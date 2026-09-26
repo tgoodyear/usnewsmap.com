@@ -108,7 +108,7 @@ sequenceDiagram
     API->>API: store in moka + Blob cache/{index_version}/
     API-->>B: 200 application/json (or ?format=arrow), Cache-Control: public, max-age=86400, ETag=index_version+query
   end
-  B->>B: build per-bucket prefix sums; playback, cumulative and trailing windows computed locally at 60 fps
+  B->>B: build per-bucket prefix sums, then compute playback, cumulative and trailing windows locally at 60 fps
   B->>API: GET /v1/hits?q=...&place=P123&cursor=...  (on marker click)
   API->>SE: (cache miss) top-N by date with highlights
   API-->>B: page list with KWIC snippets + LoC links
