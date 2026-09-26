@@ -29,25 +29,32 @@ This document set evaluates the legacy system ([`tgoodyear/usnewsmap`](https://g
 **What we will build.**
 
 ```
-Browser (React + MapLibre/deck.gl SPA, Azure Static Web Apps)
-   │  GET /v1/...  (cacheable, canonical URLs)
+Browser (React + MapLibre/deck.gl SPA)  ◄── Azure Static Web Apps (Free): usnewsmap.com, TLS, global static CDN
+   │  GET https://api.usnewsmap.com/v1/...  (cacheable, canonical URLs)
    ▼
-Azure Front Door (CDN cache + WAF rate limiting, usnewsmap.com)
-   ▼
-Rust API (axum) on Azure Container Apps  ── in-memory reference data (titles, places, baselines)
-   ▼
-Full-text search engine  ──►  Azure Blob Storage (index + curated Parquet corpus)
+One Azure Container App, one replica, two containers:
+   Rust API (axum) ── localhost ──► Quickwit searcher        ── in-memory reference data
+   ▼                                   ▼
+Azure Blob Storage: search index (Hot) · curated Parquet corpus (Cool) · reference data · response cache
    ▲
-Ingest jobs (Rust, Container Apps Jobs + Storage Queues) ◄── LoC Chronicling America bulk OCR + loc.gov API
+Ingest: backfill and full rebuilds on ACI Spot containers (preview); weekly increments on Container Apps Jobs
+        ◄── LoC Chronicling America bulk OCR + loc.gov API
 ```
 
 **Main decisions** (details and alternatives are in the ADRs):
 
 1. **The server returns complete aggregates instead of a sample of hits.** The API returns counts for every matching page, grouped by place and time bucket, in one cacheable response. Playback, cumulative and trailing-window views are then computed in the browser, with no per-user server state ([ADR-0003](adr/0003-stateless-aggregate-first-api.md)).
 2. **Azure Blob Storage is the system of record.** The corpus is stored as curated Parquet on Blob Storage, and every search index can be rebuilt from it ([ADR-0002](adr/0002-blob-data-lake-system-of-record.md)).
-3. **Search engine: Quickwit on Azure Container Apps with its index on Blob Storage is recommended. Azure AI Search is the fully managed alternative behind the same interface.** AI Search is the more "pure PaaS" option, but for a corpus of about 23 million pages and roughly 0.6–1 TB of text it costs about **$2,800–5,600 per month**. The recommended option costs about **$180–350 per month** in a typical month. Quickwit also supports nested *place × time* aggregations in its generally available API; AI Search offers them only in preview. The owner makes the final call based on funding ([ADR-0001](adr/0001-search-engine.md)).
+3. **Search engine: Quickwit on Azure Container Apps with its index on Blob Storage is recommended. Azure AI Search is the fully managed alternative behind the same interface.** AI Search is the more "pure PaaS" option, but for a corpus of about 23 million pages and roughly 0.6–1 TB of text it costs about **$2,800–5,600 per month**. The recommended lean deployment costs about **$30–60 per month** in total. Quickwit also supports nested *place × time* aggregations in its generally available API; AI Search offers them only in preview. The owner makes the final call based on funding ([ADR-0001](adr/0001-search-engine.md)).
 4. **The API is written in Rust (axum + tokio).** The API is I/O-bound and runs on scale-to-zero, per-second-billed compute, so Rust's fast cold start, small memory footprint and predictable tail latency lower cost directly. As of May 2026 the Azure SDK for Rust has GA releases for Identity, Blob Storage and Queues. The one gap, AI Search, has no Rust SDK; we would call its REST API directly, which is a small amount of code ([ADR-0004](adr/0004-rust-api.md)).
-5. **Cost and operations are hard requirements.** The target is **$500 per month or less at steady state**, with **no IaaS virtual machines** (every component is Azure PaaS or runs as a container on Container Apps, and Azure Policy blocks VM resource types), all infrastructure in Bicep, and GitHub Actions with OIDC. A single maintainer can run it, and a sponsoring institution can take it over ([ADR-0005](adr/0005-sustainability-constraints.md)).
+5. **Cost and operations are hard requirements.** The target is **under $80 per month**; the lean profile runs about **$30–60 in a typical month**. To get there:
+   - there is no Front Door; Static Web Apps (Free) serves the site;
+   - the API and search engine share one small Container App;
+   - the corpus sits in cool storage;
+   - logs stay inside the free tier;
+   - images live in GitHub Container Registry.
+
+   There are **no IaaS virtual machines**. Heavy one-off work (the initial backfill and full re-indexes) runs on **Azure Container Instances Spot containers** (preview, up to 70% cheaper), which exist only while that work runs. If Spot capacity isn't available, the fallback is Azure Batch with Spot nodes that scale to zero. All infrastructure is in Bicep, with GitHub Actions using OIDC. The earlier "growth" profile (Front Door, a larger search node, zone-redundant storage; about $180–350 per month) remains documented as an upgrade path once a sponsor funds it. A single maintainer can run it, and a sponsoring institution can take it over ([ADR-0005](adr/0005-sustainability-constraints.md), [ADR-0006](adr/0006-lean-hosting-profile.md)).
 
 **What users get beyond the original:** accurate full counts, not a 500-hit sample; shareable URLs; comparison of several terms; phrase, all-words, any-word, proximity and fuzzy search to cope with OCR errors; filters by state, title, language and front page only; a *first appearance* layer for studying how stories spread; keyword-in-context snippets; a coverage layer that separates "no mention" from "no digitized papers"; CSV/GeoJSON export; an embeddable mode; accessible table views; and a documented public API for researchers. See [02](02-product-requirements.md).
 

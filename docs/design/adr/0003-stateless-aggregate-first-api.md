@@ -11,7 +11,7 @@ The legacy API returned a **random sample of 500 hits** per request, kept per-us
 
 - One `GET /v1/aggregate` returns **complete** counts as a sparse *place × bucket* cube, together with the national series and the first appearance per place.
 - The **browser** computes cumulative, trailing-window, relative and first-appearance views from prefix sums in O(places) per frame.
-- All reads are **GET with canonical URLs**, immutable per `index_version`, and cached at Front Door and in-process.
+- All reads are **GET with canonical URLs**, immutable per `index_version`, and cached in the browser, in process and in a persistent Blob cache (plus Front Door in the growth profile).
 - There are no sessions, cookies or per-user server state.
 
 ## Alternatives

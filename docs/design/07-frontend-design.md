@@ -6,7 +6,7 @@
 |---------|--------|-----|
 | Framework | **React 19 + TypeScript**, built with **Vite** | Large hiring and contributor pool; strong typing against the OpenAPI types |
 | Map | **MapLibre GL JS** (vector basemap) + **deck.gl** (`ScatterplotLayer`, `HeatmapLayer`, `GeoJsonLayer`) | WebGL rendering of thousands of animated points at 60 fps; open source, no token required |
-| Basemap | Self-hosted **Protomaps PMTiles** (a US extract of OpenStreetMap) on Blob behind Front Door, with a muted "archival" dark style and a light style | No per-view tile fees or third-party keys (the legacy code depended on CartoDB and Mapbox tokens) |
+| Basemap | Self-hosted **Protomaps PMTiles** (a US extract of OpenStreetMap) in a public-read Blob container (HTTP range requests, no tile server), with a muted "archival" dark style and a light style. The keyless OpenFreeMap service is the fallback | No per-view tile fees or third-party keys (the legacy code depended on CartoDB and Mapbox tokens) |
 | Charts | **uPlot** (timeline, compare) | Tiny and fast; handles thousands of points |
 | Data fetching | **TanStack Query** | Caching, deduplication, cancellation of superseded searches |
 | State | URL as the source of truth (custom `useUrlState`, backed by `URLSearchParams`), plus **Zustand** for ephemeral UI | Permalinks by construction |
@@ -14,7 +14,7 @@
 | UI primitives | **Radix UI** (dialogs, sliders, toggles, tooltips) | Accessible by default |
 | i18n | Messages in `en` at launch, structured for more locales | Readiness for Spanish and German (many historic papers are in German) |
 | Testing | Vitest + Testing Library; **Playwright** end-to-end and visual snapshots; axe-core accessibility checks in CI | |
-| Hosting | **Azure Static Web Apps** behind Front Door | Free/Standard tier; atomic deploys; PR preview environments |
+| Hosting | **Azure Static Web Apps (Free)**; no Front Door | Free global static distribution, custom domain + TLS, atomic deploys, PR preview environments. Standard ($9) if a same-origin API or an SLA is wanted |
 
 ## 7.2 Layout and wireframes
 

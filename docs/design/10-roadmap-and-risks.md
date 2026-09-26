@@ -35,7 +35,7 @@ gantt
 | Phase | Exit criteria |
 |-------|---------------|
 | **0 Validate** | Corpus size known within ±15%; search backend chosen from S-2 data; geocoding ≥ 98% of titles at city precision, with the rest at county precision; bulk-download rate plan agreed with LoC's published limits |
-| **1 MVP** | F-01…F-08, F-20, F-22, F-25 (state/title), F-27 shipped; counts equal a brute-force scan on the golden set; p95 targets met; cost ≤ $500 in staging projections |
+| **1 MVP** | F-01…F-08, F-20, F-22, F-25 (state/title), F-27 shipped; counts equal a brute-force scan on the golden set; p95 targets met; cost < $80 in staging projections |
 | **2 Relaunch** | F-09, F-21, F-23, F-24, F-26, F-28, F-29, F-30 shipped; WCAG 2.2 AA audit passed; runbooks rehearsed (full re-index, rollback) |
 | **3 Research** | Each feature has its own proposal and cost check before build |
 
@@ -52,13 +52,15 @@ gantt
 
 | # | Risk | Likelihood | Impact | Mitigation | Owner |
 |---|------|-----------|--------|-----------|-------|
-| R-1 | **Sustainability again**: the maintainer leaves and the bills lapse | Med | High | ≤ $500/mo; IaC; runbooks; institutional sponsor owns the subscription and domain; ≥ 2 admins; handover runbook ([ADR-0005](adr/0005-sustainability-constraints.md)) | Owner |
+| R-1 | **Sustainability again**: the maintainer leaves and the bills lapse | Med | High | < $80/mo (fits a personal card or a small departmental budget); IaC; runbooks; institutional sponsor owns the subscription and domain; ≥ 2 admins; handover runbook ([ADR-0005](adr/0005-sustainability-constraints.md)) | Owner |
 | R-2 | Quickwit fails S-2 (latency on high-frequency terms, pre-1970 dates, cache limits) | Med | Med | Integer bucket fields; Dedicated workload profile; fallback to Elastic on Azure or AI Search via the `SearchBackend` trait | Eng |
 | R-3 | AI Search chosen, but budget can't sustain ~$3–6k/mo | Med (if chosen) | High | Only choose A with committed multi-year funding; otherwise B | Owner |
 | R-4 | LoC changes bulk formats or endpoints again (as in 2025) | Med | Med | The curated lake decouples the site from the source, so the site keeps serving; a parser schema check in `discover`; follow the NDNP news feed | Eng |
 | R-5 | Bulk download throttled; backfill slow | Med | Low | Start early; respect limits; validated mirror as accelerator; the backfill is one-time | Eng |
 | R-6 | Quickwit project cadence slows after the acquisition | Low–Med | Med | Apache-2.0; pin versions; Tantivy maintained independently; backend abstraction | Eng |
-| R-7 | Abuse or bot traffic causes cost spikes | Med | Med | Edge cache; rate limits; replica caps; budget alerts; Front Door Premium bot protection if needed | Eng |
+| R-7 | Abuse or bot traffic causes cost spikes or slowness | Med | Med | Replica cap (bounds cost); API rate limits; caches; budget alerts; add Front Door (growth profile) or a free external CDN if abuse persists | Eng |
+| R-12 | **ACI Spot is a preview** (no SLA, 3 regions, may change or be withdrawn) | Med | Low | Only offline jobs use it; the same image runs on regular ACI or on a Batch Spot pool; the work is idempotent and resumable | Eng |
+| R-13 | **Lean searcher too slow** for high-frequency terms | Med | Med | Blob cache + pre-warm; relaxed SLO for that class; the 2 vCPU / 4 GiB lever (+$15–30) | Eng |
 | R-8 | OCR quality misleads users (false negatives) | High | Med | OCR-tolerant mode; "pages containing" wording; improved NDNP-Open-OCR re-ingestion; methodology page | Product |
 | R-9 | Geographic misattribution (titles that moved; county-level fallbacks) | Med | Low | Precision flags; date-ranged places; overrides reviewed in PRs | Eng |
 | R-10 | Rust maintainer pool is thin | Low–Med | Med | Small, well-tested API; OpenAPI contract; documented rewrite path ([ADR-0004](adr/0004-rust-api.md)) | Owner |
@@ -67,7 +69,7 @@ gantt
 ## 10.4 Open questions for the owner
 
 1. **Funding and sponsor.** Is there an institution (UGA Libraries / eHistory, GTRI, a state newspaper project, LoC Labs) willing to own the subscription? This decides Option A vs B and the handover story.
-2. **Search backend preference.** Is a fully managed service (AI Search, about $3–6k/mo) required on policy grounds, or is the Quickwit PaaS-container design (about $0.2–0.4k/mo) acceptable if S-2 passes?
+2. **Speed vs budget.** At the $80 ceiling, Quickwit on a 1–2 vCPU sidecar is the only search option; managed AI Search (~$2–6k/mo) is out of reach. Are slower uncached searches for very common words (5–15 s) acceptable, or should the searcher start at 2 vCPU / 4 GiB (typical total ~$65–75)?
 3. **Branding and credits.** Keep the "US News Map" name and credit the original GTRI and eHistory team and Prof. Saunt? Contact them for endorsement and redirect permissions?
 4. **Domain.** Confirm control of `usnewsmap.com` (the registrar account), and whether `usnewsmap.net` (used for legacy Solr hosts) is still held.
 5. **Legacy repo.** Archive `tgoodyear/usnewsmap` with a README pointing to the new project, after revoking the exposed keys.
@@ -78,7 +80,7 @@ gantt
 
 - [ ] All P0 features live; counts verified against brute force on the golden set
 - [ ] SLOs met for 14 consecutive days in beta
-- [ ] Cost ≤ $500 per month for 2 consecutive months (actual)
+- [ ] Cost < $80 per month for 2 consecutive months (actual)
 - [ ] Runbooks rehearsed: full re-index, index rollback, app rollback, handover dry run
 - [ ] Accessibility audit (WCAG 2.2 AA) passed
 - [ ] Legacy keys revoked; secret scanning and push protection on

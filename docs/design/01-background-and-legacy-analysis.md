@@ -131,7 +131,7 @@ These must not carry over. Anything that is still live should be revoked.
 - **Logging of personal data**: `log_metadata` stored the client IP, cookies and all request headers for every search in MongoDB, with no retention limit. The new system stores no raw IPs or cookies (see [09](09-operations-security-cost.md)).
 - **Solr query injection**: user input was concatenated into Solr URLs after stripping only double quotes. Local-params syntax (e.g. `{!…}`) and field syntax could be injected. The new API parses queries into an AST and never forwards raw syntax to the engine.
 - **Plain HTTP** for the API and for LoC links. There was no TLS enforcement.
-- **CORS `*`** on the API. The same-origin API through Front Door removes the need for it.
+- **CORS `*`** on the API. The new API allows only the site's origin, for GET requests without credentials.
 
 ## 1.5 What to keep
 

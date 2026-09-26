@@ -24,7 +24,7 @@ Use **Quickwit** (Apache-2.0, Rust/Tantivy) running on **Azure Container Apps**,
 
 ## Consequences
 
-- Monthly search cost is about $100–350 instead of about $2,800+.
+- Monthly search cost is about $25–65 (lean profile: a Quickwit sidecar plus index storage) instead of about $2,800+. With the $80 ceiling ([ADR-0006](0006-lean-hosting-profile.md)), this is the only viable option; AI Search and Elastic belong to the growth profile.
 - We operate one open-source container (version pinning, upgrades). Mitigated by keeping the index disposable and rebuildable from the lake.
 - The Azure-native SLA and support don't apply to the engine itself; they do apply to Container Apps and Storage.
 - The team must keep both translators tested (golden tests) to keep the switch real.

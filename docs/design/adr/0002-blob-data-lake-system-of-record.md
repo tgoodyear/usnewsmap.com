@@ -11,7 +11,7 @@ The legacy system treated Solr as the only copy of the processed corpus and fetc
 
 Store the corpus in **Azure Data Lake Storage Gen2** in three layers:
 
-- **raw**: immutable LoC bulk archives, tiered to Cool/Cold
+- **raw**: only small title-metadata snapshots in the lean profile. Bulk archives are streamed and not retained (LoC is the source of record); the growth profile may retain them in Cold
 - **curated**: normalized page-level Parquet, one row per page, partitioned by year and batch
 - **reference**: titles, places, baselines, coverage, and `current.json`
 
@@ -27,4 +27,5 @@ Store the corpus in **Azure Data Lake Storage Gen2** in three layers:
 
 - Fetching from LoC happens **once**; after that, re-indexing and engine swaps are local.
 - The curated lake also serves offline research (DuckDB, DataFusion, Fabric/Synapse) and could be published as a derived open dataset.
-- Storage cost is about $30–50/month.
+- Storage cost is about $15–25/month (index Hot, curated Cool).
+- Cosmos DB was considered for document state and rejected for the corpus (~600 GB uncompressed JSON ≈ $150/month in storage alone). It is reserved for future mutable user data ([05 §5.9](../05-search-and-storage.md#59-document-storage-where-document-state-lives)).

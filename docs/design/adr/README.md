@@ -8,4 +8,5 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0002](0002-blob-data-lake-system-of-record.md) | Azure Blob (ADLS Gen2) curated Parquet lake as the system of record | Accepted |
 | [0003](0003-stateless-aggregate-first-api.md) | Stateless, aggregate-first, cacheable API; playback in the browser | Accepted |
 | [0004](0004-rust-api.md) | Rust (axum) for the API and ingest | Accepted |
-| [0005](0005-sustainability-constraints.md) | Sustainability constraints: cost ceiling, no VMs, IaC, handover-ready | Accepted |
+| [0005](0005-sustainability-constraints.md) | Sustainability constraints: cost ceiling, no VMs, IaC, handover-ready | Accepted (ceiling amended by 0006) |
+| [0006](0006-lean-hosting-profile.md) | Lean hosting profile under $80/month: no Front Door, SWA Free, single container app, Spot ingest | Accepted |

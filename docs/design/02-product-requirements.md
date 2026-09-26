@@ -75,10 +75,10 @@ Priority: **P0** = must ship at relaunch (legacy parity plus accuracy); **P1** =
 | Category | Requirement |
 |----------|-------------|
 | **Accuracy** | Map and timeline counts are exact page counts for the query (no sampling). The UI states that counts are *pages containing the match*, not the number of occurrences. |
-| **Latency** (p95, warm) | Aggregate query ≤ **1.5 s** for typical queries (≤ 1M hits); ≤ **4 s** for very common terms; cached responses ≤ **150 ms** at the edge. Place drill-down ≤ **800 ms**. Playback frame ≤ **16 ms** client-side. |
-| **Throughput** | Normal load 1–5 req/s; handle **press spikes of 100+ req/s** mostly from the CDN cache (popular example searches are pre-warmed). |
-| **Availability** | 99.5% monthly for the read path. Planned maintenance served by a static "read-only / degraded" page. |
-| **Cost** | Steady state **≤ $500 per month** all-in; scales to near zero in dev/test; hard budget alerts. |
+| **Latency** (p95, warm) | Aggregate query ≤ **2 s** for typical queries (≤ 1M hits); very common terms may take up to **15 s** uncached on the lean profile (≤ 4 s on the growth profile); cached responses ≤ **150 ms**. Place drill-down ≤ **1 s**. Playback frame ≤ **16 ms** client-side. |
+| **Throughput** | Normal load 1–5 req/s; handle **press spikes of 100+ req/s** mostly from cache: popular and example searches are pre-warmed into the in-process and Blob caches; static assets come from the SWA CDN. |
+| **Availability** | 99.0% monthly for the read path on the lean profile (99.5% on the growth profile). Planned maintenance served by a static "read-only / degraded" page. |
+| **Cost** | Steady state **under $80 per month** all-in (typical ~$50); one-time backfill ~$25–50 on Spot; dev under $10; hard budget alerts and replica caps. |
 | **Operability** | No VMs. All infrastructure as code. One-command deploy. Full re-index from the data lake with no manual steps. Runbooks in the repo. |
 | **Portability / succession** | The whole system can be handed to a new owner (a university library, for example) by transferring the subscription and repo. |
 | **Security & privacy** | No PII stored. No raw IPs persisted. TLS everywhere. Least-privilege managed identities. Dependency and secret scanning. |

@@ -1,0 +1,47 @@
+# ADR-0006: Lean hosting profile (under $80/month)
+
+- **Status:** Accepted
+- **Date:** 2026-09
+- **Supersedes:** the $500/month ceiling originally set in ADR-0005
+
+## Context
+
+The owner set a target of **under $80/month**. The first design (Front Door, a separate API app, a 4 vCPU / 8 GiB always-on searcher, zone-redundant storage, ACR) came to about $345 in a typical month. The owner also asked whether Front Door is needed, and allowed Spot/batch compute and preview features.
+
+## Decision
+
+1. **No Front Door.** **Azure Static Web Apps (Free)** hosts the SPA at `usnewsmap.com`, with free managed TLS and global static content distribution. The API is served from Container Apps at **`api.usnewsmap.com`**, with a free managed certificate. CORS allows the site origin only, for GET requests without credentials.
+   - *Option:* SWA **Standard** ($9/mo) can link the Container App so the API is same-origin under `/api/*`, and adds an SLA. The API mounts its routes at both `/v1/*` and `/api/v1/*` so either setup works without code changes.
+2. **One Container App, one replica, two containers:** the Rust API (0.25 vCPU / 0.5 GiB) and Quickwit (1.0 vCPU / 2.0 GiB), talking over localhost. Min 1, max 2 replicas. Quickwit has no ingress of its own.
+3. **Persistent response cache on Blob Storage** (`cache/{index_version}/{hash}.json.zst`). Expensive aggregates are computed once per index version and survive restarts. This replaces most of what Front Door's edge cache did.
+4. **Storage tiers:**
+   - Hot LRS for the index and reference data;
+   - **Cool** LRS for curated Parquet, which is read only during rebuilds;
+   - raw LoC archives are **not retained**, because LoC is the source of record and checksums are kept in the manifests.
+5. **Free tiers:**
+   - GitHub Container Registry instead of ACR;
+   - Log Analytics kept within the free 5 GB/month using a daily cap;
+   - no Key Vault until a secret exists;
+   - the Container Apps free monthly grant covers the jobs.
+6. **Offline compute on Spot:**
+   - the initial backfill and full re-indexes run as **ACI Spot container groups** (preview, East US 2), launched in parallel and pulling work from a Storage Queue;
+   - the weekly incremental ingest stays on Container Apps Jobs, inside the free grant;
+   - Azure Batch with Spot nodes that scale to zero is the documented fallback.
+7. **Region: East US 2.** ACI Spot is available there, and so are the higher-capacity AI Search partitions for the growth profile.
+
+## Trade-offs accepted
+
+| Given up | Effect | Mitigation |
+|----------|--------|-----------|
+| Edge caching of API responses | Repeated popular searches hit the container instead of a CDN | Browser caching; in-process moka cache; Blob persistent cache; pre-warming |
+| WAF / edge rate limiting | Abuse reaches the app | App-level token-bucket rate limit; **max 2 replicas caps the bill**, so abuse degrades speed rather than increasing cost |
+| A large searcher (4 vCPU / 8 GiB) | High-frequency terms (such as `railroad` across all years) may take 5–15 s uncached | Relaxed SLO for that class; Blob cache; UI nudges toward narrower date ranges. Spike S-2 measures it. The first lever to pull is 2 vCPU / 4 GiB (+~$20–30/mo) |
+| Redundancy (ZRS, 2 replicas) | Availability target 99.0%, no SLA | Stateless app restarts in seconds; index rebuildable; the growth profile restores these |
+| Raw archive retention | Re-fetch from LoC is needed if curated data is lost | Blob versioning and soft delete on curated data; checksums in manifests |
+| SWA Free has no SLA; 100 GB/month bandwidth cap | Site stops serving if the cap is exceeded | The SPA bundle is small; tiles are served from Blob, not SWA; upgrade to Standard ($9) if traffic approaches the cap |
+
+## Consequences
+
+- Typical cost is **about $30–60 per month** (see [09 §9.5](../09-operations-security-cost.md#95-cost-model-monthly-usd-list-prices-confirm-with-the-azure-pricing-calculator)).
+- Azure AI Search, Elastic Cloud and Front Door are outside this budget. They move to the **growth profile**, enabled by configuration once someone funds them.
+- ACI Spot is a preview service with no SLA. Backfills are resumable and idempotent, so an eviction only delays the job.

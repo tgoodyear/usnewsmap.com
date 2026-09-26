@@ -28,7 +28,7 @@ This is the most consequential decision in the design. The legacy system's singl
 | R3 | Date range filtering that prunes efficiently | Must |
 | R4 | Sort by date + paginate + highlight snippets | Must |
 | R5 | Fuzzy term matching (OCR tolerance) | Should |
-| R6 | Steady-state cost that fits the **≤ $500/mo total** budget | Must |
+| R6 | Steady-state cost that fits the **< $80/mo total** budget (search compute + index storage ideally ≤ $50) | Must |
 | R7 | **No IaaS VMs** (no VMs, VM Scale Sets, AKS or Batch pools); managed or containerized on Azure PaaS; low operational effort | Must |
 | R8 | Re-index from the lake in ≤ 24 h | Should |
 | R9 | Azure-native support and SLA | Nice |
@@ -54,14 +54,15 @@ This is the most consequential decision in the design. The legacy system's singl
   | S3 × 2 × 1 | 2 TB | ~$3,900 |
 
   Storage-optimized (L) tiers also have **higher query latency** by design, which matters for large aggregations.
-- **Verdict:** Functionally strong and the least operations work, but it is **5–10× over the total budget**, and the one query shape we need most (R2) is preview-only. **This is the recommended alternative if funding allows** (e.g. a grant or institutional sponsor covering about $35–70k per year), or if semantic search (R10) becomes a priority.
+- **Preview features are acceptable** to the owner, so the preview hierarchical facets would satisfy R2. Cost is the blocker: the cheapest tier that fits the index (S3 or L1) is about $2–2.8k/month, **25–35× the lean budget**. The preview **Serverless Developer** tier caps an index at 1 GB, so it can't hold the corpus.
+- **Verdict:** Functionally strong and the least operations work, but far outside the budget. **This is the recommended alternative if funding allows** (e.g. a grant or institutional sponsor covering about $35–70k per year), or if semantic search (R10) becomes a priority.
 
 ### Option B: Quickwit on Azure Container Apps, index on Azure Blob ✅ *recommended*
 
 - **What:** Quickwit is a Rust search engine built on **Tantivy**, relicensed to **Apache-2.0** after Datadog acquired it in January 2025. It **decouples compute from storage**: index *splits* live on **Azure Blob Storage**, and stateless searchers read them directly, using hotcache footers and a local split cache.
 - **Fit:** Elasticsearch-compatible aggregations (**terms → histogram/date_histogram nesting, min/max, cardinality** are GA). Phrase queries with slop (positions have to be enabled per field). Boolean queries, snippets and sorting on fast fields. Time-partitioned splits prune date-range queries well, and publication date is a natural timestamp. Ingest API, delete tasks, and a file-backed metastore on Blob (no database needed).
 - **Azure PaaS usage:** Container Apps (managed, KEDA autoscaling, managed identity, managed OTel agent), Blob Storage (Hot), and Container Apps Jobs for indexing. There are no VMs and no Kubernetes to operate.
-- **Cost:** Index on Blob Hot at about **$20 per TB-month**, plus 1 always-on searcher (4 vCPU / 8 GiB on Consumption; idle-rate billing between requests) at roughly **$100–300 per month**. Ingest compute is paid only while jobs run.
+- **Cost:** Index on Blob Hot at about **$20 per TB-month**. The lean profile runs Quickwit as a sidecar (1 vCPU / 2 GiB) next to the API in one always-warm Container Apps replica, at roughly **$15–45 per month** at idle rates. The growth profile uses a 4 vCPU / 8 GiB searcher at about $100–300. Ingest compute is paid only while jobs run, on Spot for the backfill.
 - **Risks:**
   1. Quickwit is tuned for logs and traces. Documents averaging 20–35 KB and very high-frequency terms need benchmarking (Spike S-2).
   2. Pre-1970 timestamps need validation. The mitigation is integer bucket fields (`day`, `ym`, `year`), which the design uses anyway (§5.5).
@@ -95,14 +96,14 @@ This is the most consequential decision in the design. The legacy system's singl
 
 | | R1 | R2 | R3 | R4 | R5 | R6 cost | R7 ops | R9 | R10 | Result |
 |---|---|---|---|---|---|---|---|---|---|---|
-| A AI Search | ✅ | ⚠️ preview | ✅ | ✅ | ✅ | ❌ $2.8–5.6k | ✅✅ | ✅ | ✅ | Alternative |
-| **B Quickwit/ACA/Blob** | ✅ | ✅ | ✅ | ✅ | ⚠️ validate | ✅ $0.1–0.4k | ✅ | ⚠️ OSS | ⚠️ | **Recommended** |
+| A AI Search | ✅ | ✅ (preview OK) | ✅ | ✅ | ✅ | ❌ $2–5.6k | ✅✅ | ✅ | ✅ | Growth-profile alternative |
+| **B Quickwit/ACA/Blob** | ✅ | ✅ | ✅ | ✅ | ⚠️ validate | ✅ ~$25–65 | ✅ | ⚠️ OSS | ⚠️ | **Recommended** |
 | C Cosmos DB | ⚠️ | ❌ | ✅ | ⚠️ | ⚠️ | ⚠️ | ✅✅ | ✅ | ✅ | Future user data |
 | D Elastic on Azure | ✅ | ✅ | ✅ | ✅ | ✅ | ❌/⚠️ | ✅ | ✅ | ✅ | Fallback |
 | E PostgreSQL | ❌ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | ✅ | Rejected |
 | F Embedded Tantivy | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ⚠️ | Offline only |
 
-**Decision gate (Spike S-2):** index the same **1M-page sample** into Quickwit (on Container Apps) and Azure AI Search (S1, since 1M pages is about 30 GB). Run the benchmark query set (§5.8). **Choose Quickwit if** its p95 for Q1 is ≤ 1.5 s on typical queries and ≤ 4 s on the high-frequency set, and it passes the correctness checks. **Otherwise** pick AI Search at L1 if funding is secured, or Elastic.
+**Decision gate (Spike S-2):** index a **1M-page sample** into Quickwit running at the lean size (1 vCPU / 2 GiB sidecar), and repeat at 2 vCPU / 4 GiB. Run the benchmark query set (§5.8) and project the results to 23M pages. **Accept the lean size if** p95 for Q1 is ≤ 2 s on typical queries and ≤ 15 s on the high-frequency set, and the correctness checks pass. **Otherwise** move to 2 vCPU / 4 GiB (still under $80), and if that fails, revisit the budget. A comparison run on AI Search S1 is optional; it is informative, but unaffordable at full scale.
 
 ## 5.4 Backend abstraction
 
@@ -271,12 +272,27 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 
 Metrics: p50, p95 and p99 latency (cold and warm); index size ÷ raw text; ingest pages/s; cost per 1,000 queries; count correctness against a DataFusion brute-force scan of the curated Parquet sample (must match exactly).
 
-## 5.9 Document storage summary
+## 5.9 Document storage: where document state lives
+
+"Document state" here means the durable record of each page: its text, its identifiers and metadata, its provenance (batch, version, OCR source), and whether it has been curated and indexed. It is stored like this:
 
 | Data | Store | Why |
 |------|-------|-----|
-| Raw LoC archives | Blob **Cool→Cold** | Immutable provenance; cheap |
-| Curated page corpus | ADLS Gen2 **Hot**, Parquet | System of record; rebuilds indexes; enables offline analytics (DuckDB/DataFusion/Fabric) |
-| Search index | Quickwit splits on Blob **Hot** (or AI Search managed storage) | Disposable, versioned |
-| Reference data | Blob Hot (Parquet + zstd JSON), in API memory | Small; read-mostly |
-| Operational/user data (future) | Cosmos DB serverless | Only if accounts or saved searches are added |
+| **Page text + metadata (the corpus)** | **ADLS Gen2 curated Parquet, Cool tier** (~150–300 GB compressed; versioning + soft delete) | The **system of record** ([ADR-0002](adr/0002-blob-data-lake-system-of-record.md)). Written once per batch version and read in bulk (index rebuilds, baselines, offline research). Costs about **$2–3/month** |
+| **Pipeline state** (which batches and versions are curated and indexed, checksums, index-build progress) | `manifests/*.json` on Blob, updated with ETag optimistic concurrency | About 3,000 small documents with one writer at a time. ETags give atomic compare-and-swap without a database |
+| **Serving copy of text** (snippets) and **stored fields** (lccn, date, edition, seq) | Inside the search index (Quickwit docstore on Blob Hot) | Hits and snippets come back in the same engine call, with no second lookup |
+| **Reference data** (titles, places, baselines, coverage) | Blob Hot, Parquet + zstd JSON; loaded into API memory | Small and read-mostly |
+| **Response cache** | Blob Hot `cache/{index_version}/` | Survives restarts; replaces an edge cache on the lean profile |
+| **User data** (future: saved searches, collections) | Cosmos DB (free tier or serverless) | The first real need for a low-latency mutable operational store |
+
+### Why not Cosmos DB for document state?
+
+It's a reasonable question, since Cosmos DB is Azure's flagship managed document store. Here is how it compares for this workload:
+
+| Variant | Size | Storage cost | One-time load cost | Verdict |
+|---------|------|--------------|--------------------|---------|
+| **Full page text in Cosmos** (~23M items, avg ~25 KB) | ~600 GB (Cosmos stores JSON uncompressed; Parquet+zstd is ~4× smaller) | **~$150/month** at $0.25/GB: on its own about 2× the whole budget | Writing 23M × ~25 KB items is roughly 2–3 billion RU, about **$500–750** on serverless | ❌ Too large and costly. The access pattern (bulk scans for rebuilds) is also what Parquet is built for, and a poor fit for a transactional store |
+| **Metadata only** (no text; ~0.5 KB/item) | ~12 GB | $0 on the **free tier** (1,000 RU/s + 25 GB free per subscription), else ~$3/month | ~140M RU: ~38 h at the free tier's 1,000 RU/s, or ~$35 serverless | ⚠️ Feasible, but nothing needs it: page metadata already comes back from the index with every hit, and point lookups by `doc_id` are rare |
+| **Pipeline manifests only** (~3,000 items) | < 10 MB | $0 (free tier) | trivial | ⚠️ Nicer querying than Blob JSON, but adds a service and an SDK dependency (the Rust Cosmos SDK is still beta, 0.37) for about 3,000 records |
+
+**Recommendation:** keep the corpus in Parquet on ADLS (Cool) and the pipeline state in Blob manifests. **Adopt Cosmos DB (free tier) at the first feature that needs mutable, per-user or per-item operational state:** saved searches, user collections, annotations, or crowd-sourced geocoding corrections. Once it exists, moving the manifests into it is a small, optional follow-up.

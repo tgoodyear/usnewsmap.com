@@ -26,10 +26,9 @@ The legacy crawler targeted `chroniclingamerica.loc.gov` JSON endpoints (`/batch
 ## 4.3 Data lake layout (ADLS Gen2, one storage account)
 
 ```
-raw/                                   (Cool → Cold after 30 days; immutable)
-  loc-bulk-ocr/{batch}/{version}/…      original archives + checksum files as downloaded
-  loc-api/titles/{date}/…json.zst       raw title metadata snapshots
-curated/                               (Hot; rebuildable from raw)
+raw/                                   (lean profile: NOT retained; LoC is the source of record)
+  loc-api/titles/{date}/…json.zst       raw title metadata snapshots only (small)
+curated/                               (Cool; the system of record; versioned + soft delete)
   pages/year={YYYY}/batch={batch}/part-{nnnn}.parquet
 reference/                             (Hot; small; loaded by API)
   titles.parquet        titles.json.zst
@@ -40,7 +39,9 @@ reference/                             (Hot; small; loaded by API)
   overrides/places.csv                  hand-curated geocoding fixes (also in git)
   current.json                          { index_version, backend, index_name, built_at, doc_count, … }
 manifests/
-  batches/{batch}.json                  { versions_seen, status, pages, sha256, curated_at, indexed_in }
+  batches/{batch}.json                  { versions_seen, status, pages, source_sha256, curated_at, indexed_in }
+  index/{index_version}.json            partitions completed by the index build (resume after Spot eviction)
+cache/{index_version}/                 (Hot) persistent API response cache, zstd JSON keyed by canonical-query hash
 qw-index/                              (Hot; Quickwit splits + file-backed metastore)
 ```
 
@@ -70,13 +71,13 @@ qw-index/                              (Hot; Quickwit splits + file-backed metas
 
 ## 4.4 Pipeline
 
-All stages are subcommands of one Rust binary (`usnm-ingest`), packaged as one container image and run as **Azure Container Apps Jobs**. Work is split into **one queue message per batch version** (about 3,000 batches), so it parallelizes naturally and retries are idempotent.
+All stages are subcommands of one Rust binary (`usnm-ingest`), packaged as one container image. **Weekly incremental** work runs as **Azure Container Apps Jobs**. The **initial backfill and full re-indexes** run the same image on **ACI Spot container groups** (preview) created by a launcher (see [08 §8.4](08-azure-infrastructure.md#84-compute-sizing-notes)). Work is split into **one queue message per batch version** (about 3,000 batches), so it parallelizes naturally and retries are idempotent.
 
 ```mermaid
 flowchart LR
   D[discover<br/>scheduled weekly] -->|new/changed batch versions| Q[[queue: batches]]
   Q --> B[batch worker ×N<br/>KEDA queue scaler]
-  B --> RAW[(raw/)]
+  B -. streamed, not retained .-> RAW[(LoC bulk archive)]
   B --> CUR[(curated/pages)]
   B --> MAN[(manifests/)]
   T[titles-sync<br/>weekly] --> REFT[(reference/titles)]
@@ -89,13 +90,13 @@ flowchart LR
 | Stage | Trigger | Does | Idempotency |
 |-------|---------|------|-------------|
 | `discover` | Cron (weekly) + manual | Lists batches and versions from the Datasets portal; diffs against `manifests/`; enqueues work | Manifest ETags; enqueue only if status ≠ curated for that version |
-| `batch` | Queue | Downloads the bulk OCR for the batch (checksum verified) → `raw/`; parses per-page text; normalizes; joins title → place/state/language; writes curated Parquet (~256 MB row groups); updates the manifest | Output path is deterministic per batch/version; write to a temp path and rename; the manifest records sha256 |
+| `batch` | Queue | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; joins title → place/state/language; writes curated Parquet (~256 MB row groups); updates the manifest | Output path is deterministic per batch/version; write to a temp path and rename; the manifest records sha256 |
 | `titles-sync` | Cron (weekly) | Pulls title records from the loc.gov API; snapshots to `raw/`; builds `reference/titles` | Snapshot by date |
 | `geocode` | When titles change | Resolves place of publication → GNIS feature (county-aware), else county centroid, else state centroid; applies `overrides/places.csv`; writes `reference/places` with a `precision` flag | Deterministic |
 | `stats` | After batches are curated | Aggregates baselines (pages per place/day and per title/month) and coverage (state/year) from curated Parquet using DataFusion or Polars | Full recompute (cheap: one scan of the ids and dates columns) |
 | `index` | After stats, or manual | Streams curated rows changed since the last `index_version` into the engine; a full rebuild writes to a new index; updates `current.json` | Engine doc_id upserts (AI Search) / delete-then-append by batch (Quickwit) |
 
-**Throughput plan for the initial backfill.** 23M pages at a conservative 2,000 pages/s per indexer is about 3.2 hours of pure indexing per indexer. In practice LoC download politeness dominates (days, not hours), which is why the curated lake matters: **after the first backfill we never re-download to re-index.** If the mirror is validated, the backfill can pull from it instead.
+**Throughput plan for the initial backfill.** 23M pages at a conservative 2,000 pages/s per indexer is about 3.2 hours of pure indexing per indexer. In practice LoC download politeness dominates (days, not hours), which is why the curated lake matters: **after the first backfill we never re-download to re-index.** If the mirror is validated, the backfill can pull from it instead. On **ACI Spot**, 8 workers × 2 vCPU for ~4 days cost about $20–25. Evictions only delay the work, because each queue message (one batch) is idempotent and reappears after its visibility timeout.
 
 ## 4.5 Text normalization (applied at curation time)
 

@@ -43,9 +43,9 @@
 | HTTP client | `reqwest` (rustls, HTTP/2, connection pooling) |
 | Serialization | `serde`, `serde_json`; **Arrow IPC** (`arrow-ipc`) for large cubes when `?format=arrow` |
 | Query parsing | Handwritten recursive-descent parser (`winnow`), fuzz-tested with `cargo-fuzz` |
-| Caching | `moka` (async, size-bounded, TTL) for aggregate and hits results; in addition to Front Door |
+| Caching | `moka` (async, size-bounded, TTL) in process, plus a **persistent Blob cache** (`cache/{index_version}/`, zstd JSON) for expensive aggregates |
 | Reference data | `arrow`/`parquet` readers at startup; `ahash` maps; loaded as `Arc<RefData>` and hot-swapped with `arc-swap` |
-| Rate limiting | `governor` (per-client-IP token bucket, keyed on a salted hash); Front Door rules at the edge |
+| Rate limiting | `governor` (per-client-IP token bucket, keyed on a salted hash). With no WAF on the lean profile, this and `maxReplicas: 2` are the abuse controls |
 | OpenAPI | `utoipa` (types → OpenAPI 3.1); Scalar or Redoc docs served at `/v1/docs` |
 | Config | `figment` (env + file); 12-factor |
 | Telemetry | `tracing`, `tracing-opentelemetry`, `opentelemetry-otlp` |
@@ -57,7 +57,8 @@
 
 Principles:
 
-- **All reads are GET** with canonical query strings, so Front Door and browsers can cache them.
+- **All reads are GET** with canonical query strings, so browsers (and any future CDN) can cache them.
+- **Base URL:** `https://api.usnewsmap.com/v1/…`. The same routes are also mounted at `/api/v1/…`, so that linking the app to SWA Standard (same-origin `/api/*`) works without code changes.
 - **Responses are immutable per `index_version`.**
 - **No cookies and no sessions.**
 - **Public, read-only.** Anonymous use is limited by rate; researchers can get a higher-limit key later.
@@ -176,15 +177,18 @@ primary   := PHRASE [ "~" INT ] | TERM [ "~" (1|2) ] | PREFIX "*" | "(" query ")
 
 ## 6.5 Caching
 
+The lean profile has no edge CDN in front of the API, so the API caches in three layers:
+
 | Layer | Key | TTL | Notes |
 |-------|-----|-----|-------|
-| Browser | URL | `max-age=300` | With `ETag` for revalidation |
-| Front Door | Canonical URL (query string included) | `s-maxage=86400` | No purges needed: the `v={index_version}` query parameter changes the URL on every index publish |
-| API (moka) | `(index_version, canonical query)` | 24 h, size-bounded (256 MB) | Coalesces concurrent identical requests (single-flight) |
+| Browser | URL | `max-age=86400` + `ETag` | URLs carry `v={index_version}`, so they are immutable per version |
+| API in-process (moka) | `(index_version, canonical query)` | 24 h, size-bounded (~256 MB) | Coalesces concurrent identical requests (single-flight) |
+| **API persistent (Blob)** | `cache/{index_version}/{sha256(canonical)}.json.zst` | Lifetime of the index version | Written for responses that took over 500 ms to compute. Read-through on moka misses (~20–60 ms). Survives restarts and scale-to-zero in dev. Old version prefixes are deleted by lifecycle rule after 14 days |
+| *(Growth profile)* Front Door | Canonical URL | `s-maxage=86400` | No purges needed because URLs change with `index_version` |
 
 **Version rollover.** Responses carry `ETag: "{index_version}:{hash}"`. The SPA fetches `/v1/meta` (5-minute TTL) at startup and appends `&v={index_version}` to API requests. When the version changes, URLs change and every cache moves on without purges.
 
-**Pre-warming.** After each index publish, a job requests the example searches and the top 200 queries from the previous 30 days (from aggregated, anonymous telemetry).
+**Pre-warming.** After each index publish, a job requests the example searches and the top 200 queries from the previous 30 days (from aggregated, anonymous telemetry). The results land in the Blob cache, so they are warm even after a replica restart. Index versions are published at most **weekly** to keep the cache hit rate high.
 
 ## 6.6 Service internals
 
@@ -206,7 +210,7 @@ flowchart LR
 - **Startup:** read `reference/current.json`, load reference Parquet (~40–80 MB in memory including baselines), warm the connection pool, then become ready.
 - **Hot reload:** a background task polls `current.json`. When `index_version` changes, it loads the new reference data into a fresh `Arc<RefData>` and swaps it atomically. In-flight requests finish on the old snapshot.
 - **Concurrency:** one tokio runtime; each request fans out to at most 3 concurrent backend calls; a global semaphore caps backend concurrency so a spike can't overwhelm the searcher.
-- **Resources:** 0.5 vCPU / 1 GiB per replica; KEDA HTTP scaler on concurrent requests; min 1 replica in production, 0 elsewhere.
+- **Resources:** the `api` container is 0.25 vCPU / 0.5 GiB, sharing a replica with the `quickwit` sidecar (1 vCPU / 2 GiB) and reaching it on `localhost`. KEDA HTTP scaler on concurrent requests; min 1 / max 2 replicas in production, min 0 elsewhere.
 
 ## 6.7 Testing strategy
 
