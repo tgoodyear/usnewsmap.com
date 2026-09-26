@@ -81,7 +81,7 @@ Priority: **P0** = must ship at relaunch (legacy parity plus accuracy); **P1** =
 | **Cost** | Steady state **under $80 per month** all-in (typical ~$50); one-time backfill ~$25–50 on Spot; dev under $10; hard budget alerts and replica caps. |
 | **Operability** | No VMs. All infrastructure as code. One-command deploy. Full re-index from the data lake with no manual steps. Runbooks in the repo. |
 | **Portability / succession** | The whole system can be handed to a new owner (a university library, for example) by transferring the subscription and repo. |
-| **Security & privacy** | No PII stored. No raw IPs persisted. TLS everywhere. Least-privilege managed identities. Dependency and secret scanning. |
+| **Security & privacy** | No accounts, cookies or other PII collected by the application. The application never logs client IPs, and App Insights masks them. **Only exception:** if platform HTTP access logs are enabled for abuse investigation (off by default on the lean profile; Front Door logs in the growth profile), they contain raw IPs and are retained for **at most 30 days**. TLS everywhere. Least-privilege managed identities. Dependency and secret scanning. |
 | **Accessibility** | WCAG 2.2 AA. Everything on the map is also available as a table. Keyboard-operable playback. Honors `prefers-reduced-motion`. |
 | **Browser support** | Evergreen browsers; mobile Safari/Chrome; WebGL2 with a graceful non-WebGL fallback (table view). |
 | **Data freshness** | New LoC batches and OCR reprocessing picked up within **7 days**, automatically. |

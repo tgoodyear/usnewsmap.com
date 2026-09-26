@@ -10,7 +10,7 @@ One subscription (ideally owned by a sponsoring institution), one region: **East
 |----------|--------------|---------|
 | **Static Web App** `swa-usnm` | **Free** (custom domains `usnewsmap.com` + `www`, free managed TLS, global static distribution, PR preview environments). Standard ($9) optional: linked Container App at `/api/*`, SLA | SPA hosting. **Replaces Front Door** for the site |
 | **Container Apps environment** `cae-usnm` | Consumption only | Hosts the app and jobs; managed OTel agent → App Insights |
-| Container App `ca-usnm` | **One app, two containers per replica:** `api` (Rust, 0.25 vCPU / 0.5 GiB) + `quickwit` (searcher + file-backed metastore, 1.0 vCPU / 2.0 GiB, listening on localhost only). Min 1, **max 2** replicas; HTTP scaler | Public API at **`api.usnewsmap.com`** (custom domain, free managed certificate). CORS allows `https://usnewsmap.com` for GET only |
+| Container App `ca-usnm` | **One app, two containers per replica:** `api` (Rust, 0.25 vCPU / 0.5 GiB) + `quickwit` (**searcher only**, opening the file-backed metastore read-only in polling mode, 1.0 vCPU / 2.0 GiB, listening on localhost only). Min 1, **max 2** replicas; HTTP scaler. See §8.4.1 for the single-writer rule | Public API at **`api.usnewsmap.com`** (custom domain, free managed certificate). CORS allows `https://usnewsmap.com` for GET only |
 | Container Apps Jobs `job-ingest-*` | Scheduled / event-driven (KEDA Azure Queue scaler); active rate, mostly within the free grant | Weekly incremental work: discover, batch (a few new batches), titles-sync, geocode, stats, incremental index, pre-warm |
 | **ACI Spot container groups** `aci-usnm-backfill-{n}` (preview) | Created on demand by the `backfill` launcher; up to 4 vCPU / 16 GB each; no public IP (not needed) | Initial backfill and full re-index; deleted when the queue drains |
 | **Storage account** `stusnmdata` | StorageV2, **HNS enabled (ADLS Gen2)**, **LRS**; `qw-index/`, `reference/` and `cache/` in **Hot**; `curated/` in **Cool**; blob versioning + soft delete (14 d) on `curated/` and `reference/`; **raw archives not retained** | Data lake, index splits, persistent response cache, queues |
@@ -27,7 +27,7 @@ Container images are published to **GitHub Container Registry** as public images
 
 | Principal | Type | Role assignments (scope) |
 |-----------|------|--------------------------|
-| `id-usnm-app` (user-assigned, on `ca-usnm`) | MI | `Storage Blob Data Reader` (`reference/`); `Storage Blob Data Contributor` (`qw-index/`, `cache/`) |
+| `id-usnm-app` (user-assigned, on `ca-usnm`) | MI | `Storage Blob Data Reader` (`reference/`, `qw-index/`); `Storage Blob Data Contributor` (`cache/`). Serving replicas **can't** write the index |
 | `id-usnm-ingest` (on jobs and ACI Spot groups) | MI | `Storage Blob Data Contributor` (`curated/`, `reference/`, `qw-index/`); `Storage Queue Data Contributor`; **Cosmos DB Built-in Data Contributor** (database `usnm`) |
 | `id-usnm-launcher` (on the `backfill` launcher job) | MI | `Contributor` on `rg-usnm-prod-spot` only (to create and delete ACI container groups); `Managed Identity Operator` on `id-usnm-ingest` |
 | GitHub Actions (`usnewsmap.com` repo, `main` branch + `prod` environment) | **OIDC federated credential** on an app registration | `Contributor` on `rg-usnm-*` + `User Access Administrator` constrained by a condition to the roles above (for Bicep role assignments) |
@@ -45,7 +45,7 @@ There are no storage account keys or SAS tokens in app config: `allowSharedKeyAc
 - **Abuse protection without a WAF:** the per-client token bucket in the API (salted-hash keys, in memory), request timeouts, a query-complexity budget, and `maxReplicas: 2`. The replica cap turns abuse into slower responses instead of a larger bill.
 - **Cosmos DB** allows Entra ID RBAC only (no keys). Its public network access is restricted with the same IP allow-list approach while a backfill runs.
 - **The data storage account** uses firewall allow-lists: the Container Apps environment's outbound IPs plus trusted Azure services. ACI Spot groups have no VNet in preview, so while a backfill runs the launcher adds the groups' outbound IPs to the allow-list and removes them afterwards. Public blob access is disabled (the tiles account is the only exception).
-- **Hardening path (growth profile):** Front Door Standard/Premium in front of both origins (edge cache, WAF, Private Link), a VNet-integrated environment, and private endpoints.
+- **Hardening path (growth profile):** Front Door in front of both origins (edge cache, WAF), a VNet-integrated environment, and private endpoints. With **Front Door Standard**, the API app must keep **external** ingress, because internal ingress is reachable only inside the environment. Lock it to Front Door by validating the `X-Azure-FDID` header in the API, plus IP allow-list rules generated from the published `AzureFrontDoor.Backend` service-tag CIDRs and re-synced by a scheduled job (Container Apps IP restrictions take CIDRs, not service-tag names). **Front Door Premium** can instead reach an internal environment over Private Link.
 
 ## 8.4 Compute sizing notes
 
@@ -64,6 +64,18 @@ There are no storage account keys or SAS tokens in app config: `allowSharedKeyAc
   - After an eviction it resumes at the first unfinished partition.
   - Partial partitions are discarded because splits are published only when a partition completes. The exact mechanism (per-partition commit or file-source checkpoints) is validated in S-2.
 - **Fallback:** if ACI Spot is unavailable or evictions stall progress, the same image runs on regular-priority ACI (about 3× the cost, still ~$100) or on an **Azure Batch Spot pool** that scales to zero (container tasks, one per batch). Using the Batch fallback needs a time-boxed exemption from the "Not allowed resource types" policy for the `rg-usnm-prod-spot` resource group.
+
+### 8.4.1 Quickwit metastore: one writer, many readers
+
+Quickwit's **file-backed metastore** (a JSON file per index on Blob) doesn't support concurrent writers. Scaling a node that *writes* it would risk corrupting metadata. The design therefore separates readers from the writer:
+
+| Process | Quickwit roles | Metastore access | Count |
+|---------|----------------|------------------|-------|
+| `quickwit` sidecar in each `ca-usnm` replica | `searcher` (plus the metastore service pointed at the file-backed URI with `#polling_interval=30s`) | **Read-only.** It picks up newly published splits by polling. No indexer or janitor roles run here, and the identity has only Blob *Reader* on `qw-index/` | 1–2 |
+| `index` job (weekly incremental: Container Apps Job) | `indexer` + `janitor`, embedded in the job container | **Sole writer** of the *serving* index's metastore | ≤ 1, enforced by a Cosmos `ops/quickwit-writer` lease (ETag compare-and-swap, 2-hour TTL, renewed while running) |
+| Full rebuild (ACI Spot) | `indexer` + `janitor` | Sole writer of a **new** index (`pages-v{date}` with its own `index_uri` and metastore file). Serving replicas don't read it until `current.json` flips | 1 |
+
+S-2 validates that searchers with a polling, read-only file-backed metastore behave as documented on the pinned Quickwit version. **Fallback:** a PostgreSQL metastore (Azure Database for PostgreSQL Flexible Server, Burstable B1ms, ~$13–15/month). It supports any number of Quickwit nodes and still fits under $80 (typical ~$65).
 
 ## 8.5 Infrastructure as code
 

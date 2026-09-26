@@ -118,7 +118,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
     "p": [0, 0, 1, …],
     "b": [4, 5, 4, …],
     "h": [120, 88, 97, …],
-    "baseline_ref": "/v1/coverage?from=1896-06-01&to=1896-12-31&bucket=week"
+    "baseline_ref": "/v1/coverage?from=1896-06-01&to=1896-12-31&bucket=week&v=pages-v20261001-1"
   },
   "truncated": false,
   "timing_ms": { "backend": 412, "total": 455 }
@@ -137,7 +137,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "total": 612,
   "items": [
     {
-      "doc_id": "7q2k9…",
+      "doc_id": "sn84031492_1896-07-10_ed-1_seq-1",
       "date": "1896-07-10",
       "lccn": "sn84031492",
       "title": "The Chicago Eagle",
@@ -150,7 +150,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
       }
     }
   ],
-  "next_cursor": "eyJkIjo3MTk5NSwiaWQiOiI3cTJrOSJ9"   // opaque (date, doc_id) search_after
+  "next_cursor": "eyJkIjo3MTk5NSwiaWQiOiJzbjg0MDMxNDkyXzE4OTYtMDctMTBfZWQtMV9zZXEtMSJ9"   // opaque (date, doc_id) search_after
 }
 ```
 
@@ -167,7 +167,11 @@ query     := or_expr
 or_expr   := and_expr ( "OR" and_expr )*
 and_expr  := unary ( ["AND"] unary )*
 unary     := "-" primary | primary
-primary   := PHRASE [ "~" INT ] | TERM [ "~" (1|2) ] | PREFIX "*" | "(" query ")"
+primary   := PHRASE [ "~" INT ]
+           | TERM [ "~" ("1" | "2") | "*" ]     (* fuzzy distance OR prefix, never both; prefix needs ≥ 3 chars *)
+           | "(" query ")"
+PHRASE    := '"' TERM ( TERM )* '"'
+TERM      := letter ( letter | digit | "'" )*
 ```
 
 - **Limits:** ≤ 12 terms, ≤ 4 OR branches, prefix length ≥ 3, fuzzy distance ≤ 2, slop ≤ 20, no leading wildcards, no field syntax (`field:`), and no engine local-params. This removes the legacy Solr injection risk structurally, because only the AST reaches the translator.
@@ -181,12 +185,19 @@ The lean profile has no edge CDN in front of the API, so the API caches in three
 
 | Layer | Key | TTL | Notes |
 |-------|-----|-----|-------|
-| Browser | URL | `max-age=86400` + `ETag` | URLs carry `v={index_version}`, so they are immutable per version |
+| Browser | URL | `max-age=86400` + `ETag` for versioned URLs; `max-age=300` for unversioned | URLs carry `v={index_version}` and the API rejects mismatched `v` (see below), so versioned URLs are immutable |
 | API in-process (moka) | `(index_version, canonical query)` | 24 h, size-bounded (~256 MB) | Coalesces concurrent identical requests (single-flight) |
 | **API persistent (Blob)** | `cache/{index_version}/{sha256(canonical)}.json.zst` | Lifetime of the index version | Written for responses that took over 500 ms to compute. Read-through on moka misses (~20–60 ms). Survives restarts and scale-to-zero in dev. Old version prefixes are deleted by lifecycle rule after 14 days |
 | *(Growth profile)* Front Door | Canonical URL | `s-maxage=86400` | No purges needed because URLs change with `index_version` |
 
-**Version rollover.** Responses carry `ETag: "{index_version}:{hash}"`. The SPA fetches `/v1/meta` (5-minute TTL) at startup and appends `&v={index_version}` to API requests. When the version changes, URLs change and every cache moves on without purges.
+**Version rollover.** Responses carry `ETag: "{index_version}:{hash}"`, and every URL a response links to (such as `baseline_ref`) carries the same `v`. The SPA fetches `/v1/meta` (5-minute TTL) at startup and appends `&v={index_version}` to API requests.
+
+**`v` is validated, never ignored.** The API only answers a request whose `v` names the version it is serving:
+
+- `v` = current version → normal response, cacheable (`max-age=86400`).
+- `v` missing → served from the current version with `Cache-Control: max-age=300` and a `Content-Location` naming the versioned URL.
+- `v` ≠ current (stale tab, old link, or a rollback) → **`307` redirect** to the same canonical query with the current `v`, marked `Cache-Control: no-store`. The SPA then refreshes `/v1/meta` and its other version-scoped data. A stale URL is therefore never answered with, or cached as, data from a different snapshot.
+- The Blob cache is keyed by the **serving** version (`cache/{index_version}/…`), so its entries can't cross versions either.
 
 **Pre-warming.** After each index publish, a job requests the example searches and the top 200 queries from the previous 30 days (from aggregated, anonymous telemetry). The results land in the Blob cache, so they are warm even after a replica restart. Index versions are published at most **weekly** to keep the cache hit rate high.
 

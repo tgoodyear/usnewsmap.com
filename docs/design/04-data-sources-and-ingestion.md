@@ -19,8 +19,8 @@ The legacy crawler targeted `chroniclingamerica.loc.gov` JSON endpoints (`/batch
 ## 4.2 Canonical identifiers
 
 - **Page key** (human-readable and stable): `{lccn}/{yyyy-mm-dd}/ed-{n}/seq-{n}`, e.g. `sn84026749/1896-07-10/ed-1/seq-1`. This is the same tuple the legacy code used (`sn, date, ed, seq`) and the one LoC uses for resource paths.
-- **Doc id** (engine key): `xxh3_64(page_key)` encoded as 13-char base32. It is compact and safe for AI Search keys and Quickwit.
-- **Place id**: `P` + a stable integer assigned in `reference/places` (e.g. `P00412`). One place can serve many titles, since cities had several papers.
+- **Doc id** (engine key): the page key itself, with `/` replaced by `_` (e.g. `sn84026749_1896-07-10_ed-1_seq-1`). It is **collision-free by construction**, reversible, and uses only characters valid in AI Search keys (letters, digits, `_`, `-`). A 64-bit hash was rejected: at 23M pages the chance of at least one collision is ~1.4×10⁻⁵, and a collision would silently merge two pages and break exact counts.
+- **Place id**: `P` + a stable integer assigned once and never reused (e.g. `P00412`). Ids stay stable across reference snapshots; the registry is carried forward from one `reference/{index_version}/places` snapshot to the next. One place can serve many titles, since cities had several papers.
 - **Index version**: `pages-v{YYYYMMDD}-{n}`. It is recorded in `reference/current.json` and appears in every API ETag.
 
 ## 4.3 Data lake layout (ADLS Gen2, one storage account)
@@ -30,14 +30,16 @@ raw/                                   (lean profile: NOT retained; LoC is the s
   loc-api/titles/{date}/…json.zst       raw title metadata snapshots only (small)
 curated/                               (Cool; the system of record; versioned + soft delete)
   pages/year={YYYY}/batch={batch}/part-{nnnn}.parquet
-reference/                             (Hot; small; loaded by API)
-  titles.parquet        titles.json.zst
-  places.parquet        places.geojson.zst
-  baselines_place_day.parquet           pages published per (place_id, date)
-  baselines_title_month.parquet
-  coverage_state_year.parquet
+reference/                             (Hot; small; loaded by API; IMMUTABLE per index version)
+  {index_version}/
+    titles.parquet      titles.json.zst
+    places.parquet      places.geojson.zst
+    baselines_place_day.parquet         pages published per (place_id, date)
+    baselines_title_month.parquet
+    coverage_state_year.parquet
+    manifest.json                       { index_version, files: [{path, sha256, bytes}], built_from: {titles_snapshot, curated_partitions} }
   overrides/places.csv                  hand-curated geocoding fixes (also in git)
-  current.json                          { index_version, backend, index_name, built_at, doc_count, … }
+  current.json                          { index_version, backend, index_name, index_uri, reference_manifest: "{index_version}/manifest.json", previous_version, published_at }
 (document state, meaning per-title, per-batch, per-issue and per-index-run status, lives in Cosmos DB, not here; see 05 §5.9.1)
 cache/{index_version}/                 (Hot) persistent API response cache, zstd JSON keyed by canonical-query hash
 qw-index/                              (Hot; Quickwit splits + file-backed metastore)
@@ -47,19 +49,19 @@ qw-index/                              (Hot; Quickwit splits + file-backed metas
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `doc_id` | string | xxh3 base32 |
+| `doc_id` | string | `page_key` with `/`→`_` (unique) |
 | `page_key` | string | `lccn/date/ed-n/seq-n` |
 | `lccn` | string | |
 | `date` | date32 | Publication date. Pre-1970 dates are normal; ~1756 onward. |
 | `year`, `month` | int16, int8 | Denormalized for partition pruning |
 | `edition`, `seq` | int16 | |
 | `front_page` | bool | `seq == 1` |
-| `place_id` | string | From title → place |
-| `state` | string(2) | USPS code; territories map to today's state for filtering, and the historical name is kept in `titles` |
-| `language` | list<string> | From title metadata |
+
+Curated rows hold only **immutable page facts**. Title-derived attributes (`place_id`, `state`, `language`) are **not stored here**. The `index` and `stats` jobs join them from the versioned titles snapshot, so a corrected title record never leaves stale copies in the system of record.
 | `batch`, `batch_version` | string, int16 | Provenance |
 | `ocr_source` | enum | `ndnp-original` \| `ndnp-open-ocr` |
-| `text` | large_string | Normalized OCR text (§4.5) |
+| `text_status` | enum | `ok` \| `short` \| `empty` (§4.5) |
+| `text` | large_string (nullable) | Normalized OCR text (§4.5); null unless `text_status = ok` |
 | `text_chars`, `word_count` | int32 | QA and baselines |
 | `text_sha256` | fixed_binary(32) | Change detection |
 | `resource_url` | string | Canonical loc.gov page URL |
@@ -78,9 +80,9 @@ flowchart LR
   B -. streamed, not retained .-> RAW[(LoC bulk archive)]
   B --> CUR[(curated/pages)]
   B --> MAN[(Cosmos DB: document state)]
-  T[titles-sync<br/>weekly] --> REFT[(reference/titles)]
-  G[geocode<br/>on titles change] --> REFP[(reference/places)]
-  CUR --> S[stats<br/>baselines + coverage] --> REFB[(reference/baselines, coverage)]
+  T[titles-sync<br/>weekly] --> REFT[(Cosmos titles + reference/v/titles)]
+  G[geocode<br/>on titles change] --> REFP[(reference/v/places)]
+  CUR --> S[stats<br/>baselines + coverage] --> REFB[(reference/v/baselines, coverage)]
   CUR --> I[index<br/>incremental or full] --> SE[(search engine)]
   I --> CURJ[(reference/current.json)]
 ```
@@ -88,11 +90,11 @@ flowchart LR
 | Stage | Trigger | Does | Idempotency |
 |-------|---------|------|-------------|
 | `discover` | Cron (weekly) + manual | Lists batches and versions from the Datasets portal; upserts `batches` items in Cosmos; enqueues work | Enqueue only if the Cosmos status ≠ curated for that version |
-| `batch` | Queue | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; joins title → place/state/language; writes curated Parquet (~256 MB row groups); updates the manifest | Claims the batch with a conditional Cosmos patch (lease + ETag); output path is deterministic per batch/version; writes to a temp path and renames; records sha256, pages and issue items in Cosmos |
+| `batch` | Queue | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; writes curated Parquet (~256 MB row groups); updates the manifest | Claims the batch with a conditional Cosmos patch (lease + ETag); output path is deterministic per batch/version; writes to a temp path and renames; records sha256, pages and issue items in Cosmos |
 | `titles-sync` | Cron (weekly) | Pulls title records from the loc.gov API; snapshots to `raw/`; builds `reference/titles` | Snapshot by date |
 | `geocode` | When titles change | Resolves place of publication → GNIS feature (county-aware), else county centroid, else state centroid; applies `overrides/places.csv`; writes `reference/places` with a `precision` flag | Deterministic |
-| `stats` | After batches are curated | Aggregates baselines (pages per place/day and per title/month) and coverage (state/year) from curated Parquet using DataFusion or Polars | Full recompute (cheap: one scan of the ids and dates columns) |
-| `index` | After stats, or manual | Streams curated rows changed since the last `index_version` into the engine; a full rebuild writes to a new index; updates `current.json` | Engine doc_id upserts (AI Search) / delete-then-append by batch (Quickwit) |
+| `stats` | After batches are curated | Aggregates baselines (pages per place/day and per title/month) and coverage (state/year) from curated Parquet joined with the titles snapshot, using DataFusion or Polars. Writes a **new** `reference/{index_version}/` snapshot (never overwrites) | Full recompute (cheap: one scan of the ids and dates columns) |
+| `index` | After stats, or manual | Takes the Cosmos `ops/quickwit-writer` lease (the single metastore writer). Streams curated rows with `text_status = ok` changed since the last `index_version`, joined with the titles snapshot for `place_id`/`state`/`language`. A full rebuild writes a new index. Publishes by writing `current.json` last, naming the index and its reference snapshot | Deterministic `doc_id` (the page key) makes upserts and deletes exact; delete-then-append by batch on Quickwit |
 
 **Throughput plan for the initial backfill.** 23M pages at a conservative 2,000 pages/s per indexer is about 3.2 hours of pure indexing per indexer. In practice LoC download politeness dominates (days, not hours), which is why the curated lake matters: **after the first backfill we never re-download to re-index.** If the mirror is validated, the backfill can pull from it instead. On **ACI Spot**, 8 workers × 2 vCPU for ~4 days cost about $20–25. Evictions only delay the work, because each queue message (one batch) is idempotent and reappears after its visibility timeout.
 
@@ -101,7 +103,7 @@ flowchart LR
 1. Unicode NFC; strip control characters; turn the long s `ſ` into `s`; normalize ligatures (`ﬁ` → `fi`).
 2. **Rejoin line-break hyphenation**: `indus-\ntry` → `industry`, but only when the joined token is alphabetic. This substantially improves phrase recall on OCR text.
 3. Collapse runs of whitespace; keep paragraph breaks as `\n`.
-4. Drop pages whose normalized text is empty or shorter than 20 characters (the legacy code also skipped empty pages). Record them in the manifest so coverage counts stay honest.
+4. **Keep every digitized page as a curated row**, even when the normalized text is empty or shorter than 20 characters. Such rows get `text_status = empty | short` and a null `text`. They are **excluded from the search index only**; baselines and coverage count them, so relative frequencies and the "no digitized newspapers" layer stay correct. (The legacy code dropped them entirely.)
 5. Keep the text case-sensitive in storage; lowercasing and ASCII folding happen in the engine's analyzer.
 
 ## 4.6 Geography
@@ -117,7 +119,7 @@ flowchart LR
 |--------|-----------|--------|
 | **New batch** | `discover` finds an unseen batch | Curate → incremental index (append) → recompute stats → bump `index_version` minor |
 | **New batch version** (e.g. `_ver02`, or NDNP-Open-OCR reprocessing) | Version increment or dataset update | Curate the new version; pages whose `text_sha256` changed are **replaced**: AI Search upserts by `doc_id`; Quickwit runs a delete task for `batch:{batch}` followed by re-ingest. Bump `index_version`. |
-| **Title metadata change** (e.g. corrected place) | `titles-sync` diff | Rebuild places/baselines. If `place_id` changed for indexed pages, run a batch re-index for the affected titles. |
+| **Title metadata change** (e.g. corrected place) | `titles-sync` diff (recorded on the Cosmos `titles` item) | Build a new reference snapshot (places, baselines, coverage). Re-index the affected titles' pages, which picks up the new `place_id`/`state`/`language` via the join, then publish a new `index_version`. No re-curation is needed because curated rows carry no title-derived fields. |
 | **Analyzer or schema change** | Code change | **Full rebuild** into a new index from curated Parquet, then flip `current.json` atomically. Keep the previous index for 7 days for rollback. |
 
-The API re-reads `reference/current.json` every 10 minutes. Because `index_version` is part of every cache key, the CDN and in-process caches never serve stale results across versions.
+The API re-reads `reference/current.json` every 10 minutes and loads the reference snapshot it names, verifying checksums. Snapshots are immutable and kept for at least the current and previous versions (7 days minimum), so **rolling back `current.json` restores the exact index + reference pair** that was published together. Because `index_version` is part of every cache key, caches never mix versions.

@@ -42,7 +42,7 @@ flowchart LR
   subgraph "Azure Container Apps environment (Consumption)"
     subgraph APP["ca-usnm · api.usnewsmap.com · min 1 / max 2 replicas"]
       API[api container<br/>Rust · axum]
-      QW[quickwit container<br/>searcher + metastore<br/>localhost only]
+      QW[quickwit container<br/>searcher · read-only metastore<br/>polling · localhost only]
     end
     JOBS[[Container Apps Jobs<br/>weekly: discover · batch · stats<br/>incremental index · prewarm]]
   end
@@ -69,7 +69,8 @@ flowchart LR
   SPOT --> CUR & IDX
   SPOT <--> COS
   Q --> SPOT
-  JOBS -->|ingest API| QW
+  JOBS -->|single writer: embedded indexer + janitor| IDX
+  SPOT -->|full rebuild: new index| IDX
   APP & JOBS --> AI
 ```
 
@@ -82,7 +83,8 @@ The **growth profile** adds Azure Front Door in front of both origins (edge cach
 | **Static Web Apps** | SWA Free | Serves the SPA at `usnewsmap.com` with TLS and global static distribution; route rules (SPA fallback, `/loc_api/*` → 410); PR preview environments | Managed |
 | **Web app** | React 19 + TypeScript + Vite; MapLibre GL JS; deck.gl; uPlot; TanStack Query | UI, URL state, **client-side playback** from aggregate cubes, accessibility views | Static |
 | **Search API** (`api` container) | Rust, axum/tokio, reqwest, moka | Parse and validate queries → backend DSL; run aggregate, hit and snippet queries; join with reference data; normalize; encode responses; **three cache layers** (browser, in-process, Blob); rate limiting; OpenAPI | Replicas (max 2) |
-| **Search engine** (`quickwit` sidecar) | **Quickwit** (Rust, Apache-2.0); Azure AI Search in the growth profile | Inverted index with positions; phrase, proximity and fuzzy; nested *terms × histogram* aggregations; snippets | With its replica; splits on Blob |
+| **Search engine** (`quickwit` sidecar) | **Quickwit** (Rust, Apache-2.0); Azure AI Search in the growth profile | **Read-only** serving: searcher role with the file-backed metastore opened in polling mode. No indexer or janitor role runs here | With its replica; splits on Blob |
+| **Index writer** | Quickwit indexer + janitor embedded in the `index` job (Container Apps Job weekly; ACI Spot for full rebuilds) | The **only** process that writes the metastore, guarded by a Cosmos `ops` lease. Full rebuilds write a brand-new index, so they never touch the serving one | One at a time |
 | **Reference data** | Parquet/JSON artifacts on Blob | Titles (LCCN → name, place, dates, language), places (lat/lon, county, state), baselines (pages per place per day), coverage | Loaded into API memory (tens of MB) |
 | **Weekly ingest** | Rust CLI in Container Apps Jobs; Storage Queues | Discover new LoC batches; curate; build reference data; incremental index; pre-warm | Queue length |
 | **Backfill / re-index** | Same Rust image on **ACI Spot container groups** (preview) | Initial download and curation of ~3,000 batches; full index builds | Launcher creates N groups |

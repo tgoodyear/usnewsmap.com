@@ -4,7 +4,7 @@
 
 | SLI | SLO (30-day) | Measured by |
 |-----|--------------|-------------|
-| Availability of `/v1/aggregate` and `/v1/hits` (non-5xx, excluding 503 query-too-broad) | **99.0%** (lean) / 99.5% (growth) | API logs + availability tests |
+| Availability of `/v1/aggregate` and `/v1/hits`: good = non-5xx; **every 5xx (including 503 backend timeout) counts as bad**; 4xx (400 syntax, 422 query-too-broad, 429) are client outcomes, not failures | **99.0%** (lean) / 99.5% (growth) | API logs + availability tests |
 | Latency of `/v1/aggregate`, uncached, typical query set | p95 ≤ **2 s** (high-frequency set ≤ 15 s on lean) | API server spans |
 | Latency of `/v1/aggregate`, cached (moka or Blob) | p95 ≤ **150 ms** | API server spans |
 | Data freshness (LoC batch published → searchable) | ≤ **7 days** for 95% of batches | Manifests vs discover log |
@@ -48,8 +48,8 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 
 ### 9.4.2 Privacy
 
-- There are **no accounts, cookies or PII**. The site is anonymous by design.
-- **IP addresses:** Container Apps system logs (which may include client IPs) are retained for 30 days for abuse handling only. App Insights IP collection is masked (the default). The API rate-limiter keys are **salted hashes** held only in memory.
+- The application collects **no accounts, cookies or PII**. The site is anonymous by design. The one bounded exception is platform access logs, described next.
+- **IP addresses:** the API never writes client IPs to its logs or telemetry, and App Insights IP collection stays masked (the default). Container Apps doesn't emit per-request access logs by default, and the lean profile leaves them off. **Exception:** if HTTP access logs are turned on to investigate abuse (or Front Door logs in the growth profile), they contain raw client IPs, go only to Log Analytics, and are **retained for at most 30 days**. The API rate-limiter keys are **salted hashes** held only in memory.
 - **Query text** is treated as potentially sensitive (genealogy searches contain family names). It is never logged per request; only daily aggregates with k ≥ 5 are kept.
 - A privacy page states all of the above, and there is nothing to consent to because no cookies are set.
 - This replaces the legacy practice of storing IPs, cookies and full headers for every search, indefinitely.

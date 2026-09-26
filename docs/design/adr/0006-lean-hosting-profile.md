@@ -12,7 +12,7 @@ The owner set a target of **under $80/month**. The first design (Front Door, a s
 
 1. **No Front Door.** **Azure Static Web Apps (Free)** hosts the SPA at `usnewsmap.com`, with free managed TLS and global static content distribution. The API is served from Container Apps at **`api.usnewsmap.com`**, with a free managed certificate. CORS allows the site origin only, for GET requests without credentials.
    - *Option:* SWA **Standard** ($9/mo) can link the Container App so the API is same-origin under `/api/*`, and adds an SLA. The API mounts its routes at both `/v1/*` and `/api/v1/*` so either setup works without code changes.
-2. **One Container App, one replica, two containers:** the Rust API (0.25 vCPU / 0.5 GiB) and Quickwit (1.0 vCPU / 2.0 GiB), talking over localhost. Min 1, max 2 replicas. Quickwit has no ingress of its own.
+2. **One Container App, one replica, two containers:** the Rust API (0.25 vCPU / 0.5 GiB) and Quickwit (1.0 vCPU / 2.0 GiB, **searcher only, metastore read-only**), talking over localhost. Min 1, max 2 replicas. Quickwit has no ingress of its own. Only the `index` job writes the metastore, one at a time ([08 §8.4.1](../08-azure-infrastructure.md#841-quickwit-metastore-one-writer-many-readers)).
 3. **Persistent response cache on Blob Storage** (`cache/{index_version}/{hash}.json.zst`). Expensive aggregates are computed once per index version and survive restarts. This replaces most of what Front Door's edge cache did.
 4. **Storage tiers:**
    - Hot LRS for the index and reference data;

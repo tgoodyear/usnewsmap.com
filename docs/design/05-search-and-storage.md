@@ -60,7 +60,7 @@ This is the most consequential decision in the design. The legacy system's singl
 ### Option B: Quickwit on Azure Container Apps, index on Azure Blob ✅ *recommended*
 
 - **What:** Quickwit is a Rust search engine built on **Tantivy**, relicensed to **Apache-2.0** after Datadog acquired it in January 2025. It **decouples compute from storage**: index *splits* live on **Azure Blob Storage**, and stateless searchers read them directly, using hotcache footers and a local split cache.
-- **Fit:** Elasticsearch-compatible aggregations (**terms → histogram/date_histogram nesting, min/max, cardinality** are GA). Phrase queries with slop (positions have to be enabled per field). Boolean queries, snippets and sorting on fast fields. Time-partitioned splits prune date-range queries well, and publication date is a natural timestamp. Ingest API, delete tasks, and a file-backed metastore on Blob (no database needed).
+- **Fit:** Elasticsearch-compatible aggregations (**terms → histogram/date_histogram nesting, min/max, cardinality** are GA). Phrase queries with slop (positions have to be enabled per field). Boolean queries, snippets and sorting on fast fields. Time-partitioned splits prune date-range queries well, and publication date is a natural timestamp. Ingest API, delete tasks, and a file-backed metastore on Blob (no database needed). The file-backed metastore allows **one writer only**; serving searchers open it read-only and poll for changes ([08 §8.4.1](08-azure-infrastructure.md#841-quickwit-metastore-one-writer-many-readers)).
 - **Azure PaaS usage:** Container Apps (managed, KEDA autoscaling, managed identity, managed OTel agent), Blob Storage (Hot), and Container Apps Jobs for indexing. There are no VMs and no Kubernetes to operate.
 - **Cost:** Index on Blob Hot at about **$20 per TB-month**. The lean profile runs Quickwit as a sidecar (1 vCPU / 2 GiB) next to the API in one always-warm Container Apps replica, at roughly **$15–45 per month** at idle rates. The growth profile uses a 4 vCPU / 8 GiB searcher at about $100–300. Ingest compute is paid only while jobs run, on Spot for the backfill.
 - **Risks:**
@@ -249,7 +249,7 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 3. `terms(place_id) → min(day)` gives the first appearance per place.
 4. `max_hits = 0`, so no documents are returned.
 
-**Normalization** happens in the API from `reference/baselines_place_day` (pages *published* per place and day, rolled up to any bucket in memory):
+**Normalization** happens in the API from `reference/{index_version}/baselines_place_day` (pages *published* per place and day, rolled up to any bucket in memory):
 `rel[place][bucket] = hits / baseline`, and nationally `rel[bucket] = Σhits / Σbaseline`. This replaces the legacy `globalFreq` table, stays correct as the corpus grows, and gives honest per-place rates.
 
 **High-frequency guardrails.** Terms such as `the` match almost every page. Protections:
