@@ -103,4 +103,4 @@ Budget alerts at $250/$400/$500 (actual and forecast); App Insights daily cap; m
 | `curated/`, `reference/` | ZRS + blob versioning + soft delete (14 d); rebuildable from `raw/` | RPO 0 / RTO ≤ 24 h (re-curate) |
 | Search index | Disposable; rebuild from `curated/` | RTO ≤ 24 h full rebuild; the previous version is kept 7 days for instant rollback |
 | Code, IaC, runbooks | GitHub | RPO 0 |
-| Region outage | Not active/active (cost). Re-deploy to a paired region with `azd up` and **restore from GRS** if the sponsor opts in (+~$20/mo for GRS on curated/reference) | RTO 1–2 days (acceptable for this service class) |
+| Region outage | Not active/active (cost). Everything is PaaS, so there are no VM images or disks to replicate. Re-deploy to a paired region with `azd up` and **restore from GRS** if the sponsor opts in (+~$20/mo for GRS on curated/reference) | RTO 1–2 days (acceptable for this service class) |

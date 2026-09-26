@@ -2,6 +2,9 @@
 
 ## 8.1 Resource inventory (production)
 
+> **No IaaS.** Every resource below is PaaS or SaaS. The inventory has no Virtual Machines, VM Scale Sets, AKS clusters or Batch pools, and none may be added ([ADR-0005](adr/0005-sustainability-constraints.md)). Container Apps "Dedicated" workload profiles are Microsoft-managed capacity inside Container Apps. We never see or patch the underlying hosts.
+
+
 One subscription (ideally owned by a sponsoring institution, see [ADR-0005](adr/0005-sustainability-constraints.md)), one region (**East US 2** or **Central US**: both have the higher-capacity AI Search partitions if we switch to Option A, and are close to the LoC and US audience). Resource group `rg-usnm-prod`:
 
 | Resource | SKU / config | Purpose |
@@ -42,7 +45,7 @@ No storage account keys or SAS tokens in app config: `allowSharedKeyAccess=false
 ## 8.4 Compute sizing notes
 
 - **API:** 0.5 vCPU / 1 GiB handles hundreds of requests per second of cached responses and dozens of uncached ones. The bottleneck is the search engine.
-- **Search (Quickwit):** start on **Consumption 4 vCPU / 8 GiB**, min 1 replica. Watch the split-cache hit ratio and p95. If ephemeral disk limits hurt cache effectiveness, move this app to a **Dedicated D4/D8 workload profile** (larger local disk, still PaaS). The decision point is Spike S-2 plus the first month of production metrics.
+- **Search (Quickwit):** start on **Consumption 4 vCPU / 8 GiB**, min 1 replica. It stays on Container Apps in every scenario; there is no VM or AKS fallback. Watch the split-cache hit ratio and p95. If ephemeral disk limits hurt cache effectiveness, move this app to a **Dedicated D4/D8 workload profile** (larger local disk; still fully managed PaaS with no VM). The decision point is Spike S-2 plus the first month of production metrics.
 - **Ingest jobs:** 2 vCPU / 4 GiB per replica, parallelism ≤ 8 for batch workers (bounded by LoC politeness, not CPU), and 4 vCPU / 8 GiB for the indexer.
 
 ## 8.5 Infrastructure as code
@@ -51,7 +54,7 @@ No storage account keys or SAS tokens in app config: `allowSharedKeyAccess=false
 - Modules: `frontdoor`, `staticwebapp`, `containerapps-env`, `containerapp`, `job`, `storage`, `acr`, `keyvault`, `monitoring`, `budget`, `rbac`, *(optional)* `aisearch`.
 - **Parameters per environment**: `dev` (scale to zero, LRS, small sample corpus of ~1M pages), `prod`.
 - Lint with `bicep lint` plus PSRule for Azure in CI; `what-if` output posted to the PR for any change under `infra/`.
-- Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings, allowed locations.
+- Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings, allowed locations, and a built-in **"Not allowed resource types"** assignment that blocks `Microsoft.Compute/virtualMachines`, `virtualMachineScaleSets`, `Microsoft.ContainerService/managedClusters` and `Microsoft.Batch/batchAccounts` on the project resource groups, so VMs can't creep in.
 
 ## 8.6 CI/CD (GitHub Actions)
 

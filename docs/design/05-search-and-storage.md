@@ -29,7 +29,7 @@ This is the most consequential decision in the design. The legacy system's singl
 | R4 | Sort by date + paginate + highlight snippets | Must |
 | R5 | Fuzzy term matching (OCR tolerance) | Should |
 | R6 | Steady-state cost that fits the **≤ $500/mo total** budget | Must |
-| R7 | No VMs; managed or containerized on Azure PaaS; low operational effort | Must |
+| R7 | **No IaaS VMs** (no VMs, VM Scale Sets, AKS or Batch pools); managed or containerized on Azure PaaS; low operational effort | Must |
 | R8 | Re-index from the lake in ≤ 24 h | Should |
 | R9 | Azure-native support and SLA | Nice |
 | R10 | Path to vector/semantic search | Nice |
@@ -79,7 +79,7 @@ This is the most consequential decision in the design. The legacy system's singl
 ### Option D: Elastic Cloud on Azure (Azure Native ISV Service)
 
 - Has every feature we need (nested aggregations, highlighting, fuzzy, vectors). **Searchable snapshots on Azure Blob** (frozen tier) could make ~1 TB cheap to store, but frozen-tier aggregations over millions of documents take multiple seconds. A hot tier of ~1 TB runs about **$1,500–3,000 per month**.
-- **Verdict:** A credible fallback if Quickwit fails S-2 and AI Search is unaffordable. Marketplace billing through Azure.
+- **Verdict:** A credible fallback if Quickwit fails S-2 and AI Search is unaffordable. It is a fully managed SaaS offering billed through the Azure Marketplace; Elastic runs the infrastructure and we manage no VMs. A self-hosted Elasticsearch/OpenSearch cluster on VMs is **not** an option.
 
 ### Option E: Azure Database for PostgreSQL Flexible Server (tsvector / GIN)
 
@@ -89,7 +89,7 @@ This is the most consequential decision in the design. The legacy system's singl
 ### Option F: Embedded Tantivy inside the Rust API
 
 - Fastest and cheapest per query (in-process, no network hop). But it needs a **~1 TB local index on a persistent disk**, which Container Apps doesn't provide at that size. It would mean VMs or AKS, which violates R7.
-- **Verdict:** Rejected for the hosted system. It remains a great **offline/research build** (a single binary plus an index on a workstation) and a fallback for a sponsor who runs on-premises hardware.
+- **Verdict:** Rejected for the hosted system, because it would require IaaS VMs. It remains useful **outside the cloud architecture** as an offline research build: a single binary plus an index on a researcher's own machine.
 
 ### Scoring summary
 

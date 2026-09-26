@@ -12,7 +12,7 @@ The original site worked, won awards and was used, then **went offline for lack 
 These are **hard constraints** on every design choice:
 
 1. **Cost ceiling:** at most **$500/month** steady state in production, and at most $40/month in dev, enforced by Azure Budgets and alerts.
-2. **No VMs or self-managed clusters.** Only PaaS services (Container Apps, Static Web Apps, Storage, Front Door) and containerized OSS where it is clearly cheaper.
+2. **No IaaS virtual machines.** We don't provision or manage Azure VMs, VM Scale Sets, AKS node pools, Azure Batch pools or any other compute whose OS we patch. Allowed: PaaS services (Container Apps, including Microsoft-managed Dedicated workload profiles; Container Apps Jobs; Static Web Apps; Storage; Front Door; Azure AI Search), and open-source software only when it runs as a container on Container Apps. If a proposed component needs a VM, it is rejected or redesigned.
 3. **Everything as code:** Bicep + azd, GitHub Actions with OIDC, runbooks in the repo. A new maintainer can stand up the whole system with `azd up` plus a documented backfill.
 4. **Handover-ready:** the subscription, domain and repo can each be transferred to a sponsoring institution. At least 2 admins at all times. A handover runbook exists.
 5. **Graceful degradation:** if the search engine is unavailable, cached results and a status banner still serve users. If LoC changes its APIs, the site keeps serving from the lake.
