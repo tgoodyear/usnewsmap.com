@@ -14,6 +14,7 @@ One subscription (ideally owned by a sponsoring institution), one region: **East
 | Container Apps Jobs `job-ingest-*` | Scheduled / event-driven (KEDA Azure Queue scaler); active rate, mostly within the free grant | Weekly incremental work: discover, batch (a few new batches), titles-sync, geocode, stats, incremental index, pre-warm |
 | **ACI Spot container groups** `aci-usnm-backfill-{n}` (preview) | Created on demand by the `backfill` launcher; up to 4 vCPU / 16 GB each; no public IP (not needed) | Initial backfill and full re-index; deleted when the queue drains |
 | **Storage account** `stusnmdata` | StorageV2, **HNS enabled (ADLS Gen2)**, **LRS**; `qw-index/`, `reference/` and `cache/` in **Hot**; `curated/` in **Cool**; blob versioning + soft delete (14 d) on `curated/` and `reference/`; **raw archives not retained** | Data lake, index splits, persistent response cache, queues |
+| **Cosmos DB account** `cosmos-usnm` | NoSQL API, **free tier** (enable at creation; one per subscription), provisioned 1,000 RU/s shared database `usnm`, `disableLocalAuth: true`, continuous backup (7-day) | Document state ([ADR-0007](adr/0007-cosmos-document-state.md)) |
 | **Storage account** `stusnmtiles` | StorageV2, LRS, one container with anonymous read (non-sensitive public map data), CORS for the site | PMTiles basemap, read with HTTP range requests (kept off SWA to stay under its 250 MB app-size and 100 GB bandwidth limits) |
 | **Log Analytics** `log-usnm` + **Application Insights** `appi-usnm` | Pay-as-you-go with a **daily cap** (≈150 MB/day) so ingestion stays within the free 5 GB/month; 30-day retention | Telemetry |
 | **Azure DNS** zone `usnewsmap.com` | – | Apex alias to SWA, `api` CNAME to the container app, validation records |
@@ -27,7 +28,7 @@ Container images are published to **GitHub Container Registry** as public images
 | Principal | Type | Role assignments (scope) |
 |-----------|------|--------------------------|
 | `id-usnm-app` (user-assigned, on `ca-usnm`) | MI | `Storage Blob Data Reader` (`reference/`); `Storage Blob Data Contributor` (`qw-index/`, `cache/`) |
-| `id-usnm-ingest` (on jobs and ACI Spot groups) | MI | `Storage Blob Data Contributor` (`curated/`, `reference/`, `manifests/`, `qw-index/`); `Storage Queue Data Contributor` |
+| `id-usnm-ingest` (on jobs and ACI Spot groups) | MI | `Storage Blob Data Contributor` (`curated/`, `reference/`, `qw-index/`); `Storage Queue Data Contributor`; **Cosmos DB Built-in Data Contributor** (database `usnm`) |
 | `id-usnm-launcher` (on the `backfill` launcher job) | MI | `Contributor` on `rg-usnm-prod-spot` only (to create and delete ACI container groups); `Managed Identity Operator` on `id-usnm-ingest` |
 | GitHub Actions (`usnewsmap.com` repo, `main` branch + `prod` environment) | **OIDC federated credential** on an app registration | `Contributor` on `rg-usnm-*` + `User Access Administrator` constrained by a condition to the roles above (for Bicep role assignments) |
 | Maintainers | Entra users / group `grp-usnm-maintainers` | `Reader` by default; **PIM just-in-time** `Contributor` where the tenant licensing allows it |
@@ -42,6 +43,7 @@ There are no storage account keys or SAS tokens in app config: `allowSharedKeyAc
   - Quickwit binds to `127.0.0.1` inside the replica and has no ingress.
 - **CORS:** `Access-Control-Allow-Origin: https://usnewsmap.com` (plus SWA preview origins in dev), GET only, no credentials. Researchers call the API directly; CORS doesn't restrict them.
 - **Abuse protection without a WAF:** the per-client token bucket in the API (salted-hash keys, in memory), request timeouts, a query-complexity budget, and `maxReplicas: 2`. The replica cap turns abuse into slower responses instead of a larger bill.
+- **Cosmos DB** allows Entra ID RBAC only (no keys). Its public network access is restricted with the same IP allow-list approach while a backfill runs.
 - **The data storage account** uses firewall allow-lists: the Container Apps environment's outbound IPs plus trusted Azure services. ACI Spot groups have no VNet in preview, so while a backfill runs the launcher adds the groups' outbound IPs to the allow-list and removes them afterwards. Public blob access is disabled (the tiles account is the only exception).
 - **Hardening path (growth profile):** Front Door Standard/Premium in front of both origins (edge cache, WAF, Private Link), a VNet-integrated environment, and private endpoints.
 
@@ -58,7 +60,7 @@ There are no storage account keys or SAS tokens in app config: `allowSharedKeyAc
   - Each group pulls batch messages from the Storage Queue until the queue is empty, then exits (`restartPolicy: OnFailure`), and the launcher deletes the groups.
   - **Evictions are harmless.** ACI restarts an evicted group automatically. The in-flight queue message becomes visible again after its visibility timeout, and batch processing is idempotent (deterministic output paths plus manifest checks), so a retry overwrites the same result.
   - The per-group disk limit of **50 GB** is enough, because each batch archive is streamed and processed, then discarded.
-- **Full index build:** one ACI Spot group (4 vCPU / 16 GB) runs the Quickwit indexer against the curated Parquet, **one curated partition at a time**, recording completed partitions in `manifests/index/{index_version}.json`.
+- **Full index build:** one ACI Spot group (4 vCPU / 16 GB) runs the Quickwit indexer against the curated Parquet, **one curated partition at a time**, recording completed partitions in the Cosmos `index_runs` item.
   - After an eviction it resumes at the first unfinished partition.
   - Partial partitions are discarded because splits are published only when a partition completes. The exact mechanism (per-partition commit or file-source checkpoints) is validated in S-2.
 - **Fallback:** if ACI Spot is unavailable or evictions stall progress, the same image runs on regular-priority ACI (about 3× the cost, still ~$100) or on an **Azure Batch Spot pool** that scales to zero (container tasks, one per batch). Using the Batch fallback needs a time-boxed exemption from the "Not allowed resource types" policy for the `rg-usnm-prod-spot` resource group.
@@ -66,7 +68,7 @@ There are no storage account keys or SAS tokens in app config: `allowSharedKeyAc
 ## 8.5 Infrastructure as code
 
 - **Bicep** modules under `infra/` with **Azure Developer CLI (`azd`)** for environment management and a one-command `azd up`.
-- Modules: `staticwebapp`, `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
+- Modules: `staticwebapp`, `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `cosmos`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
 - **Parameters per environment**: `dev` (scale to zero, LRS, small sample corpus of ~1M pages), `prod`.
 - Lint with `bicep lint` plus PSRule for Azure in CI; `what-if` output posted to the PR for any change under `infra/`.
 - Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings, allowed locations, and a built-in **"Not allowed resource types"** assignment that blocks `Microsoft.Compute/virtualMachines`, `virtualMachineScaleSets`, `Microsoft.ContainerService/managedClusters` and `Microsoft.Batch/batchAccounts` on the project resource groups, so VMs can't creep in.

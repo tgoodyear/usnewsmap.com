@@ -38,9 +38,7 @@ reference/                             (Hot; small; loaded by API)
   coverage_state_year.parquet
   overrides/places.csv                  hand-curated geocoding fixes (also in git)
   current.json                          { index_version, backend, index_name, built_at, doc_count, … }
-manifests/
-  batches/{batch}.json                  { versions_seen, status, pages, source_sha256, curated_at, indexed_in }
-  index/{index_version}.json            partitions completed by the index build (resume after Spot eviction)
+(document state, meaning per-title, per-batch, per-issue and per-index-run status, lives in Cosmos DB, not here; see 05 §5.9.1)
 cache/{index_version}/                 (Hot) persistent API response cache, zstd JSON keyed by canonical-query hash
 qw-index/                              (Hot; Quickwit splits + file-backed metastore)
 ```
@@ -79,7 +77,7 @@ flowchart LR
   Q --> B[batch worker ×N<br/>KEDA queue scaler]
   B -. streamed, not retained .-> RAW[(LoC bulk archive)]
   B --> CUR[(curated/pages)]
-  B --> MAN[(manifests/)]
+  B --> MAN[(Cosmos DB: document state)]
   T[titles-sync<br/>weekly] --> REFT[(reference/titles)]
   G[geocode<br/>on titles change] --> REFP[(reference/places)]
   CUR --> S[stats<br/>baselines + coverage] --> REFB[(reference/baselines, coverage)]
@@ -89,8 +87,8 @@ flowchart LR
 
 | Stage | Trigger | Does | Idempotency |
 |-------|---------|------|-------------|
-| `discover` | Cron (weekly) + manual | Lists batches and versions from the Datasets portal; diffs against `manifests/`; enqueues work | Manifest ETags; enqueue only if status ≠ curated for that version |
-| `batch` | Queue | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; joins title → place/state/language; writes curated Parquet (~256 MB row groups); updates the manifest | Output path is deterministic per batch/version; write to a temp path and rename; the manifest records sha256 |
+| `discover` | Cron (weekly) + manual | Lists batches and versions from the Datasets portal; upserts `batches` items in Cosmos; enqueues work | Enqueue only if the Cosmos status ≠ curated for that version |
+| `batch` | Queue | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; joins title → place/state/language; writes curated Parquet (~256 MB row groups); updates the manifest | Claims the batch with a conditional Cosmos patch (lease + ETag); output path is deterministic per batch/version; writes to a temp path and renames; records sha256, pages and issue items in Cosmos |
 | `titles-sync` | Cron (weekly) | Pulls title records from the loc.gov API; snapshots to `raw/`; builds `reference/titles` | Snapshot by date |
 | `geocode` | When titles change | Resolves place of publication → GNIS feature (county-aware), else county centroid, else state centroid; applies `overrides/places.csv`; writes `reference/places` with a `precision` flag | Deterministic |
 | `stats` | After batches are curated | Aggregates baselines (pages per place/day and per title/month) and coverage (state/year) from curated Parquet using DataFusion or Polars | Full recompute (cheap: one scan of the ids and dates columns) |

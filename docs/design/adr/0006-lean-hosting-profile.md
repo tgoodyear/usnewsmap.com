@@ -17,7 +17,7 @@ The owner set a target of **under $80/month**. The first design (Front Door, a s
 4. **Storage tiers:**
    - Hot LRS for the index and reference data;
    - **Cool** LRS for curated Parquet, which is read only during rebuilds;
-   - raw LoC archives are **not retained**, because LoC is the source of record and checksums are kept in the manifests.
+   - raw LoC archives are **not retained**, because LoC is the source of record and checksums are kept in the Cosmos batch state.
 5. **Free tiers:**
    - GitHub Container Registry instead of ACR;
    - Log Analytics kept within the free 5 GB/month using a daily cap;
@@ -37,7 +37,7 @@ The owner set a target of **under $80/month**. The first design (Front Door, a s
 | WAF / edge rate limiting | Abuse reaches the app | App-level token-bucket rate limit; **max 2 replicas caps the bill**, so abuse degrades speed rather than increasing cost |
 | A large searcher (4 vCPU / 8 GiB) | High-frequency terms (such as `railroad` across all years) may take 5–15 s uncached | Relaxed SLO for that class; Blob cache; UI nudges toward narrower date ranges. Spike S-2 measures it. The first lever to pull is 2 vCPU / 4 GiB (+~$20–30/mo) |
 | Redundancy (ZRS, 2 replicas) | Availability target 99.0%, no SLA | Stateless app restarts in seconds; index rebuildable; the growth profile restores these |
-| Raw archive retention | Re-fetch from LoC is needed if curated data is lost | Blob versioning and soft delete on curated data; checksums in manifests |
+| Raw archive retention | Re-fetch from LoC is needed if curated data is lost | Blob versioning and soft delete on curated data; checksums in the Cosmos batch state |
 | SWA Free has no SLA; 100 GB/month bandwidth cap | Site stops serving if the cap is exceeded | The SPA bundle is small; tiles are served from Blob, not SWA; upgrade to Standard ($9) if traffic approaches the cap |
 
 ## Consequences

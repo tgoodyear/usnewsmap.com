@@ -28,4 +28,4 @@ Store the corpus in **Azure Data Lake Storage Gen2** in three layers:
 - Fetching from LoC happens **once**; after that, re-indexing and engine swaps are local.
 - The curated lake also serves offline research (DuckDB, DataFusion, Fabric/Synapse) and could be published as a derived open dataset.
 - Storage cost is about $15–25/month (index Hot, curated Cool).
-- Cosmos DB was considered for document state and rejected for the corpus (~600 GB uncompressed JSON ≈ $150/month in storage alone). It is reserved for future mutable user data ([05 §5.9](../05-search-and-storage.md#59-document-storage-where-document-state-lives)).
+- Cosmos DB was considered for document state and rejected for the corpus (~600 GB uncompressed JSON ≈ $150/month in storage alone). Cosmos DB is used for **document state** instead ([ADR-0007](0007-cosmos-document-state.md)).

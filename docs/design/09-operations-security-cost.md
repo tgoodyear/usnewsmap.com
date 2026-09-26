@@ -81,9 +81,10 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Container Apps Jobs (weekly incremental ingest, stats, pre-warm) | Mostly within the free grant | $0 | $1 | $3 |
 | Egress | SPA via SWA; tiles and API responses via Azure egress (first 100 GB free) | $0 | $0 | $5 |
 | Log Analytics / App Insights | Daily cap keeps it within 5 GB/month free | $0 | $0 | $3 |
+| Cosmos DB (document state) | Free tier: 1,000 RU/s + 25 GB (serverless ~$1–3 if the free tier is taken) | $0 | $0 | $3 |
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
 | Container registry | GitHub Container Registry (public images) | $0 | $0 | $0 |
-| **Total** | | **~$30** | **~$50** | **~$87** |
+| **Total** | | **~$30** | **~$50** | **~$90** |
 
 "High" is a press-spike month billed at the upper idle rates. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (forecast) trigger the cost-spike runbook well before that.
 
@@ -122,7 +123,8 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 
 | Asset | Protection | RPO / RTO |
 |-------|-----------|-----------|
-| Raw LoC archives | Not retained (lean profile); LoC is the source of record; checksums in manifests | Re-download (days) |
+| Raw LoC archives | Not retained (lean profile); LoC is the source of record; checksums in Cosmos batch state | Re-download (days) |
+| Cosmos DB document state | Continuous backup (7-day point-in-time restore); rebuildable from Parquet + the LoC batch list | RPO minutes / RTO hours |
 | `curated/`, `reference/` | LRS + blob versioning + soft delete (14 d); ZRS in the growth profile; rebuildable by re-downloading from LoC on ACI Spot (~$25–50) | RPO 0 / RTO ≤ 24 h from versions, ~1 week from LoC |
 | Search index | Disposable; rebuild from `curated/` | RTO ≤ 24 h full rebuild; the previous version is kept 7 days for instant rollback |
 | Code, IaC, runbooks | GitHub | RPO 0 |

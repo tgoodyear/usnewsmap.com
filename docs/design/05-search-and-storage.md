@@ -272,27 +272,49 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 
 Metrics: p50, p95 and p99 latency (cold and warm); index size ÷ raw text; ingest pages/s; cost per 1,000 queries; count correctness against a DataFusion brute-force scan of the curated Parquet sample (must match exactly).
 
-## 5.9 Document storage: where document state lives
+## 5.9 Document storage and document state
 
-"Document state" here means the durable record of each page: its text, its identifiers and metadata, its provenance (batch, version, OCR source), and whether it has been curated and indexed. It is stored like this:
+The design separates **document content** from **document state**:
+
+- **Content** is the page text and immutable metadata: large, written once per batch version, and read in bulk.
+- **State** is small and mutable: where each title, batch and page is in the pipeline, its errors, versions, index membership, geocoding review status, and coverage summaries. It changes often, needs atomic updates, and people ask questions of it ("which titles failed curation?", "which batches aren't in index v7?").
 
 | Data | Store | Why |
 |------|-------|-----|
-| **Page text + metadata (the corpus)** | **ADLS Gen2 curated Parquet, Cool tier** (~150–300 GB compressed; versioning + soft delete) | The **system of record** ([ADR-0002](adr/0002-blob-data-lake-system-of-record.md)). Written once per batch version and read in bulk (index rebuilds, baselines, offline research). Costs about **$2–3/month** |
-| **Pipeline state** (which batches and versions are curated and indexed, checksums, index-build progress) | `manifests/*.json` on Blob, updated with ETag optimistic concurrency | About 3,000 small documents with one writer at a time. ETags give atomic compare-and-swap without a database |
-| **Serving copy of text** (snippets) and **stored fields** (lccn, date, edition, seq) | Inside the search index (Quickwit docstore on Blob Hot) | Hits and snippets come back in the same engine call, with no second lookup |
-| **Reference data** (titles, places, baselines, coverage) | Blob Hot, Parquet + zstd JSON; loaded into API memory | Small and read-mostly |
-| **Response cache** | Blob Hot `cache/{index_version}/` | Survives restarts; replaces an edge cache on the lean profile |
-| **User data** (future: saved searches, collections) | Cosmos DB (free tier or serverless) | The first real need for a low-latency mutable operational store |
+| **Page text + immutable metadata** (the corpus) | **ADLS Gen2 curated Parquet, Cool tier** (~150–300 GB compressed; versioning + soft delete) | The system of record for content ([ADR-0002](adr/0002-blob-data-lake-system-of-record.md)). Read in bulk for rebuilds, baselines and offline research. About $2–3/month |
+| **Document state** (per LCCN, per batch, per issue, per index run) | **Azure Cosmos DB for NoSQL, free tier** | Queryable, atomic partial updates (patch), optimistic concurrency, change feed. **$0** within the free tier ([ADR-0007](adr/0007-cosmos-document-state.md)) |
+| **Serving copy of text** (snippets) and **stored fields** | Inside the search index (Quickwit docstore on Blob Hot) | Hits and snippets come back in the same engine call |
+| **Reference data for the API** (titles, places, baselines, coverage) | Blob Hot, Parquet + zstd JSON, loaded into API memory. Built by the `stats` job from Parquet and the Cosmos `titles` container | The API's read path has no database dependency, so the site keeps serving if Cosmos is unavailable |
+| **Response cache** | Blob Hot `cache/{index_version}/` | Survives restarts |
+| **User data** (future: saved searches, collections) | Same Cosmos account (new containers) | Reuses the existing account and identity |
 
-### Why not Cosmos DB for document state?
+### 5.9.1 Cosmos DB state model
 
-It's a reasonable question, since Cosmos DB is Azure's flagship managed document store. Here is how it compares for this workload:
+One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth: true`, Entra ID data-plane RBAC), one database `usnm` with **shared throughput of 1,000 RU/s** (the free-tier allowance), and these containers:
 
-| Variant | Size | Storage cost | One-time load cost | Verdict |
-|---------|------|--------------|--------------------|---------|
-| **Full page text in Cosmos** (~23M items, avg ~25 KB) | ~600 GB (Cosmos stores JSON uncompressed; Parquet+zstd is ~4× smaller) | **~$150/month** at $0.25/GB: on its own about 2× the whole budget | Writing 23M × ~25 KB items is roughly 2–3 billion RU, about **$500–750** on serverless | ❌ Too large and costly. The access pattern (bulk scans for rebuilds) is also what Parquet is built for, and a poor fit for a transactional store |
-| **Metadata only** (no text; ~0.5 KB/item) | ~12 GB | $0 on the **free tier** (1,000 RU/s + 25 GB free per subscription), else ~$3/month | ~140M RU: ~38 h at the free tier's 1,000 RU/s, or ~$35 serverless | ⚠️ Feasible, but nothing needs it: page metadata already comes back from the index with every hit, and point lookups by `doc_id` are rare |
-| **Pipeline manifests only** (~3,000 items) | < 10 MB | $0 (free tier) | trivial | ⚠️ Nicer querying than Blob JSON, but adds a service and an SDK dependency (the Rust Cosmos SDK is still beta, 0.37) for about 3,000 records |
+| Container | Partition key | Item (one per…) | Approx. count | Key fields |
+|-----------|---------------|-----------------|---------------|-----------|
+| `titles` | `/lccn` | newspaper title | ~4–5k | name, place history (date-ranged), `place_id`, geocode `{method, precision, review_status, override}`, languages, first/last issue, page counts by `ocr_source`, `status ∈ {discovered, curated, indexed, error}`, `last_error`, `updated_at` |
+| `batches` | `/batch` | LoC batch | ~3k | `versions_seen[]`, `current_version`, `status ∈ {discovered, queued, downloading, curated, indexed, failed}`, `attempts`, `source_sha256`, `pages`, `lccns[]`, `curated_path`, `indexed_in[]`, `lease {owner, until}` |
+| `issues` | `/lccn` | issue (lccn + date + edition) | ~3–4M | page count, empty-OCR pages, `batch`, `batch_version`, `ocr_source`, `indexed_in` (index version). Enables "what's missing for this title?" checks |
+| `index_runs` | `/index_version` | index build | tens | `status`, partitions done / total, doc counts, golden-query check results, `published_at`, `previous_version` |
+| `ops` | `/kind` | misc | few | `current` pointer (mirrors `reference/current.json`), locks, schedules |
 
-**Recommendation:** keep the corpus in Parquet on ADLS (Cool) and the pipeline state in Blob manifests. **Adopt Cosmos DB (free tier) at the first feature that needs mutable, per-user or per-item operational state:** saved searches, user collections, annotations, or crowd-sourced geocoding corrections. Once it exists, moving the manifests into it is a small, optional follow-up.
+**Why issues and not pages?** Page-level state (23M items, ~12 GB) would fit the free tier's 25 GB, but writing it costs about 140M RU: roughly 38 hours of the whole free throughput. It would also duplicate what the Parquet files already record. Issue-level state (~3–4M items, ~2 GB) answers the practical questions (coverage gaps, reprocessing status) at about a sixth of the write cost. Page-level detail is always available by scanning Parquet.
+
+**Usage patterns:**
+- **Work claiming.** Batch workers (Container Apps Jobs or ACI Spot groups) take a batch with a conditional **patch** on the batch item (`lease.until < now` → set the owner, `status=downloading`), using its ETag. This replaces the queue-visibility trick for exclusivity. The Storage Queue stays as the wake-up signal.
+- **Progress and retries.** Every state transition is one patch (~10 RU). Failures record `last_error` and `attempts`, and a failed batch can be re-queued with a single query plus patch.
+- **Change feed.** The `index` job reads the `batches` change feed (pull model) to find batches that became `curated` since its last continuation token. This is a natural driver for incremental indexing. The Rust SDK added change-feed pull in 0.37.
+- **Operator queries.** `SELECT * FROM b WHERE b.status = 'failed'`, "titles with county-precision geocodes awaiting review", "issues not in the current index". These run from the Data Explorer or a tiny admin CLI subcommand.
+
+**Throughput budget.**
+- A backfill writes ~3k batch transitions × ~5 plus ~3.5M issue upserts at ~8 RU each, about **30M RU in total**. At a throttled ~600 RU/s that takes ~14 hours, well within the ~4-day download-bound backfill.
+- Weekly increments use a few thousand RU.
+- The SDK retries 429s, and workers keep a client-side RU budget so the free throughput isn't exceeded.
+
+**Cost:** **$0** within the free tier. Beyond it: ~$0.25/GB-month plus provisioned RU/s. If the free tier is already used in the subscription, **serverless** costs roughly $1–3/month at this volume.
+
+**SDK:** `azure_data_cosmos` (Rust, **beta 0.37**; preview/beta is acceptable per the owner). The operations used here (point read, upsert, patch with an ETag condition, query, change-feed pull) are small, and the REST API is a fallback.
+
+**Resilience:** the API doesn't read Cosmos on the request path. If Cosmos is throttled or down, the site keeps serving and only the pipeline pauses. Continuous backup (7-day, free tier) covers mistakes, and state can be rebuilt from Parquet plus the LoC batch list if ever lost.

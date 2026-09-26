@@ -52,10 +52,10 @@ flowchart LR
     REF[(reference/<br/>titles · places · baselines · coverage)]
     IDX[(qw-index/<br/>Quickwit splits + metastore · Hot)]
     CACHE[(cache/<br/>persistent response cache)]
-    MAN[(manifests/)]
     Q[[Storage Queues<br/>ingest work items]]
   end
   TILES[(Blob: PMTiles basemap)]
+  COS[(Cosmos DB · free tier<br/>document state: titles · batches<br/>issues · index_runs)]
   AI[Application Insights<br/>+ Log Analytics]
 
   SWA -. SPA calls GET /v1/* .-> API
@@ -64,8 +64,10 @@ flowchart LR
   API -->|startup load| REF
   API <--> CACHE
   QW --> IDX
-  JOBS --> CUR & REF & MAN & Q
-  SPOT --> CUR & MAN & IDX
+  JOBS --> CUR & REF & Q
+  JOBS <--> COS
+  SPOT --> CUR & IDX
+  SPOT <--> COS
   Q --> SPOT
   JOBS -->|ingest API| QW
   APP & JOBS --> AI
@@ -85,6 +87,7 @@ The **growth profile** adds Azure Front Door in front of both origins (edge cach
 | **Weekly ingest** | Rust CLI in Container Apps Jobs; Storage Queues | Discover new LoC batches; curate; build reference data; incremental index; pre-warm | Queue length |
 | **Backfill / re-index** | Same Rust image on **ACI Spot container groups** (preview) | Initial download and curation of ~3,000 batches; full index builds | Launcher creates N groups |
 | **Data lake** | ADLS Gen2 (Blob) | System of record for the corpus and all derived artifacts | Managed |
+| **Document state** | Cosmos DB for NoSQL, free tier | Per-title, per-batch, per-issue and per-index-run status; work leases; change feed driving incremental indexing. Not on the API request path | Free tier (1,000 RU/s) |
 | **Observability** | App Insights via the managed OpenTelemetry agent; Log Analytics (free tier with daily cap) | Traces, metrics, logs, availability tests, alerts | Managed |
 
 ## 3.4 Key runtime flows
@@ -129,12 +132,12 @@ sequenceDiagram
   participant IX as index-build job
   participant SE as Search engine
   CRON->>LOC: list batches (+ versions) and OCR bulk files
-  CRON->>L: compare with manifests/ (ETag-guarded)
+  CRON->>L: upsert batch state in Cosmos DB
   CRON->>Q: enqueue new/changed batches
   W->>Q: dequeue batch
   W->>LOC: download bulk OCR (rate-limited, polite UA)
   W->>L: stream archive (not retained) → write curated/pages/batch=…/part.parquet
-  W->>L: update manifests/batch.json (status=curated)
+  W->>L: patch Cosmos batch + issue state (status=curated)
   IX->>L: read curated partitions changed since the last index version
   IX->>SE: ingest docs (Quickwit ingest API / AI Search push)
   IX->>L: rebuild reference/ (baselines, coverage) → publish new index_version
@@ -147,6 +150,7 @@ sequenceDiagram
 |----------|--------|-----|
 | Search engine | Quickwit on Container Apps + Blob (recommended, the only option within budget); Azure AI Search (managed alternative, growth profile); both behind the Rust `SearchBackend` trait | [0001](adr/0001-search-engine.md) |
 | System of record | Curated Parquet in ADLS Gen2; indexes are disposable | [0002](adr/0002-blob-data-lake-system-of-record.md) |
+| Document state | Cosmos DB free tier (titles, batches, issues, index runs) | [0007](adr/0007-cosmos-document-state.md) |
 | API shape | Stateless, GET, aggregate-first, CDN-cacheable; client-side temporal playback | [0003](adr/0003-stateless-aggregate-first-api.md) |
 | API language | Rust (axum) | [0004](adr/0004-rust-api.md) |
 | Operating constraints | < $80/mo, no VMs, IaC, single-maintainer operable | [0005](adr/0005-sustainability-constraints.md) |
