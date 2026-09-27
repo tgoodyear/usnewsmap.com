@@ -1,0 +1,68 @@
+[
+ {
+  "lccn": "sn99000001",
+  "name": "The Fixture Gazette 1",
+  "place_id": "P00001",
+  "state": "IL",
+  "languages": [
+   "eng"
+  ],
+  "first": "1895-01-01",
+  "last": "1897-12-31"
+ },
+ {
+  "lccn": "sn99000002",
+  "name": "The Fixture Gazette 2",
+  "place_id": "P00002",
+  "state": "NY",
+  "languages": [
+   "eng"
+  ],
+  "first": "1895-01-01",
+  "last": "1897-12-31"
+ },
+ {
+  "lccn": "sn99000003",
+  "name": "The Fixture Gazette 3",
+  "place_id": "P00003",
+  "state": "CA",
+  "languages": [
+   "eng"
+  ],
+  "first": "1895-01-01",
+  "last": "1897-12-31"
+ },
+ {
+  "lccn": "sn99000004",
+  "name": "The Fixture Gazette 4",
+  "place_id": "P00004",
+  "state": "GA",
+  "languages": [
+   "eng"
+  ],
+  "first": "1895-01-01",
+  "last": "1897-12-31"
+ },
+ {
+  "lccn": "sn99000005",
+  "name": "The Fixture Gazette 5",
+  "place_id": "P00005",
+  "state": "SC",
+  "languages": [
+   "eng"
+  ],
+  "first": "1895-01-01",
+  "last": "1897-12-31"
+ },
+ {
+  "lccn": "sn99000006",
+  "name": "The Fixture Gazette 6",
+  "place_id": "P00006",
+  "state": "NE",
+  "languages": [
+   "eng"
+  ],
+  "first": "1895-01-01",
+  "last": "1897-12-31"
+ }
+]

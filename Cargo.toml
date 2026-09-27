@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = ["crates/usnm-core", "crates/usnm-search", "crates/usnm-api"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.85"
+repository = "https://github.com/tgoodyear/usnewsmap.com"
+
+[workspace.dependencies]
+usnm-core = { path = "crates/usnm-core" }
+usnm-search = { path = "crates/usnm-search" }
+arc-swap = "1"
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+form_urlencoded = "1"
+http-body-util = "0.1"
+futures = "0.3"
+moka = { version = "0.12", features = ["future"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "cors", "timeout", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+unicode-normalization = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

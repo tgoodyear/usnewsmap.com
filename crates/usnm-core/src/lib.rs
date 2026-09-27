@@ -1,0 +1,16 @@
+//! Domain types shared by the US News Map API and ingest pipeline.
+//!
+//! See `docs/design/` for the design these modules implement:
+//! - [`ids`]: page keys and collision-free document ids (04 §4.2)
+//! - [`time`]: day numbers and time buckets (05 §5.5, §5.7)
+//! - [`text`]: text normalization shared by ingest and query parsing (04 §4.5)
+//! - [`query`]: the user query language and its limits (06 §6.4)
+//! - [`params`]: request parameters and canonical cache keys (06 §6.3)
+//! - [`cube`]: the sparse place × bucket cube (06 §6.3.3)
+
+pub mod cube;
+pub mod ids;
+pub mod params;
+pub mod query;
+pub mod text;
+pub mod time;

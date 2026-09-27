@@ -1,0 +1,323 @@
+//! Search request parameters and their canonical form (06 §6.3.1).
+//!
+//! Canonicalization folds `mode`, `near` and `fuzzy` into the query AST, sorts
+//! list values, makes `from`/`to`/`bucket` explicit, and renders keys in a fixed
+//! order. Equivalent requests therefore share one cache key and one URL.
+
+use chrono::NaiveDate;
+use serde::Serialize;
+use thiserror::Error;
+
+use crate::query::{self, Mode, Node, QueryError};
+use crate::time::{day_number, BucketSpec, BucketUnit};
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum ParamError {
+    #[error("missing required parameter `{0}`")]
+    Missing(&'static str),
+    #[error("invalid value for `{name}`: {reason}")]
+    Invalid { name: String, reason: String },
+    #[error("unknown parameter `{0}`")]
+    Unknown(String),
+    #[error("parameter `{0}` given more than once")]
+    Repeated(String),
+    #[error(transparent)]
+    Query(#[from] QueryError),
+}
+
+fn invalid(name: &str, reason: impl Into<String>) -> ParamError {
+    ParamError::Invalid {
+        name: name.to_owned(),
+        reason: reason.into(),
+    }
+}
+
+/// Filters every search endpoint accepts.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct Filters {
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    /// USPS codes, uppercase, sorted.
+    pub states: Vec<String>,
+    /// LCCNs, sorted.
+    pub lccns: Vec<String>,
+    /// ISO 639-2 codes, lowercase, sorted.
+    pub langs: Vec<String>,
+    pub front_only: bool,
+}
+
+impl Filters {
+    pub fn from_day(&self) -> u32 {
+        day_number(self.from)
+    }
+    pub fn to_day(&self) -> u32 {
+        day_number(self.to)
+    }
+}
+
+/// A validated, canonical search request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchRequest {
+    pub query: Node,
+    pub filters: Filters,
+    pub bucket: BucketUnit,
+    /// `index_version` the client expects, if any.
+    pub version: Option<String>,
+}
+
+/// Keys common to all search endpoints; endpoints may accept extra keys.
+const COMMON_KEYS: &[&str] = &[
+    "q", "mode", "near", "fuzzy", "from", "to", "state", "lccn", "lang", "front", "bucket", "v",
+];
+
+/// Raw query-string pairs with duplicate detection.
+#[derive(Debug, Clone, Default)]
+pub struct RawParams(Vec<(String, String)>);
+
+impl RawParams {
+    pub fn parse(query: &str) -> Result<Self, ParamError> {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (k, v) in form_urlencoded::parse(query.as_bytes()) {
+            if pairs.iter().any(|(pk, _)| *pk == k) {
+                return Err(ParamError::Repeated(k.into_owned()));
+            }
+            pairs.push((k.into_owned(), v.into_owned()));
+        }
+        Ok(Self(pairs))
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .filter(|v| !v.is_empty())
+    }
+
+    /// Reject keys outside `COMMON_KEYS` + `extra` (prevents cache-busting parameters).
+    pub fn reject_unknown(&self, extra: &[&str]) -> Result<(), ParamError> {
+        match self
+            .0
+            .iter()
+            .find(|(k, _)| !COMMON_KEYS.contains(&k.as_str()) && !extra.contains(&k.as_str()))
+        {
+            Some((k, _)) => Err(ParamError::Unknown(k.clone())),
+            None => Ok(()),
+        }
+    }
+
+    pub fn u8_in(&self, key: &str, max: u8) -> Result<Option<u8>, ParamError> {
+        self.get(key)
+            .map(|v| {
+                v.parse::<u8>()
+                    .ok()
+                    .filter(|n| *n <= max)
+                    .ok_or_else(|| invalid(key, format!("must be 0–{max}")))
+            })
+            .transpose()
+    }
+}
+
+impl SearchRequest {
+    /// Parse and validate. Dates are clamped to the corpus `bounds`.
+    pub fn from_raw(raw: &RawParams, bounds: (NaiveDate, NaiveDate)) -> Result<Self, ParamError> {
+        let q = raw.get("q").ok_or(ParamError::Missing("q"))?;
+        let mode = raw
+            .get("mode")
+            .map(|m| {
+                Mode::parse(m).ok_or_else(|| invalid("mode", "must be phrase, all, any or near"))
+            })
+            .transpose()?;
+        let near = raw.u8_in("near", query::MAX_SLOP)?.unwrap_or(0);
+        let fuzzy = raw.u8_in("fuzzy", query::MAX_FUZZY)?.unwrap_or(0);
+        let query = query::build(q, mode, near, fuzzy)?;
+
+        let date = |key: &str, default: NaiveDate| -> Result<NaiveDate, ParamError> {
+            raw.get(key)
+                .map(|v| {
+                    NaiveDate::parse_from_str(v, "%Y-%m-%d")
+                        .map_err(|_| invalid(key, "must be YYYY-MM-DD"))
+                })
+                .transpose()
+                .map(|d| d.unwrap_or(default).clamp(bounds.0, bounds.1))
+        };
+        let from = date("from", bounds.0)?;
+        let to = date("to", bounds.1)?;
+        if from > to {
+            return Err(invalid("from", "must not be after `to`"));
+        }
+
+        let states = list(raw.get("state"), "state", |s| {
+            (s.len() == 2 && s.bytes().all(|b| b.is_ascii_alphabetic()))
+                .then(|| s.to_ascii_uppercase())
+        })?;
+        let lccns = list(raw.get("lccn"), "lccn", |s| {
+            (!s.is_empty()
+                && s.len() <= 16
+                && s.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+            .then(|| s.to_owned())
+        })?;
+        let langs = list(raw.get("lang"), "lang", |s| {
+            (s.len() == 3 && s.bytes().all(|b| b.is_ascii_alphabetic()))
+                .then(|| s.to_ascii_lowercase())
+        })?;
+        let front_only = match raw.get("front") {
+            None | Some("false") | Some("0") => false,
+            Some("true") | Some("1") => true,
+            Some(_) => return Err(invalid("front", "must be true or false")),
+        };
+        let bucket = match raw.get("bucket") {
+            None | Some("auto") => BucketUnit::auto(from, to),
+            Some(b) => BucketUnit::parse(b)
+                .ok_or_else(|| invalid("bucket", "must be auto, year, month, week or day"))?,
+        };
+        Ok(Self {
+            query,
+            filters: Filters {
+                from,
+                to,
+                states,
+                lccns,
+                langs,
+                front_only,
+            },
+            bucket,
+            version: raw.get("v").map(str::to_owned),
+        })
+    }
+
+    pub fn bucket_spec(&self) -> BucketSpec {
+        BucketSpec::new(self.bucket, self.filters.from, self.filters.to)
+    }
+
+    /// Canonical query string, without `v`. Used as the cache key and in URLs.
+    pub fn canonical(&self) -> String {
+        let f = &self.filters;
+        let mut s = form_urlencoded::Serializer::new(String::new());
+        s.append_pair("bucket", self.bucket.as_str());
+        s.append_pair("from", &f.from.format("%Y-%m-%d").to_string());
+        if f.front_only {
+            s.append_pair("front", "true");
+        }
+        if !f.langs.is_empty() {
+            s.append_pair("lang", &f.langs.join(","));
+        }
+        if !f.lccns.is_empty() {
+            s.append_pair("lccn", &f.lccns.join(","));
+        }
+        s.append_pair("q", &self.query.to_string());
+        if !f.states.is_empty() {
+            s.append_pair("state", &f.states.join(","));
+        }
+        s.append_pair("to", &f.to.format("%Y-%m-%d").to_string());
+        s.finish()
+    }
+
+    /// Canonical query string pinned to `version`.
+    pub fn canonical_with_version(&self, version: &str) -> String {
+        let mut c = self.canonical();
+        c.push_str("&v=");
+        c.extend(form_urlencoded::byte_serialize(version.as_bytes()));
+        c
+    }
+}
+
+/// Parse a comma-separated list, validating and normalizing each item; sorted and deduplicated.
+fn list(
+    value: Option<&str>,
+    name: &str,
+    item: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<String>, ParamError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for part in value.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        out.push(item(part).ok_or_else(|| invalid(name, format!("`{part}` is not valid")))?);
+    }
+    if out.len() > 60 {
+        return Err(invalid(name, "too many values"));
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bounds() -> (NaiveDate, NaiveDate) {
+        (
+            NaiveDate::from_ymd_opt(1756, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(1963, 12, 31).unwrap(),
+        )
+    }
+
+    fn req(q: &str) -> Result<SearchRequest, ParamError> {
+        SearchRequest::from_raw(&RawParams::parse(q)?, bounds())
+    }
+
+    #[test]
+    fn equivalent_requests_share_a_canonical_form() {
+        let a =
+            req("q=Cross+of+Gold&mode=phrase&from=1896-06-01&to=1896-12-31&state=sc,GA").unwrap();
+        let b = req("state=GA,SC&to=1896-12-31&from=1896-06-01&q=%22cross+of+gold%22&bucket=auto")
+            .unwrap();
+        assert_eq!(a.canonical(), b.canonical());
+        assert_eq!(
+            a.canonical(),
+            "bucket=week&from=1896-06-01&q=%22cross+of+gold%22&state=GA%2CSC&to=1896-12-31"
+        );
+        assert_eq!(
+            a.canonical_with_version("pages-v1"),
+            format!("{}&v=pages-v1", a.canonical())
+        );
+    }
+
+    #[test]
+    fn defaults_and_clamping() {
+        let r = req("q=scalawag&from=1600-01-01").unwrap();
+        assert_eq!(r.filters.from, bounds().0);
+        assert_eq!(r.filters.to, bounds().1);
+        assert_eq!(r.bucket, BucketUnit::Year);
+        assert!(!r.filters.front_only);
+    }
+
+    #[test]
+    fn rejects_bad_parameters() {
+        assert_eq!(req("mode=all").unwrap_err(), ParamError::Missing("q"));
+        assert!(matches!(req("q=a1&q=b1"), Err(ParamError::Repeated(_))));
+        assert!(matches!(
+            req("q=gold&from=1900-01-01&to=1899-01-01"),
+            Err(ParamError::Invalid { .. })
+        ));
+        assert!(matches!(
+            req("q=gold&state=Georgia"),
+            Err(ParamError::Invalid { .. })
+        ));
+        assert!(matches!(
+            req("q=gold&fuzzy=3"),
+            Err(ParamError::Invalid { .. })
+        ));
+        assert!(matches!(
+            req("q=gold&bucket=decade"),
+            Err(ParamError::Invalid { .. })
+        ));
+        assert!(matches!(req("q=text:gold"), Err(ParamError::Query(_))));
+        let raw = RawParams::parse("q=gold&_=123").unwrap();
+        assert_eq!(
+            raw.reject_unknown(&[]).unwrap_err(),
+            ParamError::Unknown("_".into())
+        );
+    }
+
+    #[test]
+    fn keeps_version() {
+        assert_eq!(
+            req("q=gold&v=pages-v2").unwrap().version.as_deref(),
+            Some("pages-v2")
+        );
+    }
+}
