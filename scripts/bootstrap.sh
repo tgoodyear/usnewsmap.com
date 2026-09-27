@@ -153,6 +153,52 @@ if [ "$USE_ACR" != true ]; then
   done
 fi
 
+# Names on the site and the API, once the registrar delegates the domain to
+# the zone (the certificates are validated through DNS).
+DOMAIN=$(aget USNM_DNS_ZONE)
+if [ -n "$DOMAIN" ]; then
+  step "Custom domains for $DOMAIN"
+  if ! curl -fsS -H 'accept: application/dns-json' "https://cloudflare-dns.com/dns-query?name=$DOMAIN&type=NS" |
+    grep -q azure-dns; then
+    echo "$DOMAIN is not delegated to Azure DNS yet. Set its name servers to:"
+    echo "  $(aget NAME_SERVERS)"
+    echo "then re-run this script to bind the names."
+  else
+    RG=$(aget AZURE_RESOURCE_GROUP) SWA=$(aget SWA_NAME) APP=$(aget API_APP) CAE=$(aget CONTAINER_ENV_NAME)
+    names() { tr '\t' '\n' | grep -Fqx "$1"; }
+    # The site: www validates by its CNAME; the apex by a TXT token in the zone.
+    hosts=$(az staticwebapp hostname list -n "$SWA" -g "$RG" --query "[].[name, domainName]" -o tsv)
+    names "www.$DOMAIN" <<< "$hosts" ||
+      az staticwebapp hostname set -n "$SWA" -g "$RG" --hostname "www.$DOMAIN" -o none
+    if ! names "$DOMAIN" <<< "$hosts"; then
+      az staticwebapp hostname set -n "$SWA" -g "$RG" --hostname "$DOMAIN" \
+        --validation-method dns-txt-token --no-wait -o none
+      token=""
+      for _ in $(seq 30); do
+        token=$(az staticwebapp hostname show -n "$SWA" -g "$RG" --hostname "$DOMAIN" \
+          --query "validationToken || properties.validationToken" -o tsv 2> /dev/null || true)
+        [ -n "$token" ] && break
+        sleep 10
+      done
+      [ -n "$token" ] || die "Static Web Apps gave no validation token for $DOMAIN"
+      az network dns record-set txt add-record -g "$RG" -z "$DOMAIN" -n _dnsauth -v "$token" -o none
+      echo "$DOMAIN is validating (usually minutes, up to a few hours); it serves the site once done"
+    fi
+    # The API: a managed certificate, recorded so that provisioning keeps the binding.
+    if [ -z "$(aget USNM_API_CERT_ID)" ]; then
+      az containerapp hostname list -n "$APP" -g "$RG" --query "[].name" -o tsv | names "api.$DOMAIN" ||
+        az containerapp hostname add -n "$APP" -g "$RG" --hostname "api.$DOMAIN" -o none
+      az containerapp hostname bind -n "$APP" -g "$RG" --hostname "api.$DOMAIN" \
+        --environment "$CAE" --validation-method CNAME -o none
+      cert=$(az containerapp show -n "$APP" -g "$RG" \
+        --query "properties.configuration.ingress.customDomains[?name=='api.$DOMAIN'].certificateId | [0]" -o tsv)
+      [ -n "$cert" ] || die "api.$DOMAIN has no certificate after binding"
+      azd env set USNM_API_CERT_ID "$cert"
+      azd provision --no-prompt
+    fi
+  fi
+fi
+
 API_URL=$(aget API_URL)
 evar USNM_API_APP "$(aget API_APP)"
 evar USNM_API_URL "$API_URL"
@@ -178,7 +224,6 @@ if [ "$CLEANUP" = true ]; then
 fi
 
 step "Done"
-[ -n "$DOMAIN" ] && echo "Delegate $DOMAIN to: $(aget NAME_SERVERS)"
 if [ "$(aget USNM_INGEST_JOBS)" = true ]; then
   echo "Load the corpus (08 §8.9): az containerapp job start -n $(aget BACKFILL_JOB) -g $(aget AZURE_RESOURCE_GROUP)"
 fi

@@ -32,6 +32,10 @@ param searchBackend string = 'fixtures'
 param quickwitImage string = 'quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
 @description('Private registry the images come from (pulled with the app identity); empty for a public registry.')
 param registryServer string = ''
+@description('Custom hostname for the API (e.g. api.usnewsmap.com); empty for none.')
+param customDomain string = ''
+@description('The managed certificate bound to customDomain. scripts/bootstrap.sh issues it once DNS is delegated; until then the hostname is not declared. Declaring it here keeps `azd provision` from dropping the binding.')
+param customDomainCertificateId string = ''
 @description('Principal allowed to roll out new API images (the CI identity); empty for none.')
 param deployerPrincipalId string = ''
 
@@ -145,6 +149,15 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 8080
         transport: 'http'
         allowInsecure: false
+        customDomains: empty(customDomain) || empty(customDomainCertificateId)
+          ? []
+          : [
+              {
+                name: customDomain
+                certificateId: customDomainCertificateId
+                bindingType: 'SniEnabled'
+              }
+            ]
       }
     }
     template: {

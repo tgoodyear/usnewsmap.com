@@ -65,6 +65,9 @@ param deployPolicies bool = true
 @description('Public DNS zone for the site (e.g. usnewsmap.com); empty skips it. Delegate the domain to the NAME_SERVERS output.')
 param dnsZoneName string = ''
 
+@description('Managed certificate for api.{dnsZoneName}, recorded by scripts/bootstrap.sh after it issues one.')
+param apiCertificateId string = ''
+
 // Resource names must be lowercase (Cosmos, storage).
 var env = toLower(environmentName)
 var tags = {
@@ -232,6 +235,8 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     registryServer: useAcr ? registry.outputs.loginServer : ''
     // CI rolls out new images only once they come from the registry.
     deployerPrincipalId: useAcr ? registry.outputs.ciPrincipalId : ''
+    customDomain: empty(dnsZoneName) ? '' : 'api.${dnsZoneName}'
+    customDomainCertificateId: apiCertificateId
     identityId: identities.outputs.appId
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
@@ -332,10 +337,14 @@ module dns 'modules/dns.bicep' = if (!empty(dnsZoneName)) {
 
 output AZURE_LOCATION string = location
 output AZURE_RESOURCE_GROUP string = rg.name
-output API_URL string = deployApi ? 'https://${api!.outputs.fqdn}' : ''
+// The custom hostname once its certificate is bound, else the app's own.
+output API_URL string = !deployApi
+  ? ''
+  : (!empty(dnsZoneName) && !empty(apiCertificateId) ? 'https://api.${dnsZoneName}' : 'https://${api!.outputs.fqdn}')
 output API_APP string = deployApi ? api!.outputs.name : ''
 output SITE_URL string = 'https://${site.outputs.defaultHostname}'
 output SWA_NAME string = site.outputs.name
+output CONTAINER_ENV_NAME string = 'cae-usnm-${env}'
 // Set these as the domain's name servers at the registrar.
 output NAME_SERVERS string = empty(dnsZoneName) ? '' : join(dns!.outputs.nameServers, ' ')
 output TILES_URL string = tiles.outputs.tilesUrl

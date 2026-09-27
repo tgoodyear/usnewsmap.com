@@ -161,7 +161,7 @@ flowchart LR
 ## 8.8 Domain and DNS
 
 - Move the `usnewsmap.com` registration to an account the project controls, with auto-renew and at least 2 admins. This was one of the legacy single points of failure.
-- Host DNS in **Azure DNS**: apex `usnewsmap.com` as an alias record to the Static Web App, `www` → apex redirect, and `api` as a CNAME to the container app with its domain-verification TXT record. Add `CAA` records for the CAs that the SWA and Container Apps managed certificates use.
+- Host DNS in **Azure DNS**: apex `usnewsmap.com` as an alias record to the Static Web App, `www` → apex redirect, and `api` as a CNAME to the container app with its domain-verification TXT record. Add `CAA` records for the CAs that the SWA and Container Apps managed certificates use. **As built:** the zone is `infra/modules/dns.bicep`; `scripts/bootstrap.sh` binds the apex and `www` to the Static Web App (TXT and CNAME validation) and issues the `api` managed certificate once the delegation is live, recording it so Bicep keeps the binding (§8.9).
 - Keep `/loc_api/*` returning **410 Gone** (an SWA route rule) with a link to the new API docs (old clients may still call it), and redirect legacy query URLs where they can be mapped.
 
 ## 8.9 Portability: redeploying into another subscription or tenant

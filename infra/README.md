@@ -103,7 +103,9 @@ azd provision
 azd env get-value NAME_SERVERS      # set these four as the domain's name servers at the registrar
 ```
 
-The zone holds the apex (an alias to the Static Web App, and CAA records allowing only DigiCert, the managed certificates' CA, with no wildcards), `www` (CNAME to it), and `api` (CNAME to the API app, with the `asuid.api` TXT record Container Apps checks). It also carries over the domain's no-mail records (SPF `v=spf1 -all`, DMARC `p=reject`, and an empty key for every DKIM selector), as they were on the previous DNS host. **Before switching name servers, copy any other records the domain still needs into the zone**: once delegated, only the zone's records resolve. Binding the names on the apps and issuing their managed certificates needs the delegation to be live, so that is a separate step.
+The zone holds the apex (an alias to the Static Web App, and CAA records allowing only DigiCert, the managed certificates' CA, with no wildcards), `www` (CNAME to it), and `api` (CNAME to the API app, with the `asuid.api` TXT record Container Apps checks). It also carries over the domain's no-mail records (SPF `v=spf1 -all`, DMARC `p=reject`, and an empty key for every DKIM selector), as they were on the previous DNS host. **Before switching name servers, copy any other records the domain still needs into the zone**: once delegated, only the zone's records resolve. Once the registrar delegates the domain, `scripts/bootstrap.sh` binds the names (it checks the delegation first, and re-running it later finishes the job):
+- `www` and the apex are custom domains of the Static Web App. `www` validates by its CNAME; for the apex, bootstrap writes Static Web Apps' validation token to `_dnsauth` as a TXT record. Both get free managed certificates.
+- `api` gets a managed certificate from the Container Apps environment, validated by its CNAME. Its id is recorded as `USNM_API_CERT_ID`, and Bicep declares the binding from it, so later provisioning keeps it. `API_URL` (and the site's API base) then becomes `https://api.<domain>`.
 
 ## Container registry
 
