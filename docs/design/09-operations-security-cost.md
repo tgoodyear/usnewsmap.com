@@ -29,7 +29,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | **Rollback app** | Container Apps: shift traffic to the previous revision |
 | **Search engine down** | The API serves cached results. An uncached request returns 503 with a friendly message and the SPA shows a banner. Restart the revision; if the index is corrupt, roll back the index version |
 | **Public access left open** | The `network-guard` job closes it automatically within an hour. Check the Activity Log for who or what opened it, and confirm a matching `ops/public-access-window` item |
-| **Cost spike** | Check the request mix in App Insights (bot?); tighten the API token bucket; confirm `maxReplicas: 2`; confirm the Log Analytics daily cap; check for orphaned ACI Spot groups left by a failed backfill |
+| **Cost spike** | Check the request mix in App Insights (bot?); tighten the API token bucket; confirm `maxReplicas: 2`; confirm the Log Analytics daily cap; check for a backfill job left running (`az containerapp job execution list`) |
 | **LoC source change** | If the discover job fails its schema check, pause ingestion (the site keeps serving), then update the parser |
 | **Maintainer handover** | Transfer the subscription, repo, domain and DNS; rotate the OIDC federation; update the budget contacts |
 
@@ -86,21 +86,23 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Cosmos DB (document state) | Free tier: 1,000 RU/s + 25 GB (serverless ~$1–3 if the free tier is taken) | $0 | $0 | $3 |
 | **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
-| Container registry | GitHub Container Registry (public images) | $0 | $0 | $0 |
-| **Total** | | **~$46** | **~$67** | **~$109** |
+| Container registry | ACR Basic (private images) | $5 | $5 | $5 |
+| **Total** | | **~$51** | **~$72** | **~$114** |
 
-"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The typical month stays under $80 with ~$13 of headroom. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $60, $70 and $78 (forecast) trigger the cost-spike runbook well before that.
+"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The typical month stays under $80 with ~$8 of headroom. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
 
-**The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$82–97, over the $80 target** now that private networking costs ~$17. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
+**The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$87–102, over the $80 target** now that private networking (~$17) and the registry (~$5) are in. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
 
-### One-time backfill (ACI Spot containers, preview)
+### One-time backfill (Container Apps Jobs)
 
 | Stage | Assumption | Estimate |
 |-------|------------|----------|
-| Curation workers | 8 container groups × 2 vCPU / 4 GB × ~96 h (bounded by LoC download politeness); ACI Spot at about 70% off regular ACI | ~$20–25 |
-| Full index build | 1 group × 4 vCPU / 16 GB × ~24 h | ~$2–5 |
+| Curation workers | ~175 worker-hours measured in S-1 (04 §4.1.1): 8 replicas × 1 vCPU / 2 GiB × ~22 h, Consumption list price | ~$15–20 |
+| Full index build | `caj-usnm-ingest`, 2 vCPU / 4 GiB × a few hours | ~$1–3 |
 | Storage transactions + curated writes | | ~$5 |
-| **Total** | | **~$25–50** |
+| **Total** | | **~$20–30** |
+
+The ACI Spot alternative (08 §8.4) comes to about the same, ~$25–50, but needs the launcher and the public-access window.
 
 If Spot capacity is unavailable, running the same workload on regular-priority ACI costs about $80–150, and on Azure Batch Spot about $25–50. A full re-index later (no download) costs about $5 on Spot.
 

@@ -3,16 +3,16 @@
 //! - **Claim:** a conditional replace of the batch item sets a lease and
 //!   `status = downloading`. Losing the race just moves on to the next batch.
 //!   An expired lease (a crashed or evicted worker) makes a batch claimable.
-//! - **Curate:** the archive is fetched to local disk and checked against its
-//!   published sha256, then each page is normalized into Parquet parts under
-//!   a new attempt path. Nothing is ever overwritten.
+//! - **Curate:** the archive is streamed and parsed as it downloads, each
+//!   page normalized into Parquet parts under a new attempt path. Its sha256
+//!   is checked against the published one before anything is committed.
+//!   Nothing is ever overwritten, and nothing touches local disk.
 //! - **Commit:** issue items are upserted first (idempotent). The last write
 //!   is one conditional replace that points the batch at this attempt, and it
 //!   succeeds only while this worker still holds the lease. A crash anywhere
 //!   before it leaves the batch retryable.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
@@ -36,8 +36,6 @@ pub struct Worker {
     /// Unique per process: lease owner and part of the attempt path.
     pub owner: String,
     pub lease: Duration,
-    /// Where archives are downloaded (ephemeral disk).
-    pub work_dir: std::path::PathBuf,
 }
 
 /// Pages per (lccn → day → pages), stored beside the parts.
@@ -138,19 +136,27 @@ impl Worker {
 
     /// Curate the claimed version of `b` into a new attempt path.
     pub async fn curate(&self, b: &Batch) -> anyhow::Result<Curated> {
-        std::fs::create_dir_all(&self.work_dir)?;
-        let download = tempfile::Builder::new()
-            .prefix(&format!("{}-", b.batch))
-            .tempfile_in(&self.work_dir)?;
-        let sha = source::fetch(&b.source_url, download.path()).await?;
+        let download = source::open(&b.source_url).await?;
+        // Unique per claim: the attempt count rises with every claim of this
+        // version, and the sub-second time separates re-queued runs.
+        let attempt = format!(
+            "{}-{}-a{}",
+            Utc::now()
+                .format("%Y%m%dT%H%M%S%.6fZ")
+                .to_string()
+                .replace('.', ""),
+            self.owner,
+            b.attempts
+        );
+        let prefix = format!("pages/{}/v{:02}/{attempt}", b.batch, b.version);
+        let w = self.write_parts(b, download.reader, &prefix).await?;
+        // The parts are only an uncommitted attempt until this matches.
+        let sha = download.digest.await.context("download task stopped")??;
         if let Some(want) = &b.source_sha256 {
             if !want.eq_ignore_ascii_case(&sha) {
                 bail!("archive sha256 {sha} does not match the published {want}");
             }
         }
-        let attempt = format!("{}-{}", Utc::now().format("%Y%m%dT%H%M%SZ"), self.owner);
-        let prefix = format!("pages/{}/v{:02}/{attempt}", b.batch, b.version);
-        let w = self.write_parts(b, download.path(), &prefix).await?;
         if w.pages == 0 {
             bail!("the archive holds no pages");
         }
@@ -185,13 +191,12 @@ impl Worker {
     async fn write_parts(
         &self,
         b: &Batch,
-        archive_path: &Path,
+        input: source::ChannelReader,
         prefix: &str,
     ) -> anyhow::Result<Written> {
         // Parsing and Parquet encoding are CPU-bound; finished parts come back
         // over a channel and are uploaded while the next one is built.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
-        let path = archive_path.to_owned();
         let (batch, version, ocr) = (b.batch.clone(), b.version, b.ocr_source.clone());
         let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let now = Utc::now();
@@ -200,7 +205,7 @@ impl Worker {
             let mut issues = Issues::new();
             let (mut pages, mut ok_pages) = (0u64, 0u64);
             let (mut first, mut last) = (NaiveDate::MAX, NaiveDate::MIN);
-            archive::read_pages(&path, |p| {
+            archive::read_pages_from(input, |p| {
                 let row = CuratedRow::from_ocr(p.key, &p.text, &batch, version, &ocr, now);
                 pages += 1;
                 ok_pages += u64::from(row.status == TextStatus::Ok);

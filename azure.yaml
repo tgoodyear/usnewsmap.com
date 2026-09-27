@@ -1,6 +1,8 @@
 # Azure Developer CLI: `azd provision` deploys infra/main.bicep.
-# The API image is built and published to GHCR by CI, so there are no azd
-# services to build here; the image tag is the USNM_API_IMAGE parameter.
+# Images are built by CI and pushed to the private registry (ACR) with OIDC,
+# so there are no azd
+# services to build here. USNM_IMAGE_TAG picks the tag (default `main`);
+# USNM_API_IMAGE is only a public image to run before the registry is in use.
 name: usnewsmap
 metadata:
   template: usnewsmap@0.1.0

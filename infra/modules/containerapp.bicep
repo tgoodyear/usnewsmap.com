@@ -30,6 +30,8 @@ param trustedProxyHops int = 1
 param searchBackend string = 'fixtures'
 @description('Quickwit image, pinned by digest (v0.9.1; the version spike S-2 validated).')
 param quickwitImage string = 'quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
+@description('Private registry the images come from (pulled with the app identity); empty for a public registry.')
+param registryServer string = ''
 
 var quickwit = searchBackend == 'quickwit'
 
@@ -135,6 +137,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
     workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: empty(registryServer) ? [] : [{ server: registryServer, identity: identityId }]
       ingress: {
         external: true
         targetPort: 8080
