@@ -637,3 +637,43 @@ async fn a_backend_switch_forces_a_full_release() {
         "quickwit"
     );
 }
+
+/// A release that no longer holds the writer lock stops without publishing.
+#[tokio::test]
+async fn a_release_that_loses_the_writer_lock_does_not_publish() {
+    let e = env().await;
+    let a = e.root.join("batch_fx_x_ver01.tar.gz");
+    write_archive(
+        &a,
+        &fixture_pages().iter().take(40).collect::<Vec<_>>(),
+        true,
+        true,
+    );
+    source::enqueue(&e.state, &[listed("batch_fx_x_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let r = Release {
+        state: e.state.clone(),
+        curated: e.curated.clone(),
+        reference: e.reference.clone(),
+        owner: "releaser".into(),
+        full: false,
+        synthetic: true,
+        now: Utc::now(),
+    };
+    let lease = r.lock().await.unwrap();
+    // Another writer takes the lock over (e.g. after this one stalled).
+    let taken = serde_json::json!({
+        "id": "quickwit-writer", "kind": "quickwit-writer", "owner": "someone-else",
+        "until": Utc::now() + chrono::Duration::hours(1),
+    });
+    e.state
+        .docs
+        .upsert("ops", "quickwit-writer", &taken)
+        .await
+        .unwrap();
+    let mut sink = JsonlSink::new(e.root.join("idx"));
+    assert!(r.run_held(&mut sink, &lease).await.is_err());
+    assert!(e.reference.get("current.json").await.unwrap().is_none());
+}

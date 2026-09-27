@@ -14,6 +14,7 @@
 //! janitor, and the retry builds a new one.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
@@ -82,34 +83,82 @@ pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place) -> Value {
     })
 }
 
+/// How long the writer lock lasts without renewal, and how often it's renewed.
+const LEASE_TTL: Duration = Duration::minutes(30);
+const LEASE_RENEW: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// A held writer lock, renewed in the background until it is released.
+/// If a renewal fails, the release stops at its next checkpoint and never
+/// publishes (08 §8.4.1).
+pub struct WriterLease {
+    lost: Arc<AtomicBool>,
+    renewer: tokio::task::JoinHandle<()>,
+}
+
+impl WriterLease {
+    fn check(&self) -> anyhow::Result<()> {
+        if self.lost.load(Ordering::SeqCst) {
+            bail!("the writer lock could not be renewed; stopping without publishing");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for WriterLease {
+    fn drop(&mut self) {
+        self.renewer.abort();
+    }
+}
+
 impl Release {
-    /// Take the writer lock (re-entrant for this owner). Callers that run a
+    /// Take the writer lock and keep renewing it. Callers that run a
     /// Quickwit writer node take it before the node starts and release it
     /// after the node stops, so no two writers ever overlap.
-    pub async fn lock(&self) -> anyhow::Result<()> {
-        self.state
-            .lock(WRITER_LOCK, &self.owner, Duration::hours(12))
-            .await
+    pub async fn lock(&self) -> anyhow::Result<WriterLease> {
+        self.state.lock(WRITER_LOCK, &self.owner, LEASE_TTL).await?;
+        let lost = Arc::new(AtomicBool::new(false));
+        let (state, owner, flag) = (self.state.clone(), self.owner.clone(), lost.clone());
+        let renewer = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(LEASE_RENEW).await;
+                if let Err(e) = state.lock(WRITER_LOCK, &owner, LEASE_TTL).await {
+                    tracing::error!(error = %format!("{e:#}"), "writer lock renewal failed");
+                    flag.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+        });
+        Ok(WriterLease { lost, renewer })
     }
 
-    pub async fn unlock(&self) -> anyhow::Result<()> {
+    pub async fn unlock(&self, lease: WriterLease) -> anyhow::Result<()> {
+        drop(lease);
         self.state.unlock(WRITER_LOCK, &self.owner).await
     }
 
     /// Build and publish a new version, or `None` if there is nothing new.
     pub async fn run(&self, sink: &mut dyn IndexSink) -> anyhow::Result<Option<Published>> {
-        self.lock().await?;
-        let result = self.run_held(sink).await;
-        let unlocked = self.unlock().await;
+        let lease = self.lock().await?;
+        let result = self.run_held(sink, &lease).await;
+        let unlocked = self.unlock(lease).await;
         let published = result?;
         unlocked?;
         Ok(published)
     }
 
+    /// Confirm this owner still holds the lock (and extend it).
+    async fn confirm(&self, lease: &WriterLease) -> anyhow::Result<()> {
+        lease.check()?;
+        self.state.lock(WRITER_LOCK, &self.owner, LEASE_TTL).await
+    }
+
     /// [`Release::run`] for a caller that already holds the writer lock.
-    pub async fn run_held(&self, sink: &mut dyn IndexSink) -> anyhow::Result<Option<Published>> {
-        // Re-taking a lock this owner holds just confirms (and extends) it.
-        self.lock().await?;
+    pub async fn run_held(
+        &self,
+        sink: &mut dyn IndexSink,
+        lease: &WriterLease,
+    ) -> anyhow::Result<Option<Published>> {
+        self.confirm(lease).await?;
         let current = Catalog::load(self.reference.as_ref()).await?;
         let (previous, previous_backend) = match self.published_run().await? {
             Some((run, backend)) => (Some(run), Some(backend)),
@@ -206,7 +255,9 @@ impl Release {
         tracing::info!(%version, index = %index_id, full, batches = scope.len(), "building index");
 
         let outcome = async {
-            let docs = self.build_index(sink, &index_id, &scope, &catalog).await?;
+            let docs = self
+                .build_index(lease, sink, &index_id, &scope, &catalog)
+                .await?;
             let bounds = self
                 .write_snapshot(&version, &version_batches, &catalog)
                 .await?;
@@ -225,7 +276,9 @@ impl Release {
         run.docs = docs;
         etag = self.state.update_run(&run, &etag).await?;
 
-        // Publish: the version pointer is the last write (04 §4.7).
+        // Publish: the version pointer is the last write (04 §4.7), and only
+        // while this release still holds the writer lock.
+        self.confirm(lease).await?;
         let pointer = json!({
             "index_version": version,
             "backend": sink.backend(),
@@ -317,6 +370,7 @@ impl Release {
 
     async fn build_index(
         &self,
+        lease: &WriterLease,
         sink: &mut dyn IndexSink,
         index_id: &str,
         scope: &[RunBatch],
@@ -338,6 +392,7 @@ impl Release {
         let mut docs = 0u64;
         for b in scope {
             for path in &b.curated.parts {
+                lease.check()?;
                 let bytes = self
                     .curated
                     .get(path)

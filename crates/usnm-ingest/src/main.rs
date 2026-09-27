@@ -93,8 +93,9 @@ enum Command {
     },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
-        #[arg(long)]
-        list: Option<String>,
+        /// As for `enqueue`: LoC's listing unless another list is given.
+        #[arg(long, default_value = source::LOC_DATASETS)]
+        list: String,
         /// Only these batches from the list.
         #[arg(long, value_delimiter = ',')]
         batches: Vec<String>,
@@ -175,9 +176,9 @@ async fn release(
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
-    r.lock().await?;
-    let result = release_locked(cli, &r, t).await;
-    let unlocked = r.unlock().await;
+    let lease = r.lock().await?;
+    let result = release_locked(cli, &r, &lease, t).await;
+    let unlocked = r.unlock(lease).await;
     let result = result.and_then(|p| unlocked.map(|()| p));
     match result? {
         Some(p) => {
@@ -192,6 +193,7 @@ async fn release(
 async fn release_locked(
     cli: &Stores,
     r: &Release,
+    lease: &usnm_ingest::release::WriterLease,
     t: &IndexTarget,
 ) -> anyhow::Result<Option<usnm_ingest::release::Published>> {
     let mut node = None;
@@ -212,7 +214,7 @@ async fn release_locked(
         }
         _ => bail!("choose one of --index-dir, --quickwit-url or --quickwit-bin"),
     };
-    let result = r.run_held(sink.as_mut()).await;
+    let result = r.run_held(sink.as_mut(), lease).await;
     if let Some(n) = node {
         n.stop().await?;
     }
@@ -250,9 +252,7 @@ async fn main() -> anyhow::Result<()> {
             synthetic,
             target,
         } => {
-            if let Some(list) = list {
-                enqueue(&state, list, batches).await?;
-            }
+            enqueue(&state, list, batches).await?;
             curate(&cli.stores, &state, None).await?;
             release(&cli.stores, &state, *full, *synthetic, target).await
         }
