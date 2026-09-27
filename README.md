@@ -21,7 +21,7 @@ Start with the **[design document](docs/design/README.md)**: background, require
 | `fixtures/` | A small **synthetic** corpus for local development and tests (not real newspaper data) |
 | `docs/design/` | The design document set |
 
-Not yet built: the ingest pipeline (see the [roadmap](docs/design/10-roadmap-and-risks.md)). The infrastructure runs the API on synthetic fixtures until the Quickwit sidecar lands.
+Not yet built: the ingest pipeline (see the [roadmap](docs/design/10-roadmap-and-risks.md)). Until the first index is published, the infrastructure runs the API on synthetic fixtures (`USNM_SEARCH_BACKEND=fixtures`); the Quickwit sidecar is ready behind `USNM_SEARCH_BACKEND=quickwit`.
 
 ## Local development
 
@@ -33,6 +33,19 @@ cargo run -p usnm-api                  # serves the synthetic fixture corpus on 
 curl 'localhost:8080/v1/aggregate?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31'
 curl 'localhost:8080/v1/hits?q=%22cross+of+gold%22&place=P00001&limit=5'
 ```
+
+### Against Quickwit
+
+The same fixtures can be served by [Quickwit 0.9.1](https://github.com/quickwit-oss/quickwit/releases/tag/v0.9.1), the pinned version, set up the way production runs it. `scripts/quickwit-fixtures.sh` loads the fixture indexes with a writer node, stops it, and starts a read-only searcher that polls the metastore:
+
+```sh
+url=$(QUICKWIT_BIN=/path/to/quickwit scripts/quickwit-fixtures.sh /tmp/qw)
+QUICKWIT_URL=$url cargo test -p usnm-search --test quickwit_parity   # Quickwit vs the reference backend
+USNM_BACKEND=quickwit cargo run -p usnm-api
+kill "$(cat /tmp/qw/quickwit.pid)"
+```
+
+Without `QUICKWIT_URL`, the parity tests skip; CI runs them in the `quickwit` job. Quickwit has no fuzzy term queries, so on this backend `/v1/meta` reports `"fuzzy": false` and fuzzy queries return 422 (05 §5.5.1).
 
 ### Configuration (environment variables)
 

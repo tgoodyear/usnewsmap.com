@@ -149,7 +149,7 @@ impl SearchBackend for MemoryBackend {
             .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.place_id == p))
             .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.lccn == l))
             .collect();
-        docs.sort_by(|a, b| (a.day, &a.doc_id).cmp(&(b.day, &b.doc_id)));
+        docs.sort_by(|a, b| (a.day, a.sort_key, &a.doc_id).cmp(&(b.day, b.sort_key, &b.doc_id)));
         let highlight = positive_terms(query);
         Ok(HitsPage {
             total: docs.len() as u64,
@@ -341,6 +341,7 @@ mod shard_tests {
             front_page: true,
             edition: 1,
             seq: 1,
+            sort_key: u64::from(place) << 24 | 1 << 16 | 1,
             text: "a cross of gold".into(),
         }
     }

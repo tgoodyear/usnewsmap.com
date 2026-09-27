@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use usnm_search::SearchBackend;
+use usnm_search::{IndexSet, SearchBackend};
 use usnm_store::ObjectStore;
 
 pub mod config;
@@ -76,6 +76,8 @@ impl Loader {
                     .map_err(|e| e.to_string())??
             }
         };
+        let set = IndexSet(refdata.current.indexes.clone());
+        backend.prepare(&set).await.map_err(|e| e.to_string())?;
         Ok(Snapshot { refdata, backend })
     }
 }

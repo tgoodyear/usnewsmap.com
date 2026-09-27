@@ -2,8 +2,9 @@
 //! language and aggregation requests, and queries an explicit set of sealed
 //! indexes (08 §8.4.1).
 //!
-//! Items to confirm against the pinned Quickwit version in Spike S-2 are
-//! marked `S-2` (fuzzy queries, sort direction syntax, snippet escaping).
+//! Behaviour confirmed against Quickwit 0.9.1 in Spike S-2 is marked `S-2`
+//! (05 §5.5.1); `tests/quickwit_parity.rs` checks it against the reference
+//! backend.
 
 use std::time::Duration;
 
@@ -88,7 +89,8 @@ fn map_err(e: reqwest::Error) -> SearchError {
 pub fn query_string(node: &Node) -> Result<String, SearchError> {
     Ok(match node {
         Node::Term(t) if t.fuzzy > 0 => {
-            // S-2: confirm fuzzy term support in Quickwit's query language.
+            // S-2: Quickwit 0.9's query language has no fuzzy terms (`~n` on a
+            // term silently matches nothing), so refuse rather than miscount.
             return Err(SearchError::Unsupported(
                 "fuzzy (OCR-tolerant) matching".into(),
             ));
@@ -210,10 +212,11 @@ pub fn hits_request(
         "query": full_query(node, filters, extra)?,
         "max_hits": page.limit,
         "start_offset": page.offset,
-        // Date, then doc id as a stable tiebreak (doc_id is a fast field, 05 §5.5.1).
-        // S-2: confirm ascending multi-field sort syntax for the pinned version.
-        "sort_by": "day,doc_id",
-        "snippet_fields": ["text"]
+        // Oldest first, then title, edition and page (`sort_key`). Quickwit 0.9
+        // can't sort on text fields, and a leading `-` means ascending (S-2).
+        "sort_by": "-day,-sort_key",
+        // A comma-separated string, not an array, in Quickwit 0.9 (S-2).
+        "snippet_fields": "text"
     }))
 }
 
@@ -375,7 +378,8 @@ pub fn parse_hits(resp: SearchResponse) -> Result<HitsPage, SearchError> {
 }
 
 /// Quickwit highlights with `<b>…</b>`. Rebuild the snippet so that the only
-/// markup that can reach the browser is `<mark>` (S-2: confirm escaping).
+/// markup that can reach the browser is `<mark>`. Quickwit returns snippet
+/// text HTML-escaped (S-2), so it is unescaped here and re-escaped once.
 pub fn convert_snippet(s: &str) -> String {
     let mut segments: Vec<(bool, String)> = Vec::new();
     let mut rest = s;
@@ -448,6 +452,24 @@ impl SearchBackend for QuickwitBackend {
             .search(indexes, &hits_request(query, filters, page)?)
             .await?;
         parse_hits(resp)
+    }
+
+    /// A read-only searcher reads the metastore manifest once at start, so it
+    /// can't find indexes created later by name in a search. Looking an index
+    /// up by id loads it from storage (and then it's polled like the rest), so
+    /// each index is looked up before its version is served (S-2, 08 §8.4.1).
+    async fn prepare(&self, indexes: &IndexSet) -> Result<(), SearchError> {
+        for id in indexes.ids() {
+            let url = format!("{}/api/v1/indexes/{id}", self.base_url);
+            let resp = self.client.get(url).send().await.map_err(map_err)?;
+            if !resp.status().is_success() {
+                return Err(SearchError::Backend(format!(
+                    "index `{id}` is not available: quickwit returned {}",
+                    resp.status()
+                )));
+            }
+        }
+        Ok(())
     }
 
     async fn health(&self) -> Result<(), SearchError> {
@@ -525,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn hits_sort_by_date_then_doc_id() {
+    fn hits_sort_by_day_then_sort_key() {
         let page = HitsQuery {
             place_id: Some("P00001".into()),
             lccn: None,
@@ -533,7 +555,8 @@ mod tests {
             limit: 25,
         };
         let r = hits_request(&parse("gold").unwrap(), &filters(), &page).unwrap();
-        assert_eq!(r["sort_by"], "day,doc_id");
+        assert_eq!(r["sort_by"], "-day,-sort_key");
+        assert_eq!(r["snippet_fields"], "text");
         assert_eq!(r["start_offset"], 50);
         assert!(r["query"]
             .as_str()

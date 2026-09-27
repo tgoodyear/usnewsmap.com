@@ -57,6 +57,11 @@ def page_text(rng, topics):
     return " ".join(words).capitalize() + "."
 
 
+def sort_key(title_ordinal, edition, seq):
+    """Numeric same-day tiebreak: Quickwit 0.9 can't sort on text fields."""
+    return (title_ordinal << 24) | (edition << 16) | seq
+
+
 def main():
     rng = random.Random(1896)
     OUT.mkdir(parents=True, exist_ok=True)
@@ -90,7 +95,12 @@ def main():
                     "day": dn, "ym": d.year * 12 + d.month - 1, "year": d.year,
                     "place_id": pid, "place_shard": ordinal % 8, "lccn": lccn,
                     "state": state, "language": ["eng"], "front_page": seq == 1,
-                    "edition": 1, "seq": seq, "text": text,
+                    "edition": 1, "seq": seq,
+                    # Hits order within a day: title, then edition, then page (05 §5.5).
+                    "sort_key": sort_key(ordinal, 1, seq),
+                    # Quickwit's timestamp field; the API itself uses `day`.
+                    "date": d.isoformat(),
+                    "text": text,
                 }
                 (docs_delta if d >= date(1897, 7, 1) else docs_base).append(doc)
             d += timedelta(days=7)

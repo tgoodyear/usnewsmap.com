@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Load the synthetic fixture indexes into a local Quickwit node, then serve
+# them the way production does (08 §8.4.1): the writer stops and a read-only
+# searcher polls the file-backed metastore. For the parity test
+# (crates/usnm-search/tests/quickwit_parity.rs) and for running the API with
+# USNM_BACKEND=quickwit locally.
+#
+#   scripts/quickwit-fixtures.sh [workdir]      # prints the searcher URL
+#   kill "$(cat workdir/quickwit.pid)"          # stops it
+#
+# QUICKWIT_BIN   path to the quickwit binary (default: quickwit on PATH)
+# QUICKWIT_PORT  REST port (default 7280)
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+work="${1:-$(mktemp -d)}"
+bin="${QUICKWIT_BIN:-quickwit}"
+port="${QUICKWIT_PORT:-7280}"
+url="http://127.0.0.1:${port}"
+
+mkdir -p "$work/data" "$work/meta" "$work/indexes"
+
+# node.yaml for one role: `writer` (default services) or `searcher`.
+node_config() {
+  cat <<YAML
+version: 0.8
+cluster_id: usnm-$1
+node_id: $1
+listen_address: 127.0.0.1
+rest:
+  listen_port: ${port}
+data_dir: ${work}/data
+default_index_root_uri: file://${work}/indexes
+YAML
+  if [ "$1" = searcher ]; then
+    # Same shape as the sidecar in infra/modules/containerapp.bicep.
+    printf 'enabled_services: [searcher, metastore]\nmetastore_uri: file://%s/meta#polling_interval=5s\n' "$work"
+  else
+    printf 'metastore_uri: file://%s/meta\n' "$work"
+  fi
+}
+
+start() {
+  node_config "$1" > "$work/$1.yaml"
+  "$bin" run --config "$work/$1.yaml" > "$work/$1.log" 2>&1 &
+  echo $! > "$work/quickwit.pid"
+  for _ in $(seq 1 60); do
+    curl -sf "$url/api/v1/version" > /dev/null && return 0
+    sleep 1
+  done
+  cat "$work/$1.log" >&2
+  exit 1
+}
+
+stop() {
+  local pid
+  pid="$(cat "$work/quickwit.pid")"
+  kill "$pid"
+  for _ in $(seq 1 60); do
+    kill -0 "$pid" 2> /dev/null || return 0
+    sleep 1
+  done
+  echo "quickwit writer did not stop" >&2
+  exit 1
+}
+
+start writer
+for index in pages-base-fixture pages-delta-fixture-1; do
+  sed -e "s|\${INDEX_ID}|${index}|" -e "s|\${INDEX_URI}|file://${work}/indexes/${index}|" \
+    "$root/infra/quickwit/pages-index.yaml" |
+    curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
+      "$url/api/v1/indexes" > /dev/null
+  curl -sf -XPOST "$url/api/v1/${index}/ingest?commit=force" \
+    --data-binary @"$root/fixtures/data/indexes/${index}.jsonl" |
+    grep -q '"num_rejected_docs": 0' || { echo "ingest of ${index} rejected documents" >&2; exit 1; }
+done
+stop
+start searcher
+echo "$url"

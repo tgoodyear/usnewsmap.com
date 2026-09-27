@@ -15,7 +15,7 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `private-endpoints` | `pe-usnm-blob` and `pe-usnm-cosmos` in `snet-pe`, registered in the private DNS zones |
 | `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, plus Cosmos Built-in Data Contributor on `usnm` |
 | `containerapps-env` | VNet-integrated, workload-profiles environment that uses only the Consumption profile (no management fee) |
-| `containerapp` | The API (`ca-usnm-{env}`): 0.25 vCPU / 0.5 GiB, external ingress, health probes, and 0–1 to 2 replicas on an HTTP scaler |
+| `containerapp` | The API (`ca-usnm-{env}`): 0.25 vCPU / 0.5 GiB, external ingress, health probes, and 0–1 to 2 replicas on an HTTP scaler. With `searchBackend: quickwit`, also a read-only Quickwit 0.9.1 sidecar (1 vCPU / 2 GiB, localhost only) and a system-assigned identity with Blob Data **Reader** on `qw-index` only |
 | `staticwebapp` | SWA Free for the site |
 | `monitoring` | Log Analytics (30-day retention, ~150 MB/day cap) and Application Insights. An action group is created when alert emails are set |
 | `budget`, `alerts` | $80 monthly budget (alerts at $40, $60, $75, plus an $80 forecast alert; needs alert emails and `USNM_BUDGET_START`) and an alert on control-plane writes to the data accounts (needs alert emails) |
@@ -23,11 +23,19 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 
 ### What this slice runs
 
-The API runs on its **baked synthetic fixtures** (memory backend), and its persistent response cache is set to `cache/` on the data account. That exercises the production paths the real corpus will use: the managed identity, the Blob private endpoint and private DNS, ingress, probes and scaling.
+By default (`USNM_SEARCH_BACKEND=fixtures`) the API runs on its **baked synthetic fixtures** (memory backend), and its persistent response cache is set to `cache/` on the data account. That exercises the production paths the real corpus will use: the managed identity, the Blob private endpoint and private DNS, ingress, probes and scaling.
+
+`USNM_SEARCH_BACKEND=quickwit` switches to the production search path (08 §8.4.1):
+
+- The API reads `current.json` and reference snapshots from `reference/`.
+- It queries a **Quickwit searcher sidecar** on `127.0.0.1:7280`.
+- The sidecar opens the file-backed metastore in `qw-index/` read-only, polling every 30 s. Before a new version goes live, the API looks up each index that version lists, so the searcher loads indexes created after it started.
+- **Quickwit authenticates with the app's system-assigned identity.** Quickwit 0.9 uses the Azure SDK's default credential chain, which in Container Apps can only use the system-assigned identity. That identity has Blob Data Reader on `qw-index` and nothing else.
+
+Switch only after the ingest jobs have published indexes and a `current.json`. Until then the API has nothing to serve and keeps retrying its first load. On the first deployment with `quickwit`, the identity's role assignment is created after the app, so the sidecar and API may restart a few times until the assignment propagates (a few minutes). This deployment is also where Quickwit's managed-identity auth is first confirmed against a real account (spike S-2). If it fails, the fallback is a user-delegation SAS minted by the API (08 §8.2).
 
 The following come in later slices:
 
-- **Quickwit searcher sidecar:** after spike S-2 confirms how Quickwit authenticates to Blob without account keys (managed identity, or a user-delegation SAS minted by the API).
 - **Ingest jobs, backfill launcher and `network-guard`:** with the ingest pipeline. Its launcher identity and the custom "public access toggle" role come with it.
 - **Custom domains and DNS** (`usnewsmap.com`, `api.usnewsmap.com`): see §8.8. Managed certificates need the DNS records in place first.
 
@@ -62,6 +70,7 @@ To roll out a specific image, run `azd env set USNM_API_IMAGE ghcr.io/<owner>/us
 | `environmentName` | `AZURE_ENV_NAME` | — (e.g. `dev`, `prod`; `prod` keeps one warm replica, others scale to zero) |
 | `location` | `AZURE_LOCATION` | `eastus2` |
 | `apiImage` | `USNM_API_IMAGE` | `ghcr.io/tgoodyear/usnewsmap-api:main` |
+| `searchBackend` | `USNM_SEARCH_BACKEND` | `fixtures`, or `quickwit` once indexes are published |
 | `cosmosFreeTier` | `USNM_COSMOS_FREE_TIER` | `true` (one free-tier account per subscription) |
 | `alertEmails` | `USNM_ALERT_EMAILS` | empty (comma-separated) |
 | `budgetStartDate` | `USNM_BUDGET_START` | empty. The first day of a month; the budget is created only with alert emails and this set. Azure can't change a budget's start date, so keep it fixed |

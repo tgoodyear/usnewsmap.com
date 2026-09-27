@@ -127,10 +127,11 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 
 | Field | Type | Indexed | Fast/Facet/Sort | Stored | Purpose |
 |-------|------|---------|-----------------|--------|---------|
-| `doc_id` | keyword | key | ✅ sort (tiebreak) | ✅ | Identity; secondary sort for stable hit pages |
+| `doc_id` | keyword | key | ✅ | ✅ | Identity |
 | `text` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | Search |
-| `date` | date | ✅ | ✅ sort | ✅ | Range and sort; Quickwit timestamp field (if S-2 confirms pre-1970) |
-| `day` | u32 | ✅ | ✅ | – | Days since 1700-01-01; day/week buckets; range filter |
+| `date` | date | ✅ | ✅ | ✅ | Quickwit timestamp field (pre-1970 confirmed in S-2) |
+| `day` | u32 | ✅ | ✅ sort | ✅ | Days since 1700-01-01; day/week buckets; range filter; hit order |
+| `sort_key` | u64 | – | ✅ sort | – | `title ordinal << 24 \| edition << 16 \| seq`: stable hit order within a day (Quickwit can't sort on text, §5.5.1) |
 | `ym` | u32 | ✅ | ✅ | – | `year*12 + (month-1)`; month buckets |
 | `year` | u16 | ✅ | ✅ | – | Year buckets |
 | `place_id` | keyword | ✅ | ✅ facet | ✅ | Map aggregation |
@@ -144,43 +145,39 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 
 **Analyzer `usnm_text`:** a Unicode word tokenizer, then lowercase, then ASCII folding, then removal of tokens longer than 40 characters (OCR garbage). **No stemming and no stop words.** Historical exactness matters, and stop words are needed for phrases such as "cross of gold".
 
-### 5.5.1 Quickwit index config (sketch)
+### 5.5.1 Quickwit index config (validated in S-2)
+
+The config lives in [`infra/quickwit/pages-index.yaml`](../../infra/quickwit/pages-index.yaml). It is a template: the tooling substitutes `${INDEX_ID}` (`pages-base-20261001`, `pages-delta-20261008-1`, …) and `${INDEX_URI}` (`azure://qw-index/{id}`), so every base and delta shares one doc mapping. It has been checked against **Quickwit 0.9.1** (the pinned version) on the synthetic fixtures:
 
 ```yaml
-version: 0.9
-index_id: pages-base-20261001        # deltas use the same mapping: pages-delta-20261008-1, …
-index_uri: azure://qw-index/pages-base-20261001
 doc_mapping:
   mode: strict
-  timestamp_field: date          # validate pre-1970 in S-2; bucket fields don't depend on it
+  timestamp_field: date
   tokenizers:
-    - name: usnm_text
-      type: simple            # unicode word split
-      filters: [lower_caser, ascii_folding, remove_long]
+    - { name: usnm_text, type: simple, filters: [remove_long, lower_caser, ascii_folding] }
   field_mappings:
-    - { name: doc_id,     type: text,     tokenizer: raw, fast: true, stored: true }   # fast: hits sort tiebreak
+    - { name: doc_id,     type: text,     tokenizer: raw, fast: true, stored: true }
     - { name: text,       type: text,     tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }
-    - { name: date,       type: datetime, input_formats: ["%Y-%m-%d"], fast: true, stored: true }
-    - { name: day,        type: u64,      fast: true, indexed: true }
-    - { name: ym,         type: u64,      fast: true, indexed: true }
-    - { name: year,       type: u64,      fast: true, indexed: true }
-    - { name: place_id,   type: text,     tokenizer: raw, fast: true, stored: true }
-    - { name: place_shard, type: u64,     fast: true, indexed: true }
-    - { name: lccn,       type: text,     tokenizer: raw, fast: true, stored: true }
-    - { name: state,      type: text,     tokenizer: raw, fast: true }
-    - { name: language,   type: array<text>, tokenizer: raw, fast: true }
-    - { name: front_page, type: bool,     fast: true, indexed: true }
-    - { name: edition,    type: u64,      stored: true, indexed: false }
-    - { name: seq,        type: u64,      stored: true, indexed: false }
-    - { name: batch,      type: text,     tokenizer: raw }
-indexing_settings:
-  split_num_docs_target: 2000000
-  commit_timeout_secs: 60
-search_settings:
-  default_search_fields: [text]
+    - { name: date,       type: datetime, input_formats: ["%Y-%m-%d"], output_format: "%Y-%m-%d", fast: true, stored: true }
+    - { name: day,        type: u64,      fast: true, indexed: true, stored: true }
+    - { name: sort_key,   type: u64,      fast: true, indexed: false }   # hit order within a day
+    # ym, year, place_id, place_shard, lccn, state, language, front_page, edition, seq, batch as in §5.5
 ```
 
-The exact syntax for custom tokenizers is to be confirmed against the Quickwit version pinned in S-2. `fieldnorms: false` saves space because we don't rank by BM25 length normalization.
+**What spike S-2 settled, and how it's checked.** CI's `quickwit` job loads the fixture base and delta into Quickwit 0.9.1, stops the writer, and serves them from a read-only polling searcher configured like production. `crates/usnm-search/tests/quickwit_parity.rs` then compares the Quickwit backend with the in-memory reference backend. It covers 11 query shapes × 6 filter sets × 4 bucket units: summaries, full cubes, place-shard partitions of the cube, hit pages and snippets.
+
+| Item | Finding on 0.9.1 | Consequence |
+|------|------------------|-------------|
+| Tokenizer | `type: simple` plus `remove_long`, `lower_caser` and `ascii_folding` filters is accepted as written | As §5.5 |
+| Pre-1970 dates | `datetime` with `%Y-%m-%d` input stores and returns 1890s dates correctly, and `date` works as the timestamp field | Buckets still use the integer fields |
+| Multi-index search | One request over base + delta returns exact counts and aggregations | Versions are explicit index lists (08 §8.4.1) |
+| Nested aggregations | `terms(place_id) > histogram(day / ym / year)` and the `place_shard` split match the reference exactly | §5.7 as designed |
+| Sorting | Quickwit **can't sort on text fields**, so `doc_id` can't be the tiebreak. A leading `-` in `sort_by` means **ascending** | Hits sort by `-day,-sort_key`. `sort_key` = `title ordinal << 24 \| edition << 16 \| seq`, a numeric stand-in for (title, edition, page) |
+| Snippets | `snippet_fields` is a comma-separated string, not an array. Fragments come back HTML-escaped with `<b>` highlights | The API unescapes the text, then re-escapes it and emits only `<mark>` |
+| Phrases, slop, prefix | Exact phrases (stop words included), `"a b"~n` and `word*` match the reference | As §5.6 |
+| **Fuzzy terms** | **Not supported.** `term~1` parses but silently matches nothing, and the Elasticsearch-compatible API has no fuzzy query either | The Quickwit backend reports `fuzzy: false` and returns 422 for fuzzy queries rather than wrong counts. F-21 needs another approach; see [10 R-15](10-roadmap-and-risks.md#103-risk-register) |
+
+Still open in S-2: the 1M-page benchmark (§5.8, latency and memory at the sidecar size, split cache) and managed-identity Blob auth against a real account (08 §8.2).
 
 ### 5.5.2 Azure AI Search index (sketch)
 
@@ -228,7 +225,7 @@ The user-facing syntax is simple and matches LoC's modes. The API parses it into
 | Any word | mode = any | `Or[Term…]` | `text:a OR text:b` | `a b` (searchMode any) |
 | Near | mode = near, n = 5 | `Phrase(slop 5, unordered)` | `text:"a b"~5` | `"a b"~5` |
 | Exclude | `-word` | `Not(Term)` | `-text:word` | `-word` |
-| Fuzzy (OCR) | toggle "OCR-tolerant" | `Fuzzy(term, d=1 or 2)` | validate in S-2 | `term~1` |
+| Fuzzy (OCR) | toggle "OCR-tolerant" | `Fuzzy(term, d=1 or 2)` | not supported in 0.9 (§5.5.1); refused | `term~1` |
 | Prefix | `word*` (≥ 3 chars) | `Prefix` | `text:word*` | `word*` |
 
 Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range and term filters on `day`, `state`, etc. They are never free text.

@@ -5,6 +5,7 @@
     "environmentName": { "value": "${AZURE_ENV_NAME}" },
     "location": { "value": "${AZURE_LOCATION=eastus2}" },
     "apiImage": { "value": "${USNM_API_IMAGE=ghcr.io/tgoodyear/usnewsmap-api:main}" },
+    "searchBackend": { "value": "${USNM_SEARCH_BACKEND=fixtures}" },
     "cosmosFreeTier": { "value": "${USNM_COSMOS_FREE_TIER=true}" },
     "alertEmails": { "value": "${USNM_ALERT_EMAILS=}" },
     "budgetStartDate": { "value": "${USNM_BUDGET_START=}" }
