@@ -3,6 +3,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import type { BucketUnit, Mode } from "../api/types";
+import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
 export type Layer = "points" | "heat";
 export type Norm = "raw" | "rel";
@@ -75,8 +76,10 @@ export function parseView(search: string): ViewState {
     const v = s.get(k) ?? "";
     return isIsoDate(v) ? v : "";
   };
-  const z = Number(s.get("z"));
-  const c = (s.get("c") ?? "").split(",").map(Number);
+  // Number("") is 0, so blank values are rejected before converting.
+  const num = (v: string | null | undefined) => (v === null || v === undefined || v.trim() === "" ? NaN : Number(v));
+  const z = num(s.get("z"));
+  const c = (s.get("c") ?? "").split(",").map(num);
   return {
     q: (s.get("q") ?? "").slice(0, 256),
     mode: oneOf(s.get("mode"), MODES, DEFAULTS.mode),
@@ -94,7 +97,7 @@ export function parseView(search: string): ViewState {
     norm: oneOf(s.get("norm"), ["raw", "rel"] as const, DEFAULTS.norm),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),
-    z: Number.isFinite(z) && z > 0 && z <= 22 ? z : null,
+    z: Number.isFinite(z) && z >= MIN_ZOOM && z <= MAX_ZOOM ? z : null,
     c:
       c.length === 2 && c.every(Number.isFinite) && Math.abs(c[0]!) <= 180 && Math.abs(c[1]!) <= 90
         ? [c[0]!, c[1]!]

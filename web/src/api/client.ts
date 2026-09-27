@@ -82,11 +82,29 @@ export interface SearchParams {
   front?: boolean;
 }
 
+/**
+ * Plain words, with no query syntax. Mirrors `is_plain` in
+ * crates/usnm-core/src/query.rs: the API applies the phrase/any/near modes
+ * only to plain input and parses anything else as query syntax.
+ */
+export function isPlain(q: string): boolean {
+  return (
+    !/["()~*:]/.test(q) &&
+    !q.split(/\s+/).some((w) => w === "AND" || w === "OR" || w === "NOT" || w.startsWith("-"))
+  );
+}
+
 export function searchQuery(p: SearchParams, version: string): URLSearchParams {
   const s = new URLSearchParams();
   s.set("q", p.q);
-  if (p.mode && p.mode !== "phrase") s.set("mode", p.mode);
-  if (p.mode === "near" && p.near) s.set("near", String(p.near));
+  // The selected mode applies to plain words ("cross of gold" as an exact
+  // phrase). Query syntax such as quotes or OR already says what it means,
+  // so it is sent without a mode, which the API reads as query syntax.
+  const mode = p.mode ?? "phrase";
+  if (isPlain(p.q) && mode !== "all") {
+    s.set("mode", mode);
+    if (mode === "near" && p.near) s.set("near", String(p.near));
+  }
   if (p.from) s.set("from", p.from);
   if (p.to) s.set("to", p.to);
   if (p.bucket && p.bucket !== "auto") s.set("bucket", p.bucket);

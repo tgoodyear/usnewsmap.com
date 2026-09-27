@@ -13,6 +13,7 @@ import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import type { Layer, Norm } from "../state/url";
 import { colorFor } from "../lib/scale";
 import type { MapPoint } from "./mapTypes";
+import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
 
 interface Props {
@@ -74,8 +75,8 @@ export default function MapView(props: Props) {
       style: STYLE_URL === "none" ? PLAIN_STYLE : STYLE_URL,
       center: latest.current.center ?? US_CENTER,
       zoom: latest.current.zoom ?? 3.3,
-      minZoom: 2,
-      maxZoom: 12,
+      minZoom: MIN_ZOOM,
+      maxZoom: MAX_ZOOM,
       attributionControl: { compact: true },
       dragRotate: false,
       pitchWithRotate: false,

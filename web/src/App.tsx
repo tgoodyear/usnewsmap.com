@@ -4,7 +4,7 @@ import { api, ApiError, VersionChangedError, type SearchParams } from "./api/cli
 import type { Problem } from "./api/types";
 import { alignCube, prefixSums, relative, windowValues } from "./engine/cube";
 import { EXAMPLES } from "./examples";
-import { bucketIndex, bucketStart } from "./lib/time";
+import { bucketIndex, bucketLabel, bucketStart } from "./lib/time";
 import { cssColor } from "./lib/scale";
 import { useView, type ViewState } from "./state/url";
 import { SearchBar, searchKey } from "./components/SearchBar";
@@ -68,11 +68,12 @@ export function App() {
   // about 200 calls per 10 s), and a permalink only needs where it stopped.
   // `base` is the URL's `t` when scrubbing began; once the URL changes for
   // any reason (the deferred write, back/forward, a new search) it wins.
-  const [scrub, setScrub] = useState<{ base: string; t: string } | null>(null);
-  const tIso = scrub && scrub.base === view.t ? scrub.t : view.t;
+  // It also belongs to one search: a new search never inherits it.
+  const key = searchKey(view);
+  const [scrub, setScrub] = useState<{ key: string; base: string; t: string } | null>(null);
+  const tIso = scrub && scrub.key === key && scrub.base === view.t ? scrub.t : view.t;
   const t = data ? (tIso ? bucketIndex(data.bucket.unit, data.bucket.from, count, tIso) : count - 1) : 0;
   const urlWrite = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const key = searchKey(view);
   useEffect(() => () => clearTimeout(urlWrite.current), [key]);
 
   // Prefix sums are built once per response; each frame is O(places).
@@ -138,14 +139,14 @@ export function App() {
     (i: number) => {
       if (!data) return;
       const iso = bucketStart(data.bucket.unit, data.bucket.from, i);
-      setScrub((s) => ({ base: s && s.base === urlT ? s.base : urlT, t: iso }));
+      setScrub((s) => ({ key, base: s && s.key === key && s.base === urlT ? s.base : urlT, t: iso }));
       clearTimeout(urlWrite.current);
       urlWrite.current = setTimeout(() => {
         setView({ t: iso });
         setScrub(null);
       }, 300);
     },
-    [data, setView, urlT],
+    [data, setView, urlT, key],
   );
   const select = useCallback((id: string) => setView({ place: id }), [setView]);
   const onViewport = useCallback(
@@ -235,7 +236,7 @@ export function App() {
           {data && places.data && (
             <>
               <div className="toolbar">
-                <p className="summary" aria-live="polite">
+                <p className="summary">
                   <strong>{visible.length.toLocaleString()}</strong> places ·{" "}
                   <strong>{visible.reduce((a, p) => a + p.value, 0).toLocaleString()}</strong> pages
                   {data.coarsened && " · buckets coarsened to fit"}
@@ -324,6 +325,16 @@ export function App() {
               )}
 
               {count > 0 && data.total.hits > 0 && (
+                <Announcer
+                  message={`Showing ${visible.length.toLocaleString()} places, ${visible
+                    .reduce((a, p) => a + p.value, 0)
+                    .toLocaleString()} pages, up to ${bucketLabel(
+                    data.bucket.unit,
+                    bucketStart(data.bucket.unit, data.bucket.from, t),
+                  )}.`}
+                />
+              )}
+              {count > 0 && data.total.hits > 0 && (
                 <footer className="timebar">
                   <TimeDock
                     unit={data.bucket.unit}
@@ -360,6 +371,28 @@ export function App() {
         {meta.data && ` Index ${meta.data.index_version}.`}
       </footer>
     </div>
+  );
+}
+
+/**
+ * The one live region for results (07 §7.6): the date and counts together,
+ * announced at most every 1.5 s, so playback doesn't flood a screen reader.
+ */
+function Announcer({ message }: { message: string }) {
+  const [spoken, setSpoken] = useState("");
+  const last = useRef(0);
+  useEffect(() => {
+    const wait = Math.max(0, last.current + 1500 - Date.now());
+    const timer = setTimeout(() => {
+      last.current = Date.now();
+      setSpoken(message);
+    }, wait);
+    return () => clearTimeout(timer);
+  }, [message]);
+  return (
+    <p className="visually-hidden" role="status" aria-live="polite">
+      {spoken}
+    </p>
   );
 }
 

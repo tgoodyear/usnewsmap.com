@@ -30,6 +30,14 @@ describe("view URL", () => {
     expect(parseView("?from=1896-02-31&to=1896-04-31&t=1896-06-31")).toEqual(DEFAULTS);
   });
 
+  it("rejects blank coordinates and zooms the map can't show", () => {
+    for (const q of ["?c=,", "?c=12,", "?c=,40", "?z=20", "?z=1", "?z="]) {
+      const v = parseView(q);
+      expect([v.c, v.z], q).toEqual([null, null]);
+    }
+    expect(parseView("?z=12&c=0,0")).toMatchObject({ z: 12, c: [0, 0] });
+  });
+
   it("keeps near only in near mode", () => {
     expect(serializeView({ ...DEFAULTS, q: "a b", mode: "near", near: 8 })).toBe(
       "?q=a+b&mode=near&near=8",

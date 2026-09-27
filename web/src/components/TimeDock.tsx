@@ -81,6 +81,11 @@ export function TimeDock({ unit, from, count, t, window, onSeek, onWindow }: Pro
   }, [count, onSeek]);
 
   const label = bucketLabel(unit, bucketStart(unit, from, t));
+  // A permalink may carry any valid window; show it alongside the presets.
+  const windowOptions =
+    window !== null && !WINDOWS.includes(window)
+      ? [...WINDOWS, window].sort((a, b) => (a ?? 0) - (b ?? 0))
+      : WINDOWS;
   return (
     <div className="dock" role="group" aria-label="Playback">
       <button
@@ -116,7 +121,7 @@ export function TimeDock({ unit, from, count, t, window, onSeek, onWindow }: Pro
           value={window === null ? "cum" : String(window)}
           onChange={(e) => onWindow(e.target.value === "cum" ? null : Number(e.target.value))}
         >
-          {WINDOWS.map((w) => (
+          {windowOptions.map((w) => (
             <option key={w ?? "cum"} value={w ?? "cum"}>
               {w === null ? "Cumulative" : `Last ${w} ${unit}${w > 1 ? "s" : ""}`}
             </option>
@@ -133,9 +138,8 @@ export function TimeDock({ unit, from, count, t, window, onSeek, onWindow }: Pro
         aria-label="Time"
         aria-valuetext={label}
       />
-      <output className="dock__label" aria-live="polite">
-        {label}
-      </output>
+      {/* Announced by the app's throttled live region, not on every frame. */}
+      <output className="dock__label">{label}</output>
     </div>
   );
 }

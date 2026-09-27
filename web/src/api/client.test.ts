@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, VersionChangedError } from "./client";
+import { api, ApiError, isPlain, searchQuery, VersionChangedError } from "./client";
 
 function respond(body: unknown, status = 200, type = "application/json") {
   vi.stubGlobal(
@@ -33,8 +33,20 @@ describe("api client", () => {
 
   it("pins every search to the version and omits defaults", async () => {
     respond({ index_version: "v1" });
-    await api.aggregate({ q: "a b", mode: "phrase", bucket: "auto", state: ["GA"] }, "v1");
+    await api.aggregate({ q: "a b", mode: "all", bucket: "auto", state: ["GA"] }, "v1");
     const url = String(vi.mocked(fetch).mock.calls[0]![0]);
     expect(url).toBe("/v1/aggregate?q=a+b&state=GA&v=v1");
+  });
+
+  it("sends the mode for plain words and query syntax as-is", () => {
+    const q = (p: Parameters<typeof searchQuery>[0]) => searchQuery(p, "v").toString();
+    expect(q({ q: "cross of gold", mode: "phrase" })).toBe("q=cross+of+gold&mode=phrase&v=v");
+    expect(q({ q: "cross of gold" })).toBe("q=cross+of+gold&mode=phrase&v=v");
+    expect(q({ q: "yellow fever", mode: "near", near: 5 })).toBe("q=yellow+fever&mode=near&near=5&v=v");
+    expect(q({ q: "free silver", mode: "any" })).toBe("q=free+silver&mode=any&v=v");
+    expect(q({ q: '"cross of gold"', mode: "phrase" })).toBe("q=%22cross+of+gold%22&v=v");
+    expect(q({ q: "fever OR influenza", mode: "phrase" })).toBe("q=fever+OR+influenza&v=v");
+    expect(isPlain("gold -silver")).toBe(false);
+    expect(isPlain("gold-standard")).toBe(true);
   });
 });

@@ -132,3 +132,25 @@ test("no results suggests what to try", async ({ page }) => {
   await page.goto("/?q=zyzzyva");
   await expect(page.getByRole("status")).toContainText("No pages match");
 });
+
+test("exact phrase applies to plain words, like a quoted phrase", async ({ page }) => {
+  const pages = async (query: string) => {
+    await page.goto(`/?${query}&from=1895-01-01&to=1897-12-31&bucket=month&tab=table`);
+    const summary = page.locator(".summary");
+    await expect(summary).toContainText("pages");
+    return Number(((await summary.locator("strong").nth(1).textContent()) ?? "").replace(/,/g, ""));
+  };
+  const quoted = await pages("q=%22cross+of+gold%22");
+  const plain = await pages("q=cross+of+gold");
+  const any = await pages("q=cross+of+gold&mode=any");
+  expect(plain).toBe(quoted);
+  expect(any).toBeGreaterThan(plain);
+
+  // Word order matters for a phrase: typed with the default "Exact phrase"
+  // mode, "standard gold" matches nothing (as all words it would match 201).
+  await page.goto("/");
+  await page.getByRole("searchbox").fill("standard gold");
+  await page.getByRole("button", { name: "Search" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "No pages match" })).toBeVisible();
+  expect(await pages("q=standard+gold&mode=all")).toBeGreaterThan(0);
+});
