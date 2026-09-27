@@ -14,6 +14,9 @@
     "cosmosFreeTier": { "value": "${USNM_COSMOS_FREE_TIER=true}" },
     "alertEmails": { "value": "${USNM_ALERT_EMAILS=}" },
     "budgetStartDate": { "value": "${USNM_BUDGET_START=}" },
-    "dnsZoneName": { "value": "${USNM_DNS_ZONE=}" }
+    "dnsZoneName": { "value": "${USNM_DNS_ZONE=}" },
+    "apiCertificateId": { "value": "${USNM_API_CERT_ID=}" },
+    "githubRepo": { "value": "${USNM_GITHUB_REPO=tgoodyear/usnewsmap.com}" },
+    "githubRepoIds": { "value": "${USNM_GITHUB_REPO_IDS=tgoodyear@116683/usnewsmap.com@1389862972}" }
   }
 }

@@ -24,7 +24,7 @@ One subscription (ideally owned by a sponsoring institution), one region: **East
 | Container Registry `crusnm{env}{suffix}` | **Basic** (~$5/mo); no admin user, no anonymous pull | Private images: the API, ingest and a digest-pinned copy of Quickwit. Pulled with the app and ingest identities (`AcrPull`); pushed only by CI on `main` (`AcrPush`, §8.2) |
 | *(not used in lean)* Front Door, Key Vault, AI Search | – | Growth profile only; each is a Bicep parameter switch |
 
-Container images are **private**, in ACR Basic. CI on `main` signs in to Azure with OIDC as `id-usnm-ci` (a user-assigned identity with a federated credential for this repository's `main` branch; no stored secret) and pushes the API and ingest images tagged `main` and the commit sha. It also copies Quickwit v0.9.1 in by digest, so deployments don't depend on Docker Hub. The container app and jobs pull with their managed identities. A new environment bootstraps from a placeholder until CI has pushed (`useAcr`, infra/README.md).
+Container images are **private**, in ACR Basic. CI on `main` signs in to Azure with OIDC as `id-usnm-ci-{env}` (a user-assigned identity whose federated credential trusts only this repository's GitHub Environment `{env}`, which only `main` may use; no stored secret) and pushes the API and ingest images tagged `main` and the commit sha. It also copies Quickwit v0.9.1 in by digest, so deployments don't depend on Docker Hub. The container app and jobs pull with their managed identities. A new environment has no API until CI has pushed; `scripts/bootstrap.sh` sequences that (§8.9).
 
 ## 8.2 Identity and access (managed identities everywhere)
 
@@ -35,8 +35,8 @@ Container images are **private**, in ACR Basic. CI on `main` signs in to Azure w
 | `id-usnm-ingest` (on the ingest jobs) | MI | `Storage Blob Data Contributor` (`curated/`, `reference/`, `qw-index/`); **Cosmos DB Built-in Data Contributor** (database `usnm`) |
 | `caj-usnm-ingest` system-assigned identity (used only by the Quickwit writer the job runs) | MI | `Storage Blob Data Contributor` (`qw-index/`) and nothing else |
 | `id-usnm-launcher` (on the `backfill` launcher job and the `network-guard` job) | MI | `Contributor` on `rg-usnm-prod-spot` only (to create and delete ACI container groups); `Managed Identity Operator` on `id-usnm-ingest`; custom role **`USNM Public Access Toggle`** on `stusnmdata` and `cosmos-usnm` only (`read` and `write` on the account resource, used solely to flip `publicNetworkAccess`). Azure Policy **denies** any change to `allowSharedKeyAccess` or `disableLocalAuth`, so this role can't re-enable keys |
-| `id-usnm-ci` (user-assigned, federated credential for GitHub Actions on `main`) | MI | `AcrPush` on the registry only |
-| GitHub Actions (`usnewsmap.com` repo, `main` branch + `prod` environment) | **OIDC federated credential** on an app registration | `Contributor` on `rg-usnm-*` + `User Access Administrator` constrained by a condition to the roles above (for Bicep role assignments) |
+| `id-usnm-ci-{env}` (user-assigned, federated credential for the GitHub Environment `{env}`, restricted to `main`) | MI | `AcrPush` on its registry; `Contributor` on its API app and its Static Web App only (roll out images, read the site's deployment token) |
+| Infrastructure changes (`azd provision`, via `scripts/bootstrap.sh`) | The operator's own sign-in | `Owner` on the subscription (role assignments, policy definitions). CI never provisions, so no identity with role-assignment rights exists outside a person's session |
 | Maintainers | Entra users / group `grp-usnm-maintainers` | `Reader` by default; **PIM just-in-time** `Contributor` where the tenant licensing allows it. Data-plane inspection (Cosmos queries, blob listing) runs through the `usnm-ingest admin …` CLI as an on-demand Container Apps Job inside the VNet, because the portal's Data Explorer can't reach the private endpoints from the internet |
 
 There are no storage account keys or SAS tokens in app config: `allowSharedKeyAccess=false` on the data account.
@@ -145,6 +145,7 @@ flowchart LR
   PROD --> POST[prewarm cache · synthetic checks]
 ```
 
+- **As built:** `ci` runs every check on each PR and push. On `main`, after all of them pass, `publish` runs once per environment listed in `USNM_DEPLOY_ENVIRONMENTS`: it pushes the images to that environment's registry and rolls its API onto the commit. `deploy web` does the same for the site. Each environment is a GitHub Environment restricted to `main`, with its own variables and OIDC trust (§8.9). Only the commit `main` currently points at deploys, so a slow run for an older commit can't overwrite a newer one. The diagram above is the fuller target (preview environments, staged traffic, approvals).
 - **Container Apps revisions** for blue/green: a new revision receives 10% of traffic until synthetic checks pass, then 100%. Rolling back means shifting traffic to the previous revision.
 - **Images:** pinned base `gcr.io/distroless/cc-debian12` (or `scratch` with a musl static build) for the API; the Quickwit image is pinned by digest and copied into ACR with that digest unchanged (CI checks it).
 - **Data pipeline deploys** are separate from app deploys. A new `index_version` is published by the `index` job and picked up by the API's refresher, not by redeploying.
@@ -160,5 +161,44 @@ flowchart LR
 ## 8.8 Domain and DNS
 
 - Move the `usnewsmap.com` registration to an account the project controls, with auto-renew and at least 2 admins. This was one of the legacy single points of failure.
-- Host DNS in **Azure DNS**: apex `usnewsmap.com` as an alias record to the Static Web App, `www` → apex redirect, and `api` as a CNAME to the container app with its domain-verification TXT record. Add `CAA` records for the CAs that the SWA and Container Apps managed certificates use.
+- Host DNS in **Azure DNS**: apex `usnewsmap.com` as an alias record to the Static Web App, `www` → apex redirect, and `api` as a CNAME to the container app with its domain-verification TXT record. Add `CAA` records for the CAs that the SWA and Container Apps managed certificates use. **As built:** the zone is `infra/modules/dns.bicep`; `scripts/bootstrap.sh` binds the apex and `www` to the Static Web App (TXT and CNAME validation) and issues the `api` managed certificate once the delegation is live, recording it so Bicep keeps the binding (§8.9).
 - Keep `/loc_api/*` returning **410 Gone** (an SWA route rule) with a link to the new API docs (old clients may still call it), and redirect legacy query URLs where they can be mapped.
+
+## 8.9 Portability: redeploying into another subscription or tenant
+
+The whole system can be stood up from this repository in **any** Azure subscription, in any tenant, with one command, and the corpus rebuilt from public sources. That is a design requirement: no single account, subscription or person is load-bearing (the legacy site's failure mode).
+
+**Command:** `scripts/bootstrap.sh <env> [--subscription ID] [--location REGION] [--domain NAME] [--alert-email ADDR] [--ingest]`. It is idempotent: re-running it brings an existing environment up to date. It:
+
+1. checks the sign-ins (`az`, `azd`, `gh`) and registers the resource providers the templates use;
+2. creates or selects the `azd` environment and sets its parameters, including:
+   - the GitHub repository (and its immutable-ID OIDC form, looked up from the API);
+   - whether the subscription's one Cosmos DB free-tier slot is still free;
+3. provisions (everything but the API, which has no image yet);
+4. creates the **GitHub Environment** of the same name, restricted to the `main` branch, writes that environment's variables, and adds it to the repository variable `USNM_DEPLOY_ENVIRONMENTS`;
+5. runs `ci` on `main` (every time, so the registry holds the current `main`), which publishes the images, and waits for that run;
+6. switches to the registry (`USNM_USE_ACR=true`) and provisions again, which deploys the API;
+7. once the registrar delegates the domain to the zone, binds the apex and `www` to the Static Web App and `api` to the API with managed certificates (re-run it after delegating);
+8. deploys the web app and checks the API's `/readyz` and the site.
+
+Then, for a full corpus, start the backfill job and let the weekly ingest job publish (04 §4.4). A **new environment starts with no data**: the system of record is LoC's public data, and everything in Blob and Cosmos is derived from it by a deterministic pipeline. Rebuilding takes ~4.5 h of title sync (LoC's 20-requests/minute API limit) and ~22 h of curation with 8 workers, for about $15–20. Hand-curated state belongs in git, never only in an environment: the place-coordinate overrides (`catalog/overrides/places.json`) ship in the ingest image.
+
+**What is per environment, and what is shared:**
+
+| Thing | Scope | Notes |
+|-------|-------|-------|
+| Resource groups `rg-usnm-{env}` and everything in them (registry, identities, storage, Cosmos, VNet, apps, jobs, Static Web App, DNS zone) | Per environment | Globally unique names carry a suffix derived from the subscription and environment, so the same environment name works in another subscription |
+| CI identity `id-usnm-ci-{env}` | Per environment | Trusts only jobs in the GitHub Environment `{env}` of the configured repository, which only `main` may use. Rights: AcrPush on its registry, Contributor on its API app and its Static Web App. No secret is stored anywhere; the web deploy reads the site's deployment token at deploy time |
+| GitHub Environment `{env}` | Per environment | Its variables are written by bootstrap. `publish` (in `ci`) and `deploy web` run once per listed environment |
+| Guard-rail policy definitions (`usnm-deny-*`, `usnm-audit-*`) | Per subscription | Shared by every environment in the subscription; the assignments are per resource group. Needs Owner (or Resource Policy Contributor) on the subscription |
+| Cosmos DB free tier | One account per subscription | Bootstrap turns it off for a second environment in the same subscription (~$1–3/month serverless instead) |
+| The domain | One environment | Only the environment whose zone the registrar delegates to serves `usnewsmap.com`; others use their `*.azurestaticapps.net` and `*.azurecontainerapps.io` names |
+
+**Prerequisites in the target:** an account with **Owner** on the subscription (role assignments, policy definitions). No tenant-level objects are created (no app registrations; all identities are managed identities), so no Entra admin is needed. On GitHub: admin on the repository (environments and variables). A **fork** works the same way: bootstrap reads the fork's name and ids, and the federated credentials trust that repository only.
+
+**Moving production** to another subscription (or tenant):
+1. Run `scripts/bootstrap.sh <env> --subscription NEW --domain usnewsmap.com --ingest`. For an existing local azd environment, add `--move`. Without it, bootstrap refuses to rebind an environment to a different subscription. With it, bootstrap resets the settings that describe the old subscription: the registry switch-over, the API certificate, and the Cosmos DB free-tier check. Use a new environment name if the old one should keep deploying from CI meanwhile: the GitHub Environment `<env>` points at whichever subscription bootstrap wired last.
+2. Let the new environment rebuild the corpus, and check it on its `*.azurestaticapps.net` and `*.azurecontainerapps.io` names.
+3. Delegate the domain to the new zone's name servers (`azd env get-value NAME_SERVERS`), then **re-run bootstrap**. Once it sees the delegation, it binds the apex, `www` and `api` to the new apps and issues their certificates. HTTPS on the custom names needs this step.
+4. The old environment keeps serving until the delegation changes; afterwards, delete it with `azd down`.
+
