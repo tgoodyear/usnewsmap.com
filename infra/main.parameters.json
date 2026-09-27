@@ -13,6 +13,7 @@
     "backfillWorkers": { "value": "${USNM_BACKFILL_WORKERS=8}" },
     "cosmosFreeTier": { "value": "${USNM_COSMOS_FREE_TIER=true}" },
     "alertEmails": { "value": "${USNM_ALERT_EMAILS=}" },
-    "budgetStartDate": { "value": "${USNM_BUDGET_START=}" }
+    "budgetStartDate": { "value": "${USNM_BUDGET_START=}" },
+    "dnsZoneName": { "value": "${USNM_DNS_ZONE=}" }
   }
 }

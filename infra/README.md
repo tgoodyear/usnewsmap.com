@@ -77,6 +77,7 @@ To roll out a specific build, run `azd env set USNM_IMAGE_TAG <commit sha>` (def
 | `cosmosFreeTier` | `USNM_COSMOS_FREE_TIER` | `true` (one free-tier account per subscription) |
 | `alertEmails` | `USNM_ALERT_EMAILS` | empty (comma-separated) |
 | `budgetStartDate` | `USNM_BUDGET_START` | empty. The first day of a month; the budget is created only with alert emails and this set. Azure can't change a budget's start date, so keep it fixed |
+| `dnsZoneName` | `USNM_DNS_ZONE` | empty (no zone). The site's domain, e.g. `usnewsmap.com` |
 | `deployPolicies` | — | `true` (needs Resource Policy Contributor on the subscription) |
 
 ## Web app
@@ -92,6 +93,18 @@ gh workflow run "deploy web"
 ```
 
 The API allows the site's `*.azurestaticapps.net` origin (and `allowedOrigins`) for CORS.
+
+## Domain (DNS)
+
+The zone for the site's domain lives in Azure DNS (~$0.50/month):
+
+```sh
+azd env set USNM_DNS_ZONE usnewsmap.com
+azd provision
+azd env get-value NAME_SERVERS      # set these four as the domain's name servers at the registrar
+```
+
+The zone holds the apex (an alias to the Static Web App), `www` (CNAME to it), and `api` (CNAME to the API app, with the `asuid.api` TXT record Container Apps checks). **Before switching name servers, copy any records the domain still needs (MX, SPF/DKIM TXT, verification records) into the zone**: once delegated, only the zone's records resolve. Binding the names on the apps and issuing their managed certificates needs the delegation to be live, so that is a separate step.
 
 ## Container registry
 

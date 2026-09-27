@@ -37,3 +37,5 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
 
 output id string = env.id
 output defaultDomain string = env.properties.defaultDomain
+// The value of the `asuid.{name}` TXT record that proves a custom domain.
+output customDomainVerificationId string = env.properties.customDomainConfiguration.customDomainVerificationId

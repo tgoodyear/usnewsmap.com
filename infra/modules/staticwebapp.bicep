@@ -18,4 +18,5 @@ resource swa 'Microsoft.Web/staticSites@2023-12-01' = {
   }
 }
 
+output id string = swa.id
 output defaultHostname string = swa.properties.defaultHostname

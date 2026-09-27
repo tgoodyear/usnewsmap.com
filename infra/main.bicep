@@ -59,6 +59,9 @@ param budgetStartDate string = ''
 @description('Create and assign the guardrail policies (needs Resource Policy Contributor on the subscription).')
 param deployPolicies bool = true
 
+@description('Public DNS zone for the site (e.g. usnewsmap.com); empty skips it. Delegate the domain to the NAME_SERVERS output.')
+param dnsZoneName string = ''
+
 // Resource names must be lowercase (Cosmos, storage).
 var env = toLower(environmentName)
 var tags = {
@@ -303,10 +306,25 @@ module spotPolicies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   }
 }
 
+module dns 'modules/dns.bicep' = if (!empty(dnsZoneName)) {
+  scope: rg
+  name: 'dns'
+  params: {
+    tags: tags
+    zoneName: dnsZoneName
+    siteId: site.outputs.id
+    siteHostname: site.outputs.defaultHostname
+    apiFqdn: deployApi ? api!.outputs.fqdn : ''
+    apiVerificationId: containerEnv.outputs.customDomainVerificationId
+  }
+}
+
 output AZURE_LOCATION string = location
 output AZURE_RESOURCE_GROUP string = rg.name
 output API_URL string = deployApi ? 'https://${api!.outputs.fqdn}' : ''
 output SITE_URL string = 'https://${site.outputs.defaultHostname}'
+// Set these as the domain's name servers at the registrar.
+output NAME_SERVERS string = empty(dnsZoneName) ? '' : join(dns!.outputs.nameServers, ' ')
 output TILES_URL string = tiles.outputs.tilesUrl
 output STORAGE_ACCOUNT string = storage.outputs.name
 output COSMOS_ENDPOINT string = cosmos.outputs.endpoint
