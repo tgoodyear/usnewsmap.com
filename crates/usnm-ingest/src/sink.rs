@@ -183,11 +183,20 @@ impl IndexSink for QuickwitSink {
     }
 
     async fn add(&mut self, doc: &Value) -> anyhow::Result<()> {
-        serde_json::to_writer(&mut self.buf, doc)?;
-        self.buf.push(b'\n');
-        if self.buf.len() >= CHUNK_BYTES {
+        let mut line = serde_json::to_vec(doc)?;
+        line.push(b'\n');
+        if line.len() > CHUNK_BYTES {
+            bail!(
+                "document `{}` is {} bytes, over the {CHUNK_BYTES}-byte ingest request limit",
+                doc["doc_id"].as_str().unwrap_or("?"),
+                line.len()
+            );
+        }
+        // Send first if this document would push the request over the limit.
+        if self.buf.len() + line.len() > CHUNK_BYTES {
             self.send("auto").await?;
         }
+        self.buf.extend_from_slice(&line);
         Ok(())
     }
 
@@ -292,5 +301,24 @@ impl QuickwitNode {
             Err(_) => self.child.kill().await?,
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn requests_stay_under_the_ingest_limit() {
+        let mut s = QuickwitSink::new("http://127.0.0.1:9", "file:///tmp/x").unwrap();
+        s.index = Some("i".into());
+        // Documents that fit are buffered without sending.
+        let doc = serde_json::json!({"doc_id": "a", "text": "x".repeat(1000)});
+        s.add(&doc).await.unwrap();
+        assert!(s.buf.len() < CHUNK_BYTES);
+        // One document over the limit is refused, not sent.
+        let big = serde_json::json!({"doc_id": "big", "text": "x".repeat(CHUNK_BYTES)});
+        let err = s.add(&big).await.unwrap_err().to_string();
+        assert!(err.contains("`big`"), "{err}");
     }
 }

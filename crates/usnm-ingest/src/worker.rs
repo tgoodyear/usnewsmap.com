@@ -75,6 +75,21 @@ impl Worker {
             if skip.contains(&b.batch) || b.lease.as_ref().is_some_and(|l| l.until > now) {
                 continue;
             }
+            // Workers that crash never reach release_failed, so the attempt
+            // cap is also enforced here.
+            if b.attempts >= MAX_ATTEMPTS {
+                b.status = BatchStatus::Failed;
+                b.lease = None;
+                b.last_error.get_or_insert_with(|| {
+                    format!(
+                        "abandoned after {} attempts (workers stopped mid-batch)",
+                        b.attempts
+                    )
+                });
+                b.updated_at = now;
+                let _ = self.state.replace_batch(&b, &etag).await?;
+                continue;
+            }
             b.status = BatchStatus::Downloading;
             b.attempts += 1;
             b.lease = Some(Lease {

@@ -32,7 +32,7 @@ pub struct PageDoc {
     pub front_page: bool,
     pub edition: u16,
     pub seq: u16,
-    /// Same-day order for hits: `title ordinal << 24 | edition << 16 | seq`.
+    /// Same-day order for hits: `title ordinal << 32 | edition << 16 | seq`.
     /// Numeric because Quickwit 0.9 can't sort on text fields (05 §5.5).
     pub sort_key: u64,
     pub text: String,

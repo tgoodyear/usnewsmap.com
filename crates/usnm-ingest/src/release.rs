@@ -75,7 +75,7 @@ pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place) -> Value {
         "edition": k.edition,
         "seq": k.seq,
         // Hits order within a day: title, then edition, then page.
-        "sort_key": (u64::from(title.ordinal) << 24) | (u64::from(k.edition) << 16) | u64::from(k.seq),
+        "sort_key": (u64::from(title.ordinal) << 32) | (u64::from(k.edition) << 16) | u64::from(k.seq),
         "date": k.date.to_string(),
         "batch": row.batch,
         "text": row.text,
@@ -83,30 +83,35 @@ pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place) -> Value {
 }
 
 impl Release {
-    /// Build and publish a new version, or `None` if there is nothing new.
-    pub async fn run(&self, sink: &mut dyn IndexSink) -> anyhow::Result<Option<Published>> {
+    /// Take the writer lock (re-entrant for this owner). Callers that run a
+    /// Quickwit writer node take it before the node starts and release it
+    /// after the node stops, so no two writers ever overlap.
+    pub async fn lock(&self) -> anyhow::Result<()> {
         self.state
             .lock(WRITER_LOCK, &self.owner, Duration::hours(12))
-            .await?;
-        let result = self.run_locked(sink).await;
-        let unlocked = self.state.unlock(WRITER_LOCK, &self.owner).await;
+            .await
+    }
+
+    pub async fn unlock(&self) -> anyhow::Result<()> {
+        self.state.unlock(WRITER_LOCK, &self.owner).await
+    }
+
+    /// Build and publish a new version, or `None` if there is nothing new.
+    pub async fn run(&self, sink: &mut dyn IndexSink) -> anyhow::Result<Option<Published>> {
+        self.lock().await?;
+        let result = self.run_held(sink).await;
+        let unlocked = self.unlock().await;
         let published = result?;
         unlocked?;
         Ok(published)
     }
 
-    async fn run_locked(&self, sink: &mut dyn IndexSink) -> anyhow::Result<Option<Published>> {
+    /// [`Release::run`] for a caller that already holds the writer lock.
+    pub async fn run_held(&self, sink: &mut dyn IndexSink) -> anyhow::Result<Option<Published>> {
+        // Re-taking a lock this owner holds just confirms (and extends) it.
+        self.lock().await?;
         let current = Catalog::load(self.reference.as_ref()).await?;
-        let previous = match self.state.current_version().await? {
-            Some(v) => Some(
-                self.state
-                    .run(&v)
-                    .await?
-                    .with_context(|| format!("published version `{v}` has no index run"))?
-                    .0,
-            ),
-            None => None,
-        };
+        let previous = self.published_run().await?;
         // Every batch's last committed curation, whatever its current status.
         let curated: BTreeMap<String, Curated> = self
             .state
@@ -236,6 +241,32 @@ impl Release {
             docs,
             pages: run.pages,
         }))
+    }
+
+    /// The published version's run. `current.json` is the source of truth:
+    /// if a previous release crashed after writing it but before recording
+    /// the publish in Cosmos, the run and `ops/current` are repaired here.
+    async fn published_run(&self) -> anyhow::Result<Option<IndexRun>> {
+        let Some(bytes) = self.reference.get("current.json").await? else {
+            return Ok(None);
+        };
+        let pointer: Value = serde_json::from_slice(&bytes).context("current.json")?;
+        let version = pointer["index_version"]
+            .as_str()
+            .context("current.json has no index_version")?;
+        let (mut run, etag) = self.state.run(version).await?.with_context(|| {
+            format!("current.json names `{version}`, which has no index run in the pipeline state")
+        })?;
+        if run.status != RunStatus::Published {
+            tracing::warn!(version, "recording a publish that was interrupted");
+            run.status = RunStatus::Published;
+            run.published_at.get_or_insert_with(Utc::now);
+            self.state.update_run(&run, &etag).await?;
+        }
+        if self.state.current_version().await?.as_deref() != Some(version) {
+            self.state.set_current_version(version).await?;
+        }
+        Ok(Some(run))
     }
 
     /// `pages-v{date}-{n}` and its new index, `pages-{base|delta}-{date}-{n}`.

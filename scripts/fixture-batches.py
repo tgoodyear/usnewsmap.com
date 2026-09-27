@@ -51,7 +51,7 @@ def main(out):
                 info.size = len(data)
                 tar.addfile(info, io.BytesIO(data))
         sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        listing.append({"name": name, "url": str(path), "sha256": sha})
+        listing.append({"name": name, "url": str(path.resolve()), "sha256": sha})
     (out / "batches.json").write_text(json.dumps(listing, indent=1) + "\n")
     catalog = out / "reference" / "catalog"
     catalog.mkdir(parents=True, exist_ok=True)

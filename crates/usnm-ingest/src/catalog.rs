@@ -43,8 +43,9 @@ pub struct Title {
     pub extra: BTreeMap<String, Value>,
 }
 
-/// Title ordinals fill the top 40 bits of `sort_key`.
-const MAX_TITLE_ORDINAL: u32 = u32::MAX >> 8;
+/// Title ordinals fill bits 32 and up of `sort_key` (edition and seq take 16
+/// bits each). Capped so every key stays below 2^53 and exact in JSON.
+const MAX_TITLE_ORDINAL: u32 = (1 << 21) - 1;
 
 #[derive(Debug, Clone)]
 pub struct Catalog {

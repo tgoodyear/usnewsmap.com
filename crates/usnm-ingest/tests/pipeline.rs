@@ -492,3 +492,86 @@ async fn curates_a_real_loc_archive() {
         .iter()
         .all(|r| r.text.as_ref().is_some_and(|t| t.len() > 500)));
 }
+
+/// A release that crashed after writing `current.json` but before recording
+/// the publish in Cosmos: the next release treats `current.json` as the
+/// truth, repairs the state and builds on the version that is live.
+#[tokio::test]
+async fn recovers_from_a_crash_between_publish_and_bookkeeping() {
+    use usnm_ingest::state::RunStatus;
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    let b = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    write_archive(&b, &late, false, true);
+    source::enqueue(&e.state, &[listed("batch_fx_early_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let p1 = e.release(1, false).await.unwrap();
+
+    // Undo the bookkeeping, as if the process died right after current.json.
+    let (mut run, etag) = e.state.run(&p1.index_version).await.unwrap().unwrap();
+    run.status = RunStatus::Building;
+    e.state.update_run(&run, &etag).await.unwrap();
+    e.state
+        .set_current_version("pages-v20260901-1")
+        .await
+        .unwrap();
+
+    source::enqueue(&e.state, &[listed("batch_fx_late_ver01", &b, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let p2 = e.release(8, false).await.unwrap();
+    assert_eq!(
+        p2.indexes,
+        ["pages-base-20261001-1", "pages-delta-20261008-1"]
+    );
+    assert_eq!(
+        e.state
+            .run(&p1.index_version)
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .status,
+        RunStatus::Published
+    );
+    assert_eq!(
+        e.state.current_version().await.unwrap().as_deref(),
+        Some(p2.index_version.as_str())
+    );
+}
+
+/// Workers that die mid-batch never record a failure; the attempt cap still
+/// stops the batch being retried forever.
+#[tokio::test]
+async fn batches_abandoned_by_crashed_workers_fail_at_the_attempt_cap() {
+    let e = env().await;
+    let a = e.root.join("batch_fx_x_ver01.tar.gz");
+    write_archive(
+        &a,
+        &fixture_pages().iter().take(3).collect::<Vec<_>>(),
+        true,
+        true,
+    );
+    source::enqueue(&e.state, &[listed("batch_fx_x_ver01", &a, None)])
+        .await
+        .unwrap();
+    for _ in 0..usnm_ingest::worker::MAX_ATTEMPTS {
+        let w = e.worker("crashy");
+        let (mut b, _) = w.claim().await.unwrap().unwrap();
+        // Crash: the lease simply runs out.
+        let (_, etag) = e.state.batch(&b.batch).await.unwrap().unwrap();
+        b.lease.as_mut().unwrap().until = Utc::now() - chrono::Duration::seconds(1);
+        e.state.replace_batch(&b, &etag).await.unwrap().unwrap();
+    }
+    assert!(e.worker("w").claim().await.unwrap().is_none());
+    let (b, _) = e.state.batch("batch_fx_x").await.unwrap().unwrap();
+    assert_eq!(b.status, BatchStatus::Failed);
+    assert!(b.last_error.unwrap().contains("abandoned"));
+}

@@ -173,6 +173,27 @@ async fn release(
         synthetic,
         now: chrono::Utc::now(),
     };
+    // Held from before the writer node starts until after it stops, and
+    // released on every path.
+    r.lock().await?;
+    let result = release_locked(cli, &r, t).await;
+    let unlocked = r.unlock().await;
+    let result = result.and_then(|p| unlocked.map(|()| p));
+    match result? {
+        Some(p) => {
+            tracing::info!(version = %p.index_version, docs = p.docs, pages = p.pages, full = p.full, "released")
+        }
+        None => tracing::info!("nothing to release"),
+    }
+    Ok(())
+}
+
+/// Start the index target (and writer node), release, stop the node.
+async fn release_locked(
+    cli: &Stores,
+    r: &Release,
+    t: &IndexTarget,
+) -> anyhow::Result<Option<usnm_ingest::release::Published>> {
     let mut node = None;
     let mut sink: Box<dyn IndexSink> = match (&t.index_dir, &t.quickwit_url, &t.quickwit_bin) {
         (Some(dir), None, None) => Box::new(JsonlSink::new(dir)),
@@ -191,17 +212,11 @@ async fn release(
         }
         _ => bail!("choose one of --index-dir, --quickwit-url or --quickwit-bin"),
     };
-    let result = r.run(sink.as_mut()).await;
+    let result = r.run_held(sink.as_mut()).await;
     if let Some(n) = node {
         n.stop().await?;
     }
-    match result? {
-        Some(p) => {
-            tracing::info!(version = %p.index_version, docs = p.docs, pages = p.pages, full = p.full, "released")
-        }
-        None => tracing::info!("nothing to release"),
-    }
-    Ok(())
+    result
 }
 
 fn root(t: &IndexTarget) -> anyhow::Result<&str> {

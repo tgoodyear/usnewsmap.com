@@ -19,8 +19,9 @@ use anyhow::{bail, Context};
 use chrono::NaiveDate;
 use usnm_core::ids::PageKey;
 
-/// Larger `ocr.txt` files are treated as corrupt rather than read into memory.
-pub const MAX_PAGE_BYTES: u64 = 16 * 1024 * 1024;
+/// Larger `ocr.txt` files are treated as corrupt (real pages run to tens of
+/// KB). It also keeps every page's document under the index ingest limit.
+pub const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// One page's raw OCR text.
 #[derive(Debug)]

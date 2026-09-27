@@ -59,7 +59,7 @@ def page_text(rng, topics):
 
 def sort_key(title_ordinal, edition, seq):
     """Numeric same-day tiebreak: Quickwit 0.9 can't sort on text fields."""
-    return (title_ordinal << 24) | (edition << 16) | seq
+    return (title_ordinal << 32) | (edition << 16) | seq
 
 
 def main():
