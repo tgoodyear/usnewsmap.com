@@ -104,7 +104,7 @@ azd provision
 azd env get-value NAME_SERVERS      # set these four as the domain's name servers at the registrar
 ```
 
-The zone holds the apex (an alias to the Static Web App), `www` (CNAME to it), and `api` (CNAME to the API app, with the `asuid.api` TXT record Container Apps checks). **Before switching name servers, copy any records the domain still needs (MX, SPF/DKIM TXT, verification records) into the zone**: once delegated, only the zone's records resolve. Binding the names on the apps and issuing their managed certificates needs the delegation to be live, so that is a separate step.
+The zone holds the apex (an alias to the Static Web App, and CAA records allowing only DigiCert, the managed certificates' CA, with no wildcards), `www` (CNAME to it), and `api` (CNAME to the API app, with the `asuid.api` TXT record Container Apps checks). **Before switching name servers, copy any records the domain still needs (MX, SPF/DKIM TXT, verification records) into the zone**: once delegated, only the zone's records resolve. Binding the names on the apps and issuing their managed certificates needs the delegation to be live, so that is a separate step.
 
 ## Container registry
 

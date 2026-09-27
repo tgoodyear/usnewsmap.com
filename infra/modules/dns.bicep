@@ -1,7 +1,8 @@
 // Public DNS zone for the site's domain (08 §8.1). The registrar delegates to
 // the zone's name servers (the NAME_SERVERS output). Records:
 //
-// - apex: an alias to the Static Web App (an apex can't be a CNAME);
+// - apex: an alias to the Static Web App (an apex can't be a CNAME), and
+//   CAA records limiting certificate issuance (08 §8.9);
 // - www: CNAME to the Static Web App;
 // - api: CNAME to the API app, plus the `asuid.api` TXT record that
 //   Container Apps checks before it binds a custom domain.
@@ -16,11 +17,26 @@ param siteHostname string
 @description('The API app\'s FQDN; empty skips the api records.')
 param apiFqdn string
 param apiVerificationId string
+@description('CAs allowed to issue for the domain: the Static Web Apps and Container Apps managed certificates both come from DigiCert.')
+param caaIssuers array = ['digicert.com']
 
 resource zone 'Microsoft.Network/dnsZones@2018-05-01' = {
   name: zoneName
   location: 'global'
   tags: tags
+}
+
+// Only the managed-certificate CA may issue, and nobody may issue wildcards.
+resource caa 'Microsoft.Network/dnsZones/CAA@2018-05-01' = {
+  parent: zone
+  name: '@'
+  properties: {
+    TTL: 3600
+    caaRecords: concat(
+      map(caaIssuers, ca => { flags: 0, tag: 'issue', value: ca }),
+      [{ flags: 0, tag: 'issuewild', value: ';' }]
+    )
+  }
 }
 
 resource apex 'Microsoft.Network/dnsZones/A@2018-05-01' = {
