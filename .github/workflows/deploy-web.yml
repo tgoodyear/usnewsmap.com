@@ -48,20 +48,14 @@ jobs:
       group: deploy-web-${{ matrix.environment }}
       cancel-in-progress: false
     steps:
-      # A slower run for an older commit must not replace a newer site.
+      - uses: actions/checkout@v5
+      # Only the commit main points at deploys: a slower run for an older
+      # commit must not replace a newer site.
       - name: Is this still the head of main?
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
-          if [ "$head" = "$GITHUB_SHA" ]; then
-            echo "current=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::main is now at $head; not deploying $GITHUB_SHA"
-          fi
-      - if: steps.head.outputs.current == 'true'
-        uses: actions/checkout@v5
+        run: scripts/ci/head-of-main.sh
       - if: steps.head.outputs.current == 'true'
         uses: actions/setup-node@v5
         with:
@@ -70,16 +64,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Build
         if: steps.head.outputs.current == 'true'
-        working-directory: web
         env:
           VITE_API_BASE: ${{ vars.USNM_API_URL }}
-        run: |
-          if [ -z "$VITE_API_BASE" ]; then
-            echo "::error::USNM_API_URL is not set on this environment (run scripts/bootstrap.sh)"
-            exit 1
-          fi
-          npm ci
-          npm run build
+        run: scripts/ci/build-web.sh
       - if: steps.head.outputs.current == 'true'
         uses: azure/login@v3
         with:
@@ -92,10 +79,7 @@ jobs:
         env:
           SWA: ${{ vars.USNM_SWA_NAME }}
           RG: ${{ vars.USNM_RESOURCE_GROUP }}
-        run: |
-          token=$(az staticwebapp secrets list -n "$SWA" -g "$RG" --query properties.apiKey -o tsv)
-          echo "::add-mask::$token"
-          echo "token=$token" >> "$GITHUB_OUTPUT"
+        run: scripts/ci/swa-token.sh
       - if: steps.head.outputs.current == 'true'
         uses: Azure/static-web-apps-deploy@v1
         with:
