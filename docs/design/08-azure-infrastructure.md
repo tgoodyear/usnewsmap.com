@@ -176,9 +176,10 @@ The whole system can be stood up from this repository in **any** Azure subscript
    - whether the subscription's one Cosmos DB free-tier slot is still free;
 3. provisions (everything but the API, which has no image yet);
 4. creates the **GitHub Environment** of the same name, restricted to the `main` branch, writes that environment's variables, and adds it to the repository variable `USNM_DEPLOY_ENVIRONMENTS`;
-5. runs `ci` on `main`, which publishes the images into the new registry, and waits;
+5. runs `ci` on `main` (every time, so the registry holds the current `main`), which publishes the images, and waits for that run;
 6. switches to the registry (`USNM_USE_ACR=true`) and provisions again, which deploys the API;
-7. deploys the web app and checks the API's `/readyz` and the site.
+7. once the registrar delegates the domain to the zone, binds the apex and `www` to the Static Web App and `api` to the API with managed certificates (re-run it after delegating);
+8. deploys the web app and checks the API's `/readyz` and the site.
 
 Then, for a full corpus, start the backfill job and let the weekly ingest job publish (04 §4.4). A **new environment starts with no data**: the system of record is LoC's public data, and everything in Blob and Cosmos is derived from it by a deterministic pipeline. Rebuilding takes ~4.5 h of title sync (LoC's 20-requests/minute API limit) and ~22 h of curation with 8 workers, for about $15–20. Hand-curated state belongs in git, never only in an environment: the place-coordinate overrides (`catalog/overrides/places.json`) ship in the ingest image.
 
@@ -195,5 +196,9 @@ Then, for a full corpus, start the backfill job and let the weekly ingest job pu
 
 **Prerequisites in the target:** an account with **Owner** on the subscription (role assignments, policy definitions). No tenant-level objects are created (no app registrations; all identities are managed identities), so no Entra admin is needed. On GitHub: admin on the repository (environments and variables). A **fork** works the same way: bootstrap reads the fork's name and ids, and the federated credentials trust that repository only.
 
-**Moving production:** bootstrap the new subscription as `prod` (or a new name), let it rebuild the corpus, check it, then re-point the domain's name servers (or its zone records) at the new environment. The old environment keeps serving until then, and can be deleted with `azd down` afterwards.
+**Moving production** to another subscription (or tenant):
+1. Run `scripts/bootstrap.sh <env> --subscription NEW --domain usnewsmap.com --ingest`. For an existing local azd environment, add `--move`. Without it, bootstrap refuses to rebind an environment to a different subscription. With it, bootstrap resets the settings that describe the old subscription: the registry switch-over, the API certificate, and the Cosmos DB free-tier check. Use a new environment name if the old one should keep deploying from CI meanwhile: the GitHub Environment `<env>` points at whichever subscription bootstrap wired last.
+2. Let the new environment rebuild the corpus, and check it on its `*.azurestaticapps.net` and `*.azurecontainerapps.io` names.
+3. Delegate the domain to the new zone's name servers (`azd env get-value NAME_SERVERS`), then **re-run bootstrap**. Once it sees the delegation, it binds the apex, `www` and `api` to the new apps and issues their certificates. HTTPS on the custom names needs this step.
+4. The old environment keeps serving until the delegation changes; afterwards, delete it with `azd down`.
 

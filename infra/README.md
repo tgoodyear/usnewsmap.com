@@ -58,11 +58,12 @@ What it does:
 2. Creates the `azd` environment.
 3. Provisions everything except the API, which has no image yet.
 4. Creates the GitHub Environment `prod`, restricted to `main`, with its variables, and adds it to `USNM_DEPLOY_ENVIRONMENTS`.
-5. Runs `ci` on `main`, which publishes the images to the new private registry.
+5. Runs `ci` on `main` (every time, so the registry holds the current `main`) and waits for that run.
 6. Provisions again on the registry, which deploys the API.
-7. Deploys the web app and checks both.
+7. Once the registrar delegates `--domain` to the zone, binds the apex and `www` to the Static Web App and `api` to the API, with managed certificates (re-run it after delegating).
+8. Deploys the web app and checks both.
 
-Options: `--subscription`, `--location` (default `eastus2`), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and SWA token secret from before per-environment deployment).
+Options: `--subscription`, `--location` (default `eastus2`), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and SWA token secret from before per-environment deployment), `--move` (lets an existing environment move to another subscription, starting there with no data). Environment names are 1–16 lowercase letters and digits.
 
 Check the result:
 

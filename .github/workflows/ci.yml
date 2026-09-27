@@ -1,10 +1,17 @@
 name: ci
+# scripts/bootstrap.sh finds the run it dispatched by its correlation id.
+run-name: ${{ inputs.correlation != '' && format('ci ({0})', inputs.correlation) || github.event_name == 'pull_request' && github.event.pull_request.title || github.event_name == 'push' && github.event.head_commit.message || 'ci' }}
 
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      correlation:
+        description: "Identifies this run (set by scripts/bootstrap.sh)"
+        required: false
+        default: ""
 
 permissions:
   contents: read

@@ -1,4 +1,6 @@
 name: deploy web
+# scripts/bootstrap.sh finds the run it dispatched by its correlation id.
+run-name: ${{ inputs.correlation != '' && format('deploy web ({0})', inputs.correlation) || github.event_name == 'push' && github.event.head_commit.message || 'deploy web' }}
 
 # Builds the SPA and uploads it to each deployed environment's Static Web App
 # (08 §8.1). Environments are listed in the repository variable
@@ -19,6 +21,10 @@ on:
     inputs:
       environment:
         description: "Deploy only this environment (default: all listed)"
+        required: false
+        default: ""
+      correlation:
+        description: "Identifies this run (set by scripts/bootstrap.sh)"
         required: false
         default: ""
 

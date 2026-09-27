@@ -13,6 +13,8 @@
 #   --ingest              deploy the ingest and backfill jobs
 #   --cleanup-legacy      remove the repository-level variables and SWA token
 #                         secret used before per-environment deployment
+#   --move                allow an existing environment to move to another
+#                         subscription (it starts there with no data)
 #
 # Needs: az, azd, gh and curl, signed in (`az login --tenant …`,
 # `azd auth login --tenant-id …`, `gh auth login`), Owner on the subscription
@@ -23,7 +25,13 @@ usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [ $# -ge 1 ] || usage
 ENV_NAME=$1; shift
 case "$ENV_NAME" in -*|"") usage ;; esac
-SUBSCRIPTION="" LOCATION="eastus2" REPO="" DOMAIN="" EMAIL="" INGEST=false CLEANUP=false
+# It becomes part of resource names (the registry allows only lowercase
+# letters and digits) and of the CI identity's OIDC subject.
+if ! printf '%s' "$ENV_NAME" | grep -Eq '^[a-z][a-z0-9]{0,15}$'; then
+  echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter" >&2
+  exit 2
+fi
+SUBSCRIPTION="" LOCATION="eastus2" REPO="" DOMAIN="" EMAIL="" INGEST=false CLEANUP=false MOVE=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --subscription) SUBSCRIPTION=$2; shift 2 ;;
@@ -33,6 +41,7 @@ while [ $# -gt 0 ]; do
     --alert-email) EMAIL=$2; shift 2 ;;
     --ingest) INGEST=true; shift ;;
     --cleanup-legacy) CLEANUP=true; shift ;;
+    --move) MOVE=true; shift ;;
     *) usage ;;
   esac
 done
@@ -64,6 +73,20 @@ step "Configuring the azd environment"
 azd env select "$ENV_NAME" 2> /dev/null ||
   azd env new "$ENV_NAME" --subscription "$SUBSCRIPTION" --location "$LOCATION" --no-prompt
 aget() { azd env get-value "$1" 2> /dev/null || true; }
+# Settings that describe what exists in one subscription can't carry over to
+# another: moving starts again from an empty registry, with no certificate
+# and a fresh look at the Cosmos DB free tier.
+MOVING=false
+previous=$(aget AZURE_SUBSCRIPTION_ID)
+if [ -n "$previous" ] && [ "$previous" != "$SUBSCRIPTION" ]; then
+  [ "$MOVE" = true ] ||
+    die "environment $ENV_NAME is in subscription $previous; pass --move to rebuild it in $SUBSCRIPTION (it starts with no data)"
+  MOVING=true
+  azd env set USNM_USE_ACR false
+  azd env set USNM_API_IMAGE ""
+  azd env set USNM_API_CERT_ID ""
+  [ -z "$(aget USNM_BUDGET_START)" ] || azd env set USNM_BUDGET_START "$(date -u +%Y-%m-01)"
+fi
 azd env set AZURE_SUBSCRIPTION_ID "$SUBSCRIPTION"
 [ -n "$(aget AZURE_LOCATION)" ] || azd env set AZURE_LOCATION "$LOCATION"
 azd env set USNM_GITHUB_REPO "$REPO"
@@ -77,12 +100,13 @@ if [ -n "$EMAIL" ]; then
 fi
 [ "$INGEST" = true ] && azd env set USNM_INGEST_JOBS true
 # One Cosmos DB free-tier account per subscription: use it only if it's free.
-if [ -z "$(aget USNM_COSMOS_FREE_TIER)" ]; then
-  ours="cosmos-usnm-$(tr '[:upper:]' '[:lower:]' <<< "$ENV_NAME")-"
-  others=$(az cosmosdb list --query "[?enableFreeTier && !starts_with(name, '$ours')].name" -o tsv)
+if [ -z "$(aget USNM_COSMOS_FREE_TIER)" ] || [ "$MOVING" = true ]; then
+  others=$(az cosmosdb list --query "[?enableFreeTier && !starts_with(name, 'cosmos-usnm-$ENV_NAME-')].name" -o tsv)
   if [ -n "$others" ]; then
     echo "the subscription's free tier is taken by: $others"
     azd env set USNM_COSMOS_FREE_TIER false
+  else
+    azd env set USNM_COSMOS_FREE_TIER true
   fi
 fi
 USE_ACR=$(aget USNM_USE_ACR)
@@ -96,10 +120,20 @@ step "Wiring GitHub Environment '$ENV_NAME' in $REPO"
 gh api -X PUT "repos/$REPO/environments/$ENV_NAME" --input - > /dev/null << 'EOF'
 {"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
 EOF
-gh api "repos/$REPO/environments/$ENV_NAME/deployment-branch-policies" --jq '.branch_policies[].name' |
-  grep -qx main ||
-  gh api -X POST "repos/$REPO/environments/$ENV_NAME/deployment-branch-policies" \
-    -f name=main -f type=branch > /dev/null
+# Exactly one policy may exist: the branch main. Anything else (another
+# branch pattern, or a tag named main) would let other refs use the identity.
+policies="repos/$REPO/environments/$ENV_NAME/deployment-branch-policies"
+has_main=false
+while read -r id name type; do
+  [ -n "$id" ] || continue
+  if [ "$name" = main ] && [ "$type" = branch ] && [ "$has_main" = false ]; then
+    has_main=true
+  else
+    echo "removing deployment policy $type $name"
+    gh api -X DELETE "$policies/$id" > /dev/null
+  fi
+done <<< "$(gh api "$policies" --paginate --jq '.branch_policies[] | "\(.id) \(.name) \(.type // "branch")"')"
+[ "$has_main" = true ] || gh api -X POST "$policies" -f name=main -f type=branch > /dev/null
 evar() { gh variable set "$1" --env "$ENV_NAME" -R "$REPO" --body "$2"; }
 evar USNM_ACR_LOGIN_SERVER "$(aget ACR_LOGIN_SERVER)"
 evar USNM_CI_CLIENT_ID "$(aget CI_CLIENT_ID)"
@@ -117,29 +151,28 @@ if ! grep -q "\"$ENV_NAME\"" <<< "$envs"; then
 fi
 echo "deploy environments: $envs"
 
-# Start a workflow on main and wait for it to finish.
+# Start a workflow on main and wait for that run to finish. The run is found
+# by a unique correlation id, which the workflows put in their run name.
 run_and_wait() {
   local workflow=$1; shift
-  local since
-  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  gh workflow run "$workflow" -R "$REPO" --ref main "$@"
+  local correlation
+  correlation="bootstrap-$ENV_NAME-$(date -u +%Y%m%dT%H%M%S)-$$"
+  gh workflow run "$workflow" -R "$REPO" --ref main -f correlation="$correlation" "$@"
   local id=""
-  for _ in $(seq 30); do
+  for _ in $(seq 60); do
     sleep 5
-    id=$(gh run list -R "$REPO" --workflow "$workflow" --branch main --event workflow_dispatch \
-      --limit 5 --json databaseId,createdAt \
-      --jq "[.[] | select(.createdAt >= \"$since\")][0].databaseId // empty")
+    id=$(gh run list -R "$REPO" --workflow "$workflow" --event workflow_dispatch \
+      --limit 20 --json databaseId,displayTitle \
+      --jq "[.[] | select(.displayTitle | contains(\"$correlation\"))][0].databaseId // empty")
     [ -n "$id" ] && break
   done
   [ -n "$id" ] || die "the $workflow run did not start"
   gh run watch "$id" -R "$REPO" --exit-status > /dev/null || die "the $workflow run failed: gh run view $id -R $REPO --log-failed"
 }
 
-ACR=$(aget ACR_NAME)
-if ! az acr repository show-tags -n "$ACR" --repository usnewsmap-api -o tsv 2> /dev/null | grep -qx main; then
-  step "Publishing images to $ACR (ci on main)"
-  run_and_wait ci
-fi
+# Always: the registry must hold the current main, not just some earlier build.
+step "Publishing main's images to $(aget ACR_NAME) (ci on main)"
+run_and_wait ci
 
 if [ "$USE_ACR" != true ]; then
   step "Switching to the private registry"
