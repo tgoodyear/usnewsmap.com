@@ -5,17 +5,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{OriginalUri, State};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use serde::Serialize;
-use usnm_core::cube::{Cell, SparseCube, MAX_CELLS};
+use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{RawParams, SearchRequest};
 use usnm_core::time::{BucketSpec, BucketUnit};
-use usnm_search::plan;
+use usnm_search::plan::{self, Planned};
 
-use super::{cached, uses_fuzzy, with_timeout};
+use super::{cached, mount_prefix, uses_fuzzy, with_timeout};
 use crate::error::ApiError;
-use crate::refdata::RefData;
-use crate::{version, AppState};
+use crate::{version, AppState, Snapshot};
 
 #[derive(Serialize)]
 struct AggregateResponse {
@@ -27,7 +26,7 @@ struct AggregateResponse {
     series: Series,
     places: Places,
     cube: CubeOut,
-    /// True when the cube was coarsened to stay under the cell cap.
+    /// True when buckets were coarsened to keep the cube under the cell cap.
     coarsened: bool,
     timing_ms: Timing,
 }
@@ -92,32 +91,23 @@ pub async fn aggregate(
     if raw.get("format").is_some_and(|f| f != "json") {
         return Err(ApiError::Unsupported("format other than json".into()));
     }
-    let rd = state.refdata.load_full();
-    let req = SearchRequest::from_raw(&raw, rd.bounds())?;
-    if uses_fuzzy(&req.query) && !state.backend.capabilities().fuzzy {
+    let snap = state.snapshot.load_full();
+    let req = SearchRequest::from_raw(&raw, snap.refdata.bounds())?;
+    if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
             "OCR-tolerant (fuzzy) matching".into(),
         ));
     }
+    let serving = snap.refdata.version().to_owned();
     let canonical = req.canonical();
-    let pinning = match version::check(req.version.as_deref(), rd.version(), uri.path(), &canonical)
-    {
+    let pinning = match version::check(req.version.as_deref(), &serving, uri.path(), &canonical) {
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
-    let key = format!("{}|aggregate|{canonical}", rd.version());
-    let fut = compute(state.clone(), rd.clone(), req, canonical.clone());
-    cached(
-        &state,
-        key,
-        &pinning,
-        rd.version(),
-        uri.path(),
-        &canonical,
-        fut,
-    )
-    .await
-    .map(IntoResponse::into_response)
+    let key = format!("{serving}|aggregate|{canonical}");
+    let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
+    let fut = compute(state.clone(), snap, req, canonical.clone(), prefix);
+    cached(&state, key, &pinning, &serving, uri.path(), &canonical, fut).await
 }
 
 fn coarser(unit: BucketUnit) -> Option<BucketUnit> {
@@ -131,38 +121,48 @@ fn coarser(unit: BucketUnit) -> Option<BucketUnit> {
 
 async fn compute(
     state: Arc<AppState>,
-    rd: Arc<RefData>,
+    snap: Arc<Snapshot>,
     req: SearchRequest,
     canonical: String,
+    prefix: String,
 ) -> Result<AggregateResponse, ApiError> {
     let started = Instant::now();
+    let rd = &snap.refdata;
     let indexes = rd.index_set();
     let mut spec = req.bucket_spec();
     let mut coarsened = false;
-    let (agg, backend_ms) = loop {
-        let t = Instant::now();
-        let agg = with_timeout(
+    let t = Instant::now();
+    // The planner checks places-with-hits × buckets before issuing the cube,
+    // so an oversized cube is coarsened here instead of failing in the engine.
+    let agg = loop {
+        let planned = with_timeout(
             &state,
             plan::aggregate(
-                state.backend.as_ref(),
+                snap.backend.as_ref(),
                 &indexes,
                 &req.query,
                 &req.filters,
                 &spec,
+                state.config.max_cells,
             ),
         )
         .await?;
-        if agg.cells.len() <= MAX_CELLS {
-            break (agg, t.elapsed().as_millis());
-        }
-        match coarser(spec.unit) {
-            Some(unit) => {
-                spec = BucketSpec::new(unit, spec.from, spec.to);
-                coarsened = true;
-            }
-            None => break (agg, t.elapsed().as_millis()),
+        match planned {
+            Planned::Complete(agg) => break agg,
+            Planned::TooManyCells { upper_bound } => match coarser(spec.unit) {
+                Some(unit) => {
+                    spec = BucketSpec::new(unit, spec.from, spec.to);
+                    coarsened = true;
+                }
+                None => {
+                    return Err(ApiError::TooBroad(format!(
+                        "this search would produce about {upper_bound} map cells even by year"
+                    )))
+                }
+            },
         }
     };
+    let backend_ms = t.elapsed().as_millis();
 
     let mut place_ids: Vec<&str> = agg
         .summary
@@ -202,7 +202,8 @@ async fn compute(
         }
         s.append_pair("to", &spec.to.to_string());
         s.append_pair("v", rd.version());
-        format!("/v1/coverage?{}", s.finish())
+        // Same mount as this request (`/v1` or `/api/v1`), so the link stays on the API.
+        format!("{prefix}/coverage?{}", s.finish())
     });
 
     Ok(AggregateResponse {

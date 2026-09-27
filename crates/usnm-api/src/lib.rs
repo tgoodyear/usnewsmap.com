@@ -23,16 +23,31 @@ pub mod version;
 use config::Config;
 use refdata::RefData;
 
+/// One published version: its reference data and the backend that serves its
+/// index set. Swapped atomically so a request never mixes versions.
+pub struct Snapshot {
+    pub refdata: RefData,
+    pub backend: Arc<dyn SearchBackend>,
+}
+
+/// Builds the snapshot for whatever `current.json` names now.
+pub type Reloader = Arc<dyn Fn() -> Result<Snapshot, String> + Send + Sync>;
+
 pub struct AppState {
     pub config: Config,
-    pub backend: Arc<dyn SearchBackend>,
-    pub refdata: ArcSwap<RefData>,
+    pub snapshot: ArcSwap<Snapshot>,
+    /// `None` disables hot reload.
+    pub reloader: Option<Reloader>,
     /// Serialized responses keyed by `{index_version}|{endpoint}|{canonical}`.
     pub cache: Cache<String, Arc<Vec<u8>>>,
 }
 
 impl AppState {
     pub fn new(config: Config, backend: Arc<dyn SearchBackend>, refdata: RefData) -> Self {
+        Self::with_reloader(config, Snapshot { refdata, backend }, None)
+    }
+
+    pub fn with_reloader(config: Config, snapshot: Snapshot, reloader: Option<Reloader>) -> Self {
         let cache = Cache::builder()
             .max_capacity(config.cache_bytes)
             .weigher(|k: &String, v: &Arc<Vec<u8>>| {
@@ -42,8 +57,8 @@ impl AppState {
             .build();
         Self {
             config,
-            backend,
-            refdata: ArcSwap::from_pointee(refdata),
+            snapshot: ArcSwap::from_pointee(snapshot),
+            reloader,
             cache,
         }
     }
@@ -82,24 +97,69 @@ pub fn app(state: Arc<AppState>) -> Router {
         }))
 }
 
-/// Reload `current.json` periodically and swap in a newly published version.
+/// Build a snapshot for the in-memory backend: the reference data plus exactly
+/// the JSONL indexes that `current.json` names (`{data_dir}/indexes/{id}.jsonl`).
+pub fn memory_snapshot(data_dir: &std::path::Path) -> Result<Snapshot, String> {
+    use std::io::BufRead;
+    let refdata = RefData::load(data_dir)?;
+    let mut backend = usnm_search::memory::MemoryBackend::new();
+    for id in &refdata.current.indexes {
+        let path = data_dir.join("indexes").join(format!("{id}.jsonl"));
+        let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut docs = Vec::new();
+        for line in std::io::BufReader::new(file).lines() {
+            let line = line.map_err(|e| format!("{}: {e}", path.display()))?;
+            docs.push(
+                serde_json::from_str::<usnm_search::PageDoc>(&line)
+                    .map_err(|e| format!("{}: {e}", path.display()))?,
+            );
+        }
+        tracing::info!(index = %id, docs = docs.len(), "loaded memory index");
+        backend.add_index(id, docs);
+    }
+    Ok(Snapshot {
+        refdata,
+        backend: Arc::new(backend),
+    })
+}
+
+/// If `current.json` names a different version than the one serving, build
+/// the new snapshot and swap it in atomically. Returns whether it swapped.
+pub async fn reload_if_changed(state: &AppState) -> Result<bool, String> {
+    let Some(reloader) = state.reloader.clone() else {
+        return Ok(false);
+    };
+    let serving = state.snapshot.load().refdata.version().to_owned();
+    let dir = state.config.data_dir.clone();
+    let next = tokio::task::spawn_blocking(move || refdata::read_current(&dir))
+        .await
+        .map_err(|e| e.to_string())??;
+    if next.index_version == serving {
+        return Ok(false);
+    }
+    let snapshot = tokio::task::spawn_blocking(move || reloader())
+        .await
+        .map_err(|e| e.to_string())??;
+    tracing::info!(
+        version = snapshot.refdata.version(),
+        "publishing new index version"
+    );
+    state.snapshot.store(Arc::new(snapshot));
+    Ok(true)
+}
+
+/// Poll `current.json` every `refresh_interval` (no-op without a reloader).
 pub fn spawn_refresher(state: Arc<AppState>) {
+    if state.reloader.is_none() {
+        return;
+    }
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(state.config.refresh_interval);
         tick.tick().await;
         loop {
             tick.tick().await;
-            let dir = state.config.data_dir.clone();
-            match tokio::task::spawn_blocking(move || RefData::load(&dir)).await {
-                Ok(Ok(next)) if next.version() != state.refdata.load().version() => {
-                    tracing::info!(version = next.version(), "publishing new index version");
-                    state.refdata.store(Arc::new(next));
-                }
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, "reference data reload failed; keeping current version")
-                }
-                Err(e) => tracing::warn!(error = %e, "reference data reload task failed"),
+            if let Err(e) = reload_if_changed(&state).await {
+                tracing::warn!(error = %e, "reload failed; keeping current version");
             }
         }
     });

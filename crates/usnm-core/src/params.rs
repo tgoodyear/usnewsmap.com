@@ -106,6 +106,14 @@ impl RawParams {
         }
     }
 
+    /// Reject every key except `allowed` (for endpoints without search parameters).
+    pub fn reject_only(&self, allowed: &[&str]) -> Result<(), ParamError> {
+        match self.0.iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
+            Some((k, _)) => Err(ParamError::Unknown(k.clone())),
+            None => Ok(()),
+        }
+    }
+
     pub fn u8_in(&self, key: &str, max: u8) -> Result<Option<u8>, ParamError> {
         self.get(key)
             .map(|v| {

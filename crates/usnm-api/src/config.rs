@@ -21,6 +21,8 @@ pub struct Config {
     pub search_timeout: Duration,
     pub refresh_interval: Duration,
     pub cache_bytes: u64,
+    /// Cube cell budget; above it buckets are coarsened (ADR-0003).
+    pub max_cells: usize,
 }
 
 impl Config {
@@ -64,6 +66,7 @@ impl Config {
                 .unwrap_or(256)
                 * 1024
                 * 1024,
+            max_cells: usnm_core::cube::MAX_CELLS,
         })
     }
 }

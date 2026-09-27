@@ -39,15 +39,10 @@ pub async fn coverage(
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    if let Some(k) = ["q", "mode", "near", "fuzzy", "lccn", "lang", "front"]
-        .iter()
-        .find(|k| raw.get(k).is_some())
-    {
-        return Err(ApiError::Params(ParamError::Unknown((*k).to_owned())));
-    }
-    raw.reject_unknown(&[])?;
-    let rd = state.refdata.load_full();
-    let (lo, hi) = rd.bounds();
+    raw.reject_only(&["from", "to", "bucket", "state", "v"])?;
+    let snap = state.snapshot.load_full();
+    let serving = snap.refdata.version().to_owned();
+    let (lo, hi) = snap.refdata.bounds();
     let date = |k: &str, d: NaiveDate| {
         raw.get(k).map_or(Ok(d), |v| {
             NaiveDate::parse_from_str(v, "%Y-%m-%d").map_err(|_| bad(k, "must be YYYY-MM-DD"))
@@ -91,22 +86,22 @@ pub async fn coverage(
         canon.append_pair("to", &to.to_string());
         canon.finish()
     };
-    let pinning = match version::check(raw.get("v"), rd.version(), uri.path(), &canonical) {
+    let pinning = match version::check(raw.get("v"), &serving, uri.path(), &canonical) {
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
-    let key = format!("{}|coverage|{canonical}", rd.version());
-    let rd2 = rd.clone();
+    let key = format!("{serving}|coverage|{canonical}");
     let compute = async move {
+        let rd = &snap.refdata;
         let spec = BucketSpec::new(unit, from, to);
         let mut places = Vec::new();
         let mut cells = Vec::new();
-        for p in rd2
+        for p in rd
             .places
             .iter()
             .filter(|p| states.is_empty() || states.contains(&p.state))
         {
-            let series = rd2.place_baseline(&p.id, &spec);
+            let series = rd.place_baseline(&p.id, &spec);
             if series.iter().all(|&n| n == 0) {
                 continue;
             }
@@ -121,7 +116,7 @@ pub async fn coverage(
             }
         }
         Ok::<_, ApiError>(CoverageResponse {
-            index_version: rd2.version().to_owned(),
+            index_version: rd.version().to_owned(),
             bucket: unit,
             from: from.to_string(),
             to: to.to_string(),
@@ -134,7 +129,7 @@ pub async fn coverage(
         &state,
         key,
         &pinning,
-        rd.version(),
+        &serving,
         uri.path(),
         &canonical,
         compute,

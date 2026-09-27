@@ -120,14 +120,34 @@ fn collapse_whitespace(s: &str) -> String {
     out
 }
 
-/// Lowercase + ASCII-fold one token (`Ñoño` → `nono`, `ſ` → `s`).
+/// Lowercase + ASCII-fold one token (`Ñoño` → `nono`, `ſ` → `s`, `Æsop` → `aesop`).
+///
+/// Decomposable letters lose their diacritics via NFKD; letters with no
+/// decomposition (`æ œ ø ł ß đ ð þ ı`) are transliterated the way Lucene's
+/// ASCII folding filter does.
 pub fn fold(token: &str) -> String {
-    token
+    let mut out = String::with_capacity(token.len());
+    for c in token
         .nfkd()
         .filter(|c| !is_combining_mark(*c))
-        .map(|c| if c == 'ſ' { 's' } else { c })
         .flat_map(char::to_lowercase)
-        .collect()
+    {
+        match c {
+            'ſ' => out.push('s'),
+            'æ' => out.push_str("ae"),
+            'œ' => out.push_str("oe"),
+            'ø' => out.push('o'),
+            'ł' => out.push('l'),
+            'ß' => out.push_str("ss"),
+            'đ' | 'ð' => out.push('d'),
+            'þ' => out.push_str("th"),
+            'ı' => out.push('i'),
+            'ŋ' => out.push_str("ng"),
+            'ħ' => out.push('h'),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Split into folded index tokens, exactly as the `usnm_text` analyzer does.
@@ -177,6 +197,13 @@ mod tests {
             tokenize("Crucify mankind upon a CROSS of Gold! Café—ſo"),
             vec!["crucify", "mankind", "upon", "a", "cross", "of", "gold", "cafe", "so"]
         );
+        assert_eq!(
+            tokenize("Æsop Œuvre Søren Łódź Straße Þór Đakovo"),
+            vec!["aesop", "oeuvre", "soren", "lodz", "strasse", "thor", "dakovo"]
+        );
+        assert!(tokenize("Æsop Œuvre Søren Łódź Straße")
+            .iter()
+            .all(|t| t.is_ascii()));
         let long = "x".repeat(41);
         assert!(tokenize(&long).is_empty());
     }

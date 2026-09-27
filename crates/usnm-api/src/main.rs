@@ -1,13 +1,11 @@
-use std::io::BufRead;
 use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
 use usnm_api::config::{BackendKind, Config};
 use usnm_api::refdata::RefData;
-use usnm_api::{app, spawn_refresher, AppState};
-use usnm_search::memory::MemoryBackend;
+use usnm_api::{app, memory_snapshot, spawn_refresher, AppState, Reloader, Snapshot};
 use usnm_search::quickwit::QuickwitBackend;
-use usnm_search::{PageDoc, SearchBackend};
+use usnm_search::SearchBackend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,19 +17,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env()?;
-    let refdata = RefData::load(&config.data_dir)?;
-    let backend: Arc<dyn SearchBackend> = match &config.backend {
-        BackendKind::Memory => Arc::new(load_memory_backend(&config)?),
-        BackendKind::Quickwit(url) => Arc::new(QuickwitBackend::new(url, config.search_timeout)?),
+    let dir = config.data_dir.clone();
+    // Each published version gets a fresh snapshot. The memory backend reloads
+    // exactly the indexes the new version names; Quickwit is shared because
+    // the index set travels with the reference data.
+    let reloader: Reloader = match &config.backend {
+        BackendKind::Memory => Arc::new(move || memory_snapshot(&dir)),
+        BackendKind::Quickwit(url) => {
+            let backend: Arc<dyn SearchBackend> =
+                Arc::new(QuickwitBackend::new(url, config.search_timeout)?);
+            Arc::new(move || {
+                Ok(Snapshot {
+                    refdata: RefData::load(&dir)?,
+                    backend: backend.clone(),
+                })
+            })
+        }
     };
+    let snapshot = reloader()?;
     tracing::info!(
-        version = refdata.version(),
-        synthetic = refdata.current.synthetic,
+        version = snapshot.refdata.version(),
+        synthetic = snapshot.refdata.current.synthetic,
         backend = ?config.backend,
         "starting usnm-api"
     );
     let bind = config.bind.clone();
-    let state = Arc::new(AppState::new(config, backend, refdata));
+    let state = Arc::new(AppState::with_reloader(config, snapshot, Some(reloader)));
     spawn_refresher(state.clone());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "listening");
@@ -39,30 +50,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())
-}
-
-/// Load every `{data_dir}/indexes/{index_id}.jsonl` into the in-memory engine.
-fn load_memory_backend(config: &Config) -> Result<MemoryBackend, Box<dyn std::error::Error>> {
-    let mut backend = MemoryBackend::new();
-    let dir = config.data_dir.join("indexes");
-    for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_owned();
-        let docs = std::io::BufReader::new(std::fs::File::open(&path)?)
-            .lines()
-            .map(|l| Ok(serde_json::from_str::<PageDoc>(&l?)?))
-            .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-        tracing::info!(index = %id, docs = docs.len(), "loaded memory index");
-        backend.add_index(&id, docs);
-    }
-    Ok(backend)
 }
 
 async fn shutdown() {

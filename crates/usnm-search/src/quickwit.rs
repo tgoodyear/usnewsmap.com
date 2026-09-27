@@ -63,11 +63,9 @@ impl QuickwitBackend {
             .map_err(map_err)?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(SearchError::Backend(format!(
-                "quickwit returned {status}: {}",
-                truncate(&text, 300)
-            )));
+            // Never include the response body: Quickwit may echo the query, and
+            // query text must not reach logs (09 §9.4.2).
+            return Err(SearchError::Backend(format!("quickwit returned {status}")));
         }
         resp.json().await.map_err(map_err)
     }
@@ -79,10 +77,6 @@ fn map_err(e: reqwest::Error) -> SearchError {
     } else {
         SearchError::Backend(e.to_string())
     }
-}
-
-fn truncate(s: &str, n: usize) -> &str {
-    s.char_indices().nth(n).map_or(s, |(i, _)| &s[..i])
 }
 
 // ------------------------------------------------------------ translation
@@ -214,8 +208,9 @@ pub fn hits_request(
         "query": full_query(node, filters, extra)?,
         "max_hits": page.limit,
         "start_offset": page.offset,
-        // S-2: confirm ascending sort syntax for the pinned version.
-        "sort_by": "day",
+        // Date, then doc id as a stable tiebreak (doc_id is a fast field, 05 §5.5.1).
+        // S-2: confirm ascending multi-field sort syntax for the pinned version.
+        "sort_by": "day,doc_id",
         "snippet_fields": ["text"]
     }))
 }
@@ -487,6 +482,23 @@ mod tests {
             .ends_with("AND place_shard:IN [0 5]"));
         let all = cube_request(&q, &filters(), &spec, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
         assert!(!all["query"].as_str().unwrap().contains("place_shard"));
+    }
+
+    #[test]
+    fn hits_sort_by_date_then_doc_id() {
+        let page = HitsQuery {
+            place_id: Some("P00001".into()),
+            lccn: None,
+            offset: 50,
+            limit: 25,
+        };
+        let r = hits_request(&parse("gold").unwrap(), &filters(), &page).unwrap();
+        assert_eq!(r["sort_by"], "day,doc_id");
+        assert_eq!(r["start_offset"], 50);
+        assert!(r["query"]
+            .as_str()
+            .unwrap()
+            .ends_with("AND place_id:P00001"));
     }
 
     #[test]

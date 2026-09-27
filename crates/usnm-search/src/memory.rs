@@ -2,12 +2,12 @@
 //! tokenized text, so it doubles as the oracle for engine count checks
 //! (05 §5.8) and as the backend for local development on the fixture corpus.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use usnm_core::params::Filters;
-use usnm_core::query::{highlight_terms, Node, Term};
-use usnm_core::text::{fold, tokenize};
+use usnm_core::query::{Node, Term};
+use usnm_core::text::tokenize;
 use usnm_core::time::BucketSpec;
 
 use crate::{
@@ -150,7 +150,7 @@ impl SearchBackend for MemoryBackend {
             .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.lccn == l))
             .collect();
         docs.sort_by(|a, b| (a.day, &a.doc_id).cmp(&(b.day, &b.doc_id)));
-        let highlight: HashSet<String> = highlight_terms(query).into_iter().collect();
+        let highlight = positive_terms(query);
         Ok(HitsPage {
             total: docs.len() as u64,
             hits: docs
@@ -235,12 +235,35 @@ fn levenshtein_within(a: &str, b: &str, max: usize) -> bool {
     prev[b.len()] <= max
 }
 
+/// Positive terms of the query, with their prefix/fuzzy semantics; phrase
+/// words become exact terms. Used to highlight exactly what matched.
+fn positive_terms(node: &Node) -> Vec<Term> {
+    fn walk(node: &Node, out: &mut Vec<Term>) {
+        match node {
+            Node::Term(t) => out.push(t.clone()),
+            Node::Phrase { terms, .. } => out.extend(terms.iter().map(|t| Term {
+                text: t.clone(),
+                fuzzy: 0,
+                prefix: false,
+            })),
+            Node::And(c) | Node::Or(c) => c.iter().for_each(|n| walk(n, out)),
+            Node::Not(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
+}
+
 /// A ~25-word window around the first highlighted word, HTML-escaped with `<mark>`.
-fn snippet(text: &str, highlight: &HashSet<String>) -> Option<String> {
+fn snippet(text: &str, highlight: &[Term]) -> Option<String> {
     const WINDOW: usize = 12;
     let words: Vec<&str> = text.split_whitespace().collect();
-    let is_hit =
-        |w: &str| tokenize(w).iter().any(|t| highlight.contains(t)) || highlight.contains(&fold(w));
+    let is_hit = |w: &str| {
+        tokenize(w)
+            .iter()
+            .any(|tok| highlight.iter().any(|t| term_matches(t, tok)))
+    };
     let first = words.iter().position(|w| is_hit(w))?;
     let start = first.saturating_sub(WINDOW);
     let end = (first + WINDOW + 1).min(words.len());
@@ -287,9 +310,13 @@ mod tests {
 
     #[test]
     fn snippets_are_escaped_and_marked() {
-        let hl: HashSet<String> = ["gold".to_owned()].into();
+        let hl = positive_terms(&parse("gold").unwrap());
         let s = snippet("a <b> cross of Gold, & more", &hl).unwrap();
         assert_eq!(s, "a &lt;b&gt; cross of <mark>Gold,</mark> &amp; more");
+        // Prefix and fuzzy terms highlight what they matched; exclusions don't.
+        let hl = positive_terms(&parse("cruc* mankimd~1 -upon").unwrap());
+        let s = snippet("not crucify mankind upon it", &hl).unwrap();
+        assert_eq!(s, "not <mark>crucify</mark> <mark>mankind</mark> upon it");
     }
 }
 

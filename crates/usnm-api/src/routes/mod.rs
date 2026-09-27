@@ -65,6 +65,11 @@ pub(crate) async fn with_timeout<T>(
     }
 }
 
+/// The mount prefix of a request path, e.g. `/api/v1` for `/api/v1/aggregate`.
+pub(crate) fn mount_prefix<'a>(path: &'a str, endpoint: &str) -> &'a str {
+    path.strip_suffix(endpoint).unwrap_or("/v1")
+}
+
 pub(crate) fn uses_fuzzy(node: &usnm_core::query::Node) -> bool {
     use usnm_core::query::Node;
     match node {

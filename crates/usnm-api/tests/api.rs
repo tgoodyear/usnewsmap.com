@@ -12,7 +12,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 use usnm_api::config::{BackendKind, Config};
 use usnm_api::refdata::RefData;
-use usnm_api::{app, AppState};
+use usnm_api::{app, memory_snapshot, reload_if_changed, AppState, Reloader};
 use usnm_core::query::parse;
 use usnm_core::text::tokenize;
 use usnm_core::time::day_number;
@@ -40,7 +40,19 @@ fn config() -> Config {
         search_timeout: Duration::from_secs(10),
         refresh_interval: Duration::from_secs(600),
         cache_bytes: 16 * 1024 * 1024,
+        max_cells: usnm_core::cube::MAX_CELLS,
     }
+}
+
+fn state_with_cells(max_cells: usize) -> Arc<AppState> {
+    let mut backend = MemoryBackend::new();
+    for id in ["pages-base-fixture", "pages-delta-fixture-1"] {
+        backend.add_index(id, load_docs(id));
+    }
+    let refdata = RefData::load(&data_dir()).unwrap();
+    let mut cfg = config();
+    cfg.max_cells = max_cells;
+    Arc::new(AppState::new(cfg, Arc::new(backend), refdata))
 }
 
 fn state_with(indexes: Option<Vec<String>>) -> Arc<AppState> {
@@ -224,6 +236,8 @@ async fn problems_for_bad_requests() {
     assert_eq!(body["type"], "/errors/bad-parameter");
     let (status, _, _) = get(&s, "/v1/hits?q=gold").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = get(&s, "/v1/places?q=gold").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, _) = get(&s, "/v1/hits?q=gold&place=P99999").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -259,6 +273,27 @@ async fn hits_are_sorted_marked_linked_and_paginated() {
 }
 
 #[tokio::test]
+async fn hits_by_title_uses_lccn() {
+    let s = state_with(None);
+    let (status, _, body) = get(&s, "/v1/hits?q=gold&lccn=sn99000002&limit=3").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["title"]["lccn"], "sn99000002");
+    assert!(body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|i| i["lccn"] == "sn99000002"));
+    let (status, _, _) = get(&s, "/v1/hits?q=gold&lccn=sn99000001,sn99000002").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = get(&s, "/v1/hits?q=gold&lccn=sn99999999").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // With `place`, `lccn` is just a filter.
+    let (status, _, body) = get(&s, "/v1/hits?q=gold&place=P00001&lccn=sn99000002").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 0);
+}
+
+#[tokio::test]
 async fn coverage_matches_aggregate_baseline() {
     let s = state_with(None);
     let (_, _, agg) = get(
@@ -288,13 +323,115 @@ async fn front_filter_disables_inexact_baseline_and_api_alias_works() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["series"]["baseline"].is_null());
     assert!(body["cube"]["baseline_ref"].is_null());
+    // Links built on the /api/v1 mount stay on it.
+    let (_, _, body) = get(&s, "/api/v1/aggregate?q=gold").await;
+    let link = body["cube"]["baseline_ref"].as_str().unwrap().to_owned();
+    assert!(link.starts_with("/api/v1/coverage?"), "{link}");
+    let (status, _, _) = get(&s, &link).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
-async fn places_geojson() {
+async fn coarsens_before_querying_an_oversized_cube() {
+    // 6 places × 366 days and × 53 weeks exceed 240 cells; 6 × 12 months fit.
+    let s = state_with_cells(240);
+    let (status, _, body) = get(
+        &s,
+        "/v1/aggregate?q=gold&from=1896-01-01&to=1896-12-31&bucket=day",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["bucket"]["unit"], "month");
+    assert_eq!(body["coarsened"], true);
+    let cube_sum: u64 = body["cube"]["h"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(cube_sum, body["total"]["hits"].as_u64().unwrap());
+    // Even by year the cube would exceed the budget → 422, not a backend failure.
+    let tiny = state_with_cells(5);
+    let (status, _, body) = get(&tiny, "/v1/aggregate?q=gold&from=1896-01-01&to=1896-12-31").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["type"], "/errors/query-too-broad");
+}
+
+#[tokio::test]
+async fn places_geojson_is_version_pinned() {
     let s = state_with(None);
-    let (_, _, body) = get(&s, "/v1/places").await;
+    let (status, headers, _) = get(&s, "/v1/places?v=old").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        header_str(&headers, header::LOCATION),
+        "/v1/places?v=fixture-v1"
+    );
+    let (status, headers, _) = get(&s, "/v1/places?v=fixture-v1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_str(&headers, header::CACHE_CONTROL),
+        "public, max-age=86400"
+    );
+    let (_, headers, body) = get(&s, "/v1/places").await;
+    assert_eq!(
+        header_str(&headers, header::CONTENT_LOCATION),
+        "/v1/places?v=fixture-v1"
+    );
     assert_eq!(body["type"], "FeatureCollection");
     assert_eq!(body["features"].as_array().unwrap().len(), 6);
     assert_eq!(body["features"][0]["geometry"]["type"], "Point");
+}
+
+/// Copy the fixture data dir to a fresh temp dir the test can modify.
+fn temp_data_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("usnm-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for sub in ["indexes", "fixture-v1"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        for entry in std::fs::read_dir(data_dir().join(sub)).unwrap() {
+            let path = entry.unwrap().path();
+            std::fs::copy(&path, dir.join(sub).join(path.file_name().unwrap())).unwrap();
+        }
+    }
+    std::fs::copy(data_dir().join("current.json"), dir.join("current.json")).unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn hot_reload_swaps_reference_data_and_backend_together() {
+    let dir = temp_data_dir("reload");
+    let mut cfg = config();
+    cfg.data_dir = dir.clone();
+    let d = dir.clone();
+    let reloader: Reloader = Arc::new(move || memory_snapshot(&d));
+    let s = Arc::new(AppState::with_reloader(
+        cfg,
+        reloader().unwrap(),
+        Some(reloader),
+    ));
+    assert!(
+        !reload_if_changed(&s).await.unwrap(),
+        "unchanged version must not reload"
+    );
+
+    // Publish a new version whose index set adds a delta the old snapshot never loaded.
+    std::fs::copy(
+        dir.join("indexes/pages-delta-fixture-1.jsonl"),
+        dir.join("indexes/pages-delta-fixture-2.jsonl"),
+    )
+    .unwrap();
+    let mut current: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("current.json")).unwrap()).unwrap();
+    current["index_version"] = "fixture-v2".into();
+    current["indexes"] = serde_json::json!(["pages-base-fixture", "pages-delta-fixture-2"]);
+    std::fs::write(dir.join("current.json"), current.to_string()).unwrap();
+
+    assert!(reload_if_changed(&s).await.unwrap());
+    let (_, _, meta) = get(&s, "/v1/meta").await;
+    assert_eq!(meta["index_version"], "fixture-v2");
+    let (status, _, body) = get(&s, "/v1/aggregate?q=fever").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["index_version"], "fixture-v2");
+    assert!(body["total"]["hits"].as_u64().unwrap() > 0);
+    let _ = std::fs::remove_dir_all(&dir);
 }

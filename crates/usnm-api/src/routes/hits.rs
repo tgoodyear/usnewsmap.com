@@ -1,4 +1,5 @@
-//! `GET /v1/hits` (06 §6.3.4): pages for one place or title, by date, with snippets.
+//! `GET /v1/hits` (06 §6.3.4): pages for one place or one title (`lccn`),
+//! sorted by date, with snippets.
 
 use std::sync::Arc;
 
@@ -69,35 +70,42 @@ struct Links {
     viewer: Option<String>,
 }
 
+/// Select hits by `place=`, or by title with a single `lccn=` (the same
+/// parameter that filters the other endpoints). With `place`, `lccn` stays a filter.
 pub async fn hits(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_unknown(&["place", "title", "cursor", "limit"])?;
-    let rd = state.refdata.load_full();
+    raw.reject_unknown(&["place", "cursor", "limit"])?;
+    let snap = state.snapshot.load_full();
+    let rd = &snap.refdata;
     let req = SearchRequest::from_raw(&raw, rd.bounds())?;
-    if uses_fuzzy(&req.query) && !state.backend.capabilities().fuzzy {
+    if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
             "OCR-tolerant (fuzzy) matching".into(),
         ));
     }
     let place = raw.get("place").map(str::to_owned);
-    let title = raw.get("title").map(str::to_owned);
-    match (&place, &title) {
-        (Some(_), Some(_)) | (None, None) => {
+    let title = match (&place, req.filters.lccns.as_slice()) {
+        (Some(p), _) => {
+            if rd.place(p).is_none() {
+                return Err(ApiError::NotFound(format!("unknown place `{p}`")));
+            }
+            None
+        }
+        (None, [lccn]) => {
+            if !rd.titles.contains_key(lccn) {
+                return Err(ApiError::NotFound(format!("unknown title `{lccn}`")));
+            }
+            Some(lccn.clone())
+        }
+        (None, _) => {
             return Err(ApiError::BadRequest(
-                "give exactly one of `place` or `title`".into(),
+                "give `place`, or a single `lccn` to list one title's pages".into(),
             ))
         }
-        (Some(p), None) if rd.place(p).is_none() => {
-            return Err(ApiError::NotFound(format!("unknown place `{p}`")))
-        }
-        (None, Some(t)) if !rd.titles.contains_key(t) => {
-            return Err(ApiError::NotFound(format!("unknown title `{t}`")))
-        }
-        _ => {}
-    }
+    };
     let limit = match raw.get("limit") {
         None => MAX_LIMIT,
         Some(l) => l
@@ -126,20 +134,18 @@ pub async fn hits(
         if let Some(p) = &place {
             canon.append_pair("place", p);
         }
-        if let Some(t) = &title {
-            canon.append_pair("title", t);
-        }
         canon.finish()
     };
-    let pinning = match version::check(req.version.as_deref(), rd.version(), uri.path(), &canonical)
-    {
+    let serving = rd.version().to_owned();
+    let pinning = match version::check(req.version.as_deref(), &serving, uri.path(), &canonical) {
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
-    let key = format!("{}|hits|{canonical}", rd.version());
+    let key = format!("{serving}|hits|{canonical}");
     let st = state.clone();
-    let rd2 = rd.clone();
+    let snap2 = snap.clone();
     let compute = async move {
+        let rd = &snap2.refdata;
         let page = HitsQuery {
             place_id: place.clone(),
             lccn: title.clone(),
@@ -148,8 +154,9 @@ pub async fn hits(
         };
         let result = with_timeout(
             &st,
-            st.backend
-                .hits(&rd2.index_set(), &req.query, &req.filters, &page),
+            snap2
+                .backend
+                .hits(&rd.index_set(), &req.query, &req.filters, &page),
         )
         .await?;
         let highlight = highlight_terms(&req.query).join(" ");
@@ -158,11 +165,11 @@ pub async fn hits(
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&Cursor { o: next }).unwrap_or_default())
         });
         Ok::<_, ApiError>(HitsResponse {
-            index_version: rd2.version().to_owned(),
-            synthetic: rd2.current.synthetic,
+            index_version: rd.version().to_owned(),
+            synthetic: rd.current.synthetic,
             place: place
                 .as_deref()
-                .and_then(|p| rd2.place(p))
+                .and_then(|p| rd.place(p))
                 .map(|p| PlaceOut {
                     id: p.id.clone(),
                     name: p.name.clone(),
@@ -170,7 +177,7 @@ pub async fn hits(
                 }),
             title: title
                 .as_deref()
-                .and_then(|t| rd2.titles.get(t))
+                .and_then(|t| rd.titles.get(t))
                 .map(|t| TitleOut {
                     lccn: t.lccn.clone(),
                     name: t.name.clone(),
@@ -181,7 +188,7 @@ pub async fn hits(
                 .into_iter()
                 .map(|h| Item {
                     date: date_from_day(h.day).to_string(),
-                    title: rd2.titles.get(&h.lccn).map(|t| t.name.clone()),
+                    title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),
                     links: Links {
                         viewer: PageKey::from_doc_id(&h.doc_id)
                             .ok()
@@ -203,7 +210,7 @@ pub async fn hits(
         &state,
         key,
         &pinning,
-        rd.version(),
+        &serving,
         uri.path(),
         &canonical,
         compute,

@@ -12,6 +12,7 @@ pub enum ApiError {
     Unsupported(String),
     BadRequest(String),
     NotFound(String),
+    TooBroad(String),
     Timeout,
     Backend(String),
 }
@@ -78,6 +79,14 @@ impl IntoResponse for ApiError {
                 "Not supported",
                 format!("{what} is not available yet"),
                 Some("Try the search without that option."),
+                None,
+            ),
+            ApiError::TooBroad(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "/errors/query-too-broad",
+                "Query too broad",
+                msg,
+                Some("Narrow the date range, add filters, or choose a coarser time bucket."),
                 None,
             ),
             ApiError::NotFound(msg) => (

@@ -152,6 +152,7 @@ pub fn parse(input: &str) -> Result<Node, QueryError> {
         tokens,
         pos: 0,
         depth: 0,
+        input_len: input.chars().count(),
     };
     let node = p.or_expr()?;
     if let Some(t) = p.peek() {
@@ -336,6 +337,8 @@ struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
     depth: usize,
+    /// Input length in characters, for "expected more input" errors.
+    input_len: usize,
 }
 
 impl Parser {
@@ -344,7 +347,7 @@ impl Parser {
     }
 
     fn end_pos(&self) -> usize {
-        self.tokens.last().map_or(0, |t| t.pos + 1)
+        self.input_len
     }
 
     fn or_expr(&mut self) -> Result<Node, QueryError> {
@@ -706,7 +709,9 @@ mod tests {
             .message
             .contains("OR has 5"));
         assert!(err("gold OR -silver").message.contains("only an exclusion"));
-        assert!(err("gold AND").message.contains("expected"));
+        let trailing = err("gold AND");
+        assert!(trailing.message.contains("expected"));
+        assert_eq!(trailing.position, Some(8));
         assert!(err("a1 b1 c1 d1 e1 f1 g1 h1 i1 j1 k1 l1 m1")
             .message
             .contains("limit is 12"));

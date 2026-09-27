@@ -65,7 +65,7 @@ pub struct RefData {
 
 impl RefData {
     pub fn load(dir: &Path) -> Result<Self, String> {
-        let current: Current = read_json(&dir.join("current.json"))?;
+        let current = read_current(dir)?;
         let snap = dir.join(&current.reference);
         let places: Vec<Place> = read_json(&snap.join("places.json"))?;
         let titles: Vec<Title> = read_json(&snap.join("titles.json"))?;
@@ -131,6 +131,11 @@ impl RefData {
         }
         out
     }
+}
+
+/// Read only the version pointer.
+pub fn read_current(dir: &Path) -> Result<Current, String> {
+    read_json(&dir.join("current.json"))
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
