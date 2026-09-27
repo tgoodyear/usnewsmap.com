@@ -47,15 +47,14 @@ flowchart LR
     JOBS[[Container Apps Jobs<br/>weekly: discover · batch · stats<br/>incremental index · prewarm]]
   end
   SPOT[[ACI Spot container groups · preview<br/>backfill + full re-index only<br/>created on demand, deleted after]]
-  subgraph Storage["Azure Blob Storage (flat namespace, LRS, versioning)"]
+  subgraph Storage["Azure Blob Storage · flat namespace · versioning · private endpoint only (steady state)"]
     CUR[(curated/<br/>pages Parquet · Cool)]
     REF[(reference/<br/>titles · places · baselines · coverage)]
     IDX[(qw-index/<br/>Quickwit splits + metastore · Hot)]
     CACHE[(cache/<br/>persistent response cache)]
-    Q[[Storage Queues<br/>ingest work items]]
   end
   TILES[(Blob: PMTiles basemap)]
-  COS[(Cosmos DB · free tier<br/>document state: titles · batches<br/>issues · index_runs)]
+  COS[(Cosmos DB · free tier · private endpoint<br/>document state + work queue: titles · batches<br/>issues · index_runs)]
   AI[Application Insights<br/>+ Log Analytics]
 
   SWA -. SPA calls GET /v1/* .-> API
@@ -64,11 +63,10 @@ flowchart LR
   API -->|startup load| REF
   API <--> CACHE
   QW --> IDX
-  JOBS --> CUR & REF & Q
+  JOBS --> CUR & REF
   JOBS <--> COS
   SPOT --> CUR & IDX
   SPOT <--> COS
-  Q --> SPOT
   JOBS -->|single writer: embedded indexer + janitor| IDX
   SPOT -->|full rebuild: new index| IDX
   APP & JOBS --> AI
@@ -86,10 +84,10 @@ The **growth profile** adds Azure Front Door in front of both origins (edge cach
 | **Search engine** (`quickwit` sidecar) | **Quickwit** (Rust, Apache-2.0); Azure AI Search in the growth profile | **Read-only** serving: searcher role with the file-backed metastore opened in polling mode. No indexer or janitor role runs here | With its replica; splits on Blob |
 | **Index writer** | Quickwit indexer + janitor embedded in the `index` job (Container Apps Job weekly; ACI Spot for full rebuilds) | The **only** process that writes the metastore, guarded by a Cosmos `ops` lease. Full rebuilds write a brand-new index, so they never touch the serving one | One at a time |
 | **Reference data** | Parquet/JSON artifacts on Blob | Titles (LCCN → name, place, dates, language), places (lat/lon, county, state), baselines (pages per place per day), coverage | Loaded into API memory (tens of MB) |
-| **Weekly ingest** | Rust CLI in Container Apps Jobs; Storage Queues | Discover new LoC batches; curate; build reference data; incremental index; pre-warm | Queue length |
+| **Weekly ingest** | Rust CLI in Container Apps Jobs (inside the VNet); batches claimed from Cosmos with leases | Discover new LoC batches; curate; build reference data; incremental index; pre-warm | Fixed parallelism |
 | **Backfill / re-index** | Same Rust image on **ACI Spot container groups** (preview) | Initial download and curation of ~3,000 batches; full index builds | Launcher creates N groups |
 | **Data lake** | Azure Blob Storage (flat namespace, versioning + soft delete) | System of record for the corpus and all derived artifacts | Managed |
-| **Document state** | Cosmos DB for NoSQL, free tier | Per-title, per-batch, per-issue and per-index-run status; work leases; change feed driving incremental indexing. Not on the API request path | Free tier (1,000 RU/s) |
+| **Document state + work queue** | Cosmos DB for NoSQL, free tier, private endpoint | Per-title, per-batch, per-issue and per-index-run status; batch claiming via leases (replaces a Storage Queue); change feed driving incremental indexing. Not on the API request path | Free tier (1,000 RU/s) |
 | **Observability** | App Insights via the managed OpenTelemetry agent; Log Analytics (free tier with daily cap) | Traces, metrics, logs, availability tests, alerts | Managed |
 
 ## 3.4 Key runtime flows
@@ -128,18 +126,15 @@ sequenceDiagram
   autonumber
   participant CRON as Scheduled job: ingest-discover
   participant LOC as LoC Datasets / loc.gov API
-  participant Q as Storage Queue
   participant W as ingest-batch workers (Jobs / ACI Spot)
   participant L as Data lake (Blob)
   participant C as Cosmos DB (state)
   participant IX as stats + index job (single writer)
   participant SE as Search engine
   CRON->>LOC: list batches (+ versions) and OCR bulk files
-  CRON->>C: upsert batch state (discovered / queued)
-  CRON->>Q: enqueue new/changed batches
-  W->>Q: dequeue batch
+  CRON->>C: upsert batch state (discovered → queued)
+  W->>C: claim next queued batch (conditional patch: lease + ETag)
   W->>LOC: download bulk OCR (rate-limited, polite UA)
-  W->>C: claim batch (conditional patch: lease + ETag)
   W->>L: stream archive (not retained) → write curated/…/attempt=…/part.parquet
   W->>C: commit: patch batch (curated_path, status=curated) + upsert issues
   IX->>C: take writer lease · read batches change feed (newly curated)
@@ -165,7 +160,8 @@ sequenceDiagram
 | Unit of retrieval | **Page** at launch (matches LoC URLs and the legacy); article level later (American Stories) | [04](04-data-sources-and-ingestion.md) |
 | Geography | Place = title's place of publication (point), resolved from LoC metadata and GNIS; state and county from the same source | [04](04-data-sources-and-ingestion.md) |
 | Cache invalidation | `index_version` is included in every ETag and cache key (browser, in-process, Blob `cache/{index_version}/`); a new index version means new URLs and a new cache prefix | [06](06-api-design.md) |
-| Identity | Managed identities everywhere; no connection strings in app config | [08](08-azure-infrastructure.md) |
+| Identity | Managed identities everywhere; keys disabled by policy; no connection strings in app config | [08](08-azure-infrastructure.md) |
+| Private networking | VNet-integrated Container Apps env; private endpoints for Blob and Cosmos; public access disabled except during a guarded Spot-backfill window | [0008](adr/0008-private-networking.md) |
 
 ## 3.6 Repository layout (proposed for `usnewsmap.com`)
 

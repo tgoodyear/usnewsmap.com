@@ -74,12 +74,12 @@ Curated rows hold only **immutable page facts**. Title-derived attributes (`plac
 
 ## 4.4 Pipeline
 
-All stages are subcommands of one Rust binary (`usnm-ingest`), packaged as one container image. **Weekly incremental** work runs as **Azure Container Apps Jobs**. The **initial backfill and full re-indexes** run the same image on **ACI Spot container groups** (preview) created by a launcher (see [08 §8.4](08-azure-infrastructure.md#84-compute-sizing-notes)). Work is split into **one queue message per batch version** (about 3,000 batches), so it parallelizes naturally and retries are idempotent.
+All stages are subcommands of one Rust binary (`usnm-ingest`), packaged as one container image. **Weekly incremental** work runs as **Azure Container Apps Jobs**. The **initial backfill and full re-indexes** run the same image on **ACI Spot container groups** (preview) created by a launcher (see [08 §8.4](08-azure-infrastructure.md#84-compute-sizing-notes)). Work is split into **one Cosmos `batches` item per batch version** (about 3,000 batches). Workers claim items with lease patches, so work parallelizes naturally and retries are idempotent. Cosmos is the work queue; there is no Storage Queue.
 
 ```mermaid
 flowchart LR
-  D[discover<br/>scheduled weekly] -->|new/changed batch versions| Q[[queue: batches]]
-  Q --> B[batch worker ×N<br/>KEDA queue scaler]
+  D[discover<br/>scheduled weekly] -->|status=queued| Q[(Cosmos batches)]
+  Q -->|lease claim| B[batch worker ×N<br/>Jobs or ACI Spot]
   B -. streamed, not retained .-> RAW[(LoC bulk archive)]
   B --> CUR[(curated/pages)]
   B --> MAN[(Cosmos DB: document state)]
@@ -92,14 +92,14 @@ flowchart LR
 
 | Stage | Trigger | Does | Idempotency |
 |-------|---------|------|-------------|
-| `discover` | Cron (weekly) + manual | Lists batches and versions from the Datasets portal; upserts `batches` items in Cosmos; enqueues work | Enqueue only if the Cosmos status ≠ curated for that version |
-| `batch` | Queue | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; writes curated Parquet (~256 MB row groups); updates the manifest | Claims the batch with a conditional Cosmos patch (lease + ETag); writes to a **new attempt path** (never overwriting); commits by patching the Cosmos batch item's `curated_path` to that attempt, together with sha256, pages and issue items. Uncommitted attempts are garbage-collected after 7 days |
+| `discover` | Cron (weekly) + manual | Lists batches and versions from the Datasets portal; upserts `batches` items in Cosmos and marks new or changed versions `queued` | Only marks `queued` if the status ≠ curated for that version |
+| `batch` | A `queued` batch is available to claim | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; writes curated Parquet (~256 MB row groups); updates the manifest | Claims the batch with a conditional Cosmos patch (lease + ETag); writes to a **new attempt path** (never overwriting); commits by patching the Cosmos batch item's `curated_path` to that attempt, together with sha256, pages and issue items. Uncommitted attempts are garbage-collected after 7 days |
 | `titles-sync` | Cron (weekly) | Pulls title records from the loc.gov API; snapshots to `raw/`; builds `reference/titles` | Snapshot by date |
 | `geocode` | When titles change | Resolves place of publication → GNIS feature (county-aware), else county centroid, else state centroid; applies `overrides/places.csv`; writes `reference/places` with a `precision` flag | Deterministic |
 | `stats` | After batches are curated | Aggregates baselines (pages per place/day and per title/month) and coverage (state/year) from curated Parquet joined with the titles snapshot, using DataFusion or Polars. Writes a **new** `reference/{index_version}/` snapshot (never overwrites) | Full recompute (cheap: one scan of the ids and dates columns) |
 | `index` | After stats, or manual | Takes the Cosmos `ops/quickwit-writer` lease (the single metastore writer). Streams curated rows with `text_status = ok` changed since the last `index_version`, joined with the titles snapshot for `place_id`/`state`/`language`. A full rebuild writes a new index. Publishes by writing `current.json` last, naming the index and its reference snapshot | Deterministic `doc_id` (the page key) makes upserts and deletes exact; delete-then-append by batch on Quickwit |
 
-**Throughput plan for the initial backfill.** 23M pages at a conservative 2,000 pages/s per indexer is about 3.2 hours of pure indexing per indexer. In practice LoC download politeness dominates (days, not hours), which is why the curated lake matters: **after the first backfill we never re-download to re-index.** If the mirror is validated, the backfill can pull from it instead. On **ACI Spot**, 8 workers × 2 vCPU for ~4 days cost about $20–25. Evictions only delay the work, because each queue message (one batch) is idempotent and reappears after its visibility timeout.
+**Throughput plan for the initial backfill.** 23M pages at a conservative 2,000 pages/s per indexer is about 3.2 hours of pure indexing per indexer. In practice LoC download politeness dominates (days, not hours), which is why the curated lake matters: **after the first backfill we never re-download to re-index.** If the mirror is validated, the backfill can pull from it instead. On **ACI Spot**, 8 workers × 2 vCPU for ~4 days cost about $20–25. Evictions only delay the work, because each batch is idempotent and becomes claimable again when the evicted worker's lease expires. The data services accept public (Entra-only) connections only during this guarded backfill window ([08 §8.3](08-azure-infrastructure.md#83-networking)).
 
 ## 4.5 Text normalization (applied at curation time)
 

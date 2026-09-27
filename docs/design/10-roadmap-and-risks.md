@@ -60,7 +60,8 @@ gantt
 | R-6 | Quickwit project cadence slows after the acquisition | Low–Med | Med | Apache-2.0; pin versions; Tantivy maintained independently; backend abstraction | Eng |
 | R-7 | Abuse or bot traffic causes cost spikes or slowness | Med | Med | Replica cap (bounds cost); API rate limits; caches; budget alerts; add Front Door (growth profile) or a free external CDN if abuse persists | Eng |
 | R-12 | **ACI Spot is a preview** (no SLA, 3 regions, may change or be withdrawn) | Med | Low | Only offline jobs use it; the same image runs on regular ACI or on a Batch Spot pool; the work is idempotent and resumable | Eng |
-| R-13 | **Lean searcher too slow** for high-frequency terms | Med | Med | Blob cache + pre-warm; relaxed SLO for that class; the 2 vCPU / 4 GiB lever (+$15–30) | Eng |
+| R-13 | **Lean searcher too slow** for high-frequency terms | Med | Med | Blob cache + pre-warm; relaxed SLO for that class; the 2 vCPU / 4 GiB lever (+$15–30; exceeds $80 together with private networking) | Eng |
+| R-14 | **Public-access window left open** after a failed backfill | Low | Med | Hourly in-VNet `network-guard` job closes it; alert on any `publicNetworkAccess` change; access still requires Entra tokens (keys disabled by policy) | Eng |
 | R-8 | OCR quality misleads users (false negatives) | High | Med | OCR-tolerant mode; "pages containing" wording; improved NDNP-Open-OCR re-ingestion; methodology page | Product |
 | R-9 | Geographic misattribution (titles that moved; county-level fallbacks) | Med | Low | Precision flags; date-ranged places; overrides reviewed in PRs | Eng |
 | R-10 | Rust maintainer pool is thin | Low–Med | Med | Small, well-tested API; OpenAPI contract; documented rewrite path ([ADR-0004](adr/0004-rust-api.md)) | Owner |
@@ -69,7 +70,7 @@ gantt
 ## 10.4 Open questions for the owner
 
 1. **Funding and sponsor.** Is there an institution (UGA Libraries / eHistory, GTRI, a state newspaper project, LoC Labs) willing to own the subscription? This decides Option A vs B and the handover story.
-2. **Speed vs budget.** At the $80 ceiling, Quickwit on a 1–2 vCPU sidecar is the only search option; managed AI Search (~$2–6k/mo) is out of reach. Are slower uncached searches for very common words (5–15 s) acceptable, or should the searcher start at 2 vCPU / 4 GiB (typical total ~$65–75)?
+2. **Speed vs budget.** At the $80 ceiling, Quickwit on a 1–2 vCPU sidecar is the only search option; managed AI Search (~$2–6k/mo) is out of reach. Are slower uncached searches for very common words (5–15 s) acceptable, or should the searcher start at 2 vCPU / 4 GiB? With private networking (~$17/mo, [ADR-0008](adr/0008-private-networking.md)) the 2 vCPU option puts a typical month at ~$82–97, over $80. The choices are: raise the ceiling to ~$100; keep private networking and the 1 vCPU searcher (~$67); or trade private endpoints for search speed.
 3. **Branding and credits.** Keep the "US News Map" name and credit the original GTRI and eHistory team and Prof. Saunt? Contact them for endorsement and redirect permissions?
 4. **Domain.** Confirm control of `usnewsmap.com` (the registrar account), and whether `usnewsmap.net` (used for legacy Solr hosts) is still held.
 5. **Legacy repo.** Archive `tgoodyear/usnewsmap` with a README pointing to the new project, after revoking the exposed keys.

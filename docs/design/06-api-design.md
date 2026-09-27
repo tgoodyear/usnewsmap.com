@@ -28,7 +28,7 @@
 
 **Yes, use Rust** for the API and the ingest CLI ([ADR-0004](adr/0004-rust-api.md)). The gaps in the Azure Rust SDK don't matter here:
 
-- **Blob / Queues / Identity:** GA crates (`azure_identity`, `azure_storage_blob`, `azure_storage_queue`).
+- **Blob / Identity:** GA crates (`azure_identity`, `azure_storage_blob`). The app reaches Blob Storage through a private endpoint using its managed identity.
 - **AI Search** (if chosen): a thin REST client (~300 lines) over `reqwest`, with a bearer token from `azure_identity` (scope `https://search.azure.com/.default`). The REST API is versioned and stable.
 - **Quickwit:** its REST/ES-compatible API over `reqwest`, with shared serde types.
 - **Telemetry:** OpenTelemetry OTLP → **Container Apps managed OpenTelemetry agent** → Application Insights. No Azure-specific Rust exporter needed.

@@ -15,10 +15,10 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 ## 9.2 Observability
 
 - **Traces:** OpenTelemetry from the SPA (App Insights JS) → API → search backend. The trace id is propagated with `traceparent`. Spans: `parse`, `cache`, `backend.aggregate`, `postprocess`, `encode`.
-- **Metrics:** request rate, error rate and latency per endpoint; cache hit ratio (moka and Blob); backend latency; searcher CPU/memory/split-cache hits; ingest pages/s; queue depth; batches pending; index doc count by version.
+- **Metrics:** request rate, error rate and latency per endpoint; cache hit ratio (moka and Blob); backend latency; searcher CPU/memory/split-cache hits; ingest pages/s; batches queued/claimed/failed (Cosmos); public-access window state; index doc count by version.
 - **Logs:** structured JSON (`tracing` → OTLP). **No query text is logged at info level**. Canonical query hashes are logged instead; query text goes only into the k-anonymized daily aggregate used for pre-warming.
 - **Dashboards:** an Azure Workbook "USNM Overview" with golden signals, cost to date, ingest status, and the top canonical queries (k ≥ 5).
-- **Alerts (Action Group → email + optional Teams/Slack webhook):** SLO burn rate (fast 2%/1 h, slow 5%/6 h); `/readyz` failing from 2 of 3 regions; ingest job failures ≥ 3 in 24 h; queue age > 48 h; budget at 80% forecast; App Insights daily cap reached.
+- **Alerts (Action Group → email + optional Teams/Slack webhook):** SLO burn rate (fast 2%/1 h, slow 5%/6 h); `/readyz` failing from 2 of 3 regions; ingest job failures ≥ 3 in 24 h; oldest `queued` batch > 48 h; **`publicNetworkAccess` changed on `stusnmdata`/`cosmos-usnm`, or enabled without an open window**; budget at 80% forecast; App Insights daily cap reached.
 
 ## 9.3 Runbooks (kept in `ops/runbooks/`)
 
@@ -28,6 +28,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | **Rollback index** | Point `current.json` back to the previous `index_version` (kept 7 days) |
 | **Rollback app** | Container Apps: shift traffic to the previous revision |
 | **Search engine down** | The API serves cached results. An uncached request returns 503 with a friendly message and the SPA shows a banner. Restart the revision; if the index is corrupt, roll back the index version |
+| **Public access left open** | The `network-guard` job closes it automatically within an hour. Check the Activity Log for who or what opened it, and confirm a matching `ops/public-access-window` item |
 | **Cost spike** | Check the request mix in App Insights (bot?); tighten the API token bucket; confirm `maxReplicas: 2`; confirm the Log Analytics daily cap; check for orphaned ACI Spot groups left by a failed backfill |
 | **LoC source change** | If the discover job fails its schema check, pause ingestion (the site keeps serving), then update the parser |
 | **Maintainer handover** | Transfer the subscription, repo, domain and DNS; rotate the OIDC federation; update the budget contacts |
@@ -42,7 +43,8 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | **Injection** | Query-language injection into the engine (the legacy Solr risk) | AST-only translation; no raw syntax pass-through; fuzzing |
 | **XSS** | Snippets containing OCR'd markup; title metadata | Server-side escaping; only `<mark>` allowed; strict **CSP** set in `staticwebapp.config.json` global headers: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'` (MapLibre sets inline styles); `connect-src 'self' https://api.usnewsmap.com https://stusnmtiles.blob.core.windows.net https://*.in.applicationinsights.azure.com https://js.monitor.azure.com` (API, PMTiles range requests, telemetry); `worker-src 'self' blob:` (MapLibre workers); `img-src 'self' data: blob: https://tile.loc.gov https://www.loc.gov`; `frame-ancestors *` only on the embed route. Playwright tests assert that there are no CSP violations. React escapes by default |
 | **Supply chain** | Crates, npm packages, container images | `cargo-deny`, `cargo-audit`, Dependabot, CodeQL, pinned image digests, SBOM, signed images (Notation or cosign) |
-| **Secret leakage** | Keys in the repo (happened in the legacy repo) | Managed identities; GitHub secret scanning + **push protection**; no keys needed at runtime |
+| **Secret leakage** | Keys in the repo (happened in the legacy repo) | Managed identities; account keys and Cosmos keys **disabled and policy-locked**; GitHub secret scanning + **push protection**; no keys exist at runtime |
+| **Data-plane exposure** | Direct internet access to storage or Cosmos | Private endpoints with `publicNetworkAccess: Disabled` in steady state; Entra-only auth even during the guarded backfill window; the guard job and alerts on any change |
 | **Tampering with data** | Poisoned bulk files or mirrors | Checksum verification against LoC manifests; mirrors used only after verification; source checksums recorded in the manifests; blob versioning on `curated/` |
 | **Elevation** | CI credentials | OIDC federated credentials scoped to the environment and branch; no long-lived secrets; least-privilege RBAC |
 
@@ -82,13 +84,14 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Egress | SPA via SWA; tiles and API responses via Azure egress (first 100 GB free) | $0 | $0 | $5 |
 | Log Analytics / App Insights | Daily cap keeps it within 5 GB/month free | $0 | $0 | $3 |
 | Cosmos DB (document state) | Free tier: 1,000 RU/s + 25 GB (serverless ~$1–3 if the free tier is taken) | $0 | $0 | $3 |
+| **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
 | Container registry | GitHub Container Registry (public images) | $0 | $0 | $0 |
-| **Total** | | **~$30** | **~$50** | **~$90** |
+| **Total** | | **~$46** | **~$67** | **~$109** |
 
-"High" is a press-spike month billed at the upper idle rates. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (forecast) trigger the cost-spike runbook well before that.
+"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The typical month stays under $80 with ~$13 of headroom. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $60, $70 and $78 (forecast) trigger the cost-spike runbook well before that.
 
-**The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month and still fits under $80 in a typical month.
+**The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$82–97, over the $80 target** now that private networking costs ~$17. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
 
 ### One-time backfill (ACI Spot containers, preview)
 
@@ -111,7 +114,7 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 
 ### Cost controls
 
-- Budget alerts at $40/$60/$75 (actual and forecast)
+- Budget alerts at $60/$70/$78 (actual and forecast)
 - `maxReplicas: 2` on the only always-on app
 - Log Analytics daily cap
 - Curated data kept in Cool storage; raw archives not retained

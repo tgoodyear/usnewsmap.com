@@ -24,7 +24,7 @@ The owner set a target of **under $80/month**. The first design (Front Door, a s
    - no Key Vault until a secret exists;
    - the Container Apps free monthly grant covers the jobs.
 6. **Offline compute on Spot:**
-   - the initial backfill and full re-indexes run as **ACI Spot container groups** (preview, East US 2), launched in parallel and pulling work from a Storage Queue;
+   - the initial backfill and full re-indexes run as **ACI Spot container groups** (preview, East US 2), launched in parallel and claiming batches from Cosmos with leases;
    - the weekly incremental ingest stays on Container Apps Jobs, inside the free grant;
    - Azure Batch with Spot nodes that scale to zero is the documented fallback.
 7. **Region: East US 2.** ACI Spot is available there, and so are the higher-capacity AI Search partitions for the growth profile.
@@ -42,6 +42,6 @@ The owner set a target of **under $80/month**. The first design (Front Door, a s
 
 ## Consequences
 
-- Typical cost is **about $30–60 per month** (see [09 §9.5](../09-operations-security-cost.md#95-cost-model-monthly-usd-list-prices-confirm-with-the-azure-pricing-calculator)).
+- Typical cost is **about $67 per month** after [ADR-0008](0008-private-networking.md) added private networking (~$50 without it) (see [09 §9.5](../09-operations-security-cost.md#95-cost-model-monthly-usd-list-prices-confirm-with-the-azure-pricing-calculator)).
 - Azure AI Search, Elastic Cloud and Front Door are outside this budget. They move to the **growth profile**, enabled by configuration once someone funds them.
 - ACI Spot is a preview service with no SLA. Backfills are resumable and idempotent, so an eviction only delays the job.
