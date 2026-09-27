@@ -261,6 +261,9 @@ impl QuickwitNode {
             .args(["run", "--config"])
             .arg(&config_path)
             .env("QW_DISABLE_TELEMETRY", "1")
+            // AZURE_CLIENT_ID selects the pipeline's user-assigned identity;
+            // Quickwit's credential chain uses the system-assigned one (08 §8.2).
+            .env_remove("AZURE_CLIENT_ID")
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log)

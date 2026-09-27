@@ -27,6 +27,18 @@ param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
 @allowed(['fixtures', 'quickwit'])
 param searchBackend string = 'fixtures'
 
+@description('Create the ingest and backfill jobs. Needs the public usnewsmap-ingest image (08 §8.6).')
+param ingestJobs bool = false
+
+@description('Ingest job image (public GHCR image; no registry resource).')
+param ingestImage string = 'ghcr.io/tgoodyear/usnewsmap-ingest:main'
+
+@description('Weekly ingest schedule, UTC cron (e.g. "17 3 * * 1"). Empty: run the job manually.')
+param ingestCron string = ''
+
+@description('Parallel curation workers in the backfill job.')
+param backfillWorkers int = 8
+
 @description('Cosmos DB free tier (one per subscription). False makes the account serverless.')
 param cosmosFreeTier bool = true
 
@@ -50,6 +62,8 @@ var tags = {
 }
 var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
+// The site's own *.azurestaticapps.net origin, until the custom domain is live.
+var siteOrigins = union(allowedOrigins, ['https://${site.outputs.defaultHostname}'])
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: 'rg-usnm-${env}'
@@ -116,7 +130,7 @@ module tiles 'modules/tiles.bicep' = {
     // Exempt from the "data services private" audit: public map data only.
     tags: union(tags, { 'usnm-public': 'true' })
     name: 'stusnmt${suffix}'
-    allowedOrigins: allowedOrigins
+    allowedOrigins: siteOrigins
   }
 }
 
@@ -183,7 +197,7 @@ module api 'modules/containerapp.bicep' = {
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
     storageAccountName: storage.outputs.name
-    allowedOrigins: allowedOrigins
+    allowedOrigins: siteOrigins
     minReplicas: apiMinReplicas
     searchBackend: searchBackend
   }
@@ -196,6 +210,26 @@ module site 'modules/staticwebapp.bicep' = {
     location: location
     tags: tags
     name: 'swa-usnm-${env}'
+  }
+}
+
+module ingest 'modules/ingestjobs.bicep' = if (ingestJobs) {
+  scope: rg
+  name: 'ingest-jobs'
+  dependsOn: [rbac, privateEndpoints]
+  params: {
+    location: location
+    tags: tags
+    environmentId: containerEnv.outputs.id
+    image: ingestImage
+    ingestIdentityId: identities.outputs.ingestId
+    ingestClientId: identities.outputs.ingestClientId
+    storageAccountName: storage.outputs.name
+    storageBlobEndpoint: storage.outputs.blobEndpoint
+    cosmosEndpoint: cosmos.outputs.endpoint
+    jobNameSuffix: env
+    cron: ingestCron
+    workers: backfillWorkers
   }
 }
 
@@ -247,4 +281,6 @@ output SITE_URL string = 'https://${site.outputs.defaultHostname}'
 output TILES_URL string = tiles.outputs.tilesUrl
 output STORAGE_ACCOUNT string = storage.outputs.name
 output COSMOS_ENDPOINT string = cosmos.outputs.endpoint
+output INGEST_JOB string = ingestJobs ? ingest!.outputs.ingestJobName : ''
+output BACKFILL_JOB string = ingestJobs ? ingest!.outputs.backfillJobName : ''
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString

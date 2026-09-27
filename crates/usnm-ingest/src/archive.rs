@@ -85,10 +85,18 @@ fn decompress<'a>(r: impl Read + 'a) -> anyhow::Result<Box<dyn Read + 'a>> {
 /// keys are an error: a batch lists each page once.
 pub fn read_pages(
     path: &Path,
-    mut on_page: impl FnMut(RawPage) -> anyhow::Result<()>,
+    on_page: impl FnMut(RawPage) -> anyhow::Result<()>,
 ) -> anyhow::Result<ArchiveStats> {
     let file = std::fs::File::open(path).with_context(|| path.display().to_string())?;
-    let mut archive = tar::Archive::new(decompress(file)?);
+    read_pages_from(file, on_page)
+}
+
+/// [`read_pages`] from any reader, e.g. a download being streamed.
+pub fn read_pages_from(
+    input: impl Read,
+    mut on_page: impl FnMut(RawPage) -> anyhow::Result<()>,
+) -> anyhow::Result<ArchiveStats> {
+    let mut archive = tar::Archive::new(decompress(input)?);
     let mut stats = ArchiveStats::default();
     let mut seen = HashSet::new();
     for entry in archive.entries().context("reading archive")? {

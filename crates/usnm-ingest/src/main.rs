@@ -37,7 +37,7 @@ struct Stores {
     /// Reference store (catalog, snapshots, current.json): a Blob container URL or a directory.
     #[arg(long, env = "USNM_REFERENCE_URL")]
     reference: String,
-    /// Scratch space for downloads and the Quickwit writer.
+    /// Scratch space for the Quickwit writer node.
     #[arg(long, env = "USNM_WORK_DIR", default_value_os_t = std::env::temp_dir().join("usnm-ingest"))]
     work_dir: PathBuf,
 }
@@ -79,6 +79,11 @@ enum Command {
     Curate {
         #[arg(long)]
         max_batches: Option<usize>,
+        /// Enqueue from `--list` first (safe to run in many workers at once).
+        #[arg(long)]
+        enqueue: bool,
+        #[arg(long, default_value = source::LOC_DATASETS)]
+        list: String,
     },
     /// Build a new index and reference snapshot from curated batches, then publish.
     Release {
@@ -151,7 +156,6 @@ async fn curate(cli: &Stores, state: &State, max: Option<usize>) -> anyhow::Resu
         curated: usnm_store::open(&cli.curated)?,
         owner: owner_id(),
         lease: chrono::Duration::hours(2),
-        work_dir: cli.work_dir.join("downloads"),
     };
     let n = worker.run(max).await?;
     tracing::info!(curated = n, "curation finished");
@@ -239,7 +243,16 @@ async fn main() -> anyhow::Result<()> {
     let state = state(&cli.stores)?;
     match &cli.command {
         Command::Enqueue { list, batches } => enqueue(&state, list, batches).await,
-        Command::Curate { max_batches } => curate(&cli.stores, &state, *max_batches).await,
+        Command::Curate {
+            max_batches,
+            enqueue: first,
+            list,
+        } => {
+            if *first {
+                enqueue(&state, list, &[]).await?;
+            }
+            curate(&cli.stores, &state, *max_batches).await
+        }
         Command::Release {
             full,
             synthetic,

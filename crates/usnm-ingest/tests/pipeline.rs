@@ -170,7 +170,6 @@ impl Env {
             curated: self.curated.clone(),
             owner: owner.into(),
             lease: chrono::Duration::hours(2),
-            work_dir: self.root.join("work"),
         }
     }
 

@@ -16,7 +16,8 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, plus Cosmos Built-in Data Contributor on `usnm` |
 | `containerapps-env` | VNet-integrated, workload-profiles environment that uses only the Consumption profile (no management fee) |
 | `containerapp` | The API (`ca-usnm-{env}`): 0.25 vCPU / 0.5 GiB, external ingress, health probes, and 0–1 to 2 replicas on an HTTP scaler. With `searchBackend: quickwit`, also a read-only Quickwit 0.9.1 sidecar (1 vCPU / 2 GiB, localhost only) and a system-assigned identity with Blob Data **Reader** on `qw-index` only |
-| `staticwebapp` | SWA Free for the site |
+| `staticwebapp` | SWA Free for the site. Content is uploaded by the `deploy web` workflow (below) |
+| `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
 | `monitoring` | Log Analytics (30-day retention, ~150 MB/day cap) and Application Insights. An action group is created when alert emails are set |
 | `budget`, `alerts` | $80 monthly budget (alerts at $40, $60, $75, plus an $80 forecast alert; needs alert emails and `USNM_BUDGET_START`) and an alert on control-plane writes to the data accounts (needs alert emails) |
 | `policy-*` | Custom policies assigned to both resource groups. They deny IaaS compute, deny storage shared keys, deny Cosmos local auth, and audit public network access on the data accounts |
@@ -36,7 +37,7 @@ Switch only after the ingest jobs have published indexes and a `current.json`. U
 
 The following come in later slices:
 
-- **Ingest jobs, backfill launcher and `network-guard`:** with the ingest pipeline. Its launcher identity and the custom "public access toggle" role come with it.
+- **`titles-sync` and `geocode`**, which write the catalog the ingest job needs.
 - **Custom domains and DNS** (`usnewsmap.com`, `api.usnewsmap.com`): see §8.8. Managed certificates need the DNS records in place first.
 
 ## Deploy
@@ -75,6 +76,38 @@ To roll out a specific image, run `azd env set USNM_API_IMAGE ghcr.io/<owner>/us
 | `alertEmails` | `USNM_ALERT_EMAILS` | empty (comma-separated) |
 | `budgetStartDate` | `USNM_BUDGET_START` | empty. The first day of a month; the budget is created only with alert emails and this set. Azure can't change a budget's start date, so keep it fixed |
 | `deployPolicies` | — | `true` (needs Resource Policy Contributor on the subscription) |
+
+## Web app
+
+The `deploy web` workflow (`.github/workflows/deploy-web.yml`) builds `web/` and uploads it to the Static Web App on every push to `main` that touches `web/`, and on demand. It needs one secret and one variable on the GitHub repository:
+
+```sh
+gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN --body "$(az staticwebapp secrets list \
+  -n swa-usnm-$(azd env get-value AZURE_ENV_NAME) -g "$(azd env get-value AZURE_RESOURCE_GROUP)" \
+  --query properties.apiKey -o tsv)"
+gh variable set USNM_API_URL --body "$(azd env get-value API_URL)"
+gh workflow run "deploy web"
+```
+
+The API allows the site's `*.azurestaticapps.net` origin (and `allowedOrigins`) for CORS.
+
+## Ingest jobs
+
+1. Make the GHCR package `usnewsmap-ingest` public (CI publishes it from `main`), as for the API image.
+2. Deploy the jobs: `azd env set USNM_INGEST_JOBS true`, then `azd provision`. Optionally set a weekly schedule with `azd env set USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 8).
+3. Put the catalog in `reference/catalog/titles.json` and `places.json` (from `titles-sync` and `geocode`, once they exist).
+4. Backfill, then publish the first version:
+   ```sh
+   RG=$(azd env get-value AZURE_RESOURCE_GROUP)
+   # Queue every batch from LoC's listing and curate it with 8 workers (~22 h).
+   az containerapp job start -n "$(azd env get-value BACKFILL_JOB)" -g "$RG"
+   # When that has finished: curate any leftovers, build the base index, publish.
+   az containerapp job start -n "$(azd env get-value INGEST_JOB)" -g "$RG"
+   ```
+   Watch with `az containerapp job execution list -n <job> -g "$RG" -o table` and the job logs in Log Analytics.
+5. Switch the API to the published indexes: `azd env set USNM_SEARCH_BACKEND quickwit`, then `azd provision`.
+
+The storage and Cosmos accounts stay private throughout: the jobs run inside the VNet.
 
 ## Checks
 
