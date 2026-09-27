@@ -261,6 +261,7 @@ module deployer 'modules/deployer.bicep' = {
   name: 'deployer'
   params: {
     principalId: registry.outputs.ciPrincipalId
+    appIdentityName: identities.outputs.appName
   }
 }
 

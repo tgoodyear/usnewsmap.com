@@ -9,10 +9,15 @@
 //   also checks join and assign rights on those.
 //
 // The group holds only this environment's resources. The role can't touch
-// data (storage, Cosmos), keys, networking or role assignments.
+// data (storage, Cosmos), keys, networking or role assignments. Assigning
+// identities is granted on the API's own identity only: rights on the whole
+// group would let CI attach the ingest identity, and its data access, to the
+// app it controls.
 
 @description('The CI identity.')
 param principalId string
+@description('The API app\'s user-assigned identity, the only one CI may assign.')
+param appIdentityName string
 
 // The name predates the Container Apps rights; it's kept so existing
 // environments update the role in place.
@@ -34,9 +39,6 @@ resource role 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
           'Microsoft.App/managedEnvironments/read'
           'Microsoft.App/managedEnvironments/join/action'
           'Microsoft.App/locations/*/read'
-          // The app's user-assigned identity comes back in every update.
-          'Microsoft.ManagedIdentity/userAssignedIdentities/read'
-          'Microsoft.ManagedIdentity/userAssignedIdentities/assign/action'
           // The site's deployment token.
           'Microsoft.Web/staticSites/read'
           'Microsoft.Web/staticSites/listSecrets/action'
@@ -54,5 +56,23 @@ resource assignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalType: 'ServicePrincipal'
     // Custom roles are addressed at subscription level wherever they're defined.
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', role.name)
+  }
+}
+
+// The app's identity comes back in every update: Managed Identity Operator
+// (read and assign) on that identity alone.
+var identityOperator = 'f1a07417-d97a-45cb-824c-7a7467783830'
+
+resource appIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: appIdentityName
+}
+
+resource assignIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: appIdentity
+  name: guid(appIdentity.id, principalId, identityOperator)
+  properties: {
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', identityOperator)
   }
 }

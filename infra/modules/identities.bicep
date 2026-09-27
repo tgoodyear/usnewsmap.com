@@ -19,6 +19,7 @@ resource ingest 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = 
 }
 
 output appId string = app.id
+output appName string = app.name
 output appClientId string = app.properties.clientId
 output appPrincipalId string = app.properties.principalId
 output ingestId string = ingest.id
