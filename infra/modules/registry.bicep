@@ -12,7 +12,7 @@ param location string
 param tags object
 param name string
 param ciIdentityName string
-@description('GitHub repository allowed to push, as owner/name.')
+@description('GitHub repository allowed to push, as it appears in the OIDC subject claim: `owner@ownerId/name@repoId` (GitHub\'s immutable-ID format, which this repository uses), or `owner/name` for repositories on the older format.')
 param githubRepo string
 param pullPrincipalIds array
 

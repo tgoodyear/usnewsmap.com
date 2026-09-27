@@ -33,8 +33,8 @@ param useAcr bool = false
 @description('Image tag CI pushed to the registry (main or a commit sha).')
 param imageTag string = 'main'
 
-@description('GitHub repository whose main branch may push images, as owner/name.')
-param githubRepo string = 'tgoodyear/usnewsmap.com'
+@description('GitHub repository whose main branch may push images, as it appears in the OIDC subject claim (`owner@ownerId/name@repoId`; the IDs are in the AADSTS700213 error if they change).')
+param githubRepo string = 'tgoodyear@116683/usnewsmap.com@1389862972'
 
 @description('Create the ingest and backfill jobs (needs useAcr: the ingest image is only in the private registry).')
 param ingestJobs bool = false
