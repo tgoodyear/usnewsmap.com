@@ -3,6 +3,7 @@
 //
 // - apex: an alias to the Static Web App (an apex can't be a CNAME), and
 //   CAA records limiting certificate issuance (08 §8.9);
+// - no-mail records: SPF `-all`, DMARC reject, empty DKIM keys;
 // - www: CNAME to the Static Web App;
 // - api: CNAME to the API app, plus the `asuid.api` TXT record that
 //   Container Apps checks before it binds a custom domain.
@@ -36,6 +37,36 @@ resource caa 'Microsoft.Network/dnsZones/CAA@2018-05-01' = {
       map(caaIssuers, ca => { flags: 0, tag: 'issue', value: ca }),
       [{ flags: 0, tag: 'issuewild', value: ';' }]
     )
+  }
+}
+
+// The domain sends no mail: SPF allows no senders, DMARC rejects anything
+// that claims it, and every DKIM selector has an empty (revoked) key. These
+// carry over the records the domain had before moving to Azure DNS.
+resource spf 'Microsoft.Network/dnsZones/TXT@2018-05-01' = {
+  parent: zone
+  name: '@'
+  properties: {
+    TTL: 3600
+    TXTRecords: [{ value: ['v=spf1 -all'] }]
+  }
+}
+
+resource dmarc 'Microsoft.Network/dnsZones/TXT@2018-05-01' = {
+  parent: zone
+  name: '_dmarc'
+  properties: {
+    TTL: 3600
+    TXTRecords: [{ value: ['v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s;'] }]
+  }
+}
+
+resource dkim 'Microsoft.Network/dnsZones/TXT@2018-05-01' = {
+  parent: zone
+  name: '*._domainkey'
+  properties: {
+    TTL: 3600
+    TXTRecords: [{ value: ['v=DKIM1; p='] }]
   }
 }
 
