@@ -36,8 +36,6 @@ param registryServer string = ''
 param customDomain string = ''
 @description('The managed certificate bound to customDomain. scripts/bootstrap.sh issues it once DNS is delegated; until then the hostname is not declared. Declaring it here keeps `azd provision` from dropping the binding.')
 param customDomainCertificateId string = ''
-@description('Principal allowed to roll out new API images (the CI identity); empty for none.')
-param deployerPrincipalId string = ''
 
 var quickwit = searchBackend == 'quickwit'
 
@@ -199,21 +197,6 @@ resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01
     principalId: app.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
-  }
-}
-
-// CI rolls a green main build onto this app (`az containerapp update
-// --image`). Contributor scoped to this one app: it can't touch any other
-// resource, and assigning identities also needs rights on them, which CI lacks.
-var contributor = 'b24988ac-6180-42a3-ab7e-976ab8b6e2d0'
-
-resource deployer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deployerPrincipalId)) {
-  scope: app
-  name: guid(app.id, deployerPrincipalId, contributor)
-  properties: {
-    principalId: deployerPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributor)
   }
 }
 

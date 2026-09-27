@@ -233,8 +233,6 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
       ? '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
       : 'quickwit/quickwit:v0.9.1@${quickwitDigest}'
     registryServer: useAcr ? registry.outputs.loginServer : ''
-    // CI rolls out new images only once they come from the registry.
-    deployerPrincipalId: useAcr ? registry.outputs.ciPrincipalId : ''
     customDomain: empty(dnsZoneName) ? '' : 'api.${dnsZoneName}'
     customDomainCertificateId: apiCertificateId
     identityId: identities.outputs.appId
@@ -254,7 +252,15 @@ module site 'modules/staticwebapp.bicep' = {
     location: location
     tags: tags
     name: 'swa-usnm-${env}'
-    deployerPrincipalId: registry.outputs.ciPrincipalId
+  }
+}
+
+// What CI may do here: roll out API images, read the site's deployment token.
+module deployer 'modules/deployer.bicep' = {
+  scope: rg
+  name: 'deployer'
+  params: {
+    principalId: registry.outputs.ciPrincipalId
   }
 }
 
