@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,7 +9,8 @@ use usnm_ingest::docs::{DocStore, FileDocs};
 use usnm_ingest::release::Release;
 use usnm_ingest::sink::{IndexSink, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::source::{self, ListedBatch};
-use usnm_ingest::state::State;
+use usnm_ingest::state::{BatchStatus, State};
+use usnm_ingest::titles;
 use usnm_ingest::worker::Worker;
 use usnm_ingest::{cosmos::CosmosDocs, owner_id};
 use usnm_store::credential;
@@ -96,6 +98,24 @@ enum Command {
         #[command(flatten)]
         target: IndexTarget,
     },
+    /// Fetch LoC's records for titles with pages, then rebuild the catalog (`geocode`).
+    TitlesSync {
+        /// Titles to fetch: those named in this batch list (LoC's listing
+        /// names them), plus those in curated batches.
+        #[arg(long, default_value = source::LOC_DATASETS)]
+        list: String,
+        /// Only these LCCNs instead.
+        #[arg(long, value_delimiter = ',')]
+        lccns: Vec<String>,
+        /// Re-fetch records that are already cached.
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long, default_value = titles::LOC_ITEMS)]
+        items: String,
+    },
+    /// Rebuild `catalog/titles.json` and `places.json` from the cached records
+    /// and `overrides/places.json` (no network).
+    Geocode,
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
         /// As for `enqueue`: LoC's listing unless another list is given.
@@ -132,7 +152,7 @@ async fn read_list(list: &str) -> anyhow::Result<Vec<ListedBatch>> {
     source::parse_list(&std::fs::read(dest.path())?)
 }
 
-async fn enqueue(state: &State, list: &str, only: &[String]) -> anyhow::Result<()> {
+async fn enqueue(state: &State, list: &str, only: &[String]) -> anyhow::Result<Vec<ListedBatch>> {
     let mut batches = read_list(list).await?;
     if !only.is_empty() {
         batches.retain(|b| only.contains(&b.name));
@@ -147,6 +167,41 @@ async fn enqueue(state: &State, list: &str, only: &[String]) -> anyhow::Result<(
     }
     let report = source::enqueue(state, &batches).await?;
     tracing::info!(?report, "enqueued");
+    Ok(batches)
+}
+
+/// Fetch missing title records for `listed` titles and every curated batch's
+/// titles, then rebuild the catalog.
+async fn titles_sync(
+    cli: &Stores,
+    state: &State,
+    listed: impl IntoIterator<Item = String>,
+    refresh: bool,
+    items: &str,
+) -> anyhow::Result<()> {
+    let mut lccns: BTreeSet<String> = listed.into_iter().collect();
+    for (b, _) in state.batches(&[BatchStatus::Curated]).await? {
+        lccns.extend(b.curated.into_iter().flat_map(|c| c.lccns));
+    }
+    let reference = usnm_store::open(&cli.reference)?;
+    let report = titles::sync(
+        reference.as_ref(),
+        &lccns,
+        refresh,
+        items,
+        titles::LOC_INTERVAL,
+    )
+    .await?;
+    tracing::info!(?report, "title records");
+    geocode(reference.as_ref()).await
+}
+
+async fn geocode(reference: &dyn usnm_store::ObjectStore) -> anyhow::Result<()> {
+    let report = titles::geocode(reference).await?;
+    if !report.unresolved.is_empty() {
+        tracing::warn!(unresolved = ?report.unresolved, "titles with no state were left out");
+    }
+    tracing::info!(?report, "catalog");
     Ok(())
 }
 
@@ -242,7 +297,25 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let state = state(&cli.stores)?;
     match &cli.command {
-        Command::Enqueue { list, batches } => enqueue(&state, list, batches).await,
+        Command::Enqueue { list, batches } => enqueue(&state, list, batches).await.map(drop),
+        Command::TitlesSync {
+            list,
+            lccns,
+            refresh,
+            items,
+        } => {
+            let listed = if lccns.is_empty() {
+                read_list(list)
+                    .await?
+                    .into_iter()
+                    .flat_map(|b| b.lccns)
+                    .collect()
+            } else {
+                lccns.clone()
+            };
+            titles_sync(&cli.stores, &state, listed, *refresh, items).await
+        }
+        Command::Geocode => geocode(usnm_store::open(&cli.stores.reference)?.as_ref()).await,
         Command::Curate {
             max_batches,
             enqueue: first,
@@ -265,8 +338,11 @@ async fn main() -> anyhow::Result<()> {
             synthetic,
             target,
         } => {
-            enqueue(&state, list, batches).await?;
+            let listed = enqueue(&state, list, batches).await?;
             curate(&cli.stores, &state, None).await?;
+            // Every curated title needs a catalog entry before release.
+            let lccns = listed.into_iter().flat_map(|b| b.lccns);
+            titles_sync(&cli.stores, &state, lccns, false, titles::LOC_ITEMS).await?;
             release(&cli.stores, &state, *full, *synthetic, target).await
         }
     }

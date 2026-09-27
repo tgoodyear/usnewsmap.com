@@ -204,6 +204,7 @@ fn listed(name: &str, path: &Path, sha256: Option<String>) -> ListedBatch {
         url: path.to_str().unwrap().into(),
         sha256,
         ocr_source: None,
+        lccns: vec![],
     }
 }
 
