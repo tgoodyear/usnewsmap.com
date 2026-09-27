@@ -258,23 +258,21 @@ pub async fn get_json(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
     for attempt in 1..=3u64 {
         match client.get(url).send().await {
             Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => return Ok(None),
-            Ok(r) if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            // A 429, or an HTML page (a CAPTCHA challenge, whatever its
+            // status) where JSON was asked for.
+            Ok(r)
+                if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || r.headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|v| v.contains("html")) =>
+            {
                 return Err(Throttled(url.to_owned()).into())
             }
-            Ok(r) if r.status().is_success() => {
-                let html = r
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .is_some_and(|v| v.contains("html"));
-                if html {
-                    return Err(Throttled(url.to_owned()).into());
-                }
-                match r.bytes().await {
-                    Ok(b) => return Ok(Some(b.to_vec())),
-                    Err(e) => last = Some(anyhow::Error::from(e).context(format!("{url}: body"))),
-                }
-            }
+            Ok(r) if r.status().is_success() => match r.bytes().await {
+                Ok(b) => return Ok(Some(b.to_vec())),
+                Err(e) => last = Some(anyhow::Error::from(e).context(format!("{url}: body"))),
+            },
             Ok(r) if r.status().is_server_error() => {
                 last = Some(anyhow::anyhow!("{url} returned {}", r.status()))
             }

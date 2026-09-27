@@ -171,14 +171,15 @@ async fn enqueue(state: &State, list: &str, only: &[String]) -> anyhow::Result<V
 }
 
 /// Fetch missing title records for `listed` titles and every curated batch's
-/// titles, then rebuild the catalog.
+/// titles, then rebuild the catalog from what is cached. Returns whether LoC
+/// rate limited the run (which then stopped early, keeping what it fetched).
 async fn titles_sync(
     cli: &Stores,
     state: &State,
     listed: impl IntoIterator<Item = String>,
     refresh: bool,
     items: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let mut lccns: BTreeSet<String> = listed.into_iter().collect();
     for (b, _) in state.batches(&[BatchStatus::Curated]).await? {
         lccns.extend(b.curated.into_iter().flat_map(|c| c.lccns));
@@ -193,7 +194,8 @@ async fn titles_sync(
     )
     .await?;
     tracing::info!(?report, "title records");
-    geocode(reference.as_ref()).await
+    geocode(reference.as_ref()).await?;
+    Ok(report.throttled)
 }
 
 async fn geocode(reference: &dyn usnm_store::ObjectStore) -> anyhow::Result<()> {
@@ -313,7 +315,11 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 lccns.clone()
             };
-            titles_sync(&cli.stores, &state, listed, *refresh, items).await
+            if titles_sync(&cli.stores, &state, listed, *refresh, items).await? {
+                // Fail, so the job reports it and a later run continues.
+                bail!("LoC rate limited titles-sync; the cache kept what was fetched, and the next run continues");
+            }
+            Ok(())
         }
         Command::Geocode => geocode(usnm_store::open(&cli.stores.reference)?.as_ref()).await,
         Command::Curate {
@@ -342,7 +348,12 @@ async fn main() -> anyhow::Result<()> {
             curate(&cli.stores, &state, None).await?;
             // Every curated title needs a catalog entry before release.
             let lccns = listed.into_iter().flat_map(|b| b.lccns);
-            titles_sync(&cli.stores, &state, lccns, false, titles::LOC_ITEMS).await?;
+            if titles_sync(&cli.stores, &state, lccns, false, titles::LOC_ITEMS).await? {
+                // Release anyway: it refuses to publish if a curated title is
+                // still missing from the catalog, and a partial backlog of
+                // titles without pages shouldn't hold up new pages.
+                tracing::warn!("LoC rate limited titles-sync; releasing with the catalog as it is");
+            }
             release(&cli.stores, &state, *full, *synthetic, target).await
         }
     }

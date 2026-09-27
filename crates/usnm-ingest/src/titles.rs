@@ -449,6 +449,9 @@ pub fn build(
                 t.place_id = place_id;
                 t.state = d.state.code.into();
                 t.languages = languages;
+                // Replace what geocode derives (a refreshed record may lack
+                // some of it); keep any other, hand-written fields.
+                t.extra.retain(|k, _| !DERIVED_KEYS.contains(&k.as_str()));
                 t.extra.extend(extra);
             }
             None => {
@@ -485,17 +488,25 @@ fn place_key(p: &Place) -> Option<(String, String)> {
     })
 }
 
+/// The `extra` fields geocode owns on a title.
+const DERIVED_KEYS: &[&str] = &[
+    "loc_title",
+    "place_of_publication",
+    "dates",
+    "first_year",
+    "last_year",
+];
+
 fn derive(r: &RawTitle) -> Option<Derived<'_>> {
     let (name, place_label) = split_title(&r.title);
     let state = choose_state(&r.states, place_label.as_deref())?;
-    let city = if r.cities.is_empty() {
-        None
-    } else {
-        place_label
-            .as_deref()
-            .and_then(city_from_label)
-            .or_else(|| r.cities.first().map(|c| title_case(c)))
-    };
+    // The city the title names, else LoC's first listed city. A label that
+    // names only a state ("(Nebraska)") has no city.
+    let city = place_label
+        .as_deref()
+        .and_then(city_from_label)
+        .filter(|c| !names_a_state(c))
+        .or_else(|| r.cities.first().map(|c| title_case(c)));
     Some(Derived {
         raw: r,
         name,
@@ -565,6 +576,12 @@ fn city_from_label(label: &str) -> Option<String> {
         .map(|f| f.to_uppercase().chain(chars).collect())
         .unwrap_or_default();
     (!city.is_empty()).then_some(city)
+}
+
+fn names_a_state(s: &str) -> bool {
+    STATES.iter().any(|st| {
+        st.name.eq_ignore_ascii_case(s) || st.abbrevs.iter().any(|a| a.eq_ignore_ascii_case(s))
+    })
 }
 
 fn choose_state(states: &[String], label: Option<&str>) -> Option<&'static State> {
@@ -995,11 +1012,19 @@ mod tests {
                         ("200 OK", "{not json".to_owned())
                     } else if path.starts_with("/item/sn8/") {
                         ("429 Too Many Requests", "<html>slow down</html>".to_owned())
+                    } else if path.starts_with("/item/sn7/") {
+                        // A challenge page with a non-429 status.
+                        ("403 Forbidden", "<html>are you human?</html>".to_owned())
                     } else {
                         ("404 Not Found", String::new())
                     };
+                    let ctype = if body.starts_with('<') {
+                        "text/html"
+                    } else {
+                        "application/json"
+                    };
                     let resp = format!(
-                        "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        "HTTP/1.1 {status}\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                         body.len()
                     );
                     let _ = sock.write_all(resp.as_bytes()).await;
@@ -1093,6 +1118,70 @@ mod tests {
         assert!(r.throttled);
         assert_eq!((r.wanted, r.fetched, r.not_found.len()), (2, 0, 0));
         assert_eq!(hits.load(Ordering::SeqCst) - before, 1);
+
+        // So does an HTML challenge page, whatever its status.
+        let before = hits.load(Ordering::SeqCst);
+        let challenged: BTreeSet<String> = ["sn7", "sn99"].iter().map(|s| s.to_string()).collect();
+        let r = sync(store.as_ref(), &challenged, false, &base, Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(r.throttled);
+        assert_eq!(hits.load(Ordering::SeqCst) - before, 1);
+    }
+
+    #[test]
+    fn the_city_comes_from_the_title_label() {
+        // No location_city: the label still names the city.
+        let r = raw(
+            "sn1",
+            "Weekly Star (Canton, Ohio) 1880-1881",
+            &[],
+            &["ohio"],
+            None,
+        );
+        assert_eq!(derive(&r).unwrap().city.as_deref(), Some("Canton"));
+        // A label naming only the state has no city: the state's place.
+        let r = raw(
+            "sn2",
+            "State Journal (Nebraska) 1880-1881",
+            &[],
+            &["nebraska"],
+            None,
+        );
+        assert_eq!(derive(&r).unwrap().city, None);
+        // No label: LoC's first city.
+        let r = raw("sn3", "Plain Name", &["north platte"], &["nebraska"], None);
+        assert_eq!(derive(&r).unwrap().city.as_deref(), Some("North Platte"));
+    }
+
+    #[test]
+    fn a_refresh_replaces_derived_fields_and_keeps_others() {
+        let mut r = BTreeMap::new();
+        let first = raw(
+            "sn1",
+            "Paper (Akron, Ohio) 1890-1900",
+            &["akron"],
+            &["ohio"],
+            None,
+        );
+        r.insert("sn1".to_owned(), first);
+        let (c, _) = build(&r, vec![], vec![], &[]).unwrap();
+        let mut titles = c.titles.clone();
+        titles[0]
+            .extra
+            .insert("note".into(), Value::from("hand-written"));
+        assert!(titles[0].extra.contains_key("place_of_publication"));
+        // The refreshed record has no label and no dates.
+        let mut refreshed = raw("sn1", "Paper", &["akron"], &["ohio"], None);
+        refreshed.dates = None;
+        r.insert("sn1".to_owned(), refreshed);
+        let (c2, _) = build(&r, titles, c.places.clone(), &[]).unwrap();
+        let extra = &c2.title("sn1").unwrap().extra;
+        for gone in ["place_of_publication", "dates", "first_year", "last_year"] {
+            assert!(!extra.contains_key(gone), "{gone} should be gone");
+        }
+        assert_eq!(extra["loc_title"], "Paper");
+        assert_eq!(extra["note"], "hand-written");
     }
 
     #[test]
