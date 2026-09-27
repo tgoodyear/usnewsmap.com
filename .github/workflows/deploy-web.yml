@@ -1,52 +1,99 @@
 name: deploy web
 
-# Builds the SPA and uploads it to the Static Web App (08 §8.1). Needs:
-#   secret   AZURE_STATIC_WEB_APPS_API_TOKEN   the site's deployment token
-#   variable USNM_API_URL                      the API origin (azd output API_URL)
-# Without the token the job only builds, so forks and new clones stay green.
+# Builds the SPA and uploads it to each deployed environment's Static Web App
+# (08 §8.1). Environments are listed in the repository variable
+# USNM_DEPLOY_ENVIRONMENTS (a JSON array); each GitHub Environment holds its
+# variables (written by scripts/bootstrap.sh):
+#   USNM_API_URL          the API origin, built into the site
+#   USNM_SWA_NAME         the Static Web App
+#   USNM_RESOURCE_GROUP   its resource group
+#   USNM_CI_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID   OIDC sign-in
+# The deployment token is read at deploy time with the CI identity; no
+# secret is stored. With no environments listed, nothing runs.
 
 on:
   push:
     branches: [main]
     paths: ["web/**", ".github/workflows/deploy-web.yml"]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deploy only this environment (default: all listed)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
-concurrency:
-  group: deploy-web
-  cancel-in-progress: false
-
 jobs:
   deploy:
+    name: deploy web (${{ matrix.environment }})
+    if: vars.USNM_DEPLOY_ENVIRONMENTS != '' && vars.USNM_DEPLOY_ENVIRONMENTS != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ inputs.environment != '' && fromJSON(format('["{0}"]', inputs.environment)) || fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
+    environment: ${{ matrix.environment }}
     runs-on: ubuntu-latest
-    env:
-      HAS_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN != '' }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-web-${{ matrix.environment }}
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      # A slower run for an older commit must not replace a newer site.
+      - name: Is this still the head of main?
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is now at $head; not deploying $GITHUB_SHA"
+          fi
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/checkout@v5
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Build
+        if: steps.head.outputs.current == 'true'
         working-directory: web
         env:
           VITE_API_BASE: ${{ vars.USNM_API_URL }}
         run: |
-          if [ -z "$VITE_API_BASE" ] && [ "$HAS_TOKEN" = true ]; then
-            echo "::error::Set the repository variable USNM_API_URL (azd env get-value API_URL)"
+          if [ -z "$VITE_API_BASE" ]; then
+            echo "::error::USNM_API_URL is not set on this environment (run scripts/bootstrap.sh)"
             exit 1
           fi
           npm ci
           npm run build
-      - if: env.HAS_TOKEN != 'true'
-        run: echo "::notice::AZURE_STATIC_WEB_APPS_API_TOKEN is not set; built but not deployed"
-      - if: env.HAS_TOKEN == 'true'
+      - if: steps.head.outputs.current == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Read the deployment token
+        id: token
+        if: steps.head.outputs.current == 'true'
+        env:
+          SWA: ${{ vars.USNM_SWA_NAME }}
+          RG: ${{ vars.USNM_RESOURCE_GROUP }}
+        run: |
+          token=$(az staticwebapp secrets list -n "$SWA" -g "$RG" --query properties.apiKey -o tsv)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+      - if: steps.head.outputs.current == 'true'
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          azure_static_web_apps_api_token: ${{ steps.token.outputs.token }}
           action: upload
           app_location: web/dist
           skip_app_build: true

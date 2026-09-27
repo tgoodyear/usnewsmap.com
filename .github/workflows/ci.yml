@@ -63,55 +63,32 @@ jobs:
   image:
     name: container image builds
     runs-on: ubuntu-latest
-    # PRs only build. On main, images go to the private registry (08 §8.6),
-    # once the repository variables from `azd provision` are set (infra/README.md).
+    # Build and smoke-test both images. Publishing happens per environment in
+    # `publish`, from the same build cache.
     permissions:
       contents: read
-      id-token: write
-    env:
-      ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
-      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_ACR_LOGIN_SERVER != '' }}
-      QUICKWIT: quickwit/quickwit@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
     steps:
       - uses: actions/checkout@v5
-      - if: env.PUBLISH == 'true'
-        uses: azure/login@v3
-        with:
-          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - if: env.PUBLISH == 'true'
-        run: az acr login --name "${ACR%%.*}"
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
           context: .
-          push: ${{ env.PUBLISH == 'true' }}
-          tags: |
-            ${{ env.ACR || 'local' }}/usnewsmap-api:main
-            ${{ env.ACR || 'local' }}/usnewsmap-api:${{ github.sha }}
+          tags: usnewsmap-api:check
+          outputs: type=cacheonly
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
       - uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.ingest
-          push: ${{ env.PUBLISH == 'true' }}
-          tags: |
-            ${{ env.ACR || 'local' }}/usnewsmap-ingest:main
-            ${{ env.ACR || 'local' }}/usnewsmap-ingest:${{ github.sha }}
+          tags: usnm-ingest-check
+          load: true
+          cache-from: type=gha,scope=ingest
+          cache-to: type=gha,scope=ingest,mode=max
       - name: The ingest image runs
         run: |
-          docker build -q -f Dockerfile.ingest -t usnm-ingest-check . > /dev/null
           docker run --rm usnm-ingest-check --version
           docker run --rm --entrypoint quickwit usnm-ingest-check --version
-      - name: Copy the pinned Quickwit image into the registry, digest unchanged
-        if: env.PUBLISH == 'true'
-        run: |
-          command -v skopeo > /dev/null || { sudo apt-get update -q && sudo apt-get install -y -q skopeo; }
-          token=$(az acr login --name "${ACR%%.*}" --expose-token --query accessToken -o tsv)
-          skopeo login "$ACR" -u 00000000-0000-0000-0000-000000000000 -p "$token"
-          skopeo copy --all --preserve-digests "docker://docker.io/${QUICKWIT}" "docker://${ACR}/quickwit/quickwit:v0.9.1"
-          want="${QUICKWIT#*@}"
-          got="sha256:$(skopeo inspect --raw "docker://${ACR}/quickwit/quickwit:v0.9.1" | sha256sum | cut -d' ' -f1)"
-          test "$got" = "$want" || { echo "::error::copied Quickwit digest $got != $want"; exit 1; }
 
   infra:
     name: infra (bicep lint, build)
@@ -192,26 +169,35 @@ jobs:
             web/test-results
             api.log
 
-  deploy-api:
-    name: roll out the API (main)
-    # After every check passes on main, move the API app to this commit's
-    # image. Needs the repository variables from `azd provision` (infra/README.md).
+  publish:
+    name: publish and roll out (${{ matrix.environment }})
+    # After every check passes on main: push the images to each deployed
+    # environment's private registry (08 §8.6) and roll its API onto this
+    # commit. Environments are listed in the repository variable
+    # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
+    # Environment holds its own variables, written by scripts/bootstrap.sh.
     needs: [rust, quickwit, fixtures, image, infra, web, web-e2e]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_ACR_LOGIN_SERVER != '' && vars.USNM_API_APP != '' && vars.USNM_RESOURCE_GROUP != ''
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_DEPLOY_ENVIRONMENTS != '' && vars.USNM_DEPLOY_ENVIRONMENTS != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
+    environment: ${{ matrix.environment }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     concurrency:
-      group: deploy-api
+      group: deploy-${{ matrix.environment }}
       cancel-in-progress: false
     env:
+      ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
       APP: ${{ vars.USNM_API_APP }}
       RG: ${{ vars.USNM_RESOURCE_GROUP }}
-      IMAGE: ${{ vars.USNM_ACR_LOGIN_SERVER }}/usnewsmap-api:${{ github.sha }}
+      QUICKWIT: quickwit/quickwit@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
     steps:
       # Runs finish out of order: a slower run for an older commit must not
-      # replace a newer image. Only the commit main points at deploys.
+      # replace newer images. Only the commit main points at publishes.
       - name: Is this still the head of main?
         id: head
         env:
@@ -221,21 +207,59 @@ jobs:
           if [ "$head" = "$GITHUB_SHA" ]; then
             echo "current=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::main is now at $head; not deploying $GITHUB_SHA"
+            echo "::notice::main is now at $head; not publishing $GITHUB_SHA"
           fi
+      - if: steps.head.outputs.current == 'true'
+        uses: actions/checkout@v5
       - if: steps.head.outputs.current == 'true'
         uses: azure/login@v3
         with:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Point the app at this commit's image
+      - if: steps.head.outputs.current == 'true'
+        run: az acr login --name "${ACR%%.*}"
+      - if: steps.head.outputs.current == 'true'
+        uses: docker/setup-buildx-action@v4
+      - if: steps.head.outputs.current == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          cache-from: type=gha,scope=api
+          tags: |
+            ${{ env.ACR }}/usnewsmap-api:main
+            ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
+      - if: steps.head.outputs.current == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.ingest
+          push: true
+          cache-from: type=gha,scope=ingest
+          tags: |
+            ${{ env.ACR }}/usnewsmap-ingest:main
+            ${{ env.ACR }}/usnewsmap-ingest:${{ github.sha }}
+      - name: Copy the pinned Quickwit image into the registry, digest unchanged
         if: steps.head.outputs.current == 'true'
         run: |
+          command -v skopeo > /dev/null || { sudo apt-get update -q && sudo apt-get install -y -q skopeo; }
+          token=$(az acr login --name "${ACR%%.*}" --expose-token --query accessToken -o tsv)
+          skopeo login "$ACR" -u 00000000-0000-0000-0000-000000000000 -p "$token"
+          skopeo copy --all --preserve-digests "docker://docker.io/${QUICKWIT}" "docker://${ACR}/quickwit/quickwit:v0.9.1"
+          want="${QUICKWIT#*@}"
+          got="sha256:$(skopeo inspect --raw "docker://${ACR}/quickwit/quickwit:v0.9.1" | sha256sum | cut -d' ' -f1)"
+          test "$got" = "$want" || { echo "::error::copied Quickwit digest $got != $want"; exit 1; }
+      # The API app exists once the environment pulls from its registry
+      # (bootstrap's second provision); until then only the images publish.
+      - name: Point the API at this commit's image
+        if: steps.head.outputs.current == 'true' && env.APP != ''
+        run: |
           az config set extension.use_dynamic_install=yes_without_prompt
-          az containerapp update -n "$APP" -g "$RG" --container-name api --image "$IMAGE" -o none
+          az containerapp update -n "$APP" -g "$RG" --container-name api \
+            --image "$ACR/usnewsmap-api:$GITHUB_SHA" -o none
       - name: Wait for the new revision to serve
-        if: steps.head.outputs.current == 'true'
+        if: steps.head.outputs.current == 'true' && env.APP != ''
         run: |
           latest="" ready=""
           for _ in $(seq 60); do

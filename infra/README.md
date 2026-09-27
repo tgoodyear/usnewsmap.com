@@ -42,29 +42,36 @@ The following come in later slices:
 
 ## Deploy
 
-Prerequisites:
-
-- The [Azure Developer CLI](https://aka.ms/azd) and an account with **Owner** on the subscription. Owner is needed because the deployment creates role assignments and policy definitions.
-- The images come from the private registry the deployment creates. The first `azd provision` deploys everything except the API, which has no image to pull until CI has pushed one (see [Container registry](#container-registry)).
+One command stands up an environment in any subscription or tenant, wires this repository to deploy it, and can be re-run at any time to bring it up to date ([08 §8.9](../docs/design/08-azure-infrastructure.md)):
 
 ```sh
-azd auth login
-azd env new dev
-azd env set AZURE_LOCATION eastus2
-azd env set USNM_ALERT_EMAILS "you@example.org"   # optional: enables alerts
-azd env set USNM_BUDGET_START 2026-10-01           # optional, with emails: enables the budget; set once, never change
-azd env set USNM_COSMOS_FREE_TIER false            # if another account in the subscription already uses the free tier
-azd provision
+az login [--tenant TENANT]                 # and select the subscription, or pass --subscription
+azd auth login [--tenant-id TENANT]
+gh auth login
+scripts/bootstrap.sh prod --alert-email you@example.org --domain usnewsmap.com --ingest
 ```
 
-Then set up the [container registry](#container-registry), which deploys the API. Outputs include `API_URL`, `SITE_URL` and `TILES_URL`. Check that the deployment works:
+Prerequisites: `az`, `azd`, `gh` and `curl`; **Owner** on the subscription (the deployment creates role assignments and policy definitions); admin on the GitHub repository (it creates the GitHub Environment and its variables). No tenant-level objects are created.
+
+What it does:
+1. Registers the resource providers.
+2. Creates the `azd` environment.
+3. Provisions everything except the API, which has no image yet.
+4. Creates the GitHub Environment `prod`, restricted to `main`, with its variables, and adds it to `USNM_DEPLOY_ENVIRONMENTS`.
+5. Runs `ci` on `main`, which publishes the images to the new private registry.
+6. Provisions again on the registry, which deploys the API.
+7. Deploys the web app and checks both.
+
+Options: `--subscription`, `--location` (default `eastus2`), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and SWA token secret from before per-environment deployment).
+
+Check the result:
 
 ```sh
-curl "$(azd env get-value API_URL)/v1/meta"          # "synthetic": true
+curl "$(azd env get-value API_URL)/v1/meta"          # "synthetic": true until the corpus is loaded
 curl "$(azd env get-value API_URL)/readyz"
 ```
 
-To roll out a specific build, run `azd env set USNM_IMAGE_TAG <commit sha>` (default `main`) and then `azd provision`.
+After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API onto the commit; `deploy web` does the same for the site. To pin a specific build instead, run `azd env set USNM_IMAGE_TAG <commit sha>` (default `main`) and `azd provision`.
 
 | Parameter | azd variable | Default |
 |-----------|--------------|---------|
@@ -78,21 +85,13 @@ To roll out a specific build, run `azd env set USNM_IMAGE_TAG <commit sha>` (def
 | `alertEmails` | `USNM_ALERT_EMAILS` | empty (comma-separated) |
 | `budgetStartDate` | `USNM_BUDGET_START` | empty. The first day of a month; the budget is created only with alert emails and this set. Azure can't change a budget's start date, so keep it fixed |
 | `dnsZoneName` | `USNM_DNS_ZONE` | empty (no zone). The site's domain, e.g. `usnewsmap.com` |
+| `githubRepo`, `githubRepoIds` | `USNM_GITHUB_REPO`, `USNM_GITHUB_REPO_IDS` | this repository; bootstrap sets both (the second is GitHub's immutable-ID form, `owner@id/name@id`) |
+| `allowedOrigins` | — | empty. Extra CORS origins; the site's own hostname and the domain (with `www`) are always allowed |
 | `deployPolicies` | — | `true` (needs Resource Policy Contributor on the subscription) |
 
 ## Web app
 
-The `deploy web` workflow (`.github/workflows/deploy-web.yml`) builds `web/` and uploads it to the Static Web App on every push to `main` that touches `web/`, and on demand. It needs one secret and one variable on the GitHub repository:
-
-```sh
-gh secret set AZURE_STATIC_WEB_APPS_API_TOKEN --body "$(az staticwebapp secrets list \
-  -n swa-usnm-$(azd env get-value AZURE_ENV_NAME) -g "$(azd env get-value AZURE_RESOURCE_GROUP)" \
-  --query properties.apiKey -o tsv)"
-gh variable set USNM_API_URL --body "$(azd env get-value API_URL)"
-gh workflow run "deploy web"
-```
-
-The API allows the site's `*.azurestaticapps.net` origin (and `allowedOrigins`) for CORS.
+The `deploy web` workflow (`.github/workflows/deploy-web.yml`) builds `web/` with each environment's API URL and uploads it to that environment's Static Web App. It runs on every push to `main` that touches `web/`, and on demand (`gh workflow run "deploy web" -f environment=prod`). It reads the deployment token at deploy time with the CI identity, so no secret is stored. The API allows the site's `*.azurestaticapps.net` origin, the domain and `www` (with `USNM_DNS_ZONE`), and any `allowedOrigins` for CORS.
 
 ## Domain (DNS)
 
@@ -108,30 +107,19 @@ The zone holds the apex (an alias to the Static Web App, and CAA records allowin
 
 ## Container registry
 
-Images are private, in ACR Basic (`crusnm{env}…`). CI pushes to it from `main`, signing in with OIDC as `id-usnm-ci-{env}`; no secret is stored anywhere. One-time setup after the first `azd provision` (these are repository **variables**, not secrets):
+Images are private, in ACR Basic (`crusnm{env}…`), with no admin user and no anonymous pull. The apps and jobs pull with their managed identities.
 
-```sh
-gh variable set USNM_ACR_LOGIN_SERVER --body "$(azd env get-value ACR_LOGIN_SERVER)"
-gh variable set USNM_CI_CLIENT_ID     --body "$(azd env get-value CI_CLIENT_ID)"
-gh variable set AZURE_TENANT_ID       --body "$(azd env get-value AZURE_TENANT_ID)"
-gh variable set AZURE_SUBSCRIPTION_ID --body "$(azd env get-value AZURE_SUBSCRIPTION_ID)"
-gh variable set USNM_RESOURCE_GROUP   --body "$(azd env get-value AZURE_RESOURCE_GROUP)"
-gh workflow run ci --ref main          # pushes the API and ingest images and copies Quickwit in
-azd env set USNM_USE_ACR true
-azd provision                          # the API (and sidecar) now pull from the registry
-gh variable set USNM_API_APP --body "$(azd env get-value API_APP)"   # the app exists now: enables continuous deployment
-```
+CI pushes from `main` as `id-usnm-ci-{env}`, signing in with OIDC. That identity trusts only jobs in the GitHub Environment `{env}`, and no secret is stored anywhere. `scripts/bootstrap.sh` sets it all up.
 
-Once the API runs from the registry, the old GHCR packages can be made private again or deleted.
+The CI identity's rights are AcrPush on its registry, plus Contributor on its API app and its Static Web App. The web deploy uses the latter to read the site's deployment token at deploy time.
 
-**Continuous deployment of the API:** with `USNM_API_APP` and `USNM_RESOURCE_GROUP` set, every green run of `ci` on `main` rolls the API app onto that commit's image (`usnewsmap-api:<sha>`) and waits for the new revision to be ready. The CI identity has Contributor on that one app only. `azd provision` sets the image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the same one). The web app deploys itself the same way (`deploy web`).
+`azd provision` sets the API image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the one CI last rolled out).
 
 ## Ingest jobs
 
-1. Set up the [container registry](#container-registry) (the ingest image is only published there).
-2. Deploy the jobs: `azd env set USNM_INGEST_JOBS true`, then `azd provision`. Optionally set a weekly schedule with `azd env set USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 8).
-3. Put the catalog in `reference/catalog/titles.json` and `places.json` (from `titles-sync` and `geocode`, once they exist).
-4. Backfill, then publish the first version:
+1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `azd env set USNM_INGEST_JOBS true` and `azd provision` on an environment already on the registry). Optionally set a weekly schedule with `azd env set USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 8).
+2. Put the catalog in `reference/catalog/titles.json` and `places.json` (from `titles-sync` and `geocode`, once they exist).
+3. Backfill, then publish the first version:
    ```sh
    RG=$(azd env get-value AZURE_RESOURCE_GROUP)
    # Queue every batch from LoC's listing and curate it with 8 workers (~22 h).
@@ -140,7 +128,7 @@ Once the API runs from the registry, the old GHCR packages can be made private a
    az containerapp job start -n "$(azd env get-value INGEST_JOB)" -g "$RG"
    ```
    Watch with `az containerapp job execution list -n <job> -g "$RG" -o table` and the job logs in Log Analytics.
-5. Switch the API to the published indexes: `azd env set USNM_SEARCH_BACKEND quickwit`, then `azd provision`.
+4. Switch the API to the published indexes: `azd env set USNM_SEARCH_BACKEND quickwit`, then `azd provision`.
 
 The storage and Cosmos accounts stay private throughout: the jobs run inside the VNet.
 

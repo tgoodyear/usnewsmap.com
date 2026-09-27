@@ -17,8 +17,8 @@ param location string = 'eastus2'
 @description('A public API image, used only while useAcr is off. Empty (the default) skips the API until CI has pushed to the registry and useAcr is on.')
 param apiImage string = ''
 
-@description('Origins allowed by API CORS and the tiles account.')
-param allowedOrigins array = ['https://usnewsmap.com']
+@description('Extra origins allowed by API CORS and the tiles account. The site\'s own Static Web Apps hostname and, with dnsZoneName, the domain and its www are always allowed.')
+param allowedOrigins array = []
 
 @description('0 lets dev scale to zero; production keeps one warm replica.')
 param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
@@ -33,8 +33,11 @@ param useAcr bool = false
 @description('Image tag CI pushed to the registry (main or a commit sha).')
 param imageTag string = 'main'
 
-@description('GitHub repository whose main branch may push images, as it appears in the OIDC subject claim (`owner@ownerId/name@repoId`; the IDs are in the AADSTS700213 error if they change).')
-param githubRepo string = 'tgoodyear@116683/usnewsmap.com@1389862972'
+@description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment named after this azd environment may use the CI identity.')
+param githubRepo string = 'tgoodyear/usnewsmap.com'
+
+@description('The same repository as `owner@ownerId/name@repoId` (GitHub\'s immutable-ID OIDC subject format); scripts/bootstrap.sh looks it up.')
+param githubRepoIds string = 'tgoodyear@116683/usnewsmap.com@1389862972'
 
 @description('Create the ingest and backfill jobs (needs useAcr: the ingest image is only in the private registry).')
 param ingestJobs bool = false
@@ -73,8 +76,9 @@ var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
 // Quickwit v0.9.1, copied into the registry by CI with its digest unchanged.
 var quickwitDigest = 'sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
-// The site's own *.azurestaticapps.net origin, until the custom domain is live.
-var siteOrigins = union(allowedOrigins, ['https://${site.outputs.defaultHostname}'])
+// The site's *.azurestaticapps.net origin, and its custom domain if it has one.
+var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
+var siteOrigins = union(allowedOrigins, domainOrigins, ['https://${site.outputs.defaultHostname}'])
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: 'rg-usnm-${env}'
@@ -110,6 +114,8 @@ module registry 'modules/registry.bicep' = {
     name: 'crusnm${env}${suffix}'
     ciIdentityName: 'id-usnm-ci-${env}'
     githubRepo: githubRepo
+    githubRepoIds: githubRepoIds
+    githubEnvironment: env
     pullPrincipalIds: [identities.outputs.appPrincipalId, identities.outputs.ingestPrincipalId]
   }
 }
@@ -243,6 +249,7 @@ module site 'modules/staticwebapp.bicep' = {
     location: location
     tags: tags
     name: 'swa-usnm-${env}'
+    deployerPrincipalId: registry.outputs.ciPrincipalId
   }
 }
 
@@ -289,7 +296,9 @@ module alerts 'modules/alerts.bicep' = if (!empty(emails)) {
 }
 
 module policyDefinitions 'modules/policy-definitions.bicep' = if (deployPolicies) {
-  name: 'usnm-policy-definitions'
+  // Subscription-scope deployment: named per environment so that two
+  // environments in one subscription don't overwrite each other's history.
+  name: 'usnm-policy-definitions-${env}'
 }
 
 module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
@@ -326,6 +335,7 @@ output AZURE_RESOURCE_GROUP string = rg.name
 output API_URL string = deployApi ? 'https://${api!.outputs.fqdn}' : ''
 output API_APP string = deployApi ? api!.outputs.name : ''
 output SITE_URL string = 'https://${site.outputs.defaultHostname}'
+output SWA_NAME string = site.outputs.name
 // Set these as the domain's name servers at the registrar.
 output NAME_SERVERS string = empty(dnsZoneName) ? '' : join(dns!.outputs.nameServers, ' ')
 output TILES_URL string = tiles.outputs.tilesUrl
@@ -335,7 +345,7 @@ output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName 
 output BACKFILL_JOB string = ingestJobs && useAcr ? ingest!.outputs.backfillJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
-// For the GitHub repository variables CI signs in with (not secrets).
+// For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).
 output CI_CLIENT_ID string = registry.outputs.ciClientId
 output AZURE_TENANT_ID string = tenant().tenantId
 output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId

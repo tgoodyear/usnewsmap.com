@@ -1,8 +1,10 @@
 // Private container registry (08 §8.6). Images are never public: pulls need
 // Entra ID (the app and ingest identities have AcrPull); there is no
-// admin user and no anonymous pull. CI pushes from `main` as `id-usnm-ci`, a
+// admin user and no anonymous pull. CI pushes as `id-usnm-ci-{env}`, a
 // user-assigned identity that GitHub Actions signs in to with OIDC (a
-// federated credential; no secret is stored anywhere).
+// federated credential; no secret is stored anywhere). It trusts only jobs
+// in this repository's GitHub Environment named after the azd environment,
+// which the bootstrap script restricts to the `main` branch.
 //
 // Basic tier: private endpoints need Premium (~$50/month), so the registry
 // keeps its public endpoint, which still requires a token. Images are code,
@@ -12,8 +14,12 @@ param location string
 param tags object
 param name string
 param ciIdentityName string
-@description('GitHub repository allowed to push, as it appears in the OIDC subject claim: `owner@ownerId/name@repoId` (GitHub\'s immutable-ID format, which this repository uses), or `owner/name` for repositories on the older format.')
+@description('GitHub repository allowed to deploy, as owner/name.')
 param githubRepo string
+@description('The same repository in GitHub\'s immutable-ID subject format, `owner@ownerId/name@repoId`; empty if unknown. Repositories may use either format, so both are trusted.')
+param githubRepoIds string = ''
+@description('GitHub Environment whose jobs may use the CI identity.')
+param githubEnvironment string
 param pullPrincipalIds array
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
@@ -33,12 +39,26 @@ resource ci 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   location: location
   tags: tags
 
-  // Only workflow runs on this repository's main branch can use it.
+  // Only jobs in this repository's GitHub Environment can use it. (The
+  // name predates environments; it is kept so existing identities update
+  // in place.)
   resource github 'federatedIdentityCredentials' = {
     name: 'github-main'
     properties: {
       issuer: 'https://token.actions.githubusercontent.com'
-      subject: 'repo:${githubRepo}:ref:refs/heads/main'
+      subject: 'repo:${githubRepo}:environment:${githubEnvironment}'
+      audiences: ['api://AzureADTokenExchange']
+    }
+  }
+
+  // The immutable-ID form of the same subject. Credentials on one identity
+  // must be written one at a time.
+  resource githubIds 'federatedIdentityCredentials' = if (!empty(githubRepoIds)) {
+    name: 'github-ids'
+    dependsOn: [github]
+    properties: {
+      issuer: 'https://token.actions.githubusercontent.com'
+      subject: 'repo:${githubRepoIds}:environment:${githubEnvironment}'
       audiences: ['api://AzureADTokenExchange']
     }
   }

@@ -2,7 +2,7 @@
 // the zone's name servers (the NAME_SERVERS output). Records:
 //
 // - apex: an alias to the Static Web App (an apex can't be a CNAME), and
-//   CAA records limiting certificate issuance (08 §8.9);
+//   CAA records limiting certificate issuance (08 §8.8);
 // - no-mail records: SPF `-all`, DMARC reject, empty DKIM keys;
 // - www: CNAME to the Static Web App;
 // - api: CNAME to the API app, plus the `asuid.api` TXT record that
