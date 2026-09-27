@@ -1,0 +1,20 @@
+{
+ "index_version": "fixture-v1",
+ "files": [
+  {
+   "path": "baselines.json",
+   "sha256": "5659664d8a866f380dcca09f46a39c8f41e03b181e1fa6e248a66ec78f035a8c",
+   "bytes": 11305
+  },
+  {
+   "path": "places.json",
+   "sha256": "798cf77227c6cf273023216e37c0f6190b89850315e5d2611538378986f6e10d",
+   "bytes": 950
+  },
+  {
+   "path": "titles.json",
+   "sha256": "eb1d35a9170aa0549c1be984f3e9229c829a2c5aac1cad4c12c5a48b7acefc6f",
+   "bytes": 1119
+  }
+ ]
+}

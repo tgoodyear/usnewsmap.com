@@ -1,0 +1,23 @@
+[package]
+name = "usnm-store"
+version = "0.1.0"
+description = "Object storage for US News Map: Azure Blob (Entra ID) and local directories"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+httpdate.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "process", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["fs", "process", "sync", "time", "net"] }
+
+[lints]
+workspace = true

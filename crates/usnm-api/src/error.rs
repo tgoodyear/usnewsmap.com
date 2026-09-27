@@ -15,6 +15,8 @@ pub enum ApiError {
     TooBroad(String),
     Timeout,
     Backend(String),
+    /// Too many requests from this client; retry after the given wait.
+    RateLimited(std::time::Duration),
 }
 
 #[derive(Serialize)]
@@ -48,6 +50,11 @@ impl From<SearchError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let retry_after = match &self {
+            ApiError::RateLimited(wait) => Some(wait.as_secs_f64().ceil().max(1.0) as u64),
+            ApiError::Timeout | ApiError::Backend(_) => Some(30),
+            _ => None,
+        };
         let (status, kind, title, detail, hint, position) = match self {
             ApiError::Params(ParamError::Query(q)) => (
                 StatusCode::BAD_REQUEST,
@@ -105,6 +112,14 @@ impl IntoResponse for ApiError {
                 Some("Narrow the date range or add filters, then try again."),
                 None,
             ),
+            ApiError::RateLimited(_) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "/errors/rate-limited",
+                "Too many requests",
+                "This client has sent too many requests.".to_owned(),
+                Some("Wait for the time in Retry-After, then try again."),
+                None,
+            ),
             ApiError::Backend(msg) => {
                 tracing::error!(error = %msg, "search backend error");
                 (
@@ -132,8 +147,8 @@ impl IntoResponse for ApiError {
             HeaderValue::from_static("application/problem+json"),
         );
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        if status == StatusCode::SERVICE_UNAVAILABLE {
-            headers.insert(header::RETRY_AFTER, HeaderValue::from_static("30"));
+        if let Some(secs) = retry_after {
+            headers.insert(header::RETRY_AFTER, HeaderValue::from(secs));
         }
         resp
     }

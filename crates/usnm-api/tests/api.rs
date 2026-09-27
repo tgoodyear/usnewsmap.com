@@ -10,14 +10,15 @@ use axum::http::{header, Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
-use usnm_api::config::{BackendKind, Config};
+use usnm_api::config::Config;
 use usnm_api::refdata::RefData;
-use usnm_api::{app, memory_snapshot, reload_if_changed, AppState, Reloader};
+use usnm_api::{app, reload_if_changed, AppState, Engine, Loader};
 use usnm_core::query::parse;
 use usnm_core::text::tokenize;
 use usnm_core::time::day_number;
 use usnm_search::memory::{eval, MemoryBackend};
 use usnm_search::PageDoc;
+use usnm_store::LocalStore;
 
 fn data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data")
@@ -32,35 +33,40 @@ fn load_docs(index_id: &str) -> Vec<PageDoc> {
 }
 
 fn config() -> Config {
-    Config {
-        bind: "127.0.0.1:0".into(),
-        backend: BackendKind::Memory,
-        data_dir: data_dir(),
-        allowed_origins: vec!["https://usnewsmap.com".into()],
-        search_timeout: Duration::from_secs(10),
-        refresh_interval: Duration::from_secs(600),
-        cache_bytes: 16 * 1024 * 1024,
-        max_cells: usnm_core::cube::MAX_CELLS,
-    }
+    let mut c = Config::from_lookup(|_| None).unwrap();
+    c.data_dir = data_dir();
+    c.reference_url = data_dir().display().to_string();
+    c.cache_bytes = 16 * 1024 * 1024;
+    // Tests without a client address share one bucket; rate limiting has its own test.
+    c.rate_limit = None;
+    c
 }
 
-fn state_with_cells(max_cells: usize) -> Arc<AppState> {
+async fn refdata() -> RefData {
+    RefData::load(&LocalStore::new(data_dir())).await.unwrap()
+}
+
+fn fixture_backend() -> MemoryBackend {
     let mut backend = MemoryBackend::new();
     for id in ["pages-base-fixture", "pages-delta-fixture-1"] {
         backend.add_index(id, load_docs(id));
     }
-    let refdata = RefData::load(&data_dir()).unwrap();
+    backend
+}
+
+async fn state_with_cells(max_cells: usize) -> Arc<AppState> {
     let mut cfg = config();
     cfg.max_cells = max_cells;
-    Arc::new(AppState::new(cfg, Arc::new(backend), refdata))
+    Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ))
 }
 
-fn state_with(indexes: Option<Vec<String>>) -> Arc<AppState> {
-    let mut backend = MemoryBackend::new();
-    for id in ["pages-base-fixture", "pages-delta-fixture-1"] {
-        backend.add_index(id, load_docs(id));
-    }
-    let mut refdata = RefData::load(&data_dir()).unwrap();
+async fn state_with(indexes: Option<Vec<String>>) -> Arc<AppState> {
+    let backend = fixture_backend();
+    let mut refdata = refdata().await;
     if let Some(ids) = indexes {
         refdata.current.indexes = ids;
     }
@@ -99,7 +105,7 @@ fn oracle_count(q: &str, from: &str, to: &str, indexes: &[&str]) -> u64 {
 
 #[tokio::test]
 async fn health_and_meta() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let (status, _, _) = get(&s, "/healthz").await;
     assert_eq!(status, StatusCode::OK);
     let (status, _, meta) = get(&s, "/v1/meta").await;
@@ -111,7 +117,7 @@ async fn health_and_meta() {
 
 #[tokio::test]
 async fn aggregate_counts_match_brute_force() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let uri = "/v1/aggregate?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31";
     let (status, headers, body) = get(&s, uri).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -176,7 +182,7 @@ async fn aggregate_counts_match_brute_force() {
 
 #[tokio::test]
 async fn version_pinning_and_redirects() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let (status, headers, _) = get(&s, "/v1/aggregate?q=gold&v=fixture-v1").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -199,8 +205,8 @@ async fn version_pinning_and_redirects() {
 #[tokio::test]
 async fn index_set_isolation() {
     // A version naming only the base index must not see pages in the delta.
-    let full = state_with(None);
-    let base_only = state_with(Some(vec!["pages-base-fixture".into()]));
+    let full = state_with(None).await;
+    let base_only = state_with(Some(vec!["pages-base-fixture".into()])).await;
     let uri = "/v1/aggregate?q=fever&from=1895-01-01&to=1897-12-31";
     let (_, _, a) = get(&full, uri).await;
     let (_, _, b) = get(&base_only, uri).await;
@@ -222,7 +228,7 @@ async fn index_set_isolation() {
 
 #[tokio::test]
 async fn problems_for_bad_requests() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let (status, headers, body) = get(&s, "/v1/aggregate?q=text:gold").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -244,7 +250,7 @@ async fn problems_for_bad_requests() {
 
 #[tokio::test]
 async fn hits_are_sorted_marked_linked_and_paginated() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let base = "/v1/hits?q=%22cross+of+gold%22&from=1896-01-01&to=1896-12-31&place=P00001&limit=5";
     let (status, _, page1) = get(&s, base).await;
     assert_eq!(status, StatusCode::OK, "{page1}");
@@ -274,7 +280,7 @@ async fn hits_are_sorted_marked_linked_and_paginated() {
 
 #[tokio::test]
 async fn hits_by_title_uses_lccn() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let (status, _, body) = get(&s, "/v1/hits?q=gold&lccn=sn99000002&limit=3").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["title"]["lccn"], "sn99000002");
@@ -295,7 +301,7 @@ async fn hits_by_title_uses_lccn() {
 
 #[tokio::test]
 async fn coverage_matches_aggregate_baseline() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let (_, _, agg) = get(
         &s,
         "/v1/aggregate?q=gold&from=1896-01-01&to=1896-12-31&bucket=month",
@@ -318,7 +324,7 @@ async fn coverage_matches_aggregate_baseline() {
 
 #[tokio::test]
 async fn front_filter_disables_inexact_baseline_and_api_alias_works() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let (status, _, body) = get(&s, "/api/v1/aggregate?q=gold&front=true").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["series"]["baseline"].is_null());
@@ -334,7 +340,7 @@ async fn front_filter_disables_inexact_baseline_and_api_alias_works() {
 #[tokio::test]
 async fn coarsens_before_querying_an_oversized_cube() {
     // 6 places × 366 days and × 53 weeks exceed 240 cells; 6 × 12 months fit.
-    let s = state_with_cells(240);
+    let s = state_with_cells(240).await;
     let (status, _, body) = get(
         &s,
         "/v1/aggregate?q=gold&from=1896-01-01&to=1896-12-31&bucket=day",
@@ -351,7 +357,7 @@ async fn coarsens_before_querying_an_oversized_cube() {
         .sum();
     assert_eq!(cube_sum, body["total"]["hits"].as_u64().unwrap());
     // Even by year the cube would exceed the budget → 422, not a backend failure.
-    let tiny = state_with_cells(5);
+    let tiny = state_with_cells(5).await;
     let (status, _, body) = get(&tiny, "/v1/aggregate?q=gold&from=1896-01-01&to=1896-12-31").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["type"], "/errors/query-too-broad");
@@ -359,7 +365,7 @@ async fn coarsens_before_querying_an_oversized_cube() {
 
 #[tokio::test]
 async fn places_geojson_is_version_pinned() {
-    let s = state_with(None);
+    let s = state_with(None).await;
     let (status, headers, _) = get(&s, "/v1/places?v=old").await;
     assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(
@@ -400,15 +406,14 @@ fn temp_data_dir(name: &str) -> PathBuf {
 #[tokio::test]
 async fn hot_reload_swaps_reference_data_and_backend_together() {
     let dir = temp_data_dir("reload");
-    let mut cfg = config();
-    cfg.data_dir = dir.clone();
-    let d = dir.clone();
-    let reloader: Reloader = Arc::new(move || memory_snapshot(&d));
-    let s = Arc::new(AppState::with_reloader(
-        cfg,
-        reloader().unwrap(),
-        Some(reloader),
-    ));
+    let loader = Loader {
+        reference: Arc::new(LocalStore::new(&dir)),
+        engine: Engine::Memory {
+            indexes_dir: dir.join("indexes"),
+        },
+    };
+    let snapshot = loader.snapshot().await.unwrap();
+    let s = Arc::new(AppState::with_loader(config(), snapshot, Some(loader)));
     assert!(
         !reload_if_changed(&s).await.unwrap(),
         "unchanged version must not reload"
@@ -433,5 +438,153 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["index_version"], "fixture-v2");
     assert!(body["total"]["hits"].as_u64().unwrap() > 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f1")) else {
+        return Vec::new();
+    };
+    entries
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "zst"))
+        .collect()
+}
+
+#[tokio::test]
+async fn slow_responses_persist_and_survive_a_restart() {
+    let dir = std::env::temp_dir().join(format!("usnm-respcache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = Arc::new(LocalStore::new(&dir));
+    let mut cfg = config();
+    cfg.persist_after = Duration::ZERO;
+    let first = Arc::new(
+        AppState::new(cfg.clone(), Arc::new(fixture_backend()), refdata().await)
+            .with_response_store(store.clone()),
+    );
+    let uri = "/v1/aggregate?q=fever&v=fixture-v1";
+    let (status, _, body) = get(&first, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut files = Vec::new();
+    for _ in 0..100 {
+        files = persisted_files(&dir);
+        if !files.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f1/");
+    let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        !name.contains("fever"),
+        "search text must not appear in paths"
+    );
+
+    // A fresh replica with an empty in-process cache and an empty index still
+    // answers from the persisted entry: the body is identical.
+    let restarted = Arc::new(
+        AppState::new(cfg, Arc::new(MemoryBackend::new()), refdata().await)
+            .with_response_store(store),
+    );
+    let (status, headers, again) = get(&restarted, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again, body);
+    assert!(header_str(&headers, header::ETAG).starts_with("\"fixture-v1:"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn fast_responses_are_not_persisted() {
+    let dir = std::env::temp_dir().join(format!("usnm-respfast-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = config();
+    cfg.persist_after = Duration::from_secs(3600);
+    let s = Arc::new(
+        AppState::new(cfg, Arc::new(fixture_backend()), refdata().await)
+            .with_response_store(Arc::new(LocalStore::new(&dir))),
+    );
+    let (status, _, _) = get(&s, "/v1/aggregate?q=fever&v=fixture-v1").await;
+    assert_eq!(status, StatusCode::OK);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(persisted_files(&dir).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+async fn get_from(
+    state: &Arc<AppState>,
+    uri: &str,
+    xff: &str,
+) -> (StatusCode, axum::http::HeaderMap) {
+    let resp = app(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("x-forwarded-for", xff)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    (resp.status(), resp.headers().clone())
+}
+
+#[tokio::test]
+async fn clients_over_their_rate_get_429() {
+    let mut cfg = config();
+    cfg.rate_limit = Some(usnm_api::config::RateLimit {
+        per_minute: 1.try_into().unwrap(),
+        burst: 2.try_into().unwrap(),
+    });
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    for _ in 0..2 {
+        assert_eq!(
+            get_from(&s, "/v1/meta", "203.0.113.7").await.0,
+            StatusCode::OK
+        );
+    }
+    let (status, headers) = get_from(&s, "/api/v1/meta", "198.51.100.1, 203.0.113.7").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        header_str(&headers, header::CONTENT_TYPE),
+        "application/problem+json"
+    );
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    let retry: u64 = header_str(&headers, header::RETRY_AFTER).parse().unwrap();
+    assert!((1..=60).contains(&retry));
+    // Other clients and health probes are unaffected.
+    assert_eq!(
+        get_from(&s, "/v1/meta", "203.0.113.8").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get_from(&s, "/healthz", "203.0.113.7").await.0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn reference_files_must_match_the_manifest() {
+    let dir = temp_data_dir("manifest");
+    let store = LocalStore::new(&dir);
+    assert!(RefData::load(&store).await.is_ok());
+
+    let places = dir.join("fixture-v1/places.json");
+    let mut text = std::fs::read_to_string(&places).unwrap();
+    text = text.replacen("Fixture", "Fixturf", 1);
+    std::fs::write(&places, text).unwrap();
+    let err = RefData::load(&store).await.unwrap_err();
+    assert!(err.contains("manifest"), "{err}");
+
+    // Ids from current.json become object paths, so they must be plain segments.
+    let mut current: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("current.json")).unwrap()).unwrap();
+    current["reference"] = "../fixture-v1".into();
+    std::fs::write(dir.join("current.json"), current.to_string()).unwrap();
+    let err = RefData::load(&store).await.unwrap_err();
+    assert!(err.contains("not a valid id"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }

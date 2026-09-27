@@ -1,27 +1,36 @@
 //! US News Map public search API (06).
 
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use axum::extract::Request;
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderValue, Method};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use moka::future::Cache;
+use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use usnm_search::SearchBackend;
+use usnm_store::ObjectStore;
 
 pub mod config;
 pub mod error;
+pub mod ratelimit;
 pub mod refdata;
 mod routes;
 pub mod version;
 
 use config::Config;
-use refdata::RefData;
+use error::ApiError;
+use ratelimit::Limiter;
+use refdata::{Current, RefData};
 
 /// One published version: its reference data and the backend that serves its
 /// index set. Swapped atomically so a request never mixes versions.
@@ -30,24 +39,67 @@ pub struct Snapshot {
     pub backend: Arc<dyn SearchBackend>,
 }
 
-/// Builds the snapshot for whatever `current.json` names now.
-pub type Reloader = Arc<dyn Fn() -> Result<Snapshot, String> + Send + Sync>;
+/// How a snapshot's search backend is obtained.
+pub enum Engine {
+    /// Load exactly the JSONL indexes the version names from `{dir}/{id}.jsonl`.
+    Memory { indexes_dir: PathBuf },
+    /// A shared engine (Quickwit): the index set travels with the reference data.
+    Shared(Arc<dyn SearchBackend>),
+}
+
+/// Builds snapshots from the reference store (Blob or a local directory).
+pub struct Loader {
+    pub reference: Arc<dyn ObjectStore>,
+    pub engine: Engine,
+}
+
+impl Loader {
+    pub async fn current(&self) -> Result<Current, String> {
+        refdata::read_current(self.reference.as_ref()).await
+    }
+
+    /// The snapshot for whatever `current.json` names now.
+    pub async fn snapshot(&self) -> Result<Snapshot, String> {
+        let current = self.current().await?;
+        self.load(current).await
+    }
+
+    pub async fn load(&self, current: Current) -> Result<Snapshot, String> {
+        let refdata = RefData::load_for(self.reference.as_ref(), current).await?;
+        let backend: Arc<dyn SearchBackend> = match &self.engine {
+            Engine::Shared(b) => b.clone(),
+            Engine::Memory { indexes_dir } => {
+                let dir = indexes_dir.clone();
+                let ids = refdata.current.indexes.clone();
+                tokio::task::spawn_blocking(move || memory_backend(&dir, &ids))
+                    .await
+                    .map_err(|e| e.to_string())??
+            }
+        };
+        Ok(Snapshot { refdata, backend })
+    }
+}
 
 pub struct AppState {
     pub config: Config,
     pub snapshot: ArcSwap<Snapshot>,
     /// `None` disables hot reload.
-    pub reloader: Option<Reloader>,
+    pub loader: Option<Loader>,
     /// Serialized responses keyed by `{index_version}|{endpoint}|{canonical}`.
     pub cache: Cache<String, Arc<Vec<u8>>>,
+    /// Persistent response cache (06 §6.5), read on in-process misses.
+    pub responses: Option<Arc<dyn ObjectStore>>,
+    pub limiter: Option<Limiter>,
+    /// Caps concurrent backend queries across all requests.
+    pub permits: Semaphore,
 }
 
 impl AppState {
     pub fn new(config: Config, backend: Arc<dyn SearchBackend>, refdata: RefData) -> Self {
-        Self::with_reloader(config, Snapshot { refdata, backend }, None)
+        Self::with_loader(config, Snapshot { refdata, backend }, None)
     }
 
-    pub fn with_reloader(config: Config, snapshot: Snapshot, reloader: Option<Reloader>) -> Self {
+    pub fn with_loader(config: Config, snapshot: Snapshot, loader: Option<Loader>) -> Self {
         let cache = Cache::builder()
             .max_capacity(config.cache_bytes)
             .weigher(|k: &String, v: &Arc<Vec<u8>>| {
@@ -56,11 +108,21 @@ impl AppState {
             .time_to_live(Duration::from_secs(24 * 3600))
             .build();
         Self {
+            limiter: config
+                .rate_limit
+                .map(|l| Limiter::new(l, config.trusted_proxy_hops)),
+            permits: Semaphore::new(config.backend_concurrency),
             config,
             snapshot: ArcSwap::from_pointee(snapshot),
-            reloader,
+            loader,
             cache,
+            responses: None,
         }
+    }
+
+    pub fn with_response_store(mut self, store: Arc<dyn ObjectStore>) -> Self {
+        self.responses = Some(store);
+        self
     }
 }
 
@@ -80,7 +142,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/places", get(routes::places))
         .route("/aggregate", get(routes::aggregate))
         .route("/hits", get(routes::hits))
-        .route("/coverage", get(routes::coverage));
+        .route("/coverage", get(routes::coverage))
+        .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit));
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -97,14 +160,25 @@ pub fn app(state: Arc<AppState>) -> Router {
         }))
 }
 
-/// Build a snapshot for the in-memory backend: the reference data plus exactly
-/// the JSONL indexes that `current.json` names (`{data_dir}/indexes/{id}.jsonl`).
-pub fn memory_snapshot(data_dir: &std::path::Path) -> Result<Snapshot, String> {
+async fn rate_limit(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    if let Some(limiter) = &state.limiter {
+        let peer = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| c.0.ip());
+        if let Err(wait) = limiter.check(req.headers(), peer) {
+            return ApiError::RateLimited(wait).into_response();
+        }
+    }
+    next.run(req).await
+}
+
+/// An in-memory backend holding exactly the named JSONL indexes.
+fn memory_backend(dir: &std::path::Path, ids: &[String]) -> Result<Arc<dyn SearchBackend>, String> {
     use std::io::BufRead;
-    let refdata = RefData::load(data_dir)?;
     let mut backend = usnm_search::memory::MemoryBackend::new();
-    for id in &refdata.current.indexes {
-        let path = data_dir.join("indexes").join(format!("{id}.jsonl"));
+    for id in ids {
+        let path = dir.join(format!("{id}.jsonl"));
         let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut docs = Vec::new();
         for line in std::io::BufReader::new(file).lines() {
@@ -117,29 +191,20 @@ pub fn memory_snapshot(data_dir: &std::path::Path) -> Result<Snapshot, String> {
         tracing::info!(index = %id, docs = docs.len(), "loaded memory index");
         backend.add_index(id, docs);
     }
-    Ok(Snapshot {
-        refdata,
-        backend: Arc::new(backend),
-    })
+    Ok(Arc::new(backend))
 }
 
 /// If `current.json` names a different version than the one serving, build
 /// the new snapshot and swap it in atomically. Returns whether it swapped.
 pub async fn reload_if_changed(state: &AppState) -> Result<bool, String> {
-    let Some(reloader) = state.reloader.clone() else {
+    let Some(loader) = &state.loader else {
         return Ok(false);
     };
-    let serving = state.snapshot.load().refdata.version().to_owned();
-    let dir = state.config.data_dir.clone();
-    let next = tokio::task::spawn_blocking(move || refdata::read_current(&dir))
-        .await
-        .map_err(|e| e.to_string())??;
-    if next.index_version == serving {
+    let next = loader.current().await?;
+    if next.index_version == state.snapshot.load().refdata.version() {
         return Ok(false);
     }
-    let snapshot = tokio::task::spawn_blocking(move || reloader())
-        .await
-        .map_err(|e| e.to_string())??;
+    let snapshot = loader.load(next).await?;
     tracing::info!(
         version = snapshot.refdata.version(),
         "publishing new index version"
@@ -148,16 +213,17 @@ pub async fn reload_if_changed(state: &AppState) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Poll `current.json` every `refresh_interval` (no-op without a reloader).
-pub fn spawn_refresher(state: Arc<AppState>) {
-    if state.reloader.is_none() {
-        return;
-    }
+/// Poll `current.json` every `refresh_interval` (no-op without a loader), and
+/// prune idle rate-limit buckets.
+pub fn spawn_background(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(state.config.refresh_interval);
         tick.tick().await;
         loop {
             tick.tick().await;
+            if let Some(limiter) = &state.limiter {
+                limiter.housekeeping();
+            }
             if let Err(e) = reload_if_changed(&state).await {
                 tracing::warn!(error = %e, "reload failed; keeping current version");
             }
