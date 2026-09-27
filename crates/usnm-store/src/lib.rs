@@ -53,6 +53,10 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
         body: Vec<u8>,
         content_type: &str,
     ) -> Result<bool, StoreError>;
+
+    /// Create or replace an object. Only the publisher uses this, for the
+    /// version pointer (`current.json`); everything else is create-only.
+    async fn put(&self, path: &str, body: Vec<u8>, content_type: &str) -> Result<(), StoreError>;
 }
 
 /// Open a store: an `https://{account}.blob.core.windows.net/{container}[/prefix]`

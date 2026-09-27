@@ -152,6 +152,27 @@ impl ObjectStore for BlobStore {
         Ok(Some(body))
     }
 
+    async fn put(&self, path: &str, body: Vec<u8>, content_type: &str) -> Result<(), StoreError> {
+        let resp = self
+            .request(Method::PUT, path)
+            .await?
+            .header("x-ms-blob-type", "BlockBlob")
+            .header(CONTENT_TYPE, content_type)
+            .header(CONTENT_LENGTH, body.len())
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| transport("put", path, e))?;
+        match resp.status() {
+            StatusCode::CREATED => Ok(()),
+            s => Err(StoreError::Http {
+                op: "put",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+
     async fn put_new(
         &self,
         path: &str,

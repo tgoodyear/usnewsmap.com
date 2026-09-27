@@ -16,12 +16,13 @@ Start with the **[design document](docs/design/README.md)**: background, require
 | `crates/usnm-search` | `SearchBackend` trait, the Quickwit translator and client, an in-memory reference backend, and the sharded aggregate planner |
 | `crates/usnm-store` | Object storage: Azure Blob over REST with managed identity (Entra ID only), or a local directory with the same layout |
 | `crates/usnm-api` | The public search API (axum): `/v1/meta`, `/v1/places`, `/v1/aggregate`, `/v1/hits`, `/v1/coverage`, health probes |
+| `crates/usnm-ingest` | The ingest pipeline (`usnm-ingest`): enqueue LoC batches, curate them to Parquet, build sealed indexes and reference snapshots, publish. State in Cosmos DB |
 | `web/` | The single-page app: React + MapLibre + deck.gl (see [`web/README.md`](web/README.md)) |
 | `infra/` | Bicep + `azd` for the lean Azure profile (see [`infra/README.md`](infra/README.md)) |
 | `fixtures/` | A small **synthetic** corpus for local development and tests (not real newspaper data) |
 | `docs/design/` | The design document set |
 
-Not yet built: the ingest pipeline (see the [roadmap](docs/design/10-roadmap-and-risks.md)). Until the first index is published, the infrastructure runs the API on synthetic fixtures (`USNM_SEARCH_BACKEND=fixtures`); the Quickwit sidecar is ready behind `USNM_SEARCH_BACKEND=quickwit`.
+Not yet built: reading the batch list from the LoC Datasets portal, `titles-sync` and `geocode`, and the ingest jobs in Azure (see [04 §4.4](docs/design/04-data-sources-and-ingestion.md#44-pipeline)). Until the first index is published, the infrastructure runs the API on synthetic fixtures (`USNM_SEARCH_BACKEND=fixtures`); the Quickwit sidecar is ready behind `USNM_SEARCH_BACKEND=quickwit`.
 
 ## Local development
 
@@ -46,6 +47,23 @@ kill "$(cat /tmp/qw/quickwit.pid)"
 ```
 
 Without `QUICKWIT_URL`, the parity tests skip; CI runs them in the `quickwit` job. Quickwit has no fuzzy term queries, so on this backend `/v1/meta` reports `"fuzzy": false` and fuzzy queries return 422 (05 §5.5.1).
+
+### Ingest pipeline
+
+`usnm-ingest` turns LoC batch archives into a published version: `enqueue` records a batch list, `curate` claims queued batches and writes curated Parquet, and `release` builds a new index (a delta, or a base with `--full`) and its reference snapshot, then writes `current.json` last. `run` does all three. To try it on the synthetic corpus, rebuilt as two batch archives:
+
+```sh
+python3 scripts/fixture-batches.py /tmp/usnm-ingest          # archives, batches.json, reference/catalog/
+cd /tmp/usnm-ingest
+cargo run --manifest-path ~/src/usnewsmap.com/Cargo.toml -p usnm-ingest -- \
+  --state-file state.json --curated curated --reference reference \
+  run --list batches.json --synthetic --index-dir reference/indexes
+USNM_DATA_DIR=/tmp/usnm-ingest/reference cargo run --manifest-path ~/src/usnewsmap.com/Cargo.toml -p usnm-api
+```
+
+(Adjust `~/src/usnewsmap.com` to your checkout.) To index into Quickwit instead, replace `--index-dir …` with `--quickwit-bin /path/to/quickwit --quickwit-metastore file:///tmp/usnm-ingest/qw --quickwit-index-root file:///tmp/usnm-ingest/qw`; the pipeline runs its own writer node for the release.
+
+In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos https://{account}.documents.azure.com/`, Blob URLs for `--curated` and `--reference`, and `--quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index`. Every option also reads an environment variable (`usnm-ingest --help`).
 
 ### Configuration (environment variables)
 

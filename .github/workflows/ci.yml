@@ -27,7 +27,7 @@ jobs:
       - run: cargo test --workspace --locked
 
   quickwit:
-    name: quickwit parity (S-2)
+    name: quickwit (parity, ingest release)
     runs-on: ubuntu-latest
     env:
       QUICKWIT_VERSION: v0.9.1
@@ -46,6 +46,8 @@ jobs:
       - name: Load fixtures, serve them from a read-only searcher
         run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
       - run: cargo test -p usnm-search --test quickwit_parity --locked
+      # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it.
+      - run: cargo test -p usnm-ingest --test pipeline --locked
       - if: failure()
         run: tail -n 200 "$RUNNER_TEMP"/qw/*.log
 
@@ -81,6 +83,19 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/usnewsmap-api:main
             ghcr.io/${{ github.repository_owner }}/usnewsmap-api:${{ github.sha }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ingest
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/usnewsmap-ingest:main
+            ghcr.io/${{ github.repository_owner }}/usnewsmap-ingest:${{ github.sha }}
+      - name: The ingest image runs
+        run: |
+          docker build -q -f Dockerfile.ingest -t usnm-ingest-check . > /dev/null
+          docker run --rm usnm-ingest-check --version
+          docker run --rm --entrypoint quickwit usnm-ingest-check --version
 
   infra:
     name: infra (bicep lint, build)

@@ -1,0 +1,42 @@
+[package]
+name = "usnm-ingest"
+version = "0.1.0"
+description = "US News Map ingest pipeline: curate LoC batches, build indexes and reference snapshots, publish"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+usnm-core.workspace = true
+usnm-store.workspace = true
+anyhow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+bzip2.workspace = true
+chrono.workspace = true
+clap.workspace = true
+flate2.workspace = true
+form_urlencoded.workspace = true
+futures.workspace = true
+httpdate.workspace = true
+parquet.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+usnm-api = { path = "../usnm-api" }
+axum.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net"] }
+
+[lints]
+workspace = true

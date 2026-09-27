@@ -69,7 +69,7 @@ def main():
     for pid, ordinal, name, state, *_ in PLACES:
         lccn = f"sn99{ordinal:06d}"
         titles.append({
-            "lccn": lccn, "name": f"The Fixture Gazette {ordinal}", "place_id": pid,
+            "lccn": lccn, "name": f"The Fixture Gazette {ordinal}", "ordinal": ordinal, "place_id": pid,
             "state": state, "languages": ["eng"], "first": "1895-01-01", "last": "1897-12-31",
         })
         counts = {}

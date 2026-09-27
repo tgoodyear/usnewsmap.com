@@ -1,4 +1,4 @@
-//! Entra ID access tokens for Blob Storage.
+//! Entra ID access tokens for Azure data services (Blob Storage, Cosmos DB).
 //!
 //! In Container Apps the managed identity endpoint (`IDENTITY_ENDPOINT` +
 //! `IDENTITY_HEADER`) issues tokens; `AZURE_CLIENT_ID` selects the
@@ -18,6 +18,9 @@ use crate::StoreError;
 
 /// Token audience for Azure Storage.
 pub const STORAGE_RESOURCE: &str = "https://storage.azure.com/";
+
+/// Token audience for the Cosmos DB data plane.
+pub const COSMOS_RESOURCE: &str = "https://cosmos.azure.com";
 
 const REFRESH_MARGIN: Duration = Duration::from_secs(300);
 
@@ -69,17 +72,20 @@ impl Credential {
     }
 }
 
-/// The ambient credential: managed identity when its endpoint is present,
-/// otherwise the Azure CLI.
+/// The ambient credential for Blob Storage: managed identity when its
+/// endpoint is present, otherwise the Azure CLI.
 pub fn from_env() -> Arc<Credential> {
+    from_env_for(STORAGE_RESOURCE)
+}
+
+/// The ambient credential for another resource (e.g. [`COSMOS_RESOURCE`]).
+pub fn from_env_for(resource: &'static str) -> Arc<Credential> {
     let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     match (var("IDENTITY_ENDPOINT"), var("IDENTITY_HEADER")) {
-        (Some(endpoint), Some(header)) => Arc::new(Credential::new(ManagedIdentity::new(
-            endpoint,
-            header,
-            var("AZURE_CLIENT_ID"),
-        ))),
-        _ => Arc::new(Credential::new(AzureCli)),
+        (Some(endpoint), Some(header)) => Arc::new(Credential::new(
+            ManagedIdentity::new(endpoint, header, var("AZURE_CLIENT_ID")).with_resource(resource),
+        )),
+        _ => Arc::new(Credential::new(AzureCli { resource })),
     }
 }
 
@@ -88,6 +94,7 @@ pub struct ManagedIdentity {
     endpoint: String,
     header: String,
     client_id: Option<String>,
+    resource: &'static str,
     http: reqwest::Client,
 }
 
@@ -97,11 +104,17 @@ impl ManagedIdentity {
             endpoint,
             header,
             client_id,
+            resource: STORAGE_RESOURCE,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
                 .build()
                 .expect("static client config"),
         }
+    }
+
+    pub fn with_resource(mut self, resource: &'static str) -> Self {
+        self.resource = resource;
+        self
     }
 }
 
@@ -110,6 +123,7 @@ impl fmt::Debug for ManagedIdentity {
         f.debug_struct("ManagedIdentity")
             .field("endpoint", &self.endpoint)
             .field("client_id", &self.client_id)
+            .field("resource", &self.resource)
             .finish_non_exhaustive()
     }
 }
@@ -117,10 +131,7 @@ impl fmt::Debug for ManagedIdentity {
 #[async_trait]
 impl TokenSource for ManagedIdentity {
     async fn fetch(&self) -> Result<AccessToken, StoreError> {
-        let mut query = vec![
-            ("api-version", "2019-08-01"),
-            ("resource", STORAGE_RESOURCE),
-        ];
+        let mut query = vec![("api-version", "2019-08-01"), ("resource", self.resource)];
         if let Some(id) = &self.client_id {
             query.push(("client_id", id));
         }
@@ -148,7 +159,9 @@ impl TokenSource for ManagedIdentity {
 
 /// `az account get-access-token` for local development.
 #[derive(Debug)]
-pub struct AzureCli;
+pub struct AzureCli {
+    pub resource: &'static str,
+}
 
 #[async_trait]
 impl TokenSource for AzureCli {
@@ -158,7 +171,7 @@ impl TokenSource for AzureCli {
                 "account",
                 "get-access-token",
                 "--resource",
-                STORAGE_RESOURCE,
+                self.resource,
                 "--output",
                 "json",
             ])

@@ -29,19 +29,22 @@ The legacy crawler targeted `chroniclingamerica.loc.gov` JSON endpoints (`/batch
 raw/                                   (lean profile: NOT retained; LoC is the source of record)
   loc-api/titles/{date}/…json.zst       raw title metadata snapshots only (small)
 curated/                               (Cool; the system of record; versioned + soft delete)
-  pages/year={YYYY}/batch={batch}/v{batch_version}/attempt={attempt_id}/part-{nnnn}.parquet
+  pages/{batch}/v{NN}/{attempt}/part-{nnnn}.parquet
                                         written once, never overwritten; the Cosmos `batches` item
                                         points at the committed attempt (the atomic "commit")
+  pages/{batch}/v{NN}/{attempt}/counts.json
+                                        pages per (lccn, day), all text statuses: baselines are
+                                        built from these without re-reading the parts
 reference/                             (Hot; small; loaded by API; IMMUTABLE per index version)
-  {index_version}/
-    titles.parquet      titles.json.zst
-    places.parquet      places.geojson.zst
-    baselines_place_day.parquet         pages published per (place_id, date)
-    baselines_title_month.parquet
-    coverage_state_year.parquet
-    manifest.json                       { index_version, files: [{path, sha256, bytes}], built_from: {titles_snapshot, curated_partitions} }
+  catalog/titles.json, places.json      the working catalog (titles-sync + geocode; hand-written
+                                        until those land). Titles and places carry stable ordinals
+  {index_version}/                      = pages-v{YYYYMMDD}-{n}
+    titles.json  places.json            the catalog as published with this version (only titles
+                                        and places that have pages in it)
+    baselines.json                      pages published per place: {place_id: [[day, pages], …]}
+    manifest.json                       { index_version, files: [{path, sha256, bytes}], built_from: {batches} }
   overrides/places.csv                  hand-curated geocoding fixes (also in git)
-  current.json                          { index_version, backend, indexes: [base, delta…] (sealed), reference_manifest: "{index_version}/manifest.json", previous_version, published_at }
+  current.json                          { index_version, backend, indexes: [base, delta…] (sealed), reference: "{index_version}", bounds, previous_version, published_at, synthetic }
 (document state, meaning per-title, per-batch, per-issue and per-index-run status, lives in Cosmos DB, not here; see 05 §5.9.1)
 cache/{index_version}/                 (Hot) persistent API response cache, zstd JSON keyed by canonical-query hash
 qw-index/                              (Hot; Quickwit splits + file-backed metastore)
@@ -74,7 +77,9 @@ Curated rows hold only **immutable page facts**. Title-derived attributes (`plac
 
 ## 4.4 Pipeline
 
-All stages are subcommands of one Rust binary (`usnm-ingest`), packaged as one container image. **Weekly incremental** work runs as **Azure Container Apps Jobs**. The **initial backfill and full re-indexes** run the same image on **ACI Spot container groups** (preview) created by a launcher (see [08 §8.4](08-azure-infrastructure.md#84-compute-sizing-notes)). Work is split into **one Cosmos `batches` item per batch version** (about 3,000 batches). Workers claim items with lease patches, so work parallelizes naturally and retries are idempotent. Cosmos is the work queue; there is no Storage Queue.
+All stages are subcommands of one Rust binary (`usnm-ingest`, in `crates/usnm-ingest`), packaged as one container image (`Dockerfile.ingest`: the binary on the pinned Quickwit image).
+
+**Implemented so far:** `enqueue` (from a batch list), `curate` (the `batch` stage), and `release` (the `index` stage, with the reference snapshot built from each batch's `counts.json`; `stats` is folded in). `run` chains all three for the weekly job. State lives in Cosmos over its REST API, or in a local JSON file for development. **Still to come:** reading the batch list from the Datasets portal (after S-1 confirms its format), `titles-sync`, `geocode`, the Container Apps Jobs, and the ACI Spot launcher. `scripts/fixture-batches.py` turns the synthetic fixtures into batch archives, and CI checks that the pipeline reproduces the fixture indexes and reference snapshot exactly. **Weekly incremental** work runs as **Azure Container Apps Jobs**. The **initial backfill and full re-indexes** run the same image on **ACI Spot container groups** (preview) created by a launcher (see [08 §8.4](08-azure-infrastructure.md#84-compute-sizing-notes)). Work is split into **one Cosmos `batches` item per batch version** (about 3,000 batches). Workers claim items with lease patches, so work parallelizes naturally and retries are idempotent. Cosmos is the work queue; there is no Storage Queue.
 
 ```mermaid
 flowchart LR
@@ -92,12 +97,12 @@ flowchart LR
 
 | Stage | Trigger | Does | Idempotency |
 |-------|---------|------|-------------|
-| `discover` | Cron (weekly) + manual | Lists batches and versions from the Datasets portal; upserts `batches` items in Cosmos and marks new or changed versions `queued` | Only marks `queued` if the status ≠ curated for that version |
+| `discover` (`enqueue`) | Cron (weekly) + manual | Lists batches and versions from the Datasets portal (for now: from a batch list `[{name, url, sha256?}]`); upserts `batches` items in Cosmos and marks new or changed versions `queued`. Never downgrades a version | Only marks `queued` if the status ≠ curated for that version; failed batches are re-queued |
 | `batch` | A `queued` batch is available to claim | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; writes curated Parquet (~256 MB row groups); updates the manifest | Claims the batch with a conditional Cosmos patch (lease + ETag); writes to a **new attempt path** (never overwriting); then **upserts the issue items first** (idempotent, keyed by lccn/date/edition). The **final commit marker** is one conditional patch on the batch item, made only while the worker still holds the lease: `curated_path` → that attempt, plus sha256, pages and `status=curated`. If anything fails before that patch, the batch stays un-curated, its lease expires, and it's retried; `discover` also re-queues any batch not `curated`. Re-upserting issues is harmless. Uncommitted attempts are garbage-collected after 7 days |
 | `titles-sync` | Cron (weekly) | Pulls title records from the loc.gov API; snapshots to `raw/`; builds `reference/titles` | Snapshot by date |
 | `geocode` | When titles change | Resolves place of publication → GNIS feature (county-aware), else county centroid, else state centroid; applies `overrides/places.csv`; writes `reference/places` with a `precision` flag | Deterministic |
 | `stats` | After batches are curated | Aggregates baselines (pages per place/day and per title/month) and coverage (state/year) from curated Parquet joined with the titles snapshot, using DataFusion or Polars. Writes a **new** `reference/{index_version}/` snapshot (never overwrites) | Full recompute (cheap: one scan of the ids and dates columns) |
-| `index` | After stats, or manual | Takes the Cosmos `ops/quickwit-writer` lease (the single metastore writer). **Incremental:** writes newly curated rows with `text_status = ok` into a **new delta index**. **Compaction/full:** writes all rows into a **new base index**. Both join the titles snapshot for `place_id`/`state`/`language` and compute `place_shard`. Never writes an index a published version lists. Publishes by writing `current.json` last, naming the index set and its reference snapshot | Deterministic `doc_id` (the page key); each new index is built from scratch, so a retry discards the unpublished index and starts again |
+| `index` (`release`) | After curation, or manual | Takes the Cosmos `ops/quickwit-writer` lease (the single metastore writer). Runs the Quickwit writer node as a child process for the length of the release. **Incremental:** writes newly curated rows with `text_status = ok` into a **new delta index**. **Compaction/full:** writes all rows into a **new base index**. Both join the titles snapshot for `place_id`/`state`/`language` and compute `place_shard`. Never writes an index a published version lists. Publishes by writing `current.json` last, naming the index set and its reference snapshot | Deterministic `doc_id` (the page key); each new index is built from scratch, so a retry discards the unpublished index and starts again |
 
 **Throughput plan for the initial backfill.** 23M pages at a conservative 2,000 pages/s per indexer is about 3.2 hours of pure indexing per indexer. In practice LoC download politeness dominates (days, not hours), which is why the curated lake matters: **after the first backfill we never re-download to re-index.** If the mirror is validated, the backfill can pull from it instead. On **ACI Spot**, 8 workers × 2 vCPU for ~4 days cost about $20–25. Evictions only delay the work, because each batch is idempotent and becomes claimable again when the evicted worker's lease expires. The data services accept public (Entra-only) connections only during this guarded backfill window ([08 §8.3](08-azure-infrastructure.md#83-networking)).
 

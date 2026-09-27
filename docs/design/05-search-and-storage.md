@@ -318,6 +318,6 @@ One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth
 
 **Cost:** **$0** within the free tier. Beyond it: ~$0.25/GB-month plus provisioned RU/s. If the free tier is already used in the subscription, **serverless** costs roughly $1–3/month at this volume.
 
-**SDK:** `azure_data_cosmos` (Rust, **beta 0.37**; preview/beta is acceptable per the owner). The operations used here (point read, upsert, patch with an ETag condition, query, change-feed pull) are small, and the REST API is a fallback.
+**Client:** the pipeline talks to the Cosmos **REST API** directly (`crates/usnm-ingest/src/cosmos.rs`) with Entra ID tokens: point read, create, **replace with `If-Match`** (for claims, commits and locks), upsert and a one-field query, retrying 429s. That is the whole surface the pipeline needs, and it avoids depending on the beta Rust SDK. Finding newly curated batches uses a status query rather than the change feed; at ~3k batch items the query costs little.
 
 **Resilience:** the API doesn't read Cosmos on the request path. If Cosmos is throttled or down, the site keeps serving and only the pipeline pauses. Continuous backup (7-day, free tier) covers mistakes, and state can be rebuilt from Parquet plus the LoC batch list if ever lost.

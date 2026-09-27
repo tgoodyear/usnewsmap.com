@@ -1,0 +1,22 @@
+# usnm-ingest container image (04 §4.4): the pipeline binary on the pinned
+# Quickwit image, so `release --quickwit-bin` can run the sole metastore
+# writer as a child process (08 §8.4.1). Used by the Container Apps Jobs and
+# the ACI Spot backfill groups.
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+# The index config is compiled into the binary.
+COPY infra/quickwit ./infra/quickwit
+RUN cargo build --release --locked -p usnm-ingest
+
+# Quickwit v0.9.1 (the version spike S-2 validated), pinned by digest.
+FROM quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
+COPY --from=build /src/target/release/usnm-ingest /usr/local/bin/usnm-ingest
+RUN useradd --system --uid 10001 --home-dir /work --create-home usnm
+ENV USNM_QUICKWIT_BIN=/usr/local/bin/quickwit \
+    USNM_WORK_DIR=/work \
+    QW_DISABLE_TELEMETRY=1
+USER usnm
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/usnm-ingest"]

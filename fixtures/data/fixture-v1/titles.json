@@ -2,6 +2,7 @@
  {
   "lccn": "sn99000001",
   "name": "The Fixture Gazette 1",
+  "ordinal": 1,
   "place_id": "P00001",
   "state": "IL",
   "languages": [
@@ -13,6 +14,7 @@
  {
   "lccn": "sn99000002",
   "name": "The Fixture Gazette 2",
+  "ordinal": 2,
   "place_id": "P00002",
   "state": "NY",
   "languages": [
@@ -24,6 +26,7 @@
  {
   "lccn": "sn99000003",
   "name": "The Fixture Gazette 3",
+  "ordinal": 3,
   "place_id": "P00003",
   "state": "CA",
   "languages": [
@@ -35,6 +38,7 @@
  {
   "lccn": "sn99000004",
   "name": "The Fixture Gazette 4",
+  "ordinal": 4,
   "place_id": "P00004",
   "state": "GA",
   "languages": [
@@ -46,6 +50,7 @@
  {
   "lccn": "sn99000005",
   "name": "The Fixture Gazette 5",
+  "ordinal": 5,
   "place_id": "P00005",
   "state": "SC",
   "languages": [
@@ -57,6 +62,7 @@
  {
   "lccn": "sn99000006",
   "name": "The Fixture Gazette 6",
+  "ordinal": 6,
   "place_id": "P00006",
   "state": "NE",
   "languages": [
