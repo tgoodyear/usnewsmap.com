@@ -115,9 +115,14 @@ impl Worker {
                 break;
             };
             let name = format!("{}_ver{:02}", batch.batch, batch.version);
-            match self.curate(&batch).await {
-                Ok(c) => {
-                    self.commit(&batch.batch, c).await?;
+            // A failed commit (e.g. a newer version was queued meanwhile) is
+            // handled like a failed curation: clear the lease and re-queue.
+            let result = match self.curate(&batch).await {
+                Ok(c) => self.commit(&batch.batch, c).await,
+                Err(e) => Err(e),
+            };
+            match result {
+                Ok(()) => {
                     tracing::info!(batch = %name, "curated");
                     done += 1;
                 }

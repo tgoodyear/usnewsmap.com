@@ -247,7 +247,8 @@ impl QuickwitNode {
             "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
              metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n",
-            port + 1,
+            port.checked_add(1)
+                .context("--quickwit-port must be below 65535")?,
             data.display()
         );
         if let Ok(account) = std::env::var("QW_AZURE_STORAGE_ACCOUNT") {

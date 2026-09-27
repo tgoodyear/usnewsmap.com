@@ -241,27 +241,37 @@ impl State {
 
     /// Take the single-writer lock (08 §8.4.1). Fails if another live holder has it.
     pub async fn lock(&self, name: &str, owner: &str, ttl: Duration) -> anyhow::Result<()> {
-        let doc = serde_json::json!({
-            "id": name, "kind": name, "owner": owner, "until": Utc::now() + ttl,
-        });
-        if self.docs.create(OPS, name, &doc).await?.is_some() {
-            return Ok(());
+        // A lost ETag race just means re-reading: it may have been this
+        // owner's own concurrent renewal, which is fine.
+        for _ in 0..5 {
+            let doc = serde_json::json!({
+                "id": name, "kind": name, "owner": owner, "until": Utc::now() + ttl,
+            });
+            let Some(held) = self.docs.get(OPS, name, name).await? else {
+                if self.docs.create(OPS, name, &doc).await?.is_some() {
+                    return Ok(());
+                }
+                continue;
+            };
+            let until: Option<DateTime<Utc>> =
+                serde_json::from_value(held.doc["until"].clone()).ok();
+            let holder = held.doc["owner"].as_str().unwrap_or("?");
+            if holder != owner && until.is_some_and(|u| u > Utc::now()) {
+                bail!(
+                    "lock `{name}` is held by `{holder}` until {}",
+                    until.expect("checked")
+                );
+            }
+            if self
+                .docs
+                .replace(OPS, name, &doc, &held.etag)
+                .await?
+                .is_some()
+            {
+                return Ok(());
+            }
         }
-        let Some(held) = self.docs.get(OPS, name, name).await? else {
-            bail!("lock `{name}` vanished while being taken; retry");
-        };
-        let until: Option<DateTime<Utc>> = serde_json::from_value(held.doc["until"].clone()).ok();
-        let holder = held.doc["owner"].as_str().unwrap_or("?");
-        if holder != owner && until.is_some_and(|u| u > Utc::now()) {
-            bail!(
-                "lock `{name}` is held by `{holder}` until {}",
-                until.expect("checked")
-            );
-        }
-        match self.docs.replace(OPS, name, &doc, &held.etag).await? {
-            Some(_) => Ok(()),
-            None => bail!("lock `{name}` was taken concurrently"),
-        }
+        bail!("lock `{name}` kept changing concurrently")
     }
 
     pub async fn unlock(&self, name: &str, owner: &str) -> anyhow::Result<()> {
@@ -281,6 +291,20 @@ impl State {
 mod tests {
     use super::*;
     use crate::docs::MemoryDocs;
+
+    #[tokio::test]
+    async fn concurrent_renewals_by_the_holder_both_succeed() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        s.lock("w", "a", Duration::hours(1)).await.unwrap();
+        for _ in 0..20 {
+            let (x, y) = tokio::join!(
+                s.lock("w", "a", Duration::hours(1)),
+                s.lock("w", "a", Duration::hours(1))
+            );
+            x.unwrap();
+            y.unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn writer_lock_is_exclusive_until_it_expires_or_is_released() {
