@@ -82,7 +82,7 @@ The **growth profile** adds Azure Front Door in front of both origins (edge cach
 | **Web app** | React 19 + TypeScript + Vite; MapLibre GL JS; deck.gl; uPlot; TanStack Query | UI, URL state, **client-side playback** from aggregate cubes, accessibility views | Static |
 | **Search API** (`api` container) | Rust, axum/tokio, reqwest, moka | Parse and validate queries → backend DSL; run aggregate, hit and snippet queries; join with reference data; normalize; encode responses; **three cache layers** (browser, in-process, Blob); rate limiting; OpenAPI | Replicas (max 2) |
 | **Search engine** (`quickwit` sidecar) | **Quickwit** (Rust, Apache-2.0); Azure AI Search in the growth profile | **Read-only** serving: searcher role with the file-backed metastore opened in polling mode. No indexer or janitor role runs here | With its replica; splits on Blob |
-| **Index writer** | Quickwit indexer + janitor embedded in the `index` job (Container Apps Job weekly; ACI Spot for full rebuilds) | The **only** process that writes the metastore, guarded by a Cosmos `ops` lease. Full rebuilds write a brand-new index, so they never touch the serving one | One at a time |
+| **Index writer** | Quickwit indexer + janitor embedded in the `index` job (Container Apps Job weekly; ACI Spot for compaction) | The **only** process that writes the metastore, guarded by a Cosmos `ops` lease. It writes only **new** indexes (weekly deltas, or a new base at compaction); published indexes are sealed, so a version's results never change | One at a time |
 | **Reference data** | Parquet/JSON artifacts on Blob | Titles (LCCN → name, place, dates, language), places (lat/lon, county, state), baselines (pages per place per day), coverage | Loaded into API memory (tens of MB) |
 | **Weekly ingest** | Rust CLI in Container Apps Jobs (inside the VNet); batches claimed from Cosmos with leases | Discover new LoC batches; curate; build reference data; incremental index; pre-warm | Fixed parallelism |
 | **Backfill / re-index** | Same Rust image on **ACI Spot container groups** (preview) | Initial download and curation of ~3,000 batches; full index builds | Launcher creates N groups |
@@ -136,7 +136,8 @@ sequenceDiagram
   W->>C: claim next queued batch (conditional patch: lease + ETag)
   W->>LOC: download bulk OCR (rate-limited, polite UA)
   W->>L: stream archive (not retained) → write curated/…/attempt=…/part.parquet
-  W->>C: commit: patch batch (curated_path, status=curated) + upsert issues
+  W->>C: upsert issue items (idempotent)
+  W->>C: final commit: conditional patch batch (curated_path, status=curated)
   IX->>C: take writer lease · read batches change feed (newly curated)
   IX->>L: stats: build reference/{index_version}/ snapshot (baselines, coverage)
   IX->>L: read committed curated partitions

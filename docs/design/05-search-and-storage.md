@@ -134,6 +134,7 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 | `ym` | u32 | ✅ | ✅ | – | `year*12 + (month-1)`; month buckets |
 | `year` | u16 | ✅ | ✅ | – | Year buckets |
 | `place_id` | keyword | ✅ | ✅ facet | ✅ | Map aggregation |
+| `place_shard` | u8 | ✅ | ✅ | – | `place ordinal mod 8`, used to shard large cube aggregations (§5.7) |
 | `lccn` | keyword | ✅ | ✅ | ✅ | Title filter and hits |
 | `state` | keyword | ✅ | ✅ | – | Filter and choropleth |
 | `language` | keyword[] | ✅ | ✅ | – | Filter |
@@ -147,8 +148,8 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 
 ```yaml
 version: 0.9
-index_id: pages-v20261001-1
-index_uri: azure://qw-index/pages-v20261001-1
+index_id: pages-base-20261001        # deltas use the same mapping: pages-delta-20261008-1, …
+index_uri: azure://qw-index/pages-base-20261001
 doc_mapping:
   mode: strict
   timestamp_field: date          # validate pre-1970 in S-2; bucket fields don't depend on it
@@ -164,6 +165,7 @@ doc_mapping:
     - { name: ym,         type: u64,      fast: true, indexed: true }
     - { name: year,       type: u64,      fast: true, indexed: true }
     - { name: place_id,   type: text,     tokenizer: raw, fast: true, stored: true }
+    - { name: place_shard, type: u64,     fast: true, indexed: true }
     - { name: lccn,       type: text,     tokenizer: raw, fast: true, stored: true }
     - { name: state,      type: text,     tokenizer: raw, fast: true }
     - { name: language,   type: array<text>, tokenizer: raw, fast: true }
@@ -242,12 +244,15 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 | 4 months – 3 years | week | 157 |
 | ≤ 4 months | day | 122 |
 
-**Queries issued for Q1** (one round-trip in Quickwit; two or three in parallel for AI Search):
+**Queries issued for Q1** (Quickwit; AI Search in the growth profile issues the equivalent facet requests):
 
-1. `terms(place_id, size = #places) → histogram(bucket_field, interval)` gives the sparse cube `[place][bucket] = pages`.
-2. `histogram(bucket_field)` over all hits gives the national series (this could also be derived from 1; computing it directly guards against truncation).
-3. `terms(place_id) → min(day)` gives the first appearance per place.
-4. `max_hits = 0`, so no documents are returned.
+1. **Summary query** (always one call): `histogram(bucket_field)` for the national series, plus `terms(place_id, size = 5,000) → min(day)` for the first appearance per place. This also yields **P**, the number of places with at least one hit. It needs at most ~3,000 + 360 buckets.
+2. **Cube query:** `terms(place_id) → histogram(bucket_field, interval)` gives the sparse cube `[place][bucket] = pages`. Its upper bound is **P × B** buckets (B = number of time buckets).
+   - If P × B ≤ **150,000**, it's a single call.
+   - Otherwise the API **shards** it by `place_shard`, a fast field holding `place ordinal mod 8` that is written at index time. It issues ⌈P × B / 150,000⌉ sub-queries (at most 8), two at a time, each filtered to its shard, and merges the results. The worst case (~633k cells) takes 5 sub-queries.
+3. `max_hits = 0` on every call, so no documents are returned.
+
+**Engine limits, set explicitly.** Quickwit caps nested aggregations with `searcher.aggregation_bucket_limit` (**default 65,000**) and `searcher.aggregation_memory_limit` (default 500 MB). The sidecar config sets **`aggregation_bucket_limit: 200000`** and **`aggregation_memory_limit: 768MB`**, which fits the 2 GiB sidecar, so a 150k-bucket shard has headroom. S-2 benchmarks memory and latency at exactly these settings. If memory is tight, the shard target drops (e.g. to 60k buckets, ≤ 11 sub-queries) rather than raising the limits. Typical queries therefore take two calls (summary + one cube), and the largest take up to 1 + 8.
 
 **Normalization** happens in the API from `reference/{index_version}/baselines_place_day` (pages *published* per place and day, rolled up to any bucket in memory):
 `rel[place][bucket] = hits / baseline`, and nationally `rel[bucket] = Σhits / Σbaseline`. This replaces the legacy `globalFreq` table, stays correct as the corpus grows, and gives honest per-place rates.
@@ -304,6 +309,7 @@ One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth
 
 **Usage patterns:**
 - **Work claiming.** Batch workers (Container Apps Jobs or ACI Spot groups) take a batch with a conditional **patch** on the batch item (`lease.until < now` → set the owner, `status=downloading`), using its ETag. This also makes Cosmos the work queue: `queued` batches are claimed in order, and an expired lease makes a batch claimable again. No Storage Queue is needed, which saves a private endpoint.
+- **Commit order.** Cosmos transactions don't span containers, so a worker writes dependent items first (issue upserts, which are idempotent) and makes the batch's `status=curated` patch the **last** write, conditional on its lease. A crash at any point leaves the batch un-curated and retryable, never marked done with incomplete issue state.
 - **Progress and retries.** Every state transition is one patch (~10 RU). Failures record `last_error` and `attempts`, and a failed batch can be re-queued with a single query plus patch.
 - **Change feed.** The `index` job reads the `batches` change feed (pull model) to find batches that became `curated` since its last continuation token. This is a natural driver for incremental indexing. The Rust SDK added change-feed pull in 0.37.
 - **Operator queries.** `SELECT * FROM b WHERE b.status = 'failed'`, "titles with county-precision geocodes awaiting review", "issues not in the current index". These run from the Data Explorer or a tiny admin CLI subcommand.

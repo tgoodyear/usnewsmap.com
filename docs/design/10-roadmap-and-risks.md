@@ -44,7 +44,7 @@ gantt
 | ID | Question | Method | Output |
 |----|----------|--------|--------|
 | **S-1** | How big is the corpus really (pages, text bytes, languages)? Which bulk endpoints and formats exist, and what are the rate limits? | Download 20 batches across eras; measure; read the Datasets portal docs; email `ndnptech@loc.gov` about bulk etiquette | Sizing sheet; updated [04](04-data-sources-and-ingestion.md) |
-| **S-2** | Quickwit vs Azure AI Search on our query shape | 1M-page sample in both; benchmark set ([05 §5.8](05-search-and-storage.md#58-benchmark-query-set-spike-s-2)); verify pre-1970 timestamps, fuzzy, slop, snippets, delete tasks, managed-identity Blob auth in Quickwit, and split-cache behavior on Container Apps | Benchmark report; final [ADR-0001](adr/0001-search-engine.md) |
+| **S-2** | Quickwit vs Azure AI Search on our query shape | 1M-page sample in both; benchmark set ([05 §5.8](05-search-and-storage.md#58-benchmark-query-set-spike-s-2)); verify pre-1970 timestamps, fuzzy, slop, snippets, multi-index search and aggregations across a base + up to 8 sealed deltas, nested-aggregation memory and latency at `aggregation_bucket_limit: 200000` / `aggregation_memory_limit: 768MB` with place-shard splitting, managed-identity Blob auth in Quickwit, and split-cache behavior on Container Apps | Benchmark report; final [ADR-0001](adr/0001-search-engine.md) |
 | **S-3** | Geocoding quality from LoC metadata + GNIS | Resolve all titles; diff against legacy `town_ref.csv`; manually review outliers | `overrides/places.csv`; precision stats |
 | **S-4** | Playback performance on low-end devices | Synthetic worst-case cube (3,000 × 211) on a low-end Android device and an older iPhone | Adjust the budget or thin the cube |
 

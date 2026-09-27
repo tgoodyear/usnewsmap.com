@@ -97,8 +97,17 @@ Quickwit's **file-backed metastore** (a JSON file per index on Blob) doesn't sup
 | Process | Quickwit roles | Metastore access | Count |
 |---------|----------------|------------------|-------|
 | `quickwit` sidecar in each `ca-usnm` replica | `searcher` (plus the metastore service pointed at the file-backed URI with `#polling_interval=30s`) | **Read-only.** It picks up newly published splits by polling. No indexer or janitor roles run here, and the identity has only Blob *Reader* on `qw-index/` | 1–2 |
-| `index` job (weekly incremental: Container Apps Job) | `indexer` + `janitor`, embedded in the job container | **Sole writer** of the *serving* index's metastore | ≤ 1, enforced by a Cosmos `ops/quickwit-writer` lease (ETag compare-and-swap, 2-hour TTL, renewed while running) |
-| Full rebuild (ACI Spot) | `indexer` + `janitor` | Sole writer of a **new** index (`pages-v{date}` with its own `index_uri` and metastore file). Serving replicas don't read it until `current.json` flips | 1 |
+| `index` job (weekly incremental: Container Apps Job) | `indexer` + `janitor`, embedded in the job container | **Sole writer.** It only ever writes a **new delta index** (`pages-delta-{date}-{n}`), never an index that a published version already lists | ≤ 1, enforced by a Cosmos `ops/quickwit-writer` lease (ETag compare-and-swap, 2-hour TTL, renewed while running) |
+| Compaction / full rebuild (ACI Spot) | `indexer` + `janitor` | Sole writer of a **new base index** (`pages-base-{date}`) | 1 |
+
+**Index versions are immutable sets of sealed indexes.** An `index_version` names an explicit list of Quickwit indexes in `current.json`: one base plus zero or more deltas, e.g. `["pages-base-20261001", "pages-delta-20261008-1", "pages-delta-20261015-1"]`.
+
+- **Sealing:** once an index appears in a published version, it's sealed. No job writes to it again; replacement or deletion only happens by building a new base.
+- **Explicit index lists:** the API passes exactly the listed index ids to Quickwit (multi-index search with the same doc mapping). The polling searchers may see a new delta's metadata as soon as the writer creates it, but no query touches it until a new `current.json` lists it. A given `v` therefore always returns identical results, and rolling back to the previous `current.json` restores the exact previous set.
+- **Weekly increments** add new pages as a new delta, then publish a new version listing base + all deltas.
+- **Replacements** (new batch versions, OCR reprocessing) and **title-metadata changes** can't be applied to sealed indexes. They're recorded as pending in Cosmos and applied by the next **compaction**: a full rebuild into a new base on ACI Spot (~$5), which also clears the deltas. Compaction runs monthly, or sooner once there are 8 deltas or when pending replacements are flagged urgent. Until then the previous text and place assignments keep serving, consistently with their reference snapshot.
+- **Garbage collection:** the janitor deletes an index only after no version within the 7-day rollback window lists it.
+- **Azure AI Search (growth profile)** can't query several indexes in one request. That backend publishes only on compaction (a new index per version), and weekly increments wait for it.
 
 S-2 validates that searchers with a polling, read-only file-backed metastore behave as documented on the pinned Quickwit version. **Fallback:** a PostgreSQL metastore (Azure Database for PostgreSQL Flexible Server, Burstable B1ms, ~$13–15/month). It supports any number of Quickwit nodes and still fits under $80 (typical ~$65).
 

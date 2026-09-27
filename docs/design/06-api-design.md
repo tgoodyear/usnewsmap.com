@@ -126,7 +126,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 ```
 
 - Place coordinates and names are **not** repeated here. The SPA loads `/v1/places` once (CDN-cached, ~150 KB compressed) and joins by id.
-- The cube is sparse, so size scales with non-zero cells. The worst realistic case (a common term, ~3,000 places × 211 yearly buckets) is about **633k triplets**: ~9–10 MB of JSON (~2–3 MB gzip) or ~5 MB as Arrow (~1.5–2.5 MB compressed). Above a hard cap of 700k cells, the API steps to a coarser bucket. The SPA requests Arrow when the expected cube is large. `?format=arrow` returns `application/vnd.apache.arrow.stream`.
+- The cube is sparse, so size scales with non-zero cells. The worst realistic case (a common term, ~3,000 places × 211 yearly buckets) is about **633k triplets**: ~9–10 MB of JSON (~2–3 MB gzip) or ~5 MB as Arrow (~1.5–2.5 MB compressed). Above a hard cap of 700k cells, the API steps to a coarser bucket. Large cubes are computed as sharded sub-queries so they stay within the engine's bucket limit ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)). The SPA requests Arrow when the expected cube is large. `?format=arrow` returns `application/vnd.apache.arrow.stream`.
 
 ### 6.3.4 `GET /v1/hits` response
 
@@ -198,6 +198,7 @@ The lean profile has no edge CDN in front of the API, so the API caches in three
 - `v` missing → served from the current version with `Cache-Control: max-age=300` and a `Content-Location` naming the versioned URL.
 - `v` ≠ current (stale tab, old link, or a rollback) → **`307` redirect** to the same canonical query with the current `v`, marked `Cache-Control: no-store`. The SPA then refreshes `/v1/meta` and its other version-scoped data. A stale URL is therefore never answered with, or cached as, data from a different snapshot.
 - The Blob cache is keyed by the **serving** version (`cache/{index_version}/…`), so its entries can't cross versions either.
+- Each version names an immutable set of sealed Quickwit indexes, and the API queries exactly that set ([08 §8.4.1](08-azure-infrastructure.md#841-quickwit-metastore-one-writer-many-readers)). The results for a given `v` therefore can't change while it's being served.
 
 **Pre-warming.** After each index publish, a job requests the example searches and the top 200 queries from the previous 30 days (from aggregated, anonymous telemetry). The results land in the Blob cache, so they are warm even after a replica restart. Index versions are published at most **weekly** to keep the cache hit rate high.
 
