@@ -16,10 +16,11 @@ Start with the **[design document](docs/design/README.md)**: background, require
 | `crates/usnm-search` | `SearchBackend` trait, the Quickwit translator and client, an in-memory reference backend, and the sharded aggregate planner |
 | `crates/usnm-store` | Object storage: Azure Blob over REST with managed identity (Entra ID only), or a local directory with the same layout |
 | `crates/usnm-api` | The public search API (axum): `/v1/meta`, `/v1/places`, `/v1/aggregate`, `/v1/hits`, `/v1/coverage`, health probes |
+| `infra/` | Bicep + `azd` for the lean Azure profile (see [`infra/README.md`](infra/README.md)) |
 | `fixtures/` | A small **synthetic** corpus for local development and tests (not real newspaper data) |
 | `docs/design/` | The design document set |
 
-Not yet built: the web app, the ingest pipeline, and the Bicep infrastructure (see the [roadmap](docs/design/10-roadmap-and-risks.md)).
+Not yet built: the web app and the ingest pipeline (see the [roadmap](docs/design/10-roadmap-and-risks.md)). The infrastructure runs the API on synthetic fixtures until the Quickwit sidecar lands.
 
 ## Local development
 

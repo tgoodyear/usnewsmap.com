@@ -37,10 +37,47 @@ jobs:
   image:
     name: container image builds
     runs-on: ubuntu-latest
+    # Pushes to GHCR only for commits on main (08 §8.6); PRs just build.
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
+      - if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
-          tags: usnm-api:ci
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/usnewsmap-api:main
+            ghcr.io/${{ github.repository_owner }}/usnewsmap-api:${{ github.sha }}
+
+  infra:
+    name: infra (bicep lint, build)
+    runs-on: ubuntu-latest
+    env:
+      BICEP_VERSION: v0.47.16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bicep
+        run: |
+          # The runner ships a root-owned bicep; install the pinned one alongside.
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/bicep" \
+            "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
+          chmod +x "$RUNNER_TEMP/bin/bicep"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/bicep" --version | grep -F "${BICEP_VERSION#v}"
+      - name: Lint (any warning fails)
+        run: |
+          out=$(for f in infra/main.bicep infra/modules/*.bicep; do bicep lint "$f" 2>&1; done)
+          echo "$out"
+          test -z "$out"
+      - run: bicep build infra/main.bicep --stdout > /dev/null
