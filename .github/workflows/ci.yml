@@ -197,7 +197,7 @@ jobs:
     # After every check passes on main, move the API app to this commit's
     # image. Needs the repository variables from `azd provision` (infra/README.md).
     needs: [rust, quickwit, fixtures, image, infra, web, web-e2e]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_ACR_LOGIN_SERVER != '' && vars.USNM_API_APP != ''
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_ACR_LOGIN_SERVER != '' && vars.USNM_API_APP != '' && vars.USNM_RESOURCE_GROUP != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -211,20 +211,39 @@ jobs:
       API_URL: ${{ vars.USNM_API_URL }}
       IMAGE: ${{ vars.USNM_ACR_LOGIN_SERVER }}/usnewsmap-api:${{ github.sha }}
     steps:
-      - uses: azure/login@v3
+      # Runs finish out of order: a slower run for an older commit must not
+      # replace a newer image. Only the commit main points at deploys.
+      - name: Is this still the head of main?
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is now at $head; not deploying $GITHUB_SHA"
+          fi
+      - if: steps.head.outputs.current == 'true'
+        uses: azure/login@v3
         with:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Point the app at this commit's image
+        if: steps.head.outputs.current == 'true'
         run: |
           az config set extension.use_dynamic_install=yes_without_prompt
           az containerapp update -n "$APP" -g "$RG" --container-name api --image "$IMAGE" -o none
       - name: Wait for the new revision to serve
+        if: steps.head.outputs.current == 'true'
         run: |
+          latest="" ready=""
           for _ in $(seq 60); do
-            read -r latest ready < <(az containerapp show -n "$APP" -g "$RG" \
-              --query "[properties.latestRevisionName, properties.latestReadyRevisionName]" -o tsv | tr '\n' ' ')
+            revs=$(az containerapp show -n "$APP" -g "$RG" \
+              --query "[properties.latestRevisionName, properties.latestReadyRevisionName]" -o tsv)
+            latest=$(sed -n 1p <<< "$revs")
+            ready=$(sed -n 2p <<< "$revs")
             if [ -n "$latest" ] && [ "$latest" = "$ready" ]; then
               echo "revision $latest is ready"
               break
