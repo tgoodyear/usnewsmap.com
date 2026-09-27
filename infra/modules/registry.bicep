@@ -72,3 +72,4 @@ resource push 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 output name string = registry.name
 output loginServer string = registry.properties.loginServer
 output ciClientId string = ci.properties.clientId
+output ciPrincipalId string = ci.properties.principalId

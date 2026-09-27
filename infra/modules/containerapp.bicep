@@ -32,6 +32,8 @@ param searchBackend string = 'fixtures'
 param quickwitImage string = 'quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
 @description('Private registry the images come from (pulled with the app identity); empty for a public registry.')
 param registryServer string = ''
+@description('Principal allowed to roll out new API images (the CI identity); empty for none.')
+param deployerPrincipalId string = ''
 
 var quickwit = searchBackend == 'quickwit'
 
@@ -187,4 +189,20 @@ resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01
   }
 }
 
+// CI rolls a green main build onto this app (`az containerapp update
+// --image`). Contributor scoped to this one app: it can't touch any other
+// resource, and assigning identities also needs rights on them, which CI lacks.
+var contributor = 'b24988ac-6180-42a3-ab7e-976ab8b6e2d0'
+
+resource deployer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deployerPrincipalId)) {
+  scope: app
+  name: guid(app.id, deployerPrincipalId, contributor)
+  properties: {
+    principalId: deployerPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributor)
+  }
+}
+
+output name string = app.name
 output fqdn string = app.properties.configuration.ingress.fqdn

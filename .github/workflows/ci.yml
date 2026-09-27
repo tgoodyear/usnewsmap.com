@@ -18,7 +18,7 @@ jobs:
     name: rust (fmt, clippy, test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -34,7 +34,7 @@ jobs:
       QUICKWIT_VERSION: v0.9.1
       QUICKWIT_SHA256: ad67c2e2aab79e810906dfebec694aa50b07a001aaa75ce3ba7bc32d079f8185
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Quickwit
@@ -56,7 +56,7 @@ jobs:
     name: fixtures are reproducible
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: python3 fixtures/generate.py
       - run: git diff --exit-code fixtures/data
 
@@ -73,23 +73,23 @@ jobs:
       PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_ACR_LOGIN_SERVER != '' }}
       QUICKWIT: quickwit/quickwit@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - if: env.PUBLISH == 'true'
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - if: env.PUBLISH == 'true'
         run: az acr login --name "${ACR%%.*}"
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: ${{ env.PUBLISH == 'true' }}
           tags: |
             ${{ env.ACR || 'local' }}/usnewsmap-api:main
             ${{ env.ACR || 'local' }}/usnewsmap-api:${{ github.sha }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.ingest
@@ -119,7 +119,7 @@ jobs:
     env:
       BICEP_VERSION: v0.47.16
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Bicep
         run: |
           # The runner ships a root-owned bicep; install the pinned one alongside.
@@ -143,8 +143,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -160,10 +160,10 @@ jobs:
     name: web end-to-end (Playwright + axe)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -184,10 +184,73 @@ jobs:
         env:
           CI: "1"
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: playwright-report
           path: |
             web/playwright-report
             web/test-results
             api.log
+
+  deploy-api:
+    name: roll out the API (main)
+    # After every check passes on main, move the API app to this commit's
+    # image. Needs the repository variables from `azd provision` (infra/README.md).
+    needs: [rust, quickwit, fixtures, image, infra, web, web-e2e]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_ACR_LOGIN_SERVER != '' && vars.USNM_API_APP != '' && vars.USNM_RESOURCE_GROUP != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-api
+      cancel-in-progress: false
+    env:
+      APP: ${{ vars.USNM_API_APP }}
+      RG: ${{ vars.USNM_RESOURCE_GROUP }}
+      IMAGE: ${{ vars.USNM_ACR_LOGIN_SERVER }}/usnewsmap-api:${{ github.sha }}
+    steps:
+      # Runs finish out of order: a slower run for an older commit must not
+      # replace a newer image. Only the commit main points at deploys.
+      - name: Is this still the head of main?
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is now at $head; not deploying $GITHUB_SHA"
+          fi
+      - if: steps.head.outputs.current == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Point the app at this commit's image
+        if: steps.head.outputs.current == 'true'
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az containerapp update -n "$APP" -g "$RG" --container-name api --image "$IMAGE" -o none
+      - name: Wait for the new revision to serve
+        if: steps.head.outputs.current == 'true'
+        run: |
+          latest="" ready=""
+          for _ in $(seq 60); do
+            revs=$(az containerapp show -n "$APP" -g "$RG" \
+              --query "[properties.latestRevisionName, properties.latestReadyRevisionName]" -o tsv)
+            latest=$(sed -n 1p <<< "$revs")
+            ready=$(sed -n 2p <<< "$revs")
+            if [ -n "$latest" ] && [ "$latest" = "$ready" ]; then
+              echo "revision $latest is ready"
+              break
+            fi
+            sleep 10
+          done
+          test "$latest" = "$ready" || { echo "::error::revision $latest did not become ready"; exit 1; }
+          # Always check the app's own address; no variable can skip this.
+          fqdn=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+          test -n "$fqdn" || { echo "::error::$APP has no ingress FQDN"; exit 1; }
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "https://$fqdn/readyz"
