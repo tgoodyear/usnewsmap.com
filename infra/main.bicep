@@ -30,8 +30,9 @@ param cosmosFreeTier bool = true
 param alertEmails string = ''
 
 
-@description('Budget start month (first day). Defaults to the current month.')
-param budgetStartDate string = utcNow('yyyy-MM-01')
+@description('Budget start month, YYYY-MM-01. Set once per environment (a budget\'s start date cannot change); the budget is skipped when empty.')
+param budgetStartDate string = ''
+
 
 @description('Create and assign the guardrail policies (needs Resource Policy Contributor on the subscription).')
 param deployPolicies bool = true
@@ -192,7 +193,7 @@ module site 'modules/staticwebapp.bicep' = {
   }
 }
 
-module budget 'modules/budget.bicep' = if (!empty(emails)) {
+module budget 'modules/budget.bicep' = if (!empty(emails) && !empty(budgetStartDate)) {
   scope: rg
   name: 'budget'
   params: {

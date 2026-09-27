@@ -31,7 +31,7 @@ resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
       actual75: {
         enabled: true
         operator: 'GreaterThanOrEqualTo'
-        threshold: 94
+        threshold: json('93.75') // $75 of $80
         thresholdType: 'Actual'
         contactEmails: contactEmails
       }

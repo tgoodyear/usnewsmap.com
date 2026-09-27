@@ -5,7 +5,7 @@ param location string
 param tags object
 param name string
 param workspaceId string
-@description('Free tier (1000 RU/s, 25 GB): one account per subscription. When false, the account is serverless.')
+@description('Free tier (1000 RU/s, 25 GB, continuous backup): one account per subscription. When false, the account is serverless with periodic backup.')
 param freeTier bool = true
 
 var containers = [
@@ -31,10 +31,21 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = {
     disableKeyBasedMetadataWriteAccess: true
     publicNetworkAccess: 'Disabled'
     minimalTlsVersion: 'Tls12'
-    backupPolicy: {
-      type: 'Continuous'
-      continuousModeProperties: { tier: 'Continuous7Days' }
-    }
+    // Continuous backup (7-day, free) needs provisioned throughput; serverless
+    // accounts take periodic backup (every 4 h, 8 h retention, the free default).
+    backupPolicy: freeTier
+      ? {
+          type: 'Continuous'
+          continuousModeProperties: { tier: 'Continuous7Days' }
+        }
+      : {
+          type: 'Periodic'
+          periodicModeProperties: {
+            backupIntervalInMinutes: 240
+            backupRetentionIntervalInHours: 8
+            backupStorageRedundancy: 'Local'
+          }
+        }
   }
 }
 
