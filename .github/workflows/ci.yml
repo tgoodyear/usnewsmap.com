@@ -251,11 +251,15 @@ jobs:
         if: steps.head.outputs.current == 'true'
         run: |
           command -v skopeo > /dev/null || { sudo apt-get update -q && sudo apt-get install -y -q skopeo; }
-          token=$(az acr login --name "${ACR%%.*}" --expose-token --query accessToken -o tsv)
-          skopeo login "$ACR" -u 00000000-0000-0000-0000-000000000000 -p "$token"
-          skopeo copy --all --preserve-digests "docker://docker.io/${QUICKWIT}" "docker://${ACR}/quickwit/quickwit:v0.9.1"
+          # skopeo gets its own credentials file: `az acr login` above left an
+          # identity token in Docker's, which `skopeo login` refuses to touch.
+          auth="$RUNNER_TEMP/acr-auth.json"
+          az acr login --name "${ACR%%.*}" --expose-token --query accessToken -o tsv |
+            skopeo login --authfile "$auth" "$ACR" -u 00000000-0000-0000-0000-000000000000 --password-stdin
+          skopeo copy --all --preserve-digests --dest-authfile "$auth" \
+            "docker://docker.io/${QUICKWIT}" "docker://${ACR}/quickwit/quickwit:v0.9.1"
           want="${QUICKWIT#*@}"
-          got="sha256:$(skopeo inspect --raw "docker://${ACR}/quickwit/quickwit:v0.9.1" | sha256sum | cut -d' ' -f1)"
+          got="sha256:$(skopeo inspect --authfile "$auth" --raw "docker://${ACR}/quickwit/quickwit:v0.9.1" | sha256sum | cut -d' ' -f1)"
           test "$got" = "$want" || { echo "::error::copied Quickwit digest $got != $want"; exit 1; }
       # The API app exists once the environment pulls from its registry
       # (bootstrap's second provision); until then only the images publish.
