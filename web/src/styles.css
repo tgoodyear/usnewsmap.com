@@ -113,7 +113,13 @@ input, select {
 .segmented button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 
 .stage { position: relative; flex: 1; display: flex; min-height: 300px; }
+.map-wrap { position: relative; flex: 1; display: flex; min-height: 300px; }
 .map { flex: 1; min-height: 300px; }
+.map-tooltip {
+  position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 4px 8px; font-size: 0.85rem; white-space: nowrap;
+}
 .map--loading { display: grid; place-items: center; color: var(--muted); }
 
 .legend {

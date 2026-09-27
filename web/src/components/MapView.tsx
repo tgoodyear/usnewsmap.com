@@ -32,6 +32,13 @@ setWorkerUrl(workerUrl);
 
 const US_CENTER: [number, number] = [-96, 38.5];
 const MAX_RADIUS_PX = 26;
+/** Extra slop around a circle for hover and click, in pixels. */
+const HIT_SLOP_PX = 3;
+
+/** Circle radius in pixels: area ∝ pages, so radius ∝ √pages; 0 hides a place. */
+function radiusOf(value: number, maxValue: number): number {
+  return value > 0 ? Math.max(3, MAX_RADIUS_PX * Math.sqrt(value / Math.max(maxValue, 1))) : 0;
+}
 
 // `none` gives a plain background: offline development and tests.
 const STYLE_URL = import.meta.env.VITE_BASEMAP_STYLE ?? "https://tiles.openfreemap.org/styles/positron";
@@ -47,6 +54,13 @@ export default function MapView(props: Props) {
   const overlay = useRef<MapboxOverlay | null>(null);
   // Set while the map moves to match the URL, so that move isn't written back.
   const syncing = useRef(false);
+  const tooltip = useRef<HTMLDivElement>(null);
+  // What the hit test sees: the drawn points and their scale.
+  const drawn = useRef<{ points: MapPoint[]; maxValue: number; layer: Layer }>({
+    points: [],
+    maxValue: 1,
+    layer: "points",
+  });
   // The map is created once; its handlers read the latest viewport props.
   const latest = useRef(props);
   useEffect(() => {
@@ -68,8 +82,57 @@ export default function MapView(props: Props) {
     });
     m.touchZoomRotate.disableRotation();
     m.addControl(new NavigationControl({ showCompass: false }), "top-left");
+    // Overlaid, not interleaved: deck.gl 9.4's interleaved mode reads
+    // MapLibre internals that changed in MapLibre 6.
     const o = new MapboxOverlay({ interleaved: false, layers: [] });
     m.addControl(o);
+
+    // Hover and click are hit-tested on the CPU against the projected
+    // circles. GPU picking would read pixels back on every mouse move,
+    // stalling the pipeline; a few thousand projections cost far less.
+    const hit = (x: number, y: number): MapPoint | null => {
+      const { points, maxValue, layer } = drawn.current;
+      if (layer !== "points") return null;
+      let best: MapPoint | null = null;
+      let bestD = Infinity;
+      for (const p of points) {
+        if (p.value <= 0) continue;
+        const s = m.project(p.position);
+        const r = radiusOf(p.value, maxValue) + HIT_SLOP_PX;
+        const d = (s.x - x) ** 2 + (s.y - y) ** 2;
+        // Prefer the nearest centre among circles under the pointer.
+        if (d <= r * r && d < bestD) {
+          best = p;
+          bestD = d;
+        }
+      }
+      return best;
+    };
+    let frame = 0;
+    m.on("mousemove", (e) => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const p = hit(e.point.x, e.point.y);
+        m.getCanvas().style.cursor = p ? "pointer" : "";
+        const tip = tooltip.current;
+        if (!tip) return;
+        if (!p) {
+          tip.hidden = true;
+          return;
+        }
+        tip.textContent = `${p.name}, ${p.state} · ${p.value.toLocaleString()} pages`;
+        tip.style.transform = `translate(${e.point.x + 12}px, ${e.point.y + 12}px)`;
+        tip.hidden = false;
+      });
+    });
+    m.on("mouseout", () => {
+      cancelAnimationFrame(frame);
+      if (tooltip.current) tooltip.current.hidden = true;
+    });
+    m.on("click", (e) => {
+      const p = hit(e.point.x, e.point.y);
+      if (p) latest.current.onSelect(p.id);
+    });
     m.on("moveend", () => {
       if (syncing.current) {
         syncing.current = false;
@@ -81,6 +144,7 @@ export default function MapView(props: Props) {
     map.current = m;
     overlay.current = o;
     return () => {
+      cancelAnimationFrame(frame);
       m.remove();
       map.current = null;
       overlay.current = null;
@@ -104,17 +168,20 @@ export default function MapView(props: Props) {
     m.jumpTo({ center: target, zoom: z });
   }, [zoom, center]);
 
-  const { points, layer, norm, maxValue, maxRel, selected, onSelect } = props;
+  const { points, layer, norm, maxValue, maxRel, selected } = props;
   useEffect(() => {
     const o = overlay.current;
     if (!o) return;
-    const visible = points.filter((p) => p.value > 0);
+    // Every place in the search is always drawn; places with no pages yet
+    // have zero radius. A fixed-size dataset lets deck.gl update attribute
+    // values in place on each playback step instead of rebuilding buffers.
+    drawn.current = { points, maxValue, layer };
     const layers =
       layer === "heat"
         ? [
             new HeatmapLayer<MapPoint>({
               id: "heat",
-              data: visible,
+              data: points,
               getPosition: (p) => p.position,
               getWeight: (p) => (norm === "rel" ? p.rel : p.value),
               radiusPixels: 40,
@@ -124,13 +191,12 @@ export default function MapView(props: Props) {
         : [
             new ScatterplotLayer<MapPoint>({
               id: "points",
-              data: visible,
-              pickable: true,
+              data: points,
               stroked: true,
               radiusUnits: "pixels",
               lineWidthUnits: "pixels",
               // Area ∝ hits, so radius ∝ √hits (perceptually honest).
-              getRadius: (p) => Math.max(3, MAX_RADIUS_PX * Math.sqrt(p.value / Math.max(maxValue, 1))),
+              getRadius: (p) => radiusOf(p.value, maxValue),
               getFillColor: (p) =>
                 p.precision === "city"
                   ? colorFor(norm === "rel" ? p.rel / Math.max(maxRel, 1e-9) : p.value / Math.max(maxValue, 1))
@@ -139,31 +205,24 @@ export default function MapView(props: Props) {
                 p.id === selected
                   ? [20, 20, 20, 255]
                   : colorFor(norm === "rel" ? p.rel / Math.max(maxRel, 1e-9) : p.value / Math.max(maxValue, 1)),
-              getLineWidth: (p) => (p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5),
-              onClick: (info) => {
-                if (info.object) onSelect(info.object.id);
-              },
+              getLineWidth: (p) => (p.value <= 0 ? 0 : p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5),
               updateTriggers: {
                 getRadius: [maxValue],
                 getFillColor: [norm, maxValue, maxRel],
                 getLineColor: [norm, maxValue, maxRel, selected],
-                getLineWidth: [selected],
+                getLineWidth: [selected, points],
               },
-              transitions: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-                ? {}
-                : { getRadius: 120 },
             }),
           ];
-    o.setProps({
-      layers,
-      getTooltip: ({ object }) =>
-        object && "name" in object
-          ? {
-              text: `${(object as MapPoint).name}, ${(object as MapPoint).state}\n${(object as MapPoint).value.toLocaleString()} pages`,
-            }
-          : null,
-    });
-  }, [points, layer, norm, maxValue, maxRel, selected, onSelect]);
+    // No attribute transitions: deck.gl runs them on the GPU with transform
+    // feedback and reads buffers back, which stalls every playback step.
+    o.setProps({ layers });
+  }, [points, layer, norm, maxValue, maxRel, selected]);
 
-  return <div ref={container} className="map" data-testid="map" />;
+  return (
+    <div className="map-wrap">
+      <div ref={container} className="map" data-testid="map" />
+      <div ref={tooltip} className="map-tooltip" role="tooltip" hidden />
+    </div>
+  );
 }

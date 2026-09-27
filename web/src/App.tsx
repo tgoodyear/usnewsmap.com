@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useMemo } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api, ApiError, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
@@ -60,7 +60,17 @@ export function App() {
 
   const data = agg.data;
   const count = data?.bucket.count ?? 0;
-  const t = data ? (view.t ? bucketIndex(data.bucket.unit, data.bucket.from, count, view.t) : count - 1) : 0;
+  // Scrubbing and playback update the view at once but write the URL only
+  // when movement pauses: browsers throttle the History API (Firefox allows
+  // about 200 calls per 10 s), and a permalink only needs where it stopped.
+  // `base` is the URL's `t` when scrubbing began; once the URL changes for
+  // any reason (the deferred write, back/forward, a new search) it wins.
+  const [scrub, setScrub] = useState<{ base: string; t: string } | null>(null);
+  const tIso = scrub && scrub.base === view.t ? scrub.t : view.t;
+  const t = data ? (tIso ? bucketIndex(data.bucket.unit, data.bucket.from, count, tIso) : count - 1) : 0;
+  const urlWrite = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const key = searchKey(view);
+  useEffect(() => () => clearTimeout(urlWrite.current), [key]);
 
   // Prefix sums are built once per response; each frame is O(places).
   const hitSums = useMemo(
@@ -120,12 +130,19 @@ export function App() {
   // Colour by raw counts until relative values are known.
   const norm = view.norm === "rel" && !relReady ? "raw" : view.norm;
 
+  const urlT = view.t;
   const seek = useCallback(
     (i: number) => {
       if (!data) return;
-      setView({ t: bucketStart(data.bucket.unit, data.bucket.from, i) });
+      const iso = bucketStart(data.bucket.unit, data.bucket.from, i);
+      setScrub((s) => ({ base: s && s.base === urlT ? s.base : urlT, t: iso }));
+      clearTimeout(urlWrite.current);
+      urlWrite.current = setTimeout(() => {
+        setView({ t: iso });
+        setScrub(null);
+      }, 300);
     },
-    [data, setView],
+    [data, setView, urlT],
   );
   const select = useCallback((id: string) => setView({ place: id }), [setView]);
   const onViewport = useCallback(

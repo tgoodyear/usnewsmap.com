@@ -66,6 +66,8 @@ test("example search maps, plays, drills down and keeps a permalink", async ({ p
   // Keyboard playback: Home goes to the first week, where nothing has matched yet.
   await page.locator("body").press("Home");
   await expect(page.locator(".dock__label")).toHaveText("Week of Jun 1, 1896");
+  // The position reaches the URL once movement pauses.
+  await expect(page).toHaveURL(/[?&]t=1896-06-01/);
   await expect(page.locator(".summary")).toContainText("0 places");
   await page.locator("body").press("End");
   await expect(page.locator(".summary")).toContainText("6 places");
