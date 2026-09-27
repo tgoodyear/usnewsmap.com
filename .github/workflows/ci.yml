@@ -81,3 +81,59 @@ jobs:
           echo "$out"
           test -z "$out"
       - run: bicep build infra/main.bicep --stdout > /dev/null
+
+  web:
+    name: web (lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  web-e2e:
+    name: web end-to-end (Playwright + axe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Start the API on the synthetic fixtures
+        run: |
+          cargo build --release --locked -p usnm-api
+          USNM_BIND=127.0.0.1:8080 USNM_RATE_PER_MIN=0 ./target/release/usnm-api > api.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/readyz && break; sleep 1; done
+      - working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          # Default basemap style: the tests intercept it and serve a local
+          # style, so no third-party tile service is needed.
+          npm run build
+          npm run e2e
+        env:
+          CI: "1"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+            api.log
