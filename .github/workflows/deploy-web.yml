@@ -16,7 +16,13 @@ run-name: ${{ inputs.correlation != '' && format('deploy web ({0})', inputs.corr
 on:
   push:
     branches: [main]
-    paths: ["web/**", ".github/workflows/deploy-web.yml"]
+    paths:
+      - "web/**"
+      - ".github/workflows/deploy-web.yml"
+      # The scripts this workflow runs.
+      - "scripts/ci/head-of-main.sh"
+      - "scripts/ci/build-web.sh"
+      - "scripts/ci/swa-token.sh"
   workflow_dispatch:
     inputs:
       environment:
