@@ -440,4 +440,58 @@ mod tests {
             .await
             .is_err());
     }
+
+    /// Serve one response on a loopback port: `declared` in Content-Length,
+    /// then `body`, then close (short when `body` is shorter).
+    async fn serve_once(body: Vec<u8>, declared: usize) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 4096];
+            let _ = sock.read(&mut req).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {declared}\r\nconnection: close\r\n\r\n"
+            );
+            sock.write_all(head.as_bytes()).await.unwrap();
+            for chunk in body.chunks(64 * 1024) {
+                if sock.write_all(chunk).await.is_err() {
+                    return;
+                }
+            }
+            let _ = sock.shutdown().await;
+        });
+        format!("http://127.0.0.1:{}/batch.tar", addr.port())
+    }
+
+    fn read_all(d: Download) -> tokio::task::JoinHandle<(std::io::Result<Vec<u8>>, Download)> {
+        tokio::task::spawn_blocking(move || {
+            let mut d = d;
+            let mut out = Vec::new();
+            let r = std::io::Read::read_to_end(&mut d.reader, &mut out).map(|_| out);
+            (r, d)
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streams_http_bodies_larger_than_the_channel() {
+        // 6 MiB in 64 KiB writes: far more chunks than the 16-slot channel holds.
+        let body: Vec<u8> = (0..6 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let url = serve_once(body.clone(), body.len()).await;
+        let (read, d) = read_all(open(&url).await.unwrap()).await.unwrap();
+        assert_eq!(read.unwrap(), body);
+        let sha = d.digest.await.unwrap().unwrap();
+        assert_eq!(sha, hex(&Sha256::digest(&body)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_interrupted_download_fails_the_reader_and_the_digest() {
+        let body = vec![7u8; 1024 * 1024];
+        let url = serve_once(body, 4 * 1024 * 1024).await;
+        let (read, d) = read_all(open(&url).await.unwrap()).await.unwrap();
+        let err = read.unwrap_err().to_string();
+        assert!(err.contains("download interrupted"), "{err}");
+        assert!(d.digest.await.unwrap().is_err());
+    }
 }

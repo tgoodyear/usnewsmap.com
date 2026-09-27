@@ -45,7 +45,7 @@ The following come in later slices:
 Prerequisites:
 
 - The [Azure Developer CLI](https://aka.ms/azd) and an account with **Owner** on the subscription. Owner is needed because the deployment creates role assignments and policy definitions.
-- The images come from the private registry the deployment creates (see [Container registry](#container-registry)). A new environment first runs with `apiImage` until CI has pushed there.
+- The images come from the private registry the deployment creates. The first `azd provision` deploys everything except the API, which has no image to pull until CI has pushed one (see [Container registry](#container-registry)).
 
 ```sh
 azd auth login
@@ -57,7 +57,7 @@ azd env set USNM_COSMOS_FREE_TIER false            # if another account in the s
 azd provision
 ```
 
-Outputs include `API_URL`, `SITE_URL` and `TILES_URL`. Check that the deployment works:
+Then set up the [container registry](#container-registry), which deploys the API. Outputs include `API_URL`, `SITE_URL` and `TILES_URL`. Check that the deployment works:
 
 ```sh
 curl "$(azd env get-value API_URL)/v1/meta"          # "synthetic": true
@@ -70,7 +70,7 @@ To roll out a specific build, run `azd env set USNM_IMAGE_TAG <commit sha>` (def
 |-----------|--------------|---------|
 | `environmentName` | `AZURE_ENV_NAME` | — (e.g. `dev`, `prod`; `prod` keeps one warm replica, others scale to zero) |
 | `location` | `AZURE_LOCATION` | `eastus2` |
-| `apiImage` | `USNM_API_IMAGE` | `ghcr.io/tgoodyear/usnewsmap-api:main`; only used while `useAcr` is off |
+| `apiImage` | `USNM_API_IMAGE` | empty. A public image to run while `useAcr` is off; empty skips the API until then |
 | `useAcr` | `USNM_USE_ACR` | `false`. Turn on once CI has pushed to the registry |
 | `imageTag` | `USNM_IMAGE_TAG` | `main` (or a commit sha) |
 | `searchBackend` | `USNM_SEARCH_BACKEND` | `fixtures`, or `quickwit` once indexes are published |

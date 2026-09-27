@@ -14,8 +14,8 @@ param environmentName string
 @description('Region; East US 2 has ACI Spot (preview) and SWA.')
 param location string = 'eastus2'
 
-@description('API image used until useAcr is on (a new environment bootstraps from it).')
-param apiImage string = 'ghcr.io/tgoodyear/usnewsmap-api:main'
+@description('A public API image, used only while useAcr is off. Empty (the default) skips the API until CI has pushed to the registry and useAcr is on.')
+param apiImage string = ''
 
 @description('Origins allowed by API CORS and the tiles account.')
 param allowedOrigins array = ['https://usnewsmap.com']
@@ -204,7 +204,10 @@ module containerEnv 'modules/containerapps-env.bicep' = {
   }
 }
 
-module api 'modules/containerapp.bicep' = {
+// A new environment has no image to pull until CI pushes to its registry.
+var deployApi = useAcr || !empty(apiImage)
+
+module api 'modules/containerapp.bicep' = if (deployApi) {
   scope: rg
   name: 'api'
   dependsOn: [rbac, privateEndpoints]
@@ -302,7 +305,7 @@ module spotPolicies 'modules/policy-assignments.bicep' = if (deployPolicies) {
 
 output AZURE_LOCATION string = location
 output AZURE_RESOURCE_GROUP string = rg.name
-output API_URL string = 'https://${api.outputs.fqdn}'
+output API_URL string = deployApi ? 'https://${api!.outputs.fqdn}' : ''
 output SITE_URL string = 'https://${site.outputs.defaultHostname}'
 output TILES_URL string = tiles.outputs.tilesUrl
 output STORAGE_ACCOUNT string = storage.outputs.name

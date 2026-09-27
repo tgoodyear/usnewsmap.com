@@ -87,11 +87,11 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
 | Container registry | ACR Basic (private images) | $5 | $5 | $5 |
-| **Total** | | **~$46** | **~$67** | **~$109** |
+| **Total** | | **~$51** | **~$72** | **~$114** |
 
-"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The typical month stays under $80 with ~$13 of headroom. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $60, $70 and $78 (forecast) trigger the cost-spike runbook well before that.
+"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The typical month stays under $80 with ~$8 of headroom. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
 
-**The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$82–97, over the $80 target** now that private networking costs ~$17. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
+**The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$87–102, over the $80 target** now that private networking (~$17) and the registry (~$5) are in. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
 
 ### One-time backfill (Container Apps Jobs)
 

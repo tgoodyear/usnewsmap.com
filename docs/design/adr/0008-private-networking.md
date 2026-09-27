@@ -31,7 +31,7 @@ Every app/job → storage/Cosmos path already used managed identities, with keys
 
 ## Consequences
 
-- About **+$17/month** (2 endpoints, 2 DNS zones, per-GB processing). The typical month is ~$67, and a press-spike month ~$109 (see [09 §9.5](../09-operations-security-cost.md#95-cost-model-monthly-usd-list-prices-confirm-with-the-azure-pricing-calculator)).
+- About **+$17/month** (2 endpoints, 2 DNS zones, per-GB processing). The typical month is ~$72, and a press-spike month ~$114 (see [09 §9.5](../09-operations-security-cost.md#95-cost-model-monthly-usd-list-prices-confirm-with-the-azure-pricing-calculator)).
 - The **2 vCPU search lever no longer fits under $80** without dropping private endpoints or raising the ceiling. This is flagged as an owner decision in [10 §10.4](../10-roadmap-and-risks.md#104-open-questions-for-the-owner).
 - The Azure portal's Data Explorer and Storage Browser can't reach the data from the internet in steady state. Maintainers use the in-VNet `usnm-ingest admin` job, or open a short recorded window.
 - The environment must be created with VNet integration from the start.

@@ -58,7 +58,8 @@ There are no storage account keys or SAS tokens in app config: `allowSharedKeyAc
   | `api` container | Blob (`reference/`, `cache/`) | `id-usnm-app` | Private endpoint `pe-usnm-blob` |
   | `quickwit` sidecar | Blob (`qw-index/`, read-only) | `ca-usnm` system-assigned identity (§8.2) | Private endpoint `pe-usnm-blob` |
   | Weekly jobs, `index` job, admin CLI | Blob + Cosmos | `id-usnm-ingest` | Private endpoints `pe-usnm-blob`, `pe-usnm-cosmos` |
-  | ACI Spot backfill groups | Blob + Cosmos | `id-usnm-ingest` | **Public endpoint, only during a guarded backfill window** (below) |
+  | Backfill job (`caj-usnm-backfill`) | Blob + Cosmos | `id-usnm-ingest` | Private endpoints `pe-usnm-blob`, `pe-usnm-cosmos` |
+| ACI Spot backfill groups (alternative, not built) | Blob + Cosmos | `id-usnm-ingest` | **Public endpoint, only during a guarded backfill window** (below) |
   | Browser | Tiles account (`stusnmtiles`) | Anonymous (public map data) | Public by design; no private data |
   | Browser | API | None (anonymous public read API) | Public ingress `api.usnewsmap.com` |
 
@@ -76,7 +77,7 @@ There are no storage account keys or SAS tokens in app config: `allowSharedKeyAc
   - image pulls from the registry's public endpoint, which requires an Entra ID token (a private endpoint needs ACR Premium, ~$50/mo); images are code, not data;
   - LoC downloads.
 - Anonymous public blob access is disabled on the data account (the tiles account is the only exception).
-- **Hardening path (growth profile):** Front Door in front of both origins (edge cache, WAF); an Azure Monitor Private Link Scope for telemetry; and moving the backfill onto VNet-integrated compute (Container Apps Jobs, ~$150–250 per backfill instead of ~$25–50 on Spot), which removes the public-access window entirely. With **Front Door Standard**, the API app must keep **external** ingress, because internal ingress is reachable only inside the environment. Lock it to Front Door by validating the `X-Azure-FDID` header in the API, plus IP allow-list rules generated from the published `AzureFrontDoor.Backend` service-tag CIDRs and re-synced by a scheduled job (Container Apps IP restrictions take CIDRs, not service-tag names). **Front Door Premium** can instead reach an internal environment over Private Link.
+- **Hardening path (growth profile):** Front Door in front of both origins (edge cache, WAF); and an Azure Monitor Private Link Scope for telemetry. (The backfill already runs inside the VNet as Container Apps Jobs, §8.4, so the public-access window exists only if the Spot alternative is used.) With **Front Door Standard**, the API app must keep **external** ingress, because internal ingress is reachable only inside the environment. Lock it to Front Door by validating the `X-Azure-FDID` header in the API, plus IP allow-list rules generated from the published `AzureFrontDoor.Backend` service-tag CIDRs and re-synced by a scheduled job (Container Apps IP restrictions take CIDRs, not service-tag names). **Front Door Premium** can instead reach an internal environment over Private Link.
 
 ## 8.4 Compute sizing notes
 
@@ -117,7 +118,7 @@ Quickwit's **file-backed metastore** (a JSON file per index on Blob) doesn't sup
 - **Garbage collection:** the janitor deletes an index only after no version within the 7-day rollback window lists it.
 - **Azure AI Search (growth profile)** can't query several indexes in one request. That backend publishes only on compaction (a new index per version), and weekly increments wait for it.
 
-S-2 checked this on Quickwit 0.9.1 with a file-backed metastore: a searcher-only node (`enabled_services: [searcher, metastore]`, `#polling_interval`) serves the writer's indexes, never writes the metastore, and serves indexes created after it started once they are warmed as above. CI repeats this on every change (the `quickwit` job). **Fallback:** a PostgreSQL metastore (Azure Database for PostgreSQL Flexible Server, Burstable B1ms, ~$13–15/month). It supports any number of Quickwit nodes and still fits under $80 (typical ~$65).
+S-2 checked this on Quickwit 0.9.1 with a file-backed metastore: a searcher-only node (`enabled_services: [searcher, metastore]`, `#polling_interval`) serves the writer's indexes, never writes the metastore, and serves indexes created after it started once they are warmed as above. CI repeats this on every change (the `quickwit` job). **Fallback:** a PostgreSQL metastore (Azure Database for PostgreSQL Flexible Server, Burstable B1ms, ~$13–15/month). It supports any number of Quickwit nodes, but puts a typical month at ~$86, over $80.
 
 ## 8.5 Infrastructure as code
 
@@ -153,7 +154,7 @@ flowchart LR
 | Env | Corpus | Scale | Cost target |
 |-----|--------|-------|-------------|
 | `dev` | 1M-page sample (ten diverse years) | `ca-usnm` min 0 (accepts a cold start of several seconds); SWA preview environments; ingest on ACI Spot | ≤ $10/mo |
-| `prod` | Full | As in §8.1 | < $80/mo (typical ~$67) |
+| `prod` | Full | As in §8.1 | < $80/mo (typical ~$72) |
 | *Local* | 10k-page fixture | `docker compose` (Quickwit + API + Azurite) | $0 |
 
 ## 8.8 Domain and DNS
