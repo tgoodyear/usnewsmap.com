@@ -126,7 +126,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 ```
 
 - Place coordinates and names are **not** repeated here. The SPA loads `/v1/places` once (CDN-cached, ~150 KB compressed) and joins by id.
-- The cube is sparse, so size scales with non-zero cells. The worst realistic case (a common term, 3,000 places × 210 years) is about 400k triplets: ~3 MB of JSON, ~1 MB compressed, ~1.2 MB in Arrow. `?format=arrow` returns `application/vnd.apache.arrow.stream`.
+- The cube is sparse, so size scales with non-zero cells. The worst realistic case (a common term, ~3,000 places × 211 yearly buckets) is about **633k triplets**: ~9–10 MB of JSON (~2–3 MB gzip) or ~5 MB as Arrow (~1.5–2.5 MB compressed). Above a hard cap of 700k cells, the API steps to a coarser bucket. The SPA requests Arrow when the expected cube is large. `?format=arrow` returns `application/vnd.apache.arrow.stream`.
 
 ### 6.3.4 `GET /v1/hits` response
 

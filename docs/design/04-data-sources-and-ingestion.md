@@ -23,13 +23,15 @@ The legacy crawler targeted `chroniclingamerica.loc.gov` JSON endpoints (`/batch
 - **Place id**: `P` + a stable integer assigned once and never reused (e.g. `P00412`). Ids stay stable across reference snapshots; the registry is carried forward from one `reference/{index_version}/places` snapshot to the next. One place can serve many titles, since cities had several papers.
 - **Index version**: `pages-v{YYYYMMDD}-{n}`. It is recorded in `reference/current.json` and appears in every API ETag.
 
-## 4.3 Data lake layout (ADLS Gen2, one storage account)
+## 4.3 Data lake layout (Blob Storage, flat namespace, one storage account)
 
 ```
 raw/                                   (lean profile: NOT retained; LoC is the source of record)
   loc-api/titles/{date}/…json.zst       raw title metadata snapshots only (small)
 curated/                               (Cool; the system of record; versioned + soft delete)
-  pages/year={YYYY}/batch={batch}/part-{nnnn}.parquet
+  pages/year={YYYY}/batch={batch}/v{batch_version}/attempt={attempt_id}/part-{nnnn}.parquet
+                                        written once, never overwritten; the Cosmos `batches` item
+                                        points at the committed attempt (the atomic "commit")
 reference/                             (Hot; small; loaded by API; IMMUTABLE per index version)
   {index_version}/
     titles.parquet      titles.json.zst
@@ -57,7 +59,6 @@ qw-index/                              (Hot; Quickwit splits + file-backed metas
 | `edition`, `seq` | int16 | |
 | `front_page` | bool | `seq == 1` |
 
-Curated rows hold only **immutable page facts**. Title-derived attributes (`place_id`, `state`, `language`) are **not stored here**. The `index` and `stats` jobs join them from the versioned titles snapshot, so a corrected title record never leaves stale copies in the system of record.
 | `batch`, `batch_version` | string, int16 | Provenance |
 | `ocr_source` | enum | `ndnp-original` \| `ndnp-open-ocr` |
 | `text_status` | enum | `ok` \| `short` \| `empty` (§4.5) |
@@ -66,6 +67,8 @@ Curated rows hold only **immutable page facts**. Title-derived attributes (`plac
 | `text_sha256` | fixed_binary(32) | Change detection |
 | `resource_url` | string | Canonical loc.gov page URL |
 | `ingested_at` | timestamp | |
+
+Curated rows hold only **immutable page facts**. Title-derived attributes (`place_id`, `state`, `language`) are **not stored here**. The `index` and `stats` jobs join them from the versioned titles snapshot, so a corrected title record never leaves stale copies in the system of record.
 
 **Size estimate.** The legacy sample of 1879 *Daily Review* (Towanda, PA) pages averages about **10.6 KB** of OCR text per page. Later eight-column broadsheets carry 2–5× more. We plan for **20–35 KB per page average × ~23M pages ≈ 450–800 GB of raw text**, or about **150–300 GB as zstd Parquet**. This is validated in Spike S-1 ([10](10-roadmap-and-risks.md)).
 
@@ -90,7 +93,7 @@ flowchart LR
 | Stage | Trigger | Does | Idempotency |
 |-------|---------|------|-------------|
 | `discover` | Cron (weekly) + manual | Lists batches and versions from the Datasets portal; upserts `batches` items in Cosmos; enqueues work | Enqueue only if the Cosmos status ≠ curated for that version |
-| `batch` | Queue | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; writes curated Parquet (~256 MB row groups); updates the manifest | Claims the batch with a conditional Cosmos patch (lease + ETag); output path is deterministic per batch/version; writes to a temp path and renames; records sha256, pages and issue items in Cosmos |
+| `batch` | Queue | Streams the bulk OCR for the batch (checksum verified; not retained); parses per-page text; normalizes; writes curated Parquet (~256 MB row groups); updates the manifest | Claims the batch with a conditional Cosmos patch (lease + ETag); writes to a **new attempt path** (never overwriting); commits by patching the Cosmos batch item's `curated_path` to that attempt, together with sha256, pages and issue items. Uncommitted attempts are garbage-collected after 7 days |
 | `titles-sync` | Cron (weekly) | Pulls title records from the loc.gov API; snapshots to `raw/`; builds `reference/titles` | Snapshot by date |
 | `geocode` | When titles change | Resolves place of publication → GNIS feature (county-aware), else county centroid, else state centroid; applies `overrides/places.csv`; writes `reference/places` with a `precision` flag | Deterministic |
 | `stats` | After batches are curated | Aggregates baselines (pages per place/day and per title/month) and coverage (state/year) from curated Parquet joined with the titles snapshot, using DataFusion or Polars. Writes a **new** `reference/{index_version}/` snapshot (never overwrites) | Full recompute (cheap: one scan of the ids and dates columns) |
@@ -117,7 +120,7 @@ flowchart LR
 
 | Change | Detection | Action |
 |--------|-----------|--------|
-| **New batch** | `discover` finds an unseen batch | Curate → incremental index (append) → recompute stats → bump `index_version` minor |
+| **New batch** | `discover` finds an unseen batch | Curate → `stats` builds the new `reference/{index_version}/` snapshot → `index` appends the new pages → **publish last**: write `current.json` only when both the index and its reference snapshot are complete |
 | **New batch version** (e.g. `_ver02`, or NDNP-Open-OCR reprocessing) | Version increment or dataset update | Curate the new version; pages whose `text_sha256` changed are **replaced**: AI Search upserts by `doc_id`; Quickwit runs a delete task for `batch:{batch}` followed by re-ingest. Bump `index_version`. |
 | **Title metadata change** (e.g. corrected place) | `titles-sync` diff (recorded on the Cosmos `titles` item) | Build a new reference snapshot (places, baselines, coverage). Re-index the affected titles' pages, which picks up the new `place_id`/`state`/`language` via the join, then publish a new `index_version`. No re-curation is needed because curated rows carry no title-derived fields. |
 | **Analyzer or schema change** | Code change | **Full rebuild** into a new index from curated Parquet, then flip `current.json` atomically. Keep the previous index for 7 days for rollback. |

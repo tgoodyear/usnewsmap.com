@@ -1,6 +1,6 @@
 # 05: Search & Document Storage
 
-This is the most consequential decision in the design. The legacy system's single Solr core did two jobs: it was the document store and it was the aggregation engine. Here we separate **storage** (Azure Blob / ADLS Gen2, see [04](04-data-sources-and-ingestion.md)) from **retrieval** (a full-text engine whose index can be rebuilt from the lake), and evaluate the retrieval options.
+This is the most consequential decision in the design. The legacy system's single Solr core did two jobs: it was the document store and it was the aggregation engine. Here we separate **storage** (Azure Blob Storage, see [04](04-data-sources-and-ingestion.md)) from **retrieval** (a full-text engine whose index can be rebuilt from the lake), and evaluate the retrieval options.
 
 ## 5.1 Workload characterization
 
@@ -281,7 +281,7 @@ The design separates **document content** from **document state**:
 
 | Data | Store | Why |
 |------|-------|-----|
-| **Page text + immutable metadata** (the corpus) | **ADLS Gen2 curated Parquet, Cool tier** (~150–300 GB compressed; versioning + soft delete) | The system of record for content ([ADR-0002](adr/0002-blob-data-lake-system-of-record.md)). Read in bulk for rebuilds, baselines and offline research. About $2–3/month |
+| **Page text + immutable metadata** (the corpus) | **Curated Parquet on Blob Storage (flat namespace), Cool tier** (~150–300 GB compressed; immutable attempt paths; versioning + soft delete) | The system of record for content ([ADR-0002](adr/0002-blob-data-lake-system-of-record.md)). Read in bulk for rebuilds, baselines and offline research. About $2–3/month |
 | **Document state** (per LCCN, per batch, per issue, per index run) | **Azure Cosmos DB for NoSQL, free tier** | Queryable, atomic partial updates (patch), optimistic concurrency, change feed. **$0** within the free tier ([ADR-0007](adr/0007-cosmos-document-state.md)) |
 | **Serving copy of text** (snippets) and **stored fields** | Inside the search index (Quickwit docstore on Blob Hot) | Hits and snippets come back in the same engine call |
 | **Reference data for the API** (titles, places, baselines, coverage) | Blob Hot, Parquet + zstd JSON, loaded into API memory. Built by the `stats` job from Parquet and the Cosmos `titles` container | The API's read path has no database dependency, so the site keeps serving if Cosmos is unavailable |

@@ -74,7 +74,7 @@ Every frame is **O(P)**: about 3,000 subtractions, then a single deck.gl attribu
 
 | Layer | Encoding | Notes |
 |-------|----------|-------|
-| **Points** (default) | Circle area ∝ √hits (perceptually honest); fill color = relative frequency on a sequential palette; hollow ring = county- or state-precision place | Replaces the legacy mean/std five-class buckets, which shifted meaning between searches |
+| **Points** (default) | Circle **area ∝ hits**, i.e. radius ∝ √hits (perceptually honest); fill color = relative frequency on a sequential palette; hollow ring = county- or state-precision place | Replaces the legacy mean/std five-class buckets, which shifted meaning between searches |
 | **Heat** | deck.gl `HeatmapLayer` weighted by hits (or relative) | Good for dense eastern regions |
 | **States** | Choropleth of hits per 1,000 pages published in the window; hatched where there is no coverage | Normalized, avoids the "big city" bias |
 | **First appearance** | Categorical time ramp (early = warm, late = cool); animated reveal | Designed for "Cross of Gold"-style spread stories |

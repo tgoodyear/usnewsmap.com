@@ -31,4 +31,4 @@ Use **Rust** (axum, tokio, reqwest, serde, moka, utoipa, tracing/OpenTelemetry) 
 ## Consequences
 
 - The contributor pool is smaller. Mitigated by a small codebase (roughly 3–5k lines for the API), the OpenAPI contract, golden tests and a documented rewrite path.
-- The Cosmos Rust SDK is still beta (0.37), which doesn't matter because Cosmos isn't used at launch.
+- The Cosmos Rust SDK is still beta (0.37), and Cosmos **is** on the launch ingestion path (document state and work leases, [ADR-0007](0007-cosmos-document-state.md)). This is an accepted beta dependency: the owner allows preview/beta components; the operations used are few (point read, upsert, conditional patch, query, change-feed pull); the REST API is the fallback; and the API's request path doesn't depend on Cosmos.

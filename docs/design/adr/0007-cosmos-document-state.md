@@ -10,7 +10,7 @@ The pipeline has to track per-title (LCCN), per-batch, per-issue and per-index-r
 
 ## Decision
 
-Store document state in **Azure Cosmos DB for NoSQL on the free tier**: provisioned 1,000 RU/s shared across one database, 25 GB, Entra ID RBAC only. Containers are `titles`, `batches`, `issues`, `index_runs` and `ops` (see [05 §5.9.1](../05-search-and-storage.md#591-cosmos-db-state-model)). Page text stays in Parquet on ADLS. The API's request path doesn't depend on Cosmos.
+Store document state in **Azure Cosmos DB for NoSQL on the free tier**: provisioned 1,000 RU/s shared across one database, 25 GB, Entra ID RBAC only. Containers are `titles`, `batches`, `issues`, `index_runs` and `ops` (see [05 §5.9.1](../05-search-and-storage.md#591-cosmos-db-state-model)). Page text stays in Parquet on Blob Storage. The API's request path doesn't depend on Cosmos.
 
 ## Alternatives
 

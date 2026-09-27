@@ -23,5 +23,5 @@ The legacy API returned a **random sample of 500 hits** per request, kept per-us
 ## Consequences
 
 - One search is one request, and popular searches are served from the edge.
-- The response size is bounded by automatic bucket selection (≤ ~400k cells in the worst case, ~1 MB compressed).
+- Response size is bounded by automatic bucket selection. Worst case is ~3,000 places × 211 yearly buckets ≈ **633k non-zero cells**: ~9–10 MB of JSON before compression (~2–3 MB gzip), or ~5 MB as Arrow (u16 place, u16 bucket, u32 hits per cell; ~1.5–2.5 MB compressed). The API also enforces a hard cap of 700k cells, above which it steps to a coarser bucket.
 - Finer-grained playback over long ranges needs a "refine" re-query (acceptable).
