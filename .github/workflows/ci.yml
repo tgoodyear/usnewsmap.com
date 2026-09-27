@@ -191,3 +191,47 @@ jobs:
             web/playwright-report
             web/test-results
             api.log
+
+  deploy-api:
+    name: roll out the API (main)
+    # After every check passes on main, move the API app to this commit's
+    # image. Needs the repository variables from `azd provision` (infra/README.md).
+    needs: [rust, quickwit, fixtures, image, infra, web, web-e2e]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_ACR_LOGIN_SERVER != '' && vars.USNM_API_APP != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-api
+      cancel-in-progress: false
+    env:
+      APP: ${{ vars.USNM_API_APP }}
+      RG: ${{ vars.USNM_RESOURCE_GROUP }}
+      API_URL: ${{ vars.USNM_API_URL }}
+      IMAGE: ${{ vars.USNM_ACR_LOGIN_SERVER }}/usnewsmap-api:${{ github.sha }}
+    steps:
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Point the app at this commit's image
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az containerapp update -n "$APP" -g "$RG" --container-name api --image "$IMAGE" -o none
+      - name: Wait for the new revision to serve
+        run: |
+          for _ in $(seq 60); do
+            read -r latest ready < <(az containerapp show -n "$APP" -g "$RG" \
+              --query "[properties.latestRevisionName, properties.latestReadyRevisionName]" -o tsv | tr '\n' ' ')
+            if [ -n "$latest" ] && [ "$latest" = "$ready" ]; then
+              echo "revision $latest is ready"
+              break
+            fi
+            sleep 10
+          done
+          test "$latest" = "$ready" || { echo "::error::revision $latest did not become ready"; exit 1; }
+          if [ -n "$API_URL" ]; then
+            curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "$API_URL/readyz"
+          fi

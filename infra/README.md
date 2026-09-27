@@ -115,12 +115,16 @@ gh variable set USNM_ACR_LOGIN_SERVER --body "$(azd env get-value ACR_LOGIN_SERV
 gh variable set USNM_CI_CLIENT_ID     --body "$(azd env get-value CI_CLIENT_ID)"
 gh variable set AZURE_TENANT_ID       --body "$(azd env get-value AZURE_TENANT_ID)"
 gh variable set AZURE_SUBSCRIPTION_ID --body "$(azd env get-value AZURE_SUBSCRIPTION_ID)"
+gh variable set USNM_API_APP          --body "$(azd env get-value API_APP)"               # after USNM_USE_ACR is on
+gh variable set USNM_RESOURCE_GROUP   --body "$(azd env get-value AZURE_RESOURCE_GROUP)"
 gh workflow run ci --ref main          # pushes the API and ingest images and copies Quickwit in
 azd env set USNM_USE_ACR true
 azd provision                          # the API (and sidecar) now pull from the registry
 ```
 
 Once the API runs from the registry, the old GHCR packages can be made private again or deleted.
+
+**Continuous deployment of the API:** with `USNM_API_APP` and `USNM_RESOURCE_GROUP` set, every green run of `ci` on `main` rolls the API app onto that commit's image (`usnewsmap-api:<sha>`) and waits for the new revision to be ready. The CI identity has Contributor on that one app only. `azd provision` sets the image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the same one). The web app deploys itself the same way (`deploy web`).
 
 ## Ingest jobs
 
