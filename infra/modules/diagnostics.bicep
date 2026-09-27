@@ -1,0 +1,138 @@
+// Resource logs for every resource that has them (08 §8.1), all to the one
+// Log Analytics workspace. Kept in one place so the inventory is reviewable;
+// the "diagnostic settings" audit policy (policy-definitions.bicep) flags any
+// resource that slips through.
+//
+// Everything with resource logs is covered, with every category, except
+// where a category would record each request and eat the workspace's daily
+// cap (about 150 MB):
+// - Blob reads (StorageRead): the public tiles and the index splits Quickwit
+//   range-reads on every search. Writes and deletes are the audit trail.
+// - Cosmos DataPlaneRequests and the per-query/per-request statistics: every
+//   ingest write. Control-plane changes are the audit trail.
+// - Container Apps HTTP logs: every API request (Application Insights
+//   already samples them).
+//
+// Not covered, deliberately:
+// - Application Insights: workspace-based, so its telemetry is already in
+//   this workspace; its resource logs would store every row twice.
+// - The Static Web App: Azure lists log categories for it, but diagnostic
+//   settings aren't offered for Static Web Apps in practice
+//   (github.com/Azure/static-web-apps/issues/1295). Left out rather than
+//   risk a failed provision.
+// - Resources with platform metrics only (DNS zones, private endpoints,
+//   Container Apps and jobs): no logs to send, and Azure Monitor keeps their
+//   metrics 93 days at no cost.
+//
+// Retention is the workspace's (30 days; 31 are included in the ingestion
+// price, so shorter saves nothing).
+
+param workspaceId string
+param workspaceName string
+param registryName string
+param vnetName string
+param containerEnvName string
+param cosmosName string
+param dataStorageName string
+param tilesStorageName string
+
+var name = 'to-log-analytics'
+
+resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
+  name: workspaceName
+}
+
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: registryName
+}
+
+resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
+  name: vnetName
+}
+
+resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
+  name: containerEnvName
+}
+
+resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
+  name: cosmosName
+}
+
+// Queries run against the workspace (LAQueryLogs) and its own health.
+resource workspaceLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  scope: workspace
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logs: [{ categoryGroup: 'allLogs', enabled: true }]
+  }
+}
+
+// Logins and image pushes and deletes.
+resource registryLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  scope: registry
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [{ categoryGroup: 'allLogs', enabled: true }]
+  }
+}
+
+resource vnetLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  scope: vnet
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logs: [{ categoryGroup: 'allLogs', enabled: true }]
+  }
+}
+
+// The apps' and jobs' console output and the platform's events (revisions,
+// scaling, restarts). The environment sends them here (appLogsConfiguration
+// is azure-monitor), into ContainerAppConsoleLogs and ContainerAppSystemLogs.
+resource containerEnvLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  scope: containerEnv
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      { category: 'ContainerAppConsoleLogs', enabled: true }
+      { category: 'ContainerAppSystemLogs', enabled: true }
+    ]
+  }
+}
+
+resource cosmosLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  scope: cosmos
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      { category: 'ControlPlaneRequests', enabled: true }
+      { category: 'PartitionKeyStatistics', enabled: true }
+    ]
+  }
+}
+
+// Both storage accounts: blob writes and deletes; the unused queue, table
+// and file services log everything (nothing, until something uses them).
+module dataStorageLogs 'storage-diagnostics.bicep' = {
+  name: 'diagnostics-${dataStorageName}'
+  params: {
+    storageName: dataStorageName
+    workspaceId: workspaceId
+    settingName: name
+  }
+}
+
+module tilesStorageLogs 'storage-diagnostics.bicep' = {
+  name: 'diagnostics-${tilesStorageName}'
+  params: {
+    storageName: tilesStorageName
+    workspaceId: workspaceId
+    settingName: name
+  }
+}

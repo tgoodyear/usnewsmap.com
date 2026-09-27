@@ -19,8 +19,9 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `staticwebapp` | SWA Free for the site. Content is uploaded by the `deploy web` workflow (below) |
 | `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
 | `monitoring` | Log Analytics (30-day retention, ~150 MB/day cap) and Application Insights. An action group is created when alert emails are set |
+| `diagnostics` | Diagnostic settings, sending resource logs to Log Analytics for every resource that has them: the workspace, registry, VNet, Container Apps environment (app and job console output, platform events), Cosmos control plane, and both storage accounts (blob writes and deletes; queue, table and file services in full). Per-request categories are left out to stay under the cap (08 §8.1.1) |
 | `budget`, `alerts` | $80 monthly budget (alerts at $40, $60, $75, plus an $80 forecast alert; needs alert emails and `USNM_BUDGET_START`) and an alert on control-plane writes to the data accounts (needs alert emails) |
-| `policy-*` | Custom policies assigned to both resource groups. They deny IaaS compute, deny storage shared keys, deny Cosmos local auth, and audit public network access on the data accounts |
+| `policy-*` | Custom policies assigned to both resource groups. They deny IaaS compute, deny storage shared keys, deny Cosmos local auth, audit public network access on the data accounts, and audit resources that have resource logs but no diagnostic setting |
 
 ### What this slice runs
 

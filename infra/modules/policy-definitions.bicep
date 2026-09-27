@@ -94,4 +94,53 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
   }
 }
 
-output ids array = [noIaas.id, noSharedKey.id, noCosmosKeys.id, auditPublicAccess.id]
+// Every resource type in the project that has resource logs must send some
+// to a workspace (the settings live in diagnostics.bicep). Audit, not
+// deployIfNotExists: the template writes them, and chooses categories per
+// resource to stay inside the workspace's daily cap (a remediation identity
+// would need role-assignment rights and could only turn on whole category
+// groups). Mode All, so storage services (child resources) are evaluated.
+var loggedTypes = [
+  'Microsoft.OperationalInsights/workspaces'
+  'Microsoft.ContainerRegistry/registries'
+  'Microsoft.Network/virtualNetworks'
+  'Microsoft.App/managedEnvironments'
+  'Microsoft.DocumentDB/databaseAccounts'
+  'Microsoft.Storage/storageAccounts/blobServices'
+  'Microsoft.Storage/storageAccounts/queueServices'
+  'Microsoft.Storage/storageAccounts/tableServices'
+  'Microsoft.Storage/storageAccounts/fileServices'
+]
+
+resource auditDiagnostics 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
+  name: 'usnm-audit-diagnostic-settings'
+  properties: {
+    displayName: 'US News Map: resources with resource logs must send them to Log Analytics'
+    description: 'Audit only: infra/modules/diagnostics.bicep writes the settings.'
+    policyType: 'Custom'
+    mode: 'All'
+    policyRule: {
+      if: { field: 'type', in: loggedTypes }
+      then: {
+        effect: 'auditIfNotExists'
+        details: {
+          type: 'Microsoft.Insights/diagnosticSettings'
+          existenceCondition: {
+            allOf: [
+              { field: 'Microsoft.Insights/diagnosticSettings/workspaceId', exists: true }
+              {
+                count: {
+                  field: 'Microsoft.Insights/diagnosticSettings/logs[*]'
+                  where: { field: 'Microsoft.Insights/diagnosticSettings/logs[*].enabled', equals: 'true' }
+                }
+                greater: 0
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+
+output ids array = [noIaas.id, noSharedKey.id, noCosmosKeys.id, auditPublicAccess.id, auditDiagnostics.id]

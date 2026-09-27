@@ -6,11 +6,6 @@ param location string
 param tags object
 param name string
 param subnetId string
-param workspaceName string
-
-resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
-  name: workspaceName
-}
 
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: name
@@ -24,18 +19,17 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
       infrastructureSubnetId: subnetId
       internal: false
     }
+    // Logs go through the environment's diagnostic setting
+    // (diagnostics.bicep), not the workspace's shared key.
     appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: workspace.properties.customerId
-        sharedKey: workspace.listKeys().primarySharedKey
-      }
+      destination: 'azure-monitor'
     }
     zoneRedundant: false
   }
 }
 
 output id string = env.id
+output name string = env.name
 output defaultDomain string = env.properties.defaultDomain
 // The value of the `asuid.{name}` TXT record that proves a custom domain.
 output customDomainVerificationId string = env.properties.customDomainConfiguration.customDomainVerificationId

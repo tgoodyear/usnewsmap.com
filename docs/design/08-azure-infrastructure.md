@@ -26,6 +26,31 @@ One subscription (ideally owned by a sponsoring institution), one region: **East
 
 Container images are **private**, in ACR Basic. CI on `main` signs in to Azure with OIDC as `id-usnm-ci-{env}` (a user-assigned identity whose federated credential trusts only this repository's GitHub Environment `{env}`, which only `main` may use; no stored secret) and pushes the API and ingest images tagged `main` and the commit sha. It also copies Quickwit v0.9.1 in by digest, so deployments don't depend on Docker Hub. The container app and jobs pull with their managed identities. A new environment has no API until CI has pushed; `scripts/bootstrap.sh` sequences that (§8.9).
 
+### 8.1.1 Resource logs and maintenance windows
+
+**Every resource with resource logs sends them to `log-usnm`** through a diagnostic setting, all declared in one module, [`infra/modules/diagnostics.bicep`](../../infra/modules/diagnostics.bicep). An audit policy (§8.5) flags any resource of those types that lacks one.
+
+| Resource | Categories |
+|---|---|
+| Log Analytics, Container Registry, VNet; storage queue, table and file services | All (`allLogs`) |
+| Container Apps environment | `ContainerAppConsoleLogs`, `ContainerAppSystemLogs`. The environment's `appLogsConfiguration` is `azure-monitor`, so app and job logs arrive through this setting rather than the workspace's shared key |
+| Cosmos DB | `ControlPlaneRequests`, `PartitionKeyStatistics` |
+| Blob service (data and tiles accounts) | `StorageWrite`, `StorageDelete` |
+
+- **Per-request categories are left out** because they would consume the ≈150 MB/day cap: blob reads (public tile fetches, and Quickwit's split reads on every search), Cosmos `DataPlaneRequests` and the per-query statistics (every ingest write), and Container Apps HTTP logs (Application Insights already samples requests). Writes, deletes and control-plane changes are the audit trail.
+- **Also left out:**
+  - Application Insights is workspace-based, so its telemetry is already in `log-usnm`. Its resource logs would store every row twice.
+  - For the Static Web App, Azure lists log categories, but diagnostic settings aren't offered for Static Web Apps in practice ([Azure/static-web-apps#1295](https://github.com/Azure/static-web-apps/issues/1295)).
+  - Metrics-only resources (DNS zones, private endpoints, Container Apps and jobs) have no logs. Azure Monitor keeps their platform metrics for 93 days at no cost.
+- **Retention** is the workspace's 30 days. Tables can go as low as 4 days, but 31 days are included in the ingestion price, so a 14-day limit would save nothing.
+- **Bicep writes the settings, not a `deployIfNotExists` policy.** Every resource here is created by the template, and nothing is created at runtime. The template can choose categories per resource, while the built-in policy initiatives enable whole category groups (`allLogs`/`audit`), which include the per-request logs above. Remediation would also need a policy identity with role-assignment rights, and it lags creation by minutes. The policy is therefore audit-only: it catches drift without writing anything.
+
+**Maintenance windows: none apply to this stack.**
+
+- Customer-scheduled maintenance (Maintenance Configurations) covers VMs and dedicated hosts, Azure SQL, and some network gateways. None of Cosmos DB, Storage, Container Registry, Static Web Apps, Log Analytics or DNS offers one.
+- Container Apps has *planned maintenance* for an environment, but only for apps on Dedicated workload profiles. This environment is Consumption-only. The feature is also billed on the Dedicated Plan Management meter (about $0.10/hour, ≈ $73/month), which alone is most of the $80 budget.
+- If the environment ever moves to a Dedicated profile, add `Microsoft.App/managedEnvironments/maintenanceConfigurations` (`default`), with `startHourUtc: 7` and `durationHours: 8` on the chosen weekday. The start hour is UTC only: 7 is 3 am Eastern in summer (EDT) and 2 am in winter (EST).
+
 ## 8.2 Identity and access (managed identities everywhere)
 
 | Principal | Type | Role assignments (scope) |
@@ -126,7 +151,7 @@ S-2 checked this on Quickwit 0.9.1 with a file-backed metastore: a searcher-only
 - Modules: `network` (VNet, subnets, private endpoints, private DNS zones), `staticwebapp`, `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `cosmos`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
 - **Parameters per environment**: `dev` (scale to zero, LRS, small sample corpus of ~1M pages), `prod`.
 - Lint with `bicep lint` plus PSRule for Azure in CI; `what-if` output posted to the PR for any change under `infra/`.
-- Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings, allowed locations, and a built-in **"Not allowed resource types"** assignment that blocks `Microsoft.Compute/virtualMachines`, `virtualMachineScaleSets`, `Microsoft.ContainerService/managedClusters` and `Microsoft.Batch/batchAccounts` on the project resource groups, so VMs can't creep in. Also: **deny** `allowSharedKeyAccess != false` on storage, **deny** `disableLocalAuth != true` on Cosmos, and **audit** `publicNetworkAccess != Disabled` (the guard job remediates it outside an open window).
+- Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings (**as built:** `usnm-audit-diagnostic-settings`, `auditIfNotExists` on every resource type with resource logs, §8.1.1), allowed locations, and a built-in **"Not allowed resource types"** assignment that blocks `Microsoft.Compute/virtualMachines`, `virtualMachineScaleSets`, `Microsoft.ContainerService/managedClusters` and `Microsoft.Batch/batchAccounts` on the project resource groups, so VMs can't creep in. Also: **deny** `allowSharedKeyAccess != false` on storage, **deny** `disableLocalAuth != true` on Cosmos, and **audit** `publicNetworkAccess != Disabled` (the guard job remediates it outside an open window).
 
 ## 8.6 CI/CD (GitHub Actions)
 

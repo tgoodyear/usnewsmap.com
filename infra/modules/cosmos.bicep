@@ -4,7 +4,6 @@
 param location string
 param tags object
 param name string
-param workspaceId string
 @description('Free tier (1000 RU/s, 25 GB, continuous backup): one account per subscription. When false, the account is serverless with periodic backup.')
 param freeTier bool = true
 
@@ -71,15 +70,6 @@ resource dbContainers 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/contai
     }
   }
 ]
-
-resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
-  scope: account
-  name: 'to-log-analytics'
-  properties: {
-    workspaceId: workspaceId
-    logs: [{ category: 'ControlPlaneRequests', enabled: true }]
-  }
-}
 
 output id string = account.id
 output name string = account.name

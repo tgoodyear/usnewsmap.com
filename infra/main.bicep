@@ -151,7 +151,6 @@ module storage 'modules/storage.bicep' = {
     location: location
     tags: tags
     name: 'stusnmd${suffix}'
-    workspaceId: monitoring.outputs.workspaceId
   }
 }
 
@@ -174,7 +173,6 @@ module cosmos 'modules/cosmos.bicep' = {
     location: location
     tags: tags
     name: 'cosmos-usnm-${env}-${suffix}'
-    workspaceId: monitoring.outputs.workspaceId
     freeTier: cosmosFreeTier
   }
 }
@@ -212,7 +210,22 @@ module containerEnv 'modules/containerapps-env.bicep' = {
     tags: tags
     name: 'cae-usnm-${env}'
     subnetId: network.outputs.caeSubnetId
+  }
+}
+
+// Resource logs for everything that has them, to the one workspace.
+module diagnostics 'modules/diagnostics.bicep' = {
+  scope: rg
+  name: 'diagnostics'
+  params: {
+    workspaceId: monitoring.outputs.workspaceId
     workspaceName: monitoring.outputs.workspaceName
+    registryName: registry.outputs.name
+    vnetName: network.outputs.vnetName
+    containerEnvName: containerEnv.outputs.name
+    cosmosName: cosmos.outputs.name
+    dataStorageName: storage.outputs.name
+    tilesStorageName: tiles.outputs.name
   }
 }
 
