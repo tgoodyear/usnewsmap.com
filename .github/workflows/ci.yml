@@ -26,6 +26,29 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  quickwit:
+    name: quickwit parity (S-2)
+    runs-on: ubuntu-latest
+    env:
+      QUICKWIT_VERSION: v0.9.1
+      QUICKWIT_SHA256: ad67c2e2aab79e810906dfebec694aa50b07a001aaa75ce3ba7bc32d079f8185
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Quickwit
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/qw.tgz" \
+            "https://github.com/quickwit-oss/quickwit/releases/download/${QUICKWIT_VERSION}/quickwit-${QUICKWIT_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${QUICKWIT_SHA256}  $RUNNER_TEMP/qw.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/qw.tgz" -C "$RUNNER_TEMP"
+          echo "QUICKWIT_BIN=$RUNNER_TEMP/quickwit-${QUICKWIT_VERSION}/quickwit" >> "$GITHUB_ENV"
+      - name: Load fixtures, serve them from a read-only searcher
+        run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
+      - run: cargo test -p usnm-search --test quickwit_parity --locked
+      - if: failure()
+        run: tail -n 200 "$RUNNER_TEMP"/qw/*.log
+
   fixtures:
     name: fixtures are reproducible
     runs-on: ubuntu-latest

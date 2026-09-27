@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reference: usnm_store::open(&config.reference_url)?,
         engine,
     };
-    let snapshot = loader.snapshot().await?;
+    let snapshot = initial_snapshot(&loader).await?;
     tracing::info!(
         version = snapshot.refdata.version(),
         synthetic = snapshot.refdata.current.synthetic,
@@ -61,6 +61,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_graceful_shutdown(shutdown())
     .await?;
     Ok(())
+}
+
+/// The first snapshot, retried while the search sidecar starts alongside the
+/// API (and while a new identity's role assignments propagate).
+async fn initial_snapshot(loader: &Loader) -> Result<usnm_api::Snapshot, String> {
+    const ATTEMPTS: u32 = 30;
+    let mut delay = std::time::Duration::from_secs(1);
+    let mut attempt = 1;
+    loop {
+        match loader.snapshot().await {
+            Ok(s) => return Ok(s),
+            Err(e) if attempt < ATTEMPTS => {
+                tracing::warn!(error = %e, attempt, "initial load failed; retrying");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(15));
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 async fn shutdown() {

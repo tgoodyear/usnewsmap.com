@@ -1,6 +1,6 @@
 # ADR-0001: Search engine
 
-- **Status:** Proposed. Becomes final after Spike S-2 (see [10](../10-roadmap-and-risks.md#102-validation-spikes)).
+- **Status:** Proposed. Becomes final after Spike S-2 (see [10](../10-roadmap-and-risks.md#102-validation-spikes)). The correctness half of S-2 has passed on Quickwit 0.9.1 ([05 §5.5.1](../05-search-and-storage.md#551-quickwit-index-config-validated-in-s-2)), except fuzzy terms, which Quickwit doesn't support (R-15). The 1M-page benchmark is still to run.
 - **Date:** 2026-09
 - **Deciders:** Project owner, lead engineer
 

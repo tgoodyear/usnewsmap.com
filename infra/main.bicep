@@ -23,6 +23,10 @@ param allowedOrigins array = ['https://usnewsmap.com']
 @description('0 lets dev scale to zero; production keeps one warm replica.')
 param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
 
+@description('fixtures: the API serves its baked synthetic data. quickwit: reference data from Blob and a read-only Quickwit sidecar over qw-index (needs published indexes).')
+@allowed(['fixtures', 'quickwit'])
+param searchBackend string = 'fixtures'
+
 @description('Cosmos DB free tier (one per subscription). False makes the account serverless.')
 param cosmosFreeTier bool = true
 
@@ -178,8 +182,10 @@ module api 'modules/containerapp.bicep' = {
     identityId: identities.outputs.appId
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
+    storageAccountName: storage.outputs.name
     allowedOrigins: allowedOrigins
     minReplicas: apiMinReplicas
+    searchBackend: searchBackend
   }
 }
 

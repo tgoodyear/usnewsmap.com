@@ -32,6 +32,9 @@ pub struct PageDoc {
     pub front_page: bool,
     pub edition: u16,
     pub seq: u16,
+    /// Same-day order for hits: `title ordinal << 24 | edition << 16 | seq`.
+    /// Numeric because Quickwit 0.9 can't sort on text fields (05 §5.5).
+    pub sort_key: u64,
     pub text: String,
 }
 
@@ -134,7 +137,7 @@ pub trait SearchBackend: Send + Sync {
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError>;
 
-    /// Hits sorted by date (then doc id), with snippets.
+    /// Hits oldest first, then by `sort_key` (title, edition, page), with snippets.
     async fn hits(
         &self,
         indexes: &IndexSet,
@@ -144,6 +147,12 @@ pub trait SearchBackend: Send + Sync {
     ) -> Result<HitsPage, SearchError>;
 
     async fn health(&self) -> Result<(), SearchError>;
+
+    /// Make every index in the set searchable before a version goes live, or
+    /// fail so the loader keeps serving the previous version.
+    async fn prepare(&self, _indexes: &IndexSet) -> Result<(), SearchError> {
+        Ok(())
+    }
 }
 
 /// Escape text for HTML and wrap highlighted ranges in `<mark>`.
