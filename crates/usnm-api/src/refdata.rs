@@ -70,6 +70,8 @@ pub struct RefData {
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
+    /// The published version this snapshot was built for.
+    index_version: String,
     files: Vec<ManifestFile>,
 }
 
@@ -95,6 +97,14 @@ impl RefData {
             &format!("{dir}/manifest.json"),
             &fetch(store, &format!("{dir}/manifest.json")).await?,
         )?;
+        // Each version publishes its own snapshot (04 §4.4), so the manifest
+        // must name the version `current.json` pairs it with.
+        if manifest.index_version != current.index_version {
+            return Err(format!(
+                "{dir}/manifest.json is for `{}`, not `{}`",
+                manifest.index_version, current.index_version
+            ));
+        }
         let mut raw = Vec::with_capacity(FILES.len());
         for name in FILES {
             let path = format!("{dir}/{name}");

@@ -4,9 +4,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use usnm_store::credential::{Credential, ManagedIdentity, StaticToken};
@@ -40,17 +41,39 @@ async fn put_blob(
     Path(p): Path<String>,
     h: HeaderMap,
     body: Bytes,
-) -> StatusCode {
+) -> Response {
     if !authorized(&h) || h.get("x-ms-blob-type").is_none() {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
     }
     assert_eq!(h.get("if-none-match").unwrap(), "*");
+    if p.starts_with("leased/") {
+        return (
+            StatusCode::CONFLICT,
+            [("x-ms-error-code", "LeaseIdMissing")],
+        )
+            .into_response();
+    }
     let mut m = b.lock().unwrap();
     if m.contains_key(&p) {
-        return StatusCode::CONFLICT;
+        return (
+            StatusCode::CONFLICT,
+            [("x-ms-error-code", "BlobAlreadyExists")],
+        )
+            .into_response();
     }
     m.insert(p, body.to_vec());
-    StatusCode::CREATED
+    StatusCode::CREATED.into_response()
+}
+
+async fn chunked(h: HeaderMap) -> Response {
+    if !authorized(&h) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // No Content-Length: the body is streamed in chunks past the limit.
+    let chunk = Bytes::from(vec![b'x'; 1024 * 1024]);
+    let n = usnm_store::MAX_OBJECT_BYTES / chunk.len() as u64 + 2;
+    let stream = futures::stream::iter((0..n).map(move |_| Ok::<_, std::io::Error>(chunk.clone())));
+    Response::new(Body::from_stream(stream))
 }
 
 async fn identity(Query(q): Query<HashMap<String, String>>, h: HeaderMap) -> (StatusCode, String) {
@@ -70,6 +93,7 @@ async fn serve() -> (String, Blobs) {
     let blobs: Blobs = Arc::default();
     let app = Router::new()
         .route("/msi/token", get(identity))
+        .route("/c/big/object", get(chunked))
         .route("/c/{*p}", get(get_blob).put(put_blob))
         .with_state(blobs.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -98,6 +122,21 @@ async fn get_and_create_only_put_with_managed_identity() {
         .unwrap());
     assert_eq!(store.get("v1/x.json").await.unwrap().unwrap(), b"1");
     assert_eq!(blobs.lock().unwrap().len(), 1);
+    // Other conflicts are errors, not "already exists".
+    let err = store
+        .put_new("leased/x.json", b"1".to_vec(), "application/json")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("409"), "{err}");
+}
+
+#[tokio::test]
+async fn oversized_streams_stop_at_the_limit() {
+    let (base, _) = serve().await;
+    let cred = Arc::new(Credential::new(StaticToken("secret-token".into())));
+    let store = BlobStore::new(&format!("{base}/c"), cred).unwrap();
+    let err = store.get("big/object").await.unwrap_err();
+    assert!(matches!(err, usnm_store::StoreError::TooLarge(_)), "{err}");
 }
 
 #[tokio::test]

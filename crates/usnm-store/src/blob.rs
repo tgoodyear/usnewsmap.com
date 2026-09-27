@@ -17,6 +17,15 @@ use crate::{validate_path, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 /// Blob service REST API version (bearer tokens need 2017-11-09 or later).
 pub const API_VERSION: &str = "2023-11-03";
 
+/// Blob endpoint host suffixes (public, US Government and China clouds).
+/// Private endpoints keep these names, resolved through private DNS. The
+/// managed identity's token is only ever sent to one of these hosts.
+pub const BLOB_HOST_SUFFIXES: [&str; 3] = [
+    ".blob.core.windows.net",
+    ".blob.core.usgovcloudapi.net",
+    ".blob.core.chinacloudapi.cn",
+];
+
 pub struct BlobStore {
     /// `https://{account}.blob.core.windows.net/{container}[/prefix]`, no trailing `/`.
     base: String,
@@ -33,15 +42,27 @@ impl std::fmt::Debug for BlobStore {
 }
 
 impl BlobStore {
-    /// `location` is a container URL, optionally with a path prefix. SAS
-    /// tokens are refused: access is by Entra ID only. Plain `http` is
-    /// allowed for loopback test servers, never for a real account.
+    /// `location` is a container URL, optionally with a path prefix, on an
+    /// Azure Blob host ([`BLOB_HOST_SUFFIXES`]). SAS tokens are refused:
+    /// access is by Entra ID only. Plain `http` is allowed for loopback test
+    /// servers, never for a real account.
     pub fn new(location: &str, credential: Arc<Credential>) -> Result<Self, StoreError> {
         let bad = |why: &str| StoreError::InvalidLocation(format!("{location}: {why}"));
         let url = Url::parse(location).map_err(|e| bad(&e.to_string()))?;
         let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        let blob_host = url.host_str().is_some_and(|h| {
+            let h = h.to_ascii_lowercase();
+            BLOB_HOST_SUFFIXES
+                .iter()
+                .any(|s| h.len() > s.len() && h.ends_with(s))
+        });
         match url.scheme() {
-            "https" => {}
+            "https" if blob_host || loopback => {}
+            "https" => {
+                return Err(bad(
+                    "must be an Azure Blob endpoint (*.blob.core.windows.net)",
+                ))
+            }
             "http" if loopback => {}
             _ => return Err(bad("must be https")),
         }
@@ -60,6 +81,8 @@ impl BlobStore {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(120))
+            // Never carry the bearer token anywhere but the configured host.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| StoreError::Io(e.to_string()))?;
         Ok(Self {
@@ -113,11 +136,20 @@ impl ObjectStore for BlobStore {
         if resp.content_length().is_some_and(|n| n > MAX_OBJECT_BYTES) {
             return Err(StoreError::TooLarge(path.into()));
         }
-        let bytes = resp.bytes().await.map_err(|e| transport("get", path, e))?;
-        if bytes.len() as u64 > MAX_OBJECT_BYTES {
-            return Err(StoreError::TooLarge(path.into()));
+        // Stream, so a response without an honest Content-Length still stops
+        // at the limit instead of being buffered whole.
+        let mut resp = resp;
+        let mut body = Vec::with_capacity(
+            resp.content_length()
+                .map_or(0, |n| usize::try_from(n).unwrap_or(0)),
+        );
+        while let Some(chunk) = resp.chunk().await.map_err(|e| transport("get", path, e))? {
+            if (body.len() + chunk.len()) as u64 > MAX_OBJECT_BYTES {
+                return Err(StoreError::TooLarge(path.into()));
+            }
+            body.extend_from_slice(&chunk);
         }
-        Ok(Some(bytes.to_vec()))
+        Ok(Some(body))
     }
 
     async fn put_new(
@@ -137,11 +169,18 @@ impl ObjectStore for BlobStore {
             .send()
             .await
             .map_err(|e| transport("put", path, e))?;
-        match resp.status() {
-            StatusCode::CREATED => Ok(true),
-            // The blob already exists.
-            StatusCode::CONFLICT | StatusCode::PRECONDITION_FAILED => Ok(false),
-            s => Err(StoreError::Http {
+        let code = resp
+            .headers()
+            .get("x-ms-error-code")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        match (resp.status(), code) {
+            (StatusCode::CREATED, _) => Ok(true),
+            // Only "the blob already exists" is a normal create-only miss;
+            // lease, immutability and blob-type conflicts are errors.
+            (StatusCode::CONFLICT, "BlobAlreadyExists")
+            | (StatusCode::PRECONDITION_FAILED, "ConditionNotMet") => Ok(false),
+            (s, _) => Err(StoreError::Http {
                 op: "put",
                 path: path.into(),
                 status: s.as_u16(),
@@ -166,6 +205,8 @@ mod tests {
         let ok = BlobStore::new("https://acct.blob.core.windows.net/cache/api", cred()).unwrap();
         assert_eq!(ok.base, "https://acct.blob.core.windows.net/cache/api");
         assert!(BlobStore::new("http://127.0.0.1:10000/c", cred()).is_ok());
+        assert!(BlobStore::new("https://acct.blob.core.usgovcloudapi.net/c", cred()).is_ok());
+        assert!(BlobStore::new("https://ACCT.BLOB.CORE.WINDOWS.NET/c", cred()).is_ok());
         for bad in [
             "https://acct.blob.core.windows.net",
             "https://acct.blob.core.windows.net/",
@@ -173,6 +214,9 @@ mod tests {
             "https://acct.blob.core.windows.net/c?sv=2024&sig=x",
             "https://u:p@acct.blob.core.windows.net/c",
             "ftp://acct/c",
+            "https://example.com/c",
+            "https://acct.blob.core.windows.net.evil.example/c",
+            "https://.blob.core.windows.net/c",
         ] {
             assert!(BlobStore::new(bad, cred()).is_err(), "{bad}");
         }

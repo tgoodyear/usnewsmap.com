@@ -59,7 +59,9 @@ impl Limiter {
 }
 
 /// The client address: `hops` entries from the right of `X-Forwarded-For`
-/// (all header lines, in order), else the peer address.
+/// (all header lines, in order). If the header has fewer entries than there
+/// are trusted proxies, or the chosen entry isn't an address, no entry can be
+/// shown to be proxy-added, so this falls back to the peer address.
 pub fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>, hops: usize) -> Option<IpAddr> {
     if hops == 0 {
         return peer;
@@ -72,11 +74,10 @@ pub fn client_ip(headers: &HeaderMap, peer: Option<IpAddr>, hops: usize) -> Opti
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
-    if entries.is_empty() {
-        return peer;
+    match entries.len().checked_sub(hops) {
+        Some(i) => parse_ip(entries[i]).or(peer),
+        None => peer,
     }
-    let chosen = entries[entries.len().saturating_sub(hops)];
-    parse_ip(chosen).or(peer)
 }
 
 /// Accepts `1.2.3.4`, `1.2.3.4:5678`, `2001:db8::1` and `[2001:db8::1]:5678`.
@@ -105,8 +106,8 @@ mod tests {
         let h = xff(&["6.6.6.6, 1.2.3.4"]);
         assert_eq!(client_ip(&h, peer, 1), Some("1.2.3.4".parse().unwrap()));
         assert_eq!(client_ip(&h, peer, 2), Some("6.6.6.6".parse().unwrap()));
-        // More hops than entries: the leftmost is still proxy-added.
-        assert_eq!(client_ip(&h, peer, 3), Some("6.6.6.6".parse().unwrap()));
+        // More hops than entries: nothing is provably proxy-added.
+        assert_eq!(client_ip(&h, peer, 3), peer);
         assert_eq!(client_ip(&h, peer, 0), peer);
         assert_eq!(client_ip(&HeaderMap::new(), peer, 1), peer);
         let h = xff(&["6.6.6.6", "[2001:db8::1]:443"]);

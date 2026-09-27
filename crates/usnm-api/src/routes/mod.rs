@@ -59,8 +59,17 @@ async fn read_persisted(store: &dyn ObjectStore, path: &str) -> Option<Vec<u8>> 
     let decoded = zstd::stream::read::Decoder::new(bytes.as_slice())
         .and_then(|d| d.take(MAX_PERSISTED_BYTES + 1).read_to_end(&mut body));
     match decoded {
-        Ok(n) if (n as u64) <= MAX_PERSISTED_BYTES => Some(body),
-        Ok(_) => None,
+        // Only a complete JSON document counts as a hit.
+        Ok(n)
+            if (n as u64) <= MAX_PERSISTED_BYTES
+                && serde_json::from_slice::<serde::de::IgnoredAny>(&body).is_ok() =>
+        {
+            Some(body)
+        }
+        Ok(_) => {
+            tracing::warn!("persistent cache entry is invalid; recomputing");
+            None
+        }
         Err(e) => {
             tracing::warn!(error = %e, "persistent cache entry is corrupt");
             None

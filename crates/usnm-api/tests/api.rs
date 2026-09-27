@@ -403,6 +403,19 @@ fn temp_data_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// Copy a reference snapshot under a new version, as the stats job would publish it.
+fn snapshot_copy(dir: &std::path::Path, from: &str, to: &str) {
+    std::fs::create_dir_all(dir.join(to)).unwrap();
+    for entry in std::fs::read_dir(dir.join(from)).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, dir.join(to).join(path.file_name().unwrap())).unwrap();
+    }
+    let manifest = dir.join(to).join("manifest.json");
+    let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    m["index_version"] = to.into();
+    std::fs::write(manifest, m.to_string()).unwrap();
+}
+
 #[tokio::test]
 async fn hot_reload_swaps_reference_data_and_backend_together() {
     let dir = temp_data_dir("reload");
@@ -429,6 +442,16 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
         serde_json::from_str(&std::fs::read_to_string(dir.join("current.json")).unwrap()).unwrap();
     current["index_version"] = "fixture-v2".into();
     current["indexes"] = serde_json::json!(["pages-base-fixture", "pages-delta-fixture-2"]);
+
+    // A version whose reference snapshot is still v1's is refused.
+    std::fs::write(dir.join("current.json"), current.to_string()).unwrap();
+    let err = reload_if_changed(&s).await.unwrap_err();
+    assert!(err.contains("is for `fixture-v1`"), "{err}");
+    assert_eq!(s.snapshot.load().refdata.version(), "fixture-v1");
+
+    // With its own snapshot, it publishes.
+    snapshot_copy(&dir, "fixture-v1", "fixture-v2");
+    current["reference"] = "fixture-v2".into();
     std::fs::write(dir.join("current.json"), current.to_string()).unwrap();
 
     assert!(reload_if_changed(&s).await.unwrap());
@@ -490,6 +513,20 @@ async fn slow_responses_persist_and_survive_a_restart() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(again, body);
     assert!(header_str(&headers, header::ETAG).starts_with("\"fixture-v1:"));
+
+    // An entry that decompresses but isn't JSON is ignored and recomputed.
+    std::fs::write(
+        &files[0],
+        zstd::encode_all(&b"{\"truncated"[..], 3).unwrap(),
+    )
+    .unwrap();
+    let recomputing = Arc::new(
+        AppState::new(config(), Arc::new(fixture_backend()), refdata().await)
+            .with_response_store(Arc::new(LocalStore::new(&dir))),
+    );
+    let (status, _, fresh) = get(&recomputing, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fresh, body);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
