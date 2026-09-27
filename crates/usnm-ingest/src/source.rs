@@ -2,9 +2,10 @@
 //!
 //! `enqueue` takes a batch list: JSON `[{name, url, sha256?, ocr_source?}]`,
 //! where `name` is the LoC batch name with its version suffix
-//! (`batch_az_acacia_ver02`). Reading that list off the Chronicling America
-//! Datasets portal is the next step, once spike S-1 has confirmed the
-//! portal's listing format.
+//! (`az_acacia_ver02`). It also reads LoC's own listing directly: the
+//! Chronicling America collection JSON ([`LOC_DATASETS`]) carries a
+//! `datasets` array with each batch's bulk OCR archive, sha256, size and
+//! page count (spike S-1, 04 §4.1.1).
 
 use std::io::Write;
 use std::path::Path;
@@ -25,14 +26,34 @@ pub const USER_AGENT: &str = concat!(
     " (+https://github.com/tgoodyear/usnewsmap.com)"
 );
 
+/// The Chronicling America collection JSON, whose `datasets` array lists
+/// every batch's bulk OCR archive (about 3,000 batches, 2.5 TB of `tar.bz2`).
+pub const LOC_DATASETS: &str = "https://www.loc.gov/collections/chronicling-america/?fo=json&c=1";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListedBatch {
+    /// LoC's listing calls this `batch`.
+    #[serde(alias = "batch")]
     pub name: String,
     pub url: String,
     #[serde(default)]
     pub sha256: Option<String>,
     #[serde(default)]
     pub ocr_source: Option<String>,
+}
+
+/// Parse a batch list: a JSON array of batches, or LoC's collection JSON
+/// (an object with a `datasets` array). Other fields are ignored.
+pub fn parse_list(bytes: &[u8]) -> anyhow::Result<Vec<ListedBatch>> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum List {
+        Plain(Vec<ListedBatch>),
+        Collection { datasets: Vec<ListedBatch> },
+    }
+    Ok(match serde_json::from_slice(bytes).context("batch list")? {
+        List::Plain(v) | List::Collection { datasets: v } => v,
+    })
 }
 
 /// Split `batch_az_acacia_ver02` into (`batch_az_acacia`, 2).
@@ -242,6 +263,26 @@ mod tests {
             sha256: None,
             ocr_source: None,
         }
+    }
+
+    #[test]
+    fn reads_loc_collection_listings() {
+        // Two entries as LoC publishes them (trimmed).
+        let loc = br#"{"title": "Chronicling America", "datasets": [
+          {"archive_name": "dlc_zurich_ver04.tar.bz2", "batch": "dlc_zurich_ver04",
+           "issue_count": 1, "lccns": ["sn85042252"], "page_count": 4,
+           "sha256": "ad36f7bb2ef915867460ac2b3c70f9aaa33709a9a99f554a49a9dc4fc35f3ba9",
+           "size": 58753, "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_zurich_ver04.tar.bz2"},
+          {"batch": "vi_elgar_ver02", "sha256": null,
+           "url": "https://chroniclingamerica.loc.gov/data/ocr/vi_elgar_ver02.tar.bz2"}
+        ], "results": []}"#;
+        let l = parse_list(loc).unwrap();
+        assert_eq!(l.len(), 2);
+        assert_eq!(split_version(&l[0].name).unwrap(), ("dlc_zurich".into(), 4));
+        assert!(l[0].sha256.is_some() && l[1].sha256.is_none());
+        let plain = br#"[{"name": "batch_a_ver01", "url": "/tmp/a.tar.gz"}]"#;
+        assert_eq!(parse_list(plain).unwrap()[0].name, "batch_a_ver01");
+        assert!(parse_list(br#"{"results": []}"#).is_err());
     }
 
     #[test]

@@ -14,6 +14,17 @@ The legacy crawler targeted `chroniclingamerica.loc.gov` JSON endpoints (`/batch
 | *American Stories* (Dell et al., Harvard; Hugging Face) | Article-level segmentation of ~20M scans, 438M articles, 1774–1963 | Parquet download | **Phase 3** option for article-level results and reprint detection (F-33/F-34). |
 | *Mirrors* (e.g. the `biglam/chronicling-america-bulk-ocr` bucket on Hugging Face) | Same bulk OCR | S3-style bulk | Optional **backfill accelerator** to reduce load on LoC. Check provenance and checksums against LoC manifests before use. |
 
+### 4.1.1 Spike S-1 findings (September 2026)
+
+- **The batch list is machine-readable.** The collection JSON (`https://www.loc.gov/collections/chronicling-america/?fo=json&c=1`) carries a `datasets` array: one entry per batch with `batch` (e.g. `vi_elgar_ver02`), `url` (`https://chroniclingamerica.loc.gov/data/ocr/{batch}.tar.bz2`), `sha256`, `size`, `page_count`, `issue_count` and `lccns`. `usnm-ingest enqueue` reads it directly (its default `--list`). The Datasets HTML page itself answers scripted clients with 403, so the JSON is the interface.
+- **Size:** 2,997 batches, **23.7M pages**, **2.47 TB of `tar.bz2`** (largest 3.8 GB). Versions run `_ver01` (2,307) to `_ver08`.
+- **Archive layout:** `{lccn}/{yyyy}/{mm}/{dd}/ed-{n}/seq-{n}/ocr.txt` plus ALTO `ocr.xml`, exactly the historical layout the reader expected. The XML is ~35× the text and is skipped, so most of the download is discarded.
+- **Text volume:** a 1900s weekly batch (`vi_elgar_ver02`: 1,605 pages) averages **33.7 KB of text per page**; its curated Parquet is 3.2× smaller than the raw text. That fits the 450–800 GB raw / 150–300 GB curated estimate in §4.3.1.
+- **Throughput:** the download ran at ~80 MB/s. Curation is bound by single-threaded bzip2 at **~3.9 MB/s of archive per worker** (54 s for 208 MB), so the full 2.47 TB is ~175 worker-hours: about 22 hours with 8 workers. Run one worker process per vCPU.
+- **Scratch disk:** the worker downloads the whole archive before parsing (to verify the sha256 first), so its disk must hold the largest archive (3.8 GB).
+- **Titles:** `https://www.loc.gov/item/{lccn}/?fo=json` returns the title record with `location_city/county/state`, **`latlong`**, `dates_of_publication`, `number_first_issue`/`number_last_issue` and `languages`. LoC's own coordinates can seed `geocode`, with GNIS as the cross-check.
+- **Access:** everything above is anonymous HTTPS. A real archive (`dlc_zurich_ver04`, 58 KB) is checked into `crates/usnm-ingest/tests/data/` as a layout regression test.
+
 **Good-citizen policy:** identify ourselves with a descriptive User-Agent and contact address; prefer bulk over per-page requests; schedule off-peak; back off exponentially on 429/5xx; never parallelize beyond published limits; cache everything in our lake so we fetch each object **once**.
 
 ## 4.2 Canonical identifiers

@@ -67,9 +67,13 @@ struct IndexTarget {
 enum Command {
     /// Record listed batches and queue new ones and new versions.
     Enqueue {
-        /// Batch list: JSON `[{name, url, sha256?, ocr_source?}]`, a path or https URL.
-        #[arg(long)]
+        /// Batch list: JSON `[{name, url, sha256?, ocr_source?}]` or LoC's
+        /// collection JSON, as a path or https URL.
+        #[arg(long, default_value = source::LOC_DATASETS)]
         list: String,
+        /// Only these batches (names with their version suffix), e.g. to try a few.
+        #[arg(long, value_delimiter = ',')]
+        batches: Vec<String>,
     },
     /// Claim and curate queued batches until none are left.
     Curate {
@@ -91,6 +95,9 @@ enum Command {
     Run {
         #[arg(long)]
         list: Option<String>,
+        /// Only these batches from the list.
+        #[arg(long, value_delimiter = ',')]
+        batches: Vec<String>,
         #[arg(long)]
         full: bool,
         #[arg(long)]
@@ -116,12 +123,23 @@ fn state(s: &Stores) -> anyhow::Result<State> {
 async fn read_list(list: &str) -> anyhow::Result<Vec<ListedBatch>> {
     let dest = tempfile::NamedTempFile::new()?;
     source::fetch(list, dest.path()).await?;
-    let bytes = std::fs::read(dest.path())?;
-    serde_json::from_slice(&bytes).context("batch list")
+    source::parse_list(&std::fs::read(dest.path())?)
 }
 
-async fn enqueue(state: &State, list: &str) -> anyhow::Result<()> {
-    let report = source::enqueue(state, &read_list(list).await?).await?;
+async fn enqueue(state: &State, list: &str, only: &[String]) -> anyhow::Result<()> {
+    let mut batches = read_list(list).await?;
+    if !only.is_empty() {
+        batches.retain(|b| only.contains(&b.name));
+        let found: Vec<&str> = batches.iter().map(|b| b.name.as_str()).collect();
+        let missing: Vec<&String> = only
+            .iter()
+            .filter(|o| !found.contains(&o.as_str()))
+            .collect();
+        if !missing.is_empty() {
+            bail!("not in the list: {missing:?}");
+        }
+    }
+    let report = source::enqueue(state, &batches).await?;
     tracing::info!(?report, "enqueued");
     Ok(())
 }
@@ -203,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let state = state(&cli.stores)?;
     match &cli.command {
-        Command::Enqueue { list } => enqueue(&state, list).await,
+        Command::Enqueue { list, batches } => enqueue(&state, list, batches).await,
         Command::Curate { max_batches } => curate(&cli.stores, &state, *max_batches).await,
         Command::Release {
             full,
@@ -212,12 +230,13 @@ async fn main() -> anyhow::Result<()> {
         } => release(&cli.stores, &state, *full, *synthetic, target).await,
         Command::Run {
             list,
+            batches,
             full,
             synthetic,
             target,
         } => {
             if let Some(list) = list {
-                enqueue(&state, list).await?;
+                enqueue(&state, list, batches).await?;
             }
             curate(&cli.stores, &state, None).await?;
             release(&cli.stores, &state, *full, *synthetic, target).await

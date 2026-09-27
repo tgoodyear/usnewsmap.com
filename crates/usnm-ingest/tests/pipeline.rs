@@ -449,3 +449,46 @@ async fn releases_into_a_quickwit_writer_node() {
     assert_eq!(count("text:\"cross of gold\"").await, phrase);
     node.stop().await.unwrap();
 }
+
+/// A real LoC bulk OCR archive (see `tests/data/README.md`): the layout,
+/// compression and checksum as LoC publishes them.
+#[tokio::test]
+async fn curates_a_real_loc_archive() {
+    let e = env().await;
+    let archive =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/dlc_zurich_ver04.tar.bz2");
+    let list = source::parse_list(
+        format!(
+            r#"{{"datasets": [{{"batch": "dlc_zurich_ver04", "url": "{}", "page_count": 4,
+            "sha256": "ad36f7bb2ef915867460ac2b3c70f9aaa33709a9a99f554a49a9dc4fc35f3ba9"}}]}}"#,
+            archive.display()
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    source::enqueue(&e.state, &list).await.unwrap();
+    assert_eq!(e.worker("w").run(None).await.unwrap(), 1);
+    let (b, _) = e.state.batch("dlc_zurich").await.unwrap().unwrap();
+    let c = b.curated.unwrap();
+    assert_eq!(
+        (c.version, c.pages, c.lccns.as_slice()),
+        (4, 4, &["sn85042252".to_owned()][..])
+    );
+    assert_eq!(
+        (c.first.as_str(), c.last.as_str()),
+        ("1865-08-10", "1865-08-10")
+    );
+    let mut rows = Vec::new();
+    let part = e.curated.get(&c.parts[0]).await.unwrap().unwrap();
+    usnm_ingest::curated::read_part(part.into(), true, |r| {
+        rows.push(r);
+        Ok(())
+    })
+    .unwrap();
+    let mut seqs: Vec<u16> = rows.iter().map(|r| r.key.seq).collect();
+    seqs.sort_unstable();
+    assert_eq!(seqs, [1, 2, 3, 4]);
+    assert!(rows
+        .iter()
+        .all(|r| r.text.as_ref().is_some_and(|t| t.len() > 500)));
+}
