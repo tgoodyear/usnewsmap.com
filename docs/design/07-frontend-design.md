@@ -16,6 +16,12 @@
 | Testing | Vitest + Testing Library; **Playwright** end-to-end and visual snapshots; axe-core accessibility checks in CI | |
 | Hosting | **Azure Static Web Apps (Free)**; no Front Door | Free global static distribution, custom domain + TLS, atomic deploys, PR preview environments. Standard ($9) if a same-origin API or an SLA is wanted |
 
+**Implementation notes (first slice, [`web/`](../../web/README.md)):**
+
+- The timeline is a small SVG bar chart rather than uPlot, because it has one series until compare mode lands.
+- Controls are native elements, so Radix and Zustand aren't needed yet.
+- The basemap defaults to OpenFreeMap Positron until the PMTiles extract is published.
+
 ## 7.2 Layout and wireframes
 
 The design keeps the legacy "map-first" identity: a full-bleed map with controls layered over it. The new layout groups the controls into a **search bar**, a **time dock**, and a **side panel**.

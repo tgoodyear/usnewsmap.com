@@ -1,0 +1,37 @@
+# Web app
+
+The US News Map single-page app ([design doc 07](../docs/design/07-frontend-design.md)). It uses React 19, TypeScript, Vite, MapLibre GL, deck.gl and TanStack Query, and is hosted on Azure Static Web Apps.
+
+## Develop
+
+Start the API on the synthetic fixtures, then the dev server, which proxies `/v1` to the API:
+
+```sh
+cargo run -p usnm-api            # from the repo root; serves :8080
+cd web && npm ci && npm run dev  # http://localhost:5173
+```
+
+| Script | What |
+|--------|------|
+| `npm run lint` / `typecheck` / `test` | ESLint, `tsc`, Vitest unit tests (engine, URL state, dates, snippets) |
+| `npm run build` | Production build into `dist/` (includes `staticwebapp.config.json`) |
+| `npm run e2e` | Playwright end-to-end tests with axe accessibility checks against `vite preview` and a running API. Set `PW_CHROMIUM_PATH` to use an existing Chromium |
+
+Build-time settings:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `VITE_API_BASE` | same origin | API origin, e.g. `https://api.usnewsmap.com` |
+| `VITE_BASEMAP_STYLE` | OpenFreeMap Positron | MapLibre style URL. `none` gives a plain background (offline and tests). The self-hosted PMTiles style replaces the default once the tiles are published |
+| `USNM_API_ORIGIN` | `http://127.0.0.1:8080` | API the dev and preview servers proxy `/v1` to |
+
+## How it works
+
+- **The URL is the state** (`src/state/url.ts`). Query, dates, scrubber position, window, layer, measure, selected place, tab and viewport are all in the URL. Only non-default values are written, and every parameter is validated when the URL is parsed.
+- **One aggregate request per search.** `src/engine/cube.ts` builds per-place prefix sums from the sparse cube, so each playback frame, cumulative or trailing window, is a subtraction per place. Relative frequency uses the coverage cube named by `baseline_ref`, aligned to the same places.
+- **Version pinning.** Every request carries the `v` from `/v1/meta`, so a whole session reads one published snapshot.
+- **Snippets** are split into text and `<mark>` segments and rendered as text nodes. No API HTML is ever injected.
+- **Accessibility.** A Table tab mirrors the map. Playback works from the keyboard: `Space`, `←`/`→` (`Shift` for 10), `Home`/`End`. The current date is announced in a live region. Reduced motion is honored. Without WebGL2, the table is shown instead of the map.
+- **Performance.** The map stack is lazy-loaded; the critical-path JS is about 88 KB gzip (budget 250 KB).
+
+Not yet built: compare mode, the first-appearance and state-choropleth layers, the coverage overlay, embed mode, export, and the share dialog beyond copying the link.
