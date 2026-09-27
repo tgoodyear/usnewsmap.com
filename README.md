@@ -22,7 +22,7 @@ Start with the **[design document](docs/design/README.md)**: background, require
 | `fixtures/` | A small **synthetic** corpus for local development and tests (not real newspaper data) |
 | `docs/design/` | The design document set |
 
-Not yet built: reading the batch list from the LoC Datasets portal, `titles-sync` and `geocode`, and the ingest jobs in Azure (see [04 §4.4](docs/design/04-data-sources-and-ingestion.md#44-pipeline)). Until the first index is published, the infrastructure runs the API on synthetic fixtures (`USNM_SEARCH_BACKEND=fixtures`); the Quickwit sidecar is ready behind `USNM_SEARCH_BACKEND=quickwit`.
+Not yet built: `titles-sync` and `geocode`, and the ingest jobs in Azure (see [04 §4.4](docs/design/04-data-sources-and-ingestion.md#44-pipeline)). Until the first index is published, the infrastructure runs the API on synthetic fixtures (`USNM_SEARCH_BACKEND=fixtures`); the Quickwit sidecar is ready behind `USNM_SEARCH_BACKEND=quickwit`.
 
 ## Local development
 
@@ -63,7 +63,7 @@ USNM_DATA_DIR=/tmp/usnm-ingest/reference cargo run --manifest-path ~/src/usnewsm
 
 (Adjust `~/src/usnewsmap.com` to your checkout.) To index into Quickwit instead, replace `--index-dir …` with `--quickwit-bin /path/to/quickwit --quickwit-metastore file:///tmp/usnm-ingest/qw --quickwit-index-root file:///tmp/usnm-ingest/qw`; the pipeline runs its own writer node for the release.
 
-In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos https://{account}.documents.azure.com/`, Blob URLs for `--curated` and `--reference`, and `--quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index`. Every option also reads an environment variable (`usnm-ingest --help`).
+In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos https://{account}.documents.azure.com/`, Blob URLs for `--curated` and `--reference`, and `--quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index`. The store, state and index-target options also read environment variables (`USNM_CURATED_URL`, `USNM_REFERENCE_URL`, `USNM_COSMOS_ENDPOINT`, `USNM_QUICKWIT_*`, …; see `usnm-ingest --help`). `enqueue` with no `--list` reads LoC's own batch listing; add `--batches name_ver01,…` to take only some.
 
 ### Configuration (environment variables)
 

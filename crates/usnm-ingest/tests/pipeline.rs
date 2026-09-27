@@ -575,3 +575,65 @@ async fn batches_abandoned_by_crashed_workers_fail_at_the_attempt_cap() {
     assert_eq!(b.status, BatchStatus::Failed);
     assert!(b.last_error.unwrap().contains("abandoned"));
 }
+
+/// Records documents and claims to be Quickwit: stands in for a backend switch.
+struct OtherBackend(u64);
+
+#[async_trait::async_trait]
+impl usnm_ingest::sink::IndexSink for OtherBackend {
+    async fn create(&mut self, _index_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn add(&mut self, _doc: &Value) -> anyhow::Result<()> {
+        self.0 += 1;
+        Ok(())
+    }
+    async fn finish(&mut self, expected: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(self.0 == expected);
+        Ok(())
+    }
+    fn backend(&self) -> &'static str {
+        "quickwit"
+    }
+}
+
+/// Deltas only stack on indexes in the same engine: switching backend
+/// rebuilds everything into a new base there.
+#[tokio::test]
+async fn a_backend_switch_forces_a_full_release() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    let b = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    write_archive(&b, &late, false, true);
+    source::enqueue(&e.state, &[listed("batch_fx_early_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    e.release(1, false).await.unwrap(); // memory
+    source::enqueue(&e.state, &[listed("batch_fx_late_ver01", &b, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let r = Release {
+        state: e.state.clone(),
+        curated: e.curated.clone(),
+        reference: e.reference.clone(),
+        owner: "releaser".into(),
+        full: false,
+        synthetic: true,
+        now: Utc.with_ymd_and_hms(2026, 10, 8, 3, 0, 0).unwrap(),
+    };
+    let mut sink = OtherBackend(0);
+    let p = r.run(&mut sink).await.unwrap().unwrap();
+    assert!(p.full);
+    assert_eq!(p.indexes, ["pages-base-20261008-1"]);
+    assert_eq!(sink.0, p.docs);
+    assert_eq!(
+        e.reference_json("current.json").await["backend"],
+        "quickwit"
+    );
+}

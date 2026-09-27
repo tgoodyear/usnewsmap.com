@@ -5,7 +5,8 @@
 //! replace, upsert and a one-field query are used; 429s are retried after the
 //! service's `x-ms-retry-after-ms`.
 
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context};
@@ -25,6 +26,10 @@ pub struct CosmosDocs {
     database: String,
     credential: Arc<Credential>,
     http: reqwest::Client,
+    /// Latest session token per container and partition key range. The
+    /// account uses Session consistency, so echoing these gives this client
+    /// read-your-writes (a claim sees the enqueue that preceded it).
+    sessions: Mutex<HashMap<String, BTreeMap<String, String>>>,
 }
 
 impl CosmosDocs {
@@ -51,6 +56,7 @@ impl CosmosDocs {
                 .timeout(Duration::from_secs(60))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
+            sessions: Mutex::default(),
         })
     }
 
@@ -63,8 +69,39 @@ impl CosmosDocs {
         Ok(self.endpoint.join(&path)?)
     }
 
+    fn session_token(&self, container: &str) -> Option<String> {
+        let sessions = self.sessions.lock().expect("sessions");
+        let ranges = sessions.get(container)?;
+        (!ranges.is_empty()).then(|| {
+            ranges
+                .iter()
+                .map(|(range, token)| format!("{range}:{token}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+    }
+
+    /// Record `x-ms-session-token` (`{range}:{token}`, comma-separated).
+    fn remember_session(&self, container: &str, resp: &Response) {
+        let Some(header) = resp
+            .headers()
+            .get("x-ms-session-token")
+            .and_then(|v| v.to_str().ok())
+        else {
+            return;
+        };
+        let mut sessions = self.sessions.lock().expect("sessions");
+        let ranges = sessions.entry(container.to_owned()).or_default();
+        for part in header.split(',') {
+            if let Some((range, token)) = part.trim().split_once(':') {
+                ranges.insert(range.to_owned(), token.to_owned());
+            }
+        }
+    }
+
     async fn send(
         &self,
+        container: &str,
         build: impl Fn() -> RequestBuilder,
         pk: Option<&str>,
     ) -> anyhow::Result<Response> {
@@ -80,7 +117,11 @@ impl CosmosDocs {
             if let Some(pk) = pk {
                 req = req.header("x-ms-documentdb-partitionkey", json!([pk]).to_string());
             }
+            if let Some(session) = self.session_token(container) {
+                req = req.header("x-ms-session-token", session);
+            }
             let resp = req.send().await.context("Cosmos request")?;
+            self.remember_session(container, &resp);
             if resp.status() != StatusCode::TOO_MANY_REQUESTS || attempt >= MAX_RETRIES {
                 return Ok(resp);
             }
@@ -126,7 +167,11 @@ impl DocStore for CosmosDocs {
     async fn get(&self, container: &str, pk: &str, id: &str) -> anyhow::Result<Option<Versioned>> {
         let url = self.docs_url(container, Some(id))?;
         let resp = self
-            .send(|| self.http.request(Method::GET, url.clone()), Some(pk))
+            .send(
+                container,
+                || self.http.request(Method::GET, url.clone()),
+                Some(pk),
+            )
             .await?;
         match resp.status() {
             StatusCode::NOT_FOUND => Ok(None),
@@ -146,7 +191,11 @@ impl DocStore for CosmosDocs {
     ) -> anyhow::Result<Option<String>> {
         let url = self.docs_url(container, None)?;
         let resp = self
-            .send(|| self.http.post(url.clone()).json(doc), Some(pk))
+            .send(
+                container,
+                || self.http.post(url.clone()).json(doc),
+                Some(pk),
+            )
             .await?;
         match resp.status() {
             StatusCode::CREATED => Ok(Some(etag_of(&resp))),
@@ -166,6 +215,7 @@ impl DocStore for CosmosDocs {
         let url = self.docs_url(container, Some(id))?;
         let resp = self
             .send(
+                container,
                 || {
                     self.http
                         .put(url.clone())
@@ -186,6 +236,7 @@ impl DocStore for CosmosDocs {
         let url = self.docs_url(container, None)?;
         let resp = self
             .send(
+                container,
                 || {
                     self.http
                         .post(url.clone())
@@ -229,6 +280,7 @@ impl DocStore for CosmosDocs {
             let cont = continuation.clone();
             let resp = self
                 .send(
+                    container,
                     || {
                         let mut r = self
                             .http
@@ -293,6 +345,11 @@ mod tests {
         assert_eq!(h["x-ms-version"], API_VERSION);
         assert!(h.contains_key("x-ms-date"));
         seen.lock().unwrap().push(
+            h.get("x-ms-session-token")
+                .map(|v| format!("session={}", v.to_str().unwrap()))
+                .unwrap_or_default(),
+        );
+        seen.lock().unwrap().push(
             h.get("x-ms-documentdb-partitionkey")
                 .map(|v| v.to_str().unwrap().to_owned())
                 .unwrap_or_default(),
@@ -320,6 +377,10 @@ mod tests {
         let pos = items.iter().position(|(d, _)| d["id"] == doc["id"]);
         let etag = format!("\"e{}\"", items.len() + 10);
         out.insert("etag", etag.parse().unwrap());
+        out.insert(
+            "x-ms-session-token",
+            format!("0:1#{}", items.len() + 1).parse().unwrap(),
+        );
         match (pos, upsert) {
             (Some(_), false) => (S::CONFLICT, out, "{}".into()),
             (Some(i), true) => {
@@ -430,7 +491,12 @@ mod tests {
         let all = c.list("batches", "status", &["curated"]).await.unwrap();
         assert_eq!(all.len(), 2);
         assert!(all[0].doc.get("_rid").is_none());
-        assert!(fake.seen.lock().unwrap().contains(&"[\"b1\"]".to_owned()));
+        let seen = fake.seen.lock().unwrap();
+        assert!(seen.contains(&"[\"b1\"]".to_owned()));
+        // Writes return session tokens; later requests echo the latest one.
+        assert!(seen.contains(&"session=0:1#1".to_owned()), "{seen:?}");
+        assert!(seen.contains(&"session=0:1#2".to_owned()), "{seen:?}");
+
         assert!(CosmosDocs::new(
             "https://evil.example/",
             "usnm",

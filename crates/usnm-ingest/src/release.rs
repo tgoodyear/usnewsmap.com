@@ -111,7 +111,10 @@ impl Release {
         // Re-taking a lock this owner holds just confirms (and extends) it.
         self.lock().await?;
         let current = Catalog::load(self.reference.as_ref()).await?;
-        let previous = self.published_run().await?;
+        let (previous, previous_backend) = match self.published_run().await? {
+            Some((run, backend)) => (Some(run), Some(backend)),
+            None => (None, None),
+        };
         // Every batch's last committed curation, whatever its current status.
         let curated: BTreeMap<String, Curated> = self
             .state
@@ -121,7 +124,18 @@ impl Release {
             .filter_map(|(b, _)| b.curated.map(|c| (b.batch, c)))
             .collect();
 
+        // A delta only makes sense on top of indexes in the same engine.
+        let switching = previous_backend
+            .as_deref()
+            .is_some_and(|b| b != sink.backend());
+        if switching {
+            tracing::info!(
+                to = sink.backend(),
+                "search backend changed; building a full base"
+            );
+        }
         let full = self.full
+            || switching
             || previous
                 .as_ref()
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
@@ -246,7 +260,7 @@ impl Release {
     /// The published version's run. `current.json` is the source of truth:
     /// if a previous release crashed after writing it but before recording
     /// the publish in Cosmos, the run and `ops/current` are repaired here.
-    async fn published_run(&self) -> anyhow::Result<Option<IndexRun>> {
+    async fn published_run(&self) -> anyhow::Result<Option<(IndexRun, String)>> {
         let Some(bytes) = self.reference.get("current.json").await? else {
             return Ok(None);
         };
@@ -266,7 +280,8 @@ impl Release {
         if self.state.current_version().await?.as_deref() != Some(version) {
             self.state.set_current_version(version).await?;
         }
-        Ok(Some(run))
+        let backend = pointer["backend"].as_str().unwrap_or("memory").to_owned();
+        Ok(Some((run, backend)))
     }
 
     /// `pages-v{date}-{n}` and its new index, `pages-{base|delta}-{date}-{n}`.
