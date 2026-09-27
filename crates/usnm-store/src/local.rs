@@ -44,6 +44,25 @@ impl ObjectStore for LocalStore {
         }
     }
 
+    async fn put(&self, path: &str, body: Vec<u8>, _content_type: &str) -> Result<(), StoreError> {
+        validate_path(path)?;
+        let full = self.root.join(path);
+        tokio::task::spawn_blocking(move || {
+            let dir = full.parent().expect("validated paths have a parent");
+            std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+            // Readers see the old object or the new one, never a partial write.
+            let tmp = dir.join(format!(
+                ".tmp-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::write(&tmp, &body).map_err(|e| io(&tmp, e))?;
+            std::fs::rename(&tmp, &full).map_err(|e| io(&full, e))
+        })
+        .await
+        .map_err(|e| StoreError::Io(e.to_string()))?
+    }
+
     async fn put_new(
         &self,
         path: &str,
@@ -89,6 +108,8 @@ mod tests {
         assert!(s.put_new("v1/a.json", b"one".to_vec(), "").await.unwrap());
         assert!(!s.put_new("v1/a.json", b"two".to_vec(), "").await.unwrap());
         assert_eq!(s.get("v1/a.json").await.unwrap().unwrap(), b"one");
+        s.put("v1/a.json", b"three".to_vec(), "").await.unwrap();
+        assert_eq!(s.get("v1/a.json").await.unwrap().unwrap(), b"three");
         assert!(s.get("../etc/passwd").await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

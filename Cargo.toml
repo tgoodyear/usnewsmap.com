@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/usnm-core", "crates/usnm-search", "crates/usnm-store", "crates/usnm-api"]
+members = [
+    "crates/usnm-core",
+    "crates/usnm-search",
+    "crates/usnm-store",
+    "crates/usnm-api",
+    "crates/usnm-ingest",
+]
 
 [workspace.package]
 edition = "2021"
@@ -12,21 +18,31 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 usnm-core = { path = "crates/usnm-core" }
 usnm-search = { path = "crates/usnm-search" }
 usnm-store = { path = "crates/usnm-store" }
+anyhow = "1"
 arc-swap = "1"
+arrow-array = "60"
+arrow-schema = "60"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
-chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+bytes = "1"
+bzip2 = "0.6"
+chrono = { version = "0.4", default-features = false, features = ["std", "serde", "clock"] }
+clap = { version = "4", features = ["derive", "env"] }
+flate2 = "1"
 form_urlencoded = "1"
 http-body-util = "0.1"
 futures = "0.3"
 governor = "0.10"
 httpdate = "1"
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 moka = { version = "0.12", features = ["future"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tower = { version = "0.5", features = ["util"] }

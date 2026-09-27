@@ -131,7 +131,7 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 | `text` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | Search |
 | `date` | date | ✅ | ✅ | ✅ | Quickwit timestamp field (pre-1970 confirmed in S-2) |
 | `day` | u32 | ✅ | ✅ sort | ✅ | Days since 1700-01-01; day/week buckets; range filter; hit order |
-| `sort_key` | u64 | – | ✅ sort | – | `title ordinal << 24 \| edition << 16 \| seq`: stable hit order within a day (Quickwit can't sort on text, §5.5.1) |
+| `sort_key` | u64 | – | ✅ sort | – | `title ordinal << 32 \| edition << 16 \| seq`: stable hit order within a day (Quickwit can't sort on text, §5.5.1) |
 | `ym` | u32 | ✅ | ✅ | – | `year*12 + (month-1)`; month buckets |
 | `year` | u16 | ✅ | ✅ | – | Year buckets |
 | `place_id` | keyword | ✅ | ✅ facet | ✅ | Map aggregation |
@@ -172,7 +172,7 @@ doc_mapping:
 | Pre-1970 dates | `datetime` with `%Y-%m-%d` input stores and returns 1890s dates correctly, and `date` works as the timestamp field | Buckets still use the integer fields |
 | Multi-index search | One request over base + delta returns exact counts and aggregations | Versions are explicit index lists (08 §8.4.1) |
 | Nested aggregations | `terms(place_id) > histogram(day / ym / year)` and the `place_shard` split match the reference exactly | §5.7 as designed |
-| Sorting | Quickwit **can't sort on text fields**, so `doc_id` can't be the tiebreak. A leading `-` in `sort_by` means **ascending** | Hits sort by `-day,-sort_key`. `sort_key` = `title ordinal << 24 \| edition << 16 \| seq`, a numeric stand-in for (title, edition, page) |
+| Sorting | Quickwit **can't sort on text fields**, so `doc_id` can't be the tiebreak. A leading `-` in `sort_by` means **ascending** | Hits sort by `-day,-sort_key`. `sort_key` = `title ordinal << 32 \| edition << 16 \| seq`, a numeric stand-in for (title, edition, page) |
 | Snippets | `snippet_fields` is a comma-separated string, not an array. Fragments come back HTML-escaped with `<b>` highlights | The API unescapes the text, then re-escapes it and emits only `<mark>` |
 | Phrases, slop, prefix | Exact phrases (stop words included), `"a b"~n` and `word*` match the reference | As §5.6 |
 | **Fuzzy terms** | **Not supported.** `term~1` parses but silently matches nothing, and the Elasticsearch-compatible API has no fuzzy query either | The Quickwit backend reports `fuzzy: false` and returns 422 for fuzzy queries rather than wrong counts. F-21 needs another approach; see [10 R-15](10-roadmap-and-risks.md#103-risk-register) |
@@ -318,6 +318,6 @@ One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth
 
 **Cost:** **$0** within the free tier. Beyond it: ~$0.25/GB-month plus provisioned RU/s. If the free tier is already used in the subscription, **serverless** costs roughly $1–3/month at this volume.
 
-**SDK:** `azure_data_cosmos` (Rust, **beta 0.37**; preview/beta is acceptable per the owner). The operations used here (point read, upsert, patch with an ETag condition, query, change-feed pull) are small, and the REST API is a fallback.
+**Client:** the pipeline talks to the Cosmos **REST API** directly (`crates/usnm-ingest/src/cosmos.rs`) with Entra ID tokens: point read, create, **replace with `If-Match`** (for claims, commits and locks), upsert and a one-field query, retrying 429s. That is the whole surface the pipeline needs, and it avoids depending on the beta Rust SDK. Finding newly curated batches uses a status query rather than the change feed; at ~3k batch items the query costs little.
 
 **Resilience:** the API doesn't read Cosmos on the request path. If Cosmos is throttled or down, the site keeps serving and only the pipeline pauses. Continuous backup (7-day, free tier) covers mistakes, and state can be rebuilt from Parquet plus the LoC batch list if ever lost.

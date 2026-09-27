@@ -59,7 +59,7 @@ def page_text(rng, topics):
 
 def sort_key(title_ordinal, edition, seq):
     """Numeric same-day tiebreak: Quickwit 0.9 can't sort on text fields."""
-    return (title_ordinal << 24) | (edition << 16) | seq
+    return (title_ordinal << 32) | (edition << 16) | seq
 
 
 def main():
@@ -69,7 +69,7 @@ def main():
     for pid, ordinal, name, state, *_ in PLACES:
         lccn = f"sn99{ordinal:06d}"
         titles.append({
-            "lccn": lccn, "name": f"The Fixture Gazette {ordinal}", "place_id": pid,
+            "lccn": lccn, "name": f"The Fixture Gazette {ordinal}", "ordinal": ordinal, "place_id": pid,
             "state": state, "languages": ["eng"], "first": "1895-01-01", "last": "1897-12-31",
         })
         counts = {}

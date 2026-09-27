@@ -341,7 +341,7 @@ mod shard_tests {
             front_page: true,
             edition: 1,
             seq: 1,
-            sort_key: u64::from(place) << 24 | 1 << 16 | 1,
+            sort_key: u64::from(place) << 32 | 1 << 16 | 1,
             text: "a cross of gold".into(),
         }
     }
