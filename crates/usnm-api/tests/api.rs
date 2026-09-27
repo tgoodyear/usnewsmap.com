@@ -524,9 +524,15 @@ async fn slow_responses_persist_and_survive_a_restart() {
         AppState::new(config(), Arc::new(fixture_backend()), refdata().await)
             .with_response_store(Arc::new(LocalStore::new(&dir))),
     );
-    let (status, _, fresh) = get(&recomputing, uri).await;
+    let (status, _, mut fresh) = get(&recomputing, uri).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(fresh, body);
+    // Recomputed, so only its timing may differ from the original.
+    let mut original = body.clone();
+    for v in [&mut fresh, &mut original] {
+        v.as_object_mut().unwrap().remove("timing_ms");
+    }
+    // Serving the invalid entry would have parsed as `null` here.
+    assert_eq!(fresh, original);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
