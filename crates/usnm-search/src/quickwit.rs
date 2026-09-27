@@ -15,7 +15,7 @@ use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
 use crate::{
-    mark_html, Capabilities, CubeCell, Hit, HitsPage, HitsQuery, IndexSet, PageDoc, PlaceSummary,
+    mark_html, Capabilities, CubeCell, Hit, HitsPage, HitsQuery, IndexSet, PlaceSummary,
     SearchBackend, SearchError, Summary,
 };
 
@@ -67,7 +67,9 @@ impl QuickwitBackend {
             // query text must not reach logs (09 §9.4.2).
             return Err(SearchError::Backend(format!("quickwit returned {status}")));
         }
-        resp.json().await.map_err(map_err)
+        let parsed: SearchResponse = resp.json().await.map_err(map_err)?;
+        check_complete(&parsed)?;
+        Ok(parsed)
     }
 }
 
@@ -221,11 +223,48 @@ pub fn hits_request(
 pub struct SearchResponse {
     pub num_hits: u64,
     #[serde(default)]
-    pub hits: Vec<PageDoc>,
+    pub hits: Vec<StoredHit>,
     #[serde(default)]
     pub snippets: Option<Vec<Value>>,
     #[serde(default)]
     pub aggregations: Option<Value>,
+    /// Partial failures (e.g. splits that could not be searched). A 200 with
+    /// any errors is incomplete and must not be served or cached.
+    #[serde(default)]
+    pub errors: Vec<Value>,
+}
+
+/// The fields a hit carries: only those stored in the index (05 §5.5).
+/// `day` and `front_page` are not stored; they are derived from `date` and `seq`.
+#[derive(Debug, Deserialize)]
+pub struct StoredHit {
+    pub doc_id: String,
+    /// Quickwit renders datetimes as RFC 3339 (`1896-07-10T00:00:00Z`) by default.
+    pub date: String,
+    pub place_id: String,
+    pub lccn: String,
+    pub edition: u16,
+    pub seq: u16,
+}
+
+impl StoredHit {
+    fn day(&self) -> Option<u32> {
+        let ymd = self.date.get(..10)?;
+        let date = chrono::NaiveDate::parse_from_str(ymd, "%Y-%m-%d").ok()?;
+        Some(usnm_core::time::day_number(date))
+    }
+}
+
+/// Reject responses that report partial failures, without echoing their content.
+pub fn check_complete(resp: &SearchResponse) -> Result<(), SearchError> {
+    if resp.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(SearchError::Backend(format!(
+            "quickwit reported {} partial failure(s)",
+            resp.errors.len()
+        )))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,13 +340,14 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
     Ok(cells)
 }
 
-pub fn parse_hits(resp: SearchResponse) -> HitsPage {
+pub fn parse_hits(resp: SearchResponse) -> Result<HitsPage, SearchError> {
     let snippets = resp.snippets.unwrap_or_default();
-    let hits = resp
-        .hits
-        .into_iter()
-        .enumerate()
-        .map(|(i, d)| Hit {
+    let mut hits = Vec::with_capacity(resp.hits.len());
+    for (i, d) in resp.hits.into_iter().enumerate() {
+        let day = d
+            .day()
+            .ok_or_else(|| SearchError::Backend("hit has an unparseable date".into()))?;
+        hits.push(Hit {
             snippets: snippets
                 .get(i)
                 .and_then(|s| s.get("text"))
@@ -319,19 +359,19 @@ pub fn parse_hits(resp: SearchResponse) -> HitsPage {
                         .collect()
                 })
                 .unwrap_or_default(),
+            front_page: d.seq == 1,
+            day,
             doc_id: d.doc_id,
-            day: d.day,
             lccn: d.lccn,
             place_id: d.place_id,
             edition: d.edition,
             seq: d.seq,
-            front_page: d.front_page,
-        })
-        .collect();
-    HitsPage {
+        });
+    }
+    Ok(HitsPage {
         total: resp.num_hits,
         hits,
-    }
+    })
 }
 
 /// Quickwit highlights with `<b>…</b>`. Rebuild the snippet so that the only
@@ -407,7 +447,7 @@ impl SearchBackend for QuickwitBackend {
         let resp = self
             .search(indexes, &hits_request(query, filters, page)?)
             .await?;
-        Ok(parse_hits(resp))
+        parse_hits(resp)
     }
 
     async fn health(&self) -> Result<(), SearchError> {
@@ -499,6 +539,41 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with("AND place_id:P00001"));
+    }
+
+    #[test]
+    fn decodes_hits_from_stored_fields_only() {
+        let resp: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 2,
+            "hits": [
+                {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
+                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1, "text": "…"},
+                {"doc_id": "sn99000001_1896-07-10_ed-1_seq-3", "date": "1896-07-10T00:00:00Z",
+                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 3}
+            ],
+            "snippets": [{"text": ["a <b>gold</b> b"]}, {"text": []}]
+        }))
+        .unwrap();
+        let page = parse_hits(resp).unwrap();
+        assert_eq!(
+            page.hits[0].day,
+            usnm_core::time::day_number(d("1896-07-10"))
+        );
+        assert!(page.hits[0].front_page);
+        assert!(!page.hits[1].front_page);
+        assert_eq!(page.hits[0].snippets, vec!["a <mark>gold</mark> b"]);
+    }
+
+    #[test]
+    fn rejects_partial_failures_without_echoing_them() {
+        let resp: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 3,
+            "errors": [{"split_id": "x", "error": "failed on query text:secret"}]
+        }))
+        .unwrap();
+        let err = check_complete(&resp).unwrap_err().to_string();
+        assert!(err.contains("1 partial failure"));
+        assert!(!err.contains("secret"));
     }
 
     #[test]
