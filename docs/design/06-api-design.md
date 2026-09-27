@@ -28,7 +28,7 @@
 
 **Yes, use Rust** for the API and the ingest CLI ([ADR-0004](adr/0004-rust-api.md)). The gaps in the Azure Rust SDK don't matter here:
 
-- **Blob / Identity:** GA crates (`azure_identity`, `azure_storage_blob`). The app reaches Blob Storage through a private endpoint using its managed identity.
+- **Blob / Identity:** the API needs only Get Blob and a create-only Put Blob, so it calls the Blob REST API over `reqwest` with an Entra ID bearer token from the Container Apps managed identity endpoint (the `usnm-store` crate, ~300 lines). The GA crates (`azure_identity`, `azure_storage_blob`) remain an option if more of the API is needed. The app reaches Blob Storage through a private endpoint; account keys and SAS are never used.
 - **AI Search** (if chosen): a thin REST client (~300 lines) over `reqwest`, with a bearer token from `azure_identity` (scope `https://search.azure.com/.default`). The REST API is versioned and stable.
 - **Quickwit:** its REST/ES-compatible API over `reqwest`, with shared serde types.
 - **Telemetry:** OpenTelemetry OTLP → **Container Apps managed OpenTelemetry agent** → Application Insights. No Azure-specific Rust exporter needed.
@@ -49,7 +49,7 @@
 | OpenAPI | `utoipa` (types → OpenAPI 3.1); Scalar or Redoc docs served at `/v1/docs` |
 | Config | `figment` (env + file); 12-factor |
 | Telemetry | `tracing`, `tracing-opentelemetry`, `opentelemetry-otlp` |
-| Azure | `azure_identity`, `azure_storage_blob` |
+| Azure | Blob REST + managed identity tokens over `reqwest` (`usnm-store`); `azure_identity` / `azure_storage_blob` if more is needed |
 | Testing | `insta` (golden snapshots), `wiremock` (backend fakes), `proptest` (parser), `testcontainers` (Quickwit) |
 | Lint / supply chain | `clippy -D warnings`, `rustfmt`, `cargo-deny` (licenses/advisories), `cargo-audit`, SBOM via `cargo-cyclonedx` |
 

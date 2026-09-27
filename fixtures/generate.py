@@ -7,6 +7,7 @@ never be presented as real Chronicling America data.
 
 Usage: python3 fixtures/generate.py   (writes fixtures/data/…)
 """
+import hashlib
 import json
 import random
 from datetime import date, timedelta
@@ -109,6 +110,13 @@ def main():
     (snap / "places.json").write_text(json.dumps(places, indent=1) + "\n")
     (snap / "titles.json").write_text(json.dumps(titles, indent=1) + "\n")
     (snap / "baselines.json").write_text(json.dumps(baselines) + "\n")
+    # The API verifies every reference file against this manifest (04 §4.3).
+    files = []
+    for name in ("baselines.json", "places.json", "titles.json"):
+        data = (snap / name).read_bytes()
+        files.append({"path": name, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
+    manifest = {"index_version": VERSION, "files": files}
+    (snap / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
     current = {
         "index_version": VERSION,
         "backend": "memory",

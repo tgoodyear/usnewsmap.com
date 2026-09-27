@@ -2,10 +2,8 @@ use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
 use usnm_api::config::{BackendKind, Config};
-use usnm_api::refdata::RefData;
-use usnm_api::{app, memory_snapshot, spawn_refresher, AppState, Reloader, Snapshot};
+use usnm_api::{app, spawn_background, AppState, Engine, Loader};
 use usnm_search::quickwit::QuickwitBackend;
-use usnm_search::SearchBackend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,38 +15,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env()?;
-    let dir = config.data_dir.clone();
     // Each published version gets a fresh snapshot. The memory backend reloads
     // exactly the indexes the new version names; Quickwit is shared because
     // the index set travels with the reference data.
-    let reloader: Reloader = match &config.backend {
-        BackendKind::Memory => Arc::new(move || memory_snapshot(&dir)),
+    let engine = match &config.backend {
+        BackendKind::Memory => Engine::Memory {
+            indexes_dir: config.data_dir.join("indexes"),
+        },
         BackendKind::Quickwit(url) => {
-            let backend: Arc<dyn SearchBackend> =
-                Arc::new(QuickwitBackend::new(url, config.search_timeout)?);
-            Arc::new(move || {
-                Ok(Snapshot {
-                    refdata: RefData::load(&dir)?,
-                    backend: backend.clone(),
-                })
-            })
+            Engine::Shared(Arc::new(QuickwitBackend::new(url, config.search_timeout)?))
         }
     };
-    let snapshot = reloader()?;
+    let loader = Loader {
+        reference: usnm_store::open(&config.reference_url)?,
+        engine,
+    };
+    let snapshot = loader.snapshot().await?;
     tracing::info!(
         version = snapshot.refdata.version(),
         synthetic = snapshot.refdata.current.synthetic,
         backend = ?config.backend,
+        reference = ?loader.reference,
         "starting usnm-api"
     );
+    let responses = config
+        .response_cache_url
+        .as_deref()
+        .map(usnm_store::open)
+        .transpose()?;
     let bind = config.bind.clone();
-    let state = Arc::new(AppState::with_reloader(config, snapshot, Some(reloader)));
-    spawn_refresher(state.clone());
+    let mut state = AppState::with_loader(config, snapshot, Some(loader));
+    if let Some(store) = responses {
+        tracing::info!(store = ?store, "persistent response cache enabled");
+        state = state.with_response_store(store);
+    }
+    let state = Arc::new(state);
+    spawn_background(state.clone());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "listening");
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    // Peer addresses feed the rate limiter when there is no trusted proxy.
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await?;
     Ok(())
 }
 

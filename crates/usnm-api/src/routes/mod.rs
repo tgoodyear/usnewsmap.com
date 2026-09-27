@@ -9,17 +9,96 @@ pub use hits::hits;
 pub use meta::{meta, places, readyz};
 
 use std::future::Future;
+use std::io::Read;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use usnm_store::ObjectStore;
 
 use crate::error::ApiError;
 use crate::version::{self, Pinning};
 use crate::AppState;
 
-/// Serve `compute()` through the response cache, with version-aware headers.
+/// Bump when a response body's shape changes, so a new release never serves
+/// persisted bodies written by an older one for the same index version.
+pub(crate) const RESPONSE_FORMAT: u32 = 1;
+
+/// A persistent-cache read slower than this is abandoned and the response computed.
+const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Largest decompressed body read back from the persistent cache.
+const MAX_PERSISTED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Object path for a cache key: `{index_version}/f{format}/{sha256(key)}.json.zst`.
+/// Keys contain search text, so only their hash appears in the path.
+pub(crate) fn persisted_path(serving: &str, key: &str) -> String {
+    let digest: String = Sha256::digest(key.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{serving}/f{RESPONSE_FORMAT}/{digest}.json.zst")
+}
+
+async fn read_persisted(store: &dyn ObjectStore, path: &str) -> Option<Vec<u8>> {
+    let bytes = match tokio::time::timeout(PERSISTED_READ_TIMEOUT, store.get(path)).await {
+        Ok(Ok(found)) => found?,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "persistent cache read failed");
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!("persistent cache read timed out");
+            return None;
+        }
+    };
+    let mut body = Vec::new();
+    let decoded = zstd::stream::read::Decoder::new(bytes.as_slice())
+        .and_then(|d| d.take(MAX_PERSISTED_BYTES + 1).read_to_end(&mut body));
+    match decoded {
+        // Only a complete JSON document counts as a hit.
+        Ok(n)
+            if (n as u64) <= MAX_PERSISTED_BYTES
+                && serde_json::from_slice::<serde::de::IgnoredAny>(&body).is_ok() =>
+        {
+            Some(body)
+        }
+        Ok(_) => {
+            tracing::warn!("persistent cache entry is invalid; recomputing");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "persistent cache entry is corrupt");
+            None
+        }
+    }
+}
+
+/// Compress and store a computed body in the background; failures only log.
+fn persist(store: Arc<dyn ObjectStore>, path: String, body: Arc<Vec<u8>>) {
+    tokio::spawn(async move {
+        let compressed =
+            tokio::task::spawn_blocking(move || zstd::encode_all(body.as_slice(), 3)).await;
+        let result = match compressed {
+            Ok(Ok(bytes)) => store
+                .put_new(&path, bytes, "application/zstd")
+                .await
+                .map_err(|e| e.to_string()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "persistent cache write failed");
+        }
+    });
+}
+
+/// Serve `compute()` through the in-process cache, then the persistent
+/// cache, with version-aware headers. Concurrent identical requests share one
+/// computation.
 pub(crate) async fn cached<F, T>(
     state: &AppState,
     key: String,
@@ -33,13 +112,30 @@ where
     F: Future<Output = Result<T, ApiError>>,
     T: Serialize,
 {
+    let persistent = state
+        .responses
+        .clone()
+        .map(|store| (store, persisted_path(serving, &key)));
+    let persist_after = state.config.persist_after;
     let body = state
         .cache
-        .try_get_with(key, async {
+        .try_get_with(key, async move {
+            if let Some((store, path)) = &persistent {
+                if let Some(body) = read_persisted(store.as_ref(), path).await {
+                    return Ok(Arc::new(body));
+                }
+            }
+            let started = Instant::now();
             let value = compute.await?;
-            serde_json::to_vec(&value)
+            let body = serde_json::to_vec(&value)
                 .map(Arc::new)
-                .map_err(|e| ApiError::Backend(e.to_string()))
+                .map_err(|e| ApiError::Backend(e.to_string()))?;
+            if let Some((store, path)) = persistent {
+                if started.elapsed() >= persist_after {
+                    persist(store, path, body.clone());
+                }
+            }
+            Ok(body)
         })
         .await
         .map_err(|e: Arc<ApiError>| Arc::try_unwrap(e).unwrap_or_else(|e| e.as_ref().clone()))?;
@@ -59,7 +155,13 @@ pub(crate) async fn with_timeout<T>(
     state: &AppState,
     fut: impl Future<Output = Result<T, usnm_search::SearchError>>,
 ) -> Result<T, ApiError> {
-    match tokio::time::timeout(state.config.search_timeout, fut).await {
+    // Waiting for a permit counts against the timeout, so a saturated
+    // backend sheds load as 503s instead of queueing without bound.
+    let run = async {
+        let _permit = state.permits.acquire().await;
+        fut.await
+    };
+    match tokio::time::timeout(state.config.search_timeout, run).await {
         Ok(r) => r.map_err(ApiError::from),
         Err(_) => Err(ApiError::Timeout),
     }

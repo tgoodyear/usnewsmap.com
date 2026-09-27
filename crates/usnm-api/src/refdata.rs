@@ -2,16 +2,21 @@
 //!
 //! `current.json` names the sealed index set and the reference snapshot that
 //! were published together; both are immutable, so the API can hot-swap to a
-//! new version atomically. This loader reads a local directory; reading the
-//! same layout from Blob Storage via managed identity is the next increment.
+//! new version atomically. The same layout is read from a Blob container (via
+//! the managed identity) or a local directory, and every reference file is
+//! checked against the snapshot's `manifest.json` before it is used.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
+use usnm_store::{is_safe_segment, ObjectStore};
+
+/// The reference files the API loads from each snapshot.
+const FILES: [&str; 3] = ["places.json", "titles.json", "baselines.json"];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Bounds {
@@ -63,14 +68,71 @@ pub struct RefData {
     pub baselines: HashMap<String, Vec<(u32, u32)>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct Manifest {
+    /// The published version this snapshot was built for.
+    index_version: String,
+    files: Vec<ManifestFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestFile {
+    path: String,
+    sha256: String,
+    bytes: u64,
+}
+
 impl RefData {
-    pub fn load(dir: &Path) -> Result<Self, String> {
-        let current = read_current(dir)?;
-        let snap = dir.join(&current.reference);
-        let places: Vec<Place> = read_json(&snap.join("places.json"))?;
-        let titles: Vec<Title> = read_json(&snap.join("titles.json"))?;
-        let mut baselines: HashMap<String, Vec<(u32, u32)>> =
-            read_json(&snap.join("baselines.json"))?;
+    /// Load whatever `current.json` names now.
+    pub async fn load(store: &dyn ObjectStore) -> Result<Self, String> {
+        let current = read_current(store).await?;
+        Self::load_for(store, current).await
+    }
+
+    /// Load the reference snapshot `current` names, verifying each file
+    /// against the snapshot manifest.
+    pub async fn load_for(store: &dyn ObjectStore, current: Current) -> Result<Self, String> {
+        let dir = &current.reference;
+        let manifest: Manifest = parse(
+            &format!("{dir}/manifest.json"),
+            &fetch(store, &format!("{dir}/manifest.json")).await?,
+        )?;
+        // Each version publishes its own snapshot (04 §4.4), so the manifest
+        // must name the version `current.json` pairs it with.
+        if manifest.index_version != current.index_version {
+            return Err(format!(
+                "{dir}/manifest.json is for `{}`, not `{}`",
+                manifest.index_version, current.index_version
+            ));
+        }
+        let mut raw = Vec::with_capacity(FILES.len());
+        for name in FILES {
+            let path = format!("{dir}/{name}");
+            let entry = manifest
+                .files
+                .iter()
+                .find(|f| f.path == name)
+                .ok_or_else(|| format!("{dir}/manifest.json does not list {name}"))?;
+            let bytes = fetch(store, &path).await?;
+            let digest = hex(&Sha256::digest(&bytes));
+            if bytes.len() as u64 != entry.bytes || !digest.eq_ignore_ascii_case(&entry.sha256) {
+                return Err(format!("{path} does not match its manifest entry"));
+            }
+            raw.push((path, bytes));
+        }
+        // Parsing large snapshots is CPU-bound; keep it off the async workers.
+        tokio::task::spawn_blocking(move || Self::build(current, &raw))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    fn build(current: Current, raw: &[(String, Vec<u8>)]) -> Result<Self, String> {
+        let [(pp, places), (tp, titles), (bp, baselines)] = raw else {
+            return Err("reference snapshot is incomplete".into());
+        };
+        let places: Vec<Place> = parse(pp, places)?;
+        let titles: Vec<Title> = parse(tp, titles)?;
+        let mut baselines: HashMap<String, Vec<(u32, u32)>> = parse(bp, baselines)?;
         for series in baselines.values_mut() {
             series.sort_unstable();
         }
@@ -133,12 +195,36 @@ impl RefData {
     }
 }
 
-/// Read only the version pointer.
-pub fn read_current(dir: &Path) -> Result<Current, String> {
-    read_json(&dir.join("current.json"))
+/// Read only the version pointer. Its ids become object paths and cache
+/// prefixes, so each must be a single safe path segment.
+pub async fn read_current(store: &dyn ObjectStore) -> Result<Current, String> {
+    let current: Current = parse("current.json", &fetch(store, "current.json").await?)?;
+    for id in [&current.index_version, &current.reference]
+        .into_iter()
+        .chain(&current.indexes)
+    {
+        if !is_safe_segment(id) {
+            return Err(format!("current.json: `{id}` is not a valid id"));
+        }
+    }
+    if current.indexes.is_empty() {
+        return Err("current.json lists no indexes".into());
+    }
+    Ok(current)
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+async fn fetch(store: &dyn ObjectStore, path: &str) -> Result<Vec<u8>, String> {
+    store
+        .get(path)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{path} not found in {store:?}"))
+}
+
+fn parse<T: for<'de> Deserialize<'de>>(path: &str, bytes: &[u8]) -> Result<T, String> {
+    serde_json::from_slice(bytes).map_err(|e| format!("{path}: {e}"))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
