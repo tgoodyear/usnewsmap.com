@@ -114,7 +114,7 @@ Images are private, in ACR Basic (`crusnm{env}…`), with no admin user and no a
 
 CI pushes from `main` as `id-usnm-ci-{env}`, signing in with OIDC. That identity trusts only jobs in the GitHub Environment `{env}`, and no secret is stored anywhere. `scripts/bootstrap.sh` sets it all up.
 
-The CI identity's rights are AcrPush on its registry, plus Contributor on its API app and its Static Web App. The web deploy uses the latter to read the site's deployment token at deploy time.
+The CI identity's rights are AcrPush on its registry, Contributor on its API app, and a custom role on its resource group that can only read Static Web Apps and list their secrets. The web deploy uses the last to read the site's deployment token at deploy time. (Azure rejects role assignments scoped to a Static Web App itself, hence the resource-group scope; the group holds only this one site.)
 
 `azd provision` sets the API image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the one CI last rolled out).
 

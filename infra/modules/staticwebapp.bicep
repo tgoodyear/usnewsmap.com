@@ -20,17 +20,37 @@ resource swa 'Microsoft.Web/staticSites@2023-12-01' = {
   }
 }
 
-// CI reads the deployment token at deploy time (no stored secret):
-// Contributor scoped to this one site.
-var contributor = 'b24988ac-6180-42a3-ab7e-976ab8b6e2d0'
+// CI reads the deployment token at deploy time (no stored secret). Azure
+// rejects role assignments scoped to a Static Web App itself
+// (RoleDefinitionDoesNotExist, even for built-in roles), so a custom role
+// that can only read static sites and list their secrets is assigned on this
+// resource group, which holds only this one site.
+resource deployRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = if (!empty(deployerPrincipalId)) {
+  name: guid(resourceGroup().id, 'usnm-swa-deployer')
+  properties: {
+    // Role names are unique per tenant: include the subscription and group.
+    roleName: 'usnm static web app deployer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    description: 'Read Static Web Apps and their deployment token, for CI deploys.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: [
+          'Microsoft.Web/staticSites/read'
+          'Microsoft.Web/staticSites/listSecrets/action'
+        ]
+      }
+    ]
+    assignableScopes: [resourceGroup().id]
+  }
+}
 
 resource deployer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deployerPrincipalId)) {
-  scope: swa
-  name: guid(swa.id, deployerPrincipalId, contributor)
+  name: guid(resourceGroup().id, deployerPrincipalId, 'usnm-swa-deployer')
   properties: {
     principalId: deployerPrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributor)
+    // Custom roles are addressed at subscription level wherever they're defined.
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', deployRole!.name)
   }
 }
 
