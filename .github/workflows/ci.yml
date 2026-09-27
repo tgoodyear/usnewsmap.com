@@ -68,10 +68,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Bicep
         run: |
-          curl -fsSL -o /usr/local/bin/bicep \
+          # The runner ships a root-owned bicep; install the pinned one alongside.
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/bicep" \
             "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
-          chmod +x /usr/local/bin/bicep
-          bicep --version
+          chmod +x "$RUNNER_TEMP/bin/bicep"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/bicep" --version | grep -F "${BICEP_VERSION#v}"
       - name: Lint (any warning fails)
         run: |
           out=$(for f in infra/main.bicep infra/modules/*.bicep; do bicep lint "$f" 2>&1; done)
