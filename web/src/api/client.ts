@@ -34,9 +34,10 @@ export class ApiError extends Error {
   }
 }
 
-async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function getJson<T>(path: string, signal?: AbortSignal, cache?: RequestCache): Promise<T> {
   const resp = await fetch(`${API_BASE}${path}`, {
     signal,
+    cache,
     headers: { accept: "application/json" },
   });
   if (!resp.ok) {
@@ -98,7 +99,9 @@ export function searchQuery(p: SearchParams, version: string): URLSearchParams {
 }
 
 export const api = {
-  meta: (signal?: AbortSignal) => getJson<Meta>("/v1/meta", signal),
+  // Always revalidate: /v1/meta is cacheable for 5 minutes, and after a
+  // version change a cached copy would name the old version again.
+  meta: (signal?: AbortSignal) => getJson<Meta>("/v1/meta", signal, "no-cache"),
   places: (version: string, signal?: AbortSignal) =>
     getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, signal),
   aggregate: (p: SearchParams, version: string, signal?: AbortSignal) =>

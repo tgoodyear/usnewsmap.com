@@ -25,6 +25,12 @@ describe("api client", () => {
     expect((err as ApiError).problem.hint).toBe("h");
   });
 
+  it("revalidates /v1/meta instead of trusting the HTTP cache", async () => {
+    respond({ index_version: "v2" });
+    await api.meta();
+    expect(vi.mocked(fetch).mock.calls[0]![1]).toMatchObject({ cache: "no-cache" });
+  });
+
   it("pins every search to the version and omits defaults", async () => {
     respond({ index_version: "v1" });
     await api.aggregate({ q: "a b", mode: "phrase", bucket: "auto", state: ["GA"] }, "v1");

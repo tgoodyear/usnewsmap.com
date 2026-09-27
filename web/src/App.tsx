@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
 import { alignCube, prefixSums, relative, windowValues } from "./engine/cube";
@@ -48,7 +48,10 @@ export function App() {
     queryKey: ["aggregate", version, params],
     queryFn: ({ signal }) => api.aggregate(params, version, signal),
     enabled: !!version && !!view.q,
-    placeholderData: keepPreviousData,
+    // Keep showing the previous search while the next loads, but never a
+    // result from another index version (it would be drawn against this
+    // version's places).
+    placeholderData: (prev) => (prev?.index_version === version ? prev : undefined),
   });
   const baselineRef = agg.data?.cube.baseline_ref ?? null;
   const coverage = useQuery({
