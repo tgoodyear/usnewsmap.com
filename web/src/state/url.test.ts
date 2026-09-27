@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULTS, parseView, serializeView } from "./url";
+import { DEFAULTS, isIsoDate, parseView, serializeView } from "./url";
 
 describe("view URL", () => {
   it("round-trips and writes only non-defaults", () => {
@@ -20,6 +20,14 @@ describe("view URL", () => {
       "?mode=evil&bucket=hour&from=1896-6-1&win=-3&layer=3d&z=99&c=500,1&place=%3Cscript%3E&state=Illinois",
     );
     expect(v).toEqual(DEFAULTS);
+  });
+
+  it("accepts only real calendar dates", () => {
+    expect(isIsoDate("1896-02-29")).toBe(true);
+    expect(isIsoDate("1897-02-29")).toBe(false);
+    expect(isIsoDate("1896-02-31")).toBe(false);
+    expect(isIsoDate("1896-13-01")).toBe(false);
+    expect(parseView("?from=1896-02-31&to=1896-04-31&t=1896-06-31")).toEqual(DEFAULTS);
   });
 
   it("keeps near only in near mode", () => {

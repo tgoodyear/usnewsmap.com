@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useMemo } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { api, ApiError, type SearchParams } from "./api/client";
+import { api, ApiError, VersionChangedError, type SearchParams } from "./api/client";
+import type { Problem } from "./api/types";
 import { alignCube, prefixSums, relative, windowValues } from "./engine/cube";
 import { EXAMPLES } from "./examples";
 import { bucketIndex, bucketStart } from "./lib/time";
@@ -52,7 +53,7 @@ export function App() {
   const baselineRef = agg.data?.cube.baseline_ref ?? null;
   const coverage = useQuery({
     queryKey: ["coverage", baselineRef],
-    queryFn: ({ signal }) => api.coverage(baselineRef!, signal),
+    queryFn: ({ signal }) => api.coverage(baselineRef!, version, signal),
     enabled: !!baselineRef,
     staleTime: Infinity,
   });
@@ -77,10 +78,14 @@ export function App() {
     [places.data],
   );
 
+  // Relative frequency needs the coverage cube; until it arrives (or if it
+  // fails) it is unknown (NaN), never 0.
   const points: (MapPoint & { firstDay: number })[] = useMemo(() => {
     if (!data || !hitSums) return [];
     const hits = windowValues(hitSums, t, view.win);
-    const rel = pageSums ? relative(hits, windowValues(pageSums, t, view.win)) : new Float64Array(hits.length);
+    const rel = pageSums
+      ? relative(hits, windowValues(pageSums, t, view.win))
+      : new Float64Array(hits.length).fill(Number.NaN);
     return data.places.id.flatMap((id, i) => {
       const f = features.get(id);
       if (!f) return [];
@@ -110,7 +115,10 @@ export function App() {
     for (const i of ts) for (const v of windowValues(hitSums, i, view.win, buf)) max = Math.max(max, v);
     return max;
   }, [hitSums, count, view.win]);
-  const maxRel = Math.max(1e-9, ...points.map((p) => p.rel));
+  const maxRel = Math.max(1e-9, ...points.map((p) => (Number.isFinite(p.rel) ? p.rel : 0)));
+  const relReady = pageSums !== null;
+  // Colour by raw counts until relative values are known.
+  const norm = view.norm === "rel" && !relReady ? "raw" : view.norm;
 
   const seek = useCallback(
     (i: number) => {
@@ -128,7 +136,20 @@ export function App() {
 
   const visible = points.filter((p) => p.value > 0);
   const selected = points.find((p) => p.id === view.place);
-  const problem = agg.error instanceof ApiError ? agg.error.problem : null;
+  const updating = [agg.error, places.error, coverage.error].some((e) => e instanceof VersionChangedError);
+  const problem: Problem | null = updating || !agg.error
+    ? null
+    : agg.error instanceof ApiError
+      ? agg.error.problem
+      : {
+          type: "about:blank",
+          title: "The search failed",
+          status: 0,
+          detail: "The search service could not be reached or sent an unreadable response.",
+          hint: "Check your connection and try again.",
+        };
+  const placesFailed = places.error && !(places.error instanceof VersionChangedError);
+  const coverageFailed = view.norm === "rel" && coverage.error && !(coverage.error instanceof VersionChangedError);
 
   return (
     <div className={view.q ? "app" : "app app--empty"}>
@@ -170,13 +191,28 @@ export function App() {
         </main>
       ) : (
         <main className={agg.isFetching ? "results results--loading" : "results"} aria-busy={agg.isFetching}>
+          {updating && (
+            <p className="notice" role="status">
+              A newer index was just published. Updating to it…
+            </p>
+          )}
+          {placesFailed && (
+            <p className="notice notice--error" role="alert">
+              Place locations could not be loaded, so results can't be mapped. Please reload the page.
+            </p>
+          )}
           {problem && (
             <div className="notice notice--error" role="alert">
               <strong>{problem.title}.</strong> {problem.detail}
               {problem.hint && <div>{problem.hint}</div>}
             </div>
           )}
-          {data && (
+          {data && !places.data && !placesFailed && (
+            <p className="notice" role="status">
+              Loading places…
+            </p>
+          )}
+          {data && places.data && (
             <>
               <div className="toolbar">
                 <p className="summary" aria-live="polite">
@@ -184,13 +220,12 @@ export function App() {
                   <strong>{visible.reduce((a, p) => a + p.value, 0).toLocaleString()}</strong> pages
                   {data.coarsened && " · buckets coarsened to fit"}
                 </p>
-                <div className="segmented" role="tablist" aria-label="View">
+                <div className="segmented" role="group" aria-label="View">
                   {(["map", "table"] as const).map((tab) => (
                     <button
                       key={tab}
                       type="button"
-                      role="tab"
-                      aria-selected={view.tab === tab}
+                      aria-pressed={view.tab === tab}
                       onClick={() => setView({ tab })}
                     >
                       {tab === "map" ? "Map" : "Table"}
@@ -214,6 +249,13 @@ export function App() {
                 <ShareButton />
               </div>
 
+              {view.norm === "rel" && !relReady && (
+                <p className={coverageFailed ? "notice notice--error" : "notice"} role={coverageFailed ? "alert" : "status"}>
+                  {coverageFailed
+                    ? "Publication counts could not be loaded, so shares of pages published aren't available. Showing page counts."
+                    : "Loading publication counts…"}
+                </p>
+              )}
               {data.total.hits === 0 ? (
                 <div className="notice" role="status">
                   <strong>No pages match.</strong> Try “All words” instead of an exact phrase, widen the
@@ -235,7 +277,7 @@ export function App() {
                       <MapView
                         points={points}
                         layer={view.layer}
-                        norm={view.norm}
+                        norm={norm}
                         maxValue={maxValue}
                         maxRel={maxRel}
                         selected={view.place}
@@ -244,7 +286,7 @@ export function App() {
                         center={view.c}
                         onViewport={onViewport}
                       />
-                      <Legend norm={view.norm} />
+                      <Legend norm={norm} />
                     </Suspense>
                   )}
                   {view.place && (
@@ -254,6 +296,7 @@ export function App() {
                       placeId={view.place}
                       placeName={selected?.name ?? features.get(view.place)?.properties.name ?? view.place}
                       windowHits={selected?.value ?? 0}
+                      synthetic={data.synthetic}
                       onClose={() => setView({ place: "" })}
                     />
                   )}

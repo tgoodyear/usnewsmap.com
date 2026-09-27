@@ -32,6 +32,7 @@ export function cssColor(x: number): string {
 }
 
 export function formatRel(x: number): string {
+  if (!Number.isFinite(x)) return "—";
   if (x === 0) return "0";
   return `${(x * 100).toFixed(x >= 0.1 ? 0 : 1)}%`;
 }

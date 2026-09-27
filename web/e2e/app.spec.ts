@@ -1,6 +1,45 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+// The app uses the default basemap style. Serve a local style in its place,
+// with a GeoJSON source so MapLibre's worker must load, and no third-party
+// tile service is contacted.
+const STYLE = {
+  version: 8,
+  sources: {
+    outline: {
+      type: "geojson",
+      data: {
+        type: "Feature",
+        properties: {},
+        geometry: { type: "Polygon", coordinates: [[[-125, 25], [-67, 25], [-67, 49], [-125, 49], [-125, 25]]] },
+      },
+    },
+  },
+  layers: [
+    { id: "bg", type: "background", paint: { "background-color": "#e8e4dc" } },
+    { id: "us", type: "fill", source: "outline", paint: { "fill-color": "#f7f5f0" } },
+  ],
+};
+
+test.beforeEach(async ({ page }) => {
+  await page.route("https://tiles.openfreemap.org/**", (route) =>
+    route.request().url().includes("/styles/")
+      ? route.fulfill({ json: STYLE })
+      : route.fulfill({ status: 404 }),
+  );
+});
+
+/** Console errors, which fail the test (e.g. "Worker failed to load"). */
+function watchErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(m.text());
+  });
+  page.on("pageerror", (e) => errors.push(e.message));
+  return errors;
+}
+
 // Runs against the API serving the synthetic fixtures (6 places; "cross of
 // gold" first appears in Chicago on 1896-07-10 and reaches Nebraska last).
 
@@ -39,7 +78,7 @@ test("example search maps, plays, drills down and keeps a permalink", async ({ p
   expect(early).toBeGreaterThan(0);
   expect(early).toBeLessThan(6);
 
-  await page.getByRole("tab", { name: "Table" }).click();
+  await page.getByRole("button", { name: "Table" }).click();
   await expect(page).toHaveURL(/tab=table/);
   const rows = page.locator("table.places tbody tr");
   await expect(rows).toHaveCount(early);
@@ -49,23 +88,35 @@ test("example search maps, plays, drills down and keeps a permalink", async ({ p
   const panel = page.getByRole("complementary");
   await expect(panel.locator(".hit").first()).toBeVisible();
   await expect(panel.locator("mark").first()).toBeVisible();
-  const link = panel.getByRole("link", { name: /Library of Congress/ }).first();
-  await expect(link).toHaveAttribute("href", /^https:\/\/www\.loc\.gov\/resource\/sn99/);
-  await expect(link).toHaveAttribute("rel", /noopener/);
+  // The fixtures' LCCNs are invented, so no Library of Congress link is offered.
+  await expect(panel.getByRole("link", { name: /Library of Congress/ })).toHaveCount(0);
+  await expect(panel.locator(".hit__demo").first()).toContainText("not a real Library of Congress page");
 
   // The permalink restores the whole view.
   await page.reload();
-  await expect(page.getByRole("tab", { name: "Table" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".dock__label")).toContainText("1896");
   await expect(page.getByRole("complementary")).toBeVisible();
 });
 
-test("the map renders on the map tab", async ({ page, browserName }) => {
-  test.skip(browserName !== "chromium");
+test("the map renders with its worker and no console errors", async ({ page }) => {
+  const errors = watchErrors(page);
   await page.goto("/?q=%22cross+of+gold%22&bucket=month");
   await expect(page.getByTestId("map")).toBeVisible();
   await expect(page.locator(".maplibregl-canvas")).toBeVisible();
   await expect(page.locator(".legend")).toContainText("Pages containing the match");
+  // The GeoJSON source is parsed in the worker; the map is idle only once it has.
+  await page.waitForFunction(() => document.querySelector(".maplibregl-canvas") !== null);
+  await page.waitForTimeout(1500);
+  expect(errors.filter((e) => !/WebGL|GPU|WEBGL_debug/i.test(e))).toEqual([]);
+});
+
+test("space on a focused button activates it, not playback", async ({ page }) => {
+  await page.goto("/?q=%22cross+of+gold%22&bucket=month");
+  await page.getByRole("button", { name: "Table" }).focus();
+  await page.keyboard.press("Space");
+  await expect(page.getByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: /Play/ })).toHaveAttribute("aria-pressed", "false");
 });
 
 test("syntax errors show the API's hint", async ({ page }) => {

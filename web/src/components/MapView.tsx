@@ -2,8 +2,11 @@
 // the map stack stays off the critical path.
 
 import { useEffect, useRef } from "react";
-import { Map as MapLibreMap, NavigationControl, type StyleSpecification } from "maplibre-gl";
+import { Map as MapLibreMap, NavigationControl, setWorkerUrl, type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+// MapLibre finds its worker relative to its own module at runtime, which a
+// bundler can't follow; bundle the worker explicitly and hand it the URL.
+import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { ScatterplotLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
@@ -25,6 +28,8 @@ interface Props {
   onViewport: (zoom: number, center: [number, number]) => void;
 }
 
+setWorkerUrl(workerUrl);
+
 const US_CENTER: [number, number] = [-96, 38.5];
 const MAX_RADIUS_PX = 26;
 
@@ -40,6 +45,8 @@ export default function MapView(props: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const overlay = useRef<MapboxOverlay | null>(null);
+  // Set while the map moves to match the URL, so that move isn't written back.
+  const syncing = useRef(false);
   // The map is created once; its handlers read the latest viewport props.
   const latest = useRef(props);
   useEffect(() => {
@@ -64,6 +71,10 @@ export default function MapView(props: Props) {
     const o = new MapboxOverlay({ interleaved: false, layers: [] });
     m.addControl(o);
     m.on("moveend", () => {
+      if (syncing.current) {
+        syncing.current = false;
+        return;
+      }
       const c = m.getCenter();
       latest.current.onViewport(m.getZoom(), [c.lng, c.lat]);
     });
@@ -75,6 +86,23 @@ export default function MapView(props: Props) {
       overlay.current = null;
     };
   }, []);
+
+  // Back/forward or a pasted permalink changes the URL viewport while the map
+  // stays mounted: move the map to match. Differences below the precision the
+  // URL stores are the map's own last move echoing back, so they're ignored.
+  const { zoom, center } = props;
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const c = m.getCenter();
+    const target = center ?? US_CENTER;
+    const z = zoom ?? 3.3;
+    if (Math.abs(m.getZoom() - z) < 0.01 && Math.abs(c.lng - target[0]) < 0.001 && Math.abs(c.lat - target[1]) < 0.001) {
+      return;
+    }
+    syncing.current = true;
+    m.jumpTo({ center: target, zoom: z });
+  }, [zoom, center]);
 
   const { points, layer, norm, maxValue, maxRel, selected, onSelect } = props;
   useEffect(() => {

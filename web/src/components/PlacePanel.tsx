@@ -9,11 +9,13 @@ interface Props {
   placeId: string;
   placeName: string;
   windowHits: number;
+  /** Synthetic fixtures: their LCCNs are invented, so LoC has no such pages. */
+  synthetic: boolean;
   onClose: () => void;
 }
 
 /** Place drill-down (F-03): date-sorted pages with snippets and LoC links. */
-export function PlacePanel({ params, version, placeId, placeName, windowHits, onClose }: Props) {
+export function PlacePanel({ params, version, placeId, placeName, windowHits, synthetic, onClose }: Props) {
   const query = useInfiniteQuery({
     queryKey: ["hits", version, params, placeId],
     queryFn: ({ pageParam, signal }) => api.hits(params, version, placeId, pageParam, signal),
@@ -51,7 +53,9 @@ export function PlacePanel({ params, version, placeId, placeName, windowHits, on
                 {snippetSegments(s).map((seg, j) => (seg.mark ? <mark key={j}>{seg.text}</mark> : seg.text))}
               </p>
             ))}
-            {h.links.viewer && (
+            {synthetic ? (
+              <p className="hit__demo">Demo page: not a real Library of Congress page.</p>
+            ) : h.links.viewer && (
               <a href={h.links.viewer} target="_blank" rel="noopener noreferrer">
                 View page at the Library of Congress
               </a>

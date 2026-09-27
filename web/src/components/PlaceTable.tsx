@@ -29,6 +29,10 @@ export function PlaceTable({ rows, onSelect, selected }: Props) {
   const sorted = [...rows].sort((a, b) => {
     const x = a[sort.key];
     const y = b[sort.key];
+    // Unknown values (NaN) sort last in both directions.
+    if (typeof x === "number" && typeof y === "number" && (Number.isNaN(x) || Number.isNaN(y))) {
+      return Number.isNaN(x) ? (Number.isNaN(y) ? 0 : 1) : -1;
+    }
     const c = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y));
     return sort.desc ? -c : c;
   });

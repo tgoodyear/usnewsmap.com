@@ -15,10 +15,12 @@ interface Props {
 const SPEEDS = [0.5, 1, 2, 4];
 const WINDOWS = [null, 1, 3, 6, 12, 52];
 
-function isTyping(el: EventTarget | null): boolean {
+/** Shortcuts never steal keys from a focused control (Space on a button, arrows in a field). */
+function isInteractive(el: EventTarget | null): boolean {
   return (
     el instanceof HTMLElement &&
-    (el.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName))
+    (el.isContentEditable ||
+      el.closest("input, select, textarea, button, a[href], summary, [role='button'], [role='slider']") !== null)
   );
 }
 
@@ -59,7 +61,7 @@ export function TimeDock({ unit, from, count, t, window, onSeek, onWindow }: Pro
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isInteractive(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
       const jump = e.shiftKey ? 10 : 1;
       if (e.key === " ") {
         e.preventDefault();

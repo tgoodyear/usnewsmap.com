@@ -10,6 +10,22 @@ import type {
 /** API origin: same-origin (dev proxy, SWA linked backend) unless configured. */
 export const API_BASE: string = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 
+/**
+ * A version-scoped response came from a different index version than the
+ * page is pinned to (the API redirects a stale `v`, and fetch follows it).
+ * The app refreshes /v1/meta and every version-scoped query rather than
+ * mixing snapshots (06 §6.5).
+ */
+export class VersionChangedError extends Error {
+  readonly expected: string;
+  readonly actual: string;
+  constructor(expected: string, actual: string) {
+    super(`index version changed from ${expected} to ${actual}`);
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
 export class ApiError extends Error {
   readonly problem: Problem;
   constructor(problem: Problem) {
@@ -39,6 +55,17 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     throw new ApiError(problem);
   }
   return (await resp.json()) as T;
+}
+
+/** Fetch a version-scoped resource and check it belongs to `version`. */
+async function getPinned<T extends { index_version: string }>(
+  path: string,
+  version: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  const body = await getJson<T>(path, signal);
+  if (body.index_version !== version) throw new VersionChangedError(version, body.index_version);
+  return body;
 }
 
 /** Search parameters in the API's vocabulary; empty values are omitted. */
@@ -73,12 +100,12 @@ export function searchQuery(p: SearchParams, version: string): URLSearchParams {
 export const api = {
   meta: (signal?: AbortSignal) => getJson<Meta>("/v1/meta", signal),
   places: (version: string, signal?: AbortSignal) =>
-    getJson<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, signal),
+    getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, signal),
   aggregate: (p: SearchParams, version: string, signal?: AbortSignal) =>
-    getJson<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, signal),
+    getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, signal),
   /** `ref` is the response's `baseline_ref`, already canonical and versioned. */
-  coverage: (ref: string, signal?: AbortSignal) =>
-    getJson<CoverageResponse>(ref.replace(/^\/(api\/)?v1\//, "/v1/"), signal),
+  coverage: (ref: string, version: string, signal?: AbortSignal) =>
+    getPinned<CoverageResponse>(ref.replace(/^\/(api\/)?v1\//, "/v1/"), version, signal),
   hits: (
     p: SearchParams,
     version: string,
@@ -91,6 +118,6 @@ export const api = {
     s.set("place", place);
     s.set("limit", "20");
     if (cursor) s.set("cursor", cursor);
-    return getJson<HitsResponse>(`/v1/hits?${s}`, signal);
+    return getPinned<HitsResponse>(`/v1/hits?${s}`, version, signal);
   },
 };

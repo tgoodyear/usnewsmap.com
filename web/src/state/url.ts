@@ -51,6 +51,14 @@ const MODES: Mode[] = ["phrase", "all", "any", "near"];
 const BUCKETS = ["auto", "year", "month", "week", "day"] as const;
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
+/** A real calendar date in YYYY-MM-DD form (rejects e.g. 1896-02-31). */
+export function isIsoDate(v: string): boolean {
+  if (!ISO.test(v)) return false;
+  const [y, m, d] = v.split("-").map(Number) as [number, number, number];
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
+
 function oneOf<T extends string>(v: string | null, allowed: readonly T[], d: T): T {
   return v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : d;
 }
@@ -65,7 +73,7 @@ export function parseView(search: string): ViewState {
   const s = new URLSearchParams(search);
   const date = (k: string) => {
     const v = s.get(k) ?? "";
-    return ISO.test(v) ? v : "";
+    return isIsoDate(v) ? v : "";
   };
   const z = Number(s.get("z"));
   const c = (s.get("c") ?? "").split(",").map(Number);

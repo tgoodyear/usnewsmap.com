@@ -9,6 +9,8 @@ const api = process.env.USNM_API_ORIGIN ?? "http://127.0.0.1:8080";
 
 export default defineConfig({
   plugins: [react()],
+  // MapLibre's worker is an ES module that imports a shared chunk.
+  worker: { format: "es" },
   server: { proxy: { "/v1": api } },
   preview: { proxy: { "/v1": api } },
   build: {
