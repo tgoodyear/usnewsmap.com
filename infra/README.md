@@ -114,14 +114,14 @@ Images are private, in ACR Basic (`crusnm{env}…`), with no admin user and no a
 
 CI pushes from `main` as `id-usnm-ci-{env}`, signing in with OIDC. That identity trusts only jobs in the GitHub Environment `{env}`, and no secret is stored anywhere. `scripts/bootstrap.sh` sets it all up.
 
-The CI identity's rights are AcrPush on its registry, plus Contributor on its API app and its Static Web App. The web deploy uses the latter to read the site's deployment token at deploy time.
+The CI identity's rights are AcrPush on its registry, Contributor on its API app, and a custom role on its resource group that can only read Static Web Apps and list their secrets. The web deploy uses the last to read the site's deployment token at deploy time. (Azure rejects role assignments scoped to a Static Web App itself, hence the resource-group scope; the group holds only this one site.)
 
 `azd provision` sets the API image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the one CI last rolled out).
 
 ## Ingest jobs
 
 1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `azd env set USNM_INGEST_JOBS true` and `azd provision` on an environment already on the registry). Optionally set a weekly schedule with `azd env set USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 8).
-2. Put the catalog in `reference/catalog/titles.json` and `places.json` (from `titles-sync` and `geocode`, once they exist).
+2. The catalog (`reference/catalog/titles.json`, `places.json`) is built by `titles-sync`, which `run` calls before every release. Coordinate corrections live in git, in `catalog/overrides/places.json` (`[{city, state, lat, lon}]`), and ship in the ingest image; the next run applies them.
 3. Backfill, then publish the first version:
    ```sh
    RG=$(azd env get-value AZURE_RESOURCE_GROUP)

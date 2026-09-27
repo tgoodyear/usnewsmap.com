@@ -112,8 +112,19 @@ fi
 USE_ACR=$(aget USNM_USE_ACR)
 [ -n "$USE_ACR" ] || { USE_ACR=false; azd env set USNM_USE_ACR false; }
 
+# New roles and permissions take a minute or two to apply everywhere, so a
+# provision that depends on one can fail once; it's idempotent, so retry.
+provision() {
+  for attempt in 1 2 3; do
+    azd provision --no-prompt && return 0
+    [ "$attempt" = 3 ] && die "provisioning failed three times"
+    echo "retrying in 60s"
+    sleep 60
+  done
+}
+
 step "Provisioning"
-azd provision --no-prompt
+provision
 
 step "Wiring GitHub Environment '$ENV_NAME' in $REPO"
 # Only main may deploy: the CI identity trusts this environment's jobs.
@@ -178,12 +189,7 @@ if [ "$USE_ACR" != true ]; then
   step "Switching to the private registry"
   azd env set USNM_USE_ACR true
   azd env set USNM_API_IMAGE ""
-  # A new pull permission can take a few minutes to apply.
-  for attempt in 1 2 3; do
-    azd provision --no-prompt && break
-    [ "$attempt" = 3 ] && die "provisioning failed"
-    echo "retrying in 60s"; sleep 60
-  done
+  provision
 fi
 
 # Names on the site and the API, once the registrar delegates the domain to
@@ -227,7 +233,7 @@ if [ -n "$DOMAIN" ]; then
         --query "properties.configuration.ingress.customDomains[?name=='api.$DOMAIN'].certificateId | [0]" -o tsv)
       [ -n "$cert" ] || die "api.$DOMAIN has no certificate after binding"
       azd env set USNM_API_CERT_ID "$cert"
-      azd provision --no-prompt
+      provision
     fi
   fi
 fi

@@ -39,6 +39,9 @@ pub struct ListedBatch {
     pub sha256: Option<String>,
     #[serde(default)]
     pub ocr_source: Option<String>,
+    /// Titles with pages in the batch (LoC's listing has them).
+    #[serde(default)]
+    pub lccns: Vec<String>,
 }
 
 /// Parse a batch list: a JSON array of batches, or LoC's collection JSON
@@ -227,6 +230,60 @@ async fn get(url: &str) -> anyhow::Result<reqwest::Response> {
     bail!("{url}: giving up after 6 attempts")
 }
 
+/// The server is rate limiting us (a 429, or an HTML challenge page where
+/// JSON was expected). loc.gov blocks for an hour when its API limit is
+/// exceeded, so callers stop rather than retry.
+#[derive(Debug)]
+pub struct Throttled(pub String);
+
+impl std::fmt::Display for Throttled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rate limited by {}", self.0)
+    }
+}
+
+impl std::error::Error for Throttled {}
+
+/// GET a small JSON `url` (https, or loopback http in tests) into memory,
+/// retrying server errors and interrupted bodies. `Ok(None)` is a 404; a
+/// 429 or an HTML page is a [`Throttled`] error, never retried.
+pub async fn get_json(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    check_remote(url)?;
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
+        .build()?;
+    let mut last = None;
+    for attempt in 1..=3u64 {
+        match client.get(url).send().await {
+            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => return Ok(None),
+            // A 429, or an HTML page (a CAPTCHA challenge, whatever its
+            // status) where JSON was asked for.
+            Ok(r)
+                if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || r.headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .is_some_and(|v| v.contains("html")) =>
+            {
+                return Err(Throttled(url.to_owned()).into())
+            }
+            Ok(r) if r.status().is_success() => match r.bytes().await {
+                Ok(b) => return Ok(Some(b.to_vec())),
+                Err(e) => last = Some(anyhow::Error::from(e).context(format!("{url}: body"))),
+            },
+            Ok(r) if r.status().is_server_error() => {
+                last = Some(anyhow::anyhow!("{url} returned {}", r.status()))
+            }
+            Ok(r) => bail!("{url} returned {}", r.status()),
+            Err(e) => last = Some(anyhow::Error::from(e).context(url.to_owned())),
+        }
+        tokio::time::sleep(Duration::from_secs(5 * attempt)).await;
+    }
+    Err(last.expect("an attempt failed"))
+}
+
 /// Fetch `url` (https, `file://` or a local path) into `dest`, returning its
 /// sha256. Used for small files such as batch lists.
 pub async fn fetch(url: &str, dest: &Path) -> anyhow::Result<String> {
@@ -359,6 +416,7 @@ mod tests {
             url: format!("https://example.org/{name}.tar.bz2"),
             sha256: None,
             ocr_source: None,
+            lccns: vec![],
         }
     }
 

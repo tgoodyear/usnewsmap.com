@@ -14,6 +14,7 @@ pub mod release;
 pub mod sink;
 pub mod source;
 pub mod state;
+pub mod titles;
 pub mod worker;
 
 /// A process-unique id for leases and attempt paths.

@@ -1,8 +1,7 @@
 //! Titles and places: the catalog that pages are joined with (04 §4.6).
 //!
-//! `titles-sync` and `geocode` (a later slice) maintain `catalog/titles.json`
-//! and `catalog/places.json` in the reference store; until then they are
-//! written by hand. Each published reference snapshot carries its own copy,
+//! `titles-sync` and `geocode` ([`crate::titles`]) maintain
+//! `catalog/titles.json` and `catalog/places.json` in the reference store. Each published reference snapshot carries its own copy,
 //! so a published version never changes when the catalog does.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
