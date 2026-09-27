@@ -86,7 +86,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Cosmos DB (document state) | Free tier: 1,000 RU/s + 25 GB (serverless ~$1–3 if the free tier is taken) | $0 | $0 | $3 |
 | **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
-| Container registry | GitHub Container Registry (public images) | $0 | $0 | $0 |
+| Container registry | ACR Basic (private images) | $5 | $5 | $5 |
 | **Total** | | **~$46** | **~$67** | **~$109** |
 
 "High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The typical month stays under $80 with ~$13 of headroom. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $60, $70 and $78 (forecast) trigger the cost-spike runbook well before that.

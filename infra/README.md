@@ -45,7 +45,7 @@ The following come in later slices:
 Prerequisites:
 
 - The [Azure Developer CLI](https://aka.ms/azd) and an account with **Owner** on the subscription. Owner is needed because the deployment creates role assignments and policy definitions.
-- The API image published to GHCR. CI pushes `ghcr.io/<owner>/usnewsmap-api:main` and `:<sha>` on every merge to `main`. The first push creates the package as **private**: make it public in the package settings, or the Container App can't pull it.
+- The images come from the private registry the deployment creates (see [Container registry](#container-registry)). A new environment first runs with `apiImage` until CI has pushed there.
 
 ```sh
 azd auth login
@@ -64,13 +64,15 @@ curl "$(azd env get-value API_URL)/v1/meta"          # "synthetic": true
 curl "$(azd env get-value API_URL)/readyz"
 ```
 
-To roll out a specific image, run `azd env set USNM_API_IMAGE ghcr.io/<owner>/usnewsmap-api:<sha>` and then `azd provision`.
+To roll out a specific build, run `azd env set USNM_IMAGE_TAG <commit sha>` (default `main`) and then `azd provision`.
 
 | Parameter | azd variable | Default |
 |-----------|--------------|---------|
 | `environmentName` | `AZURE_ENV_NAME` | — (e.g. `dev`, `prod`; `prod` keeps one warm replica, others scale to zero) |
 | `location` | `AZURE_LOCATION` | `eastus2` |
-| `apiImage` | `USNM_API_IMAGE` | `ghcr.io/tgoodyear/usnewsmap-api:main` |
+| `apiImage` | `USNM_API_IMAGE` | `ghcr.io/tgoodyear/usnewsmap-api:main`; only used while `useAcr` is off |
+| `useAcr` | `USNM_USE_ACR` | `false`. Turn on once CI has pushed to the registry |
+| `imageTag` | `USNM_IMAGE_TAG` | `main` (or a commit sha) |
 | `searchBackend` | `USNM_SEARCH_BACKEND` | `fixtures`, or `quickwit` once indexes are published |
 | `cosmosFreeTier` | `USNM_COSMOS_FREE_TIER` | `true` (one free-tier account per subscription) |
 | `alertEmails` | `USNM_ALERT_EMAILS` | empty (comma-separated) |
@@ -91,9 +93,25 @@ gh workflow run "deploy web"
 
 The API allows the site's `*.azurestaticapps.net` origin (and `allowedOrigins`) for CORS.
 
+## Container registry
+
+Images are private, in ACR Basic (`crusnm{env}…`). CI pushes to it from `main`, signing in with OIDC as `id-usnm-ci-{env}`; no secret is stored anywhere. One-time setup after the first `azd provision` (these are repository **variables**, not secrets):
+
+```sh
+gh variable set USNM_ACR_LOGIN_SERVER --body "$(azd env get-value ACR_LOGIN_SERVER)"
+gh variable set USNM_CI_CLIENT_ID     --body "$(azd env get-value CI_CLIENT_ID)"
+gh variable set AZURE_TENANT_ID       --body "$(azd env get-value AZURE_TENANT_ID)"
+gh variable set AZURE_SUBSCRIPTION_ID --body "$(azd env get-value AZURE_SUBSCRIPTION_ID)"
+gh workflow run ci --ref main          # pushes the API and ingest images and copies Quickwit in
+azd env set USNM_USE_ACR true
+azd provision                          # the API (and sidecar) now pull from the registry
+```
+
+Once the API runs from the registry, the old GHCR packages can be made private again or deleted.
+
 ## Ingest jobs
 
-1. Make the GHCR package `usnewsmap-ingest` public (CI publishes it from `main`), as for the API image.
+1. Set up the [container registry](#container-registry) (the ingest image is only published there).
 2. Deploy the jobs: `azd env set USNM_INGEST_JOBS true`, then `azd provision`. Optionally set a weekly schedule with `azd env set USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 8).
 3. Put the catalog in `reference/catalog/titles.json` and `places.json` (from `titles-sync` and `geocode`, once they exist).
 4. Backfill, then publish the first version:

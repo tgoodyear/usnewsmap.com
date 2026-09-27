@@ -17,6 +17,8 @@ param location string
 param tags object
 param environmentId string
 param image string
+@description('Private registry the image comes from (pulled with the ingest identity).')
+param registryServer string
 param ingestIdentityId string
 param ingestClientId string
 param storageAccountName string
@@ -50,6 +52,7 @@ resource ingest 'Microsoft.App/jobs@2024-03-01' = {
     environmentId: environmentId
     workloadProfileName: 'Consumption'
     configuration: {
+      registries: [{ server: registryServer, identity: ingestIdentityId }]
       triggerType: empty(cron) ? 'Manual' : 'Schedule'
       manualTriggerConfig: empty(cron) ? { parallelism: 1, replicaCompletionCount: 1 } : null
       scheduleTriggerConfig: empty(cron)
@@ -93,6 +96,7 @@ resource backfill 'Microsoft.App/jobs@2024-03-01' = {
     environmentId: environmentId
     workloadProfileName: 'Consumption'
     configuration: {
+      registries: [{ server: registryServer, identity: ingestIdentityId }]
       triggerType: 'Manual'
       manualTriggerConfig: { parallelism: workers, replicaCompletionCount: workers }
       replicaTimeout: 86400

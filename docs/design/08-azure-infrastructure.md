@@ -21,9 +21,10 @@ One subscription (ideally owned by a sponsoring institution), one region: **East
 | **Log Analytics** `log-usnm` + **Application Insights** `appi-usnm` | Pay-as-you-go with a **daily cap** (≈150 MB/day) so ingestion stays within the free 5 GB/month; 30-day retention | Telemetry |
 | **Azure DNS** zone `usnewsmap.com` | – | Apex alias to SWA, `api` CNAME to the container app, validation records |
 | **Action Group** + **Budget** | – | Alerts; cost budget at $40/$60/$75 |
-| *(not used in lean)* Front Door, ACR, Key Vault, AI Search | – | Growth profile only; each is a Bicep parameter switch |
+| Container Registry `crusnm{env}{suffix}` | **Basic** (~$5/mo); no admin user, no anonymous pull | Private images: the API, ingest and a digest-pinned copy of Quickwit. Pulled with the app and ingest identities (`AcrPull`); pushed only by CI on `main` (`AcrPush`, §8.2) |
+| *(not used in lean)* Front Door, Key Vault, AI Search | – | Growth profile only; each is a Bicep parameter switch |
 
-Container images are published to **GitHub Container Registry** as public images, so no registry resource or pull credential is needed. If images must be private, ACR Basic (~$5/mo) is the switch.
+Container images are **private**, in ACR Basic. CI on `main` signs in to Azure with OIDC as `id-usnm-ci` (a user-assigned identity with a federated credential for this repository's `main` branch; no stored secret) and pushes the API and ingest images tagged `main` and the commit sha. It also copies Quickwit v0.9.1 in by digest, so deployments don't depend on Docker Hub. The container app and jobs pull with their managed identities. A new environment bootstraps from a placeholder until CI has pushed (`useAcr`, infra/README.md).
 
 ## 8.2 Identity and access (managed identities everywhere)
 
@@ -34,6 +35,7 @@ Container images are published to **GitHub Container Registry** as public images
 | `id-usnm-ingest` (on the ingest jobs) | MI | `Storage Blob Data Contributor` (`curated/`, `reference/`, `qw-index/`); **Cosmos DB Built-in Data Contributor** (database `usnm`) |
 | `caj-usnm-ingest` system-assigned identity (used only by the Quickwit writer the job runs) | MI | `Storage Blob Data Contributor` (`qw-index/`) and nothing else |
 | `id-usnm-launcher` (on the `backfill` launcher job and the `network-guard` job) | MI | `Contributor` on `rg-usnm-prod-spot` only (to create and delete ACI container groups); `Managed Identity Operator` on `id-usnm-ingest`; custom role **`USNM Public Access Toggle`** on `stusnmdata` and `cosmos-usnm` only (`read` and `write` on the account resource, used solely to flip `publicNetworkAccess`). Azure Policy **denies** any change to `allowSharedKeyAccess` or `disableLocalAuth`, so this role can't re-enable keys |
+| `id-usnm-ci` (user-assigned, federated credential for GitHub Actions on `main`) | MI | `AcrPush` on the registry only |
 | GitHub Actions (`usnewsmap.com` repo, `main` branch + `prod` environment) | **OIDC federated credential** on an app registration | `Contributor` on `rg-usnm-*` + `User Access Administrator` constrained by a condition to the roles above (for Bicep role assignments) |
 | Maintainers | Entra users / group `grp-usnm-maintainers` | `Reader` by default; **PIM just-in-time** `Contributor` where the tenant licensing allows it. Data-plane inspection (Cosmos queries, blob listing) runs through the `usnm-ingest admin …` CLI as an on-demand Container Apps Job inside the VNet, because the portal's Data Explorer can't reach the private endpoints from the internet |
 
@@ -71,7 +73,7 @@ There are no storage account keys or SAS tokens in app config: `allowSharedKeyAc
 - **Not private (accepted):**
   - the tiles account, which holds public map data only;
   - telemetry ingestion to Azure Monitor (an Azure Monitor Private Link Scope is part of the growth profile);
-  - image pulls from GHCR;
+  - image pulls from the registry's public endpoint, which requires an Entra ID token (a private endpoint needs ACR Premium, ~$50/mo); images are code, not data;
   - LoC downloads.
 - Anonymous public blob access is disabled on the data account (the tiles account is the only exception).
 - **Hardening path (growth profile):** Front Door in front of both origins (edge cache, WAF); an Azure Monitor Private Link Scope for telemetry; and moving the backfill onto VNet-integrated compute (Container Apps Jobs, ~$150–250 per backfill instead of ~$25–50 on Spot), which removes the public-access window entirely. With **Front Door Standard**, the API app must keep **external** ingress, because internal ingress is reachable only inside the environment. Lock it to Front Door by validating the `X-Azure-FDID` header in the API, plus IP allow-list rules generated from the published `AzureFrontDoor.Backend` service-tag CIDRs and re-synced by a scheduled job (Container Apps IP restrictions take CIDRs, not service-tag names). **Front Door Premium** can instead reach an internal environment over Private Link.
@@ -134,7 +136,7 @@ flowchart LR
   PR --> CI3[Infra: bicep lint · PSRule · what-if]
   PR --> CI4[Security: CodeQL · secret scanning push protection · Dependabot]
   PR --> PREV[SWA preview env + API against dev]
-  M[merge to main] --> B[build & sign images · SBOM · push GHCR]
+  M[merge to main] --> B[build & sign images · SBOM · push ACR (OIDC)]
   B --> DEV[azd deploy dev]
   DEV --> SMK[smoke + k6 short load]
   SMK --> GATE{{manual approval: prod environment}}
@@ -143,7 +145,7 @@ flowchart LR
 ```
 
 - **Container Apps revisions** for blue/green: a new revision receives 10% of traffic until synthetic checks pass, then 100%. Rolling back means shifting traffic to the previous revision.
-- **Images:** pinned base `gcr.io/distroless/cc-debian12` (or `scratch` with a musl static build) for the API; the Quickwit image is pinned by digest and mirrored into GHCR.
+- **Images:** pinned base `gcr.io/distroless/cc-debian12` (or `scratch` with a musl static build) for the API; the Quickwit image is pinned by digest and copied into ACR with that digest unchanged (CI checks it).
 - **Data pipeline deploys** are separate from app deploys. A new `index_version` is published by the `index` job and picked up by the API's refresher, not by redeploying.
 
 ## 8.7 Environments

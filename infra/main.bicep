@@ -14,7 +14,7 @@ param environmentName string
 @description('Region; East US 2 has ACI Spot (preview) and SWA.')
 param location string = 'eastus2'
 
-@description('API container image (public GHCR image; no registry resource).')
+@description('API image used until useAcr is on (a new environment bootstraps from it).')
 param apiImage string = 'ghcr.io/tgoodyear/usnewsmap-api:main'
 
 @description('Origins allowed by API CORS and the tiles account.')
@@ -27,11 +27,17 @@ param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
 @allowed(['fixtures', 'quickwit'])
 param searchBackend string = 'fixtures'
 
-@description('Create the ingest and backfill jobs. Needs the public usnewsmap-ingest image (08 §8.6).')
-param ingestJobs bool = false
+@description('Pull images from the private registry (08 §8.6). Turn on once CI has pushed them there.')
+param useAcr bool = false
 
-@description('Ingest job image (public GHCR image; no registry resource).')
-param ingestImage string = 'ghcr.io/tgoodyear/usnewsmap-ingest:main'
+@description('Image tag CI pushed to the registry (main or a commit sha).')
+param imageTag string = 'main'
+
+@description('GitHub repository whose main branch may push images, as owner/name.')
+param githubRepo string = 'tgoodyear/usnewsmap.com'
+
+@description('Create the ingest and backfill jobs (needs useAcr: the ingest image is only in the private registry).')
+param ingestJobs bool = false
 
 @description('Weekly ingest schedule, UTC cron (e.g. "17 3 * * 1"). Empty: run the job manually.')
 param ingestCron string = ''
@@ -62,6 +68,8 @@ var tags = {
 }
 var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
+// Quickwit v0.9.1, copied into the registry by CI with its digest unchanged.
+var quickwitDigest = 'sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
 // The site's own *.azurestaticapps.net origin, until the custom domain is live.
 var siteOrigins = union(allowedOrigins, ['https://${site.outputs.defaultHostname}'])
 
@@ -87,6 +95,19 @@ module monitoring 'modules/monitoring.bicep' = {
     appInsightsName: 'appi-usnm-${env}'
     actionGroupName: 'ag-usnm-${env}'
     alertEmails: emails
+  }
+}
+
+module registry 'modules/registry.bicep' = {
+  scope: rg
+  name: 'registry'
+  params: {
+    location: location
+    tags: tags
+    name: 'crusnm${env}${suffix}'
+    ciIdentityName: 'id-usnm-ci-${env}'
+    githubRepo: githubRepo
+    pullPrincipalIds: [identities.outputs.appPrincipalId, identities.outputs.ingestPrincipalId]
   }
 }
 
@@ -192,7 +213,11 @@ module api 'modules/containerapp.bicep' = {
     tags: tags
     name: 'ca-usnm-${env}'
     environmentId: containerEnv.outputs.id
-    image: apiImage
+    image: useAcr ? '${registry.outputs.loginServer}/usnewsmap-api:${imageTag}' : apiImage
+    quickwitImage: useAcr
+      ? '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
+      : 'quickwit/quickwit:v0.9.1@${quickwitDigest}'
+    registryServer: useAcr ? registry.outputs.loginServer : ''
     identityId: identities.outputs.appId
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
@@ -213,7 +238,7 @@ module site 'modules/staticwebapp.bicep' = {
   }
 }
 
-module ingest 'modules/ingestjobs.bicep' = if (ingestJobs) {
+module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
   scope: rg
   name: 'ingest-jobs'
   dependsOn: [rbac, privateEndpoints]
@@ -221,7 +246,8 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs) {
     location: location
     tags: tags
     environmentId: containerEnv.outputs.id
-    image: ingestImage
+    image: '${registry.outputs.loginServer}/usnewsmap-ingest:${imageTag}'
+    registryServer: registry.outputs.loginServer
     ingestIdentityId: identities.outputs.ingestId
     ingestClientId: identities.outputs.ingestClientId
     storageAccountName: storage.outputs.name
@@ -281,6 +307,12 @@ output SITE_URL string = 'https://${site.outputs.defaultHostname}'
 output TILES_URL string = tiles.outputs.tilesUrl
 output STORAGE_ACCOUNT string = storage.outputs.name
 output COSMOS_ENDPOINT string = cosmos.outputs.endpoint
-output INGEST_JOB string = ingestJobs ? ingest!.outputs.ingestJobName : ''
-output BACKFILL_JOB string = ingestJobs ? ingest!.outputs.backfillJobName : ''
+output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName : ''
+output BACKFILL_JOB string = ingestJobs && useAcr ? ingest!.outputs.backfillJobName : ''
+output ACR_NAME string = registry.outputs.name
+output ACR_LOGIN_SERVER string = registry.outputs.loginServer
+// For the GitHub repository variables CI signs in with (not secrets).
+output CI_CLIENT_ID string = registry.outputs.ciClientId
+output AZURE_TENANT_ID string = tenant().tenantId
+output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
