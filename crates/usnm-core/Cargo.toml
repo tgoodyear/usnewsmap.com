@@ -1,0 +1,20 @@
+[package]
+name = "usnm-core"
+version = "0.1.0"
+description = "US News Map domain types: page keys, time buckets, query language, canonical parameters"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chrono.workspace = true
+form_urlencoded.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

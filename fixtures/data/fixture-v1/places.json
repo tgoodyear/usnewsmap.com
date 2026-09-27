@@ -1,0 +1,56 @@
+[
+ {
+  "id": "P00001",
+  "ordinal": 1,
+  "name": "Fixture City A (Chicago area)",
+  "state": "IL",
+  "lat": 41.88,
+  "lon": -87.63,
+  "precision": "city"
+ },
+ {
+  "id": "P00002",
+  "ordinal": 2,
+  "name": "Fixture City B (New York area)",
+  "state": "NY",
+  "lat": 40.71,
+  "lon": -74.01,
+  "precision": "city"
+ },
+ {
+  "id": "P00003",
+  "ordinal": 3,
+  "name": "Fixture City C (San Francisco area)",
+  "state": "CA",
+  "lat": 37.77,
+  "lon": -122.42,
+  "precision": "city"
+ },
+ {
+  "id": "P00004",
+  "ordinal": 4,
+  "name": "Fixture City D (Atlanta area)",
+  "state": "GA",
+  "lat": 33.75,
+  "lon": -84.39,
+  "precision": "city"
+ },
+ {
+  "id": "P00005",
+  "ordinal": 5,
+  "name": "Fixture City E (Charleston area)",
+  "state": "SC",
+  "lat": 32.78,
+  "lon": -79.93,
+  "precision": "city"
+ },
+ {
+  "id": "P00006",
+  "ordinal": 6,
+  "name": "Fixture County F (Nebraska)",
+  "state": "NE",
+  "lat": 41.26,
+  "lon": -95.94,
+  "precision": "county"
+ }
+]

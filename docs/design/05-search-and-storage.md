@@ -127,7 +127,7 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 
 | Field | Type | Indexed | Fast/Facet/Sort | Stored | Purpose |
 |-------|------|---------|-----------------|--------|---------|
-| `doc_id` | keyword | key | – | ✅ | Identity |
+| `doc_id` | keyword | key | ✅ sort (tiebreak) | ✅ | Identity; secondary sort for stable hit pages |
 | `text` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | Search |
 | `date` | date | ✅ | ✅ sort | ✅ | Range and sort; Quickwit timestamp field (if S-2 confirms pre-1970) |
 | `day` | u32 | ✅ | ✅ | – | Days since 1700-01-01; day/week buckets; range filter |
@@ -158,7 +158,7 @@ doc_mapping:
       type: simple            # unicode word split
       filters: [lower_caser, ascii_folding, remove_long]
   field_mappings:
-    - { name: doc_id,     type: text,     tokenizer: raw, stored: true }
+    - { name: doc_id,     type: text,     tokenizer: raw, fast: true, stored: true }   # fast: hits sort tiebreak
     - { name: text,       type: text,     tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }
     - { name: date,       type: datetime, input_formats: ["%Y-%m-%d"], fast: true, stored: true }
     - { name: day,        type: u64,      fast: true, indexed: true }
