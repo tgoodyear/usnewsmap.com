@@ -208,7 +208,6 @@ jobs:
     env:
       APP: ${{ vars.USNM_API_APP }}
       RG: ${{ vars.USNM_RESOURCE_GROUP }}
-      API_URL: ${{ vars.USNM_API_URL }}
       IMAGE: ${{ vars.USNM_ACR_LOGIN_SERVER }}/usnewsmap-api:${{ github.sha }}
     steps:
       # Runs finish out of order: a slower run for an older commit must not
@@ -251,6 +250,7 @@ jobs:
             sleep 10
           done
           test "$latest" = "$ready" || { echo "::error::revision $latest did not become ready"; exit 1; }
-          if [ -n "$API_URL" ]; then
-            curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "$API_URL/readyz"
-          fi
+          # Always check the app's own address; no variable can skip this.
+          fqdn=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+          test -n "$fqdn" || { echo "::error::$APP has no ingress FQDN"; exit 1; }
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "https://$fqdn/readyz"

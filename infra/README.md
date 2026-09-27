@@ -115,11 +115,11 @@ gh variable set USNM_ACR_LOGIN_SERVER --body "$(azd env get-value ACR_LOGIN_SERV
 gh variable set USNM_CI_CLIENT_ID     --body "$(azd env get-value CI_CLIENT_ID)"
 gh variable set AZURE_TENANT_ID       --body "$(azd env get-value AZURE_TENANT_ID)"
 gh variable set AZURE_SUBSCRIPTION_ID --body "$(azd env get-value AZURE_SUBSCRIPTION_ID)"
-gh variable set USNM_API_APP          --body "$(azd env get-value API_APP)"               # after USNM_USE_ACR is on
 gh variable set USNM_RESOURCE_GROUP   --body "$(azd env get-value AZURE_RESOURCE_GROUP)"
 gh workflow run ci --ref main          # pushes the API and ingest images and copies Quickwit in
 azd env set USNM_USE_ACR true
 azd provision                          # the API (and sidecar) now pull from the registry
+gh variable set USNM_API_APP --body "$(azd env get-value API_APP)"   # the app exists now: enables continuous deployment
 ```
 
 Once the API runs from the registry, the old GHCR packages can be made private again or deleted.
