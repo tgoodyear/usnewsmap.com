@@ -45,12 +45,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Quickwit
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/qw.tgz" \
-            "https://github.com/quickwit-oss/quickwit/releases/download/${QUICKWIT_VERSION}/quickwit-${QUICKWIT_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${QUICKWIT_SHA256}  $RUNNER_TEMP/qw.tgz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/qw.tgz" -C "$RUNNER_TEMP"
-          echo "QUICKWIT_BIN=$RUNNER_TEMP/quickwit-${QUICKWIT_VERSION}/quickwit" >> "$GITHUB_ENV"
+        run: scripts/ci/install-quickwit.sh
       - name: Load fixtures, serve them from a read-only searcher
         run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
       - run: cargo test -p usnm-search --test quickwit_parity --locked
@@ -93,9 +88,7 @@ jobs:
           cache-from: type=gha,scope=ingest
           cache-to: type=gha,scope=ingest,mode=max
       - name: The ingest image runs
-        run: |
-          docker run --rm usnm-ingest-check --version
-          docker run --rm --entrypoint quickwit usnm-ingest-check --version
+        run: scripts/ci/check-ingest-image.sh usnm-ingest-check
 
   infra:
     name: infra (bicep lint, build)
@@ -105,19 +98,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Bicep
-        run: |
-          # The runner ships a root-owned bicep; install the pinned one alongside.
-          mkdir -p "$RUNNER_TEMP/bin"
-          curl -fsSL -o "$RUNNER_TEMP/bin/bicep" \
-            "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
-          chmod +x "$RUNNER_TEMP/bin/bicep"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/bin/bicep" --version | grep -F "${BICEP_VERSION#v}"
+        run: scripts/ci/install-bicep.sh
       - name: Lint (any warning fails)
-        run: |
-          out=$(for f in infra/main.bicep infra/modules/*.bicep; do bicep lint "$f" 2>&1; done)
-          echo "$out"
-          test -z "$out"
+        run: scripts/ci/lint-bicep.sh
       - run: bicep build infra/main.bicep --stdout > /dev/null
 
   web:
@@ -153,18 +136,9 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Start the API on the synthetic fixtures
-        run: |
-          cargo build --release --locked -p usnm-api
-          USNM_BIND=127.0.0.1:8080 USNM_RATE_PER_MIN=0 ./target/release/usnm-api > api.log 2>&1 &
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/readyz && break; sleep 1; done
-      - working-directory: web
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
-          # Default basemap style: the tests intercept it and serve a local
-          # style, so no third-party tile service is needed.
-          npm run build
-          npm run e2e
+        run: scripts/ci/start-api-fixtures.sh
+      - name: Build the site and run the end-to-end suite
+        run: scripts/ci/web-e2e.sh
         env:
           CI: "1"
       - if: failure()
@@ -203,21 +177,14 @@ jobs:
       RG: ${{ vars.USNM_RESOURCE_GROUP }}
       QUICKWIT: quickwit/quickwit@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
     steps:
-      # Runs finish out of order: a slower run for an older commit must not
-      # replace newer images. Only the commit main points at publishes.
+      - uses: actions/checkout@v5
+      # Only the commit main points at publishes: a slower run for an older
+      # commit must not replace newer images.
       - name: Is this still the head of main?
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
-          if [ "$head" = "$GITHUB_SHA" ]; then
-            echo "current=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::main is now at $head; not publishing $GITHUB_SHA"
-          fi
-      - if: steps.head.outputs.current == 'true'
-        uses: actions/checkout@v5
+        run: scripts/ci/head-of-main.sh
       - if: steps.head.outputs.current == 'true'
         uses: azure/login@v3
         with:
@@ -249,39 +216,11 @@ jobs:
             ${{ env.ACR }}/usnewsmap-ingest:${{ github.sha }}
       - name: Copy the pinned Quickwit image into the registry, digest unchanged
         if: steps.head.outputs.current == 'true'
-        run: |
-          command -v skopeo > /dev/null || { sudo apt-get update -q && sudo apt-get install -y -q skopeo; }
-          token=$(az acr login --name "${ACR%%.*}" --expose-token --query accessToken -o tsv)
-          skopeo login "$ACR" -u 00000000-0000-0000-0000-000000000000 -p "$token"
-          skopeo copy --all --preserve-digests "docker://docker.io/${QUICKWIT}" "docker://${ACR}/quickwit/quickwit:v0.9.1"
-          want="${QUICKWIT#*@}"
-          got="sha256:$(skopeo inspect --raw "docker://${ACR}/quickwit/quickwit:v0.9.1" | sha256sum | cut -d' ' -f1)"
-          test "$got" = "$want" || { echo "::error::copied Quickwit digest $got != $want"; exit 1; }
+        run: scripts/ci/copy-quickwit.sh
       # The API app exists once the environment pulls from its registry
       # (bootstrap's second provision); until then only the images publish.
-      - name: Point the API at this commit's image
+      - name: Roll the API onto this commit's image
         if: steps.head.outputs.current == 'true' && env.APP != ''
-        run: |
-          az config set extension.use_dynamic_install=yes_without_prompt
-          az containerapp update -n "$APP" -g "$RG" --container-name api \
-            --image "$ACR/usnewsmap-api:$GITHUB_SHA" -o none
-      - name: Wait for the new revision to serve
-        if: steps.head.outputs.current == 'true' && env.APP != ''
-        run: |
-          latest="" ready=""
-          for _ in $(seq 60); do
-            revs=$(az containerapp show -n "$APP" -g "$RG" \
-              --query "[properties.latestRevisionName, properties.latestReadyRevisionName]" -o tsv)
-            latest=$(sed -n 1p <<< "$revs")
-            ready=$(sed -n 2p <<< "$revs")
-            if [ -n "$latest" ] && [ "$latest" = "$ready" ]; then
-              echo "revision $latest is ready"
-              break
-            fi
-            sleep 10
-          done
-          test "$latest" = "$ready" || { echo "::error::revision $latest did not become ready"; exit 1; }
-          # Always check the app's own address; no variable can skip this.
-          fqdn=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
-          test -n "$fqdn" || { echo "::error::$APP has no ingress FQDN"; exit 1; }
-          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "https://$fqdn/readyz"
+        env:
+          IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
+        run: scripts/ci/roll-api.sh
