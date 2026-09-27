@@ -1,0 +1,10 @@
+# Azure Developer CLI: `azd provision` deploys infra/main.bicep.
+# The API image is built and published to GHCR by CI, so there are no azd
+# services to build here; the image tag is the USNM_API_IMAGE parameter.
+name: usnewsmap
+metadata:
+  template: usnewsmap@0.1.0
+infra:
+  provider: bicep
+  path: infra
+  module: main

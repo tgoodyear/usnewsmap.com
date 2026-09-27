@@ -113,7 +113,7 @@ S-2 validates that searchers with a polling, read-only file-backed metastore beh
 
 ## 8.5 Infrastructure as code
 
-- **Bicep** modules under `infra/` with **Azure Developer CLI (`azd`)** for environment management and a one-command `azd up`.
+- **Bicep** modules under `infra/` with **Azure Developer CLI (`azd`)** for environment management and a one-command `azd up`. The first slice is implemented in [`infra/`](../../infra/README.md). It covers the network, private endpoints, the data, tiles and Cosmos accounts, identities and RBAC, the Container Apps environment and API app, SWA, monitoring, the budget and the guardrail policies. The Quickwit sidecar, the jobs and launcher, and DNS follow.
 - Modules: `network` (VNet, subnets, private endpoints, private DNS zones), `staticwebapp`, `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `cosmos`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
 - **Parameters per environment**: `dev` (scale to zero, LRS, small sample corpus of ~1M pages), `prod`.
 - Lint with `bicep lint` plus PSRule for Azure in CI; `what-if` output posted to the PR for any change under `infra/`.
