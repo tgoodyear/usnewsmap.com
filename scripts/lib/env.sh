@@ -61,19 +61,16 @@ deploy_guardrails() {
     --yes --only-show-errors -o none
 }
 deploy_stack() (
-  # Export the settings that have a value; infra/main.bicepparam reads them,
-  # and an unset one takes its default there. Clear every name it reads
-  # first, so a variable left in the caller's shell can't stand in for a
-  # setting the file doesn't have.
+  # Export exactly the settings infra/main.bicepparam reads, when they have
+  # a value; an unset one takes its default there. Each is read on its own
+  # (aget), so the settings file never sets this script's own variables
+  # (STACK, ENV_NAME, ...), and a variable left in the caller's shell can't
+  # stand in for a setting the file doesn't have.
+  local k v
   for k in $(grep -o "readEnvironmentVariable('[A-Za-z0-9_]*'" infra/main.bicepparam | cut -d"'" -f2); do
     unset "$k"
-  done
-  set -a
-  # shellcheck source=/dev/null
-  . "$ENV_FILE"
-  set +a
-  for k in $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$ENV_FILE"); do
-    [ -n "${!k}" ] || unset "$k"
+    v=$(aget "$k")
+    [ -z "$v" ] || export "$k=$v"
   done
   # The stack's name comes from the environment's; the template's must match.
   export AZURE_ENV_NAME=$ENV_NAME

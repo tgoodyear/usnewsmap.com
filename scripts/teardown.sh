@@ -31,7 +31,12 @@ az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
 [ -n "$SUBSCRIPTION" ] && az account set --subscription "$SUBSCRIPTION"
 SUBSCRIPTION=$(az account show --query id -o tsv)
 gh auth status > /dev/null 2>&1 || die "run: gh auth login"
-[ -n "$REPO" ] || REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+# The repository whose workflows deploy this environment: the one bootstrap
+# recorded. --repo, or the checkout's own, must be the same one.
+configured=$(aget USNM_GITHUB_REPO)
+[ -n "$REPO" ] || REPO=${configured:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
+[ -z "$configured" ] || [ "$REPO" = "$configured" ] ||
+  die "environment $ENV_NAME is deployed from $configured, not $REPO"
 az stack sub show -n "$STACK" -o none 2> /dev/null ||
   die "no deployment stack $STACK in subscription $SUBSCRIPTION"
 
@@ -73,15 +78,18 @@ if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
 fi
 # A run that already started, or was queued, still holds the old list; wait
 # until none is left.
+# total_count covers every matching run, however many there are.
 unfinished() {
-  local s
+  local s n total=0
   for s in requested queued waiting pending in_progress; do
-    gh run list -R "$REPO" --status "$s" --json databaseId -q '.[].databaseId' || return 1
+    n=$(gh api "repos/$REPO/actions/runs?status=$s&per_page=1" -q .total_count) || return 1
+    total=$((total + n))
   done
+  echo "$total"
 }
 while :; do
   runs=$(unfinished) || die "can't list workflow runs in $REPO"
-  [ -n "$runs" ] || break
+  [ "$runs" -gt 0 ] || break
   echo "waiting for queued and running workflows in $REPO to finish"
   sleep 30
 done
