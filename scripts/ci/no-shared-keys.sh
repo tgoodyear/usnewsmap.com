@@ -50,8 +50,8 @@ files=$(git ls-files infra scripts .github 'Dockerfile*' crates web \
 
 matches=$(printf '%s\n' "$files" | xargs grep -inHE "$(IFS='|'; echo "${patterns[*]}")" || true)
 # Drop exact allowed lines: "file:line:content" against "file:content".
-found=$(awk -v allow="$allow" '
-  BEGIN { n = split(allow, a, "\n"); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+found=$(ALLOW="$allow" awk '
+  BEGIN { n = split(ENVIRON["ALLOW"], a, "\n"); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
   NF {
     f = $0; sub(/:.*/, "", f)
     rest = substr($0, length(f) + 2); c = rest; sub(/^[0-9]+:/, "", c)
