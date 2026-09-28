@@ -72,7 +72,9 @@ done
 step "Configuring the azd environment"
 azd env select "$ENV_NAME" 2> /dev/null ||
   azd env new "$ENV_NAME" --subscription "$SUBSCRIPTION" --location "$LOCATION" --no-prompt
-aget() { azd env get-value "$1" 2> /dev/null || true; }
+# azd prints "key not found" on stdout, so a missing key reads as empty only
+# when the output is dropped on failure.
+aget() { local v; v=$(azd env get-value "$1" 2> /dev/null) && printf '%s\n' "$v" || true; }
 # Settings that describe what exists in one subscription can't carry over to
 # another: moving starts again from an empty registry, with no certificate
 # and a fresh look at the Cosmos DB free tier.
