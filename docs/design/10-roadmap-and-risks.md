@@ -12,7 +12,7 @@ gantt
   S-3 geocoding QA                       :p0c, 2026-10-05, 10d
   Decision gate (ADR-0001 final)         :milestone, after p0b, 0d
   section Phase 1 · MVP (parity + accuracy)
-  Infra (Bicep, azd, CI/CD)              :p1a, after p0b, 10d
+  Infra (Bicep, deployment stacks, CI/CD)              :p1a, after p0b, 10d
   Ingest pipeline + curated lake         :p1b, after p0b, 20d
   Rust API (aggregate, hits, meta)       :p1c, after p0b, 20d
   SPA (search, map, playback, list)      :p1d, after p0b, 25d

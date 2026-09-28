@@ -106,6 +106,12 @@ jobs:
       - name: No shared-key authentication (ADR-0009)
         run: scripts/ci/no-shared-keys.sh
       - run: bicep build infra/main.bicep --stdout > /dev/null
+      - run: bicep build infra/guardrails.bicep --stdout > /dev/null
+      # The parameters bootstrap deploys the stack with (settings from the
+      # environment; unset ones take their defaults).
+      - run: bicep build-params infra/main.bicepparam --stdout > /dev/null
+        env:
+          AZURE_ENV_NAME: ci
 
   web:
     name: web (lint, typecheck, test, build)

@@ -14,3 +14,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0008](0008-private-networking.md) | Private networking: VNet-integrated env, private endpoints for Blob + Cosmos, guarded public window for Spot backfills | Accepted |
 | [0009](0009-entra-identity-only.md) | Entra identity only: RBAC for every caller, local (key) auth off everywhere, no shared keys or SAS | Accepted |
 | [0010](0010-site-served-by-the-api.md) | The API app serves the site: same origin, Entra-only deploys, no Static Web App | Accepted |
+| [0011](0011-deployment-stacks.md) | One deployment stack per environment (delete on removal, deny deletes), without azd | Accepted |

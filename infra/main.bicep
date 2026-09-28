@@ -1,14 +1,17 @@
 // US News Map: lean hosting profile (08 §8.1, ADR-0006). No IaaS.
 //
-// Provisioned with `azd provision` (see azure.yaml). Creates the project
+// Deployed as the deployment stack usnm-{env} by scripts/bootstrap.sh, with
+// parameters from infra/main.bicepparam. Creates the project
 // resource group and the empty Spot resource group the backfill launcher
 // will use, then the platform inside the project group.
 
 targetScope = 'subscription'
 
+import { guardrailPolicyNames } from 'guardrails.bicep'
+
 @minLength(1)
 @maxLength(16)
-@description('Environment name, e.g. dev or prod (azd sets AZURE_ENV_NAME).')
+@description('Environment name, e.g. dev or prod (AZURE_ENV_NAME in the environment\'s settings).')
 param environmentName string
 
 @description('Region; East US 2 has ACI Spot (preview).')
@@ -33,7 +36,7 @@ param useAcr bool = false
 @description('Image tag CI pushed to the registry (main or a commit sha).')
 param imageTag string = 'main'
 
-@description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment named after this azd environment may use the CI identity.')
+@description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment of the same name may use the CI identity.')
 param githubRepo string = 'tgoodyear/usnewsmap.com'
 
 @description('The same repository as `owner@ownerId/name@repoId` (GitHub\'s immutable-ID OIDC subject format); scripts/bootstrap.sh looks it up.')
@@ -59,7 +62,7 @@ param alertEmails string = ''
 param budgetStartDate string = ''
 
 
-@description('Create and assign the guardrail policies (needs Resource Policy Contributor on the subscription).')
+@description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
 @description('Public DNS zone for the site (e.g. usnewsmap.com); empty skips it. Delegate the domain to the NAME_SERVERS output.')
@@ -79,7 +82,6 @@ var env = toLower(environmentName)
 var tags = {
   project: 'usnewsmap'
   environment: environmentName
-  'azd-env-name': environmentName
 }
 var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
@@ -327,17 +329,19 @@ module alerts 'modules/alerts.bicep' = if (!empty(emails)) {
   }
 }
 
-module policyDefinitions 'modules/policy-definitions.bicep' = if (deployPolicies) {
-  // Subscription-scope deployment: named per environment so that two
-  // environments in one subscription don't overwrite each other's history.
-  name: 'usnm-policy-definitions-${env}'
-}
+// The guard-rail definitions are shared by every environment in the
+// subscription and deployed by their own stack (guardrails.bicep); this
+// environment only assigns them.
+var guardrailPolicyIds = map(
+  items(guardrailPolicyNames),
+  p => subscriptionResourceId('Microsoft.Authorization/policyDefinitions', p.value)
+)
 
 module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   scope: rg
   name: 'policy-assignments'
   params: {
-    definitionIds: policyDefinitions!.outputs.ids
+    definitionIds: guardrailPolicyIds
   }
 }
 
@@ -345,7 +349,7 @@ module spotPolicies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   scope: spotRg
   name: 'policy-assignments-spot'
   params: {
-    definitionIds: policyDefinitions!.outputs.ids
+    definitionIds: guardrailPolicyIds
   }
 }
 

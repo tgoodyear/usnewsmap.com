@@ -1,6 +1,6 @@
 // Resource logs for every resource that has them (08 §8.1), all to the one
 // Log Analytics workspace. Kept in one place so the inventory is reviewable;
-// the "diagnostic settings" audit policy (policy-definitions.bicep) flags any
+// the "diagnostic settings" audit policy (infra/guardrails.bicep) flags any
 // resource that slips through.
 //
 // Everything with resource logs is covered, with every category, except
