@@ -59,7 +59,7 @@ Container images are **private**, in ACR Basic. CI on `main` signs in to Azure w
 | `caj-usnm-ingest` system-assigned identity (used only by the Quickwit writer the job runs) | MI | `Storage Blob Data Contributor` (`qw-index/`) and nothing else |
 | `id-usnm-launcher` (on the `backfill` launcher job and the `network-guard` job) | MI | `Contributor` on `rg-usnm-prod-spot` only (to create and delete ACI container groups); `Managed Identity Operator` on `id-usnm-ingest`; custom role **`USNM Public Access Toggle`** on `stusnmdata` and `cosmos-usnm` only (`read` and `write` on the account resource, used solely to flip `publicNetworkAccess`). Azure Policy **denies** any change to `allowSharedKeyAccess` or `disableLocalAuth`, so this role can't re-enable keys |
 | `id-usnm-ci-{env}` (user-assigned, federated credential for the GitHub Environment `{env}`, restricted to `main`) | MI | `AcrPush` on its registry, and a custom role, "usnm deployer", on its resource group (`infra/modules/deployer.bicep`) that can only roll Container Apps onto new images (the API image also carries the site). Azure rejects role assignments scoped to a Container App itself, and `az containerapp update` also needs join rights on the app's environment, hence the group scope; the group holds only this environment. It also needs assign rights on the app's identity, granted as Managed Identity Operator on `id-usnm-app-{env}` alone, so CI can't attach the ingest identity (and its data access) to the app |
-| Infrastructure changes (`azd provision`, via `scripts/bootstrap.sh`) | The operator's own sign-in | `Owner` on the subscription (role assignments, policy definitions). CI never provisions, so no identity with role-assignment rights exists outside a person's session |
+| Infrastructure changes (the deployment stack, via `scripts/bootstrap.sh` or `scripts/provision.sh`) | The operator's own sign-in | `Owner` on the subscription (role assignments, policy definitions). CI never provisions, so no identity with role-assignment rights exists outside a person's session |
 | Maintainers | Entra users / group `grp-usnm-maintainers` | `Reader` by default; **PIM just-in-time** `Contributor` where the tenant licensing allows it. Data-plane inspection (Cosmos queries, blob listing) runs through the `usnm-ingest admin …` CLI as an on-demand Container Apps Job inside the VNet, because the portal's Data Explorer can't reach the private endpoints from the internet |
 
 **No shared keys anywhere ([ADR-0009](adr/0009-entra-identity-only.md)).** Every caller is an Entra identity authorized by RBAC. Local (key) auth is off on every service that has the switch, and policy denies turning it back on: storage (`allowSharedKeyAccess: false`, both accounts), Cosmos (`disableLocalAuth`), Log Analytics (`features.disableLocalAuth`), Application Insights (`DisableLocalAuth`) and the registry (no admin user, no anonymous pull). The Container Apps environment sends logs through a diagnostic setting, not the workspace key. `scripts/ci/no-shared-keys.sh` fails CI on any key pattern. The one open exception is the Static Web App's deployment token (ADR-0009).
@@ -144,7 +144,7 @@ S-2 checked this on Quickwit 0.9.1 with a file-backed metastore: a searcher-only
 
 ## 8.5 Infrastructure as code
 
-- **Bicep** modules under `infra/` with **Azure Developer CLI (`azd`)** for environment management and a one-command `azd up`. The first slice is implemented in [`infra/`](../../infra/README.md). It covers the network, private endpoints, the data, tiles and Cosmos accounts, identities and RBAC, the Container Apps environment and the API app (which serves the site), monitoring, the budget and the guardrail policies. The Quickwit sidecar is in place behind `searchBackend` (`USNM_SEARCH_BACKEND=quickwit`) and waits on the first published index. The ingest and backfill jobs are in place behind `ingestJobs` (`USNM_INGEST_JOBS=true`). DNS follows.
+- **Bicep** modules under `infra/`, deployed as **one deployment stack per environment** (`usnm-<env>`, subscription scope; [ADR-0011](adr/0011-deployment-stacks.md)). A resource removed from the template is deleted on the next deployment (`actionOnUnmanage: deleteResources`), and a deny assignment blocks deletes of any managed resource outside the stack (`denyDelete`). Settings live in `.azure/<env>/.env` and reach the template through `infra/main.bicepparam`. `scripts/bootstrap.sh` stands an environment up, `scripts/provision.sh` redeploys it, and `scripts/teardown.sh` removes it. The first slice is implemented in [`infra/`](../../infra/README.md). It covers the network, private endpoints, the data, tiles and Cosmos accounts, identities and RBAC, the Container Apps environment and the API app (which serves the site), monitoring, the budget and the guardrail policies. The Quickwit sidecar is in place behind `searchBackend` (`USNM_SEARCH_BACKEND=quickwit`) and waits on the first published index. The ingest and backfill jobs are in place behind `ingestJobs` (`USNM_INGEST_JOBS=true`). DNS follows.
 - Modules: `network` (VNet, subnets, private endpoints, private DNS zones), `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `cosmos`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
 - **Parameters per environment**: `dev` (scale to zero, LRS, small sample corpus of ~1M pages), `prod`.
 - Lint with `bicep lint` plus PSRule for Azure in CI; `what-if` output posted to the PR for any change under `infra/`.
@@ -160,10 +160,10 @@ flowchart LR
   PR --> CI4[Security: CodeQL · secret scanning push protection · Dependabot]
   PR --> PREV[preview revision of the app against dev]
   M[merge to main] --> B[build & sign images · SBOM · push ACR (OIDC)]
-  B --> DEV[azd deploy dev]
+  B --> DEV[roll dev onto the images]
   DEV --> SMK[smoke + k6 short load]
   SMK --> GATE{{manual approval: prod environment}}
-  GATE --> PROD[azd deploy prod · new revision 10% → 100%]
+  GATE --> PROD[roll prod · new revision 10% → 100%]
   PROD --> POST[prewarm cache · synthetic checks]
 ```
 
@@ -198,14 +198,14 @@ The whole system can be stood up from this repository in **any** Azure subscript
 
 **Command:** `scripts/bootstrap.sh <env> [--subscription ID] [--location REGION] [--domain NAME] [--alert-email ADDR] [--ingest]`. It is idempotent: re-running it brings an existing environment up to date. It:
 
-1. checks the sign-ins (`az`, `azd`, `gh`) and registers the resource providers the templates use;
-2. creates or selects the `azd` environment and sets its parameters, including:
+1. checks the sign-ins (`az`, `gh`) and registers the resource providers the templates use;
+2. writes the environment's settings (`.azure/<env>/.env`), including:
    - the GitHub repository (and its immutable-ID OIDC form, looked up from the API);
    - whether the subscription's one Cosmos DB free-tier slot is still free;
-3. provisions (everything but the API, which has no image yet);
+3. deploys the stack `usnm-<env>` (everything but the API, which has no image yet);
 4. creates the **GitHub Environment** of the same name, restricted to the `main` branch, writes that environment's variables, and adds it to the repository variable `USNM_DEPLOY_ENVIRONMENTS`;
 5. runs `ci` on `main` (every time, so the registry holds the current `main`), which publishes the images, and waits for that run;
-6. switches to the registry (`USNM_USE_ACR=true`) and provisions again, which deploys the API;
+6. switches to the registry (`USNM_USE_ACR=true`) and deploys the stack again, which deploys the API;
 7. once the registrar delegates the domain to the zone, binds the apex, `www` and `api` to the app with managed certificates (re-run it after delegating), and removes the Static Web App that used to serve the site;
 8. checks the API's `/readyz` and the site.
 
@@ -215,7 +215,7 @@ Then, for a full corpus, start the backfill job and let the weekly ingest job pu
 
 | Thing | Scope | Notes |
 |-------|-------|-------|
-| Resource groups `rg-usnm-{env}` and everything in them (registry, identities, storage, Cosmos, VNet, apps, jobs, DNS zone) | Per environment | Globally unique names carry a suffix derived from the subscription and environment, so the same environment name works in another subscription |
+| The deployment stack `usnm-{env}`: resource groups `rg-usnm-{env}` and everything in them (registry, identities, storage, Cosmos, VNet, apps, jobs, DNS zone) | Per environment | Globally unique names carry a suffix derived from the subscription and environment, so the same environment name works in another subscription |
 | CI identity `id-usnm-ci-{env}` | Per environment | Trusts only jobs in the GitHub Environment `{env}` of the configured repository, which only `main` may use. Rights: AcrPush on its registry, and the "usnm deployer" custom role on its resource group (roll out API images, which also carry the site), and Managed Identity Operator on the API's identity only. No secret is stored or read anywhere |
 | GitHub Environment `{env}` | Per environment | Its variables are written by bootstrap. `publish` (in `ci`) runs once per listed environment |
 | Guard-rail policy definitions (`usnm-deny-*`, `usnm-audit-*`) | Per subscription | Shared by every environment in the subscription; the assignments are per resource group. Needs Owner (or Resource Policy Contributor) on the subscription |
@@ -225,8 +225,8 @@ Then, for a full corpus, start the backfill job and let the weekly ingest job pu
 **Prerequisites in the target:** an account with **Owner** on the subscription (role assignments, policy definitions). No tenant-level objects are created (no app registrations; all identities are managed identities), so no Entra admin is needed. On GitHub: admin on the repository (environments and variables). A **fork** works the same way: bootstrap reads the fork's name and ids, and the federated credentials trust that repository only.
 
 **Moving production** to another subscription (or tenant):
-1. Run `scripts/bootstrap.sh <env> --subscription NEW --domain usnewsmap.com --ingest`. For an existing local azd environment, add `--move`. Without it, bootstrap refuses to rebind an environment to a different subscription. With it, bootstrap resets the settings that describe the old subscription: the registry switch-over, the domain certificates, and the Cosmos DB free-tier check. Use a new environment name if the old one should keep deploying from CI meanwhile: the GitHub Environment `<env>` points at whichever subscription bootstrap wired last.
+1. Run `scripts/bootstrap.sh <env> --subscription NEW --domain usnewsmap.com --ingest`. For an environment whose local settings already name another subscription, add `--move`. Without it, bootstrap refuses to rebind an environment to a different subscription. With it, bootstrap resets the settings that describe the old subscription: the registry switch-over, the domain certificates, and the Cosmos DB free-tier check. Use a new environment name if the old one should keep deploying from CI meanwhile: the GitHub Environment `<env>` points at whichever subscription bootstrap wired last.
 2. Let the new environment rebuild the corpus, and check it on its app's `*.azurecontainerapps.io` name.
-3. Delegate the domain to the new zone's name servers (`azd env get-value NAME_SERVERS`), then **re-run bootstrap**. Once it sees the delegation, it binds the apex, `www` and `api` to the new app and issues their certificates. HTTPS on the custom names needs this step.
-4. The old environment keeps serving until the delegation changes; afterwards, delete it with `azd down`.
+3. Delegate the domain to the new zone's name servers (`scripts/settings.sh <env> NAME_SERVERS`), then **re-run bootstrap**. Once it sees the delegation, it binds the apex, `www` and `api` to the new app and issues their certificates. HTTPS on the custom names needs this step.
+4. The old environment keeps serving until the delegation changes; afterwards, delete it with `scripts/teardown.sh <env> --subscription OLD`.
 

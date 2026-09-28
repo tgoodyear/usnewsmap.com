@@ -1,4 +1,4 @@
-# Infrastructure (Bicep + azd)
+# Infrastructure (Bicep, one deployment stack per environment)
 
 The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastructure.md). It uses only PaaS: there are no VMs, scale sets, AKS clusters or Batch accounts, and an assigned policy denies them.
 
@@ -46,36 +46,35 @@ One command stands up an environment in any subscription or tenant, wires this r
 
 ```sh
 az login [--tenant TENANT]                 # and select the subscription, or pass --subscription
-azd auth login [--tenant-id TENANT]
 gh auth login
 scripts/bootstrap.sh prod --alert-email you@example.org --domain usnewsmap.com --ingest
 ```
 
-Prerequisites: `az`, `azd`, `gh` and `curl`; **Owner** on the subscription (the deployment creates role assignments and policy definitions); admin on the GitHub repository (it creates the GitHub Environment and its variables). No tenant-level objects are created.
+Prerequisites: `az` (2.61 or later), `gh` and `curl`; **Owner** on the subscription (the deployment creates role assignments and policy definitions); admin on the GitHub repository (it creates the GitHub Environment and its variables). No tenant-level objects are created.
 
 What it does:
 1. Registers the resource providers.
-2. Creates the `azd` environment.
-3. Provisions everything except the API, which has no image yet.
+2. Writes the environment's settings to `.azure/<env>/.env`.
+3. Deploys the stack `usnm-<env>`: everything except the API, which has no image yet.
 4. Creates the GitHub Environment `prod`, restricted to `main`, with its variables, and adds it to `USNM_DEPLOY_ENVIRONMENTS`.
 5. Runs `ci` on `main` (every time, so the registry holds the current `main`) and waits for that run.
-6. Provisions again on the registry, which deploys the API.
+6. Deploys the stack again on the registry, which deploys the API.
 7. Once the registrar delegates `--domain` to the zone, binds the apex, `www` and `api` to the API app, which serves the site and the API, with managed certificates (re-run it after delegating). It also deletes the Static Web App that used to serve the site.
-8. Deploys the web app and checks both.
+8. Checks the API's `/readyz` and the site.
 
 Options: `--subscription`, `--location` (default `eastus2`), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and the old Static Web Apps token secret from before per-environment deployment), `--move` (lets an existing environment move to another subscription, starting there with no data). Environment names are 1–16 lowercase letters and digits.
 
 Check the result:
 
 ```sh
-curl "$(azd env get-value API_URL)/v1/meta"          # "synthetic": true until the corpus is loaded
-curl "$(azd env get-value API_URL)/readyz"
+curl "$(scripts/settings.sh prod API_URL)/v1/meta"   # "synthetic": true until the corpus is loaded
+curl "$(scripts/settings.sh prod API_URL)/readyz"
 ```
 
-After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API app, which carries the site, onto the commit. To pin a specific build instead, run `azd env set USNM_IMAGE_TAG <commit sha>` (default `main`) and `azd provision`.
+After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API app, which carries the site, onto the commit. To pin a specific build instead, run `scripts/settings.sh prod USNM_IMAGE_TAG <commit sha>` (default `main`) and `scripts/provision.sh prod`.
 
-| Parameter | azd variable | Default |
-|-----------|--------------|---------|
+| Parameter | Setting | Default |
+|-----------|---------|---------|
 | `environmentName` | `AZURE_ENV_NAME` | — (e.g. `dev`, `prod`; `prod` keeps one warm replica, others scale to zero) |
 | `location` | `AZURE_LOCATION` | `eastus2` |
 | `apiImage` | `USNM_API_IMAGE` | empty. A public image to run while `useAcr` is off; empty skips the API until then |
@@ -90,6 +89,23 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `allowedOrigins` | — | empty. Extra CORS origins; the site's own hostname and the domain (with `www`) are always allowed |
 | `deployPolicies` | — | `true` (needs Resource Policy Contributor on the subscription) |
 
+### Settings and the deployment stack
+
+An environment's settings are `KEY="value"` lines in `.azure/<env>/.env`, which is git-ignored. It uses the layout azd used, so environments created with azd carry over. `infra/main.bicepparam` reads the settings from the environment (bootstrap exports those with a value; the rest take the defaults above), and the template's outputs (`API_URL`, `ACR_NAME`, …) are written back after each deployment.
+
+```sh
+scripts/settings.sh prod                      # show all
+scripts/settings.sh prod USNM_SEARCH_BACKEND quickwit
+scripts/provision.sh prod                     # deploy the stack with the new settings
+```
+
+Everything is one **deployment stack** at subscription scope, `usnm-<env>` ([ADR-0011](../docs/design/adr/0011-deployment-stacks.md)):
+
+- **Removed from the template means removed from Azure.** Each deployment runs with `--action-on-unmanage deleteResources`, so a resource dropped from the Bicep (or switched off by a setting, such as `USNM_INGEST_JOBS=false`) is deleted, not left running.
+- **Nothing the stack manages can be deleted outside it.** `--deny-settings-mode denyDelete` puts a deny assignment on every managed resource, the resource groups included, that blocks deletes by anyone, Owners too. Changes still go through the stack. To delete by hand in an emergency, deploy once with `--deny-settings-mode none`.
+- Resources the template doesn't declare (the certificates bootstrap binds, anything made in the portal) aren't managed: the stack neither protects nor deletes them.
+- `scripts/teardown.sh <env>` deletes an environment: its resource groups, its custom role, the policy definitions when no other environment in the subscription uses them, and its GitHub Environment. It asks for the name first.
+
 ## Web app
 
 The API app serves the site ([ADR-0010](../docs/design/adr/0010-site-served-by-the-api.md)). The API image's build compiles `web/` into `/srv/site` (`USNM_SITE_DIR`), with brotli and gzip copies of each text file. So every image `ci` publishes carries the site, and each rollout ships both together. The site calls `/v1` on its own origin, so it needs no API URL and no CORS. The API still allows the domain, `www`, the app's own hostname and any `allowedOrigins` for other callers. There is no separate web deploy and no deployment token.
@@ -99,9 +115,8 @@ The API app serves the site ([ADR-0010](../docs/design/adr/0010-site-served-by-t
 The zone for the site's domain lives in Azure DNS (~$0.50/month):
 
 ```sh
-azd env set USNM_DNS_ZONE usnewsmap.com
-azd provision
-azd env get-value NAME_SERVERS      # set these four as the domain's name servers at the registrar
+scripts/bootstrap.sh prod --domain usnewsmap.com
+scripts/settings.sh prod NAME_SERVERS   # set these four as the domain's name servers at the registrar
 ```
 
 The zone holds:
@@ -111,7 +126,7 @@ The zone holds:
 
  It also carries over the domain's no-mail records (SPF `v=spf1 -all`, DMARC `p=reject`, and an empty key for every DKIM selector), as they were on the previous DNS host. **Before switching name servers, copy any other records the domain still needs into the zone**: once delegated, only the zone's records resolve. Once the registrar delegates the domain, `scripts/bootstrap.sh` binds the names (it checks the delegation first, and re-running it later finishes the job):
 - Each name gets a free managed certificate from the Container Apps environment. `www` and `api` are validated by their CNAMEs, and the apex over HTTP through its A record.
-- The certificate ids are recorded as `USNM_SITE_CERT_ID`, `USNM_WWW_CERT_ID` and `USNM_API_CERT_ID`. Bicep declares the bindings from them, so later provisioning keeps them.
+- The certificate ids are recorded as `USNM_SITE_CERT_ID`, `USNM_WWW_CERT_ID` and `USNM_API_CERT_ID`. Bicep declares the bindings from them, so later deployments keep them.
 - `SITE_URL` then becomes `https://<domain>`, and `API_URL` becomes `https://api.<domain>`.
 - If a name's DNS record changed within the last hour, resolvers may still hold the old one and validation can fail. Re-run bootstrap later.
 
@@ -123,22 +138,22 @@ CI pushes from `main` as `id-usnm-ci-{env}`, signing in with OIDC. That identity
 
 The CI identity's rights are AcrPush on its registry, and a custom role, "usnm deployer", on its resource group (`infra/modules/deployer.bicep`). The role can roll Container Apps onto new images (which carry the site too), and nothing else: no data, keys, networking or role assignments. It's scoped to the group because Azure rejects role assignments scoped to a Container App itself, and because `az containerapp update` also needs join rights on the app's environment; the group holds only this environment. The update also needs assign rights on the app's identity: CI has Managed Identity Operator on `id-usnm-app-{env}` alone, never on the group, so it can't attach the ingest identity (and its data access) to the app.
 
-`azd provision` sets the API image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the one CI last rolled out).
+Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the one CI last rolled out).
 
 ## Ingest jobs
 
-1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `azd env set USNM_INGEST_JOBS true` and `azd provision` on an environment already on the registry). Optionally set a weekly schedule with `azd env set USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 8).
+1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `scripts/settings.sh <env> USNM_INGEST_JOBS true` and `scripts/provision.sh <env>` on an environment already on the registry). Optionally set a weekly schedule with `scripts/settings.sh <env> USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 8).
 2. The catalog (`reference/catalog/titles.json`, `places.json`) is built by `titles-sync`, which `run` calls before every release. Coordinate corrections live in git, in `catalog/overrides/places.json` (`[{city, state, lat, lon}]`), and ship in the ingest image; the next run applies them.
 3. Backfill, then publish the first version:
    ```sh
-   RG=$(azd env get-value AZURE_RESOURCE_GROUP)
+   RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
    # Queue every batch from LoC's listing and curate it with 8 workers (~22 h).
-   az containerapp job start -n "$(azd env get-value BACKFILL_JOB)" -g "$RG"
+   az containerapp job start -n "$(scripts/settings.sh prod BACKFILL_JOB)" -g "$RG"
    # When that has finished: curate any leftovers, build the base index, publish.
-   az containerapp job start -n "$(azd env get-value INGEST_JOB)" -g "$RG"
+   az containerapp job start -n "$(scripts/settings.sh prod INGEST_JOB)" -g "$RG"
    ```
    Watch with `az containerapp job execution list -n <job> -g "$RG" -o table` and the job logs in Log Analytics.
-4. Switch the API to the published indexes: `azd env set USNM_SEARCH_BACKEND quickwit`, then `azd provision`.
+4. Switch the API to the published indexes: `scripts/settings.sh <env> USNM_SEARCH_BACKEND quickwit`, then `scripts/provision.sh <env>`.
 
 The storage and Cosmos accounts stay private throughout: the jobs run inside the VNet.
 

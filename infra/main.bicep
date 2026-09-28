@@ -1,6 +1,7 @@
 // US News Map: lean hosting profile (08 §8.1, ADR-0006). No IaaS.
 //
-// Provisioned with `azd provision` (see azure.yaml). Creates the project
+// Deployed as the deployment stack usnm-{env} by scripts/bootstrap.sh, with
+// parameters from infra/main.bicepparam. Creates the project
 // resource group and the empty Spot resource group the backfill launcher
 // will use, then the platform inside the project group.
 
@@ -8,7 +9,7 @@ targetScope = 'subscription'
 
 @minLength(1)
 @maxLength(16)
-@description('Environment name, e.g. dev or prod (azd sets AZURE_ENV_NAME).')
+@description('Environment name, e.g. dev or prod (AZURE_ENV_NAME in the environment\'s settings).')
 param environmentName string
 
 @description('Region; East US 2 has ACI Spot (preview).')
@@ -33,7 +34,7 @@ param useAcr bool = false
 @description('Image tag CI pushed to the registry (main or a commit sha).')
 param imageTag string = 'main'
 
-@description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment named after this azd environment may use the CI identity.')
+@description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment of the same name may use the CI identity.')
 param githubRepo string = 'tgoodyear/usnewsmap.com'
 
 @description('The same repository as `owner@ownerId/name@repoId` (GitHub\'s immutable-ID OIDC subject format); scripts/bootstrap.sh looks it up.')
@@ -79,7 +80,6 @@ var env = toLower(environmentName)
 var tags = {
   project: 'usnewsmap'
   environment: environmentName
-  'azd-env-name': environmentName
 }
 var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
