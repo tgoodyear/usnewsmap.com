@@ -15,6 +15,15 @@ pub const INDEX_TEMPLATE: &str = include_str!("../../../infra/quickwit/pages-ind
 /// Documents per ingest request, bounded well under Quickwit's 10 MiB body limit.
 const CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
+/// Per-shard ingest rate on the writer node: Quickwit's maximum (its default
+/// is 5 MB/s). A single-node writer can't spread load over more shards, so
+/// past the ~50 MiB burst allowance ingest runs at this rate.
+const SHARD_THROUGHPUT_LIMIT: &str = "20MB";
+
+/// How long one ingest request keeps retrying while the node pushes back
+/// (503 "no shards available" once the shard's rate limit is spent, or 429).
+const INGEST_RETRY_FOR: Duration = Duration::from_secs(600);
+
 #[async_trait]
 pub trait IndexSink: Send {
     /// Start a new, empty index. Fails if it already exists.
@@ -92,6 +101,9 @@ pub struct QuickwitSink {
     http: reqwest::Client,
     index: Option<String>,
     buf: Vec<u8>,
+    /// First pause after pushback; doubles up to 8 s.
+    retry_initial: Duration,
+    retry_for: Duration,
 }
 
 impl QuickwitSink {
@@ -105,6 +117,8 @@ impl QuickwitSink {
                 .build()?,
             index: None,
             buf: Vec::new(),
+            retry_initial: Duration::from_millis(500),
+            retry_for: INGEST_RETRY_FOR,
         })
     }
 
@@ -113,16 +127,31 @@ impl QuickwitSink {
             return Ok(());
         }
         let id = self.index.as_deref().context("no index created")?;
-        let body = std::mem::take(&mut self.buf);
-        let resp = self
-            .http
-            .post(format!("{}/api/v1/{id}/ingest?commit={commit}", self.base))
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await?;
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let body = bytes::Bytes::from(std::mem::take(&mut self.buf));
+        let url = format!("{}/api/v1/{id}/ingest?commit={commit}", self.base);
+        let deadline = tokio::time::Instant::now() + self.retry_for;
+        let mut pause = self.retry_initial;
+        let (status, text) = loop {
+            let resp = self
+                .http
+                .post(&url)
+                .header("content-type", "application/json")
+                .body(body.clone())
+                .send()
+                .await?;
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            // The whole request is resent; `finish` checks the final count, so
+            // a duplicate would fail the release rather than go unnoticed.
+            let pushback = status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+            if !pushback || tokio::time::Instant::now() + pause > deadline {
+                break (status, text);
+            }
+            tracing::debug!(index = id, %status, ?pause, "Quickwit pushed back; retrying");
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(Duration::from_secs(8));
+        };
         if !status.is_success() {
             bail!(
                 "ingest into `{id}` returned {status}: {}",
@@ -246,7 +275,8 @@ impl QuickwitNode {
         let mut config = format!(
             "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
-             metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n",
+             metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n\
+             ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n",
             port.checked_add(1)
                 .context("--quickwit-port must be below 65535")?,
             data.display()
@@ -310,6 +340,8 @@ impl QuickwitNode {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
 
     #[tokio::test]
@@ -324,5 +356,65 @@ mod tests {
         let big = serde_json::json!({"doc_id": "big", "text": "x".repeat(CHUNK_BYTES)});
         let err = s.add(&big).await.unwrap_err().to_string();
         assert!(err.contains("`big`"), "{err}");
+    }
+
+    /// A fake ingest endpoint that answers with `statuses` in turn (then 200)
+    /// and records every body it receives.
+    async fn fake_node(statuses: Vec<u16>) -> (QuickwitSink, Arc<Mutex<Vec<Vec<u8>>>>) {
+        use axum::http::StatusCode;
+        let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let queue = Arc::new(Mutex::new(std::collections::VecDeque::from(statuses)));
+        let app = axum::Router::new().route(
+            "/api/v1/{id}/ingest",
+            axum::routing::post({
+                let seen = seen.clone();
+                move |body: axum::body::Bytes| async move {
+                    seen.lock().unwrap().push(body.to_vec());
+                    match queue.lock().unwrap().pop_front() {
+                        Some(code) => (
+                            StatusCode::from_u16(code).unwrap(),
+                            r#"{"message":"ingest service is unavailable (no shards available)"}"#,
+                        ),
+                        None => (StatusCode::OK, r#"{"num_rejected_docs":0}"#),
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut s = QuickwitSink::new(&format!("http://{addr}"), "file:///tmp/x").unwrap();
+        s.index = Some("i".into());
+        s.retry_initial = Duration::from_millis(1);
+        s.retry_for = Duration::from_secs(5);
+        (s, seen)
+    }
+
+    #[tokio::test]
+    async fn ingest_retries_while_the_node_pushes_back() {
+        let (mut s, seen) = fake_node(vec![503, 429, 503]).await;
+        s.buf = b"{\"doc_id\":\"a\"}\n".to_vec();
+        s.send("auto").await.unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert!(seen.iter().all(|b| b == b"{\"doc_id\":\"a\"}\n"));
+    }
+
+    #[tokio::test]
+    async fn ingest_gives_up_after_the_retry_window() {
+        let (mut s, _) = fake_node(vec![503; 1000]).await;
+        s.retry_for = Duration::from_millis(50);
+        s.buf = b"{}\n".to_vec();
+        let err = s.send("auto").await.unwrap_err().to_string();
+        assert!(err.contains("503"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn other_ingest_errors_are_not_retried() {
+        let (mut s, seen) = fake_node(vec![400]).await;
+        s.buf = b"{}\n".to_vec();
+        let err = s.send("auto").await.unwrap_err().to_string();
+        assert!(err.contains("400"), "{err}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 }
