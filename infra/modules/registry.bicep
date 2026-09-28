@@ -28,7 +28,8 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   tags: tags
   sku: { name: 'Basic' }
   properties: {
-    // No admin user; anonymous pull is off by default (and needs Standard).
+    // Entra only (ADR-0009): no admin user. Anonymous pull needs Standard
+    // or Premium, so Basic can't turn it on.
     adminUserEnabled: false
     publicNetworkAccess: 'Enabled'
   }

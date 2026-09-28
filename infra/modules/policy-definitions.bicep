@@ -143,4 +143,61 @@ resource auditDiagnostics 'Microsoft.Authorization/policyDefinitions@2023-04-01'
   }
 }
 
-output ids array = [noIaas.id, noSharedKey.id, noCosmosKeys.id, auditPublicAccess.id, auditDiagnostics.id]
+// ADR-0009: nothing accepts a shared key. The aliases match the built-in
+// "should block non-Azure Active Directory based ingestion" and "local admin
+// account disabled" policies.
+resource noMonitorKeys 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
+  name: 'usnm-deny-monitor-local-auth'
+  properties: {
+    displayName: 'US News Map: Log Analytics and Application Insights must disable local (key) auth'
+    policyType: 'Custom'
+    mode: 'Indexed'
+    policyRule: {
+      if: {
+        anyOf: [
+          {
+            allOf: [
+              { field: 'type', equals: 'Microsoft.OperationalInsights/workspaces' }
+              { field: 'Microsoft.OperationalInsights/workspaces/features.disableLocalAuth', notEquals: 'true' }
+            ]
+          }
+          {
+            allOf: [
+              { field: 'type', equals: 'Microsoft.Insights/components' }
+              { field: 'Microsoft.Insights/components/DisableLocalAuth', notEquals: 'true' }
+            ]
+          }
+        ]
+      }
+      then: { effect: 'deny' }
+    }
+  }
+}
+
+resource noRegistryAdmin 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
+  name: 'usnm-deny-registry-admin-user'
+  properties: {
+    displayName: 'US News Map: container registries must disable the admin user'
+    policyType: 'Custom'
+    mode: 'Indexed'
+    policyRule: {
+      if: {
+        allOf: [
+          { field: 'type', equals: 'Microsoft.ContainerRegistry/registries' }
+          { field: 'Microsoft.ContainerRegistry/registries/adminUserEnabled', equals: true }
+        ]
+      }
+      then: { effect: 'deny' }
+    }
+  }
+}
+
+output ids array = [
+  noIaas.id
+  noSharedKey.id
+  noCosmosKeys.id
+  auditPublicAccess.id
+  auditDiagnostics.id
+  noMonitorKeys.id
+  noRegistryAdmin.id
+]
