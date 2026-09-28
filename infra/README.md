@@ -105,7 +105,7 @@ Everything is one **deployment stack** at subscription scope, `usnm-<env>` ([ADR
 - **Nothing the stack manages can be deleted outside it.** `--deny-settings-mode denyDelete` puts a deny assignment on every managed resource, the resource groups included, that blocks deletes by anyone, Owners too. Changes still go through the stack. To delete by hand in an emergency, deploy once with `--deny-settings-mode none`.
 - Resources the template doesn't declare (the certificates bootstrap binds, anything made in the portal) aren't managed: the stack neither protects nor deletes them.
 - The guard-rail policy definitions every environment in the subscription assigns (`infra/guardrails.bicep`) are a stack of their own, `usnm-guardrails`, deployed just before the environment's. Two stacks never manage the same resource.
-- `scripts/teardown.sh <env>` deletes an environment: its resource groups, its custom role, the guard-rail stack (`usnm-guardrails`, the policy definitions) when no other environment in the subscription uses it, and its GitHub Environment. It asks for the name first.
+- `scripts/teardown.sh <env>` deletes an environment: its resource groups, its custom role, the guard-rail stack (`usnm-guardrails`, the policy definitions) when no other environment in the subscription uses it, and its GitHub Environment. It asks for the name first, and works in the environment's recorded subscription. `--subscription OLD` removes only the Azure copy left in an old subscription after a move.
 
 ## Web app
 

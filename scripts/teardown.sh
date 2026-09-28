@@ -7,6 +7,12 @@
 #
 #   scripts/teardown.sh <env> [--subscription ID] [--repo OWNER/NAME]
 #
+# The subscription defaults to the environment's own (from its settings).
+# Passing another --subscription removes the copy left there after a move:
+# only its Azure resources, since the GitHub Environment, the deploy list
+# and the settings belong to the live copy. Don't run bootstrap for the same
+# environment while this runs.
+#
 # Needs: az 2.61+ and gh, signed in, Owner on the subscription and admin on
 # the repository. Asks for the environment's name before deleting anything.
 set -euo pipefail
@@ -28,8 +34,17 @@ cd "$(dirname "$0")/.."
 . scripts/lib/env.sh
 
 az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
-[ -n "$SUBSCRIPTION" ] && az account set --subscription "$SUBSCRIPTION"
+# The environment's recorded subscription, unless another is named.
+recorded=$(aget AZURE_SUBSCRIPTION_ID)
+[ -n "$SUBSCRIPTION" ] || SUBSCRIPTION=$recorded
+if [ -n "$SUBSCRIPTION" ]; then
+  az account set --subscription "$SUBSCRIPTION" ||
+    die "can't select subscription $SUBSCRIPTION (az login to its tenant?)"
+fi
 SUBSCRIPTION=$(az account show --query id -o tsv)
+# Another subscription than the recorded one: an old copy after a move.
+old_copy=false
+[ -z "$recorded" ] || [ "${SUBSCRIPTION,,}" = "${recorded,,}" ] || old_copy=true
 gh auth status > /dev/null 2>&1 || die "run: gh auth login"
 # The repository whose workflows deploy this environment: the one bootstrap
 # recorded. --repo, or the checkout's own, must be the same one.
@@ -58,41 +73,58 @@ if [ "$guardrails" = true ]; then
 elif [ -n "$others" ]; then
   echo "  (the guard-rail stack $GUARDRAILS_STACK stays: other environments use it: $others)"
 fi
-echo "and the GitHub Environment $ENV_NAME in $REPO."
+if [ "$old_copy" = true ]; then
+  echo "This is an old copy: $ENV_NAME now lives in subscription $recorded, whose"
+  echo "GitHub Environment, deploy list entry and settings stay as they are."
+else
+  echo "and the GitHub Environment $ENV_NAME in $REPO."
+fi
 read -r -p "Type the environment name to confirm: " answer
 [ "$answer" = "$ENV_NAME" ] || die "not confirmed"
 
-# First stop the workflows deploying to it, so no new rollout targets what's
-# being deleted.
-# Unset is fine (nothing deploys anywhere); any other error stops teardown.
-if ! envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2>&1); then
-  grep -qiE 'not found|HTTP 404' <<< "$envs" ||
-    die "can't read USNM_DEPLOY_ENVIRONMENTS in $REPO: $envs"
-  envs=""
-fi
-if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
-  names=$(tr -d '[]" ' <<< "$envs" | tr ',' '\n' | grep -vx "$ENV_NAME" | grep -v '^$' || true)
-  envs="[$(sed 's/.*/"&"/' <<< "$names" | paste -sd, -)]"
-  [ "$envs" = '[""]' ] && envs='[]'
-  gh variable set USNM_DEPLOY_ENVIRONMENTS -R "$REPO" --body "$envs"
-fi
-# A run that already started, or was queued, still holds the old list; wait
-# until none is left.
-# total_count covers every matching run, however many there are.
-unfinished() {
-  local s n total=0
-  for s in requested queued waiting pending in_progress; do
-    n=$(gh api "repos/$REPO/actions/runs?status=$s&per_page=1" -q .total_count) || return 1
-    total=$((total + n))
+# The GitHub side belongs to the live copy; an old copy skips it.
+if [ "$old_copy" = false ]; then
+  # First stop the workflows deploying to it, so no new rollout targets what's
+  # being deleted.
+  # Unset is fine (nothing deploys anywhere); any other error stops teardown.
+  if ! envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2>&1); then
+    grep -qiE 'not found|HTTP 404' <<< "$envs" ||
+      die "can't read USNM_DEPLOY_ENVIRONMENTS in $REPO: $envs"
+    envs=""
+  fi
+  if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
+    names=$(tr -d '[]" ' <<< "$envs" | tr ',' '\n' | grep -vx "$ENV_NAME" | grep -v '^$' || true)
+    envs="[$(sed 's/.*/"&"/' <<< "$names" | paste -sd, -)]"
+    [ "$envs" = '[""]' ] && envs='[]'
+    gh variable set USNM_DEPLOY_ENVIRONMENTS -R "$REPO" --body "$envs"
+  fi
+  # A run that already started, or was queued, still holds the old list; wait
+  # until none is left.
+  # total_count covers every matching run, however many there are.
+  unfinished() {
+    local s n total=0
+    for s in requested queued waiting pending in_progress; do
+      n=$(gh api "repos/$REPO/actions/runs?status=$s&per_page=1" -q .total_count) || return 1
+      total=$((total + n))
+    done
+    echo "$total"
+  }
+  while :; do
+    runs=$(unfinished) || die "can't list workflow runs in $REPO"
+    [ "$runs" -gt 0 ] || break
+    echo "waiting for queued and running workflows in $REPO to finish"
+    sleep 30
   done
-  echo "$total"
-}
-while :; do
-  runs=$(unfinished) || die "can't list workflow runs in $REPO"
-  [ "$runs" -gt 0 ] || break
-  echo "waiting for queued and running workflows in $REPO to finish"
-  sleep 30
-done
+
+  # Last check before anything is deleted: stop if a bootstrap put the
+  # environment back on the deploy list while this waited.
+  now=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2>&1) ||
+    grep -qiE 'not found|HTTP 404' <<< "$now" ||
+    die "can't read USNM_DEPLOY_ENVIRONMENTS in $REPO: $now"
+  if grep -q "\"$ENV_NAME\"" <<< "$now"; then
+    die "$ENV_NAME is on USNM_DEPLOY_ENVIRONMENTS again (a bootstrap ran meanwhile?); nothing deleted"
+  fi
+fi
 
 # Detach, then delete explicitly: the stack's deleteAll would stop at a
 # resource group that also holds something it doesn't manage.
@@ -116,6 +148,11 @@ if [ "$guardrails" = true ]; then
 fi
 if [ "$guardrails" = true ]; then
   az stack sub delete -n "$GUARDRAILS_STACK" --action-on-unmanage deleteAll --yes --only-show-errors
+fi
+
+if [ "$old_copy" = true ]; then
+  echo "deleted the old copy of $ENV_NAME from subscription $SUBSCRIPTION"
+  exit 0
 fi
 
 # Already gone is fine; anything else is an error to see.
