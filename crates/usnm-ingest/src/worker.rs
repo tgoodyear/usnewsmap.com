@@ -175,8 +175,13 @@ impl Worker {
 
     /// Curate the claimed version of `b` into a new attempt path.
     pub async fn curate(&self, b: &Batch) -> anyhow::Result<Curated> {
-        // One request per slot: a failed attempt is retried later, paced.
-        let download = source::open_once(&b.source_url).await?;
+        // Paced: one request per slot, and a failed attempt is retried later
+        // through the pacer. Unpaced: retry server errors straight away.
+        let download = if self.fetch_interval.is_some() {
+            source::open_once(&b.source_url).await?
+        } else {
+            source::open(&b.source_url).await?
+        };
         // Unique per claim: the attempt count rises with every claim of this
         // version, and the sub-second time separates re-queued runs.
         let attempt = format!(
