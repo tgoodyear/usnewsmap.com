@@ -89,7 +89,7 @@ enum Command {
         /// Seconds between bulk downloads across every worker (LoC allows 10
         /// per 10 minutes per IP); 0 doesn't pace.
         #[arg(long, default_value_t = worker::FETCH_INTERVAL_SECS)]
-        fetch_interval_secs: u64,
+        fetch_interval_secs: u32,
     },
     /// Build a new index and reference snapshot from curated batches, then publish.
     Release {
@@ -215,7 +215,7 @@ async fn curate(
     cli: &Stores,
     state: &State,
     max: Option<usize>,
-    fetch_interval_secs: u64,
+    fetch_interval_secs: u32,
 ) -> anyhow::Result<()> {
     let worker = Worker {
         state: state.clone(),
@@ -223,7 +223,7 @@ async fn curate(
         owner: owner_id(),
         lease: chrono::Duration::hours(2),
         fetch_interval: (fetch_interval_secs > 0)
-            .then_some(chrono::Duration::seconds(fetch_interval_secs as i64)),
+            .then_some(chrono::Duration::seconds(i64::from(fetch_interval_secs))),
     };
     let n = worker.run(max).await?;
     tracing::info!(curated = n, "curation finished");

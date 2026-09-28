@@ -284,12 +284,21 @@ impl State {
         for _ in 0..20 {
             let now = Utc::now();
             let held = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await?;
-            let slot = pacer_next(held.as_ref()).map_or(now, |n| n.max(now));
-            if self.set_pacer(held.as_ref(), slot + interval).await? {
+            let (next, blocked) = pacer(held.as_ref());
+            let slot = next.map_or(now, |n| n.max(now));
+            if self.set_pacer(held.as_ref(), slot + interval, blocked).await? {
                 return Ok(slot);
             }
         }
         bail!("the download pacer kept changing concurrently")
+    }
+
+    /// When the recorded block lifts, while one is in force. A slot reserved
+    /// before the block was recorded is void: its holder checks this after
+    /// waiting and reserves again.
+    pub async fn fetches_blocked_until(&self) -> anyhow::Result<Option<DateTime<Utc>>> {
+        let held = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await?;
+        Ok(pacer(held.as_ref()).1.filter(|u| *u > Utc::now()))
     }
 
     /// Hold every worker's bulk downloads until `until`: LoC blocks an IP for
@@ -297,23 +306,29 @@ impl State {
     pub async fn block_fetches(&self, until: DateTime<Utc>) -> anyhow::Result<()> {
         for _ in 0..20 {
             let held = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await?;
-            if pacer_next(held.as_ref()).is_some_and(|n| n >= until) {
+            let (next, blocked) = pacer(held.as_ref());
+            if blocked.is_some_and(|b| b >= until) {
                 return Ok(());
             }
-            if self.set_pacer(held.as_ref(), until).await? {
+            let next = next.map_or(until, |n| n.max(until));
+            if self.set_pacer(held.as_ref(), next, Some(until)).await? {
                 return Ok(());
             }
         }
         bail!("the download pacer kept changing concurrently")
     }
 
-    /// Point the pacer at `next`, if it hasn't changed since `held` was read.
+    /// Write the pacer, if it hasn't changed since `held` was read.
     async fn set_pacer(
         &self,
         held: Option<&Versioned>,
         next: DateTime<Utc>,
+        blocked_until: Option<DateTime<Utc>>,
     ) -> anyhow::Result<bool> {
-        let doc = serde_json::json!({ "id": FETCH_PACER, "kind": FETCH_PACER, "next": next });
+        let doc = serde_json::json!({
+            "id": FETCH_PACER, "kind": FETCH_PACER, "next": next,
+            "blocked_until": blocked_until,
+        });
         Ok(match held {
             Some(h) => self.docs.replace(OPS, FETCH_PACER, &doc, &h.etag).await?,
             None => self.docs.create(OPS, FETCH_PACER, &doc).await?,
@@ -334,8 +349,12 @@ impl State {
     }
 }
 
-fn pacer_next(held: Option<&Versioned>) -> Option<DateTime<Utc>> {
-    held.and_then(|h| serde_json::from_value(h.doc["next"].clone()).ok())
+/// The pacer's next free slot and the end of its recorded block, if any.
+fn pacer(held: Option<&Versioned>) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+    let at = |field: &str| -> Option<DateTime<Utc>> {
+        held.and_then(|h| serde_json::from_value(h.doc[field].clone()).ok())
+    };
+    (at("next"), at("blocked_until"))
 }
 
 #[cfg(test)]
@@ -366,7 +385,23 @@ mod tests {
         s.block_fetches(until).await.unwrap();
         // An earlier block never shortens a later one.
         s.block_fetches(Utc::now()).await.unwrap();
-        assert_eq!(s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap(), until);
+        assert_eq!(
+            s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap(),
+            until
+        );
+    }
+
+    #[tokio::test]
+    async fn a_block_after_a_reservation_is_seen_by_its_holder() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        assert!(s.fetches_blocked_until().await.unwrap().is_none());
+        s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap();
+        let until = Utc::now() + Duration::hours(1);
+        s.block_fetches(until).await.unwrap();
+        assert_eq!(s.fetches_blocked_until().await.unwrap(), Some(until));
+        // Reserving keeps the block on record.
+        s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap();
+        assert_eq!(s.fetches_blocked_until().await.unwrap(), Some(until));
     }
 
     #[tokio::test]
