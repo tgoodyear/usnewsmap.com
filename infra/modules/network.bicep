@@ -65,6 +65,7 @@ resource links 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01
 ]
 
 output vnetId string = vnet.id
+output vnetName string = vnet.name
 output caeSubnetId string = '${vnet.id}/subnets/snet-cae'
 output peSubnetId string = '${vnet.id}/subnets/snet-pe'
 output blobDnsZoneId string = zones[0].id

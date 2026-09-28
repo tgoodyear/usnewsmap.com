@@ -1,10 +1,10 @@
 {
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": ["/assets/*", "/*.{svg,png,ico,json,txt}"]
+    "exclude": ["/assets/*", "/*.{svg,png,ico,json,txt}", "/loc_api/*"]
   },
   "routes": [
-    { "route": "/loc_api/*", "rewrite": "/gone.html", "statusCode": 410 },
+    { "route": "/loc_api/*", "statusCode": 410 },
     { "route": "/assets/*", "headers": { "Cache-Control": "public, max-age=31536000, immutable" } }
   ],
   "globalHeaders": {

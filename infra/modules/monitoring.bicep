@@ -19,6 +19,8 @@ resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
     sku: { name: 'PerGB2018' }
     retentionInDays: 30
     workspaceCapping: { dailyQuotaGb: json(dailyCapGb) }
+    // Entra only (ADR-0009): no ingestion or queries with the workspace keys.
+    features: { disableLocalAuth: true }
   }
 }
 
@@ -31,6 +33,9 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
     Application_Type: 'web'
     WorkspaceResourceId: workspace.id
     DisableIpMasking: false
+    // Entra only (ADR-0009): telemetry must be sent with a managed identity
+    // (Monitoring Metrics Publisher), not the instrumentation key.
+    DisableLocalAuth: true
   }
 }
 

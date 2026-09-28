@@ -161,7 +161,7 @@ sequenceDiagram
 | Unit of retrieval | **Page** at launch (matches LoC URLs and the legacy); article level later (American Stories) | [04](04-data-sources-and-ingestion.md) |
 | Geography | Place = title's place of publication (point), resolved from LoC metadata and GNIS; state and county from the same source | [04](04-data-sources-and-ingestion.md) |
 | Cache invalidation | `index_version` is included in every ETag and cache key (browser, in-process, Blob `cache/{index_version}/`); a new index version means new URLs and a new cache prefix | [06](06-api-design.md) |
-| Identity | Managed identities everywhere; keys disabled by policy; no connection strings in app config | [08](08-azure-infrastructure.md) |
+| Identity | Entra identities and RBAC only: managed identities for workloads, OIDC federation for CI; local (key) auth off on every service and denied by policy; no shared keys, SAS or connection strings anywhere (one open exception: the SWA deploy token) | [0009](adr/0009-entra-identity-only.md) |
 | Private networking | VNet-integrated Container Apps env; private endpoints for Blob and Cosmos; public access disabled except during a guarded Spot-backfill window | [0008](adr/0008-private-networking.md) |
 
 ## 3.6 Repository layout (proposed for `usnewsmap.com`)

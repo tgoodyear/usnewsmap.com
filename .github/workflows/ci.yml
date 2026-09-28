@@ -101,6 +101,8 @@ jobs:
         run: scripts/ci/install-bicep.sh
       - name: Lint (any warning fails)
         run: scripts/ci/lint-bicep.sh
+      - name: No shared-key authentication (ADR-0009)
+        run: scripts/ci/no-shared-keys.sh
       - run: bicep build infra/main.bicep --stdout > /dev/null
 
   web:

@@ -12,3 +12,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0006](0006-lean-hosting-profile.md) | Lean hosting profile under $80/month: no Front Door, SWA Free, single container app, Spot ingest | Accepted |
 | [0007](0007-cosmos-document-state.md) | Cosmos DB (free tier) for document state (per LCCN, batch, issue, index run) | Accepted |
 | [0008](0008-private-networking.md) | Private networking: VNet-integrated env, private endpoints for Blob + Cosmos, guarded public window for Spot backfills | Accepted |
+| [0009](0009-entra-identity-only.md) | Entra identity only: RBAC for every caller, local (key) auth off everywhere, no shared keys or SAS | Accepted (SWA deploy token open) |

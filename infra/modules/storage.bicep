@@ -4,7 +4,6 @@
 param location string
 param tags object
 param name string
-param workspaceId string
 
 @description('Blob containers. Access is granted per container in rbac.bicep.')
 var containers = ['curated', 'reference', 'cache', 'qw-index']
@@ -96,19 +95,6 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
         }
       ]
     }
-  }
-}
-
-// Data-plane audit trail (08 §8.3).
-resource blobDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
-  scope: blobService
-  name: 'to-log-analytics'
-  properties: {
-    workspaceId: workspaceId
-    logs: [
-      { category: 'StorageWrite', enabled: true }
-      { category: 'StorageDelete', enabled: true }
-    ]
   }
 }
 

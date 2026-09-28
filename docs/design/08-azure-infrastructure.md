@@ -18,13 +18,38 @@ One subscription (ideally owned by a sponsoring institution), one region: **East
 | **Storage account** `stusnmdata` | StorageV2, **flat namespace (HNS off)** so that **blob versioning** and soft delete are available (neither is supported on HNS/ADLS Gen2 accounts); **LRS**; `qw-index/`, `reference/` and `cache/` in **Hot**; `curated/` in **Cool**; versioning + blob soft delete (14 d) on `curated/` and `reference/`; **raw archives not retained**. Parquet readers (DataFusion/`object_store`) and Quickwit use the Blob API and don't need HNS | Data lake, index splits, persistent response cache. **`publicNetworkAccess: Disabled`** in steady state (private endpoint only) |
 | **Cosmos DB account** `cosmos-usnm` | NoSQL API, **free tier** (enable at creation; one per subscription), provisioned 1,000 RU/s shared database `usnm`, `disableLocalAuth: true`, **`publicNetworkAccess: Disabled`** in steady state, continuous backup (7-day) | Document state and the ingest work queue ([ADR-0007](adr/0007-cosmos-document-state.md)) |
 | **Storage account** `stusnmtiles` | StorageV2, LRS, one container with anonymous read (non-sensitive public map data), CORS for the site | PMTiles basemap, read with HTTP range requests (kept off SWA to stay under its 250 MB app-size and 100 GB bandwidth limits) |
-| **Log Analytics** `log-usnm` + **Application Insights** `appi-usnm` | Pay-as-you-go with a **daily cap** (≈150 MB/day) so ingestion stays within the free 5 GB/month; 30-day retention | Telemetry |
+| **Log Analytics** `log-usnm` + **Application Insights** `appi-usnm` | Pay-as-you-go with a **daily cap** (≈150 MB/day) so ingestion stays within the free 5 GB/month; 30-day retention; local (key) auth disabled on both (ADR-0009) | Telemetry |
 | **Azure DNS** zone `usnewsmap.com` | – | Apex alias to SWA, `api` CNAME to the container app, validation records |
 | **Action Group** + **Budget** | – | Alerts; cost budget at $40/$60/$75 |
 | Container Registry `crusnm{env}{suffix}` | **Basic** (~$5/mo); no admin user, no anonymous pull | Private images: the API, ingest and a digest-pinned copy of Quickwit. Pulled with the app and ingest identities (`AcrPull`); pushed only by CI on `main` (`AcrPush`, §8.2) |
 | *(not used in lean)* Front Door, Key Vault, AI Search | – | Growth profile only; each is a Bicep parameter switch |
 
 Container images are **private**, in ACR Basic. CI on `main` signs in to Azure with OIDC as `id-usnm-ci-{env}` (a user-assigned identity whose federated credential trusts only this repository's GitHub Environment `{env}`, which only `main` may use; no stored secret) and pushes the API and ingest images tagged `main` and the commit sha. It also copies Quickwit v0.9.1 in by digest, so deployments don't depend on Docker Hub. The container app and jobs pull with their managed identities. A new environment has no API until CI has pushed; `scripts/bootstrap.sh` sequences that (§8.9).
+
+### 8.1.1 Resource logs and maintenance windows
+
+**Every resource with resource logs sends them to `log-usnm`** through a diagnostic setting, all declared in one module, [`infra/modules/diagnostics.bicep`](../../infra/modules/diagnostics.bicep). An audit policy (§8.5) flags any resource of those types that lacks one.
+
+| Resource | Categories |
+|---|---|
+| Log Analytics, Container Registry, VNet; storage queue, table and file services | All (`allLogs`) |
+| Container Apps environment | `ContainerAppConsoleLogs`, `ContainerAppSystemLogs`. The environment's `appLogsConfiguration` is `azure-monitor`, so app and job logs arrive through this setting rather than the workspace's shared key |
+| Cosmos DB | `ControlPlaneRequests`, `PartitionKeyStatistics` |
+| Blob service (data and tiles accounts) | `StorageWrite`, `StorageDelete` |
+
+- **Per-request categories are left out** because they would consume the ≈150 MB/day cap: blob reads (public tile fetches, and Quickwit's split reads on every search), Cosmos `DataPlaneRequests` and the per-query statistics (every ingest write), and Container Apps HTTP logs (Application Insights already samples requests). Writes, deletes and control-plane changes are the audit trail.
+- **Also left out:**
+  - Application Insights is workspace-based, so its telemetry is already in `log-usnm`. Its resource logs would store every row twice.
+  - For the Static Web App, Azure lists log categories, but diagnostic settings aren't offered for Static Web Apps in practice ([Azure/static-web-apps#1295](https://github.com/Azure/static-web-apps/issues/1295)).
+  - Metrics-only resources (DNS zones, private endpoints, Container Apps and jobs) have no logs. Azure Monitor keeps their platform metrics for 93 days at no cost.
+- **Retention** is the workspace's 30 days. Tables can go as low as 4 days, but 31 days are included in the ingestion price, so a 14-day limit would save nothing.
+- **Bicep writes the settings, not a `deployIfNotExists` policy.** Every resource here is created by the template, and nothing is created at runtime. The template can choose categories per resource, while the built-in policy initiatives enable whole category groups (`allLogs`/`audit`), which include the per-request logs above. Remediation would also need a policy identity with role-assignment rights, and it lags creation by minutes. The policy is therefore audit-only: it catches drift without writing anything.
+
+**Maintenance windows: none apply to this stack.**
+
+- Customer-scheduled maintenance (Maintenance Configurations) covers VMs and dedicated hosts, Azure SQL, and some network gateways. None of Cosmos DB, Storage, Container Registry, Static Web Apps, Log Analytics or DNS offers one.
+- Container Apps has *planned maintenance* for an environment, but only for apps on Dedicated workload profiles. This environment is Consumption-only. The feature is also billed on the Dedicated Plan Management meter (about $0.10/hour, ≈ $73/month), which alone is most of the $80 budget.
+- If the environment ever moves to a Dedicated profile, add `Microsoft.App/managedEnvironments/maintenanceConfigurations` (`default`), with `startHourUtc: 7` and `durationHours: 8` on the chosen weekday. The start hour is UTC only: 7 is 3 am Eastern in summer (EDT) and 2 am in winter (EST).
 
 ## 8.2 Identity and access (managed identities everywhere)
 
@@ -39,9 +64,9 @@ Container images are **private**, in ACR Basic. CI on `main` signs in to Azure w
 | Infrastructure changes (`azd provision`, via `scripts/bootstrap.sh`) | The operator's own sign-in | `Owner` on the subscription (role assignments, policy definitions). CI never provisions, so no identity with role-assignment rights exists outside a person's session |
 | Maintainers | Entra users / group `grp-usnm-maintainers` | `Reader` by default; **PIM just-in-time** `Contributor` where the tenant licensing allows it. Data-plane inspection (Cosmos queries, blob listing) runs through the `usnm-ingest admin …` CLI as an on-demand Container Apps Job inside the VNet, because the portal's Data Explorer can't reach the private endpoints from the internet |
 
-There are no storage account keys or SAS tokens in app config: `allowSharedKeyAccess=false` on the data account.
+**No shared keys anywhere ([ADR-0009](adr/0009-entra-identity-only.md)).** Every caller is an Entra identity authorized by RBAC. Local (key) auth is off on every service that has the switch, and policy denies turning it back on: storage (`allowSharedKeyAccess: false`, both accounts), Cosmos (`disableLocalAuth`), Log Analytics (`features.disableLocalAuth`), Application Insights (`DisableLocalAuth`) and the registry (no admin user, no anonymous pull). The Container Apps environment sends logs through a diagnostic setting, not the workspace key. `scripts/ci/no-shared-keys.sh` fails CI on any key pattern. The one open exception is the Static Web App's deployment token (ADR-0009).
 
-**How the Quickwit sidecar authenticates (S-2).** From 0.9.0, when no access key is configured, Quickwit authenticates to Blob with the Azure SDK's default credential chain (`azure_identity` 0.21). In Container Apps that chain reaches the managed identity endpoint through its App Service credential. That credential asks for the **system-assigned** identity and ignores `AZURE_CLIENT_ID`, so it can't select `id-usnm-app`. The app therefore also has a system-assigned identity, used only by the sidecar and granted `Storage Blob Data Reader` on `qw-index/` alone. The `api` container keeps using `id-usnm-app`. This follows from the 0.9.1 source; it's confirmed against a real account on the first `quickwit` deployment (below). If it fails, the fallback is unchanged: a short-lived **user-delegation SAS** minted by the `api` container and passed to Quickwit over localhost, never an account key.
+**How the Quickwit sidecar authenticates (S-2).** From 0.9.0, when no access key is configured, Quickwit authenticates to Blob with the Azure SDK's default credential chain (`azure_identity` 0.21). In Container Apps that chain reaches the managed identity endpoint through its App Service credential. That credential asks for the **system-assigned** identity and ignores `AZURE_CLIENT_ID`, so it can't select `id-usnm-app`. The app therefore also has a system-assigned identity, used only by the sidecar and granted `Storage Blob Data Reader` on `qw-index/` alone. The `api` container keeps using `id-usnm-app`. This follows from the 0.9.1 source; it's confirmed against a real account on the first `quickwit` deployment (below). If it fails, the fallback is a localhost proxy in the `api` container that adds `id-usnm-app`'s bearer token to Quickwit's Blob requests. SAS of any kind, user-delegation included, is ruled out by ADR-0009.
 
 ## 8.3 Networking
 
@@ -126,7 +151,7 @@ S-2 checked this on Quickwit 0.9.1 with a file-backed metastore: a searcher-only
 - Modules: `network` (VNet, subnets, private endpoints, private DNS zones), `staticwebapp`, `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `cosmos`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
 - **Parameters per environment**: `dev` (scale to zero, LRS, small sample corpus of ~1M pages), `prod`.
 - Lint with `bicep lint` plus PSRule for Azure in CI; `what-if` output posted to the PR for any change under `infra/`.
-- Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings, allowed locations, and a built-in **"Not allowed resource types"** assignment that blocks `Microsoft.Compute/virtualMachines`, `virtualMachineScaleSets`, `Microsoft.ContainerService/managedClusters` and `Microsoft.Batch/batchAccounts` on the project resource groups, so VMs can't creep in. Also: **deny** `allowSharedKeyAccess != false` on storage, **deny** `disableLocalAuth != true` on Cosmos, and **audit** `publicNetworkAccess != Disabled` (the guard job remediates it outside an open window).
+- Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings (**as built:** `usnm-audit-diagnostic-settings`, `auditIfNotExists` on every resource type with resource logs, §8.1.1), allowed locations, and a built-in **"Not allowed resource types"** assignment that blocks `Microsoft.Compute/virtualMachines`, `virtualMachineScaleSets`, `Microsoft.ContainerService/managedClusters` and `Microsoft.Batch/batchAccounts` on the project resource groups, so VMs can't creep in. Also: **deny** `allowSharedKeyAccess != false` on storage, **deny** `disableLocalAuth != true` on Cosmos, and **audit** `publicNetworkAccess != Disabled` (the guard job remediates it outside an open window).
 
 ## 8.6 CI/CD (GitHub Actions)
 
@@ -162,7 +187,7 @@ flowchart LR
 
 - Move the `usnewsmap.com` registration to an account the project controls, with auto-renew and at least 2 admins. This was one of the legacy single points of failure.
 - Host DNS in **Azure DNS**: apex `usnewsmap.com` as an alias record to the Static Web App, `www` → apex redirect, and `api` as a CNAME to the container app with its domain-verification TXT record. Add `CAA` records for the CAs that the SWA and Container Apps managed certificates use. **As built:** the zone is `infra/modules/dns.bicep`; `scripts/bootstrap.sh` binds the apex and `www` to the Static Web App (TXT and CNAME validation) and issues the `api` managed certificate once the delegation is live, recording it so Bicep keeps the binding (§8.9).
-- Keep `/loc_api/*` returning **410 Gone** (an SWA route rule) with a link to the new API docs (old clients may still call it), and redirect legacy query URLs where they can be mapped.
+- Keep `/loc_api/*` returning **410 Gone** (an SWA route rule, excluded from the SPA fallback; SWA can't attach a custom page to a 410) so old clients stop calling it, and redirect legacy query URLs where they can be mapped.
 
 ## 8.9 Portability: redeploying into another subscription or tenant
 
