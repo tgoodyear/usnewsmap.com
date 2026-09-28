@@ -143,13 +143,18 @@ if [ "$stack" = true ]; then
   az stack sub delete -n "$STACK" --action-on-unmanage detachAll --yes --only-show-errors
 fi
 # Each step skips what an earlier, interrupted run already deleted.
+# A lookup that fails for any other reason than "not found" stops here.
 for g in $groups; do
-  [ "$(az group exists -n "$g")" = true ] || continue
+  exists=$(az group exists -n "$g") || die "can't check resource group $g"
+  [ "$exists" = true ] || continue
   echo "deleting resource group $g"
   az group delete -n "$g" --yes -o none
 done
 for id in $roles; do
-  az resource show --ids "$id" -o none 2> /dev/null || continue
+  if ! out=$(az resource show --ids "$id" -o none 2>&1); then
+    grep -qiE 'NotFound|could not be found' <<< "$out" || die "can't check $id: $out"
+    continue
+  fi
   az resource delete --ids "$id" -o none
 done
 # The assignments went with the resource groups, so nothing uses the
@@ -168,8 +173,8 @@ if [ "$guardrails" = true ]; then
   az stack sub delete -n "$GUARDRAILS_STACK" --action-on-unmanage deleteAll --yes --only-show-errors
 fi
 
-rm -f "$resume"
 if [ "$old_copy" = true ]; then
+  rm -f "$resume"
   echo "deleted the old copy of $ENV_NAME from subscription $SUBSCRIPTION"
   exit 0
 fi
@@ -178,6 +183,8 @@ fi
 if ! out=$(gh api -X DELETE "repos/$REPO/environments/$ENV_NAME" 2>&1); then
   grep -q 'HTTP 404' <<< "$out" || die "deleting the GitHub Environment $ENV_NAME: $out"
 fi
+# Only now is everything gone; until here a re-run resumes from the list.
+rm -f "$resume"
 
 if [ -f "$ENV_FILE" ]; then mv "$ENV_FILE" "$ENV_FILE.deleted-$(date -u +%Y%m%dT%H%M%SZ)"; fi
 echo "deleted environment $ENV_NAME"

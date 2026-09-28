@@ -24,7 +24,8 @@ valid_key() {
 }
 # Read one setting (empty when unset).
 # shellcheck source=/dev/null
-aget() { valid_key "$1"; (set +u; set -a; [ ! -f "$ENV_FILE" ] || . "$ENV_FILE"; printf '%s\n' "${!1:-}"); }
+# Only the file counts: the caller's variable of the same name is cleared.
+aget() { valid_key "$1"; (set +u; unset "$1"; set -a; [ ! -f "$ENV_FILE" ] || . "$ENV_FILE"; printf '%s\n' "${!1:-}"); }
 # Write one setting, quoted so the file can be sourced.
 aset() {
   valid_key "$1"
