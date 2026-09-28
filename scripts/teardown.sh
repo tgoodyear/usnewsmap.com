@@ -34,17 +34,18 @@ cd "$(dirname "$0")/.."
 . scripts/lib/env.sh
 
 az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
-# The environment's recorded subscription, unless another is named.
+# The environment's recorded subscription, unless another is named. Without
+# a record there's no telling the live copy from an old one: stop.
 recorded=$(aget AZURE_SUBSCRIPTION_ID)
+[ -n "$recorded" ] ||
+  die "no AZURE_SUBSCRIPTION_ID in $ENV_FILE; can't tell which subscription holds $ENV_NAME"
 [ -n "$SUBSCRIPTION" ] || SUBSCRIPTION=$recorded
-if [ -n "$SUBSCRIPTION" ]; then
-  az account set --subscription "$SUBSCRIPTION" ||
-    die "can't select subscription $SUBSCRIPTION (az login to its tenant?)"
-fi
+az account set --subscription "$SUBSCRIPTION" ||
+  die "can't select subscription $SUBSCRIPTION (az login to its tenant?)"
 SUBSCRIPTION=$(az account show --query id -o tsv)
 # Another subscription than the recorded one: an old copy after a move.
 old_copy=false
-[ -z "$recorded" ] || [ "${SUBSCRIPTION,,}" = "${recorded,,}" ] || old_copy=true
+[ "${SUBSCRIPTION,,}" = "${recorded,,}" ] || old_copy=true
 gh auth status > /dev/null 2>&1 || die "run: gh auth login"
 # The repository whose workflows deploy this environment: the one bootstrap
 # recorded. --repo, or the checkout's own, must be the same one.
@@ -52,10 +53,18 @@ configured=$(aget USNM_GITHUB_REPO)
 [ -n "$REPO" ] || REPO=${configured:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
 [ -z "$configured" ] || [ "$REPO" = "$configured" ] ||
   die "environment $ENV_NAME is deployed from $configured, not $REPO"
-az stack sub show -n "$STACK" -o none 2> /dev/null ||
+# What the stack manages, saved before it's detached so an interrupted
+# teardown can be run again and pick up where it stopped.
+resume="$(dirname "$ENV_FILE")/teardown-$SUBSCRIPTION.ids"
+stack=true
+if az stack sub show -n "$STACK" -o none 2> /dev/null; then
+  ids=$(az stack sub show -n "$STACK" --query "resources[].id" -o tsv)
+elif [ -s "$resume" ]; then
+  echo "resuming an interrupted teardown of $ENV_NAME (stack already detached)"
+  ids=$(cat "$resume") stack=false
+else
   die "no deployment stack $STACK in subscription $SUBSCRIPTION"
-
-ids=$(az stack sub show -n "$STACK" --query "resources[].id" -o tsv)
+fi
 groups=$(grep -Ei '^/subscriptions/[^/]+/resourceGroups/[^/]+$' <<< "$ids" | sed 's|.*/||' || true)
 # The environment's custom role outlives its resource group: it's declared
 # in the group but stored with the subscription.
@@ -128,12 +137,21 @@ fi
 
 # Detach, then delete explicitly: the stack's deleteAll would stop at a
 # resource group that also holds something it doesn't manage.
-az stack sub delete -n "$STACK" --action-on-unmanage detachAll --yes --only-show-errors
+mkdir -p "$(dirname "$resume")"
+printf '%s\n' "$ids" > "$resume"
+if [ "$stack" = true ]; then
+  az stack sub delete -n "$STACK" --action-on-unmanage detachAll --yes --only-show-errors
+fi
+# Each step skips what an earlier, interrupted run already deleted.
 for g in $groups; do
+  [ "$(az group exists -n "$g")" = true ] || continue
   echo "deleting resource group $g"
   az group delete -n "$g" --yes -o none
 done
-for id in $roles; do az resource delete --ids "$id" -o none; done
+for id in $roles; do
+  az resource show --ids "$id" -o none 2> /dev/null || continue
+  az resource delete --ids "$id" -o none
+done
 # The assignments went with the resource groups, so nothing uses the
 # definitions any more, unless an environment was created while this ran:
 # check again just before deleting.
@@ -150,6 +168,7 @@ if [ "$guardrails" = true ]; then
   az stack sub delete -n "$GUARDRAILS_STACK" --action-on-unmanage deleteAll --yes --only-show-errors
 fi
 
+rm -f "$resume"
 if [ "$old_copy" = true ]; then
   echo "deleted the old copy of $ENV_NAME from subscription $SUBSCRIPTION"
   exit 0

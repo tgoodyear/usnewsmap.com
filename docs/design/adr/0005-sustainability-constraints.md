@@ -20,4 +20,4 @@ These are **hard constraints** on every design choice:
 ## Consequences
 
 - Some managed-service conveniences (Front Door, Azure AI Search, a larger always-on search node, private networking, zone-redundant storage) are deferred until a sponsor funds them. They are described as the **growth profile** in [09 §9.5](../09-operations-security-cost.md#95-cost-model-monthly-usd-list-prices-confirm-with-the-azure-pricing-calculator). The design keeps each one a configuration switch, not a rewrite.
-- Cost and operability are reviewed in every PR that touches `infra/` (a what-if plus a cost note).
+- Cost and operability are reviewed in every PR that touches `infra/` (a cost note, and the resources the change adds or removes; deployment stacks have no what-if preview, [ADR-0011](0011-deployment-stacks.md)).
