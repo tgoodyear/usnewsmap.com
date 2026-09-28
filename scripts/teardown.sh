@@ -24,13 +24,13 @@ while [ $# -gt 0 ]; do
 done
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
+. scripts/lib/env.sh
 
 az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
 [ -n "$SUBSCRIPTION" ] && az account set --subscription "$SUBSCRIPTION"
 SUBSCRIPTION=$(az account show --query id -o tsv)
 gh auth status > /dev/null 2>&1 || die "run: gh auth login"
 [ -n "$REPO" ] || REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-STACK="usnm-$ENV_NAME"
 az stack sub show -n "$STACK" -o none 2> /dev/null ||
   die "no deployment stack $STACK in subscription $SUBSCRIPTION"
 
@@ -78,6 +78,5 @@ if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
 fi
 gh api -X DELETE "repos/$REPO/environments/$ENV_NAME" > /dev/null 2>&1 || true
 
-settings=".azure/$ENV_NAME/.env"
-[ -f "$settings" ] && mv "$settings" "$settings.deleted-$(date -u +%Y%m%dT%H%M%SZ)"
+if [ -f "$ENV_FILE" ]; then mv "$ENV_FILE" "$ENV_FILE.deleted-$(date -u +%Y%m%dT%H%M%SZ)"; fi
 echo "deleted environment $ENV_NAME"

@@ -12,9 +12,9 @@ set -euo pipefail
 [ $# -ge 1 ] && [ $# -le 3 ] || { sed -n '2,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 cd "$(dirname "$0")/.."
-[ -e ".azure/$ENV_NAME/.env" ] || [ $# -eq 3 ] ||
-  { echo "error: no settings for $ENV_NAME" >&2; exit 1; }
 . scripts/lib/env.sh
+[ -e "$ENV_FILE" ] || [ $# -eq 3 ] ||
+  { echo "error: no settings for $ENV_NAME" >&2; exit 1; }
 case $# in
   1) cat "$ENV_FILE" ;;
   2) aget "$2" ;;
