@@ -19,6 +19,14 @@ const CHUNK_BYTES: usize = 8 * 1024 * 1024;
 /// is 5 MB/s). A single-node writer can't spread load over more shards, so
 /// past the ~50 MiB burst allowance ingest runs at this rate.
 const SHARD_THROUGHPUT_LIMIT: &str = "20MB";
+/// The node's in-memory ingest queue (Quickwit's default is 2 GiB). The first
+/// prod release ran out of memory at 4 GiB with the defaults.
+const INGEST_QUEUE_MEMORY: &str = "1GiB";
+/// The writer's local cache of uploaded splits (Quickwit's default is 100 GiB).
+/// A job replica has ~19.5 GiB of disk: the first prod release filled it,
+/// the ingester closed its shards, and every request got 503 "no shards
+/// available" until the release gave up.
+const SPLIT_STORE_BYTES: &str = "4GiB";
 
 /// How long one ingest request keeps retrying while the node pushes back
 /// (503 "no shards available" once the shard's rate limit is spent, or 429).
@@ -255,6 +263,13 @@ impl IndexSink for QuickwitSink {
     }
 }
 
+/// The last `n` lines of a log file (empty if it can't be read).
+fn log_tail(path: &Path, n: usize) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
 /// A Quickwit indexer node run as a child process for the length of a
 /// release: the one writer of the file-backed metastore.
 pub struct QuickwitNode {
@@ -279,7 +294,9 @@ impl QuickwitNode {
             "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
              metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n\
-             ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n",
+             ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n  \
+             max_queue_memory_usage: {INGEST_QUEUE_MEMORY}\n\
+             indexer:\n  split_store_max_num_bytes: {SPLIT_STORE_BYTES}\n",
             port.checked_add(1)
                 .context("--quickwit-port must be below 65535")?,
             data.display()
@@ -290,7 +307,19 @@ impl QuickwitNode {
         let config_path = work_dir.join("writer.yaml");
         std::fs::write(&config_path, config)?;
         let log = std::fs::File::create(work_dir.join("quickwit-writer.log"))?;
-        let child = tokio::process::Command::new(bin)
+        let mut cmd = tokio::process::Command::new(bin);
+        // Quickwit's environment overrides its config file, and the official
+        // image sets QW_LISTEN_ADDRESS=0.0.0.0, QW_DATA_DIR and QW_CONFIG: the
+        // writer refused to start on it ("listen address `0.0.0.0` is
+        // unspecified"). None is passed through: the storage account is in
+        // the config above, and a QW_AZURE_STORAGE_ACCESS_KEY must never
+        // reach it (ADR-0009, Entra identities only).
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("QW_") {
+                cmd.env_remove(&key);
+            }
+        }
+        let child = cmd
             .args(["run", "--config"])
             .arg(&config_path)
             .env("QW_DISABLE_TELEMETRY", "1")
@@ -303,12 +332,16 @@ impl QuickwitNode {
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("starting {}", bin.display()))?;
-        let node = Self {
+        let mut node = Self {
             child,
             url: format!("http://127.0.0.1:{port}"),
         };
         let http = reqwest::Client::new();
         for _ in 0..120 {
+            // A node that has already exited won't become ready.
+            if node.child.try_wait()?.is_some() {
+                break;
+            }
             if http
                 .get(format!("{}/health/readyz", node.url))
                 .send()
@@ -319,7 +352,10 @@ impl QuickwitNode {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        bail!("Quickwit writer did not become ready (see quickwit-writer.log)")
+        bail!(
+            "Quickwit writer did not become ready; the end of quickwit-writer.log:\n{}",
+            log_tail(&work_dir.join("quickwit-writer.log"), 20)
+        )
     }
 
     /// Stop the node and wait for it to exit.
@@ -346,6 +382,15 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[test]
+    fn log_tail_keeps_the_last_lines() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(f.path(), "a\nb\nc\n").unwrap();
+        assert_eq!(log_tail(f.path(), 2), "b\nc");
+        assert_eq!(log_tail(f.path(), 10), "a\nb\nc");
+        assert_eq!(log_tail(Path::new("/nonexistent/log"), 5), "");
+    }
 
     #[tokio::test]
     async fn requests_stay_under_the_ingest_limit() {
