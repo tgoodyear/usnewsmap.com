@@ -49,8 +49,14 @@ jobs:
       - name: Load fixtures, serve them from a read-only searcher
         run: echo "QUICKWIT_URL=$(scripts/quickwit-fixtures.sh "$RUNNER_TEMP/qw")" >> "$GITHUB_ENV"
       - run: cargo test -p usnm-search --test quickwit_parity --locked
-      # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it.
+      # The pipeline runs its own writer node (QUICKWIT_BIN) and releases into it,
+      # with the environment the official Quickwit image sets (the ingest image
+      # is built on it): the writer must not pick these up.
       - run: cargo test -p usnm-ingest --test pipeline --locked
+        env:
+          QW_LISTEN_ADDRESS: 0.0.0.0
+          QW_DATA_DIR: /quickwit/qwdata
+          QW_CONFIG: /quickwit/config/quickwit.yaml
       - if: failure()
         run: tail -n 200 "$RUNNER_TEMP"/qw/*.log
 
