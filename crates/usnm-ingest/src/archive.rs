@@ -51,6 +51,18 @@ fn zero_numbered(path: &str) -> bool {
     path.split('/').any(|p| p == "seq-0" || p == "ed-0")
 }
 
+/// `path` with `ed-0` and `seq-0` renumbered from 1.
+fn from_one(path: &str) -> String {
+    path.split('/')
+        .map(|p| match p {
+            "seq-0" => "seq-1",
+            "ed-0" => "ed-1",
+            p => p,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Parse a page key from an archive path, or `None` if it isn't page OCR text.
 pub fn page_key_from_path(path: &str) -> anyhow::Result<Option<PageKey>> {
     let parts: Vec<&str> = path.trim_start_matches("./").split('/').collect();
@@ -126,7 +138,9 @@ pub fn read_pages_from(
                 stats.skipped += 1;
                 continue;
             }
-            Err(_) if zero_numbered(&name) => {
+            // Only a page that would be valid numbered from 1: anything else
+            // wrong with the path still fails the archive.
+            Err(_) if zero_numbered(&name) && page_key_from_path(&from_one(&name)).is_ok() => {
                 stats.zero_numbered += 1;
                 continue;
             }
@@ -261,10 +275,16 @@ mod tests {
         })
         .unwrap();
         assert_eq!((stats.pages, stats.zero_numbered), (1, 1));
-        // Other malformed numbers still fail the archive.
-        let raw = tar_of(&[("sn1/1906/11/29/ed-1/seq-x/ocr.txt", b"x")]);
-        std::fs::write(f.path(), raw).unwrap();
-        assert!(read_pages(f.path(), |_| Ok(())).is_err());
+        // Other malformed numbers still fail the archive, with or without a 0.
+        for bad in [
+            "sn1/1906/11/29/ed-1/seq-x/ocr.txt",
+            "sn1/1906/11/29/ed-0/seq-x/ocr.txt",
+            "sn1/1906/13/40/ed-1/seq-0/ocr.txt",
+        ] {
+            let raw = tar_of(&[(bad, b"x")]);
+            std::fs::write(f.path(), raw).unwrap();
+            assert!(read_pages(f.path(), |_| Ok(())).is_err(), "{bad}");
+        }
     }
 
     #[test]
