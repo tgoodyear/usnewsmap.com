@@ -82,14 +82,18 @@ deploy_stack() (
     --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)" \
     --yes --only-show-errors -o none
 )
-# The template's outputs become settings (API_URL, ACR_NAME, ...).
+# The template's outputs become settings (API_URL, ACR_NAME, ...). One
+# query reads the names and the values from the same object, so they pair
+# up in order; tsv prints them as two rows, which awk splits keeping empty
+# values.
 save_outputs() {
   local k v
   while IFS=$'\t' read -r k v; do
     [ -n "$k" ] && aset "$k" "$v"
-  done < <(paste \
-    <(az stack sub show -n "$STACK" --query "keys(outputs)" -o tsv) \
-    <(az stack sub show -n "$STACK" --query "outputs.*.value" -o tsv))
+  done < <(az stack sub show -n "$STACK" \
+      --query "[keys(outputs), values(outputs)[].value]" -o tsv |
+    awk -F'\t' 'NR == 1 { n = split($0, k, "\t") }
+      NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" v[i] }')
 }
 # New roles and permissions take a minute or two to apply everywhere, so a
 # deployment that depends on one can fail once; it's idempotent, so retry.

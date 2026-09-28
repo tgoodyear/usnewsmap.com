@@ -57,6 +57,21 @@ echo "and the GitHub Environment $ENV_NAME in $REPO."
 read -r -p "Type the environment name to confirm: " answer
 [ "$answer" = "$ENV_NAME" ] || die "not confirmed"
 
+# First stop the workflows deploying to it, so no new rollout targets what's
+# being deleted.
+envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2> /dev/null || true)
+if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
+  names=$(tr -d '[]" ' <<< "$envs" | tr ',' '\n' | grep -vx "$ENV_NAME" | grep -v '^$' || true)
+  envs="[$(sed 's/.*/"&"/' <<< "$names" | paste -sd, -)]"
+  [ "$envs" = '[""]' ] && envs='[]'
+  gh variable set USNM_DEPLOY_ENVIRONMENTS -R "$REPO" --body "$envs"
+fi
+# A rollout that already started still holds the old list; wait for it.
+while [ -n "$(gh run list -R "$REPO" --status in_progress --json databaseId -q '.[].databaseId' 2> /dev/null)" ]; do
+  echo "waiting for running workflows in $REPO to finish"
+  sleep 30
+done
+
 # Detach, then delete explicitly: the stack's deleteAll would stop at a
 # resource group that also holds something it doesn't manage.
 az stack sub delete -n "$STACK" --action-on-unmanage detachAll --yes --only-show-errors
@@ -76,14 +91,6 @@ if [ "$guardrails" = true ]; then
   az stack sub delete -n "$GUARDRAILS_STACK" --action-on-unmanage deleteAll --yes --only-show-errors
 fi
 
-# Stop the workflows deploying to it.
-envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2> /dev/null || true)
-if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
-  names=$(tr -d '[]" ' <<< "$envs" | tr ',' '\n' | grep -vx "$ENV_NAME" | grep -v '^$' || true)
-  envs="[$(sed 's/.*/"&"/' <<< "$names" | paste -sd, -)]"
-  [ "$envs" = '[""]' ] && envs='[]'
-  gh variable set USNM_DEPLOY_ENVIRONMENTS -R "$REPO" --body "$envs"
-fi
 gh api -X DELETE "repos/$REPO/environments/$ENV_NAME" > /dev/null 2>&1 || true
 
 if [ -f "$ENV_FILE" ]; then mv "$ENV_FILE" "$ENV_FILE.deleted-$(date -u +%Y%m%dT%H%M%SZ)"; fi
