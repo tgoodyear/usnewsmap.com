@@ -2,12 +2,12 @@
 //!
 //! Local (key) auth is disabled on the account, so every request carries a
 //! managed identity token (`type=aad`). Only point reads, create, conditional
-//! replace, upsert and a one-field query are used; 429s are retried after the
-//! service's `x-ms-retry-after-ms`.
+//! replace, upsert and a one-field query are used; 429s are retried for up to
+//! five minutes, waiting at least the service's `x-ms-retry-after-ms`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
@@ -18,7 +18,14 @@ use usnm_store::credential::Credential;
 use crate::docs::{DocStore, Versioned};
 
 const API_VERSION: &str = "2018-12-31";
-const MAX_RETRIES: u32 = 8;
+/// How long one request keeps retrying 429s. Cosmos often suggests a wait of a
+/// few milliseconds, so a fixed number of retries is spent in under a second
+/// while several workers share the account's throughput (1,000 RU/s on the
+/// free tier): the backfill's eight workers enqueueing at once did exactly
+/// that. The SDKs retry for a length of time instead.
+const RATE_LIMIT_RETRY_FOR: Duration = Duration::from_secs(300);
+/// The longest wait between retries unless Cosmos asks for more.
+const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
 pub struct CosmosDocs {
     /// `https://{account}.documents.azure.com/`
@@ -30,6 +37,8 @@ pub struct CosmosDocs {
     /// account uses Session consistency, so echoing these gives this client
     /// read-your-writes (a claim sees the enqueue that preceded it).
     sessions: Mutex<HashMap<String, BTreeMap<String, String>>>,
+    retry_initial: Duration,
+    retry_for: Duration,
 }
 
 impl CosmosDocs {
@@ -57,6 +66,8 @@ impl CosmosDocs {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             sessions: Mutex::default(),
+            retry_initial: Duration::from_millis(100),
+            retry_for: RATE_LIMIT_RETRY_FOR,
         })
     }
 
@@ -105,7 +116,9 @@ impl CosmosDocs {
         build: impl Fn() -> RequestBuilder,
         pk: Option<&str>,
     ) -> anyhow::Result<Response> {
-        for attempt in 0.. {
+        let deadline = tokio::time::Instant::now() + self.retry_for;
+        let mut backoff = self.retry_initial;
+        loop {
             let token = self.credential.token().await?;
             let auth: String =
                 form_urlencoded::byte_serialize(format!("type=aad&ver=1.0&sig={token}").as_bytes())
@@ -122,19 +135,33 @@ impl CosmosDocs {
             }
             let resp = req.send().await.context("Cosmos request")?;
             self.remember_session(container, &resp);
-            if resp.status() != StatusCode::TOO_MANY_REQUESTS || attempt >= MAX_RETRIES {
+            if resp.status() != StatusCode::TOO_MANY_REQUESTS {
                 return Ok(resp);
             }
-            let wait = resp
+            let hint = resp
                 .headers()
                 .get("x-ms-retry-after-ms")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(1000);
-            tokio::time::sleep(Duration::from_millis(wait.min(30_000))).await;
+                .map_or(Duration::ZERO, Duration::from_millis);
+            // Jitter keeps workers that were throttled together from all
+            // retrying at the same moment.
+            let wait = hint.min(Duration::from_secs(30)).max(backoff) + jitter(backoff);
+            if tokio::time::Instant::now() + wait > deadline {
+                return Ok(resp);
+            }
+            tokio::time::sleep(wait).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
         }
-        unreachable!("the loop returns on its last attempt")
     }
+}
+
+/// Up to half of `d`, from the clock's nanoseconds (no RNG needed for this).
+fn jitter(d: Duration) -> Duration {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |t| t.subsec_nanos());
+    d.mul_f64(f64::from(nanos % 1000) / 2000.0)
 }
 
 fn etag_of(resp: &Response) -> String {
@@ -503,5 +530,60 @@ mod tests {
             Arc::new(Credential::new(StaticToken("t".into())))
         )
         .is_err());
+    }
+
+    /// Answers 429 (suggesting a 1 ms wait) until `busy` runs out, then creates.
+    async fn busy_then_create(State(busy): State<Arc<Mutex<u32>>>) -> (S, HeaderMap, String) {
+        let mut out = HeaderMap::new();
+        let mut left = busy.lock().unwrap();
+        if *left > 0 {
+            *left -= 1;
+            out.insert("x-ms-retry-after-ms", "1".parse().unwrap());
+            return (S::TOO_MANY_REQUESTS, out, "{}".into());
+        }
+        out.insert("etag", "\"e1\"".parse().unwrap());
+        (S::CREATED, out, "{}".into())
+    }
+
+    async fn busy_cosmos(busy: u32) -> (CosmosDocs, Arc<Mutex<u32>>) {
+        let left = Arc::new(Mutex::new(busy));
+        let app = Router::new()
+            .route("/dbs/usnm/colls/{c}/docs", post(busy_then_create))
+            .with_state(left.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut c = CosmosDocs::new(
+            &format!("http://127.0.0.1:{}/", addr.port()),
+            "usnm",
+            Arc::new(Credential::new(StaticToken("tok".into()))),
+        )
+        .unwrap();
+        c.retry_initial = Duration::from_millis(1);
+        (c, left)
+    }
+
+    #[tokio::test]
+    async fn rate_limits_are_retried_for_a_length_of_time() {
+        // More 429s than the eight retries this used to allow.
+        let (c, left) = busy_cosmos(10).await;
+        let etag = c
+            .create("batches", "b1", &json!({"id": "b1"}))
+            .await
+            .unwrap();
+        assert_eq!(etag.as_deref(), Some("\"e1\""));
+        assert_eq!(*left.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn rate_limits_fail_after_the_retry_window() {
+        let (mut c, _) = busy_cosmos(u32::MAX).await;
+        c.retry_for = Duration::from_millis(50);
+        let err = c
+            .create("batches", "b1", &json!({"id": "b1"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("429"), "{err}");
     }
 }
