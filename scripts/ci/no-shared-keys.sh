@@ -20,7 +20,7 @@ patterns=(
   'adminUserEnabled: *true'
   'anonymousPullEnabled: *true'
   'listSecrets'                               # any listSecrets call or grant
-  'secrets\.[A-Z_]+'                          # GitHub secrets in workflows
+  'secrets *(\.|\[)'                         # GitHub secrets, either accessor, any case
   'api_token|apiToken|deployment.?token'
 )
 
@@ -28,7 +28,7 @@ patterns=(
 # at deploy time with the CI identity and never stored. The API update's
 # listSecrets is an az CLI round trip; the app has no secrets.
 allow=(
-  '^\.github/workflows/deploy-web\.yml:'
+  '^\.github/workflows/deploy-web\.yml:.*(deployment token|Read the deployment token|azure_static_web_apps_api_token)'
   '^scripts/ci/swa-token\.sh:'
   '^infra/modules/deployer\.bicep:.*(listSecrets|deployment token)'
   '^infra/modules/staticwebapp\.bicep:.*deployment token'
@@ -37,10 +37,10 @@ allow=(
   '^crates/usnm-store/src/blob\.rs:.*sig=x'  # the test that SAS URLs are refused
 )
 
-files=$(git ls-files infra scripts .github/workflows 'Dockerfile*' 'crates/*.rs' 'crates/**/*.rs' \
+files=$(git ls-files infra scripts .github 'Dockerfile*' 'crates/*.rs' 'crates/**/*.rs' \
   | grep -v -e '^scripts/ci/no-shared-keys\.sh$' -e '\.md$' -e '_test\.rs$' -e '/tests/')
 
-found=$(printf '%s\n' "$files" | xargs grep -nHE "$(IFS='|'; echo "${patterns[*]}")" || true)
+found=$(printf '%s\n' "$files" | xargs grep -inHE "$(IFS='|'; echo "${patterns[*]}")" || true)
 for a in "${allow[@]}"; do
   found=$(printf '%s\n' "$found" | grep -vE "$a" || true)
 done
