@@ -690,6 +690,34 @@ async fn serves_the_site_alongside_the_api() {
     assert!(body.contains("id=root"));
     assert!(header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
 
+    // HEAD on an app route: GET's headers, no body.
+    let resp = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri("/search/gold")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let len = std::fs::metadata(s.config.site_dir.as_ref().unwrap().join("index.html"))
+        .unwrap()
+        .len();
+    assert_eq!(
+        header_str(resp.headers(), header::CONTENT_LENGTH),
+        len.to_string()
+    );
+    assert!(header_str(resp.headers(), header::CONTENT_TYPE).starts_with("text/html"));
+    assert!(resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .is_empty());
+
     // Hashed assets: cached for a year, the precompressed copy when accepted.
     let (status, h, body) = get_site(&s, "/assets/index-abc.js", Some("gzip")).await;
     assert_eq!(status, StatusCode::OK);

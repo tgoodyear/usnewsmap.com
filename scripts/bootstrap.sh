@@ -193,6 +193,15 @@ if [ "$USE_ACR" != true ]; then
   provision
 fi
 
+# The Static Web App that used to serve the site deployed with a shared token
+# (ADR-0009). Provisioning never deletes, so remove it here, in every
+# environment, whether or not it has a domain.
+SWA="swa-usnm-$ENV_NAME"
+if az staticwebapp show -n "$SWA" -g "$(aget AZURE_RESOURCE_GROUP)" -o none 2> /dev/null; then
+  echo "removing the Static Web App $SWA: the API app serves the site now"
+  az staticwebapp delete -n "$SWA" -g "$(aget AZURE_RESOURCE_GROUP)" --yes -o none
+fi
+
 # Names on the app (the site and the API), once the registrar delegates the
 # domain to the zone.
 DOMAIN=$(aget USNM_DNS_ZONE)
@@ -206,14 +215,7 @@ if [ -n "$DOMAIN" ]; then
   else
     RG=$(aget AZURE_RESOURCE_GROUP) APP=$(aget API_APP) CAE=$(aget CONTAINER_ENV_NAME)
     names() { tr '\t' '\n' | grep -Fqx "$1"; }
-    # The Static Web App that used to serve the site deployed with a shared
-    # token (ADR-0009). Provisioning never deletes, so remove it here, with
-    # the TXT record that validated its apex.
-    SWA="swa-usnm-$ENV_NAME"
-    if az staticwebapp show -n "$SWA" -g "$RG" -o none 2> /dev/null; then
-      echo "removing the Static Web App $SWA: the API app serves the site now"
-      az staticwebapp delete -n "$SWA" -g "$RG" --yes -o none
-    fi
+    # The TXT record that validated the Static Web App's apex.
     az network dns record-set txt delete -g "$RG" -z "$DOMAIN" -n _dnsauth --yes -o none 2> /dev/null || true
     # Each name: add it to the app, bind a managed certificate, and record the
     # certificate so provisioning keeps the binding. www and api validate by

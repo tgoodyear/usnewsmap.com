@@ -64,8 +64,19 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
+    let html = (header::CONTENT_TYPE, "text/html; charset=utf-8".to_owned());
+    // HEAD: the headers GET would send, without reading or sending the body.
+    if req.method() == Method::HEAD {
+        return match tokio::fs::metadata(&index).await {
+            Ok(meta) => [html, (header::CONTENT_LENGTH, meta.len().to_string())].into_response(),
+            Err(e) => {
+                tracing::error!(error = %e, path = %index.display(), "site index missing");
+                (StatusCode::NOT_FOUND, "not found").into_response()
+            }
+        };
+    }
     match tokio::fs::read(&index).await {
-        Ok(body) => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response(),
+        Ok(body) => ([html], body).into_response(),
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
             (StatusCode::NOT_FOUND, "not found").into_response()
