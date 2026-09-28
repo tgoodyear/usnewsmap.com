@@ -25,7 +25,7 @@ The owner set a target of **under $80/month**. The first design (Front Door, a s
    - the Container Apps free monthly grant covers the jobs.
 6. **Offline compute on Spot:**
    - the initial backfill and full re-indexes run as **ACI Spot container groups** (preview, East US 2), launched in parallel and claiming batches from Cosmos with leases;
-     *Amended September 2026 (after spike S-1):* the backfill runs as a Container Apps Job with parallel replicas inside the VNet instead. It costs about the same (~$15–20 for ~175 worker-hours) and needs no launcher or public-access window. ACI Spot stays the documented alternative (08 §8.4);
+     *Amended September 2026 (after spike S-1):* the backfill runs as a Container Apps Job with parallel replicas inside the VNet instead. It costs about the same (~$15–20 for ~175 worker-hours of CPU; ~$20–30 once downloads are paced to LoC's limit, since workers are billed while they wait, 04 §4.4) and needs no launcher or public-access window. ACI Spot stays the documented alternative (08 §8.4);
    - the weekly incremental ingest stays on Container Apps Jobs, inside the free grant;
    - Azure Batch with Spot nodes that scale to zero is the documented fallback.
 7. **Region: East US 2.** ACI Spot is available there, and so are the higher-capacity AI Search partitions for the growth profile.
