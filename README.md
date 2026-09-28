@@ -82,7 +82,7 @@ In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos h
 | `USNM_CACHE_MB` | `256` | In-process response cache size |
 | `USNM_RATE_PER_MIN` | `120` | Per-client token bucket refill rate on `/v1` (`0` disables) |
 | `USNM_RATE_BURST` | `40` | Per-client bucket size |
-| `USNM_TRUSTED_PROXY_HOPS` | `1` | Proxies that append to `X-Forwarded-For` (1 = Container Apps ingress, 2 = SWA linked backend + ingress, 0 = use the peer address) |
+| `USNM_TRUSTED_PROXY_HOPS` | `1` | Proxies that append to `X-Forwarded-For` (1 = Container Apps ingress, 2 = a proxy such as Front Door + ingress, 0 = use the peer address) |
 | `USNM_BACKEND_CONCURRENCY` | `8` | Requests that may query the search backend at once; waiting counts against the timeout |
 | `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`, `AZURE_CLIENT_ID` | set by Container Apps | Managed identity for Blob; `AZURE_CLIENT_ID` selects the user-assigned identity. Without them, the Azure CLI login is used (`az login`) |
 | `RUST_LOG` | `info` | Log filter (logs are JSON and never include query strings) |

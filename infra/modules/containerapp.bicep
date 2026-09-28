@@ -1,4 +1,4 @@
-// The public API (08 §8.1).
+// The public API and the web app it serves (08 §8.1, ADR-0009).
 //
 // searchBackend = 'fixtures': the API serves its baked synthetic fixtures
 // (memory backend) while exercising the production paths: managed identity,
@@ -32,10 +32,8 @@ param searchBackend string = 'fixtures'
 param quickwitImage string = 'quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
 @description('Private registry the images come from (pulled with the app identity); empty for a public registry.')
 param registryServer string = ''
-@description('Custom hostname for the API (e.g. api.usnewsmap.com); empty for none.')
-param customDomain string = ''
-@description('The managed certificate bound to customDomain. scripts/bootstrap.sh issues it once DNS is delegated; until then the hostname is not declared. Declaring it here keeps `azd provision` from dropping the binding.')
-param customDomainCertificateId string = ''
+@description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps `azd provision` from dropping the bindings.')
+param customDomains array = []
 
 var quickwit = searchBackend == 'quickwit'
 
@@ -147,15 +145,13 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 8080
         transport: 'http'
         allowInsecure: false
-        customDomains: empty(customDomain) || empty(customDomainCertificateId)
-          ? []
-          : [
-              {
-                name: customDomain
-                certificateId: customDomainCertificateId
-                bindingType: 'SniEnabled'
-              }
-            ]
+        customDomains: [
+          for d in filter(customDomains, d => !empty(d.certificateId)): {
+            name: d.name
+            certificateId: d.certificateId
+            bindingType: 'SniEnabled'
+          }
+        ]
       }
     }
     template: {

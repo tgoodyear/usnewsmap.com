@@ -29,8 +29,8 @@ This document set evaluates the legacy system ([`tgoodyear/usnewsmap`](https://g
 **What we will build.**
 
 ```
-Browser (React + MapLibre/deck.gl SPA)  ◄── Azure Static Web Apps (Free): usnewsmap.com, TLS, global static CDN
-   │  GET https://api.usnewsmap.com/v1/...  (cacheable, canonical URLs)
+Browser (React + MapLibre/deck.gl SPA)  ◄── the API app serves the site: usnewsmap.com, TLS
+   │  GET /v1/...  same origin; also https://api.usnewsmap.com/v1/...  (cacheable, canonical URLs)
    ▼
 One Azure Container App, one replica, two containers:
    Rust API (axum) ── localhost ──► Quickwit searcher        ── in-memory reference data
@@ -48,7 +48,7 @@ Ingest: backfill and full rebuilds on ACI Spot containers (preview); weekly incr
 3. **Search engine: Quickwit on Azure Container Apps with its index on Blob Storage is recommended. Azure AI Search is the fully managed alternative behind the same interface.** AI Search is the more "pure PaaS" option, but for a corpus of about 23 million pages and roughly 0.6–1 TB of text it costs about **$2,800–5,600 per month**. The recommended lean deployment, including private networking, costs about **$50–75 per month** in total (typical ~$72). Quickwit also supports nested *place × time* aggregations in its generally available API; AI Search offers them only in preview. The owner makes the final call based on funding ([ADR-0001](adr/0001-search-engine.md)).
 4. **The API is written in Rust (axum + tokio).** The API is I/O-bound and runs on scale-to-zero, per-second-billed compute, so Rust's fast cold start, small memory footprint and predictable tail latency lower cost directly. As of May 2026 the Azure SDK for Rust has GA releases for Identity, Blob Storage and Queues. The one gap, AI Search, has no Rust SDK; we would call its REST API directly, which is a small amount of code ([ADR-0004](adr/0004-rust-api.md)).
 5. **Cost and operations are hard requirements.** The target is **under $80 per month**; the lean profile runs about **$72 in a typical month**, including private networking and a private image registry. To get there:
-   - there is no Front Door; Static Web Apps (Free) serves the site;
+   - there is no Front Door; the API app serves the site from its own image ([ADR-0010](adr/0010-site-served-by-the-api.md));
    - the API and search engine share one small Container App in a VNet-integrated environment, reaching Blob Storage and Cosmos DB only through **private endpoints** with **managed identities** ([ADR-0008](adr/0008-private-networking.md));
    - the corpus sits in cool storage;
    - logs stay inside the free tier;

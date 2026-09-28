@@ -16,7 +16,6 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, plus Cosmos Built-in Data Contributor on `usnm` |
 | `containerapps-env` | VNet-integrated, workload-profiles environment that uses only the Consumption profile (no management fee) |
 | `containerapp` | The API (`ca-usnm-{env}`): 0.25 vCPU / 0.5 GiB, external ingress, health probes, and 0–1 to 2 replicas on an HTTP scaler. With `searchBackend: quickwit`, also a read-only Quickwit 0.9.1 sidecar (1 vCPU / 2 GiB, localhost only) and a system-assigned identity with Blob Data **Reader** on `qw-index` only |
-| `staticwebapp` | SWA Free for the site. Content is uploaded by the `deploy web` workflow (below) |
 | `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
 | `monitoring` | Log Analytics (30-day retention, ~150 MB/day cap) and Application Insights, both with local (key) auth disabled. An action group is created when alert emails are set |
 | `diagnostics` | Diagnostic settings, sending resource logs to Log Analytics for every resource that has them: the workspace, registry, VNet, Container Apps environment (app and job console output, platform events), Cosmos control plane, and both storage accounts (blob writes and deletes; queue, table and file services in full). Per-request categories are left out to stay under the cap (08 §8.1.1) |
@@ -61,10 +60,10 @@ What it does:
 4. Creates the GitHub Environment `prod`, restricted to `main`, with its variables, and adds it to `USNM_DEPLOY_ENVIRONMENTS`.
 5. Runs `ci` on `main` (every time, so the registry holds the current `main`) and waits for that run.
 6. Provisions again on the registry, which deploys the API.
-7. Once the registrar delegates `--domain` to the zone, binds the apex and `www` to the Static Web App and `api` to the API, with managed certificates (re-run it after delegating).
+7. Once the registrar delegates `--domain` to the zone, binds the apex, `www` and `api` to the API app, which serves the site and the API, with managed certificates (re-run it after delegating). It also deletes the Static Web App that used to serve the site.
 8. Deploys the web app and checks both.
 
-Options: `--subscription`, `--location` (default `eastus2`), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and SWA token secret from before per-environment deployment), `--move` (lets an existing environment move to another subscription, starting there with no data). Environment names are 1–16 lowercase letters and digits.
+Options: `--subscription`, `--location` (default `eastus2`), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and the old Static Web Apps token secret from before per-environment deployment), `--move` (lets an existing environment move to another subscription, starting there with no data). Environment names are 1–16 lowercase letters and digits.
 
 Check the result:
 
@@ -73,7 +72,7 @@ curl "$(azd env get-value API_URL)/v1/meta"          # "synthetic": true until t
 curl "$(azd env get-value API_URL)/readyz"
 ```
 
-After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API onto the commit; `deploy web` does the same for the site. To pin a specific build instead, run `azd env set USNM_IMAGE_TAG <commit sha>` (default `main`) and `azd provision`.
+After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API app, which carries the site, onto the commit. To pin a specific build instead, run `azd env set USNM_IMAGE_TAG <commit sha>` (default `main`) and `azd provision`.
 
 | Parameter | azd variable | Default |
 |-----------|--------------|---------|
@@ -93,7 +92,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 
 ## Web app
 
-The `deploy web` workflow (`.github/workflows/deploy-web.yml`) builds `web/` with each environment's API URL and uploads it to that environment's Static Web App. It runs on every push to `main` that touches `web/`, and on demand (`gh workflow run "deploy web" -f environment=prod`). It reads the deployment token at deploy time with the CI identity, so no secret is stored. The API allows the site's `*.azurestaticapps.net` origin, the domain and `www` (with `USNM_DNS_ZONE`), and any `allowedOrigins` for CORS.
+The API app serves the site ([ADR-0010](../docs/design/adr/0010-site-served-by-the-api.md)). The API image's build compiles `web/` into `/srv/site` (`USNM_SITE_DIR`), with brotli and gzip copies of each text file. So every image `ci` publishes carries the site, and each rollout ships both together. The site calls `/v1` on its own origin, so it needs no API URL and no CORS. The API still allows the domain, `www`, the app's own hostname and any `allowedOrigins` for other callers. There is no separate web deploy and no deployment token.
 
 ## Domain (DNS)
 
@@ -105,9 +104,16 @@ azd provision
 azd env get-value NAME_SERVERS      # set these four as the domain's name servers at the registrar
 ```
 
-The zone holds the apex (an alias to the Static Web App, and CAA records allowing only DigiCert, the managed certificates' CA, with no wildcards), `www` (CNAME to it), and `api` (CNAME to the API app, with the `asuid.api` TXT record Container Apps checks). It also carries over the domain's no-mail records (SPF `v=spf1 -all`, DMARC `p=reject`, and an empty key for every DKIM selector), as they were on the previous DNS host. **Before switching name servers, copy any other records the domain still needs into the zone**: once delegated, only the zone's records resolve. Once the registrar delegates the domain, `scripts/bootstrap.sh` binds the names (it checks the delegation first, and re-running it later finishes the job):
-- `www` and the apex are custom domains of the Static Web App. `www` validates by its CNAME; for the apex, bootstrap writes Static Web Apps' validation token to `_dnsauth` as a TXT record. Both get free managed certificates.
-- `api` gets a managed certificate from the Container Apps environment, validated by its CNAME. Its id is recorded as `USNM_API_CERT_ID`, and Bicep declares the binding from it, so later provisioning keeps it. `API_URL` (and the site's API base) then becomes `https://api.<domain>`.
+The zone holds:
+- the apex: an A record to the Container Apps environment's static IP, plus CAA records allowing only DigiCert (the managed certificates' CA), with no wildcards;
+- `www` and `api`: CNAMEs to the API app;
+- `asuid`, `asuid.www` and `asuid.api`: the TXT records Container Apps checks before binding each name.
+
+ It also carries over the domain's no-mail records (SPF `v=spf1 -all`, DMARC `p=reject`, and an empty key for every DKIM selector), as they were on the previous DNS host. **Before switching name servers, copy any other records the domain still needs into the zone**: once delegated, only the zone's records resolve. Once the registrar delegates the domain, `scripts/bootstrap.sh` binds the names (it checks the delegation first, and re-running it later finishes the job):
+- Each name gets a free managed certificate from the Container Apps environment. `www` and `api` are validated by their CNAMEs, and the apex over HTTP through its A record.
+- The certificate ids are recorded as `USNM_SITE_CERT_ID`, `USNM_WWW_CERT_ID` and `USNM_API_CERT_ID`. Bicep declares the bindings from them, so later provisioning keeps them.
+- `SITE_URL` then becomes `https://<domain>`, and `API_URL` becomes `https://api.<domain>`.
+- If a name's DNS record changed within the last hour, resolvers may still hold the old one and validation can fail. Re-run bootstrap later.
 
 ## Container registry
 
@@ -115,7 +121,7 @@ Images are private, in ACR Basic (`crusnm{env}…`), with no admin user and no a
 
 CI pushes from `main` as `id-usnm-ci-{env}`, signing in with OIDC. That identity trusts only jobs in the GitHub Environment `{env}`, and no secret is stored anywhere. `scripts/bootstrap.sh` sets it all up.
 
-The CI identity's rights are AcrPush on its registry, and a custom role, "usnm deployer", on its resource group (`infra/modules/deployer.bicep`). The role can roll Container Apps onto new images and read Static Web App deployment tokens, and nothing else: no data, keys, networking or role assignments. The web deploy uses it to read the site's deployment token at deploy time. It's scoped to the group because Azure rejects role assignments scoped to a Container App or Static Web App itself, and because `az containerapp update` also needs join rights on the app's environment; the group holds only this environment. The update also needs assign rights on the app's identity: CI has Managed Identity Operator on `id-usnm-app-{env}` alone, never on the group, so it can't attach the ingest identity (and its data access) to the app.
+The CI identity's rights are AcrPush on its registry, and a custom role, "usnm deployer", on its resource group (`infra/modules/deployer.bicep`). The role can roll Container Apps onto new images (which carry the site too), and nothing else: no data, keys, networking or role assignments. It's scoped to the group because Azure rejects role assignments scoped to a Container App itself, and because `az containerapp update` also needs join rights on the app's environment; the group holds only this environment. The update also needs assign rights on the app's identity: CI has Managed Identity Operator on `id-usnm-app-{env}` alone, never on the group, so it can't attach the ingest identity (and its data access) to the app.
 
 `azd provision` sets the API image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the one CI last rolled out).
 

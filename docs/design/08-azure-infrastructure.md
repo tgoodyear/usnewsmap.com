@@ -8,7 +8,6 @@ One subscription (ideally owned by a sponsoring institution), one region: **East
 
 | Resource | SKU / config | Purpose |
 |----------|--------------|---------|
-| **Static Web App** `swa-usnm` | **Free** (custom domains `usnewsmap.com` + `www`, free managed TLS, global static distribution, PR preview environments). Standard ($9) optional: linked Container App at `/api/*`, SLA | SPA hosting. **Replaces Front Door** for the site |
 | **Virtual network** `vnet-usnm` | `10.40.0.0/24`: `snet-cae` `/27` (delegated to `Microsoft.App/environments`) and `snet-pe` `/28` (private endpoints). No charge for the VNet itself | Private path from the app and jobs to storage and Cosmos ([ADR-0008](adr/0008-private-networking.md)) |
 | **Private endpoints** `pe-usnm-blob`, `pe-usnm-cosmos` | In `snet-pe`: Blob on `stusnmdata`; `Sql` on `cosmos-usnm`. Private DNS zones `privatelink.blob.core.windows.net` and `privatelink.documents.azure.com`, linked to the VNet | App → storage and jobs → storage/Cosmos traffic stays on the Microsoft backbone at private IPs |
 | **Container Apps environment** `cae-usnm` | **VNet-integrated** (`snet-cae`, external ingress for the public API), set at creation because VNet integration can't be added later. **Workload-profiles environment using only the Consumption profile.** No Dedicated profile, so no management fee. This matters because a *Consumption-only* environment caps a replica at 2 vCPU / 4 GiB, while the Consumption profile in a workload-profiles environment allows up to **4 vCPU / 8 GiB** per replica, which leaves room for the sizing levers in §8.4 | Hosts the app and jobs; managed OTel agent → App Insights |
@@ -17,9 +16,9 @@ One subscription (ideally owned by a sponsoring institution), one region: **East
 | **Container Apps Jobs** `caj-usnm-ingest-{env}`, `caj-usnm-backfill-{env}` | In `cae-usnm`, so they reach the data over the private endpoints. `ingest`: `usnm-ingest run`, 2 vCPU / 4 GiB, weekly or manual, runs the Quickwit writer. `backfill`: manual, N parallel `usnm-ingest curate` replicas at 1 vCPU / 2 GiB | Weekly increments, the initial backfill and full rebuilds (§8.4). Deployed with `ingestJobs` (`USNM_INGEST_JOBS=true`) |
 | **Storage account** `stusnmdata` | StorageV2, **flat namespace (HNS off)** so that **blob versioning** and soft delete are available (neither is supported on HNS/ADLS Gen2 accounts); **LRS**; `qw-index/`, `reference/` and `cache/` in **Hot**; `curated/` in **Cool**; versioning + blob soft delete (14 d) on `curated/` and `reference/`; **raw archives not retained**. Parquet readers (DataFusion/`object_store`) and Quickwit use the Blob API and don't need HNS | Data lake, index splits, persistent response cache. **`publicNetworkAccess: Disabled`** in steady state (private endpoint only) |
 | **Cosmos DB account** `cosmos-usnm` | NoSQL API, **free tier** (enable at creation; one per subscription), provisioned 1,000 RU/s shared database `usnm`, `disableLocalAuth: true`, **`publicNetworkAccess: Disabled`** in steady state, continuous backup (7-day) | Document state and the ingest work queue ([ADR-0007](adr/0007-cosmos-document-state.md)) |
-| **Storage account** `stusnmtiles` | StorageV2, LRS, one container with anonymous read (non-sensitive public map data), CORS for the site | PMTiles basemap, read with HTTP range requests (kept off SWA to stay under its 250 MB app-size and 100 GB bandwidth limits) |
+| **Storage account** `stusnmtiles` | StorageV2, LRS, one container with anonymous read (non-sensitive public map data), CORS for the site | PMTiles basemap, read with HTTP range requests (kept out of the API image; range requests go straight to Blob) |
 | **Log Analytics** `log-usnm` + **Application Insights** `appi-usnm` | Pay-as-you-go with a **daily cap** (≈150 MB/day) so ingestion stays within the free 5 GB/month; 30-day retention; local (key) auth disabled on both (ADR-0009) | Telemetry |
-| **Azure DNS** zone `usnewsmap.com` | – | Apex alias to SWA, `api` CNAME to the container app, validation records |
+| **Azure DNS** zone `usnewsmap.com` | – | Apex A record to the environment's static IP; `www` and `api` CNAMEs to the container app; `asuid` validation records |
 | **Action Group** + **Budget** | – | Alerts; cost budget at $40/$60/$75 |
 | Container Registry `crusnm{env}{suffix}` | **Basic** (~$5/mo); no admin user, no anonymous pull | Private images: the API, ingest and a digest-pinned copy of Quickwit. Pulled with the app and ingest identities (`AcrPull`); pushed only by CI on `main` (`AcrPush`, §8.2) |
 | *(not used in lean)* Front Door, Key Vault, AI Search | – | Growth profile only; each is a Bicep parameter switch |
@@ -40,7 +39,6 @@ Container images are **private**, in ACR Basic. CI on `main` signs in to Azure w
 - **Per-request categories are left out** because they would consume the ≈150 MB/day cap: blob reads (public tile fetches, and Quickwit's split reads on every search), Cosmos `DataPlaneRequests` and the per-query statistics (every ingest write), and Container Apps HTTP logs (Application Insights already samples requests). Writes, deletes and control-plane changes are the audit trail.
 - **Also left out:**
   - Application Insights is workspace-based, so its telemetry is already in `log-usnm`. Its resource logs would store every row twice.
-  - For the Static Web App, Azure lists log categories, but diagnostic settings aren't offered for Static Web Apps in practice ([Azure/static-web-apps#1295](https://github.com/Azure/static-web-apps/issues/1295)).
   - Metrics-only resources (DNS zones, private endpoints, Container Apps and jobs) have no logs. Azure Monitor keeps their platform metrics for 93 days at no cost.
 - **Retention** is the workspace's 30 days. Tables can go as low as 4 days, but 31 days are included in the ingestion price, so a 14-day limit would save nothing.
 - **Bicep writes the settings, not a `deployIfNotExists` policy.** Every resource here is created by the template, and nothing is created at runtime. The template can choose categories per resource, while the built-in policy initiatives enable whole category groups (`allLogs`/`audit`), which include the per-request logs above. Remediation would also need a policy identity with role-assignment rights, and it lags creation by minutes. The policy is therefore audit-only: it catches drift without writing anything.
@@ -60,7 +58,7 @@ Container images are **private**, in ACR Basic. CI on `main` signs in to Azure w
 | `id-usnm-ingest` (on the ingest jobs) | MI | `Storage Blob Data Contributor` (`curated/`, `reference/`, `qw-index/`); **Cosmos DB Built-in Data Contributor** (database `usnm`) |
 | `caj-usnm-ingest` system-assigned identity (used only by the Quickwit writer the job runs) | MI | `Storage Blob Data Contributor` (`qw-index/`) and nothing else |
 | `id-usnm-launcher` (on the `backfill` launcher job and the `network-guard` job) | MI | `Contributor` on `rg-usnm-prod-spot` only (to create and delete ACI container groups); `Managed Identity Operator` on `id-usnm-ingest`; custom role **`USNM Public Access Toggle`** on `stusnmdata` and `cosmos-usnm` only (`read` and `write` on the account resource, used solely to flip `publicNetworkAccess`). Azure Policy **denies** any change to `allowSharedKeyAccess` or `disableLocalAuth`, so this role can't re-enable keys |
-| `id-usnm-ci-{env}` (user-assigned, federated credential for the GitHub Environment `{env}`, restricted to `main`) | MI | `AcrPush` on its registry, and a custom role, "usnm deployer", on its resource group (`infra/modules/deployer.bicep`) that can only roll Container Apps onto new images and read Static Web App deployment tokens. Azure rejects role assignments scoped to a Container App or a Static Web App itself, and `az containerapp update` also needs join rights on the app's environment, hence the group scope; the group holds only this environment. It also needs assign rights on the app's identity, granted as Managed Identity Operator on `id-usnm-app-{env}` alone, so CI can't attach the ingest identity (and its data access) to the app |
+| `id-usnm-ci-{env}` (user-assigned, federated credential for the GitHub Environment `{env}`, restricted to `main`) | MI | `AcrPush` on its registry, and a custom role, "usnm deployer", on its resource group (`infra/modules/deployer.bicep`) that can only roll Container Apps onto new images (the API image also carries the site). Azure rejects role assignments scoped to a Container App itself, and `az containerapp update` also needs join rights on the app's environment, hence the group scope; the group holds only this environment. It also needs assign rights on the app's identity, granted as Managed Identity Operator on `id-usnm-app-{env}` alone, so CI can't attach the ingest identity (and its data access) to the app |
 | Infrastructure changes (`azd provision`, via `scripts/bootstrap.sh`) | The operator's own sign-in | `Owner` on the subscription (role assignments, policy definitions). CI never provisions, so no identity with role-assignment rights exists outside a person's session |
 | Maintainers | Entra users / group `grp-usnm-maintainers` | `Reader` by default; **PIM just-in-time** `Contributor` where the tenant licensing allows it. Data-plane inspection (Cosmos queries, blob listing) runs through the `usnm-ingest admin …` CLI as an on-demand Container Apps Job inside the VNet, because the portal's Data Explorer can't reach the private endpoints from the internet |
 
@@ -71,10 +69,9 @@ Container images are **private**, in ACR Basic. CI on `main` signs in to Azure w
 ## 8.3 Networking
 
 - **Public entry points:**
-  - `usnewsmap.com` → Static Web Apps (static only);
-  - `api.usnewsmap.com` → Container Apps ingress, which forwards to the `api` container.
+  - `usnewsmap.com`, `www.usnewsmap.com` and `api.usnewsmap.com` → Container Apps ingress, which forwards to the `api` container. It serves `/v1` and the built site ([ADR-0010](adr/0010-site-served-by-the-api.md)).
   - Quickwit binds to `127.0.0.1` inside the replica and has no ingress.
-- **CORS:** `Access-Control-Allow-Origin: https://usnewsmap.com` (plus SWA preview origins in dev), GET only, no credentials. Researchers call the API directly; CORS doesn't restrict them.
+- **CORS:** the site calls the API on its own origin, so it needs none. The API still allows the domain, `www`, the app's own hostname and any `allowedOrigins`, GET only, no credentials. Researchers call the API directly; CORS doesn't restrict them.
 - **Abuse protection without a WAF:** the per-client token bucket in the API (salted-hash keys, in memory), request timeouts, a query-complexity budget, and `maxReplicas: 2`. The replica cap turns abuse into slower responses instead of a larger bill.
 - **Every app/job → data path uses both a managed identity and a private endpoint** ([ADR-0008](adr/0008-private-networking.md)):
 
@@ -147,8 +144,8 @@ S-2 checked this on Quickwit 0.9.1 with a file-backed metastore: a searcher-only
 
 ## 8.5 Infrastructure as code
 
-- **Bicep** modules under `infra/` with **Azure Developer CLI (`azd`)** for environment management and a one-command `azd up`. The first slice is implemented in [`infra/`](../../infra/README.md). It covers the network, private endpoints, the data, tiles and Cosmos accounts, identities and RBAC, the Container Apps environment and API app, SWA, monitoring, the budget and the guardrail policies. The Quickwit sidecar is in place behind `searchBackend` (`USNM_SEARCH_BACKEND=quickwit`) and waits on the first published index. The ingest and backfill jobs are in place behind `ingestJobs` (`USNM_INGEST_JOBS=true`). DNS follows.
-- Modules: `network` (VNet, subnets, private endpoints, private DNS zones), `staticwebapp`, `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `cosmos`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
+- **Bicep** modules under `infra/` with **Azure Developer CLI (`azd`)** for environment management and a one-command `azd up`. The first slice is implemented in [`infra/`](../../infra/README.md). It covers the network, private endpoints, the data, tiles and Cosmos accounts, identities and RBAC, the Container Apps environment and the API app (which serves the site), monitoring, the budget and the guardrail policies. The Quickwit sidecar is in place behind `searchBackend` (`USNM_SEARCH_BACKEND=quickwit`) and waits on the first published index. The ingest and backfill jobs are in place behind `ingestJobs` (`USNM_INGEST_JOBS=true`). DNS follows.
+- Modules: `network` (VNet, subnets, private endpoints, private DNS zones), `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `cosmos`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
 - **Parameters per environment**: `dev` (scale to zero, LRS, small sample corpus of ~1M pages), `prod`.
 - Lint with `bicep lint` plus PSRule for Azure in CI; `what-if` output posted to the PR for any change under `infra/`.
 - Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings (**as built:** `usnm-audit-diagnostic-settings`, `auditIfNotExists` on every resource type with resource logs, §8.1.1), allowed locations, and a built-in **"Not allowed resource types"** assignment that blocks `Microsoft.Compute/virtualMachines`, `virtualMachineScaleSets`, `Microsoft.ContainerService/managedClusters` and `Microsoft.Batch/batchAccounts` on the project resource groups, so VMs can't creep in. Also: **deny** `allowSharedKeyAccess != false` on storage, **deny** `disableLocalAuth != true` on Cosmos, and **audit** `publicNetworkAccess != Disabled` (the guard job remediates it outside an open window).
@@ -161,7 +158,7 @@ flowchart LR
   PR --> CI2[Web: typecheck · lint · vitest · playwright · axe]
   PR --> CI3[Infra: bicep lint · PSRule · what-if]
   PR --> CI4[Security: CodeQL · secret scanning push protection · Dependabot]
-  PR --> PREV[SWA preview env + API against dev]
+  PR --> PREV[preview revision of the app against dev]
   M[merge to main] --> B[build & sign images · SBOM · push ACR (OIDC)]
   B --> DEV[azd deploy dev]
   DEV --> SMK[smoke + k6 short load]
@@ -170,7 +167,7 @@ flowchart LR
   PROD --> POST[prewarm cache · synthetic checks]
 ```
 
-- **As built:** `ci` runs every check on each PR and push. On `main`, after all of them pass, `publish` runs once per environment listed in `USNM_DEPLOY_ENVIRONMENTS`: it pushes the images to that environment's registry and rolls its API onto the commit. `deploy web` does the same for the site. Each environment is a GitHub Environment restricted to `main`, with its own variables and OIDC trust (§8.9). Only the commit `main` currently points at deploys, so a slow run for an older commit can't overwrite a newer one. The diagram above is the fuller target (preview environments, staged traffic, approvals).
+- **As built:** `ci` runs every check on each PR and push. On `main`, after all of them pass, `publish` runs once per environment listed in `USNM_DEPLOY_ENVIRONMENTS`: it pushes the images to that environment's registry and rolls its API app, which carries the site, onto the commit. Each environment is a GitHub Environment restricted to `main`, with its own variables and OIDC trust (§8.9). Only the commit `main` currently points at deploys, so a slow run for an older commit can't overwrite a newer one. The diagram above is the fuller target (preview environments, staged traffic, approvals).
 - **Container Apps revisions** for blue/green: a new revision receives 10% of traffic until synthetic checks pass, then 100%. Rolling back means shifting traffic to the previous revision.
 - **Images:** pinned base `gcr.io/distroless/cc-debian12` (or `scratch` with a musl static build) for the API; the Quickwit image is pinned by digest and copied into ACR with that digest unchanged (CI checks it).
 - **Data pipeline deploys** are separate from app deploys. A new `index_version` is published by the `index` job and picked up by the API's refresher, not by redeploying.
@@ -179,15 +176,21 @@ flowchart LR
 
 | Env | Corpus | Scale | Cost target |
 |-----|--------|-------|-------------|
-| `dev` | 1M-page sample (ten diverse years) | `ca-usnm` min 0 (accepts a cold start of several seconds); SWA preview environments; ingest on ACI Spot | ≤ $10/mo |
+| `dev` | 1M-page sample (ten diverse years) | `ca-usnm` min 0 (accepts a cold start of several seconds); ingest on ACI Spot | ≤ $10/mo |
 | `prod` | Full | As in §8.1 | < $80/mo (typical ~$72) |
 | *Local* | 10k-page fixture | `docker compose` (Quickwit + API + Azurite) | $0 |
 
 ## 8.8 Domain and DNS
 
 - Move the `usnewsmap.com` registration to an account the project controls, with auto-renew and at least 2 admins. This was one of the legacy single points of failure.
-- Host DNS in **Azure DNS**: apex `usnewsmap.com` as an alias record to the Static Web App, `www` → apex redirect, and `api` as a CNAME to the container app with its domain-verification TXT record. Add `CAA` records for the CAs that the SWA and Container Apps managed certificates use. **As built:** the zone is `infra/modules/dns.bicep`; `scripts/bootstrap.sh` binds the apex and `www` to the Static Web App (TXT and CNAME validation) and issues the `api` managed certificate once the delegation is live, recording it so Bicep keeps the binding (§8.9).
-- Keep `/loc_api/*` returning **410 Gone** (an SWA route rule, excluded from the SPA fallback; SWA can't attach a custom page to a 410) so old clients stop calling it, and redirect legacy query URLs where they can be mapped.
+- Host DNS in **Azure DNS**. All three names point at the one container app, which serves the site and the API ([ADR-0010](adr/0010-site-served-by-the-api.md)):
+  - the apex `usnewsmap.com` is an A record to the environment's static IP (an apex can't be a CNAME);
+  - `www` and `api` are CNAMEs to the app;
+  - each name has an `asuid` TXT record, which Container Apps checks before binding it;
+  - `CAA` records allow only DigiCert, the managed certificates' CA.
+
+  **As built:** the zone is `infra/modules/dns.bicep`. Once the delegation is live, `scripts/bootstrap.sh` binds each name to the app with a free managed certificate: the apex by HTTP validation, `www` and `api` by CNAME. It records each certificate so Bicep keeps the binding (§8.9).
+- The legacy `/loc_api` endpoints aren't kept: the old site has been offline for years.
 
 ## 8.9 Portability: redeploying into another subscription or tenant
 
@@ -203,8 +206,8 @@ The whole system can be stood up from this repository in **any** Azure subscript
 4. creates the **GitHub Environment** of the same name, restricted to the `main` branch, writes that environment's variables, and adds it to the repository variable `USNM_DEPLOY_ENVIRONMENTS`;
 5. runs `ci` on `main` (every time, so the registry holds the current `main`), which publishes the images, and waits for that run;
 6. switches to the registry (`USNM_USE_ACR=true`) and provisions again, which deploys the API;
-7. once the registrar delegates the domain to the zone, binds the apex and `www` to the Static Web App and `api` to the API with managed certificates (re-run it after delegating);
-8. deploys the web app and checks the API's `/readyz` and the site.
+7. once the registrar delegates the domain to the zone, binds the apex, `www` and `api` to the app with managed certificates (re-run it after delegating), and removes the Static Web App that used to serve the site;
+8. checks the API's `/readyz` and the site.
 
 Then, for a full corpus, start the backfill job and let the weekly ingest job publish (04 §4.4). A **new environment starts with no data**: the system of record is LoC's public data, and everything in Blob and Cosmos is derived from it by a deterministic pipeline. Rebuilding takes ~4.5 h of title sync (LoC's 20-requests/minute API limit) and ~22 h of curation with 8 workers, for about $15–20. Hand-curated state belongs in git, never only in an environment: the place-coordinate overrides (`catalog/overrides/places.json`) ship in the ingest image.
 
@@ -212,18 +215,18 @@ Then, for a full corpus, start the backfill job and let the weekly ingest job pu
 
 | Thing | Scope | Notes |
 |-------|-------|-------|
-| Resource groups `rg-usnm-{env}` and everything in them (registry, identities, storage, Cosmos, VNet, apps, jobs, Static Web App, DNS zone) | Per environment | Globally unique names carry a suffix derived from the subscription and environment, so the same environment name works in another subscription |
-| CI identity `id-usnm-ci-{env}` | Per environment | Trusts only jobs in the GitHub Environment `{env}` of the configured repository, which only `main` may use. Rights: AcrPush on its registry, and the "usnm deployer" custom role on its resource group (roll out API images, read the site's deployment token), and Managed Identity Operator on the API's identity only. No secret is stored anywhere; the web deploy reads the site's deployment token at deploy time |
-| GitHub Environment `{env}` | Per environment | Its variables are written by bootstrap. `publish` (in `ci`) and `deploy web` run once per listed environment |
+| Resource groups `rg-usnm-{env}` and everything in them (registry, identities, storage, Cosmos, VNet, apps, jobs, DNS zone) | Per environment | Globally unique names carry a suffix derived from the subscription and environment, so the same environment name works in another subscription |
+| CI identity `id-usnm-ci-{env}` | Per environment | Trusts only jobs in the GitHub Environment `{env}` of the configured repository, which only `main` may use. Rights: AcrPush on its registry, and the "usnm deployer" custom role on its resource group (roll out API images, which also carry the site), and Managed Identity Operator on the API's identity only. No secret is stored or read anywhere |
+| GitHub Environment `{env}` | Per environment | Its variables are written by bootstrap. `publish` (in `ci`) runs once per listed environment |
 | Guard-rail policy definitions (`usnm-deny-*`, `usnm-audit-*`) | Per subscription | Shared by every environment in the subscription; the assignments are per resource group. Needs Owner (or Resource Policy Contributor) on the subscription |
 | Cosmos DB free tier | One account per subscription | Bootstrap turns it off for a second environment in the same subscription (~$1–3/month serverless instead) |
-| The domain | One environment | Only the environment whose zone the registrar delegates to serves `usnewsmap.com`; others use their `*.azurestaticapps.net` and `*.azurecontainerapps.io` names |
+| The domain | One environment | Only the environment whose zone the registrar delegates to serves `usnewsmap.com`; others use their app's `*.azurecontainerapps.io` name |
 
 **Prerequisites in the target:** an account with **Owner** on the subscription (role assignments, policy definitions). No tenant-level objects are created (no app registrations; all identities are managed identities), so no Entra admin is needed. On GitHub: admin on the repository (environments and variables). A **fork** works the same way: bootstrap reads the fork's name and ids, and the federated credentials trust that repository only.
 
 **Moving production** to another subscription (or tenant):
-1. Run `scripts/bootstrap.sh <env> --subscription NEW --domain usnewsmap.com --ingest`. For an existing local azd environment, add `--move`. Without it, bootstrap refuses to rebind an environment to a different subscription. With it, bootstrap resets the settings that describe the old subscription: the registry switch-over, the API certificate, and the Cosmos DB free-tier check. Use a new environment name if the old one should keep deploying from CI meanwhile: the GitHub Environment `<env>` points at whichever subscription bootstrap wired last.
-2. Let the new environment rebuild the corpus, and check it on its `*.azurestaticapps.net` and `*.azurecontainerapps.io` names.
-3. Delegate the domain to the new zone's name servers (`azd env get-value NAME_SERVERS`), then **re-run bootstrap**. Once it sees the delegation, it binds the apex, `www` and `api` to the new apps and issues their certificates. HTTPS on the custom names needs this step.
+1. Run `scripts/bootstrap.sh <env> --subscription NEW --domain usnewsmap.com --ingest`. For an existing local azd environment, add `--move`. Without it, bootstrap refuses to rebind an environment to a different subscription. With it, bootstrap resets the settings that describe the old subscription: the registry switch-over, the domain certificates, and the Cosmos DB free-tier check. Use a new environment name if the old one should keep deploying from CI meanwhile: the GitHub Environment `<env>` points at whichever subscription bootstrap wired last.
+2. Let the new environment rebuild the corpus, and check it on its app's `*.azurecontainerapps.io` name.
+3. Delegate the domain to the new zone's name servers (`azd env get-value NAME_SERVERS`), then **re-run bootstrap**. Once it sees the delegation, it binds the apex, `www` and `api` to the new app and issues their certificates. HTTPS on the custom names needs this step.
 4. The old environment keeps serving until the delegation changes; afterwards, delete it with `azd down`.
 

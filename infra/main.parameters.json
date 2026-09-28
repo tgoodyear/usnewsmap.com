@@ -16,6 +16,8 @@
     "budgetStartDate": { "value": "${USNM_BUDGET_START=}" },
     "dnsZoneName": { "value": "${USNM_DNS_ZONE=}" },
     "apiCertificateId": { "value": "${USNM_API_CERT_ID=}" },
+    "siteCertificateId": { "value": "${USNM_SITE_CERT_ID=}" },
+    "wwwCertificateId": { "value": "${USNM_WWW_CERT_ID=}" },
     "githubRepo": { "value": "${USNM_GITHUB_REPO=tgoodyear/usnewsmap.com}" },
     "githubRepoIds": { "value": "${USNM_GITHUB_REPO_IDS=tgoodyear@116683/usnewsmap.com@1389862972}" }
   }

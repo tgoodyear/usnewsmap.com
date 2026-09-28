@@ -11,13 +11,13 @@ targetScope = 'subscription'
 @description('Environment name, e.g. dev or prod (azd sets AZURE_ENV_NAME).')
 param environmentName string
 
-@description('Region; East US 2 has ACI Spot (preview) and SWA.')
+@description('Region; East US 2 has ACI Spot (preview).')
 param location string = 'eastus2'
 
 @description('A public API image, used only while useAcr is off. Empty (the default) skips the API until CI has pushed to the registry and useAcr is on.')
 param apiImage string = ''
 
-@description('Extra origins allowed by API CORS and the tiles account. The site\'s own Static Web Apps hostname and, with dnsZoneName, the domain and its www are always allowed.')
+@description('Extra origins allowed by API CORS and the tiles account. The app\'s own hostname and, with dnsZoneName, the domain and its www are always allowed.')
 param allowedOrigins array = []
 
 @description('0 lets dev scale to zero; production keeps one warm replica.')
@@ -68,6 +68,12 @@ param dnsZoneName string = ''
 @description('Managed certificate for api.{dnsZoneName}, recorded by scripts/bootstrap.sh after it issues one.')
 param apiCertificateId string = ''
 
+@description('Managed certificate for {dnsZoneName} itself (the site), recorded by scripts/bootstrap.sh.')
+param siteCertificateId string = ''
+
+@description('Managed certificate for www.{dnsZoneName}, recorded by scripts/bootstrap.sh.')
+param wwwCertificateId string = ''
+
 // Resource names must be lowercase (Cosmos, storage).
 var env = toLower(environmentName)
 var tags = {
@@ -79,9 +85,21 @@ var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
 // Quickwit v0.9.1, copied into the registry by CI with its digest unchanged.
 var quickwitDigest = 'sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
-// The site's *.azurestaticapps.net origin, and its custom domain if it has one.
+// Where the site is served: the API app's own hostname, and the domain and
+// www if there is one. The site calls the API on its own origin, so these
+// matter for the tiles account's CORS (and any cross-origin API caller).
+var appName = 'ca-usnm-${env}'
+var appOrigin = 'https://${appName}.${containerEnv.outputs.defaultDomain}'
 var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
-var siteOrigins = union(allowedOrigins, domainOrigins, ['https://${site.outputs.defaultHostname}'])
+var siteOrigins = union(allowedOrigins, domainOrigins, [appOrigin])
+// Hostnames on the app, each bound once bootstrap has issued its certificate.
+var customDomains = empty(dnsZoneName)
+  ? []
+  : [
+      { name: dnsZoneName, certificateId: siteCertificateId }
+      { name: 'www.${dnsZoneName}', certificateId: wwwCertificateId }
+      { name: 'api.${dnsZoneName}', certificateId: apiCertificateId }
+    ]
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: 'rg-usnm-${env}'
@@ -239,15 +257,14 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
   params: {
     location: location
     tags: tags
-    name: 'ca-usnm-${env}'
+    name: appName
     environmentId: containerEnv.outputs.id
     image: useAcr ? '${registry.outputs.loginServer}/usnewsmap-api:${imageTag}' : apiImage
     quickwitImage: useAcr
       ? '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
       : 'quickwit/quickwit:v0.9.1@${quickwitDigest}'
     registryServer: useAcr ? registry.outputs.loginServer : ''
-    customDomain: empty(dnsZoneName) ? '' : 'api.${dnsZoneName}'
-    customDomainCertificateId: apiCertificateId
+    customDomains: customDomains
     identityId: identities.outputs.appId
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
@@ -258,17 +275,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
   }
 }
 
-module site 'modules/staticwebapp.bicep' = {
-  scope: rg
-  name: 'staticwebapp'
-  params: {
-    location: location
-    tags: tags
-    name: 'swa-usnm-${env}'
-  }
-}
-
-// What CI may do here: roll out API images, read the site's deployment token.
+// What CI may do here: roll the API app (and so the site) onto new images.
 module deployer 'modules/deployer.bicep' = {
   scope: rg
   name: 'deployer'
@@ -348,10 +355,9 @@ module dns 'modules/dns.bicep' = if (!empty(dnsZoneName)) {
   params: {
     tags: tags
     zoneName: dnsZoneName
-    siteId: site.outputs.id
-    siteHostname: site.outputs.defaultHostname
-    apiFqdn: deployApi ? api!.outputs.fqdn : ''
-    apiVerificationId: containerEnv.outputs.customDomainVerificationId
+    appFqdn: deployApi ? api!.outputs.fqdn : ''
+    staticIp: containerEnv.outputs.staticIp
+    verificationId: containerEnv.outputs.customDomainVerificationId
   }
 }
 
@@ -362,8 +368,10 @@ output API_URL string = !deployApi
   ? ''
   : (!empty(dnsZoneName) && !empty(apiCertificateId) ? 'https://api.${dnsZoneName}' : 'https://${api!.outputs.fqdn}')
 output API_APP string = deployApi ? api!.outputs.name : ''
-output SITE_URL string = 'https://${site.outputs.defaultHostname}'
-output SWA_NAME string = site.outputs.name
+// The domain once its certificate is bound, else the app's own hostname.
+output SITE_URL string = !deployApi
+  ? ''
+  : (!empty(dnsZoneName) && !empty(siteCertificateId) ? 'https://${dnsZoneName}' : 'https://${api!.outputs.fqdn}')
 output CONTAINER_ENV_NAME string = 'cae-usnm-${env}'
 // Set these as the domain's name servers at the registrar.
 output NAME_SERVERS string = empty(dnsZoneName) ? '' : join(dns!.outputs.nameServers, ' ')

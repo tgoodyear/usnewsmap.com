@@ -11,7 +11,7 @@
 #   --domain NAME         create the public DNS zone for NAME (e.g. usnewsmap.com)
 #   --alert-email ADDR    alerts and the $80 budget go to ADDR
 #   --ingest              deploy the ingest and backfill jobs
-#   --cleanup-legacy      remove the repository-level variables and SWA token
+#   --cleanup-legacy      remove the repository-level variables and the SWA token
 #                         secret used before per-environment deployment
 #   --move                allow an existing environment to move to another
 #                         subscription (it starts there with no data)
@@ -85,6 +85,8 @@ if [ -n "$previous" ] && [ "$previous" != "$SUBSCRIPTION" ]; then
   azd env set USNM_USE_ACR false
   azd env set USNM_API_IMAGE ""
   azd env set USNM_API_CERT_ID ""
+  azd env set USNM_SITE_CERT_ID ""
+  azd env set USNM_WWW_CERT_ID ""
   [ -z "$(aget USNM_BUDGET_START)" ] || azd env set USNM_BUDGET_START "$(date -u +%Y-%m-01)"
 fi
 azd env set AZURE_SUBSCRIPTION_ID "$SUBSCRIPTION"
@@ -151,7 +153,6 @@ evar USNM_CI_CLIENT_ID "$(aget CI_CLIENT_ID)"
 evar AZURE_TENANT_ID "$(aget AZURE_TENANT_ID)"
 evar AZURE_SUBSCRIPTION_ID "$(aget AZURE_SUBSCRIPTION_ID)"
 evar USNM_RESOURCE_GROUP "$(aget AZURE_RESOURCE_GROUP)"
-evar USNM_SWA_NAME "$(aget SWA_NAME)"
 # List the environment for the deploy workflows.
 envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2> /dev/null || true)
 if ! grep -q "\"$ENV_NAME\"" <<< "$envs"; then
@@ -192,8 +193,8 @@ if [ "$USE_ACR" != true ]; then
   provision
 fi
 
-# Names on the site and the API, once the registrar delegates the domain to
-# the zone (the certificates are validated through DNS).
+# Names on the app (the site and the API), once the registrar delegates the
+# domain to the zone.
 DOMAIN=$(aget USNM_DNS_ZONE)
 if [ -n "$DOMAIN" ]; then
   step "Custom domains for $DOMAIN"
@@ -203,52 +204,52 @@ if [ -n "$DOMAIN" ]; then
     echo "  $(aget NAME_SERVERS)"
     echo "then re-run this script to bind the names."
   else
-    RG=$(aget AZURE_RESOURCE_GROUP) SWA=$(aget SWA_NAME) APP=$(aget API_APP) CAE=$(aget CONTAINER_ENV_NAME)
+    RG=$(aget AZURE_RESOURCE_GROUP) APP=$(aget API_APP) CAE=$(aget CONTAINER_ENV_NAME)
     names() { tr '\t' '\n' | grep -Fqx "$1"; }
-    # The site: www validates by its CNAME; the apex by a TXT token in the zone.
-    hosts=$(az staticwebapp hostname list -n "$SWA" -g "$RG" --query "[].[name, domainName]" -o tsv)
-    names "www.$DOMAIN" <<< "$hosts" ||
-      az staticwebapp hostname set -n "$SWA" -g "$RG" --hostname "www.$DOMAIN" -o none
-    if ! names "$DOMAIN" <<< "$hosts"; then
-      az staticwebapp hostname set -n "$SWA" -g "$RG" --hostname "$DOMAIN" \
-        --validation-method dns-txt-token --no-wait -o none
-      token=""
-      for _ in $(seq 30); do
-        token=$(az staticwebapp hostname show -n "$SWA" -g "$RG" --hostname "$DOMAIN" \
-          --query "validationToken || properties.validationToken" -o tsv 2> /dev/null || true)
-        [ -n "$token" ] && break
-        sleep 10
-      done
-      [ -n "$token" ] || die "Static Web Apps gave no validation token for $DOMAIN"
-      az network dns record-set txt add-record -g "$RG" -z "$DOMAIN" -n _dnsauth -v "$token" -o none
-      echo "$DOMAIN is validating (usually minutes, up to a few hours); it serves the site once done"
+    # The Static Web App that used to serve the site deployed with a shared
+    # token (ADR-0009). Provisioning never deletes, so remove it here, with
+    # the TXT record that validated its apex.
+    SWA="swa-usnm-$ENV_NAME"
+    if az staticwebapp show -n "$SWA" -g "$RG" -o none 2> /dev/null; then
+      echo "removing the Static Web App $SWA: the API app serves the site now"
+      az staticwebapp delete -n "$SWA" -g "$RG" --yes -o none
     fi
-    # The API: a managed certificate, recorded so that provisioning keeps the binding.
-    if [ -z "$(aget USNM_API_CERT_ID)" ]; then
-      az containerapp hostname list -n "$APP" -g "$RG" --query "[].name" -o tsv | names "api.$DOMAIN" ||
-        az containerapp hostname add -n "$APP" -g "$RG" --hostname "api.$DOMAIN" -o none
-      az containerapp hostname bind -n "$APP" -g "$RG" --hostname "api.$DOMAIN" \
-        --environment "$CAE" --validation-method CNAME -o none
+    az network dns record-set txt delete -g "$RG" -z "$DOMAIN" -n _dnsauth --yes -o none 2> /dev/null || true
+    # Each name: add it to the app, bind a managed certificate, and record the
+    # certificate so provisioning keeps the binding. www and api validate by
+    # their CNAMEs; the apex over HTTP, through its A record.
+    bound=false
+    bind() {
+      local host=$1 how=$2 var=$3 cert
+      [ -z "$(aget "$var")" ] || return 0
+      az containerapp hostname list -n "$APP" -g "$RG" --query "[].name" -o tsv | names "$host" ||
+        az containerapp hostname add -n "$APP" -g "$RG" --hostname "$host" -o none
+      az containerapp hostname bind -n "$APP" -g "$RG" --hostname "$host" \
+        --environment "$CAE" --validation-method "$how" -o none ||
+        die "binding $host failed. If its DNS record changed in the last hour, resolvers may still cache the old one; re-run later."
       cert=$(az containerapp show -n "$APP" -g "$RG" \
-        --query "properties.configuration.ingress.customDomains[?name=='api.$DOMAIN'].certificateId | [0]" -o tsv)
-      [ -n "$cert" ] || die "api.$DOMAIN has no certificate after binding"
-      azd env set USNM_API_CERT_ID "$cert"
-      provision
-    fi
+        --query "properties.configuration.ingress.customDomains[?name=='$host'].certificateId | [0]" -o tsv)
+      [ -n "$cert" ] || die "$host has no certificate after binding"
+      azd env set "$var" "$cert"
+      bound=true
+    }
+    bind "api.$DOMAIN" CNAME USNM_API_CERT_ID
+    bind "www.$DOMAIN" CNAME USNM_WWW_CERT_ID
+    bind "$DOMAIN" HTTP USNM_SITE_CERT_ID
+    [ "$bound" = false ] || provision
   fi
 fi
 
-API_URL=$(aget API_URL)
 evar USNM_API_APP "$(aget API_APP)"
-evar USNM_API_URL "$API_URL"
-
-step "Deploying the web app"
-run_and_wait "deploy web" -f environment="$ENV_NAME"
+# Variables of the retired web deploy workflow.
+for v in USNM_SWA_NAME USNM_API_URL; do
+  gh variable delete "$v" --env "$ENV_NAME" -R "$REPO" 2> /dev/null && echo "deleted variable $v" || true
+done
 
 step "Checking"
+API_URL=$(aget API_URL) SITE=$(aget SITE_URL)
 curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "$API_URL/readyz" > /dev/null
 echo "API  $API_URL  ready"
-SITE=$(aget SITE_URL)
 curl -fsS --retry 10 --retry-delay 6 --retry-all-errors -o /dev/null "$SITE"
 echo "site $SITE  up"
 

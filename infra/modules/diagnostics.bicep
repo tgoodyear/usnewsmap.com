@@ -16,10 +16,6 @@
 // Not covered, deliberately:
 // - Application Insights: workspace-based, so its telemetry is already in
 //   this workspace; its resource logs would store every row twice.
-// - The Static Web App: Azure lists log categories for it, but diagnostic
-//   settings aren't offered for Static Web Apps in practice
-//   (github.com/Azure/static-web-apps/issues/1295). Left out rather than
-//   risk a failed provision.
 // - Resources with platform metrics only (DNS zones, private endpoints,
 //   Container Apps and jobs): no logs to send, and Azure Monitor keeps their
 //   metrics 93 days at no cost.

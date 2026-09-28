@@ -36,12 +36,10 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-  subgraph Web
-    SWA[Azure Static Web Apps · Free<br/>usnewsmap.com · TLS · global static CDN<br/>React + TypeScript SPA · MapLibre GL + deck.gl]
-  end
+  SPA[Browser · React + TypeScript SPA<br/>MapLibre GL + deck.gl]
   subgraph "Azure Container Apps environment (Consumption)"
-    subgraph APP["ca-usnm · api.usnewsmap.com · min 1 / max 2 replicas"]
-      API[api container<br/>Rust · axum]
+    subgraph APP["ca-usnm · usnewsmap.com, www, api · min 1 / max 2 replicas"]
+      API[api container<br/>Rust · axum<br/>serves /v1 and the built site]
       QW[quickwit container<br/>searcher · read-only metastore<br/>polling · localhost only]
     end
     JOBS[[Container Apps Jobs<br/>weekly: discover · batch · stats<br/>incremental index · prewarm]]
@@ -57,8 +55,8 @@ flowchart LR
   COS[(Cosmos DB · free tier · private endpoint<br/>document state + work queue: titles · batches<br/>issues · index_runs)]
   AI[Application Insights<br/>+ Log Analytics]
 
-  SWA -. SPA calls GET /v1/* .-> API
-  SWA -. map tiles .-> TILES
+  SPA -. site files + GET /v1/*, same origin .-> API
+  SPA -. map tiles .-> TILES
   API -->|localhost ES-compatible REST| QW
   API -->|startup load| REF
   API <--> CACHE
@@ -78,7 +76,7 @@ The **growth profile** adds Azure Front Door in front of both origins (edge cach
 
 | Component | Tech | Responsibility | Scales by |
 |-----------|------|----------------|-----------|
-| **Static Web Apps** | SWA Free | Serves the SPA at `usnewsmap.com` with TLS and global static distribution; route rules (SPA fallback, `/loc_api/*` → 410); PR preview environments | Managed |
+| **Site hosting** | The API app | Serves the built SPA at `usnewsmap.com` and `www` from the API image, same origin as `/v1`, with free managed TLS; SPA fallback, cache and security headers in code ([ADR-0010](adr/0010-site-served-by-the-api.md)) | Managed |
 | **Web app** | React 19 + TypeScript + Vite; MapLibre GL JS; deck.gl; uPlot; TanStack Query | UI, URL state, **client-side playback** from aggregate cubes, accessibility views | Static |
 | **Search API** (`api` container) | Rust, axum/tokio, reqwest, moka | Parse and validate queries → backend DSL; run aggregate, hit and snippet queries; join with reference data; normalize; encode responses; **three cache layers** (browser, in-process, Blob); rate limiting; OpenAPI | Replicas (max 2) |
 | **Search engine** (`quickwit` sidecar) | **Quickwit** (Rust, Apache-2.0); Azure AI Search in the growth profile | **Read-only** serving: searcher role with the file-backed metastore opened in polling mode. No indexer or janitor role runs here | With its replica; splits on Blob |
@@ -157,11 +155,11 @@ sequenceDiagram
 | API shape | Stateless, GET, aggregate-first, CDN-cacheable; client-side temporal playback | [0003](adr/0003-stateless-aggregate-first-api.md) |
 | API language | Rust (axum) | [0004](adr/0004-rust-api.md) |
 | Operating constraints | < $80/mo, no VMs, IaC, single-maintainer operable | [0005](adr/0005-sustainability-constraints.md) |
-| Hosting profile | No Front Door; SWA Free; one container app (API + Quickwit sidecar); ACI Spot for backfill | [0006](adr/0006-lean-hosting-profile.md) |
+| Hosting profile | No Front Door; one container app (API + Quickwit sidecar) that also serves the site; ACI Spot for backfill | [0006](adr/0006-lean-hosting-profile.md), [0010](adr/0010-site-served-by-the-api.md) |
 | Unit of retrieval | **Page** at launch (matches LoC URLs and the legacy); article level later (American Stories) | [04](04-data-sources-and-ingestion.md) |
 | Geography | Place = title's place of publication (point), resolved from LoC metadata and GNIS; state and county from the same source | [04](04-data-sources-and-ingestion.md) |
 | Cache invalidation | `index_version` is included in every ETag and cache key (browser, in-process, Blob `cache/{index_version}/`); a new index version means new URLs and a new cache prefix | [06](06-api-design.md) |
-| Identity | Entra identities and RBAC only: managed identities for workloads, OIDC federation for CI; local (key) auth off on every service and denied by policy; no shared keys, SAS or connection strings anywhere (one open exception: the SWA deploy token) | [0009](adr/0009-entra-identity-only.md) |
+| Identity | Entra identities and RBAC only: managed identities for workloads, OIDC federation for CI; local (key) auth off on every service and denied by policy; no shared keys, SAS or connection strings anywhere | [0009](adr/0009-entra-identity-only.md) |
 | Private networking | VNet-integrated Container Apps env; private endpoints for Blob and Cosmos; public access disabled except during a guarded Spot-backfill window | [0008](adr/0008-private-networking.md) |
 
 ## 3.6 Repository layout (proposed for `usnewsmap.com`)
