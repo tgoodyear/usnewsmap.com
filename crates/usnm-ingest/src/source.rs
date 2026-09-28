@@ -176,7 +176,7 @@ async fn enqueue_one(state: &State, l: &ListedBatch) -> anyhow::Result<Outcome> 
     })
 }
 
-fn local_path(url: &str) -> Option<&str> {
+pub(crate) fn local_path(url: &str) -> Option<&str> {
     url.strip_prefix("file://")
         .or_else(|| (!url.contains("://")).then_some(url))
 }
@@ -192,8 +192,9 @@ fn check_remote(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// GET `url`, retrying 429 and 5xx with backoff (honoring `Retry-After`)
-/// until the response starts.
+/// GET `url`, retrying 5xx and connection errors with backoff (honoring
+/// `Retry-After`) until the response starts. A 429 is a [`Throttled`] error
+/// at once: LoC blocks the IP for about an hour, and every retry extends it.
 async fn get(url: &str) -> anyhow::Result<reqwest::Response> {
     check_remote(url)?;
     let client = reqwest::Client::builder()
@@ -204,9 +205,16 @@ async fn get(url: &str) -> anyhow::Result<reqwest::Response> {
     let mut delay = Duration::from_secs(5);
     for attempt in 1..=6 {
         let resp = client.get(url).send().await;
+        let why = match &resp {
+            Ok(r) => r.status().to_string(),
+            Err(e) => e.to_string(),
+        };
         let wait = match resp {
             Ok(r) if r.status().is_success() => return Ok(r),
-            Ok(r) if r.status().as_u16() == 429 || r.status().is_server_error() => r
+            Ok(r) if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                return Err(Throttled(url.to_owned()).into())
+            }
+            Ok(r) if r.status().is_server_error() => r
                 .headers()
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
@@ -222,6 +230,7 @@ async fn get(url: &str) -> anyhow::Result<reqwest::Response> {
             url,
             attempt,
             wait_secs = wait.as_secs(),
+            error = %why,
             "fetch failed; backing off"
         );
         tokio::time::sleep(wait.min(Duration::from_secs(600))).await;
@@ -530,6 +539,27 @@ mod tests {
             let r = std::io::Read::read_to_end(&mut d.reader, &mut out).map(|_| out);
             (r, d)
         })
+    }
+
+    #[tokio::test]
+    async fn a_429_is_throttled_without_a_retry() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/batch.tar", listener.local_addr().unwrap());
+        let hits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let seen = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut req = [0u8; 4096];
+                let _ = sock.read(&mut req).await;
+                let reply = "HTTP/1.1 429 Too Many Requests\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        let err = open(&url).await.err().expect("a 429 fails");
+        assert!(err.downcast_ref::<Throttled>().is_some(), "{err:#}");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

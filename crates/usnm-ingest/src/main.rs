@@ -11,7 +11,7 @@ use usnm_ingest::sink::{IndexSink, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::source::{self, ListedBatch};
 use usnm_ingest::state::{BatchStatus, State};
 use usnm_ingest::titles;
-use usnm_ingest::worker::Worker;
+use usnm_ingest::worker::{self, Worker};
 use usnm_ingest::{cosmos::CosmosDocs, owner_id};
 use usnm_store::credential;
 
@@ -86,6 +86,10 @@ enum Command {
         enqueue: bool,
         #[arg(long, default_value = source::LOC_DATASETS)]
         list: String,
+        /// Seconds between bulk downloads across every worker (LoC allows 10
+        /// per 10 minutes per IP); 0 doesn't pace.
+        #[arg(long, default_value_t = worker::FETCH_INTERVAL_SECS)]
+        fetch_interval_secs: u64,
     },
     /// Build a new index and reference snapshot from curated batches, then publish.
     Release {
@@ -207,12 +211,19 @@ async fn geocode(reference: &dyn usnm_store::ObjectStore) -> anyhow::Result<()> 
     Ok(())
 }
 
-async fn curate(cli: &Stores, state: &State, max: Option<usize>) -> anyhow::Result<()> {
+async fn curate(
+    cli: &Stores,
+    state: &State,
+    max: Option<usize>,
+    fetch_interval_secs: u64,
+) -> anyhow::Result<()> {
     let worker = Worker {
         state: state.clone(),
         curated: usnm_store::open(&cli.curated)?,
         owner: owner_id(),
         lease: chrono::Duration::hours(2),
+        fetch_interval: (fetch_interval_secs > 0)
+            .then_some(chrono::Duration::seconds(fetch_interval_secs as i64)),
     };
     let n = worker.run(max).await?;
     tracing::info!(curated = n, "curation finished");
@@ -326,11 +337,12 @@ async fn main() -> anyhow::Result<()> {
             max_batches,
             enqueue: first,
             list,
+            fetch_interval_secs,
         } => {
             if *first {
                 enqueue(&state, list, &[]).await?;
             }
-            curate(&cli.stores, &state, *max_batches).await
+            curate(&cli.stores, &state, *max_batches, *fetch_interval_secs).await
         }
         Command::Release {
             full,
@@ -345,7 +357,7 @@ async fn main() -> anyhow::Result<()> {
             target,
         } => {
             let listed = enqueue(&state, list, batches).await?;
-            curate(&cli.stores, &state, None).await?;
+            curate(&cli.stores, &state, None, worker::FETCH_INTERVAL_SECS).await?;
             // Every curated title needs a catalog entry before release.
             let lccns = listed.into_iter().flat_map(|b| b.lccns);
             if titles_sync(&cli.stores, &state, lccns, false, titles::LOC_ITEMS).await? {

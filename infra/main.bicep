@@ -49,7 +49,7 @@ param ingestJobs bool = false
 param ingestCron string = ''
 
 @description('Parallel curation workers in the backfill job.')
-param backfillWorkers int = 8
+param backfillWorkers int = 4
 
 @description('Cosmos DB free tier (one per subscription). False makes the account serverless.')
 param cosmosFreeTier bool = true
