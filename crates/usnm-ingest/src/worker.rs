@@ -167,7 +167,7 @@ impl Worker {
             if let Ok(wait) = (slot - Utc::now()).to_std() {
                 tokio::time::sleep(wait).await;
             }
-            if self.state.fetches_blocked_until().await?.is_none() {
+            if self.state.fetch_allowed().await? {
                 return Ok(());
             }
         }

@@ -286,19 +286,40 @@ impl State {
             let held = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await?;
             let (next, blocked) = pacer(held.as_ref());
             let slot = next.map_or(now, |n| n.max(now));
-            if self.set_pacer(held.as_ref(), slot + interval, blocked).await? {
+            if self
+                .set_pacer(held.as_ref(), slot + interval, blocked)
+                .await?
+            {
                 return Ok(slot);
             }
         }
         bail!("the download pacer kept changing concurrently")
     }
 
-    /// When the recorded block lifts, while one is in force. A slot reserved
-    /// before the block was recorded is void: its holder checks this after
-    /// waiting and reserves again.
-    pub async fn fetches_blocked_until(&self) -> anyhow::Result<Option<DateTime<Utc>>> {
-        let held = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await?;
-        Ok(pacer(held.as_ref()).1.filter(|u| *u > Utc::now()))
+    /// Whether a download may start now: `false` while a recorded block is in
+    /// force. A slot reserved before the block was recorded is void, so its
+    /// holder asks this after waiting and reserves again if it must. A plain
+    /// read isn't enough: Cosmos's Session consistency is per process, so
+    /// another worker's block may not be visible yet. Rewriting the item with
+    /// its ETag only succeeds against the latest version.
+    pub async fn fetch_allowed(&self) -> anyhow::Result<bool> {
+        for _ in 0..20 {
+            let Some(held) = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await? else {
+                return Ok(true);
+            };
+            if pacer(Some(&held)).1.is_some_and(|u| u > Utc::now()) {
+                return Ok(false);
+            }
+            if self
+                .docs
+                .replace(OPS, FETCH_PACER, &held.doc, &held.etag)
+                .await?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        bail!("the download pacer kept changing concurrently")
     }
 
     /// Hold every worker's bulk downloads until `until`: LoC blocks an IP for
@@ -394,14 +415,20 @@ mod tests {
     #[tokio::test]
     async fn a_block_after_a_reservation_is_seen_by_its_holder() {
         let s = State::new(Arc::new(MemoryDocs::default()));
-        assert!(s.fetches_blocked_until().await.unwrap().is_none());
+        assert!(s.fetch_allowed().await.unwrap());
         s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap();
-        let until = Utc::now() + Duration::hours(1);
-        s.block_fetches(until).await.unwrap();
-        assert_eq!(s.fetches_blocked_until().await.unwrap(), Some(until));
+        assert!(s.fetch_allowed().await.unwrap());
+        let later = Utc::now() + Duration::hours(1);
+        s.block_fetches(later).await.unwrap();
+        assert!(!s.fetch_allowed().await.unwrap());
         // Reserving keeps the block on record.
         s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap();
-        assert_eq!(s.fetches_blocked_until().await.unwrap(), Some(until));
+        assert!(!s.fetch_allowed().await.unwrap());
+        // A block that has passed doesn't hold anything.
+        let s2 = State::new(Arc::new(MemoryDocs::default()));
+        let earlier = Utc::now() - Duration::seconds(1);
+        s2.block_fetches(earlier).await.unwrap();
+        assert!(s2.fetch_allowed().await.unwrap());
     }
 
     #[tokio::test]
