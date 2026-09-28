@@ -30,12 +30,23 @@ use crate::state::{Batch, BatchStatus, Curated, Issue, Lease, State};
 /// Attempts before a batch is marked failed (an operator re-queues it).
 pub const MAX_ATTEMPTS: u32 = 5;
 
+/// Seconds between bulk downloads across every worker. LoC allows 10 bulk
+/// requests per 10 minutes per IP (04 §4.1); 75 s leaves room for the odd
+/// retry after a server error.
+pub const FETCH_INTERVAL_SECS: u32 = 75;
+
+/// How long every worker holds its downloads after LoC answers 429.
+const THROTTLE_BLOCK: Duration = Duration::hours(1);
+
 pub struct Worker {
     pub state: State,
     pub curated: Arc<dyn ObjectStore>,
     /// Unique per process: lease owner and part of the attempt path.
     pub owner: String,
     pub lease: Duration,
+    /// Spacing between downloads from remote sources, shared by every worker
+    /// through the state store; `None` doesn't pace (local archives, tests).
+    pub fetch_interval: Option<Duration>,
 }
 
 /// Pages per (lccn → day → pages), stored beside the parts.
@@ -73,7 +84,7 @@ impl Worker {
             if skip.contains(&b.batch) || b.lease.as_ref().is_some_and(|l| l.until > now) {
                 continue;
             }
-            // Workers that crash never reach release_failed, so the attempt
+            // Workers that crash never reach release, so the attempt
             // cap is also enforced here.
             if b.attempts >= MAX_ATTEMPTS {
                 b.status = BatchStatus::Failed;
@@ -113,6 +124,11 @@ impl Worker {
                 break;
             };
             let name = format!("{}_ver{:02}", batch.batch, batch.version);
+            if let Some(interval) = self.fetch_interval {
+                if source::local_path(&batch.source_url).is_none() {
+                    self.wait_for_fetch_slot(interval).await?;
+                }
+            }
             // A failed commit (e.g. a newer version was queued meanwhile) is
             // handled like a failed curation: clear the lease and re-queue.
             let result = match self.curate(&batch).await {
@@ -124,9 +140,18 @@ impl Worker {
                     tracing::info!(batch = %name, "curated");
                     done += 1;
                 }
+                // LoC is refusing downloads from this IP. Every worker waits
+                // out the block, and the batch doesn't lose an attempt.
+                Err(e) if e.downcast_ref::<source::Throttled>().is_some() => {
+                    tracing::warn!(batch = %name, error = %format!("{e:#}"), "throttled; downloads pause for an hour");
+                    self.state
+                        .block_fetches(Utc::now() + THROTTLE_BLOCK)
+                        .await?;
+                    self.release(&batch.batch, &format!("{e:#}"), false).await?;
+                }
                 Err(e) => {
                     tracing::error!(batch = %name, error = %format!("{e:#}"), "curation failed");
-                    self.release_failed(&batch.batch, &format!("{e:#}")).await?;
+                    self.release(&batch.batch, &format!("{e:#}"), true).await?;
                     failed.insert(batch.batch);
                 }
             }
@@ -134,9 +159,24 @@ impl Worker {
         Ok(done)
     }
 
+    /// Wait for a bulk-download slot. A slot reserved before another worker
+    /// hit a 429 is void once that block is recorded, so check after waiting.
+    async fn wait_for_fetch_slot(&self, interval: Duration) -> anyhow::Result<()> {
+        loop {
+            let slot = self.state.reserve_fetch_slot(interval).await?;
+            if let Ok(wait) = (slot - Utc::now()).to_std() {
+                tokio::time::sleep(wait).await;
+            }
+            if self.state.fetch_allowed().await? {
+                return Ok(());
+            }
+        }
+    }
+
     /// Curate the claimed version of `b` into a new attempt path.
     pub async fn curate(&self, b: &Batch) -> anyhow::Result<Curated> {
-        let download = source::open(&b.source_url).await?;
+        // One request per slot: a failed attempt is retried later, paced.
+        let download = source::open_once(&b.source_url).await?;
         // Unique per claim: the attempt count rises with every claim of this
         // version, and the sub-second time separates re-queued runs.
         let attempt = format!(
@@ -300,7 +340,10 @@ impl Worker {
         Ok(())
     }
 
-    async fn release_failed(&self, batch: &str, error: &str) -> anyhow::Result<()> {
+    /// Clear this worker's lease and re-queue the batch (or mark it failed
+    /// once it's out of attempts). An attempt that wasn't `counted` is given
+    /// back, e.g. when the source refused to serve it at all.
+    async fn release(&self, batch: &str, error: &str, counted: bool) -> anyhow::Result<()> {
         let Some((mut b, etag)) = self.state.batch(batch).await? else {
             return Ok(());
         };
@@ -309,6 +352,9 @@ impl Worker {
         }
         b.lease = None;
         b.last_error = Some(error.chars().take(2000).collect());
+        if !counted {
+            b.attempts = b.attempts.saturating_sub(1);
+        }
         b.status = if b.attempts >= MAX_ATTEMPTS {
             BatchStatus::Failed
         } else {

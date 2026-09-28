@@ -15,6 +15,8 @@ pub const BATCHES: &str = "batches";
 pub const ISSUES: &str = "issues";
 pub const INDEX_RUNS: &str = "index_runs";
 pub const OPS: &str = "ops";
+/// The `ops` item that paces bulk downloads from LoC across every worker.
+const FETCH_PACER: &str = "loc-bulk-pacer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -274,6 +276,87 @@ impl State {
         bail!("lock `{name}` kept changing concurrently")
     }
 
+    /// Reserve the next bulk-download slot and return when it starts. Every
+    /// worker and job execution shares one egress IP, and LoC allows 10 bulk
+    /// requests per 10 minutes per IP (04 §4.1), so slots come from one item,
+    /// `interval` apart, and none start before a recorded block lifts.
+    pub async fn reserve_fetch_slot(&self, interval: Duration) -> anyhow::Result<DateTime<Utc>> {
+        for _ in 0..20 {
+            let now = Utc::now();
+            let held = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await?;
+            let (next, blocked) = pacer(held.as_ref());
+            let slot = next.map_or(now, |n| n.max(now));
+            if self
+                .set_pacer(held.as_ref(), slot + interval, blocked)
+                .await?
+            {
+                return Ok(slot);
+            }
+        }
+        bail!("the download pacer kept changing concurrently")
+    }
+
+    /// Whether a download may start now: `false` while a recorded block is in
+    /// force. A slot reserved before the block was recorded is void, so its
+    /// holder asks this after waiting and reserves again if it must. A plain
+    /// read isn't enough: Cosmos's Session consistency is per process, so
+    /// another worker's block may not be visible yet. Rewriting the item with
+    /// its ETag only succeeds against the latest version.
+    pub async fn fetch_allowed(&self) -> anyhow::Result<bool> {
+        for _ in 0..20 {
+            let Some(held) = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await? else {
+                return Ok(true);
+            };
+            if pacer(Some(&held)).1.is_some_and(|u| u > Utc::now()) {
+                return Ok(false);
+            }
+            if self
+                .docs
+                .replace(OPS, FETCH_PACER, &held.doc, &held.etag)
+                .await?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        bail!("the download pacer kept changing concurrently")
+    }
+
+    /// Hold every worker's bulk downloads until `until`: LoC blocks an IP for
+    /// about an hour once it answers 429, and each retry extends the block.
+    pub async fn block_fetches(&self, until: DateTime<Utc>) -> anyhow::Result<()> {
+        for _ in 0..20 {
+            let held = self.docs.get(OPS, FETCH_PACER, FETCH_PACER).await?;
+            let (next, blocked) = pacer(held.as_ref());
+            if blocked.is_some_and(|b| b >= until) {
+                return Ok(());
+            }
+            let next = next.map_or(until, |n| n.max(until));
+            if self.set_pacer(held.as_ref(), next, Some(until)).await? {
+                return Ok(());
+            }
+        }
+        bail!("the download pacer kept changing concurrently")
+    }
+
+    /// Write the pacer, if it hasn't changed since `held` was read.
+    async fn set_pacer(
+        &self,
+        held: Option<&Versioned>,
+        next: DateTime<Utc>,
+        blocked_until: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<bool> {
+        let doc = serde_json::json!({
+            "id": FETCH_PACER, "kind": FETCH_PACER, "next": next,
+            "blocked_until": blocked_until,
+        });
+        Ok(match held {
+            Some(h) => self.docs.replace(OPS, FETCH_PACER, &doc, &h.etag).await?,
+            None => self.docs.create(OPS, FETCH_PACER, &doc).await?,
+        }
+        .is_some())
+    }
+
     pub async fn unlock(&self, name: &str, owner: &str) -> anyhow::Result<()> {
         if let Some(held) = self.docs.get(OPS, name, name).await? {
             if held.doc["owner"].as_str() == Some(owner) {
@@ -287,10 +370,66 @@ impl State {
     }
 }
 
+/// The pacer's next free slot and the end of its recorded block, if any.
+fn pacer(held: Option<&Versioned>) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+    let at = |field: &str| -> Option<DateTime<Utc>> {
+        held.and_then(|h| serde_json::from_value(h.doc[field].clone()).ok())
+    };
+    (at("next"), at("blocked_until"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::docs::MemoryDocs;
+
+    #[tokio::test]
+    async fn download_slots_are_spaced_across_concurrent_workers() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        let gap = Duration::seconds(75);
+        let mut slots = Vec::new();
+        for _ in 0..3 {
+            let (a, b) = tokio::join!(s.reserve_fetch_slot(gap), s.reserve_fetch_slot(gap));
+            slots.push(a.unwrap());
+            slots.push(b.unwrap());
+        }
+        slots.sort();
+        for pair in slots.windows(2) {
+            assert!(pair[1] - pair[0] >= gap, "{slots:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_block_holds_every_later_slot() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        let until = Utc::now() + Duration::hours(1);
+        s.block_fetches(until).await.unwrap();
+        // An earlier block never shortens a later one.
+        s.block_fetches(Utc::now()).await.unwrap();
+        assert_eq!(
+            s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap(),
+            until
+        );
+    }
+
+    #[tokio::test]
+    async fn a_block_after_a_reservation_is_seen_by_its_holder() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        assert!(s.fetch_allowed().await.unwrap());
+        s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap();
+        assert!(s.fetch_allowed().await.unwrap());
+        let later = Utc::now() + Duration::hours(1);
+        s.block_fetches(later).await.unwrap();
+        assert!(!s.fetch_allowed().await.unwrap());
+        // Reserving keeps the block on record.
+        s.reserve_fetch_slot(Duration::seconds(75)).await.unwrap();
+        assert!(!s.fetch_allowed().await.unwrap());
+        // A block that has passed doesn't hold anything.
+        let s2 = State::new(Arc::new(MemoryDocs::default()));
+        let earlier = Utc::now() - Duration::seconds(1);
+        s2.block_fetches(earlier).await.unwrap();
+        assert!(s2.fetch_allowed().await.unwrap());
+    }
 
     #[tokio::test]
     async fn concurrent_renewals_by_the_holder_both_succeed() {

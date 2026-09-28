@@ -170,6 +170,7 @@ impl Env {
             curated: self.curated.clone(),
             owner: owner.into(),
             lease: chrono::Duration::hours(2),
+            fetch_interval: None,
         }
     }
 

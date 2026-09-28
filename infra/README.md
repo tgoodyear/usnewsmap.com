@@ -143,12 +143,15 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
 
 ## Ingest jobs
 
-1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `scripts/settings.sh <env> USNM_INGEST_JOBS true` and `scripts/provision.sh <env>` on an environment already on the registry). Optionally set a weekly schedule with `scripts/settings.sh <env> USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 8).
+1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `scripts/settings.sh <env> USNM_INGEST_JOBS true` and `scripts/provision.sh <env>` on an environment already on the registry). Optionally set a weekly schedule with `scripts/settings.sh <env> USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 4).
 2. The catalog (`reference/catalog/titles.json`, `places.json`) is built by `titles-sync`, which `run` calls before every release. Coordinate corrections live in git, in `catalog/overrides/places.json` (`[{city, state, lat, lon}]`), and ship in the ingest image; the next run applies them.
 3. Backfill, then publish the first version:
    ```sh
    RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
-   # Queue every batch from LoC's listing and curate it with 8 workers (~22 h).
+   # Queue every batch from LoC's listing and curate it. Downloads are paced to
+   # LoC's limit (10 bulk requests per 10 minutes per IP), one every 75 s across
+   # all workers, so this takes about 2.5 days. Each execution stops after 24 h:
+   # start it again until the queue is empty (it resumes where it left off).
    az containerapp job start -n "$(scripts/settings.sh prod BACKFILL_JOB)" -g "$RG"
    # When that has finished: curate any leftovers, build the base index, publish.
    az containerapp job start -n "$(scripts/settings.sh prod INGEST_JOB)" -g "$RG"
