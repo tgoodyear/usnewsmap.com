@@ -678,3 +678,40 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
     assert!(r.run_held(&mut sink, &lease).await.is_err());
     assert!(e.reference.get("current.json").await.unwrap().is_none());
 }
+
+/// A batch whose title isn't in the catalog yet waits for a later release;
+/// the batches that are ready publish without it.
+#[tokio::test]
+async fn batches_with_uncatalogued_titles_wait_for_a_later_release() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let ready: Vec<&Page> = pages
+        .iter()
+        .filter(|p| !p.text.is_empty())
+        .take(20)
+        .collect();
+    let unknown = Page {
+        lccn: "sn99999999".into(),
+        date: ready[0].date,
+        seq: 1,
+        text: "armistice".into(),
+    };
+    let a = e.root.join("batch_fx_ready_ver01.tar.gz");
+    let b = e.root.join("batch_fx_new_ver01.tar.gz");
+    write_archive(&a, &ready, true, true);
+    write_archive(&b, &[&unknown], true, true);
+    source::enqueue(
+        &e.state,
+        &[
+            listed("batch_fx_ready_ver01", &a, None),
+            listed("batch_fx_new_ver01", &b, None),
+        ],
+    )
+    .await
+    .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let p = e.release(1, false).await.unwrap();
+    assert_eq!(p.pages, 20);
+    // Nothing is ready to add until the title is catalogued.
+    assert!(e.release(2, false).await.is_none());
+}

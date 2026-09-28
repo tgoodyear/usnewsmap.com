@@ -9,6 +9,11 @@
 //!   deltas. Replacements (new batch versions) and catalog changes to
 //!   published titles take effect only here (04 §4.7).
 //!
+//! A curated batch whose titles aren't all in the catalog yet waits for a
+//! later release (it counts as new until it's published): `titles-sync` is
+//! paced and stops on LoC's rate limit, and a backlog of titles shouldn't
+//! hold up the batches that are ready.
+//!
 //! The Cosmos `ops/quickwit-writer` lock makes this the only writer. Indexes
 //! are never rewritten: a failed run leaves an unpublished index for the
 //! janitor, and the retry builds a new one.
@@ -48,6 +53,36 @@ pub struct Release {
     pub synthetic: bool,
     /// Names versions and stamps `published_at`.
     pub now: DateTime<Utc>,
+}
+
+/// The batches whose titles are all in `catalog`. The others are logged and
+/// left for a later release.
+fn catalogued(batches: Vec<RunBatch>, catalog: &Catalog) -> Vec<RunBatch> {
+    let is_ready = |b: &RunBatch| b.curated.lccns.iter().all(|l| catalog.title(l).is_some());
+    let mut ready = Vec::new();
+    let mut waiting = Vec::new();
+    for b in batches {
+        if is_ready(&b) {
+            ready.push(b);
+        } else {
+            waiting.push(b);
+        }
+    }
+    if !waiting.is_empty() {
+        let titles: BTreeSet<&str> = waiting
+            .iter()
+            .flat_map(|b| &b.curated.lccns)
+            .filter(|lccn| catalog.title(lccn).is_none())
+            .map(String::as_str)
+            .collect();
+        tracing::warn!(
+            batches = waiting.len(),
+            titles = titles.len(),
+            first = ?waiting.iter().take(5).map(|b| b.batch.as_str()).collect::<Vec<_>>(),
+            "batches wait for titles missing from the catalog (run titles-sync)"
+        );
+    }
+    ready
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +228,7 @@ impl Release {
                 .into_iter()
                 .map(|(batch, curated)| RunBatch { batch, curated })
                 .collect();
+            let all = catalogued(all, &current);
             (all.clone(), all, current, Vec::new())
         } else {
             let prev = previous
@@ -222,6 +258,13 @@ impl Release {
             }
             let published_catalog = self.load_snapshot_catalog(&prev.index_version).await?;
             let catalog = Catalog::carried_forward(&published_catalog, &current)?;
+            let new = catalogued(new, &catalog);
+            if new.is_empty() {
+                tracing::info!(
+                    "no newly curated batches with catalogued titles; nothing to release"
+                );
+                return Ok(None);
+            }
             let mut all = prev.batches.clone();
             all.extend(new.iter().cloned());
             (new, all, catalog, prev.indexes.clone())
