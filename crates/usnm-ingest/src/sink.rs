@@ -22,6 +22,9 @@ const SHARD_THROUGHPUT_LIMIT: &str = "20MB";
 
 /// How long one ingest request keeps retrying while the node pushes back
 /// (503 "no shards available" once the shard's rate limit is spent, or 429).
+/// No attempt starts after this window, but one already in flight runs to the
+/// client's 300 s timeout: cutting it short could abandon documents the node
+/// has already taken, and resending them would duplicate them.
 const INGEST_RETRY_FOR: Duration = Duration::from_secs(600);
 
 #[async_trait]
