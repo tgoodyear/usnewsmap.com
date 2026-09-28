@@ -3,7 +3,8 @@
 //! Local (key) auth is disabled on the account, so every request carries a
 //! managed identity token (`type=aad`). Only point reads, create, conditional
 //! replace, upsert and a one-field query are used; 429s are retried for up to
-//! five minutes, waiting at least the service's `x-ms-retry-after-ms`.
+//! five minutes, each wait the longer of the service's `x-ms-retry-after-ms`
+//! (capped at 30 s) and a doubling backoff, plus jitter.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
