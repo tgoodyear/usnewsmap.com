@@ -21,7 +21,7 @@
 # Owner on the subscription and admin on the GitHub repository.
 set -euo pipefail
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; exit 2; }
 [ $# -ge 1 ] || usage
 ENV_NAME=$1; shift
 case "$ENV_NAME" in -*|"") usage ;; esac
@@ -50,9 +50,11 @@ step() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
 for tool in az azd gh curl; do command -v "$tool" > /dev/null || die "$tool is not installed"; done
 # Binding a managed certificate (`hostname bind --validation-method`) needs
-# the containerapp extension; the commands built into az lack it.
-az extension show -n containerapp -o none 2> /dev/null ||
-  az extension add -n containerapp --only-show-errors -o none
+# a recent containerapp extension; the commands built into az lack it.
+az containerapp hostname bind --help 2> /dev/null | grep -q -- --validation-method ||
+  az extension add -n containerapp --upgrade --only-show-errors -o none
+az containerapp hostname bind --help 2> /dev/null | grep -q -- --validation-method ||
+  die "az containerapp hostname bind has no --validation-method; update az"
 cd "$(dirname "$0")/.."
 
 step "Checking sign-ins"
