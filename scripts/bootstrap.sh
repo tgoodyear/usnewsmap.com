@@ -153,7 +153,13 @@ evar AZURE_TENANT_ID "$(aget AZURE_TENANT_ID)"
 evar AZURE_SUBSCRIPTION_ID "$(aget AZURE_SUBSCRIPTION_ID)"
 evar USNM_RESOURCE_GROUP "$(aget AZURE_RESOURCE_GROUP)"
 # List the environment for the deploy workflows.
-envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2> /dev/null || true)
+# Unset means none yet; any other error stops here, since writing the list
+# back without the other environments would stop their deploys.
+if ! envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2>&1); then
+  grep -qiE 'not found|HTTP 404' <<< "$envs" ||
+    die "can't read USNM_DEPLOY_ENVIRONMENTS in $REPO: $envs"
+  envs=""
+fi
 if ! grep -q "\"$ENV_NAME\"" <<< "$envs"; then
   # A JSON array of names: ["dev","prod"].
   names=$( (tr -d '[]" ' <<< "$envs" | tr ',' '\n'; echo "$ENV_NAME") | grep -v '^$' | sort -u)

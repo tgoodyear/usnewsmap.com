@@ -59,7 +59,12 @@ read -r -p "Type the environment name to confirm: " answer
 
 # First stop the workflows deploying to it, so no new rollout targets what's
 # being deleted.
-envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2> /dev/null || true)
+# Unset is fine (nothing deploys anywhere); any other error stops teardown.
+if ! envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2>&1); then
+  grep -qiE 'not found|HTTP 404' <<< "$envs" ||
+    die "can't read USNM_DEPLOY_ENVIRONMENTS in $REPO: $envs"
+  envs=""
+fi
 if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
   names=$(tr -d '[]" ' <<< "$envs" | tr ',' '\n' | grep -vx "$ENV_NAME" | grep -v '^$' || true)
   envs="[$(sed 's/.*/"&"/' <<< "$names" | paste -sd, -)]"

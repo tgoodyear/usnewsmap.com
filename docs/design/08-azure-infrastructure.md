@@ -147,7 +147,7 @@ S-2 checked this on Quickwit 0.9.1 with a file-backed metastore: a searcher-only
 - **Bicep** modules under `infra/`, deployed as **one deployment stack per environment** (`usnm-<env>`, subscription scope; [ADR-0011](adr/0011-deployment-stacks.md)). A resource removed from the template is deleted on the next deployment (`actionOnUnmanage: deleteResources`), and a deny assignment blocks deletes of any managed resource outside the stack (`denyDelete`). Settings live in `.azure/<env>/.env` and reach the template through `infra/main.bicepparam`. `scripts/bootstrap.sh` stands an environment up, `scripts/provision.sh` redeploys it, and `scripts/teardown.sh` removes it. The first slice is implemented in [`infra/`](../../infra/README.md). It covers the network, private endpoints, the data, tiles and Cosmos accounts, identities and RBAC, the Container Apps environment and the API app (which serves the site), monitoring, the budget and the guardrail policies. The Quickwit sidecar is in place behind `searchBackend` (`USNM_SEARCH_BACKEND=quickwit`) and waits on the first published index. The ingest and backfill jobs are in place behind `ingestJobs` (`USNM_INGEST_JOBS=true`). DNS follows.
 - Modules: `network` (VNet, subnets, private endpoints, private DNS zones), `containerapps-env`, `containerapp`, `job`, `aci-spot` (backfill groups, deployed by the launcher), `storage`, `cosmos`, `dns`, `monitoring`, `budget`, `rbac`. Growth-profile modules behind parameters: `frontdoor`, `acr`, `keyvault`, `aisearch`.
 - **Parameters per environment**: `dev` (scale to zero, LRS, small sample corpus of ~1M pages), `prod`.
-- Lint with `bicep lint` plus PSRule for Azure in CI; `what-if` output posted to the PR for any change under `infra/`.
+- Lint with `bicep lint` plus PSRule for Azure in CI. No `what-if` preview: deployment stacks don't support it yet ([ADR-0011](adr/0011-deployment-stacks.md)).
 - Policy: deny public blob access, require HTTPS/TLS 1.2+, require diagnostic settings (**as built:** `usnm-audit-diagnostic-settings`, `auditIfNotExists` on every resource type with resource logs, §8.1.1), allowed locations, and a built-in **"Not allowed resource types"** assignment that blocks `Microsoft.Compute/virtualMachines`, `virtualMachineScaleSets`, `Microsoft.ContainerService/managedClusters` and `Microsoft.Batch/batchAccounts` on the project resource groups, so VMs can't creep in. Also: **deny** `allowSharedKeyAccess != false` on storage, **deny** `disableLocalAuth != true` on Cosmos, and **audit** `publicNetworkAccess != Disabled` (the guard job remediates it outside an open window).
 
 ## 8.6 CI/CD (GitHub Actions)
@@ -156,7 +156,7 @@ S-2 checked this on Quickwit 0.9.1 with a file-backed metastore: a searcher-only
 flowchart LR
   PR[Pull request] --> CI1[Rust: fmt · clippy · test · deny · audit · fuzz smoke]
   PR --> CI2[Web: typecheck · lint · vitest · playwright · axe]
-  PR --> CI3[Infra: bicep lint · PSRule · what-if]
+  PR --> CI3[Infra: bicep lint · PSRule]
   PR --> CI4[Security: CodeQL · secret scanning push protection · Dependabot]
   PR --> PREV[preview revision of the app against dev]
   M[merge to main] --> B[build & sign images · SBOM · push ACR (OIDC)]

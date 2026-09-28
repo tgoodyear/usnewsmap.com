@@ -160,4 +160,4 @@ The storage and Cosmos accounts stay private throughout: the jobs run inside the
 
 ## Checks
 
-CI runs `bicep lint` on every module and treats any warning as a failure, then `bicep build`. PSRule and `what-if` output on PRs need Azure credentials (an OIDC federated identity for this repo), so they come with the deploy pipeline.
+CI runs `bicep lint` on every module and treats any warning as a failure, then `bicep build`. PSRule needs Azure credentials (an OIDC federated identity for this repo), so it comes with the deploy pipeline. There's no `what-if` preview: deployment stacks don't support it yet (ADR-0011).
