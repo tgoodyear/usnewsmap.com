@@ -66,9 +66,18 @@ if grep -q "\"$ENV_NAME\"" <<< "$envs"; then
   [ "$envs" = '[""]' ] && envs='[]'
   gh variable set USNM_DEPLOY_ENVIRONMENTS -R "$REPO" --body "$envs"
 fi
-# A rollout that already started still holds the old list; wait for it.
-while [ -n "$(gh run list -R "$REPO" --status in_progress --json databaseId -q '.[].databaseId' 2> /dev/null)" ]; do
-  echo "waiting for running workflows in $REPO to finish"
+# A run that already started, or was queued, still holds the old list; wait
+# until none is left.
+unfinished() {
+  local s
+  for s in requested queued waiting pending in_progress; do
+    gh run list -R "$REPO" --status "$s" --json databaseId -q '.[].databaseId' || return 1
+  done
+}
+while :; do
+  runs=$(unfinished) || die "can't list workflow runs in $REPO"
+  [ -n "$runs" ] || break
+  echo "waiting for queued and running workflows in $REPO to finish"
   sleep 30
 done
 
@@ -91,7 +100,10 @@ if [ "$guardrails" = true ]; then
   az stack sub delete -n "$GUARDRAILS_STACK" --action-on-unmanage deleteAll --yes --only-show-errors
 fi
 
-gh api -X DELETE "repos/$REPO/environments/$ENV_NAME" > /dev/null 2>&1 || true
+# Already gone is fine; anything else is an error to see.
+if ! out=$(gh api -X DELETE "repos/$REPO/environments/$ENV_NAME" 2>&1); then
+  grep -q 'HTTP 404' <<< "$out" || die "deleting the GitHub Environment $ENV_NAME: $out"
+fi
 
 if [ -f "$ENV_FILE" ]; then mv "$ENV_FILE" "$ENV_FILE.deleted-$(date -u +%Y%m%dT%H%M%SZ)"; fi
 echo "deleted environment $ENV_NAME"

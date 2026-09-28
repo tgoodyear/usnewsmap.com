@@ -85,21 +85,21 @@ deploy_stack() (
 # The template's outputs become settings (API_URL, ACR_NAME, ...). One
 # query reads the names and the values from the same object, so they pair
 # up in order; tsv prints them as two rows, which awk splits keeping empty
-# values.
+# values. A failed query fails the step, so stale settings aren't kept.
 save_outputs() {
-  local k v
+  local out k v
+  out=$(az stack sub show -n "$STACK" \
+    --query "[keys(outputs), values(outputs)[].value]" -o tsv) || return 1
   while IFS=$'\t' read -r k v; do
     [ -n "$k" ] && aset "$k" "$v"
-  done < <(az stack sub show -n "$STACK" \
-      --query "[keys(outputs), values(outputs)[].value]" -o tsv |
-    awk -F'\t' 'NR == 1 { n = split($0, k, "\t") }
-      NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" v[i] }')
+  done < <(awk -F'\t' 'NR == 1 { n = split($0, k, "\t") }
+      NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" v[i] }' <<< "$out")
 }
 # New roles and permissions take a minute or two to apply everywhere, so a
 # deployment that depends on one can fail once; it's idempotent, so retry.
 provision() {
   for attempt in 1 2 3; do
-    deploy_guardrails && deploy_stack && { save_outputs; return 0; }
+    deploy_guardrails && deploy_stack && save_outputs && return 0
     [ "$attempt" = 3 ] && die "provisioning failed three times"
     echo "retrying in 60s"
     sleep 60
