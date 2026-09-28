@@ -11,12 +11,13 @@
 //! Everything else (ALTO XML, images, manifests) is skipped. Spike S-1
 //! confirms the Datasets portal's current layout against these.
 
-use std::collections::HashSet;
+use std::collections::hash_map::{Entry, HashMap};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 use anyhow::{bail, Context};
 use chrono::NaiveDate;
+use sha2::{Digest, Sha256};
 use usnm_core::ids::PageKey;
 
 /// Larger `ocr.txt` files are treated as corrupt (real pages run to tens of
@@ -37,6 +38,8 @@ pub struct ArchiveStats {
     pub skipped: u64,
     /// `ocr.txt` files that weren't valid UTF-8 (decoded lossily).
     pub lossy: u64,
+    /// Repeats of a page already read, with byte-identical text (skipped).
+    pub duplicates: u64,
 }
 
 /// Parse a page key from an archive path, or `None` if it isn't page OCR text.
@@ -81,8 +84,11 @@ fn decompress<'a>(r: impl Read + 'a) -> anyhow::Result<Box<dyn Read + 'a>> {
     })
 }
 
-/// Stream every page in the archive at `path` to `on_page`. Duplicate page
-/// keys are an error: a batch lists each page once.
+/// Stream every page in the archive at `path` to `on_page`. A page that
+/// appears again with identical text is skipped and counted; with different
+/// text it's an error, since there's no telling which copy is right. Some LoC
+/// archives repeat whole issues (e.g. `az_agave_ver01`: 76 of 9,742 pages,
+/// same `ocr.txt`, regenerated ALTO XML).
 pub fn read_pages(
     path: &Path,
     on_page: impl FnMut(RawPage) -> anyhow::Result<()>,
@@ -98,7 +104,7 @@ pub fn read_pages_from(
 ) -> anyhow::Result<ArchiveStats> {
     let mut archive = tar::Archive::new(decompress(input)?);
     let mut stats = ArchiveStats::default();
-    let mut seen = HashSet::new();
+    let mut seen: HashMap<PageKey, [u8; 32]> = HashMap::new();
     for entry in archive.entries().context("reading archive")? {
         let mut entry = entry.context("reading archive entry")?;
         if !entry.header().entry_type().is_file() {
@@ -115,11 +121,21 @@ pub fn read_pages_from(
                 entry.size()
             );
         }
-        if !seen.insert(key.clone()) {
-            bail!("{name}: page `{key}` appears twice in the archive");
-        }
         let mut bytes = Vec::with_capacity(usize::try_from(entry.size()).unwrap_or(0));
         entry.read_to_end(&mut bytes)?;
+        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        match seen.entry(key.clone()) {
+            Entry::Occupied(first) if *first.get() == digest => {
+                stats.duplicates += 1;
+                continue;
+            }
+            Entry::Occupied(_) => {
+                bail!("{name}: page `{key}` appears twice in the archive with different text")
+            }
+            Entry::Vacant(v) => {
+                v.insert(digest);
+            }
+        }
         let text = match String::from_utf8(bytes) {
             Ok(t) => t,
             Err(e) => {
@@ -201,7 +217,8 @@ mod tests {
                 ArchiveStats {
                     pages: 2,
                     skipped: 1,
-                    lossy: 1
+                    lossy: 1,
+                    duplicates: 0
                 }
             );
             assert_eq!(
@@ -213,13 +230,34 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_pages_are_an_error() {
+    fn a_page_repeated_with_different_text_is_an_error() {
         let raw = tar_of(&[
             ("a/sn1/1896-07-10/ed-1/seq-1/ocr.txt", b"x"),
             ("b/sn1/1896/07/10/ed-1/seq-1/ocr.txt", b"y"),
         ]);
         let f = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(f.path(), raw).unwrap();
-        assert!(read_pages(f.path(), |_| Ok(())).is_err());
+        let err = read_pages(f.path(), |_| Ok(())).unwrap_err().to_string();
+        assert!(err.contains("different text"), "{err}");
+    }
+
+    #[test]
+    fn a_page_repeated_with_identical_text_is_read_once() {
+        let raw = tar_of(&[
+            ("sn1/1896/07/10/ed-1/seq-1/ocr.txt", b"same"),
+            ("sn1/1896/07/10/ed-1/seq-1/ocr.xml", b"<alto v=1/>"),
+            ("sn1/1896/07/10/ed-1/seq-1/ocr.txt", b"same"),
+            ("sn1/1896/07/10/ed-1/seq-1/ocr.xml", b"<alto v=2/>"),
+        ]);
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(f.path(), raw).unwrap();
+        let mut pages = 0;
+        let stats = read_pages(f.path(), |_| {
+            pages += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(pages, 1);
+        assert_eq!((stats.pages, stats.duplicates, stats.skipped), (1, 1, 2));
     }
 }
