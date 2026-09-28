@@ -72,7 +72,14 @@ roles=$(grep -i '/providers/Microsoft.Authorization/roleDefinitions/' <<< "$ids"
 # The guard-rail definitions go with the last environment in the subscription.
 others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK' && name != '$GUARDRAILS_STACK'].name" -o tsv)
 guardrails=false
-[ -z "$others" ] && az stack sub show -n "$GUARDRAILS_STACK" -o none 2> /dev/null && guardrails=true
+if [ -z "$others" ]; then
+  if out=$(az stack sub show -n "$GUARDRAILS_STACK" -o none 2>&1); then
+    guardrails=true
+  else
+    grep -qiE 'NotFound|could not be found' <<< "$out" ||
+      die "can't check the guard-rail stack $GUARDRAILS_STACK: $out"
+  fi
+fi
 
 echo "This deletes environment $ENV_NAME from subscription $SUBSCRIPTION:"
 sed 's/^/  resource group (everything in it) /' <<< "$groups"

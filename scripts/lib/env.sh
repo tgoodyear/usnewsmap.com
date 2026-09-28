@@ -34,7 +34,10 @@ aset() {
   touch "$ENV_FILE"
   v=${v//\\/\\\\}; v=${v//\"/\\\"}; v=${v//\$/\\\$}; v=${v//\`/\\\`}
   tmp=$(mktemp)
-  grep -v "^$1=" "$ENV_FILE" > "$tmp" || true
+  # grep's 1 means "no other lines"; anything above is a read error, and
+  # writing the file back would lose every other setting.
+  grep -v "^$1=" "$ENV_FILE" > "$tmp" || [ $? -eq 1 ] ||
+    { rm -f "$tmp"; echo "error: can't read $ENV_FILE" >&2; return 1; }
   printf '%s="%s"\n' "$1" "$v" >> "$tmp"
   mv "$tmp" "$ENV_FILE"
 }
