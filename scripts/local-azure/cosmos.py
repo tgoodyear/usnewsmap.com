@@ -4,8 +4,9 @@ calls, so several ingest processes can share state locally (the --state-file
 store is one process at a time).
 
 - Entra auth only, like the real account: `authorization:
-  type=aad&ver=1.0&sig={jwt}` whose audience is https://cosmos.azure.com and
-  which has not expired (shim.py's identity endpoint mints these).
+  type=aad&ver=1.0&sig={jwt}` whose audience is https://cosmos.azure.com,
+  whose issuer is Entra's and which has not expired (shim.py's identity
+  endpoint mints these). The signature is not checked.
 - Items keyed by (container, partition key, id), with quoted etags.
 - POST: create (409 if it exists), upsert (x-ms-documentdb-is-upsert), or
   query (`SELECT * FROM c` and `... WHERE ARRAY_CONTAINS(@values, c.field)`).
@@ -42,6 +43,10 @@ FILE = os.environ.get("COSMOS_FILE", "cosmos.json")
 PAGE = int(os.environ.get("COSMOS_PAGE", "100"))
 P429 = float(os.environ.get("COSMOS_429", "0"))
 AUDIENCE = "https://cosmos.azure.com"
+# Entra's v1 and v2 issuers. Signatures are not checked.
+ISSUER = re.compile(
+    r"https://sts\.windows\.net/[0-9a-f-]{36}/|https://login\.microsoftonline\.com/[0-9a-f-]{36}/v2\.0"
+)
 QUERY_IN = re.compile(r"SELECT \* FROM c WHERE ARRAY_CONTAINS\(@values, c\.(\w+)\)")
 DOCS_PATH = re.compile(r"/dbs/([^/]+)/colls/([^/]+)/docs(?:/([^/?]+))?")
 
@@ -130,8 +135,13 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if n else b""
         c = claims(self.headers.get("authorization"))
-        if not c or c.get("aud") != AUDIENCE or c.get("exp", 0) < time.time():
-            return self.error(401, "Unauthorized", "missing, expired or wrong-audience Entra token")
+        if (
+            not c
+            or c.get("aud") != AUDIENCE
+            or not ISSUER.fullmatch(c.get("iss", ""))
+            or c.get("exp", 0) < time.time()
+        ):
+            return self.error(401, "Unauthorized", "missing, expired, wrong-audience or non-Entra token")
         if self.headers.get("x-ms-version") is None:
             return self.error(400, "BadRequest", "x-ms-version required")
         if P429 and random.random() < P429:
@@ -202,6 +212,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if PAGE < 1:
+        sys.exit(f"COSMOS_PAGE must be at least 1, not {PAGE}")
     load()
     print(f"cosmos http://127.0.0.1:{PORT}/ ({len(items)} items)", flush=True)
     Server(("127.0.0.1", PORT), Handler).serve_forever()

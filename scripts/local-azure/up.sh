@@ -37,6 +37,17 @@ done
 mkdir -p "$work/azurite"
 : > "$work/pids"
 
+# If any step fails, stop what already started so the ports are free again.
+started=false
+stop_on_failure() {
+  $started && return
+  while read -r pid; do
+    kill "$pid" 2> /dev/null || true
+  done < "$work/pids"
+  rm -f "$work/pids"
+}
+trap stop_on_failure EXIT
+
 wait_for() { # url, log
   for _ in $(seq 1 60); do
     curl -sk -o /dev/null "$1" && return 0
@@ -88,4 +99,5 @@ export USNM_CURATED_URL=http://127.0.0.1:10010/devstoreaccount1/curated
 export USNM_REFERENCE_URL=http://127.0.0.1:10010/devstoreaccount1/reference
 export USNM_RESPONSE_CACHE_URL=http://127.0.0.1:10010/devstoreaccount1/cache
 ENV
+started=true
 echo "$work/env"

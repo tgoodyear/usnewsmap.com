@@ -10,4 +10,11 @@ work="${1:?usage: down.sh workdir}"
 while read -r pid; do
   kill "$pid" 2> /dev/null || true
 done < "$work/pids"
+# Wait until they have exited, so up.sh can take the ports straight away.
+while read -r pid; do
+  for _ in $(seq 1 50); do
+    kill -0 "$pid" 2> /dev/null || break
+    sleep 0.2
+  done
+done < "$work/pids"
 rm "$work/pids"
