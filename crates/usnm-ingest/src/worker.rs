@@ -205,7 +205,7 @@ impl Worker {
             let mut issues = Issues::new();
             let (mut pages, mut ok_pages) = (0u64, 0u64);
             let (mut first, mut last) = (NaiveDate::MAX, NaiveDate::MIN);
-            archive::read_pages_from(input, |p| {
+            let stats = archive::read_pages_from(input, |p| {
                 let row = CuratedRow::from_ocr(p.key, &p.text, &batch, version, &ocr, now);
                 pages += 1;
                 ok_pages += u64::from(row.status == TextStatus::Ok);
@@ -226,6 +226,13 @@ impl Worker {
                 }
                 Ok(())
             })?;
+            if stats.duplicates > 0 {
+                tracing::warn!(
+                    %batch,
+                    duplicates = stats.duplicates,
+                    "archive repeats pages with identical text; read each once"
+                );
+            }
             if let Some(part) = writer.finish_part()? {
                 tx.blocking_send(part).context("uploader stopped")?;
             }
