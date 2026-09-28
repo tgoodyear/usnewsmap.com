@@ -32,7 +32,7 @@ param searchBackend string = 'fixtures'
 param quickwitImage string = 'quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
 @description('Private registry the images come from (pulled with the app identity); empty for a public registry.')
 param registryServer string = ''
-@description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps `azd provision` from dropping the bindings.')
+@description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
 var quickwit = searchBackend == 'quickwit'

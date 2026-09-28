@@ -1,10 +1,25 @@
-// Guardrails (08 §8.5, ADR-0005, ADR-0008), defined at subscription scope and
-// assigned to the project resource groups by policy-assignments.bicep.
+// Guardrails (08 §8.5, ADR-0005, ADR-0008): policy definitions at
+// subscription scope, assigned to each environment's resource groups by
+// modules/policy-assignments.bicep. Every environment in a subscription uses
+// the same definitions, so they're a stack of their own, usnm-guardrails,
+// which scripts/lib/env.sh deploys before an environment's stack (ADR-0011).
 
 targetScope = 'subscription'
 
+// The definitions' names; main.bicep imports them to build the ids.
+@export()
+var guardrailPolicyNames = {
+  noIaas: 'usnm-deny-iaas-compute'
+  noStorageKeys: 'usnm-deny-storage-shared-key'
+  noCosmosKeys: 'usnm-deny-cosmos-local-auth'
+  auditPublicAccess: 'usnm-audit-data-public-network'
+  auditDiagnostics: 'usnm-audit-diagnostic-settings'
+  noMonitorKeys: 'usnm-deny-monitor-local-auth'
+  noRegistryLocalAuth: 'usnm-deny-registry-local-auth'
+}
+
 resource noIaas 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
-  name: 'usnm-deny-iaas-compute'
+  name: guardrailPolicyNames.noIaas
   properties: {
     displayName: 'US News Map: no VMs, scale sets, AKS or Batch accounts'
     policyType: 'Custom'
@@ -24,8 +39,8 @@ resource noIaas 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
   }
 }
 
-resource noSharedKey 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
-  name: 'usnm-deny-storage-shared-key'
+resource noStorageKeys 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
+  name: guardrailPolicyNames.noStorageKeys
   properties: {
     displayName: 'US News Map: storage accounts must disable shared key access'
     policyType: 'Custom'
@@ -43,7 +58,7 @@ resource noSharedKey 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
 }
 
 resource noCosmosKeys 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
-  name: 'usnm-deny-cosmos-local-auth'
+  name: guardrailPolicyNames.noCosmosKeys
   properties: {
     displayName: 'US News Map: Cosmos DB accounts must disable local (key) auth and key-based metadata writes'
     policyType: 'Custom'
@@ -67,7 +82,7 @@ resource noCosmosKeys 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
 }
 
 resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
-  name: 'usnm-audit-data-public-network'
+  name: guardrailPolicyNames.auditPublicAccess
   properties: {
     displayName: 'US News Map: data services should have public network access disabled'
     description: 'Audit only: the network-guard job closes public access outside an open backfill window. The public tiles account is tagged usnm-public=true and exempt.'
@@ -119,7 +134,7 @@ var loggedTypes = [
 ]
 
 resource auditDiagnostics 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
-  name: 'usnm-audit-diagnostic-settings'
+  name: guardrailPolicyNames.auditDiagnostics
   properties: {
     displayName: 'US News Map: resources with resource logs must send them to Log Analytics'
     description: 'Audit only: infra/modules/diagnostics.bicep writes the settings.'
@@ -153,7 +168,7 @@ resource auditDiagnostics 'Microsoft.Authorization/policyDefinitions@2023-04-01'
 // "should block non-Azure Active Directory based ingestion" and "local admin
 // account disabled" policies.
 resource noMonitorKeys 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
-  name: 'usnm-deny-monitor-local-auth'
+  name: guardrailPolicyNames.noMonitorKeys
   properties: {
     displayName: 'US News Map: Log Analytics and Application Insights must disable local (key) auth'
     policyType: 'Custom'
@@ -183,7 +198,7 @@ resource noMonitorKeys 'Microsoft.Authorization/policyDefinitions@2023-04-01' = 
 // Basic can't enable anonymous pull today; the deny still covers a later
 // SKU change or drift.
 resource noRegistryLocalAuth 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
-  name: 'usnm-deny-registry-local-auth'
+  name: guardrailPolicyNames.noRegistryLocalAuth
   properties: {
     displayName: 'US News Map: container registries must disable the admin user and anonymous pull'
     policyType: 'Custom'
@@ -204,13 +219,3 @@ resource noRegistryLocalAuth 'Microsoft.Authorization/policyDefinitions@2023-04-
     }
   }
 }
-
-output ids array = [
-  noIaas.id
-  noSharedKey.id
-  noCosmosKeys.id
-  auditPublicAccess.id
-  auditDiagnostics.id
-  noMonitorKeys.id
-  noRegistryLocalAuth.id
-]

@@ -3,7 +3,7 @@
 // admin user and no anonymous pull. CI pushes as `id-usnm-ci-{env}`, a
 // user-assigned identity that GitHub Actions signs in to with OIDC (a
 // federated credential; no secret is stored anywhere). It trusts only jobs
-// in this repository's GitHub Environment named after the azd environment,
+// in this repository's GitHub Environment named after the environment,
 // which the bootstrap script restricts to the `main` branch.
 //
 // Basic tier: private endpoints need Premium (~$50/month), so the registry

@@ -97,9 +97,11 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Stage | Assumption | Estimate |
 |-------|------------|----------|
 | Curation workers | ~175 worker-hours measured in S-1 (04 §4.1.1): 8 replicas × 1 vCPU / 2 GiB × ~22 h, Consumption list price | ~$15–20 |
-| Full index build | `caj-usnm-ingest`, 2 vCPU / 4 GiB × a few hours | ~$1–3 |
+| Full index build | `caj-usnm-ingest`, 2 vCPU / 4 GiB × ~12–24 h (not yet measured on 2 vCPU; 04 §4.1.2) | ~$3–5 |
 | Storage transactions + curated writes | | ~$5 |
 | **Total** | | **~$20–30** |
+
+The curation estimate assumes downloads keep up with the workers. In the September 2026 trial (04 §4.1.2), archives not in LoC's CDN cache downloaded at 0.3–1.2 MB/s. If that holds from Azure, the workers mostly wait on the network: the backfill takes days longer, and workers that stay up while waiting cost more than the table shows.
 
 The ACI Spot alternative (08 §8.4) comes to about the same, ~$25–50, but needs the launcher and the public-access window.
 
@@ -132,4 +134,4 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 | `curated/`, `reference/` | Flat-namespace account with **blob versioning + soft delete (14 d)**. Curated data is written to immutable attempt paths and reference data to immutable per-version snapshots, so nothing committed is ever overwritten; versioning and soft delete cover accidental deletes and overwrites. LRS (ZRS in the growth profile); rebuildable by re-downloading from LoC on ACI Spot (~$25–50) | RPO 0 / RTO ≤ 24 h from versions, ~1 week from LoC |
 | Search index | Disposable; rebuild from `curated/` | RTO ≤ 24 h full rebuild; the previous version is kept 7 days for instant rollback |
 | Code, IaC, runbooks | GitHub | RPO 0 |
-| Region outage | Not active/active (cost). Everything is PaaS, so there are no VM images or disks to replicate. Re-deploy to a paired region with `azd up` and **restore from GRS** if the sponsor opts in (+~$20/mo for GRS on curated/reference) | RTO 1–2 days (acceptable for this service class) |
+| Region outage | Not active/active (cost). Everything is PaaS, so there are no VM images or disks to replicate. Stand up a **new** environment in the paired region, `scripts/bootstrap.sh <new-env> --location <paired region>` (`--location` applies to new environments only; an existing one keeps its region), **restore from GRS** if the sponsor opts in (+~$20/mo for GRS on curated/reference), and point the domain at it. Remove the old one with `scripts/teardown.sh <env>` once its region is back | RTO 1–2 days (acceptable for this service class) |

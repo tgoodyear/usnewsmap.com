@@ -177,7 +177,7 @@ usnewsmap.com/
 ├─ search/
 │  ├─ quickwit/                ← index config YAML, node config
 │  └─ azure-ai-search/         ← index JSON schema, analyzers
-├─ infra/                      ← Bicep modules + azd environment files
-├─ .github/workflows/          ← CI (fmt, clippy, test, build, scan), CD (azd deploy)
+├─ infra/                      ← Bicep modules + main.bicepparam (one deployment stack per environment)
+├─ .github/workflows/          ← CI (fmt, clippy, test, build, scan), CD (image publish + rollout)
 └─ ops/runbooks/               ← reindex, restore, incident, cost-spike
 ```

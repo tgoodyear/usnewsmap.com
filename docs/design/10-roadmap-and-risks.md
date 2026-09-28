@@ -12,7 +12,7 @@ gantt
   S-3 geocoding QA                       :p0c, 2026-10-05, 10d
   Decision gate (ADR-0001 final)         :milestone, after p0b, 0d
   section Phase 1 · MVP (parity + accuracy)
-  Infra (Bicep, azd, CI/CD)              :p1a, after p0b, 10d
+  Infra (Bicep, deployment stacks, CI/CD)              :p1a, after p0b, 10d
   Ingest pipeline + curated lake         :p1b, after p0b, 20d
   Rust API (aggregate, hits, meta)       :p1c, after p0b, 20d
   SPA (search, map, playback, list)      :p1d, after p0b, 25d
@@ -56,13 +56,14 @@ gantt
 | R-2 | Quickwit fails S-2 (latency on high-frequency terms, pre-1970 dates, cache limits) | Med | Med | Integer bucket fields; Dedicated workload profile; fallback to Elastic on Azure or AI Search via the `SearchBackend` trait | Eng |
 | R-3 | AI Search chosen, but budget can't sustain ~$3–6k/mo | Med (if chosen) | High | Only choose A with committed multi-year funding; otherwise B | Owner |
 | R-4 | LoC changes bulk formats or endpoints again (as in 2025) | Med | Med | The curated lake decouples the site from the source, so the site keeps serving; a parser schema check in `discover`; follow the NDNP news feed | Eng |
-| R-5 | Bulk download throttled; backfill slow | Med | Low | Start early; respect limits; validated mirror as accelerator; the backfill is one-time | Eng |
+| R-5 | Bulk download throttled; backfill slow. Archives not in LoC's CDN cache downloaded at 0.3–1.2 MB/s in the September 2026 trial (04 §4.1.2) | High | Med | Measure a cache-miss download from Azure before the backfill; start early; respect limits; validated mirror as accelerator; the backfill is one-time | Eng |
 | R-6 | Quickwit project cadence slows after the acquisition | Low–Med | Med | Apache-2.0; pin versions; Tantivy maintained independently; backend abstraction | Eng |
 | R-7 | Abuse or bot traffic causes cost spikes or slowness | Med | Med | Replica cap (bounds cost); API rate limits; caches; budget alerts; add Front Door (growth profile) or a free external CDN if abuse persists | Eng |
 | R-12 | **ACI Spot is a preview** (no SLA, 3 regions, may change or be withdrawn) | Med | Low | Only offline jobs use it; the same image runs on regular ACI or on a Batch Spot pool; the work is idempotent and resumable | Eng |
 | R-13 | **Lean searcher too slow** for high-frequency terms | Med | Med | Blob cache + pre-warm; relaxed SLO for that class; the 2 vCPU / 4 GiB lever (+$15–30; exceeds $80 together with private networking) | Eng |
 | R-14 | **Public-access window left open** after a failed backfill | Low | Med | Hourly in-VNet `network-guard` job closes it; alert on any `publicNetworkAccess` change; access still requires Entra tokens (keys disabled by policy) | Eng |
 | R-15 | Quickwit 0.9 has no fuzzy term queries, so F-21 (OCR-tolerant matching) can't be passed through (S-2) | High (confirmed) | Med | The API refuses fuzzy queries on Quickwit rather than miscount. Planned: expand a fuzzy term in the API into an `OR` of up to N real index terms within edit distance 1–2, using a term dictionary (FST) built with each index version; or wait for upstream support | Eng |
+| R-16 | The full index build runs past the ingest job's 24 h `replicaTimeout`, which has no retry. The single-node writer ingests at most 20 MB/s per shard; the trial built ~560 pages/s on 8 laptop cores (04 §4.1.2) | Med | Med | Measure the build rate on the job's 2 vCPU with a large batch set; if needed, raise the job's CPU or timeout for the backfill, or build the base in parts | Eng |
 | R-8 | OCR quality misleads users (false negatives) | High | Med | OCR-tolerant mode; "pages containing" wording; improved NDNP-Open-OCR re-ingestion; methodology page | Product |
 | R-9 | Geographic misattribution (titles that moved; county-level fallbacks) | Med | Low | Precision flags; date-ranged places; overrides reviewed in PRs | Eng |
 | R-10 | Rust maintainer pool is thin | Low–Med | Med | Small, well-tested API; OpenAPI contract; documented rewrite path ([ADR-0004](adr/0004-rust-api.md)) | Owner |

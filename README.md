@@ -18,7 +18,7 @@ Start with the **[design document](docs/design/README.md)**: background, require
 | `crates/usnm-api` | The public search API (axum): `/v1/meta`, `/v1/places`, `/v1/aggregate`, `/v1/hits`, `/v1/coverage`, health probes |
 | `crates/usnm-ingest` | The ingest pipeline (`usnm-ingest`): enqueue LoC batches, curate them to Parquet, build sealed indexes and reference snapshots, publish. State in Cosmos DB |
 | `web/` | The single-page app: React + MapLibre + deck.gl (see [`web/README.md`](web/README.md)) |
-| `infra/` | Bicep + `azd` for the lean Azure profile (see [`infra/README.md`](infra/README.md)) |
+| `infra/` | Bicep for the lean Azure profile, deployed as one deployment stack per environment (see [`infra/README.md`](infra/README.md)) |
 | `fixtures/` | A small **synthetic** corpus for local development and tests (not real newspaper data) |
 | `docs/design/` | The design document set |
 

@@ -1,0 +1,135 @@
+# shellcheck shell=bash
+# Shared by the environment scripts; source it with ENV_NAME set and the
+# repository root as the working directory. Needs az signed in to the
+# environment's subscription for the stack functions, and a die() function.
+#
+# An environment's settings live in .azure/$ENV_NAME/.env as KEY="value"
+# lines (the layout azd used, so older environments carry over).
+#
+# The name becomes part of resource names (the registry allows only
+# lowercase letters and digits), the stack's name and the settings path.
+# "guardrails" is taken: usnm-guardrails is the shared policy stack.
+valid_env_name() {
+  [[ $1 =~ ^[a-z][a-z0-9]{0,15}$ ]] || {
+    echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter" >&2
+    exit 2
+  }
+  [ "$1" != guardrails ] || { echo "error: \"guardrails\" is reserved" >&2; exit 2; }
+}
+valid_env_name "$ENV_NAME"
+ENV_FILE=".azure/$ENV_NAME/.env"
+# A settings file that doesn't parse stops every script up front, before
+# anything reads a setting as empty and falls back to a default.
+# shellcheck source=/dev/null
+if [ -f "$ENV_FILE" ] && ! (set +u; . "$ENV_FILE") > /dev/null; then
+  echo "error: $ENV_FILE doesn't parse; fix it before running anything" >&2
+  exit 1
+fi
+# Setting names are shell variable names.
+valid_key() {
+  [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "error: invalid setting name: $1" >&2; exit 2; }
+}
+# Read one setting (empty when unset).
+# shellcheck source=/dev/null
+# Only the file counts: the caller's variable of the same name is cleared.
+# A settings file that can't be read or parsed fails the read.
+aget() {
+  valid_key "$1"
+  (set +u; unset "$1"; set -a
+   if [ -f "$ENV_FILE" ]; then
+     . "$ENV_FILE" || { echo "error: can't read $ENV_FILE" >&2; exit 1; }
+   fi
+   printf '%s\n' "${!1:-}")
+}
+# Write one setting, quoted so the file can be sourced.
+aset() {
+  valid_key "$1"
+  # One setting, one line: the file is edited line by line.
+  [[ $2 != *$'\n'* ]] || { echo "error: $1: values can't contain newlines" >&2; return 1; }
+  local v=$2 tmp
+  mkdir -p "$(dirname "$ENV_FILE")"
+  touch "$ENV_FILE"
+  v=${v//\\/\\\\}; v=${v//\"/\\\"}; v=${v//\$/\\\$}; v=${v//\`/\\\`}
+  tmp=$(mktemp)
+  # grep's 1 means "no other lines"; anything above is a read error, and
+  # writing the file back would lose every other setting.
+  grep -v "^$1=" "$ENV_FILE" > "$tmp" || [ $? -eq 1 ] ||
+    { rm -f "$tmp"; echo "error: can't read $ENV_FILE" >&2; return 1; }
+  printf '%s="%s"\n' "$1" "$v" >> "$tmp"
+  mv "$tmp" "$ENV_FILE"
+}
+
+# One deployment stack per environment, at subscription scope (it holds the
+# resource groups). Resources dropped from the template are deleted; deny
+# settings stop anyone deleting a managed resource outside the stack.
+STACK="usnm-$ENV_NAME"
+# The guard-rail policy definitions every environment in the subscription
+# assigns: one stack of their own, so no two stacks manage the same resource.
+GUARDRAILS_STACK=usnm-guardrails
+# The region, with the same default as infra/main.bicepparam.
+stack_location() { local l; l=$(aget AZURE_LOCATION) || return 1; echo "${l:-eastus2}"; }
+deploy_guardrails() {
+  # A stack's location is fixed when it's created; environments in other
+  # regions reuse it.
+  local location
+  # Only "not found" means a first deployment; other errors stop here.
+  if ! location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv 2>&1); then
+    grep -qiE 'NotFound|could not be found' <<< "$location" || {
+      echo "error: can't check $GUARDRAILS_STACK: $location" >&2
+      return 1
+    }
+    location=$(stack_location) || return 1
+  fi
+  az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
+    --template-file infra/guardrails.bicep \
+    --action-on-unmanage deleteResources \
+    --deny-settings-mode denyDelete \
+    --description "usnewsmap guard-rail policy definitions, shared by every environment in the subscription" \
+    --yes --only-show-errors -o none
+}
+deploy_stack() (
+  # Export exactly the settings infra/main.bicepparam reads, when they have
+  # a value; an unset one takes its default there. Each is read on its own
+  # (aget), so the settings file never sets this script's own variables
+  # (STACK, ENV_NAME, ...), and a variable left in the caller's shell can't
+  # stand in for a setting the file doesn't have.
+  local k v
+  for k in $(grep -o "readEnvironmentVariable('[A-Za-z0-9_]*'" infra/main.bicepparam | cut -d"'" -f2); do
+    unset "$k"
+    v=$(aget "$k") || exit 1
+    [ -z "$v" ] || export "$k=$v"
+  done
+  # The stack's name comes from the environment's; the template's must match.
+  export AZURE_ENV_NAME=$ENV_NAME
+  local location
+  location=$(stack_location) || exit 1
+  az stack sub create --name "$STACK" --location "$location" \
+    --parameters infra/main.bicepparam \
+    --action-on-unmanage deleteResources \
+    --deny-settings-mode denyDelete \
+    --description "usnewsmap $ENV_NAME (scripts/bootstrap.sh, scripts/provision.sh)" \
+    --yes --only-show-errors -o none
+)
+# The template's outputs become settings (API_URL, ACR_NAME, ...). One
+# query reads the names and the values from the same object, so they pair
+# up in order; tsv prints them as two rows, which awk splits keeping empty
+# values. A failed query fails the step, so stale settings aren't kept.
+save_outputs() {
+  local out k v
+  out=$(az stack sub show -n "$STACK" \
+    --query "[keys(outputs), values(outputs)[].value]" -o tsv) || return 1
+  while IFS=$'\t' read -r k v; do
+    [ -z "$k" ] || aset "$k" "$v" || return 1
+  done < <(awk -F'\t' 'NR == 1 { n = split($0, k, "\t") }
+      NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" v[i] }' <<< "$out")
+}
+# New roles and permissions take a minute or two to apply everywhere, so a
+# deployment that depends on one can fail once; it's idempotent, so retry.
+provision() {
+  for attempt in 1 2 3; do
+    deploy_guardrails && deploy_stack && save_outputs && return 0
+    [ "$attempt" = 3 ] && die "provisioning failed three times"
+    echo "retrying in 60s"
+    sleep 60
+  done
+}

@@ -16,9 +16,15 @@
 #   --move                allow an existing environment to move to another
 #                         subscription (it starts there with no data)
 #
-# Needs: az (this adds its containerapp extension), azd, gh and curl, signed
-# in (`az login --tenant …`, `azd auth login --tenant-id …`, `gh auth login`),
-# Owner on the subscription and admin on the GitHub repository.
+# Needs: az 2.61+ (this adds its containerapp extension), gh and curl, signed
+# in (`az login --tenant …`, `gh auth login`), Owner on the subscription and
+# admin on the GitHub repository.
+#
+# The environment's settings live in .azure/<env>/.env (KEY="value" lines,
+# the layout azd used, so older environments carry over). Everything in Azure
+# is one deployment stack, usnm-<env>: resources removed from the template
+# are deleted, and nothing the stack manages can be deleted outside it
+# (08 §8.5). scripts/teardown.sh removes an environment.
 set -euo pipefail
 
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; exit 2; }
@@ -27,8 +33,8 @@ ENV_NAME=$1; shift
 case "$ENV_NAME" in -*|"") usage ;; esac
 # It becomes part of resource names (the registry allows only lowercase
 # letters and digits) and of the CI identity's OIDC subject.
-if ! printf '%s' "$ENV_NAME" | grep -Eq '^[a-z][a-z0-9]{0,15}$'; then
-  echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter" >&2
+if ! [[ $ENV_NAME =~ ^[a-z][a-z0-9]{0,15}$ ]] || [ "$ENV_NAME" = guardrails ]; then
+  echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter (not \"guardrails\", the shared policy stack)" >&2
   exit 2
 fi
 SUBSCRIPTION="" LOCATION="eastus2" REPO="" DOMAIN="" EMAIL="" INGEST=false CLEANUP=false MOVE=false
@@ -48,7 +54,7 @@ done
 
 step() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
-for tool in az azd gh curl; do command -v "$tool" > /dev/null || die "$tool is not installed"; done
+for tool in az gh curl; do command -v "$tool" > /dev/null || die "$tool is not installed"; done
 # Binding a managed certificate (`hostname bind --validation-method`) needs
 # a recent containerapp extension; the commands built into az lack it.
 az containerapp hostname bind --help 2> /dev/null | grep -q -- --validation-method ||
@@ -62,7 +68,6 @@ az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
 [ -n "$SUBSCRIPTION" ] && az account set --subscription "$SUBSCRIPTION"
 SUBSCRIPTION=$(az account show --query id -o tsv)
 TENANT=$(az account show --query tenantId -o tsv)
-azd auth login --check-status > /dev/null 2>&1 || die "run: azd auth login --tenant-id $TENANT"
 gh auth status > /dev/null 2>&1 || die "run: gh auth login"
 [ -n "$REPO" ] || REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 echo "subscription $SUBSCRIPTION (tenant $TENANT), repository $REPO, environment $ENV_NAME"
@@ -75,12 +80,9 @@ for ns in Microsoft.App Microsoft.ContainerRegistry Microsoft.DocumentDB Microso
     az provider register -n "$ns" --wait -o none
 done
 
-step "Configuring the azd environment"
-azd env select "$ENV_NAME" 2> /dev/null ||
-  azd env new "$ENV_NAME" --subscription "$SUBSCRIPTION" --location "$LOCATION" --no-prompt
-# azd prints "key not found" on stdout, so a missing key reads as empty only
-# when the output is dropped on failure.
-aget() { local v; v=$(azd env get-value "$1" 2> /dev/null) && printf '%s\n' "$v" || true; }
+step "Configuring environment settings"
+. scripts/lib/env.sh
+aset AZURE_ENV_NAME "$ENV_NAME"
 # Settings that describe what exists in one subscription can't carry over to
 # another: moving starts again from an empty registry, with no certificate
 # and a fresh look at the Cosmos DB free tier.
@@ -90,48 +92,37 @@ if [ -n "$previous" ] && [ "$previous" != "$SUBSCRIPTION" ]; then
   [ "$MOVE" = true ] ||
     die "environment $ENV_NAME is in subscription $previous; pass --move to rebuild it in $SUBSCRIPTION (it starts with no data)"
   MOVING=true
-  azd env set USNM_USE_ACR false
-  azd env set USNM_API_IMAGE ""
-  azd env set USNM_API_CERT_ID ""
-  azd env set USNM_SITE_CERT_ID ""
-  azd env set USNM_WWW_CERT_ID ""
-  [ -z "$(aget USNM_BUDGET_START)" ] || azd env set USNM_BUDGET_START "$(date -u +%Y-%m-01)"
+  aset USNM_USE_ACR false
+  aset USNM_API_IMAGE ""
+  aset USNM_API_CERT_ID ""
+  aset USNM_SITE_CERT_ID ""
+  aset USNM_WWW_CERT_ID ""
+  [ -z "$(aget USNM_BUDGET_START)" ] || aset USNM_BUDGET_START "$(date -u +%Y-%m-01)"
 fi
-azd env set AZURE_SUBSCRIPTION_ID "$SUBSCRIPTION"
-[ -n "$(aget AZURE_LOCATION)" ] || azd env set AZURE_LOCATION "$LOCATION"
-azd env set USNM_GITHUB_REPO "$REPO"
-azd env set USNM_GITHUB_REPO_IDS \
+aset AZURE_SUBSCRIPTION_ID "$SUBSCRIPTION"
+[ -n "$(aget AZURE_LOCATION)" ] || aset AZURE_LOCATION "$LOCATION"
+aset USNM_GITHUB_REPO "$REPO"
+aset USNM_GITHUB_REPO_IDS \
   "$(gh api "repos/$REPO" --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"')"
-[ -n "$DOMAIN" ] && azd env set USNM_DNS_ZONE "$DOMAIN"
+[ -n "$DOMAIN" ] && aset USNM_DNS_ZONE "$DOMAIN"
 if [ -n "$EMAIL" ]; then
-  azd env set USNM_ALERT_EMAILS "$EMAIL"
+  aset USNM_ALERT_EMAILS "$EMAIL"
   # A budget's start date can never change: set it once.
-  [ -n "$(aget USNM_BUDGET_START)" ] || azd env set USNM_BUDGET_START "$(date -u +%Y-%m-01)"
+  [ -n "$(aget USNM_BUDGET_START)" ] || aset USNM_BUDGET_START "$(date -u +%Y-%m-01)"
 fi
-[ "$INGEST" = true ] && azd env set USNM_INGEST_JOBS true
+[ "$INGEST" = true ] && aset USNM_INGEST_JOBS true
 # One Cosmos DB free-tier account per subscription: use it only if it's free.
 if [ -z "$(aget USNM_COSMOS_FREE_TIER)" ] || [ "$MOVING" = true ]; then
   others=$(az cosmosdb list --query "[?enableFreeTier && !starts_with(name, 'cosmos-usnm-$ENV_NAME-')].name" -o tsv)
   if [ -n "$others" ]; then
     echo "the subscription's free tier is taken by: $others"
-    azd env set USNM_COSMOS_FREE_TIER false
+    aset USNM_COSMOS_FREE_TIER false
   else
-    azd env set USNM_COSMOS_FREE_TIER true
+    aset USNM_COSMOS_FREE_TIER true
   fi
 fi
 USE_ACR=$(aget USNM_USE_ACR)
-[ -n "$USE_ACR" ] || { USE_ACR=false; azd env set USNM_USE_ACR false; }
-
-# New roles and permissions take a minute or two to apply everywhere, so a
-# provision that depends on one can fail once; it's idempotent, so retry.
-provision() {
-  for attempt in 1 2 3; do
-    azd provision --no-prompt && return 0
-    [ "$attempt" = 3 ] && die "provisioning failed three times"
-    echo "retrying in 60s"
-    sleep 60
-  done
-}
+[ -n "$USE_ACR" ] || { USE_ACR=false; aset USNM_USE_ACR false; }
 
 step "Provisioning"
 provision
@@ -162,7 +153,13 @@ evar AZURE_TENANT_ID "$(aget AZURE_TENANT_ID)"
 evar AZURE_SUBSCRIPTION_ID "$(aget AZURE_SUBSCRIPTION_ID)"
 evar USNM_RESOURCE_GROUP "$(aget AZURE_RESOURCE_GROUP)"
 # List the environment for the deploy workflows.
-envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2> /dev/null || true)
+# Unset means none yet; any other error stops here, since writing the list
+# back without the other environments would stop their deploys.
+if ! envs=$(gh variable get USNM_DEPLOY_ENVIRONMENTS -R "$REPO" 2>&1); then
+  grep -qiE 'not found|HTTP 404' <<< "$envs" ||
+    die "can't read USNM_DEPLOY_ENVIRONMENTS in $REPO: $envs"
+  envs=""
+fi
 if ! grep -q "\"$ENV_NAME\"" <<< "$envs"; then
   # A JSON array of names: ["dev","prod"].
   names=$( (tr -d '[]" ' <<< "$envs" | tr ',' '\n'; echo "$ENV_NAME") | grep -v '^$' | sort -u)
@@ -196,8 +193,8 @@ run_and_wait ci
 
 if [ "$USE_ACR" != true ]; then
   step "Switching to the private registry"
-  azd env set USNM_USE_ACR true
-  azd env set USNM_API_IMAGE ""
+  aset USNM_USE_ACR true
+  aset USNM_API_IMAGE ""
   provision
 fi
 
@@ -240,7 +237,7 @@ if [ -n "$DOMAIN" ]; then
       cert=$(az containerapp show -n "$APP" -g "$RG" \
         --query "properties.configuration.ingress.customDomains[?name=='$host'].certificateId | [0]" -o tsv)
       [ -n "$cert" ] || die "$host has no certificate after binding"
-      azd env set "$var" "$cert"
+      aset "$var" "$cert"
       bound=true
     }
     bind "api.$DOMAIN" CNAME USNM_API_CERT_ID
