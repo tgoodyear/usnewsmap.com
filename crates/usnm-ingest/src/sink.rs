@@ -305,10 +305,11 @@ impl QuickwitNode {
         // Quickwit's environment overrides its config file, and the official
         // image sets QW_LISTEN_ADDRESS=0.0.0.0, QW_DATA_DIR and QW_CONFIG: the
         // writer refused to start on it ("listen address `0.0.0.0` is
-        // unspecified"). Only the Azure settings are passed through.
+        // unspecified"). None is passed through: the storage account is in
+        // the config above, and a QW_AZURE_STORAGE_ACCESS_KEY must never
+        // reach it (ADR-0009, Entra identities only).
         for (key, _) in std::env::vars_os() {
-            let k = key.to_string_lossy();
-            if k.starts_with("QW_") && !k.starts_with("QW_AZURE_") {
+            if key.to_string_lossy().starts_with("QW_") {
                 cmd.env_remove(&key);
             }
         }

@@ -97,9 +97,9 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Stage | Assumption | Estimate |
 |-------|------------|----------|
 | Curation workers | 4 replicas × 1 vCPU / 2 GiB × ~60 h: downloads are paced to LoC's limit, so workers are billed while they wait (04 §4.4). Consumption list price | ~$20–30 |
-| Full index build | `caj-usnm-ingest`, 4 vCPU / 8 GiB × ~12–24 h (not yet measured at full size; 04 §4.1.2) | ~$3–5 |
+| Full index build | `caj-usnm-ingest`, 4 vCPU / 8 GiB × ~12–24 h (not yet measured at full size; 04 §4.1.2), ~$0.43/h at Consumption list price | ~$5–10 |
 | Storage transactions + curated writes | | ~$5 |
-| **Total** | | **~$30–40** |
+| **Total** | | **~$30–45** |
 
 The curation estimate assumes downloads keep up with the workers. In the September 2026 trial (04 §4.1.2), archives not in LoC's CDN cache downloaded at 0.3–1.2 MB/s. If that holds from Azure, the workers mostly wait on the network: the backfill takes days longer, and workers that stay up while waiting cost more than the table shows.
 
