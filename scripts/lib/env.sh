@@ -102,7 +102,7 @@ save_outputs() {
   out=$(az stack sub show -n "$STACK" \
     --query "[keys(outputs), values(outputs)[].value]" -o tsv) || return 1
   while IFS=$'\t' read -r k v; do
-    [ -n "$k" ] && aset "$k" "$v"
+    [ -z "$k" ] || aset "$k" "$v" || return 1
   done < <(awk -F'\t' 'NR == 1 { n = split($0, k, "\t") }
       NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" v[i] }' <<< "$out")
 }
