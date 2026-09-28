@@ -18,6 +18,13 @@ valid_env_name() {
 }
 valid_env_name "$ENV_NAME"
 ENV_FILE=".azure/$ENV_NAME/.env"
+# A settings file that doesn't parse stops every script up front, before
+# anything reads a setting as empty and falls back to a default.
+# shellcheck source=/dev/null
+if [ -f "$ENV_FILE" ] && ! (set +u; . "$ENV_FILE") > /dev/null; then
+  echo "error: $ENV_FILE doesn't parse; fix it before running anything" >&2
+  exit 1
+fi
 # Setting names are shell variable names.
 valid_key() {
   [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "error: invalid setting name: $1" >&2; exit 2; }
@@ -25,7 +32,15 @@ valid_key() {
 # Read one setting (empty when unset).
 # shellcheck source=/dev/null
 # Only the file counts: the caller's variable of the same name is cleared.
-aget() { valid_key "$1"; (set +u; unset "$1"; set -a; [ ! -f "$ENV_FILE" ] || . "$ENV_FILE"; printf '%s\n' "${!1:-}"); }
+# A settings file that can't be read or parsed fails the read.
+aget() {
+  valid_key "$1"
+  (set +u; unset "$1"; set -a
+   if [ -f "$ENV_FILE" ]; then
+     . "$ENV_FILE" || { echo "error: can't read $ENV_FILE" >&2; exit 1; }
+   fi
+   printf '%s\n' "${!1:-}")
+}
 # Write one setting, quoted so the file can be sourced.
 aset() {
   valid_key "$1"
@@ -52,7 +67,7 @@ STACK="usnm-$ENV_NAME"
 # assigns: one stack of their own, so no two stacks manage the same resource.
 GUARDRAILS_STACK=usnm-guardrails
 # The region, with the same default as infra/main.bicepparam.
-stack_location() { local l; l=$(aget AZURE_LOCATION); echo "${l:-eastus2}"; }
+stack_location() { local l; l=$(aget AZURE_LOCATION) || return 1; echo "${l:-eastus2}"; }
 deploy_guardrails() {
   # A stack's location is fixed when it's created; environments in other
   # regions reuse it.
@@ -63,7 +78,7 @@ deploy_guardrails() {
       echo "error: can't check $GUARDRAILS_STACK: $location" >&2
       return 1
     }
-    location=$(stack_location)
+    location=$(stack_location) || return 1
   fi
   az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
     --template-file infra/guardrails.bicep \
@@ -81,12 +96,14 @@ deploy_stack() (
   local k v
   for k in $(grep -o "readEnvironmentVariable('[A-Za-z0-9_]*'" infra/main.bicepparam | cut -d"'" -f2); do
     unset "$k"
-    v=$(aget "$k")
+    v=$(aget "$k") || exit 1
     [ -z "$v" ] || export "$k=$v"
   done
   # The stack's name comes from the environment's; the template's must match.
   export AZURE_ENV_NAME=$ENV_NAME
-  az stack sub create --name "$STACK" --location "$(stack_location)" \
+  local location
+  location=$(stack_location) || exit 1
+  az stack sub create --name "$STACK" --location "$location" \
     --parameters infra/main.bicepparam \
     --action-on-unmanage deleteResources \
     --deny-settings-mode denyDelete \
