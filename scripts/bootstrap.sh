@@ -16,9 +16,9 @@
 #   --move                allow an existing environment to move to another
 #                         subscription (it starts there with no data)
 #
-# Needs: az, azd, gh and curl, signed in (`az login --tenant …`,
-# `azd auth login --tenant-id …`, `gh auth login`), Owner on the subscription
-# and admin on the GitHub repository.
+# Needs: az (this adds its containerapp extension), azd, gh and curl, signed
+# in (`az login --tenant …`, `azd auth login --tenant-id …`, `gh auth login`),
+# Owner on the subscription and admin on the GitHub repository.
 set -euo pipefail
 
 usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -49,6 +49,10 @@ done
 step() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
 for tool in az azd gh curl; do command -v "$tool" > /dev/null || die "$tool is not installed"; done
+# Binding a managed certificate (`hostname bind --validation-method`) needs
+# the containerapp extension; the commands built into az lack it.
+az extension show -n containerapp -o none 2> /dev/null ||
+  az extension add -n containerapp --only-show-errors -o none
 cd "$(dirname "$0")/.."
 
 step "Checking sign-ins"
