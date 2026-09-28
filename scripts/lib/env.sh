@@ -29,6 +29,8 @@ aget() { valid_key "$1"; (set +u; unset "$1"; set -a; [ ! -f "$ENV_FILE" ] || . 
 # Write one setting, quoted so the file can be sourced.
 aset() {
   valid_key "$1"
+  # One setting, one line: the file is edited line by line.
+  [[ $2 != *$'\n'* ]] || { echo "error: $1: values can't contain newlines" >&2; return 1; }
   local v=$2 tmp
   mkdir -p "$(dirname "$ENV_FILE")"
   touch "$ENV_FILE"
