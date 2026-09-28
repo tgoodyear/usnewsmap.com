@@ -92,9 +92,14 @@ for id in $roles; do az resource delete --ids "$id" -o none; done
 # The assignments went with the resource groups, so nothing uses the
 # definitions any more, unless an environment was created while this ran:
 # check again just before deleting.
-if [ "$guardrails" = true ] && [ -n "$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$GUARDRAILS_STACK'].name" -o tsv)" ]; then
-  echo "keeping $GUARDRAILS_STACK: another environment was created meanwhile"
-  guardrails=false
+if [ "$guardrails" = true ]; then
+  # Fail closed: if the list can't be read, keep the stack.
+  others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$GUARDRAILS_STACK'].name" -o tsv) ||
+    die "can't list deployment stacks; kept $GUARDRAILS_STACK (delete it when no environment uses it)"
+  if [ -n "$others" ]; then
+    echo "keeping $GUARDRAILS_STACK: another environment was created meanwhile ($others)"
+    guardrails=false
+  fi
 fi
 if [ "$guardrails" = true ]; then
   az stack sub delete -n "$GUARDRAILS_STACK" --action-on-unmanage deleteAll --yes --only-show-errors

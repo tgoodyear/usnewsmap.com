@@ -33,7 +33,7 @@ ENV_NAME=$1; shift
 case "$ENV_NAME" in -*|"") usage ;; esac
 # It becomes part of resource names (the registry allows only lowercase
 # letters and digits) and of the CI identity's OIDC subject.
-if ! printf '%s' "$ENV_NAME" | grep -Eq '^[a-z][a-z0-9]{0,15}$' || [ "$ENV_NAME" = guardrails ]; then
+if ! [[ $ENV_NAME =~ ^[a-z][a-z0-9]{0,15}$ ]] || [ "$ENV_NAME" = guardrails ]; then
   echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter (not \"guardrails\", the shared policy stack)" >&2
   exit 2
 fi

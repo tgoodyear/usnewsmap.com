@@ -10,7 +10,7 @@
 # lowercase letters and digits), the stack's name and the settings path.
 # "guardrails" is taken: usnm-guardrails is the shared policy stack.
 valid_env_name() {
-  printf '%s' "$1" | grep -Eq '^[a-z][a-z0-9]{0,15}$' || {
+  [[ $1 =~ ^[a-z][a-z0-9]{0,15}$ ]] || {
     echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter" >&2
     exit 2
   }
@@ -45,12 +45,14 @@ STACK="usnm-$ENV_NAME"
 # The guard-rail policy definitions every environment in the subscription
 # assigns: one stack of their own, so no two stacks manage the same resource.
 GUARDRAILS_STACK=usnm-guardrails
+# The region, with the same default as infra/main.bicepparam.
+stack_location() { local l; l=$(aget AZURE_LOCATION); echo "${l:-eastus2}"; }
 deploy_guardrails() {
   # A stack's location is fixed when it's created; environments in other
   # regions reuse it.
   local location
   location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv 2> /dev/null ||
-    aget AZURE_LOCATION)
+    stack_location)
   az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
     --template-file infra/guardrails.bicep \
     --action-on-unmanage deleteResources \
@@ -75,7 +77,7 @@ deploy_stack() (
   done
   # The stack's name comes from the environment's; the template's must match.
   export AZURE_ENV_NAME=$ENV_NAME
-  az stack sub create --name "$STACK" --location "$(aget AZURE_LOCATION)" \
+  az stack sub create --name "$STACK" --location "$(stack_location)" \
     --parameters infra/main.bicepparam \
     --action-on-unmanage deleteResources \
     --deny-settings-mode denyDelete \
