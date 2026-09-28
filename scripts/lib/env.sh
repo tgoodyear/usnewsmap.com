@@ -66,6 +66,16 @@ aset() {
   printf '%s="%s"\n' "$1" "$v" >> "$tmp"
   mv "$tmp" "$ENV_FILE"
 }
+# Remove one setting.
+adel() {
+  valid_key "$1"
+  [ -f "$ENV_FILE" ] || return 0
+  local tmp
+  tmp=$(mktemp)
+  grep -v "^$1=" "$ENV_FILE" > "$tmp" || [ $? -eq 1 ] ||
+    { rm -f "$tmp"; echo "error: can't read $ENV_FILE" >&2; return 1; }
+  mv "$tmp" "$ENV_FILE"
+}
 
 # One deployment stack per environment, at subscription scope (it holds the
 # resource groups). Resources dropped from the template are deleted; deny
@@ -122,14 +132,19 @@ deploy_stack() (
 # query reads the names and the values from the same object, so they pair
 # up in order; tsv prints them as two rows, which awk splits keeping empty
 # values. A failed query fails the step, so stale settings aren't kept.
+# The stack returns output names with their case changed (BACKFILL_JOB comes
+# back as backfilL_JOB); main.bicep declares them all in upper case, so that's
+# the name to save. Earlier runs saved the returned names: drop those.
 save_outputs() {
-  local out k v
+  local out k v raw
   out=$(az stack sub show -n "$STACK" \
     --query "[keys(outputs), values(outputs)[].value]" -o tsv) || return 1
-  while IFS=$'\t' read -r k v; do
-    [ -z "$k" ] || aset "$k" "$v" || return 1
+  while IFS=$'\t' read -r raw k v; do
+    [ -n "$k" ] || continue
+    aset "$k" "$v" || return 1
+    [ "$raw" = "$k" ] || adel "$raw" || return 1
   done < <(awk -F'\t' 'NR == 1 { n = split($0, k, "\t") }
-      NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" v[i] }' <<< "$out")
+      NR == 2 { split($0, v, "\t"); for (i = 1; i <= n; i++) print k[i] "\t" toupper(k[i]) "\t" v[i] }' <<< "$out")
 }
 # New roles and permissions take a minute or two to apply everywhere, so a
 # deployment that depends on one can fail once; it's idempotent, so retry.
