@@ -209,7 +209,7 @@ The whole system can be stood up from this repository in **any** Azure subscript
 7. once the registrar delegates the domain to the zone, binds the apex, `www` and `api` to the app with managed certificates (re-run it after delegating), and removes the Static Web App that used to serve the site;
 8. checks the API's `/readyz` and the site.
 
-Then, for a full corpus, start the backfill job and let the weekly ingest job publish (04 §4.4). A **new environment starts with no data**: the system of record is LoC's public data, and everything in Blob and Cosmos is derived from it by a deterministic pipeline. Rebuilding takes ~4.5 h of title sync (LoC's 20-requests/minute API limit) and ~22 h of curation with 8 workers, for about $15–20. Hand-curated state belongs in git, never only in an environment: the place-coordinate overrides (`catalog/overrides/places.json`) ship in the ingest image.
+Then, for a full corpus, start the backfill job and let the weekly ingest job publish (04 §4.4). A **new environment starts with no data**: the system of record is LoC's public data, and everything in Blob and Cosmos is derived from it by a deterministic pipeline. Rebuilding takes ~4.5 h of title sync (LoC's 20-requests/minute API limit) and ~2.5 days of curation (LoC's bulk limit of 10 downloads per 10 minutes per IP; 4 paced workers, the backfill job restarted each 24 h), for about $20–30. Hand-curated state belongs in git, never only in an environment: the place-coordinate overrides (`catalog/overrides/places.json`) ship in the ingest image.
 
 **What is per environment, and what is shared:**
 
