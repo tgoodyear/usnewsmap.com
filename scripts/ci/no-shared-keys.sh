@@ -20,8 +20,14 @@ patterns=(
   'adminUserEnabled: *true'
   'anonymousPullEnabled: *true'
   'listSecrets'                               # any listSecrets call or grant
-  'secrets *(\.|\[)'                         # GitHub secrets, either accessor, any case
-  'api_token|apiToken|deployment.?token'
+  'api_token|apiToken|apiKey|deployment.?token'
+  # The same operations through the Azure CLI.
+  'keys (list|renew)|list-keys|get-shared-keys|secrets list'
+  'generate-sas|--sas-token|--account-key|--auth-mode +key|connection-string'
+  'acr credential|--admin-enabled +true'
+  # GitHub secrets: any expression that reads them (secrets.x, secrets['x'],
+  # toJSON(secrets)), and passing them all to a reusable workflow.
+  '\$\{\{[^}]*\bsecrets\b|secrets: *inherit'
 )
 
 # The one open exception (ADR-0009): the Static Web App deploy token, read
@@ -29,7 +35,8 @@ patterns=(
 # listSecrets is an az CLI round trip; the app has no secrets.
 allow=(
   '^\.github/workflows/deploy-web\.yml:.*(deployment token|Read the deployment token|azure_static_web_apps_api_token)'
-  '^scripts/ci/swa-token\.sh:'
+  '^scripts/ci/swa-token\.sh:[0-9]+:# '
+  '^scripts/ci/swa-token\.sh:[0-9]+:token=\$\(az staticwebapp secrets list -n "\$SWA" -g "\$RG" --query properties\.apiKey -o tsv\)$'
   '^infra/modules/deployer\.bicep:.*(listSecrets|deployment token)'
   '^infra/modules/staticwebapp\.bicep:.*deployment token'
   '^infra/main\.bicep:.*deployment token'

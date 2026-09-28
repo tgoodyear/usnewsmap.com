@@ -45,14 +45,20 @@ resource noSharedKey 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
 resource noCosmosKeys 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
   name: 'usnm-deny-cosmos-local-auth'
   properties: {
-    displayName: 'US News Map: Cosmos DB accounts must disable local (key) auth'
+    displayName: 'US News Map: Cosmos DB accounts must disable local (key) auth and key-based metadata writes'
     policyType: 'Custom'
     mode: 'Indexed'
     policyRule: {
       if: {
         allOf: [
           { field: 'type', equals: 'Microsoft.DocumentDB/databaseAccounts' }
-          { field: 'Microsoft.DocumentDB/databaseAccounts/disableLocalAuth', notEquals: true }
+          {
+            anyOf: [
+              { field: 'Microsoft.DocumentDB/databaseAccounts/disableLocalAuth', notEquals: true }
+              // Alias from the built-in "key based metadata write access" policy.
+              { field: 'Microsoft.DocumentDB/databaseAccounts/disableKeyBasedMetadataWriteAccess', notEquals: true }
+            ]
+          }
         ]
       }
       then: { effect: 'deny' }
