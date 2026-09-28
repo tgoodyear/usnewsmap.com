@@ -22,6 +22,11 @@ const SHARD_THROUGHPUT_LIMIT: &str = "20MB";
 /// The node's in-memory ingest queue (Quickwit's default is 2 GiB). The first
 /// prod release ran out of memory at 4 GiB with the defaults.
 const INGEST_QUEUE_MEMORY: &str = "1GiB";
+/// The writer's local cache of uploaded splits (Quickwit's default is 100 GiB).
+/// A job replica has ~19.5 GiB of disk: the first prod release filled it,
+/// the ingester closed its shards, and every request got 503 "no shards
+/// available" until the release gave up.
+const SPLIT_STORE_BYTES: &str = "4GiB";
 
 /// How long one ingest request keeps retrying while the node pushes back
 /// (503 "no shards available" once the shard's rate limit is spent, or 429).
@@ -290,7 +295,8 @@ impl QuickwitNode {
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
              metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n\
              ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n  \
-             max_queue_memory_usage: {INGEST_QUEUE_MEMORY}\n",
+             max_queue_memory_usage: {INGEST_QUEUE_MEMORY}\n\
+             indexer:\n  split_store_max_num_bytes: {SPLIT_STORE_BYTES}\n",
             port.checked_add(1)
                 .context("--quickwit-port must be below 65535")?,
             data.display()
