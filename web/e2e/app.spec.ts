@@ -174,3 +174,28 @@ test("the API serves the site: app routes, security headers, cached assets", asy
   await expect(page.getByRole("heading", { level: 1 })).toContainText("newspapers");
   expect(errors).toEqual([]);
 });
+
+test("the search options open with an extra tap on phones", async ({ page, isMobile }) => {
+  await page.goto("/");
+  const match = page.getByLabel("Match");
+  const toggle = page.getByRole("button", { name: /^Options/ });
+  if (!isMobile) {
+    // Wide screens show the options inline and no toggle.
+    await expect(match).toBeVisible();
+    await expect(toggle).toBeHidden();
+    return;
+  }
+  await expect(page.getByRole("searchbox")).toBeVisible();
+  await expect(match).toBeHidden();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(match).toBeVisible();
+  await match.selectOption("all");
+  await expect(toggle).toHaveText("Options (1)");
+  await expectAccessible(page);
+
+  // A search that uses an option opens with the options showing.
+  await page.goto("/?q=gold&mode=any");
+  await expect(page.getByLabel("Match")).toBeVisible();
+});
