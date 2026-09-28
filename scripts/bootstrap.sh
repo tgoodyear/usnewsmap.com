@@ -82,6 +82,7 @@ done
 
 step "Configuring environment settings"
 . scripts/lib/env.sh
+need_stack_az
 aset AZURE_ENV_NAME "$ENV_NAME"
 # Settings that describe what exists in one subscription can't carry over to
 # another: moving starts again from an empty registry, with no certificate
