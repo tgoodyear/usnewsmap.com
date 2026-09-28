@@ -278,6 +278,13 @@ impl Worker {
                     "archive repeats pages with identical text; read each once"
                 );
             }
+            if stats.zero_numbered > 0 {
+                tracing::warn!(
+                    %batch,
+                    pages = stats.zero_numbered,
+                    "archive has pages numbered 0 (ed-0 or seq-0); skipped them"
+                );
+            }
             if let Some(part) = writer.finish_part()? {
                 tx.blocking_send(part).context("uploader stopped")?;
             }

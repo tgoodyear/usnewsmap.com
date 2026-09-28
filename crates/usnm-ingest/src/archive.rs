@@ -40,6 +40,27 @@ pub struct ArchiveStats {
     pub lossy: u64,
     /// Repeats of a page already read, with byte-identical text (skipped).
     pub duplicates: u64,
+    /// Pages numbered `ed-0` or `seq-0`, which no page key can name (skipped).
+    pub zero_numbered: u64,
+}
+
+/// `ed-0` or `seq-0` in the path. LoC numbers editions and pages from 1 (and
+/// its viewer links do), but a few archives hold a page numbered 0:
+/// `curiv_hercules_ver01` has 1 of its 7,133 pages at `ed-1/seq-0`.
+fn zero_numbered(path: &str) -> bool {
+    path.split('/').any(|p| p == "seq-0" || p == "ed-0")
+}
+
+/// `path` with `ed-0` and `seq-0` renumbered from 1.
+fn from_one(path: &str) -> String {
+    path.split('/')
+        .map(|p| match p {
+            "seq-0" => "seq-1",
+            "ed-0" => "ed-1",
+            p => p,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Parse a page key from an archive path, or `None` if it isn't page OCR text.
@@ -111,9 +132,19 @@ pub fn read_pages_from(
             continue;
         }
         let name = entry.path()?.to_string_lossy().into_owned();
-        let Some(key) = page_key_from_path(&name)? else {
-            stats.skipped += 1;
-            continue;
+        let key = match page_key_from_path(&name) {
+            Ok(Some(key)) => key,
+            Ok(None) => {
+                stats.skipped += 1;
+                continue;
+            }
+            // Only a page that would be valid numbered from 1: anything else
+            // wrong with the path still fails the archive.
+            Err(_) if zero_numbered(&name) && page_key_from_path(&from_one(&name)).is_ok() => {
+                stats.zero_numbered += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
         };
         if entry.size() > MAX_PAGE_BYTES {
             bail!(
@@ -218,7 +249,8 @@ mod tests {
                     pages: 2,
                     skipped: 1,
                     lossy: 1,
-                    duplicates: 0
+                    duplicates: 0,
+                    zero_numbered: 0
                 }
             );
             assert_eq!(
@@ -226,6 +258,32 @@ mod tests {
                 ("sn1/1896-07-10/ed-1/seq-1".into(), "Hello".into())
             );
             assert_eq!(pages[1].1, "caf\u{fffd}");
+        }
+    }
+
+    #[test]
+    fn a_page_numbered_zero_is_skipped_and_counted() {
+        let raw = tar_of(&[
+            ("sn1/1906/11/29/ed-1/seq-0/ocr.txt", b"zero"),
+            ("sn1/1906/11/29/ed-1/seq-1/ocr.txt", b"one"),
+        ]);
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(f.path(), raw).unwrap();
+        let stats = read_pages(f.path(), |p| {
+            assert_eq!(p.text, "one");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!((stats.pages, stats.zero_numbered), (1, 1));
+        // Other malformed numbers still fail the archive, with or without a 0.
+        for bad in [
+            "sn1/1906/11/29/ed-1/seq-x/ocr.txt",
+            "sn1/1906/11/29/ed-0/seq-x/ocr.txt",
+            "sn1/1906/13/40/ed-1/seq-0/ocr.txt",
+        ] {
+            let raw = tar_of(&[(bad, b"x")]);
+            std::fs::write(f.path(), raw).unwrap();
+            assert!(read_pages(f.path(), |_| Ok(())).is_err(), "{bad}");
         }
     }
 
