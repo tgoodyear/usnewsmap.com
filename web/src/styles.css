@@ -81,6 +81,10 @@ input, select {
 
 .search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1; }
 .search__q { flex: 1 1 220px; min-width: 180px; }
+.search__options { display: contents; }
+.search__toggle { display: none; }
+/* Last on wide screens, after the options; next to the box on phones. */
+.search__go { order: 1; }
 .search__date, .search__state, .search__near { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; color: var(--muted); }
 .search__near input { width: 4.5em; }
 .search__state input { width: 8em; }
@@ -166,7 +170,18 @@ input, select {
 .credits { font-size: 0.8rem; color: var(--muted); padding: 6px 16px; flex: none; }
 
 @media (max-width: 640px) {
+  /* Phones: the brand on its own line, then the search box and its button;
+     the options open below with an extra tap. */
+  .topbar { flex-direction: column; align-items: stretch; gap: 8px; padding: 8px 12px; }
+  .search { flex-wrap: wrap; }
+  .search__q { flex: 1 1 0; min-width: 0; }
+  .search__go { order: 0; }
+  .search__toggle { display: inline-block; }
+  .search__options { display: none; }
+  .search--open .search__options { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+  .search__options select { flex: 1 1 100%; }
   .search__date, .search__state { flex: 1 1 45%; }
+  .search__date input, .search__state input { flex: 1; min-width: 0; width: auto; }
   .stage { flex-direction: column; }
   .map { min-height: 55vh; }
   .panel { width: 100%; max-height: none; border-left: 0; border-top: 1px solid var(--line); }
