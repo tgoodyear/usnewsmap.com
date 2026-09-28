@@ -56,10 +56,10 @@ step() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
 for tool in az gh curl; do command -v "$tool" > /dev/null || die "$tool is not installed"; done
 # Binding a managed certificate (`hostname bind --validation-method`) needs
-# a recent containerapp extension; the commands built into az lack it.
-az containerapp hostname bind --help 2> /dev/null | grep -q -- --validation-method ||
+# az 2.90's built-in commands, or the containerapp extension on older ones.
+az containerapp hostname bind --help 2> /dev/null | grep -- --validation-method > /dev/null ||
   az extension add -n containerapp --upgrade --only-show-errors -o none
-az containerapp hostname bind --help 2> /dev/null | grep -q -- --validation-method ||
+az containerapp hostname bind --help 2> /dev/null | grep -- --validation-method > /dev/null ||
   die "az containerapp hostname bind has no --validation-method; update az"
 cd "$(dirname "$0")/.."
 

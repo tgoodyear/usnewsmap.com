@@ -19,8 +19,10 @@ valid_env_name() {
 valid_env_name "$ENV_NAME"
 # The stack commands need az 2.61+ (--action-on-unmanage); older versions
 # stop at the first deployment with "unrecognized arguments".
+# grep reads the help to the end: with -q it could quit early, and pipefail
+# would count az's SIGPIPE as a failure.
 need_stack_az() {
-  az stack sub create --help 2> /dev/null | grep -q -- --action-on-unmanage ||
+  az stack sub create --help 2> /dev/null | grep -- --action-on-unmanage > /dev/null ||
     die "az $(az version --query '"azure-cli"' -o tsv 2> /dev/null) is too old for deployment stacks; upgrade to 2.61 or later"
 }
 ENV_FILE=".azure/$ENV_NAME/.env"
