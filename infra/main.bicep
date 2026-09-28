@@ -7,6 +7,8 @@
 
 targetScope = 'subscription'
 
+import { guardrailPolicyNames } from 'guardrails.bicep'
+
 @minLength(1)
 @maxLength(16)
 @description('Environment name, e.g. dev or prod (AZURE_ENV_NAME in the environment\'s settings).')
@@ -60,7 +62,7 @@ param alertEmails string = ''
 param budgetStartDate string = ''
 
 
-@description('Create and assign the guardrail policies (needs Resource Policy Contributor on the subscription).')
+@description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
 @description('Public DNS zone for the site (e.g. usnewsmap.com); empty skips it. Delegate the domain to the NAME_SERVERS output.')
@@ -327,17 +329,19 @@ module alerts 'modules/alerts.bicep' = if (!empty(emails)) {
   }
 }
 
-module policyDefinitions 'modules/policy-definitions.bicep' = if (deployPolicies) {
-  // Subscription-scope deployment: named per environment so that two
-  // environments in one subscription don't overwrite each other's history.
-  name: 'usnm-policy-definitions-${env}'
-}
+// The guard-rail definitions are shared by every environment in the
+// subscription and deployed by their own stack (guardrails.bicep); this
+// environment only assigns them.
+var guardrailPolicyIds = map(
+  items(guardrailPolicyNames),
+  p => subscriptionResourceId('Microsoft.Authorization/policyDefinitions', p.value)
+)
 
 module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   scope: rg
   name: 'policy-assignments'
   params: {
-    definitionIds: policyDefinitions!.outputs.ids
+    definitionIds: guardrailPolicyIds
   }
 }
 
@@ -345,7 +349,7 @@ module spotPolicies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   scope: spotRg
   name: 'policy-assignments-spot'
   params: {
-    definitionIds: policyDefinitions!.outputs.ids
+    definitionIds: guardrailPolicyIds
   }
 }
 

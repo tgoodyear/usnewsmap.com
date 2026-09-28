@@ -34,7 +34,7 @@ The owner made the rule foundational: **every authentication is by an Entra iden
 
    Short-lived tokens that Entra issues for a principal count as Entra authentication, because they carry that principal's RBAC. These are OAuth access tokens, and the registry refresh token that `az acr login` exchanges for an Entra token.
 3. **Enforced, not just configured.**
-   - Azure Policy **denies** each "local auth on" setting above on the project resource groups (`infra/modules/policy-definitions.bicep`).
+   - Azure Policy **denies** each "local auth on" setting above on the project resource groups (`infra/guardrails.bicep`).
    - CI fails any change that reintroduces a key pattern (`scripts/ci/no-shared-keys.sh`, in the `infra` job).
    - The Rust storage client refuses URLs that carry a SAS query.
 

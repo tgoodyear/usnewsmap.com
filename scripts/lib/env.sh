@@ -40,6 +40,22 @@ aset() {
 # resource groups). Resources dropped from the template are deleted; deny
 # settings stop anyone deleting a managed resource outside the stack.
 STACK="usnm-$ENV_NAME"
+# The guard-rail policy definitions every environment in the subscription
+# assigns: one stack of their own, so no two stacks manage the same resource.
+GUARDRAILS_STACK=usnm-guardrails
+deploy_guardrails() {
+  # A stack's location is fixed when it's created; environments in other
+  # regions reuse it.
+  local location
+  location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv 2> /dev/null ||
+    aget AZURE_LOCATION)
+  az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
+    --template-file infra/guardrails.bicep \
+    --action-on-unmanage deleteResources \
+    --deny-settings-mode denyDelete \
+    --description "usnewsmap guard-rail policy definitions, shared by every environment in the subscription" \
+    --yes --only-show-errors -o none
+}
 deploy_stack() (
   # Export the settings that have a value; infra/main.bicepparam reads them,
   # and an unset one takes its default there. Clear every name it reads
@@ -75,7 +91,7 @@ save_outputs() {
 # deployment that depends on one can fail once; it's idempotent, so retry.
 provision() {
   for attempt in 1 2 3; do
-    deploy_stack && { save_outputs; return 0; }
+    deploy_guardrails && deploy_stack && { save_outputs; return 0; }
     [ "$attempt" = 3 ] && die "provisioning failed three times"
     echo "retrying in 60s"
     sleep 60

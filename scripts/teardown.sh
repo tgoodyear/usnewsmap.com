@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Delete one usnewsmap environment: its deployment stack with every resource
 # and resource group it manages, and its GitHub Environment (08 §8.9). The
+# last environment in a subscription also takes the guard-rail stack. The
 # data goes with it (a new environment rebuilds it from LoC). Its local
 # settings (.azure/<env>/.env) are kept, renamed, in case they're needed.
 #
@@ -36,36 +37,38 @@ az stack sub show -n "$STACK" -o none 2> /dev/null ||
 
 ids=$(az stack sub show -n "$STACK" --query "resources[].id" -o tsv)
 groups=$(grep -Ei '^/subscriptions/[^/]+/resourceGroups/[^/]+$' <<< "$ids" | sed 's|.*/||' || true)
-# Resources that outlive their resource group: the environment's custom role
-# (declared in its group, stored with the subscription), and the guard-rail
-# policy definitions, which every environment here shares.
+# The environment's custom role outlives its resource group: it's declared
+# in the group but stored with the subscription.
 roles=$(grep -i '/providers/Microsoft.Authorization/roleDefinitions/' <<< "$ids" || true)
-policies=$(grep -i '/providers/Microsoft.Authorization/policyDefinitions/' <<< "$ids" || true)
-others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK'].name" -o tsv)
+# The guard-rail definitions go with the last environment in the subscription.
+others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK' && name != '$GUARDRAILS_STACK'].name" -o tsv)
+guardrails=false
+[ -z "$others" ] && az stack sub show -n "$GUARDRAILS_STACK" -o none 2> /dev/null && guardrails=true
 
 echo "This deletes environment $ENV_NAME from subscription $SUBSCRIPTION:"
 sed 's/^/  resource group (everything in it) /' <<< "$groups"
 [ -n "$roles" ] && sed 's/^/  /' <<< "$roles"
-if [ -z "$others" ]; then
-  [ -n "$policies" ] && sed 's/^/  /' <<< "$policies"
-else
-  echo "  (the guard-rail policy definitions stay: they're shared with $others)"
+if [ "$guardrails" = true ]; then
+  echo "  the guard-rail stack $GUARDRAILS_STACK and its policy definitions"
+elif [ -n "$others" ]; then
+  echo "  (the guard-rail stack $GUARDRAILS_STACK stays: other environments use it: $others)"
 fi
 echo "and the GitHub Environment $ENV_NAME in $REPO."
 read -r -p "Type the environment name to confirm: " answer
 [ "$answer" = "$ENV_NAME" ] || die "not confirmed"
 
 # Detach, then delete explicitly: the stack's deleteAll would stop at a
-# resource group that also holds something it doesn't manage, and at the
-# policy definitions another environment's stack protects.
+# resource group that also holds something it doesn't manage.
 az stack sub delete -n "$STACK" --action-on-unmanage detachAll --yes --only-show-errors
 for g in $groups; do
   echo "deleting resource group $g"
   az group delete -n "$g" --yes -o none
 done
 for id in $roles; do az resource delete --ids "$id" -o none; done
-if [ -z "$others" ]; then
-  for id in $policies; do az resource delete --ids "$id" -o none; done
+# The assignments went with the resource groups, so nothing uses the
+# definitions any more.
+if [ "$guardrails" = true ]; then
+  az stack sub delete -n "$GUARDRAILS_STACK" --action-on-unmanage deleteAll --yes --only-show-errors
 fi
 
 # Stop the workflows deploying to it.

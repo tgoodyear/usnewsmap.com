@@ -87,7 +87,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `dnsZoneName` | `USNM_DNS_ZONE` | empty (no zone). The site's domain, e.g. `usnewsmap.com` |
 | `githubRepo`, `githubRepoIds` | `USNM_GITHUB_REPO`, `USNM_GITHUB_REPO_IDS` | this repository; bootstrap sets both (the second is GitHub's immutable-ID form, `owner@id/name@id`) |
 | `allowedOrigins` | — | empty. Extra CORS origins; the site's own hostname and the domain (with `www`) are always allowed |
-| `deployPolicies` | — | `true` (needs Resource Policy Contributor on the subscription) |
+| `deployPolicies` | — | `true`: assign the guard-rail policies (the `usnm-guardrails` stack defines them) |
 
 ### Settings and the deployment stack
 
@@ -104,7 +104,8 @@ Everything is one **deployment stack** at subscription scope, `usnm-<env>` ([ADR
 - **Removed from the template means removed from Azure.** Each deployment runs with `--action-on-unmanage deleteResources`, so a resource dropped from the Bicep (or switched off by a setting, such as `USNM_INGEST_JOBS=false`) is deleted, not left running.
 - **Nothing the stack manages can be deleted outside it.** `--deny-settings-mode denyDelete` puts a deny assignment on every managed resource, the resource groups included, that blocks deletes by anyone, Owners too. Changes still go through the stack. To delete by hand in an emergency, deploy once with `--deny-settings-mode none`.
 - Resources the template doesn't declare (the certificates bootstrap binds, anything made in the portal) aren't managed: the stack neither protects nor deletes them.
-- `scripts/teardown.sh <env>` deletes an environment: its resource groups, its custom role, the policy definitions when no other environment in the subscription uses them, and its GitHub Environment. It asks for the name first.
+- The guard-rail policy definitions every environment in the subscription assigns (`infra/guardrails.bicep`) are a stack of their own, `usnm-guardrails`, deployed just before the environment's. Two stacks never manage the same resource.
+- `scripts/teardown.sh <env>` deletes an environment: its resource groups, its custom role, the guard-rail stack (`usnm-guardrails`, the policy definitions) when no other environment in the subscription uses it, and its GitHub Environment. It asks for the name first.
 
 ## Web app
 
