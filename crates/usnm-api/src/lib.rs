@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderValue, Method};
+use axum::http::{header, HeaderValue, Method};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -16,6 +16,7 @@ use moka::future::Cache;
 use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use usnm_search::{IndexSet, SearchBackend};
 use usnm_store::ObjectStore;
@@ -25,6 +26,7 @@ pub mod error;
 pub mod ratelimit;
 pub mod refdata;
 mod routes;
+pub mod site;
 pub mod version;
 
 use config::Config;
@@ -145,15 +147,28 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/aggregate", get(routes::aggregate))
         .route("/hits", get(routes::hits))
         .route("/coverage", get(routes::coverage))
-        .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit));
+        .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit))
+        // Unknown API paths are problem details, never the site's index.
+        .fallback(|| async { ApiError::NotFound("no such endpoint".to_owned()) });
 
-    Router::new()
+    let site = state.config.site_dir.clone();
+    let mut router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(routes::readyz))
-        // `/api/v1` lets SWA Standard link this app same-origin (ADR-0006).
         .nest("/v1", v1.clone())
+        // Kept for clients that used the same-origin `/api/v1` prefix.
         .nest("/api/v1", v1)
-        .with_state(state)
+        .with_state(state);
+    if let Some(dir) = site {
+        router = router.fallback_service(site::router(dir));
+    }
+    for (name, value) in site::SECURITY_HEADERS {
+        router = router.layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        ));
+    }
+    router
         .layer(cors)
         .layer(CompressionLayer::new())
         // Log the path only: query strings carry search text (09 §9.4.2).

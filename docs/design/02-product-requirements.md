@@ -76,7 +76,7 @@ Priority: **P0** = must ship at relaunch (legacy parity plus accuracy); **P1** =
 |----------|-------------|
 | **Accuracy** | Map and timeline counts are exact page counts for the query (no sampling). The UI states that counts are *pages containing the match*, not the number of occurrences. |
 | **Latency** (p95, warm) | Aggregate query ≤ **2 s** for typical queries (≤ 1M hits); very common terms may take up to **15 s** uncached on the lean profile (≤ 4 s on the growth profile); cached responses ≤ **150 ms**. Place drill-down ≤ **1 s**. Playback frame ≤ **16 ms** client-side. |
-| **Throughput** | Normal load 1–5 req/s; handle **press spikes of 100+ req/s** mostly from cache: popular and example searches are pre-warmed into the in-process and Blob caches; static assets come from the SWA CDN. |
+| **Throughput** | Normal load 1–5 req/s; handle **press spikes of 100+ req/s** mostly from cache: popular and example searches are pre-warmed into the in-process and Blob caches; static assets are precompressed and cached by browsers for a year (hashed names). |
 | **Availability** | 99.0% monthly for the read path on the lean profile (99.5% on the growth profile). Planned maintenance served by a static "read-only / degraded" page. |
 | **Cost** | Steady state **under $80 per month** all-in (typical ~$72 including private networking and the registry); one-time backfill ~$15–20 on Container Apps Jobs; dev under $10; hard budget alerts and replica caps. |
 | **Operability** | No VMs. All infrastructure as code. One-command deploy. Full re-index from the data lake with no manual steps. Runbooks in the repo. |

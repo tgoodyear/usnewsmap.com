@@ -42,11 +42,14 @@ pub struct Config {
     /// `None` disables rate limiting.
     pub rate_limit: Option<RateLimit>,
     /// Proxies in front of the API that append to `X-Forwarded-For`
-    /// (1 = Container Apps ingress; 2 = SWA linked backend + ingress).
+    /// (1 = Container Apps ingress; 2 = a proxy such as Front Door + ingress).
     /// 0 ignores the header and uses the peer address.
     pub trusted_proxy_hops: usize,
     /// Requests allowed to query the search backend at once.
     pub backend_concurrency: usize,
+    /// The built web app to serve alongside the API (`web/dist`); none
+    /// serves the API alone.
+    pub site_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -107,6 +110,7 @@ impl Config {
                 .map_err(|e| e.to_string())?,
             backend_concurrency: usize::try_from(num("USNM_BACKEND_CONCURRENCY", 8)?.max(1))
                 .map_err(|e| e.to_string())?,
+            site_dir: var("USNM_SITE_DIR").map(PathBuf::from),
         })
     }
 }

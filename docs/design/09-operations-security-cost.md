@@ -41,7 +41,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 |--------|--------|-----------|
 | **Denial of service / cost exhaustion** | Uncached, expensive queries in bulk (the realistic top risk for a public search site) | In-process + Blob caches; canonicalization; API token bucket (per client); query complexity limits; backend concurrency semaphore; 10 s timeouts; budget alerts; max replica caps |
 | **Injection** | Query-language injection into the engine (the legacy Solr risk) | AST-only translation; no raw syntax pass-through; fuzzing |
-| **XSS** | Snippets containing OCR'd markup; title metadata | Server-side escaping; only `<mark>` allowed; strict **CSP** set in `staticwebapp.config.json` global headers: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'` (MapLibre sets inline styles); `connect-src 'self' https://api.usnewsmap.com https://stusnmtiles.blob.core.windows.net https://*.in.applicationinsights.azure.com https://js.monitor.azure.com` (API, PMTiles range requests, telemetry); `worker-src 'self' blob:` (MapLibre workers); `img-src 'self' data: blob: https://tile.loc.gov https://www.loc.gov`; `frame-ancestors *` only on the embed route. Playwright tests assert that there are no CSP violations. React escapes by default |
+| **XSS** | Snippets containing OCR'd markup; title metadata | Server-side escaping; only `<mark>` allowed; strict **CSP** that the API sets on every response (`SECURITY_HEADERS` in `crates/usnm-api/src/site.rs`): `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'` (MapLibre sets inline styles); `connect-src 'self' https://*.blob.core.windows.net https://tiles.openfreemap.org` (the API on the same origin, PMTiles range requests, the basemap); `img-src 'self' data: blob: https:` (page images linked from LoC); `font-src 'self' https://tiles.openfreemap.org`; `worker-src 'self' blob:` (MapLibre workers); `object-src 'none'; base-uri 'self'; form-action 'self'`. There is no `frame-ancestors`, so the site can still be embedded, as the legacy site was. Telemetry origins will be added when the site sends any. Playwright tests assert that there are no CSP violations. React escapes by default |
 | **Supply chain** | Crates, npm packages, container images | `cargo-deny`, `cargo-audit`, Dependabot, CodeQL, pinned image digests, SBOM, signed images (Notation or cosign) |
 | **Secret leakage** | Keys in the repo (happened in the legacy repo) | Managed identities; account keys and Cosmos keys **disabled and policy-locked**; GitHub secret scanning + **push protection**; no keys exist at runtime |
 | **Data-plane exposure** | Direct internet access to storage or Cosmos | Private endpoints with `publicNetworkAccess: Disabled` in steady state; Entra-only auth even during the guarded backfill window; the guard job and alerts on any change |
@@ -75,13 +75,12 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 
 | Item | Assumption | Low | Typical | High |
 |------|------------|-----|---------|------|
-| Static Web Apps | **Free** plan (Standard $9 if same-origin API or an SLA is wanted) | $0 | $0 | $0 |
 | Container App `ca-usnm` (API + Quickwit sidecar) | 1 replica × 1.25 vCPU / 2.5 GiB, always warm, mostly idle rate. Active search time mostly within the free grant. A spike month scales to a second replica for some hours | $16 | $30 | $50 |
 | Blob: search index (Hot) | 0.5–0.9 TB | $10 | $14 | $18 |
 | Blob: curated Parquet (Cool) | 150–300 GB; read only during rebuilds | $2 | $2 | $3 |
 | Blob: reference, response cache, tiles (Hot) + transactions | ~20–40 GB | $1 | $2 | $4 |
 | Container Apps Jobs (weekly incremental ingest, stats, pre-warm) | Mostly within the free grant | $0 | $1 | $3 |
-| Egress | SPA via SWA; tiles and API responses via Azure egress (first 100 GB free) | $0 | $0 | $5 |
+| Egress | The site, tiles and API responses via Azure egress (first 100 GB free) | $0 | $0 | $5 |
 | Log Analytics / App Insights | Daily cap keeps it within 5 GB/month free | $0 | $0 | $3 |
 | Cosmos DB (document state) | Free tier: 1,000 RU/s + 25 GB (serverless ~$1–3 if the free tier is taken) | $0 | $0 | $3 |
 | **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |

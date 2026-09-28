@@ -1,6 +1,6 @@
 # Web app
 
-The US News Map single-page app ([design doc 07](../docs/design/07-frontend-design.md)). It uses React 19, TypeScript, Vite, MapLibre GL, deck.gl and TanStack Query, and is hosted on Azure Static Web Apps.
+The US News Map single-page app ([design doc 07](../docs/design/07-frontend-design.md)). It uses React 19, TypeScript, Vite, MapLibre GL, deck.gl and TanStack Query. The API app serves it from its image, on the same origin as `/v1` ([ADR-0010](../docs/design/adr/0010-site-served-by-the-api.md)).
 
 ## Develop
 
@@ -14,14 +14,14 @@ cd web && npm ci && npm run dev  # http://localhost:5173
 | Script | What |
 |--------|------|
 | `npm run lint` / `typecheck` / `test` | ESLint, `tsc`, Vitest unit tests (engine, URL state, dates, snippets) |
-| `npm run build` | Production build into `dist/` (includes `staticwebapp.config.json`) |
-| `npm run e2e` | Playwright end-to-end tests with axe accessibility checks against `vite preview` and a running API. Set `PW_CHROMIUM_PATH` to use an existing Chromium |
+| `npm run build` | Production build into `dist/`. The API image also runs `node scripts/precompress.mjs dist` for brotli and gzip copies |
+| `npm run e2e` | Playwright end-to-end tests with axe accessibility checks. By default against `vite preview` and a running API. With `PW_BASE_URL` (as CI does), against an API serving the build (`USNM_SITE_DIR=web/dist cargo run -p usnm-api`). Set `PW_CHROMIUM_PATH` to use an existing Chromium |
 
 Build-time settings:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `VITE_API_BASE` | same origin | API origin, e.g. `https://api.usnewsmap.com` |
+| `VITE_API_BASE` | same origin | API origin. Production leaves it empty: the API serves the site |
 | `VITE_BASEMAP_STYLE` | OpenFreeMap Positron | MapLibre style URL. `none` gives a plain background (offline and tests). The self-hosted PMTiles style replaces the default once the tiles are published |
 | `USNM_API_ORIGIN` | `http://127.0.0.1:8080` | API the dev and preview servers proxy `/v1` to |
 

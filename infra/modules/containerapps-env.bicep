@@ -31,5 +31,7 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
 output id string = env.id
 output name string = env.name
 output defaultDomain string = env.properties.defaultDomain
+// The apex A record's target (an apex can't be a CNAME).
+output staticIp string = env.properties.staticIp
 // The value of the `asuid.{name}` TXT record that proves a custom domain.
 output customDomainVerificationId string = env.properties.customDomainConfiguration.customDomainVerificationId

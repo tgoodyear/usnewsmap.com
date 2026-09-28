@@ -631,3 +631,139 @@ async fn reference_files_must_match_the_manifest() {
     assert!(err.contains("not a valid id"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A built site: an index, a hashed asset with a precompressed copy, a favicon.
+fn site_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("usnm-site-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html><div id=root></div>").unwrap();
+    std::fs::write(dir.join("assets/index-abc.js"), "console.log(1)").unwrap();
+    std::fs::write(dir.join("assets/index-abc.js.gz"), b"gzipped").unwrap();
+    std::fs::write(dir.join("favicon.svg"), "<svg/>").unwrap();
+    dir
+}
+
+async fn get_site(
+    state: &Arc<AppState>,
+    uri: &str,
+    encoding: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let mut req = Request::builder().uri(uri);
+    if let Some(e) = encoding {
+        req = req.header(header::ACCEPT_ENCODING, e);
+    }
+    let resp = app(state.clone())
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+#[tokio::test]
+async fn serves_the_site_alongside_the_api() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir());
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+
+    // The app shell, revalidated on every load, with the security headers.
+    let (status, h, body) = get_site(&s, "/", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("id=root"));
+    assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache");
+    assert!(header_str(&h, header::CONTENT_SECURITY_POLICY).contains("connect-src 'self'"));
+    assert_eq!(header_str(&h, header::X_CONTENT_TYPE_OPTIONS), "nosniff");
+
+    // App routes get the shell too, so a reload keeps working.
+    let (status, h, body) = get_site(&s, "/search/gold", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("id=root"));
+    assert!(header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
+
+    // HEAD on an app route: GET's headers, no body.
+    let resp = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri("/search/gold")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let len = std::fs::metadata(s.config.site_dir.as_ref().unwrap().join("index.html"))
+        .unwrap()
+        .len();
+    assert_eq!(
+        header_str(resp.headers(), header::CONTENT_LENGTH),
+        len.to_string()
+    );
+    assert!(header_str(resp.headers(), header::CONTENT_TYPE).starts_with("text/html"));
+    assert!(resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .is_empty());
+
+    // Hashed assets: cached for a year, the precompressed copy when accepted.
+    let (status, h, body) = get_site(&s, "/assets/index-abc.js", Some("gzip")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "gzipped");
+    assert_eq!(header_str(&h, header::CONTENT_ENCODING), "gzip");
+    assert_eq!(
+        header_str(&h, header::CACHE_CONTROL),
+        "public, max-age=31536000, immutable"
+    );
+    let (_, h, body) = get_site(&s, "/assets/index-abc.js", None).await;
+    assert_eq!(body, "console.log(1)");
+    assert_eq!(header_str(&h, header::CONTENT_ENCODING), "");
+
+    let (status, h, _) = get_site(&s, "/favicon.svg", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_str(&h, header::CACHE_CONTROL),
+        "public, max-age=3600"
+    );
+
+    // Missing files are 404s, not the shell.
+    for uri in ["/assets/gone-123.js", "/robots.txt"] {
+        let (status, h, _) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(header_str(&h, header::CACHE_CONTROL), "", "{uri}");
+    }
+
+    // The API is unchanged, and its unknown paths stay problem details.
+    let (status, _, body) = get(&s, "/v1/meta").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["index_version"].is_string());
+    let (status, h, _) = get(&s, "/v1/nope").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        header_str(&h, header::CONTENT_TYPE),
+        "application/problem+json"
+    );
+    let (status, _, _) = get(&s, "/healthz").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn without_a_site_only_the_api_answers() {
+    let s = state_with(None).await;
+    let (status, _, _) = get_site(&s, "/", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get_site(&s, "/v1/meta", None).await;
+    assert_eq!(status, StatusCode::OK);
+}

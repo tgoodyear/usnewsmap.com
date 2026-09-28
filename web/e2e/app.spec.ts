@@ -154,3 +154,23 @@ test("exact phrase applies to plain words, like a quoted phrase", async ({ page 
   await expect(page.getByRole("status").filter({ hasText: "No pages match" })).toBeVisible();
   expect(await pages("q=standard+gold&mode=all")).toBeGreaterThan(0);
 });
+
+test("the API serves the site: app routes, security headers, cached assets", async ({ page, request }) => {
+  test.skip(!process.env.PW_BASE_URL, "only when the API serves the build (CI)");
+  const shell = await request.get("/some/app/route");
+  expect(shell.status()).toBe(200);
+  expect(shell.headers()["content-type"]).toContain("text/html");
+  expect(shell.headers()["cache-control"]).toBe("no-cache");
+  expect(shell.headers()["content-security-policy"]).toContain("connect-src 'self'");
+  expect((await request.get("/assets/does-not-exist.js")).status()).toBe(404);
+
+  // The page loads under that CSP, and its assets are cached for a year.
+  const errors = watchErrors(page);
+  const script = page.waitForResponse((r) => /\/assets\/index-.*\.js$/.test(r.url()));
+  await page.goto("/");
+  const js = await script;
+  expect(js.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
+  expect(["br", "gzip"]).toContain(js.headers()["content-encoding"]);
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("newspapers");
+  expect(errors).toEqual([]);
+});

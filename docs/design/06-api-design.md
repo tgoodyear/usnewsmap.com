@@ -58,7 +58,7 @@
 Principles:
 
 - **All reads are GET** with canonical query strings, so browsers (and any future CDN) can cache them.
-- **Base URL:** `https://api.usnewsmap.com/v1/…`. The same routes are also mounted at `/api/v1/…`, so that linking the app to SWA Standard (same-origin `/api/*`) works without code changes.
+- **Base URL:** `https://api.usnewsmap.com/v1/…`. The site calls the same routes on its own origin (`https://usnewsmap.com/v1/…`), because the API app serves it ([ADR-0010](adr/0010-site-served-by-the-api.md)). The routes are also mounted at `/api/v1/…` for clients of that earlier prefix.
 - **Responses are immutable per `index_version`.**
 - **No cookies and no sessions.**
 - **Public, read-only.** Anonymous use is limited by rate; researchers can get a higher-limit key later.

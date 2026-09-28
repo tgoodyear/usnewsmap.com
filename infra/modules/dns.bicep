@@ -1,24 +1,25 @@
 // Public DNS zone for the site's domain (08 §8.1). The registrar delegates to
 // the zone's name servers (the NAME_SERVERS output). Records:
 //
-// - apex: an alias to the Static Web App (an apex can't be a CNAME), and
-//   CAA records limiting certificate issuance (08 §8.8);
+// - apex: an A record to the Container Apps environment's static IP (an apex
+//   can't be a CNAME), and CAA records limiting certificate issuance (08 §8.8);
 // - no-mail records: SPF `-all`, DMARC reject, empty DKIM keys;
-// - www: CNAME to the Static Web App;
-// - api: CNAME to the API app, plus the `asuid.api` TXT record that
-//   Container Apps checks before it binds a custom domain.
+// - www and api: CNAMEs to the app, which serves both the site and the API;
+// - `asuid`, `asuid.www`, `asuid.api`: the TXT records Container Apps checks
+//   before it binds each custom domain.
 //
-// Binding the names on the apps themselves (and their managed certificates)
-// needs the delegation to be live, so it is a separate step.
+// Binding the names on the app (and their managed certificates) needs the
+// delegation to be live, so it is a separate step (scripts/bootstrap.sh).
 
 param tags object
 param zoneName string
-param siteId string
-param siteHostname string
-@description('The API app\'s FQDN; empty skips the api records.')
-param apiFqdn string
-param apiVerificationId string
-@description('CAs allowed to issue for the domain: the Static Web Apps and Container Apps managed certificates both come from DigiCert.')
+@description('The app\'s FQDN; empty (no app yet) skips the www and api records.')
+param appFqdn string
+@description('The Container Apps environment\'s static IP, for the apex.')
+param staticIp string
+@description('The environment\'s custom domain verification ID, for the asuid records.')
+param verificationId string
+@description('CAs allowed to issue for the domain: Container Apps managed certificates come from DigiCert.')
 param caaIssuers array = ['digicert.com']
 
 resource zone 'Microsoft.Network/dnsZones@2018-05-01' = {
@@ -75,35 +76,32 @@ resource apex 'Microsoft.Network/dnsZones/A@2018-05-01' = {
   name: '@'
   properties: {
     TTL: 3600
-    targetResource: { id: siteId }
+    ARecords: [{ ipv4Address: staticIp }]
   }
 }
 
-resource www 'Microsoft.Network/dnsZones/CNAME@2018-05-01' = {
-  parent: zone
-  name: 'www'
-  properties: {
-    TTL: 3600
-    CNAMERecord: { cname: siteHostname }
-  }
-}
+var cnames = empty(appFqdn) ? [] : ['www', 'api']
 
-resource api 'Microsoft.Network/dnsZones/CNAME@2018-05-01' = if (!empty(apiFqdn)) {
-  parent: zone
-  name: 'api'
-  properties: {
-    TTL: 3600
-    CNAMERecord: { cname: apiFqdn }
+resource hosts 'Microsoft.Network/dnsZones/CNAME@2018-05-01' = [
+  for name in cnames: {
+    parent: zone
+    name: name
+    properties: {
+      TTL: 3600
+      CNAMERecord: { cname: appFqdn }
+    }
   }
-}
+]
 
-resource apiVerify 'Microsoft.Network/dnsZones/TXT@2018-05-01' = if (!empty(apiFqdn)) {
-  parent: zone
-  name: 'asuid.api'
-  properties: {
-    TTL: 3600
-    TXTRecords: [{ value: [apiVerificationId] }]
+resource verify 'Microsoft.Network/dnsZones/TXT@2018-05-01' = [
+  for name in ['asuid', 'asuid.www', 'asuid.api']: {
+    parent: zone
+    name: name
+    properties: {
+      TTL: 3600
+      TXTRecords: [{ value: [verificationId] }]
+    }
   }
-}
+]
 
 output nameServers array = zone.properties.nameServers

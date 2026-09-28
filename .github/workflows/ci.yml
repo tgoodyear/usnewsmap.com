@@ -76,9 +76,11 @@ jobs:
         with:
           context: .
           tags: usnewsmap-api:check
-          outputs: type=cacheonly
+          load: true
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
+      - name: The API image serves the API and the site
+        run: scripts/ci/check-api-image.sh usnewsmap-api:check
       - uses: docker/build-push-action@v7
         with:
           context: .

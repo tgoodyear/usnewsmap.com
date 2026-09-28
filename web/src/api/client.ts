@@ -7,7 +7,7 @@ import type {
   Problem,
 } from "./types";
 
-/** API origin: same-origin (dev proxy, SWA linked backend) unless configured. */
+/** API origin: same-origin (the API serves the site; the dev server proxies) unless configured. */
 export const API_BASE: string = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 
 /**

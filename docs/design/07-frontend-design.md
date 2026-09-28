@@ -14,7 +14,7 @@
 | UI primitives | **Radix UI** (dialogs, sliders, toggles, tooltips) | Accessible by default |
 | i18n | Messages in `en` at launch, structured for more locales | Readiness for Spanish and German (many historic papers are in German) |
 | Testing | Vitest + Testing Library; **Playwright** end-to-end and visual snapshots; axe-core accessibility checks in CI | |
-| Hosting | **Azure Static Web Apps (Free)**; no Front Door | Free global static distribution, custom domain + TLS, atomic deploys, PR preview environments. Standard ($9) if a same-origin API or an SLA is wanted |
+| Hosting | **Served by the API app** from its image; no Front Door ([ADR-0010](adr/0010-site-served-by-the-api.md)) | Same origin as the API (no CORS), Entra-only deploys, site and API always on the same version, free managed TLS. No global edge; Front Door can be added later |
 
 **Implementation notes (first slice, [`web/`](../../web/README.md)):**
 
