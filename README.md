@@ -65,6 +65,30 @@ USNM_DATA_DIR=/tmp/usnm-ingest/reference cargo run --manifest-path ~/src/usnewsm
 
 In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos https://{account}.documents.azure.com/`, Blob URLs for `--curated` and `--reference`, and `--quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index`. The store, state and index-target options also read environment variables (`USNM_CURATED_URL`, `USNM_REFERENCE_URL`, `USNM_COSMOS_ENDPOINT`, `USNM_QUICKWIT_*`, …; see `usnm-ingest --help`). `enqueue` with no `--list` reads LoC's own batch listing; add `--batches name_ver01,…` to take only some.
 
+### Against local Azure stand-ins
+
+`scripts/local-azure/` runs the Blob and Cosmos code paths without an Azure account. That includes Entra tokens, conditional Cosmos writes, and several `curate` workers sharing one queue, which the `--state-file` store can't do because it serves one process at a time. It starts:
+
+- [Azurite](https://github.com/Azure/Azurite) for Blob Storage, in OAuth mode, so it checks each token's audience, issuer and expiry
+- `shim.py`: a managed identity endpoint, and a plain-HTTP proxy in front of Azurite's HTTPS port (the Rust clients only trust public CAs)
+- `cosmos.py`: the Cosmos DB REST calls `CosmosDocs` makes, with etags, 409/412, query paging and session tokens. It only accepts Entra tokens for Cosmos. It follows our reading of the REST API, so the first run against a real account is still the real test.
+
+It needs `azurite-blob` on `PATH` (`npm install -g azurite`), Python 3 and `openssl`.
+
+```sh
+. "$(scripts/local-azure/up.sh /tmp/usnm-azure)"     # starts everything, exports the USNM_* and IDENTITY_* variables
+cargo build --release -p usnm-ingest -p usnm-api
+ingest=target/release/usnm-ingest
+$ingest enqueue --batches dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01
+$ingest curate & $ingest curate & wait                  # two workers, one queue
+$ingest titles-sync --lccns sn85042252,sn83025894,sn83021129
+$ingest release --index-dir /tmp/usnm-azure/indexes
+USNM_DATA_DIR=/tmp/usnm-azure target/release/usnm-api   # reads the snapshot from Azurite, caches responses there
+scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on the same directory resumes
+```
+
+`titles-sync` with no `--lccns` or `--list` fetches every title in LoC's listing (hours); `run --batches …` syncs only the titles for those batches. Set these on `up.sh` to change the Cosmos stand-in: `COSMOS_PAGE=2` exercises query continuation, `COSMOS_429=0.1` throttles a tenth of requests, and `COSMOS_SEED=state.json` starts from a `--state-file` run.
+
 ### Configuration (environment variables)
 
 | Variable | Default | Meaning |
