@@ -8,11 +8,13 @@
 #
 # The name becomes part of resource names (the registry allows only
 # lowercase letters and digits), the stack's name and the settings path.
+# "guardrails" is taken: usnm-guardrails is the shared policy stack.
 valid_env_name() {
   printf '%s' "$1" | grep -Eq '^[a-z][a-z0-9]{0,15}$' || {
     echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter" >&2
     exit 2
   }
+  [ "$1" != guardrails ] || { echo "error: \"guardrails\" is reserved" >&2; exit 2; }
 }
 valid_env_name "$ENV_NAME"
 ENV_FILE=".azure/$ENV_NAME/.env"
@@ -71,6 +73,8 @@ deploy_stack() (
   for k in $(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$ENV_FILE"); do
     [ -n "${!k}" ] || unset "$k"
   done
+  # The stack's name comes from the environment's; the template's must match.
+  export AZURE_ENV_NAME=$ENV_NAME
   az stack sub create --name "$STACK" --location "$(aget AZURE_LOCATION)" \
     --parameters infra/main.bicepparam \
     --action-on-unmanage deleteResources \
