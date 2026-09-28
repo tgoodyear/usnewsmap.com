@@ -179,6 +179,20 @@ if [ "$guardrails" = true ]; then
     guardrails=false
   fi
 fi
+# Stacks aren't the whole story: an environment whose teardown stopped after
+# its detach has no stack but may still assign the definitions. Ask Azure
+# for any assignment, anywhere in the subscription, that still uses them.
+if [ "$guardrails" = true ]; then
+  used=$(az policy assignment list --disable-scope-strict-match \
+    --query "[].[id, policyDefinitionId]" -o tsv) ||
+    die "can't list policy assignments; kept $GUARDRAILS_STACK (delete it when no environment uses it)"
+  used=$(grep -i '/providers/Microsoft.Authorization/policyDefinitions/usnm-' <<< "$used" | cut -f1 || true)
+  if [ -n "$used" ]; then
+    echo "keeping $GUARDRAILS_STACK: its definitions are still assigned (an unfinished teardown?):"
+    sed 's/^/  /' <<< "$used"
+    guardrails=false
+  fi
+fi
 if [ "$guardrails" = true ]; then
   az stack sub delete -n "$GUARDRAILS_STACK" --action-on-unmanage deleteAll --yes --only-show-errors
 fi
