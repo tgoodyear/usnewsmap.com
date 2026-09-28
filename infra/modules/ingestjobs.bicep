@@ -76,7 +76,7 @@ resource ingest 'Microsoft.App/jobs@2024-03-01' = {
             '--quickwit-index-root'
             'azure://qw-index'
           ]
-          resources: { cpu: json('2.0'), memory: '4Gi' }
+          resources: { cpu: json('4.0'), memory: '8Gi' }
           env: concat(env, [{ name: 'QW_AZURE_STORAGE_ACCOUNT', value: storageAccountName }])
         }
       ]

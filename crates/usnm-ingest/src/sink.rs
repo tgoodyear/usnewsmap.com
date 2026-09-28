@@ -19,6 +19,9 @@ const CHUNK_BYTES: usize = 8 * 1024 * 1024;
 /// is 5 MB/s). A single-node writer can't spread load over more shards, so
 /// past the ~50 MiB burst allowance ingest runs at this rate.
 const SHARD_THROUGHPUT_LIMIT: &str = "20MB";
+/// The node's in-memory ingest queue (Quickwit's default is 2 GiB). The first
+/// prod release ran out of memory at 4 GiB with the defaults.
+const INGEST_QUEUE_MEMORY: &str = "1GiB";
 
 /// How long one ingest request keeps retrying while the node pushes back
 /// (503 "no shards available" once the shard's rate limit is spent, or 429).
@@ -286,7 +289,8 @@ impl QuickwitNode {
             "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
              metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n\
-             ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n",
+             ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n  \
+             max_queue_memory_usage: {INGEST_QUEUE_MEMORY}\n",
             port.checked_add(1)
                 .context("--quickwit-port must be below 65535")?,
             data.display()

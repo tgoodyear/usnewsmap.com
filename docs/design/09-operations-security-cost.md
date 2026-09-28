@@ -97,7 +97,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Stage | Assumption | Estimate |
 |-------|------------|----------|
 | Curation workers | 4 replicas × 1 vCPU / 2 GiB × ~60 h: downloads are paced to LoC's limit, so workers are billed while they wait (04 §4.4). Consumption list price | ~$20–30 |
-| Full index build | `caj-usnm-ingest`, 2 vCPU / 4 GiB × ~12–24 h (not yet measured on 2 vCPU; 04 §4.1.2) | ~$3–5 |
+| Full index build | `caj-usnm-ingest`, 4 vCPU / 8 GiB × ~12–24 h (not yet measured at full size; 04 §4.1.2) | ~$3–5 |
 | Storage transactions + curated writes | | ~$5 |
 | **Total** | | **~$30–40** |
 
