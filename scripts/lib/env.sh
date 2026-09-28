@@ -57,8 +57,14 @@ deploy_guardrails() {
   # A stack's location is fixed when it's created; environments in other
   # regions reuse it.
   local location
-  location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv 2> /dev/null ||
-    stack_location)
+  # Only "not found" means a first deployment; other errors stop here.
+  if ! location=$(az stack sub show -n "$GUARDRAILS_STACK" --query location -o tsv 2>&1); then
+    grep -qiE 'NotFound|could not be found' <<< "$location" || {
+      echo "error: can't check $GUARDRAILS_STACK: $location" >&2
+      return 1
+    }
+    location=$(stack_location)
+  fi
   az stack sub create --name "$GUARDRAILS_STACK" --location "$location" \
     --template-file infra/guardrails.bicep \
     --action-on-unmanage deleteResources \
