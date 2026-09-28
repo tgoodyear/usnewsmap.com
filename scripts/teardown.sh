@@ -57,8 +57,11 @@ configured=$(aget USNM_GITHUB_REPO)
 # teardown can be run again and pick up where it stopped.
 resume="$(dirname "$ENV_FILE")/teardown-$SUBSCRIPTION.ids"
 stack=true
-if az stack sub show -n "$STACK" -o none 2> /dev/null; then
+if out=$(az stack sub show -n "$STACK" -o none 2>&1); then
   ids=$(az stack sub show -n "$STACK" --query "resources[].id" -o tsv)
+elif ! grep -qiE 'NotFound|could not be found' <<< "$out"; then
+  # Only a stack that's really gone means "already detached".
+  die "can't check the deployment stack $STACK: $out"
 elif [ -s "$resume" ]; then
   echo "resuming an interrupted teardown of $ENV_NAME (stack already detached)"
   ids=$(cat "$resume") stack=false
