@@ -13,6 +13,7 @@ ENV_NAME=$1
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 . scripts/lib/env.sh
+need_stack_az
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh $ENV_NAME first"
 az account set --subscription "$(aget AZURE_SUBSCRIPTION_ID)" 2> /dev/null ||
   die "run: az login (the environment is in subscription $(aget AZURE_SUBSCRIPTION_ID))"

@@ -32,6 +32,7 @@ done
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 . scripts/lib/env.sh
+need_stack_az
 
 az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
 # The environment's recorded subscription, unless another is named. Without
