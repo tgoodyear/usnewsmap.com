@@ -35,3 +35,11 @@ Build-time settings:
 - **Performance.** The map stack is lazy-loaded; the critical-path JS is about 88 KB gzip (budget 250 KB).
 
 Not yet built: compare mode, the first-appearance and state-choropleth layers, the coverage overlay, embed mode, export, and the share dialog beyond copying the link.
+
+## Search engines and link previews
+
+- `index.html` has the canonical link (the home page), Open Graph and Twitter card tags, and JSON-LD for the site and its publisher. `src/seo.test.ts` checks them, and `e2e/seo.spec.ts` checks them in a browser along with what the API sends crawlers.
+- The root element holds a short description of the site, for crawlers and previews that don't run JavaScript. React replaces it on its first render.
+- `public/og-image.png` is the share image, a 1200×630 screenshot of the "Cross of Gold, 1896" example on the live site.
+- `public/robots.txt` tells crawlers not to fetch `/v1/`, and `public/sitemap.xml` lists the home page. Search permalinks and `/status` are left out, since the API marks them `noindex`.
+- `public/<key>.txt` is the IndexNow key. After each production deploy, CI submits the sitemap's URLs to IndexNow (`scripts/ci/indexnow.sh`). A failed submission is logged as a warning and never fails the deploy.

@@ -646,8 +646,9 @@ async fn reference_files_must_match_the_manifest() {
 }
 
 /// A built site: an index, a hashed asset with a precompressed copy, a favicon.
-fn site_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("usnm-site-{}", std::process::id()));
+/// Each test names its own, since tests run in parallel.
+fn site_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("usnm-site-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("assets")).unwrap();
     std::fs::write(dir.join("index.html"), "<!doctype html><div id=root></div>").unwrap();
@@ -682,7 +683,7 @@ async fn get_site(
 #[tokio::test]
 async fn serves_the_site_alongside_the_api() {
     let mut cfg = config();
-    cfg.site_dir = Some(site_dir());
+    cfg.site_dir = Some(site_dir("serve"));
     let s = Arc::new(AppState::new(
         cfg,
         Arc::new(fixture_backend()),
@@ -697,18 +698,31 @@ async fn serves_the_site_alongside_the_api() {
     assert!(header_str(&h, header::CONTENT_SECURITY_POLICY).contains("connect-src 'self'"));
     assert_eq!(header_str(&h, header::X_CONTENT_TYPE_OPTIONS), "nosniff");
 
-    // App routes get the shell too, so a reload keeps working.
-    let (status, h, body) = get_site(&s, "/search/gold", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("id=root"));
-    assert!(header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
+    // The app's pages get the shell too, so a reload keeps working. The file
+    // itself is served with or without a trailing slash (web/src/route.ts).
+    for uri in ["/status", "/status/", "/index.html", "/index.html/"] {
+        let (status, h, body) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(body.contains("id=root"), "{uri}");
+        assert!(header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
+        assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache");
+    }
 
-    // HEAD on an app route: GET's headers, no body.
+    // Other paths get the shell, where the app shows a not-found page, with a 404.
+    for uri in ["/search/gold", "/does-not-exist", "/statuses"] {
+        let (status, h, body) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert!(body.contains("id=root"), "{uri}");
+        assert!(header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
+        assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache", "{uri}");
+    }
+
+    // HEAD on an app route: GET's headers and status, no body.
     let resp = app(s.clone())
         .oneshot(
             Request::builder()
                 .method("HEAD")
-                .uri("/search/gold")
+                .uri("/status")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -751,8 +765,25 @@ async fn serves_the_site_alongside_the_api() {
         "public, max-age=3600"
     );
 
+    let resp = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri("/does-not-exist")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(header_str(resp.headers(), header::CONTENT_TYPE).starts_with("text/html"));
+    assert_eq!(
+        header_str(resp.headers(), header::CACHE_CONTROL),
+        "no-cache"
+    );
+
     // Missing files are 404s, not the shell.
-    for uri in ["/assets/gone-123.js", "/robots.txt"] {
+    for uri in ["/assets/gone-123.js", "/gone.txt"] {
         let (status, h, _) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         assert_eq!(header_str(&h, header::CACHE_CONTROL), "", "{uri}");
@@ -770,6 +801,101 @@ async fn serves_the_site_alongside_the_api() {
     );
     let (status, _, _) = get(&s, "/healthz").await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn search_permalinks_and_status_are_noindex() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("noindex"));
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let robots = header::HeaderName::from_static("x-robots-tag");
+    for uri in [
+        "/?q=x",
+        "/?q=%22cross+of+gold%22&from=1896-06-01",
+        "/status",
+    ] {
+        let (status, h, _) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(header_str(&h, robots.clone()), "noindex", "{uri}");
+    }
+    for uri in ["/", "/?t=1896-07-01", "/favicon.svg"] {
+        let (status, h, _) = get_site(&s, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(header_str(&h, robots.clone()), "", "{uri}");
+    }
+}
+
+async fn get_host(state: &Arc<AppState>, host: &str, uri: &str) -> axum::response::Response {
+    app(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::HOST, host)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn www_redirects_to_the_apex() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("www"));
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let cases = [
+        ("www.usnewsmap.com", "/", "https://usnewsmap.com/"),
+        (
+            "WWW.usnewsmap.com:443",
+            "/?q=%22cross+of+gold%22&from=1896-06-01",
+            "https://usnewsmap.com/?q=%22cross+of+gold%22&from=1896-06-01",
+        ),
+        (
+            "www.usnewsmap.com",
+            "/status",
+            "https://usnewsmap.com/status",
+        ),
+        (
+            "www.usnewsmap.com",
+            "/v1/meta",
+            "https://usnewsmap.com/v1/meta",
+        ),
+    ];
+    for (host, uri, location) in cases {
+        let resp = get_host(&s, host, uri).await;
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY, "{host}{uri}");
+        assert_eq!(header_str(resp.headers(), header::LOCATION), location);
+        assert_eq!(
+            header_str(resp.headers(), header::X_CONTENT_TYPE_OPTIONS),
+            "nosniff"
+        );
+        assert!(header_str(resp.headers(), header::CONTENT_SECURITY_POLICY).contains("default-src"));
+    }
+    // HTTP/2 puts the host in the URI.
+    let resp = get_site(&s, "https://www.usnewsmap.com/status?x=1", None).await;
+    assert_eq!(resp.0, StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(
+        header_str(&resp.1, header::LOCATION),
+        "https://usnewsmap.com/status?x=1"
+    );
+    // Other hosts are served as they are.
+    for host in [
+        "usnewsmap.com",
+        "api.usnewsmap.com",
+        "www.example.com",
+        "127.0.0.1:8080",
+    ] {
+        let resp = get_host(&s, host, "/").await;
+        assert_eq!(resp.status(), StatusCode::OK, "{host}");
+    }
 }
 
 #[tokio::test]

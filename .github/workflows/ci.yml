@@ -274,3 +274,9 @@ jobs:
         env:
           IMAGE: ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
         run: scripts/ci/roll-api.sh
+      # Tell search engines about the sitemap's pages once the new revision
+      # serves them. The script only warns, so a problem never fails the deploy.
+      - name: Submit the sitemap to IndexNow
+        if: steps.head.outputs.current == 'true' && env.APP != ''
+        continue-on-error: true
+        run: scripts/ci/indexnow.sh

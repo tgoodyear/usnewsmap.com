@@ -21,7 +21,7 @@
 - The timeline is a small SVG bar chart rather than uPlot, because it has one series until compare mode lands.
 - Controls are native elements, so Radix and Zustand aren't needed yet.
 - The basemap defaults to OpenFreeMap Positron until the PMTiles extract is published.
-- `/status` is a separate page (lazy-loaded; the app has no router, so `main.tsx` picks it by path) that shows the ingest pipeline's status from `GET /v1/status` and refreshes every 30 s. The footer links to it.
+- `/status` is a separate page (lazy-loaded; the app has no router, so `main.tsx` picks it by path with `src/route.ts`) that shows the ingest pipeline's status from `GET /v1/status` and refreshes every 30 s. The footer links to it. Any other path shows a not-found page, and the API sends it with a 404.
 
 ## 7.2 Layout and wireframes
 

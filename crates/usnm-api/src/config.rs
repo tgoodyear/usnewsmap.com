@@ -63,6 +63,9 @@ pub struct Config {
     /// The built web app to serve alongside the API (`web/dist`); none
     /// serves the API alone.
     pub site_dir: Option<PathBuf>,
+    /// The site's canonical hostname: requests for `www.` + this host are
+    /// redirected to `https://` + this host.
+    pub site_host: String,
     /// Cosmos DB endpoint of the pipeline state, read-only for `/v1/status`
     /// (the same variable the ingest jobs use).
     pub cosmos_endpoint: Option<String>,
@@ -135,6 +138,9 @@ impl Config {
             backend_concurrency: usize::try_from(num("USNM_BACKEND_CONCURRENCY", 8)?.max(1))
                 .map_err(|e| e.to_string())?,
             site_dir: var("USNM_SITE_DIR").map(PathBuf::from),
+            site_host: var("USNM_SITE_HOST")
+                .unwrap_or_else(|| "usnewsmap.com".to_owned())
+                .to_ascii_lowercase(),
             cosmos_endpoint: var("USNM_COSMOS_ENDPOINT"),
             state_file: var("USNM_STATE_FILE").map(PathBuf::from),
             status_refresh: Duration::from_secs(num("USNM_STATUS_REFRESH_SECS", 60)?.max(1)),
@@ -155,6 +161,7 @@ mod tests {
         assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
         assert_eq!(c.prewarm_budget, Duration::from_secs(300));
         assert_eq!(c.ready_cap, Duration::from_secs(120));
+        assert_eq!(c.site_host, "usnewsmap.com");
         let c = Config::from_lookup(|k| match k {
             "USNM_RATE_PER_MIN" => Some("0".into()),
             "USNM_REFERENCE_URL" => Some("https://a.blob.core.windows.net/reference".into()),
