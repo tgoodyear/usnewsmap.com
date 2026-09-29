@@ -95,7 +95,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | `GET /v1/export/aggregate.csv` | Same as `/aggregate` as tidy CSV (`place_id,lat,lon,bucket_start,hits,baseline,rel`) | 1 day |
 | `GET /v1/export/hits.csv` | Hits (≤ 10,000 rows) with page keys and LoC URLs | 1 day |
 | `GET /v1/docs`, `GET /v1/openapi.json` | API documentation | 1 day |
-| `GET /healthz`, `GET /readyz` | Liveness; readiness (reference data loaded, backend reachable) | none |
+| `GET /healthz`, `GET /readyz` | Liveness; readiness (reference data loaded, caches warmed after a start, backend reachable) | none |
 
 ### 6.3.3 `GET /v1/aggregate` response
 
@@ -200,7 +200,7 @@ The lean profile has no edge CDN in front of the API, so the API caches in three
 - The Blob cache is keyed by the **serving** version (`cache/{index_version}/…`), so its entries can't cross versions either.
 - Each version names an immutable set of sealed Quickwit indexes, and the API queries exactly that set ([08 §8.4.1](08-azure-infrastructure.md#841-quickwit-metastore-one-writer-many-readers)). The results for a given `v` therefore can't change while it's being served.
 
-**Pre-warming.** After each index publish, a job requests the example searches and the top 200 queries from the previous 30 days (from aggregated, anonymous telemetry). The results land in the Blob cache, so they are warm even after a replica restart. Index versions are published at most **weekly** to keep the cache hit rate high.
+**Pre-warming.** Before a replica serves a version, at start and before a reload swaps one in, the API warms its caches with what the home page loads first: `/v1/places`, and each example search in `web/src/examples.json` (the web app's example list, compiled into the API) with the coverage cube its response links to. The requests go through the same handlers as a visitor's, pinned to the new version, so the in-process and Blob entries have the keys the web app will ask for. They skip the Blob read so that Quickwit's caches warm too, and slow results are still written to Blob for replicas that start later. Queries run one at a time, each allowed 60 s (`USNM_PREWARM_QUERY_SECS`; Quickwit's own 30 s limit per call still applies), within 5 minutes for the run (`USNM_PREWARM_BUDGET_SECS`). A warm-up that fails or runs out of time is logged and never blocks the version. Warming the most frequent recent queries is not built yet. Index versions are published at most **weekly** to keep the cache hit rate high.
 
 ## 6.6 Service internals
 
@@ -219,8 +219,8 @@ flowchart LR
   W[refresher task<br/>every 10 min: current.json] --> RD
 ```
 
-- **Startup:** read `reference/current.json`, load reference Parquet (~40–80 MB in memory including baselines), warm the connection pool, then become ready.
-- **Hot reload:** a background task polls `current.json`. When `index_version` changes, it loads the new reference data into a fresh `Arc<RefData>` and swaps it atomically. In-flight requests finish on the old snapshot.
+- **Startup:** read `reference/current.json`, load the reference data, start listening, and warm the caches (§6.5). `/readyz` fails until the warm-up ends or 2 minutes pass (`USNM_READY_CAP_SECS`), whichever is first; past the cap the replica reports ready (and logs that) while the warm-up continues. The container's startup probe allows 480 s for loading and warming.
+- **Hot reload:** a background task polls `current.json` every 10 minutes. When `index_version` changes, it loads the new reference data into a fresh snapshot, warms the caches for it (§6.5) while the old version keeps serving, then swaps it in atomically. In-flight requests finish on the old snapshot.
 - **Concurrency:** one tokio runtime; each request fans out to at most 3 concurrent backend calls; a global semaphore caps backend concurrency so a spike can't overwhelm the searcher.
 - **Resources:** the `api` container is 0.25 vCPU / 0.5 GiB, sharing a replica with the `quickwit` sidecar (1 vCPU / 2 GiB) and reaching it on `localhost`. KEDA HTTP scaler on concurrent requests; min 1 / max 2 replicas in production, min 0 elsewhere.
 

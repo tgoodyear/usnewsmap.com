@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{OriginalUri, State};
+use axum::http::Uri;
 use axum::response::Response;
 use serde::Serialize;
 use usnm_core::cube::{Cell, SparseCube};
@@ -12,9 +13,9 @@ use usnm_core::params::{RawParams, SearchRequest};
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::plan::{self, Planned};
 
-use super::{cached, mount_prefix, uses_fuzzy, with_timeout};
+use super::{cached, mount_prefix, uses_fuzzy, with_timeout, Ctx};
 use crate::error::ApiError;
-use crate::{version, AppState, Snapshot};
+use crate::{version, AppState};
 
 #[derive(Serialize)]
 struct AggregateResponse {
@@ -86,12 +87,21 @@ pub async fn aggregate(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, ApiError> {
+    let ctx = Ctx::serving(&state);
+    aggregate_in(&state, ctx, &uri).await
+}
+
+pub(crate) async fn aggregate_in(
+    state: &Arc<AppState>,
+    ctx: Ctx,
+    uri: &Uri,
+) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
     raw.reject_unknown(&["format"])?;
     if raw.get("format").is_some_and(|f| f != "json") {
         return Err(ApiError::Unsupported("format other than json".into()));
     }
-    let snap = state.snapshot.load_full();
+    let snap = &ctx.snap;
     let req = SearchRequest::from_raw(&raw, snap.refdata.bounds())?;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
@@ -106,8 +116,19 @@ pub async fn aggregate(
     };
     let key = format!("{serving}|aggregate|{canonical}");
     let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
-    let fut = compute(state.clone(), snap, req, canonical.clone(), prefix);
-    cached(&state, key, &pinning, &serving, uri.path(), &canonical, fut).await
+    let warm_up = ctx.warm_up;
+    let fut = compute(state.clone(), ctx, req, canonical.clone(), prefix);
+    cached(
+        state,
+        warm_up,
+        key,
+        &pinning,
+        &serving,
+        uri.path(),
+        &canonical,
+        fut,
+    )
+    .await
 }
 
 fn coarser(unit: BucketUnit) -> Option<BucketUnit> {
@@ -121,12 +142,13 @@ fn coarser(unit: BucketUnit) -> Option<BucketUnit> {
 
 async fn compute(
     state: Arc<AppState>,
-    snap: Arc<Snapshot>,
+    ctx: Ctx,
     req: SearchRequest,
     canonical: String,
     prefix: String,
 ) -> Result<AggregateResponse, ApiError> {
     let started = Instant::now();
+    let snap = &ctx.snap;
     let rd = &snap.refdata;
     let indexes = rd.index_set();
     let mut spec = req.bucket_spec();
@@ -138,6 +160,7 @@ async fn compute(
         loop {
             let planned = with_timeout(
                 &state,
+                ctx.timeout,
                 plan::aggregate(
                     snap.backend.as_ref(),
                     &indexes,
@@ -165,7 +188,9 @@ async fn compute(
         }
     }
     .await;
-    state.metrics.backend("aggregate", t.elapsed(), &agg);
+    if !ctx.warm_up {
+        state.metrics.backend("aggregate", t.elapsed(), &agg);
+    }
     let agg = agg?;
     let backend_ms = t.elapsed().as_millis();
 

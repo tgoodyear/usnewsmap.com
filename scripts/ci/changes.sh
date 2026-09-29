@@ -26,8 +26,9 @@ echo "$files" | sed 's/^/changed: /'
 matches() { grep -Eq "$1" <<< "$files"; }
 matches '^\.github/' && all "workflow changed"
 # The Rust build and tests: the crates, the files compiled into binaries
-# (index config, place overrides) and the fixtures the tests read.
-rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|scripts/(ci/|quickwit-fixtures\.sh))'
+# (index config, place overrides, the example searches the API warms) and the
+# fixtures the tests read.
+rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|scripts/(ci/|quickwit-fixtures\.sh))'
 web='^(web/|fixtures/|scripts/ci/)'
 image="$rust|^(web/|Dockerfile|\.dockerignore$)"
 for part in rust web image; do

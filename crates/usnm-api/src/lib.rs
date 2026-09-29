@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ use usnm_store::ObjectStore;
 
 pub mod config;
 pub mod error;
+pub mod prewarm;
 pub mod ratelimit;
 pub mod refdata;
 mod routes;
@@ -97,6 +99,9 @@ pub struct AppState {
     /// Caps concurrent backend queries across all requests.
     pub permits: Semaphore,
     pub metrics: telemetry::Metrics,
+    /// Set while the first version warms up after a start: `/readyz` says
+    /// not ready (see [`spawn_startup_warm_up`]).
+    pub warming: AtomicBool,
 }
 
 impl AppState {
@@ -123,6 +128,7 @@ impl AppState {
             cache,
             responses: None,
             metrics: telemetry::Metrics::global(),
+            warming: AtomicBool::new(false),
         }
     }
 
@@ -220,8 +226,10 @@ fn memory_backend(dir: &std::path::Path, ids: &[String]) -> Result<Arc<dyn Searc
 }
 
 /// If `current.json` names a different version than the one serving, build
-/// the new snapshot and swap it in atomically. Returns whether it swapped.
-pub async fn reload_if_changed(state: &AppState) -> Result<bool, String> {
+/// the new snapshot, warm it up and swap it in atomically. Returns whether it
+/// swapped. The old version serves until the swap; a warm-up that fails or
+/// runs out of budget is logged and the swap goes ahead.
+pub async fn reload_if_changed(state: &Arc<AppState>) -> Result<bool, String> {
     let Some(loader) = &state.loader else {
         return Ok(false);
     };
@@ -234,18 +242,43 @@ pub async fn reload_if_changed(state: &AppState) -> Result<bool, String> {
     result
 }
 
-async fn reload(state: &AppState, loader: &Loader) -> Result<bool, String> {
+async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> {
     let next = loader.current().await?;
     if next.index_version == state.snapshot.load().refdata.version() {
         return Ok(false);
     }
-    let snapshot = loader.load(next).await?;
+    let snapshot = Arc::new(loader.load(next).await?);
+    prewarm::run(state, snapshot.clone(), prewarm::Trigger::Publish).await;
     tracing::info!(
         version = snapshot.refdata.version(),
         "publishing new index version"
     );
-    state.snapshot.store(Arc::new(snapshot));
+    state.snapshot.store(snapshot);
     Ok(true)
+}
+
+/// Warm up the serving version after a start, reporting not ready until it
+/// finishes or `config.ready_cap` passes. Past the cap the replica becomes
+/// ready and the warm-up carries on within its own budget.
+pub fn spawn_startup_warm_up(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
+    state.warming.store(true, Ordering::Relaxed);
+    tokio::spawn(async move {
+        let snapshot = state.snapshot.load_full();
+        let run = tokio::spawn({
+            let state = state.clone();
+            async move { prewarm::run(&state, snapshot, prewarm::Trigger::Startup).await }
+        });
+        if tokio::time::timeout(state.config.ready_cap, run)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                cap_ms = state.config.ready_cap.as_millis() as u64,
+                "warm-up still running at the readiness cap; reporting ready"
+            );
+        }
+        state.warming.store(false, Ordering::Relaxed);
+    })
 }
 
 /// Poll `current.json` every `refresh_interval` (no-op without a loader), and

@@ -1,0 +1,23 @@
+[
+  {
+    "aggregate": "q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week",
+    "blurb": "Watch Bryan's speech spread from Chicago to both coasts, week by week.",
+    "id": "cross-of-gold",
+    "title": "Cross of Gold, 1896",
+    "view": { "bucket": "week", "from": "1896-06-01", "q": "\"cross of gold\"", "to": "1896-12-31" }
+  },
+  {
+    "aggregate": "q=%22yellow+fever%22&bucket=month",
+    "blurb": "Follow reports of an epidemic through the port cities.",
+    "id": "yellow-fever",
+    "title": "Yellow fever",
+    "view": { "bucket": "month", "norm": "rel", "q": "\"yellow fever\"" }
+  },
+  {
+    "aggregate": "q=%22free+silver%22&bucket=month",
+    "blurb": "The money question that divided the country in the 1890s.",
+    "id": "free-silver",
+    "title": "Free silver",
+    "view": { "bucket": "month", "q": "\"free silver\"" }
+  }
+]

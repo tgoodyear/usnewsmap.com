@@ -4,8 +4,11 @@ mod hits;
 mod meta;
 
 pub use aggregate::aggregate;
+pub(crate) use aggregate::aggregate_in;
 pub use coverage::coverage;
+pub(crate) use coverage::coverage_in;
 pub use hits::hits;
+pub(crate) use meta::places_in;
 pub use meta::{meta, places, readyz};
 
 use std::future::Future;
@@ -23,7 +26,29 @@ use usnm_store::ObjectStore;
 use crate::error::ApiError;
 use crate::telemetry::ServedVersion;
 use crate::version::{self, Pinning};
-use crate::AppState;
+use crate::{AppState, Snapshot};
+
+/// What a version-scoped response is computed from. Visitors' requests use
+/// the serving snapshot and the request timeout; a warm-up (`crate::prewarm`)
+/// passes the version about to be published and its own, longer timeout.
+pub(crate) struct Ctx {
+    pub snap: Arc<Snapshot>,
+    /// Limit on each backend call, including the wait for a permit.
+    pub timeout: Duration,
+    /// A warm-up, not a visitor: always compute on an in-process miss (so the
+    /// search engine's caches fill too), and leave the request metrics alone.
+    pub warm_up: bool,
+}
+
+impl Ctx {
+    pub(crate) fn serving(state: &AppState) -> Self {
+        Self {
+            snap: state.snapshot.load_full(),
+            timeout: state.config.search_timeout,
+            warm_up: false,
+        }
+    }
+}
 
 /// Bump when a response body's shape changes, so a new release never serves
 /// persisted bodies written by an older one for the same index version.
@@ -100,9 +125,12 @@ fn persist(store: Arc<dyn ObjectStore>, path: String, body: Arc<Vec<u8>>) {
 
 /// Serve `compute()` through the in-process cache, then the persistent
 /// cache, with version-aware headers. Concurrent identical requests share one
-/// computation.
+/// computation. A warm-up skips the persistent read, so the backend runs and
+/// its caches warm; the result is still persisted if it was slow.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn cached<F, T>(
     state: &AppState,
+    warm_up: bool,
     key: String,
     pinning: &Pinning,
     serving: &str,
@@ -127,7 +155,7 @@ where
         .cache
         .try_get_with(key, async {
             filled.store(true, Ordering::Relaxed);
-            if let Some((store, path)) = &persistent {
+            if let Some((store, path)) = persistent.as_ref().filter(|_| !warm_up) {
                 let found = read_persisted(store.as_ref(), path).await;
                 metrics.cache("blob", found.is_some());
                 if let Some(body) = found {
@@ -150,7 +178,7 @@ where
         .map_err(|e: Arc<ApiError>| Arc::try_unwrap(e).unwrap_or_else(|e| e.as_ref().clone()));
     // A request that waited on an identical one that failed counts as neither.
     let filled = filled.load(Ordering::Relaxed);
-    if filled || body.is_ok() {
+    if !warm_up && (filled || body.is_ok()) {
         metrics.cache("memory", !filled);
     }
     let body = body?;
@@ -170,6 +198,7 @@ where
 
 pub(crate) async fn with_timeout<T>(
     state: &AppState,
+    timeout: Duration,
     fut: impl Future<Output = Result<T, usnm_search::SearchError>>,
 ) -> Result<T, ApiError> {
     // Waiting for a permit counts against the timeout, so a saturated
@@ -178,7 +207,7 @@ pub(crate) async fn with_timeout<T>(
         let _permit = state.permits.acquire().await;
         fut.await
     };
-    match tokio::time::timeout(state.config.search_timeout, run).await {
+    match tokio::time::timeout(timeout, run).await {
         Ok(r) => r.map_err(ApiError::from),
         Err(_) => Err(ApiError::Timeout),
     }

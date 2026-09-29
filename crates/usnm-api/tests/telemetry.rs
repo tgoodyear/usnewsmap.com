@@ -15,6 +15,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 use usnm_api::config::Config;
+use usnm_api::prewarm::{self, Trigger};
 use usnm_api::refdata::RefData;
 use usnm_api::telemetry::{observe_index_version, Metrics, SERVICE};
 use usnm_api::{app, AppState};
@@ -386,4 +387,83 @@ async fn requests_are_exported_by_route_template_without_search_text() {
     .collect();
     expected.sort();
     assert_eq!(lines, expected, "{console}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn warm_up_is_logged_and_measured_and_fills_the_cache() {
+    let (endpoint, seen) = fake_ingestion().await;
+    let conn = format!(
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint={endpoint}"
+    );
+    let (tracer, meter_provider) =
+        usnm_telemetry::providers(&conn, Plain::with_token("tok"), SERVICE).unwrap();
+    let meter = meter_provider.meter(SERVICE.name);
+    let console = Captured::default();
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new("info"))
+        .with(tracing_subscriber::fmt::layer().json().with_writer({
+            let c = console.clone();
+            move || c.clone()
+        }))
+        .with(usnm_telemetry::otel_layer(&tracer, SERVICE));
+    let guard = tracing::subscriber::set_default(subscriber);
+
+    let state = Arc::new(
+        AppState::new(config(), Arc::new(fixture_backend()), refdata().await)
+            .with_metrics(Metrics::new(&meter)),
+    );
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert!(report.ok > 0 && report.ok == report.queries, "{report:?}");
+    // The first visitor's search is an in-process cache hit.
+    let first = &prewarm::examples()[0];
+    let uri = format!("/v1/aggregate?{}&v=fixture-v1", first.aggregate);
+    assert_eq!(status_of(&state, &uri).await, StatusCode::OK);
+
+    drop(guard);
+    tokio::task::spawn_blocking(move || {
+        tracer.shutdown().unwrap();
+        meter_provider.shutdown().unwrap();
+    })
+    .await
+    .unwrap();
+
+    let uploads = seen.uploads();
+    let envs = envelopes(&uploads.iter().map(|u| u.json.clone()).collect::<Vec<_>>());
+    let total = |name, attrs: &[(&str, &str)]| metric_total(&envs, name, attrs);
+    assert_eq!(
+        total("api.prewarm_queries", &[("outcome", "ok")]),
+        report.ok as f64
+    );
+    assert!(
+        seen.all_json().contains("api.prewarm_duration_seconds"),
+        "{}",
+        seen.all_json()
+    );
+    // Warm-up lookups aren't counted as visitors' cache lookups.
+    let lookup = |result| {
+        total(
+            "api.cache_lookups",
+            &[("layer", "memory"), ("result", result)],
+        )
+    };
+    assert_eq!(lookup("hit"), 1.0);
+    assert_eq!(lookup("miss"), 0.0);
+    assert_eq!(total("api.backend_duration_seconds", &[]), 0.0);
+
+    // One line for the run, without the example's search text.
+    let console = String::from_utf8(console.0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<Value> = console
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|l| l["fields"]["message"] == "warm-up finished")
+        .collect();
+    assert_eq!(lines.len(), 1, "{console}");
+    let f = &lines[0]["fields"];
+    assert_eq!(f["trigger"], "startup");
+    assert_eq!(f["version"], "fixture-v1");
+    assert_eq!(f["queries"], report.queries as u64);
+    assert_eq!(f["ok"], report.ok as u64);
+    assert_eq!(f["timed_out"], 0);
+    assert!(f["ms"].is_u64());
+    assert!(!console.contains("cross of gold") && !console.contains("q="));
 }
