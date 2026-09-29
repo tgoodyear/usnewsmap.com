@@ -5,8 +5,9 @@
 // when a condition starts, resolved when it clears.
 //
 // The queries read the JSON lines usnm-ingest writes ("command failed",
-// "building index", "release progress", "published", "curated"); change
-// them together with the log messages. Lines that could carry the managed
+// "building index", "release progress", "published", "curated", "claimed",
+// "curate progress", "curation finished"); change them together with the
+// log messages. Lines that could carry the managed
 // identity endpoint's secret are dropped first.
 
 param location string
@@ -65,9 +66,9 @@ started
 // Backfill workers have been running for the last hour (they logged in its
 // first 15 minutes and in its last 15) but none has curated a batch in it.
 // Not while LoC's rate limit holds downloads (a "throttled" line: every
-// worker waits an hour). A worker is silent while it curates a batch, so a
-// run where every worker hangs silently isn't caught here; the job's 24 h
-// replica timeout ends it, and the job-failed alert reports that.
+// worker waits an hour). Workers that keep logging "curate progress" without
+// finishing a batch are caught here; one that stops logging is caught by
+// backfillReplicaSilent.
 var backfillStalled = '''
 let logs = ContainerAppConsoleLogs
     | where ContainerName == "curate"
@@ -79,6 +80,44 @@ let curated = toscalar(logs | where TimeGenerated > ago(60m) | where Message == 
 let throttled = toscalar(logs | where TimeGenerated > ago(75m) | where Message startswith "throttled" | count);
 print Early = early, Late = late, Curated = curated, Throttled = throttled
 | where Early > 0 and Late > 0 and Curated == 0 and Throttled == 0
+'''
+
+// One backfill replica has logged nothing for 15 minutes, although it hasn't
+// ended: no "curation finished" or "command failed" line, and no platform
+// event that stopped it or its execution. A worker logs "curate progress"
+// every minute while it holds a batch (and a batch it can't finish in 45
+// minutes is abandoned with a "curation timed out" line), so 15 minutes of
+// silence means the process or its runtime is stuck, or its logs stopped
+// arriving. Only replicas that have logged "claimed" are checked: images
+// from before the heartbeat were silent for minutes by design. The window is
+// a day, the job's replica timeout.
+var backfillReplicaSilent = '''
+let lines = ContainerAppConsoleLogs
+    | where ContainerName == "curate"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | extend Message = tostring(parse_json(Log).fields.message), Replica = ContainerGroupName;
+let replicas = lines
+    | summarize
+        LastLine = max(TimeGenerated),
+        Watched = countif(Message in ("claimed", "curate progress")),
+        Ended = countif(Message in ("curation finished", "command failed"))
+        by Replica;
+let platform = ContainerAppSystemLogs
+    | where JobName startswith "caj-usnm-backfill-"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET";
+let replicaStops = platform
+    | where Reason in ("ContainerTerminated", "PodDeletion", "ProcessExited", "SuccessfulDelete")
+    | extend Replica = iff(isnotempty(ReplicaName), ReplicaName, extract(@"(caj-usnm-backfill-[a-z0-9-]+)", 1, Log))
+    | summarize Stopped = max(TimeGenerated) by Replica;
+let jobStop = toscalar(platform
+    | where Reason in ("Suspended", "DeadlineExceeded", "BackoffLimitExceeded")
+    | summarize max(TimeGenerated));
+replicas
+| where Watched > 0 and Ended == 0
+| where LastLine < ago(15m)
+| join kind=leftanti replicaStops on Replica
+| where isnull(jobStop) or jobStop < LastLine
+| project Replica, LastLine, SilentMinutes = round((now() - LastLine) / 1m, 1)
 '''
 
 var rules = [
@@ -105,6 +144,14 @@ var rules = [
     frequency: 'PT15M'
     window: 'PT2H'
     query: backfillStalled
+  }
+  {
+    name: 'backfill-replica-silent'
+    displayName: 'Backfill replica silent'
+    description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. scripts/logs.sh <env> curate-replicas shows each replica\'s last stage and heartbeat.'
+    frequency: 'PT5M'
+    window: 'P1D'
+    query: backfillReplicaSilent
   }
 ]
 

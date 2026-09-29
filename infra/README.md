@@ -19,7 +19,7 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
 | `monitoring` | Log Analytics (30-day retention, ~150 MB/day cap) and Application Insights, both with local (key) auth disabled. An action group is created when alert emails are set |
 | `diagnostics` | Diagnostic settings, sending resource logs to Log Analytics for every resource that has them: the workspace, registry, VNet, Container Apps environment (app and job console output, platform events), Cosmos control plane, and both storage accounts (blob writes and deletes; queue, table and file services in full). Per-request categories are left out to stay under the cap (08 §8.1.1) |
-| `ingest-alerts` (with `ingestJobs: true` and alert emails) | Log search alerts on the workspace: an ingest or backfill job failed, a release stalled, a backfill stalled (08 §8.1.2) |
+| `ingest-alerts` (with `ingestJobs: true` and alert emails) | Log search alerts on the workspace: an ingest or backfill job failed, a release stalled, a backfill stalled, a backfill replica went silent (08 §8.1.2) |
 | `api-alerts` (with the API and alert emails) | Log search alerts on API 5xx and slow `/v1/aggregate`; with `dnsZoneName`, standard availability tests of the site and `api.{domain}/readyz` (each once its certificate is bound) and an alert when 2 of 3 locations fail (08 §8.1.2) |
 | `workbooks` (with the jobs or the API) | Azure Monitor workbooks "usnewsmap pipeline" (with the jobs) and "usnewsmap API" (with the API), defined in `infra/workbooks/` and listed under Application Insights `appi-usnm-{env}` → Workbooks. They query the same workspace (08 §8.1.2) |
 | `budget`, `alerts` | $80 monthly budget (alerts at $40, $60, $75, plus an $80 forecast alert; needs alert emails and `USNM_BUDGET_START`) and an alert on control-plane writes to the data accounts (needs alert emails) |
@@ -166,10 +166,11 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
    scripts/logs.sh prod list                      # the saved queries (ops/queries/)
    scripts/logs.sh prod release-progress 6h       # docs sent, rate, retries, free disk, memory
    scripts/logs.sh prod curation-throughput 1d    # batches and pages per hour
+   scripts/logs.sh prod curate-replicas 6h        # each worker's last line, batch and stage
    scripts/logs.sh prod errors-by-batch 1d
    scripts/logs.sh prod job-executions 2d
    ```
-   The workspace id is the stack output `LOG_ANALYTICS_WORKSPACE_ID`; the queries run with your own sign-in (Log Analytics Reader or more). Traces (`release`, `curate`) and metrics are in Application Insights `appi-usnm-<env>`. With alert emails set, a failed job, a stalled release or a stalled backfill sends an email (08 §8.1.2). The same views, as charts: the "usnewsmap pipeline" workbook under Application Insights `appi-usnm-<env>` → Workbooks.
+   The workspace id is the stack output `LOG_ANALYTICS_WORKSPACE_ID`; the queries run with your own sign-in (Log Analytics Reader or more). Traces (`release`, `curate`) and metrics are in Application Insights `appi-usnm-<env>`. With alert emails set, a failed job, a stalled release, a stalled backfill or a backfill replica silent for 15 minutes sends an email (08 §8.1.2). The same views, as charts: the "usnewsmap pipeline" workbook under Application Insights `appi-usnm-<env>` → Workbooks.
 4. Switch the API to the published indexes: `scripts/settings.sh <env> USNM_SEARCH_BACKEND quickwit`, then `scripts/provision.sh <env>`.
 
 The storage and Cosmos accounts stay private throughout: the jobs run inside the VNet.

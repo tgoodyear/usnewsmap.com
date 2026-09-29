@@ -171,6 +171,7 @@ impl Env {
             owner: owner.into(),
             lease: chrono::Duration::hours(2),
             fetch_interval: None,
+            batch_limit: usnm_ingest::worker::BATCH_LIMIT,
         }
     }
 

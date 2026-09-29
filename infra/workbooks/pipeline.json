@@ -82,7 +82,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"curated\", \"failed\", \"throttled\", \"rate limiting\", \"backing off\", \"released\", \"pushed back\")\n| extend Message = tostring(parse_json(Log).fields.message)\n| summarize\n    Curated = countif(Message == \"curated\"),\n    Failed = countif(Message == \"curation failed\"),\n    Throttled = countif(Message in (\"throttled; downloads pause for an hour\", \"LoC is rate limiting; stopping until the next run\")),\n    FetchRetries = countif(Message == \"fetch failed; backing off\"),\n    Pushbacks = countif(Message == \"Quickwit pushed back; retrying\"),\n    Releases = countif(Message == \"released\")\n| mv-expand Tile = pack_array(\n    pack(\"Name\", \"Batches curated\", \"Value\", Curated),\n    pack(\"Name\", \"Curation failures\", \"Value\", Failed),\n    pack(\"Name\", \"LoC rate-limit pauses\", \"Value\", Throttled),\n    pack(\"Name\", \"Download retries\", \"Value\", FetchRetries),\n    pack(\"Name\", \"Quickwit pushbacks\", \"Value\", Pushbacks),\n    pack(\"Name\", \"Releases\", \"Value\", Releases))\n| project Name = tostring(Tile.Name), Value = tolong(Tile.Value)",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"curated\", \"failed\", \"timed\", \"throttled\", \"rate limiting\", \"backing off\", \"released\", \"pushed back\")\n| extend Message = tostring(parse_json(Log).fields.message)\n| summarize\n    Curated = countif(Message == \"curated\"),\n    Failed = countif(Message in (\"curation failed\", \"curation timed out\")),\n    Throttled = countif(Message in (\"throttled; downloads pause for an hour\", \"LoC is rate limiting; stopping until the next run\")),\n    FetchRetries = countif(Message == \"fetch failed; backing off\"),\n    Pushbacks = countif(Message == \"Quickwit pushed back; retrying\"),\n    Releases = countif(Message == \"released\")\n| mv-expand Tile = pack_array(\n    pack(\"Name\", \"Batches curated\", \"Value\", Curated),\n    pack(\"Name\", \"Curation failures\", \"Value\", Failed),\n    pack(\"Name\", \"LoC rate-limit pauses\", \"Value\", Throttled),\n    pack(\"Name\", \"Download retries\", \"Value\", FetchRetries),\n    pack(\"Name\", \"Quickwit pushbacks\", \"Value\", Pushbacks),\n    pack(\"Name\", \"Releases\", \"Value\", Releases))\n| project Name = tostring(Tile.Name), Value = tolong(Tile.Value)",
         "size": 0,
         "title": "Batches and releases in the time range",
         "queryType": 0,
@@ -154,9 +154,9 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"curated\", \"curation failed\", \"throttled\")\n| extend Message = tostring(parse_json(Log).fields.message)\n| where Message in (\"curated\", \"curation failed\", \"throttled; downloads pause for an hour\")\n| summarize\n    Curated = countif(Message == \"curated\"),\n    Failed = countif(Message == \"curation failed\"),\n    Throttled = countif(Message startswith \"throttled\")\n    by bin(TimeGenerated, 1h)\n| order by TimeGenerated asc",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"curated\", \"curation failed\", \"timed\", \"throttled\")\n| extend Message = tostring(parse_json(Log).fields.message)\n| where Message in (\"curated\", \"curation failed\", \"curation timed out\", \"throttled; downloads pause for an hour\")\n| summarize\n    Curated = countif(Message == \"curated\"),\n    Failed = countif(Message == \"curation failed\"),\n    TimedOut = countif(Message == \"curation timed out\"),\n    Throttled = countif(Message startswith \"throttled\")\n    by bin(TimeGenerated, 1h)\n| order by TimeGenerated asc",
         "size": 0,
-        "title": "Batches per hour: curated, failed, throttled",
+        "title": "Batches per hour: curated, failed, timed out, throttled",
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
         "crossComponentResources": [
@@ -338,6 +338,27 @@
       },
       "name": "release-memory",
       "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let lines = ContainerAppConsoleLogs\n    | where ContainerName in (\"ingest\", \"curate\")\n    | where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n    | extend j = parse_json(Log)\n    | extend Message = tostring(j.fields.message), Replica = ContainerGroupName;\nlet lastLines = lines\n    | summarize\n        arg_max(TimeGenerated, Message),\n        Ended = maxif(TimeGenerated, Message in (\"curation finished\", \"command failed\")),\n        Curating = countif(Message in (\"claimed\", \"curate progress\", \"curated\", \"curation failed\", \"curation timed out\"))\n        by Replica, Container = ContainerName\n    // The ingest job's replicas that curated (its run command), and every backfill replica.\n    | where Container == \"curate\" or Curating > 0\n    | project Replica, Container, LastLine = TimeGenerated, LastMessage = Message, Ended;\nlet beats = lines\n    | where Message == \"curate progress\"\n    | summarize arg_max(TimeGenerated, j) by Replica\n    | project\n        Replica,\n        LastHeartbeat = TimeGenerated,\n        Batch = tostring(j.fields.batch),\n        Stage = tostring(j.fields.stage),\n        StageMinutes = round(todouble(j.fields.stage_secs) / 60, 1),\n        BatchMinutes = round(todouble(j.fields.elapsed_secs) / 60, 1),\n        ArchiveMb = todouble(j.fields.archive_mb),\n        Pages = tolong(j.fields.pages),\n        Parts = tolong(j.fields.parts);\nlastLines\n| join kind=leftouter beats on Replica\n| project\n    Replica,\n    Container,\n    LastLine,\n    SilentMinutes = round((now() - LastLine) / 1m, 1),\n    LastMessage,\n    Ended,\n    LastHeartbeat,\n    Batch,\n    Stage,\n    StageMinutes,\n    BatchMinutes,\n    ArchiveMb,\n    Pages,\n    Parts\n| order by isnotnull(Ended) asc, LastLine desc",
+        "size": 0,
+        "title": "Curate workers: last line, and batch and stage from the last heartbeat",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No curate workers logged in the time range.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "curate-replicas"
     },
     {
       "type": 3,

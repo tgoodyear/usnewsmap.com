@@ -1,0 +1,52 @@
+// Curate workers: each replica's last line, and its last "curate progress"
+// line (logged every minute while it holds a batch) with the batch, stage,
+// minutes in that stage and counts so far. Ended is the time of its
+// "curation finished" or "command failed" line. The backfill-replica-silent
+// alert fires for a backfill replica that hasn't ended but has been silent
+// for 15 minutes.
+// Lines that could carry the managed identity endpoint's secret are dropped.
+let lines = ContainerAppConsoleLogs
+    | where ContainerName in ("ingest", "curate")
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | extend j = parse_json(Log)
+    | extend Message = tostring(j.fields.message), Replica = ContainerGroupName;
+let lastLines = lines
+    | summarize
+        arg_max(TimeGenerated, Message),
+        Ended = maxif(TimeGenerated, Message in ("curation finished", "command failed")),
+        Curating = countif(Message in ("claimed", "curate progress", "curated", "curation failed", "curation timed out"))
+        by Replica, Container = ContainerName
+    // The ingest job's replicas that curated (its run command), and every backfill replica.
+    | where Container == "curate" or Curating > 0
+    | project Replica, Container, LastLine = TimeGenerated, LastMessage = Message, Ended;
+let beats = lines
+    | where Message == "curate progress"
+    | summarize arg_max(TimeGenerated, j) by Replica
+    | project
+        Replica,
+        LastHeartbeat = TimeGenerated,
+        Batch = tostring(j.fields.batch),
+        Stage = tostring(j.fields.stage),
+        StageMinutes = round(todouble(j.fields.stage_secs) / 60, 1),
+        BatchMinutes = round(todouble(j.fields.elapsed_secs) / 60, 1),
+        ArchiveMb = todouble(j.fields.archive_mb),
+        Pages = tolong(j.fields.pages),
+        Parts = tolong(j.fields.parts);
+lastLines
+| join kind=leftouter beats on Replica
+| project
+    Replica,
+    Container,
+    LastLine,
+    SilentMinutes = round((now() - LastLine) / 1m, 1),
+    LastMessage,
+    Ended,
+    LastHeartbeat,
+    Batch,
+    Stage,
+    StageMinutes,
+    BatchMinutes,
+    ArchiveMb,
+    Pages,
+    Parts
+| order by isnotnull(Ended) asc, LastLine desc

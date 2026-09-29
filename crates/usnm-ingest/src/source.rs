@@ -323,6 +323,21 @@ pub struct Download {
     pub digest: tokio::sync::oneshot::Receiver<anyhow::Result<String>>,
     /// Bytes downloaded so far.
     pub bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The archive's size, when the server or the file system says.
+    pub size: Option<u64>,
+    /// Stops the download when the `Download` is dropped (e.g. a curation
+    /// cut short by the worker's watchdog), so the connection and the
+    /// parser reading it don't outlive the attempt.
+    pub task: AbortOnDrop,
+}
+
+/// Aborts a spawned task when dropped.
+pub struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Start streaming `url` (https, `file://` or a local path), retrying server
@@ -350,6 +365,10 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
         ),
         None => Source::Http(get(url, tries).await?),
     };
+    let size = match &source {
+        Source::File(f) => f.metadata().await.ok().map(|m| m.len()),
+        Source::Http(r) => r.content_length(),
+    };
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<bytes::Bytes>>(16);
     let (done, digest) = tokio::sync::oneshot::channel();
     let url = url.to_owned();
@@ -358,7 +377,7 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
     let count = move |n: usize| {
         counter.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
     };
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut hash = Sha256::new();
         let result: anyhow::Result<()> = async {
             match source {
@@ -412,6 +431,8 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
         },
         digest,
         bytes,
+        size,
+        task: AbortOnDrop(task.abort_handle()),
     })
 }
 

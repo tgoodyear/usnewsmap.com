@@ -11,6 +11,10 @@
 //!   is one conditional replace that points the batch at this attempt, and it
 //!   succeeds only while this worker still holds the lease. A crash anywhere
 //!   before it leaves the batch retryable.
+//! - **Watch:** each batch logs its stages, a heartbeat line every minute
+//!   while it is held ([`crate::heartbeat`]), and one outcome line. A batch
+//!   still unfinished [`BATCH_LIMIT`] after its download slot is abandoned
+//!   like a failed one, and the worker moves on.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::Ordering;
@@ -29,6 +33,7 @@ use usnm_store::ObjectStore;
 
 use crate::archive;
 use crate::curated::{CuratedRow, PartWriter};
+use crate::heartbeat::{self, mb, BatchProgress, Heartbeat, Stage};
 use crate::source;
 use crate::state::{Batch, BatchStatus, Curated, Issue, Lease, State};
 use crate::telemetry;
@@ -44,6 +49,57 @@ pub const FETCH_INTERVAL_SECS: u32 = 75;
 /// How long every worker holds its downloads after LoC answers 429.
 const THROTTLE_BLOCK: Duration = Duration::hours(1);
 
+/// How long a batch may take from its download slot to its commit before
+/// the worker abandons it. In the September 2026 backfill (1,213 batches,
+/// 4 workers), the time from one outcome line to the next on a worker (a
+/// whole batch, claim and wait for a slot included) was 275 s at the median,
+/// 745 s at p99 and 1,082 s at most; the largest archive (3.8 GB) took 974 s.
+/// 45 minutes is 3.6 times that p99.
+/// It also fits in the 2 h lease after the longest wait for a slot (an hour
+/// of LoC block plus a turn behind every other worker), so an abandoned batch
+/// is released before its lease runs out and another worker could claim it.
+pub const BATCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+
+/// A batch that ran past [`Worker::batch_limit`].
+#[derive(Debug)]
+pub struct TimedOut {
+    pub stage: Stage,
+    pub limit: std::time::Duration,
+}
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "curation passed the {} s limit in stage {}; the attempt is abandoned",
+            self.limit.as_secs(),
+            self.stage
+        )
+    }
+}
+
+impl std::error::Error for TimedOut {}
+
+/// How one batch ended: the `outcome` of its span and metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Ok,
+    Failed,
+    Throttled,
+    TimedOut,
+}
+
+impl Outcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Ok => "ok",
+            Outcome::Failed => "failed",
+            Outcome::Throttled => "throttled",
+            Outcome::TimedOut => "timed_out",
+        }
+    }
+}
+
 pub struct Worker {
     pub state: State,
     pub curated: Arc<dyn ObjectStore>,
@@ -53,6 +109,9 @@ pub struct Worker {
     /// Spacing between downloads from remote sources, shared by every worker
     /// through the state store; `None` doesn't pace (local archives, tests).
     pub fetch_interval: Option<Duration>,
+    /// The watchdog: how long a batch may take from its download slot to its
+    /// commit ([`BATCH_LIMIT`]).
+    pub batch_limit: std::time::Duration,
 }
 
 /// Pages per (lccn → day → pages), stored beside the parts.
@@ -140,80 +199,10 @@ impl Worker {
             let Some((batch, _)) = self.claim_except(&failed).await? else {
                 break;
             };
-            let name = format!("{}_ver{:02}", batch.batch, batch.version);
-            if let Some(interval) = self.fetch_interval {
-                if source::local_path(&batch.source_url).is_none() {
-                    self.wait_for_fetch_slot(interval).await?;
-                }
-            }
-            // One span per batch (a request in Application Insights); the
-            // time excludes the wait for a download slot.
-            let span = tracing::info_span!(
-                "curate",
-                otel.kind = "consumer",
-                batch = %name,
-                attempt = batch.attempts,
-                pages = Empty,
-                outcome = Empty,
-                otel.status_code = Empty,
-            );
-            let started = Instant::now();
-            // A failed commit (e.g. a newer version was queued meanwhile) is
-            // handled like a failed curation: clear the lease and re-queue.
-            let result = async {
-                let (c, t) = self.curate_timed(&batch).await?;
-                let (pages, parts) = (c.pages, c.parts.len());
-                let commit_started = Instant::now();
-                self.commit(&batch.batch, c).await?;
-                Ok::<_, anyhow::Error>((pages, parts, t, commit_started.elapsed()))
-            }
-            .instrument(span.clone())
-            .await;
-            let secs = started.elapsed().as_secs_f64();
-            let m = telemetry::metrics();
-            let outcome = match &result {
-                Ok(_) => "ok",
-                Err(e) if e.downcast_ref::<source::Throttled>().is_some() => "throttled",
-                Err(_) => "failed",
-            };
-            span.record("outcome", outcome);
-            m.curate_batches
-                .add(1, &[KeyValue::new("outcome", outcome)]);
-            m.curate_duration
-                .record(secs, &[KeyValue::new("outcome", outcome)]);
-            // The outcome lines belong to the batch's span (and trace).
-            match result {
-                Ok((pages, parts, t, commit)) => {
-                    span.record("pages", pages);
-                    m.curate_pages.add(pages, &[]);
-                    span.in_scope(|| {
-                        tracing::info!(
-                            batch = %name,
-                            pages,
-                            parts,
-                            archive_mb = round1(t.archive_bytes as f64 / 1_048_576.0),
-                            secs = round1(secs),
-                            stream_secs = round1(t.stream_secs),
-                            issues_secs = round1(t.issues_secs),
-                            commit_secs = round1(commit.as_secs_f64()),
-                            "curated"
-                        )
-                    });
-                    done += 1;
-                }
-                // LoC is refusing downloads from this IP. Every worker waits
-                // out the block, and the batch doesn't lose an attempt.
-                Err(e) if outcome == "throttled" => {
-                    span.in_scope(|| tracing::warn!(batch = %name, error = %format!("{e:#}"), "throttled; downloads pause for an hour"));
-                    self.state
-                        .block_fetches(Utc::now() + THROTTLE_BLOCK)
-                        .await?;
-                    self.release(&batch.batch, &format!("{e:#}"), false).await?;
-                }
-                Err(e) => {
-                    span.record("otel.status_code", "ERROR");
-                    span.in_scope(|| tracing::error!(batch = %name, secs = round1(secs), error = %format!("{e:#}"), "curation failed"));
-                    self.release(&batch.batch, &format!("{e:#}"), true).await?;
+            match self.run_one(&batch).await? {
+                Outcome::Ok => done += 1,
+                Outcome::Throttled => {}
+                Outcome::Failed | Outcome::TimedOut => {
                     failed.insert(batch.batch);
                 }
             }
@@ -221,14 +210,161 @@ impl Worker {
         Ok(done)
     }
 
+    /// Curate one claimed batch: wait for a download slot, curate, commit,
+    /// log the outcome, and release the batch unless it was committed.
+    async fn run_one(&self, batch: &Batch) -> anyhow::Result<Outcome> {
+        let name = format!("{}_ver{:02}", batch.batch, batch.version);
+        // One span per batch (a request in Application Insights), from the
+        // claim to the outcome line. `wait_secs` is the part spent waiting
+        // for a download slot; the outcome line's `secs` leaves it out.
+        let span = tracing::info_span!(
+            "curate",
+            otel.kind = "consumer",
+            batch = %name,
+            attempt = batch.attempts,
+            wait_secs = Empty,
+            pages = Empty,
+            outcome = Empty,
+            otel.status_code = Empty,
+        );
+        let progress = BatchProgress::new();
+        // Stops when dropped, at the end of this function on every path.
+        let _beat = {
+            let (span, name) = (span.clone(), name.clone());
+            Heartbeat::start(progress.clone(), heartbeat::INTERVAL, move |s| {
+                span.in_scope(|| s.log(&name))
+            })
+        };
+        let lease_until = batch.lease.as_ref().map(|l| l.until.to_rfc3339());
+        span.in_scope(|| {
+            tracing::info!(
+                batch = %name,
+                attempt = batch.attempts,
+                owner = %self.owner,
+                lease_until = lease_until.as_deref(),
+                "claimed"
+            )
+        });
+        if let Some(interval) = self.fetch_interval {
+            if source::local_path(&batch.source_url).is_none() {
+                let waiting = Instant::now();
+                self.wait_for_fetch_slot(interval, &name)
+                    .instrument(span.clone())
+                    .await?;
+                let wait_secs = round1(waiting.elapsed().as_secs_f64());
+                span.record("wait_secs", wait_secs);
+                span.in_scope(|| tracing::info!(batch = %name, wait_secs, "download slot granted"));
+            }
+        }
+        progress.set_stage(Stage::Connecting);
+        let started = Instant::now();
+        // A failed commit (e.g. a newer version was queued meanwhile) is
+        // handled like a failed curation: clear the lease and re-queue.
+        let work = async {
+            let (c, t) = self.curate_timed(batch, &name, &progress).await?;
+            let (pages, parts) = (c.pages, c.parts.len());
+            progress.set_stage(Stage::Committing);
+            let commit_started = Instant::now();
+            self.commit(&batch.batch, c).await?;
+            Ok::<_, anyhow::Error>((pages, parts, t, commit_started.elapsed()))
+        }
+        .instrument(span.clone());
+        // The watchdog. Dropping the attempt at any await is safe: its parts
+        // are under a path of its own that nothing reads before the commit,
+        // issue items are idempotent upserts, and the commit is a single
+        // conditional write (ETag and lease) that either landed or didn't. If
+        // it landed, the release below finds the lease gone and leaves the
+        // batch alone; if not, the batch is re-queued like any failure.
+        // Dropping the download stops it and the parser reading it.
+        let result = match tokio::time::timeout(self.batch_limit, work).await {
+            Ok(r) => r,
+            Err(_) => Err(TimedOut {
+                stage: progress.stage(),
+                limit: self.batch_limit,
+            }
+            .into()),
+        };
+        let secs = started.elapsed().as_secs_f64();
+        let m = telemetry::metrics();
+        let outcome = match &result {
+            Ok(_) => Outcome::Ok,
+            Err(e) if e.downcast_ref::<source::Throttled>().is_some() => Outcome::Throttled,
+            Err(e) if e.downcast_ref::<TimedOut>().is_some() => Outcome::TimedOut,
+            Err(_) => Outcome::Failed,
+        };
+        span.record("outcome", outcome.as_str());
+        m.curate_batches
+            .add(1, &[KeyValue::new("outcome", outcome.as_str())]);
+        m.curate_duration
+            .record(secs, &[KeyValue::new("outcome", outcome.as_str())]);
+        // The outcome lines belong to the batch's span (and trace).
+        match result {
+            Ok((pages, parts, t, commit)) => {
+                span.record("pages", pages);
+                m.curate_pages.add(pages, &[]);
+                span.in_scope(|| {
+                    tracing::info!(
+                        batch = %name,
+                        pages,
+                        parts,
+                        archive_mb = round1(t.archive_bytes as f64 / 1_048_576.0),
+                        secs = round1(secs),
+                        stream_secs = round1(t.stream_secs),
+                        issues_secs = round1(t.issues_secs),
+                        commit_secs = round1(commit.as_secs_f64()),
+                        "curated"
+                    )
+                });
+            }
+            // LoC is refusing downloads from this IP. Every worker waits
+            // out the block, and the batch doesn't lose an attempt.
+            Err(e) if outcome == Outcome::Throttled => {
+                span.in_scope(|| tracing::warn!(batch = %name, error = %format!("{e:#}"), "throttled; downloads pause for an hour"));
+                self.state
+                    .block_fetches(Utc::now() + THROTTLE_BLOCK)
+                    .await?;
+                self.release(&batch.batch, &format!("{e:#}"), false).await?;
+            }
+            // Where it was stuck, and how far it got.
+            Err(e) if outcome == Outcome::TimedOut => {
+                span.record("otel.status_code", "ERROR");
+                let s = progress.snapshot();
+                span.in_scope(|| {
+                    tracing::error!(
+                        batch = %name,
+                        stage = s.stage.as_str(),
+                        secs = round1(secs),
+                        stage_secs = s.in_stage.as_secs(),
+                        archive_mb = s.archive_mb(),
+                        pages = s.pages,
+                        parts = s.parts,
+                        error = %format!("{e:#}"),
+                        "curation timed out"
+                    )
+                });
+                self.release(&batch.batch, &format!("{e:#}"), true).await?;
+            }
+            Err(e) => {
+                span.record("otel.status_code", "ERROR");
+                span.in_scope(|| tracing::error!(batch = %name, secs = round1(secs), error = %format!("{e:#}"), "curation failed"));
+                self.release(&batch.batch, &format!("{e:#}"), true).await?;
+            }
+        }
+        Ok(outcome)
+    }
+
     /// Wait for a bulk-download slot. A slot reserved before another worker
     /// hit a 429 is void once that block is recorded, so check after waiting.
-    async fn wait_for_fetch_slot(&self, interval: Duration) -> anyhow::Result<()> {
+    async fn wait_for_fetch_slot(&self, interval: Duration, batch: &str) -> anyhow::Result<()> {
         loop {
             let slot = self.state.reserve_fetch_slot(interval).await?;
-            if let Ok(wait) = (slot - Utc::now()).to_std() {
-                tokio::time::sleep(wait).await;
-            }
+            let wait = (slot - Utc::now()).to_std().unwrap_or_default();
+            tracing::info!(
+                batch,
+                slot_in_secs = wait.as_secs(),
+                "waiting for a download slot"
+            );
+            tokio::time::sleep(wait).await;
             if self.state.fetch_allowed().await? {
                 return Ok(());
             }
@@ -237,10 +373,19 @@ impl Worker {
 
     /// Curate the claimed version of `b` into a new attempt path.
     pub async fn curate(&self, b: &Batch) -> anyhow::Result<Curated> {
-        self.curate_timed(b).await.map(|(c, _)| c)
+        let name = format!("{}_ver{:02}", b.batch, b.version);
+        self.curate_timed(b, &name, &BatchProgress::new())
+            .await
+            .map(|(c, _)| c)
     }
 
-    async fn curate_timed(&self, b: &Batch) -> anyhow::Result<(Curated, Timings)> {
+    /// Curate `b` (logged as `name`), reporting to `progress` as it goes.
+    async fn curate_timed(
+        &self,
+        b: &Batch,
+        name: &str,
+        progress: &Arc<BatchProgress>,
+    ) -> anyhow::Result<(Curated, Timings)> {
         let started = Instant::now();
         // Paced: one request per slot, and a failed attempt is retried later
         // through the pacer. Unpaced: retry server errors straight away.
@@ -249,6 +394,13 @@ impl Worker {
         } else {
             source::open(&b.source_url).await?
         };
+        progress.track_download(download.bytes.clone());
+        progress.set_stage(Stage::Downloading);
+        tracing::info!(
+            batch = name,
+            archive_mb = download.size.map(mb),
+            "download started"
+        );
         // Unique per claim: the attempt count rises with every claim of this
         // version, and the sub-second time separates re-queued runs.
         let attempt = format!(
@@ -261,7 +413,9 @@ impl Worker {
             b.attempts
         );
         let prefix = format!("pages/{}/v{:02}/{attempt}", b.batch, b.version);
-        let w = self.write_parts(b, download.reader, &prefix).await?;
+        let w = self
+            .write_parts(b, download.reader, &prefix, progress)
+            .await?;
         // The parts are only an uncommitted attempt until this matches.
         let sha = download.digest.await.context("download task stopped")??;
         let mut timings = Timings {
@@ -277,6 +431,16 @@ impl Worker {
         if w.pages == 0 {
             bail!("the archive holds no pages");
         }
+        tracing::info!(
+            batch = name,
+            pages = w.pages,
+            parts = w.parts.len(),
+            archive_mb = mb(timings.archive_bytes),
+            secs = round1(timings.stream_secs),
+            sha256_checked = b.source_sha256.is_some(),
+            "archive read"
+        );
+        progress.set_stage(Stage::Issues);
         let counts_path = format!("{prefix}/counts.json");
         let issues_started = Instant::now();
         self.put_new(
@@ -285,8 +449,15 @@ impl Worker {
             "application/json",
         )
         .await?;
+        let issues = w.issues.len();
         self.upsert_issues(b, w.issues).await?;
         timings.issues_secs = issues_started.elapsed().as_secs_f64();
+        tracing::info!(
+            batch = name,
+            issues,
+            issues_secs = round1(timings.issues_secs),
+            "issue items written"
+        );
         let curated = Curated {
             version: b.version,
             lccns: w.counts.keys().cloned().collect(),
@@ -313,11 +484,13 @@ impl Worker {
         b: &Batch,
         input: source::ChannelReader,
         prefix: &str,
+        progress: &Arc<BatchProgress>,
     ) -> anyhow::Result<Written> {
         // Parsing and Parquet encoding are CPU-bound; finished parts come back
         // over a channel and are uploaded while the next one is built.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
         let (batch, version, ocr) = (b.batch.clone(), b.version, b.ocr_source.clone());
+        let parsed = progress.clone();
         let producer = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let now = Utc::now();
             let mut writer = PartWriter::new();
@@ -328,6 +501,7 @@ impl Worker {
             let stats = archive::read_pages_from(input, |p| {
                 let row = CuratedRow::from_ocr(p.key, &p.text, &batch, version, &ocr, now);
                 pages += 1;
+                parsed.page();
                 ok_pages += u64::from(row.status == TextStatus::Ok);
                 first = first.min(row.key.date);
                 last = last.max(row.key.date);
@@ -370,6 +544,7 @@ impl Worker {
             let path = format!("{prefix}/part-{:04}.parquet", parts.len());
             self.put_new(&path, part, "application/vnd.apache.parquet")
                 .await?;
+            progress.part();
             parts.push(path);
         }
         let (counts, issues, pages, ok_pages, first, last) = producer.await??;
@@ -457,4 +632,141 @@ impl Worker {
 
 fn round1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::docs::MemoryDocs;
+    use crate::source::ListedBatch;
+    use std::io::Write;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn listed(name: &str, url: String) -> ListedBatch {
+        ListedBatch {
+            name: name.into(),
+            url,
+            sha256: None,
+            ocr_source: None,
+            lccns: vec![],
+        }
+    }
+
+    /// A one-page archive on disk.
+    fn archive(dir: &std::path::Path) -> String {
+        let text = b"a page with more than enough words in it to count as a real page of text";
+        let mut t = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_size(text.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        t.append_data(
+            &mut h,
+            "sn84026749/1896/07/10/ed-1/seq-1/ocr.txt",
+            &text[..],
+        )
+        .unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&t.into_inner().unwrap()).unwrap();
+        let path = dir.join("batch_b_ver01.tar.gz");
+        std::fs::write(&path, gz.finish().unwrap()).unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    /// A server that answers 200 with a large Content-Length, sends no body,
+    /// and reports when the client hangs up.
+    async fn stalled_server() -> (String, tokio::sync::oneshot::Receiver<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/batch_a_ver01.tar.bz2",
+            listener.local_addr().unwrap()
+        );
+        let (closed, hung_up) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 4096];
+            let _ = sock.read(&mut req).await;
+            let head = "HTTP/1.1 200 OK\r\ncontent-length: 104857600\r\n\r\n";
+            sock.write_all(head.as_bytes()).await.unwrap();
+            // Returns 0 (or fails) once the client drops the connection.
+            let _ = sock.read(&mut req).await;
+            let _ = closed.send(());
+        });
+        (url, hung_up)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_batch_past_the_limit_is_released_and_the_worker_moves_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (stalled, hung_up) = stalled_server().await;
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        source::enqueue(
+            &state,
+            &[
+                listed("batch_a_ver01", stalled),
+                listed("batch_b_ver01", archive(dir.path())),
+            ],
+        )
+        .await
+        .unwrap();
+        let w = Worker {
+            state: state.clone(),
+            curated: Arc::new(usnm_store::LocalStore::new(dir.path().join("curated"))),
+            owner: "w1".into(),
+            lease: Duration::hours(2),
+            fetch_interval: None,
+            batch_limit: std::time::Duration::from_millis(500),
+        };
+        let run = tokio::time::timeout(std::time::Duration::from_secs(30), w.run(None));
+        assert_eq!(
+            run.await
+                .expect("the watchdog ends the stalled batch")
+                .unwrap(),
+            1
+        );
+
+        // Released like a failed attempt: re-queued, attempt counted, no lease.
+        let (a, _) = state.batch("batch_a").await.unwrap().unwrap();
+        assert_eq!((a.status, a.attempts), (BatchStatus::Queued, 1));
+        assert!(a.lease.is_none() && a.curated.is_none());
+        let err = a.last_error.unwrap();
+        assert!(err.contains("stage downloading"), "{err}");
+        // The other batch was curated as usual.
+        let (b, _) = state.batch("batch_b").await.unwrap().unwrap();
+        assert_eq!(b.status, BatchStatus::Curated);
+        assert_eq!(b.curated.unwrap().pages, 1);
+        // The abandoned download was stopped, not left running.
+        tokio::time::timeout(std::time::Duration::from_secs(10), hung_up)
+            .await
+            .expect("the download's connection was closed")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_commit_cut_short_after_it_landed_is_not_undone() {
+        // The watchdog can fire while the commit's write is in flight. If it
+        // landed, the release that follows must leave the batch curated.
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        source::enqueue(&state, &[listed("batch_b_ver01", archive(dir.path()))])
+            .await
+            .unwrap();
+        let w = Worker {
+            state: state.clone(),
+            curated: Arc::new(usnm_store::LocalStore::new(dir.path().join("curated"))),
+            owner: "w1".into(),
+            lease: Duration::hours(2),
+            fetch_interval: None,
+            batch_limit: BATCH_LIMIT,
+        };
+        let (b, _) = w.claim().await.unwrap().unwrap();
+        let c = w.curate(&b).await.unwrap();
+        w.commit("batch_b", c).await.unwrap();
+        w.release("batch_b", "timed out", true).await.unwrap();
+        let (b, _) = state.batch("batch_b").await.unwrap().unwrap();
+        assert_eq!((b.status, b.attempts), (BatchStatus::Curated, 1));
+        assert!(b.last_error.is_none());
+        // And nobody can claim it again.
+        assert!(w.claim().await.unwrap().is_none());
+    }
 }

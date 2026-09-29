@@ -224,6 +224,7 @@ async fn curate(
         lease: chrono::Duration::hours(2),
         fetch_interval: (fetch_interval_secs > 0)
             .then_some(chrono::Duration::seconds(i64::from(fetch_interval_secs))),
+        batch_limit: worker::BATCH_LIMIT,
     };
     let n = worker.run(max).await?;
     tracing::info!(curated = n, "curation finished");
