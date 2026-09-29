@@ -522,6 +522,41 @@ mod tests {
         }
     }
 
+    /// Answers every request with `status` and an empty JSON object.
+    async fn stub(status: u16) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0; 16 * 1024];
+                let _ = sock.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 {status} Stub\r\ncontent-type: application/json\r\n\
+                     content-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_refused_request_is_rejected_and_a_server_error_is_not() {
+        for (status, rejected) in [(400, true), (422, true), (500, false), (503, false)] {
+            let qw = QuickwitBackend::new(&stub(status).await, Duration::from_secs(5)).unwrap();
+            let err = qw
+                .search(&IndexSet(vec!["i".into()]), &serde_json::json!({}))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                matches!(err, SearchError::Rejected(_)),
+                rejected,
+                "{status}: {err}"
+            );
+        }
+    }
+
     #[test]
     fn translates_ast_to_query_language() {
         let q = parse(r#""cross of gold" -bryan (silver OR free*) "gold silver"~3"#).unwrap();

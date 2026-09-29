@@ -391,6 +391,32 @@ async fn a_searcher_that_is_still_starting_is_retried() {
 }
 
 #[tokio::test]
+async fn slow_failures_share_one_limit_per_query() {
+    let dir = temp_reference("slow-failing");
+    let backend = Counting::new(Duration::from_millis(100), true);
+    let mut cfg = config();
+    let limit = Duration::from_millis(350);
+    cfg.prewarm_query_timeout = limit;
+    cfg.prewarm_budget = Duration::from_secs(30);
+    let state = Arc::new(reloading_state(&dir, cfg, backend).await);
+    let started = std::time::Instant::now();
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    let n = prewarm::examples().len();
+    // Every example got its turn: none used up the run's budget.
+    assert_eq!(report.skipped, 0, "{report:?}");
+    assert_eq!(report.failed + report.timed_out, n, "{report:?}");
+    // Each gave up at about its own limit. Resetting the limit on every
+    // attempt would take about three times as long here.
+    let bound = limit * n as u32 + Duration::from_millis(800);
+    assert!(
+        started.elapsed() < bound,
+        "{:?} >= {bound:?}",
+        started.elapsed()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn a_rejected_request_is_not_retried() {
     let dir = temp_reference("rejecting");
     let backend = Counting::rejecting();
