@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
+import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowValues } from "./engine/cube";
 import { EXAMPLES } from "./examples";
 import { bucketIndex, bucketLabel, bucketStart } from "./lib/time";
@@ -368,7 +369,7 @@ export function App() {
           Chronicling America
         </a>{" "}
         (Library of Congress and National Endowment for the Humanities).
-        {meta.data && ` Index ${meta.data.index_version}.`}
+        {meta.data && ` ${indexSummary(meta.data)}`}
       </footer>
     </div>
   );

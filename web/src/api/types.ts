@@ -11,6 +11,8 @@ export interface Meta {
   synthetic: boolean;
   places: number;
   titles: number;
+  /** Every page in the published version. Absent from APIs older than this field. */
+  pages?: number;
   capabilities: { fuzzy: boolean; max_slop: number; nested_aggregations: boolean };
   limits: {
     max_query_chars: number;

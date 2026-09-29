@@ -1,5 +1,6 @@
 //! End-to-end tests of the API against the synthetic fixture corpus.
 
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -113,6 +114,18 @@ async fn health_and_meta() {
     assert_eq!(meta["index_version"], "fixture-v1");
     assert_eq!(meta["synthetic"], true);
     assert_eq!(meta["places"], 6);
+    // Every page in the version: the sum of the baselines.
+    let baselines: HashMap<String, Vec<(u32, u32)>> = serde_json::from_slice(
+        &std::fs::read(data_dir().join("fixture-v1/baselines.json")).unwrap(),
+    )
+    .unwrap();
+    let pages: u64 = baselines
+        .values()
+        .flatten()
+        .map(|&(_, n)| u64::from(n))
+        .sum();
+    assert!(pages > 0);
+    assert_eq!(meta["pages"], pages);
 }
 
 #[tokio::test]

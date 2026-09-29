@@ -39,6 +39,7 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         "synthetic": c.synthetic,
         "places": rd.places.len(),
         "titles": rd.titles.len(),
+        "pages": rd.pages,
         "capabilities": snap.backend.capabilities(),
         "limits": {
             "max_query_chars": query::MAX_QUERY_CHARS,
