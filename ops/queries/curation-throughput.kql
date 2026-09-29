@@ -15,8 +15,8 @@ ContainerAppConsoleLogs
     Failed = countif(Message == "curation failed"),
     TimedOut = countif(Message == "curation timed out"),
     Throttled = countif(Message startswith "throttled"),
-    Pages = sum(tolong(j.fields.pages)),
-    ArchiveMb = round(sum(todouble(j.fields.archive_mb)), 1),
+    Pages = sumif(tolong(j.fields.pages), Message == "curated"),
+    ArchiveMb = round(sumif(todouble(j.fields.archive_mb), Message == "curated"), 1),
     AvgSecs = round(avgif(todouble(j.fields.secs), Message == "curated"), 1),
     MaxSecs = round(maxif(todouble(j.fields.secs), Message == "curated"), 1),
     Replicas = dcount(ContainerGroupName)
