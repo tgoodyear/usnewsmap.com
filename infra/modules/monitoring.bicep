@@ -58,5 +58,10 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(a
 
 output workspaceId string = workspace.id
 output workspaceName string = workspace.name
+// The workspace's id in the Log Analytics query API (scripts/logs.sh).
+output workspaceCustomerId string = workspace.properties.customerId
+output appInsightsName string = appInsights.name
+// The ingestion endpoint and instrumentation key, not a credential: with
+// local auth disabled, ingestion needs an Entra token as well.
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
 output actionGroupId string = empty(alertEmails) ? '' : actionGroup.id

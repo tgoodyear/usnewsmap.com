@@ -1,0 +1,31 @@
+// Release progress: how far the index build is, how fast, free disk, memory.
+// The "release progress" lines the ingest job logs every 30 s and after
+// each batch, with the release's start and end lines and the Quickwit
+// writer's warnings and errors.
+// Lines that could carry the managed identity endpoint's secret are dropped.
+ContainerAppConsoleLogs
+| where ContainerName == "ingest"
+| where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+| extend j = parse_json(Log)
+| extend Message = tostring(j.fields.message), Target = tostring(j.target), Level = tostring(j.level)
+| where Message in ("building index", "release progress", "published", "released", "command failed")
+    or (Target == "quickwit" and Level in ("WARN", "ERROR"))
+| project
+    TimeGenerated,
+    Replica = ContainerGroupName,
+    Level,
+    Message = iff(Target == "quickwit", strcat("quickwit: ", Message), Message),
+    Version = tostring(j.span.version),
+    Batch = tostring(j.fields.batch),
+    DocsSent = tolong(j.fields.docs_sent),
+    DocsExpected = tolong(j.fields.docs_expected),
+    Percent = todouble(j.fields.percent),
+    MbSent = todouble(j.fields.mb_sent),
+    DocsPerSec = todouble(j.fields.docs_per_sec),
+    Retries429 = tolong(j.fields.retries_429),
+    Retries503 = tolong(j.fields.retries_503),
+    DiskFreeMb = todouble(j.fields.disk_free_mb),
+    RssMb = todouble(j.fields.rss_mb),
+    QuickwitRssMb = todouble(j.fields.quickwit_rss_mb),
+    Error = tostring(j.fields.error)
+| order by TimeGenerated asc

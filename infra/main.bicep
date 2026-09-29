@@ -217,6 +217,7 @@ module rbac 'modules/rbac.bicep' = {
   params: {
     storageName: storage.outputs.name
     cosmosName: cosmos.outputs.name
+    appInsightsName: monitoring.outputs.appInsightsName
     appPrincipalId: identities.outputs.appPrincipalId
     ingestPrincipalId: identities.outputs.ingestPrincipalId
   }
@@ -302,6 +303,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     storageAccountName: storage.outputs.name
     storageBlobEndpoint: storage.outputs.blobEndpoint
     cosmosEndpoint: cosmos.outputs.endpoint
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     jobNameSuffix: env
     cron: ingestCron
     workers: backfillWorkers
@@ -315,6 +317,19 @@ module budget 'modules/budget.bicep' = if (!empty(emails) && !empty(budgetStartD
     name: 'budget-usnm-${env}'
     startDate: budgetStartDate
     contactEmails: emails
+  }
+}
+
+// Ingest and backfill failures and stalls, from the jobs' console logs.
+module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingestJobs && useAcr) {
+  scope: rg
+  name: 'ingest-alerts'
+  params: {
+    location: location
+    tags: tags
+    nameSuffix: env
+    workspaceId: monitoring.outputs.workspaceId
+    actionGroupId: monitoring.outputs.actionGroupId
   }
 }
 
@@ -391,3 +406,5 @@ output CI_CLIENT_ID string = registry.outputs.ciClientId
 output AZURE_TENANT_ID string = tenant().tenantId
 output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
+// The workspace's customer id, for the Log Analytics query API (scripts/logs.sh).
+output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceCustomerId

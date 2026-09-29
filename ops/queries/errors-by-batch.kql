@@ -1,0 +1,23 @@
+// Warnings and errors from the ingest and backfill jobs, by batch.
+// Batch is empty for lines not about one batch.
+// Lines that could carry the managed identity endpoint's secret are dropped.
+ContainerAppConsoleLogs
+| where ContainerName in ("ingest", "curate")
+| where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+| where Log has_any ("WARN", "ERROR")
+| extend j = parse_json(Log)
+| extend Level = tostring(j.level)
+| where Level in ("WARN", "ERROR")
+| extend
+    Batch = coalesce(tostring(j.fields.batch), tostring(j.span.batch)),
+    Message = tostring(j.fields.message),
+    Error = tostring(j.fields.error)
+// Quickwit's own lines differ only by timestamp: group them by their text.
+| extend Message = iff(tostring(j.target) == "quickwit", strcat("quickwit: ", trim(" ", substring(Message, indexof(Message, " ") + 1))), Message)
+| summarize
+    Count = count(),
+    First = min(TimeGenerated),
+    Last = max(TimeGenerated),
+    LastError = take_any(substring(Error, 0, 300))
+    by Batch, Level, Message
+| order by Level asc, Count desc
