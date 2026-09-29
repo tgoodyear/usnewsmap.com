@@ -68,6 +68,9 @@ pub struct RefData {
     pub baselines: HashMap<String, Vec<(u32, u32)>>,
     /// Every page in the published version (the sum of the baselines).
     pub pages: u64,
+    /// The batches (and their versions) the version was built from, from the
+    /// snapshot manifest; `None` for snapshots that don't record them.
+    pub published_batches: Option<HashMap<String, u16>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +78,19 @@ struct Manifest {
     /// The published version this snapshot was built for.
     index_version: String,
     files: Vec<ManifestFile>,
+    #[serde(default)]
+    built_from: Option<BuiltFrom>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuiltFrom {
+    batches: Vec<BuiltFromBatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuiltFromBatch {
+    batch: String,
+    version: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,10 +138,18 @@ impl RefData {
             }
             raw.push((path, bytes));
         }
+        let published_batches = manifest.built_from.map(|b| {
+            b.batches
+                .into_iter()
+                .map(|b| (b.batch, b.version))
+                .collect()
+        });
         // Parsing large snapshots is CPU-bound; keep it off the async workers.
-        tokio::task::spawn_blocking(move || Self::build(current, &raw))
+        let mut refdata = tokio::task::spawn_blocking(move || Self::build(current, &raw))
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())??;
+        refdata.published_batches = published_batches;
+        Ok(refdata)
     }
 
     fn build(current: Current, raw: &[(String, Vec<u8>)]) -> Result<Self, String> {
@@ -155,6 +179,7 @@ impl RefData {
             titles: titles.into_iter().map(|t| (t.lccn.clone(), t)).collect(),
             baselines,
             pages,
+            published_batches: None,
         })
     }
 

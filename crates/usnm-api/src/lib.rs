@@ -27,6 +27,7 @@ pub mod ratelimit;
 pub mod refdata;
 mod routes;
 pub mod site;
+pub mod status;
 pub mod version;
 
 use config::Config;
@@ -96,6 +97,8 @@ pub struct AppState {
     pub limiter: Option<Limiter>,
     /// Caps concurrent backend queries across all requests.
     pub permits: Semaphore,
+    /// The pipeline status document (`/v1/status`).
+    pub status: status::StatusService,
 }
 
 impl AppState {
@@ -116,6 +119,7 @@ impl AppState {
                 .rate_limit
                 .map(|l| Limiter::new(l, config.trusted_proxy_hops)),
             permits: Semaphore::new(config.backend_concurrency),
+            status: status::StatusService::new(status::PipelineSource::None, config.status_refresh),
             config,
             snapshot: ArcSwap::from_pointee(snapshot),
             loader,
@@ -126,6 +130,12 @@ impl AppState {
 
     pub fn with_response_store(mut self, store: Arc<dyn ObjectStore>) -> Self {
         self.responses = Some(store);
+        self
+    }
+
+    /// Read the pipeline state (read-only) for `/v1/status`.
+    pub fn with_pipeline(mut self, source: status::PipelineSource) -> Self {
+        self.status = status::StatusService::new(source, self.config.status_refresh);
         self
     }
 }
@@ -147,6 +157,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/aggregate", get(routes::aggregate))
         .route("/hits", get(routes::hits))
         .route("/coverage", get(routes::coverage))
+        .route("/status", get(routes::status))
         .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         // Unknown API paths are problem details, never the site's index.
         .fallback(|| async { ApiError::NotFound("no such endpoint".to_owned()) });

@@ -8,6 +8,22 @@ pub use coverage::coverage;
 pub use hits::hits;
 pub use meta::{meta, places, readyz};
 
+/// The pipeline status document (see [`crate::status`]).
+pub async fn status(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> Response {
+    let body = state.status.get(&state).await;
+    let mut resp = body.as_ref().clone().into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=30"),
+    );
+    resp
+}
+
 use std::future::Future;
 use std::io::Read;
 use std::sync::Arc;

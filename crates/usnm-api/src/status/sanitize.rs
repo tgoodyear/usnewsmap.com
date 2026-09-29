@@ -1,0 +1,316 @@
+//! Error text for a public page (09 §9.4): pipeline errors can name storage
+//! accounts, Cosmos endpoints, registry hosts, addresses, identities and
+//! worker hostnames. Those are replaced with a placeholder; LoC URLs and batch
+//! names are public data and stay.
+
+/// Longest error shown, in characters.
+pub const MAX_CHARS: usize = 200;
+
+/// Host suffixes that are never shown (Azure services and sign-in).
+const PRIVATE_SUFFIXES: [&str; 9] = [
+    ".windows.net",
+    ".azure.com",
+    ".azure.net",
+    ".azure.us",
+    ".azurecr.io",
+    ".azurecontainerapps.io",
+    ".azurewebsites.net",
+    ".microsoftonline.com",
+    ".internal",
+];
+
+/// Name prefixes of this deployment's Azure resources (08 §8.1), which some
+/// service errors quote without a hostname.
+const RESOURCE_PREFIXES: [&str; 13] = [
+    "cosmos-usnm",
+    "stusnm",
+    "crusnm",
+    "caj-usnm",
+    "ca-usnm",
+    "cae-usnm",
+    "id-usnm",
+    "pe-usnm",
+    "appi-usnm",
+    "log-usnm",
+    "rg-usnm",
+    "vnet-usnm",
+    "snet-usnm",
+];
+
+/// `error` with private details replaced and cut to [`MAX_CHARS`].
+pub fn sanitize(error: &str) -> String {
+    let mut out = String::with_capacity(error.len().min(MAX_CHARS * 2));
+    let mut token = String::new();
+    for c in error.chars() {
+        if is_token_char(c) {
+            token.push(c);
+        } else {
+            flush(&mut token, &mut out);
+            // Control characters (newlines in multi-line errors) become spaces.
+            out.push(if c.is_control() { ' ' } else { c });
+        }
+    }
+    flush(&mut token, &mut out);
+    truncate(out.trim())
+}
+
+fn is_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-._~:/?#@!$&'*+,;=%".contains(c)
+}
+
+fn flush(token: &mut String, out: &mut String) {
+    if !token.is_empty() {
+        // Sentence punctuation after a token isn't part of it.
+        let trimmed = token.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'']);
+        let tail = &token[trimmed.len()..];
+        out.push_str(&redact(trimmed));
+        out.push_str(tail);
+        token.clear();
+    }
+}
+
+fn truncate(s: &str) -> String {
+    if s.chars().count() <= MAX_CHARS {
+        return s.to_owned();
+    }
+    let mut cut: String = s.chars().take(MAX_CHARS - 1).collect();
+    cut.push('…');
+    cut
+}
+
+/// One whitespace/punctuation-delimited token, or its replacement.
+fn redact(token: &str) -> String {
+    if token.is_empty() {
+        return String::new();
+    }
+    if let Some((scheme, rest)) = token.split_once("://") {
+        if scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+')
+            && !scheme.is_empty()
+        {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let host = authority.rsplit('@').next().unwrap_or_default();
+            let host = strip_port(host).to_ascii_lowercase();
+            let public =
+                scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http");
+            return if public && is_loc(&host) {
+                token.to_owned()
+            } else {
+                "[url]".to_owned()
+            };
+        }
+    }
+    let lower = token.to_ascii_lowercase();
+    if lower
+        .split(['/', '@', '?', '#', '='])
+        .any(|part| is_private_host(strip_port(part)))
+    {
+        return "[host]".to_owned();
+    }
+    // Paths and names that embed a worker id (host-pid-nanos) name the
+    // replica; only the segment holding it is replaced.
+    if token.split('/').any(has_worker_id) {
+        return token
+            .split('/')
+            .map(|seg| if has_worker_id(seg) { "[worker]" } else { seg })
+            .collect::<Vec<_>>()
+            .join("/");
+    }
+    if token.split('/').any(|part| {
+        RESOURCE_PREFIXES
+            .iter()
+            .any(|p| part.to_ascii_lowercase().starts_with(p))
+    }) {
+        return "[resource]".to_owned();
+    }
+    if token.contains('@') && token.rsplit('@').next().is_some_and(|d| d.contains('.')) {
+        return "[email]".to_owned();
+    }
+    if is_ipv4(strip_port(token)) || is_ipv6(token) {
+        return "[ip]".to_owned();
+    }
+    if is_guid(token) {
+        return "[id]".to_owned();
+    }
+    token.to_owned()
+}
+
+fn strip_port(host: &str) -> &str {
+    match host.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host,
+    }
+}
+
+fn is_loc(host: &str) -> bool {
+    host == "loc.gov" || host.ends_with(".loc.gov")
+}
+
+fn is_private_host(part: &str) -> bool {
+    PRIVATE_SUFFIXES.iter().any(|s| part.ends_with(s))
+}
+
+fn is_ipv4(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= 3 && p.parse::<u8>().is_ok())
+}
+
+/// Hex groups and colons with a `::` or a hex letter (so times like 10:00:00 don't match).
+fn is_ipv6(s: &str) -> bool {
+    let colons = s.matches(':').count();
+    colons >= 2
+        && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
+        && (s.contains("::") || s.chars().any(|c| c.is_ascii_alphabetic()) || colons >= 5)
+        && s.split(':').all(|g| g.len() <= 4)
+}
+
+fn is_guid(s: &str) -> bool {
+    let groups: Vec<&str> = s.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, n)| g.len() == n && g.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Contains `…-{pid}-{8 hex}`, the tail of [`usnm_ingest::owner_id`]-style ids.
+fn has_worker_id(segment: &str) -> bool {
+    let parts: Vec<&str> = segment.split('-').collect();
+    parts.windows(2).any(|w| {
+        !w[0].is_empty()
+            && w[0].bytes().all(|b| b.is_ascii_digit())
+            && w[1].len() == 8
+            && w[1].bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    }) && parts.len() >= 3
+}
+
+/// A short, opaque worker id for display: the owner id's last six characters.
+pub fn short_id(owner: &str) -> String {
+    let chars: Vec<char> = owner.chars().collect();
+    chars[chars.len().saturating_sub(6)..].iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_loc_urls_and_batch_names() {
+        let e = "GET https://chroniclingamerica.loc.gov/data/batches/batch_az_acacia_ver01.tar.bz2 returned 503";
+        assert_eq!(sanitize(e), e);
+        let e =
+            "archive sha256 abc does not match for batch_dlc_elf_ver02 (https://tile.loc.gov/x)";
+        assert_eq!(sanitize(e), e);
+        assert_eq!(
+            sanitize("see https://www.loc.gov/."),
+            "see https://www.loc.gov/."
+        );
+    }
+
+    #[test]
+    fn replaces_other_urls() {
+        assert_eq!(
+            sanitize("error sending request for url (https://cosmos-usnm-prod-x1.documents.azure.com/dbs/usnm/colls/batches/docs)"),
+            "error sending request for url ([url])"
+        );
+        assert_eq!(
+            sanitize("GET https://evil.example/loc.gov failed"),
+            "GET [url] failed"
+        );
+        assert_eq!(sanitize("http://127.0.0.1:7280/api/v1"), "[url]");
+        assert_eq!(sanitize("azure://qw-index/x"), "[url]");
+        assert_eq!(
+            sanitize("https://user@chroniclingamerica.loc.gov.evil.io/"),
+            "[url]"
+        );
+    }
+
+    #[test]
+    fn replaces_azure_hosts_without_a_scheme() {
+        assert_eq!(
+            sanitize("blob stusnmdataabc.blob.core.windows.net/curated/x: 403"),
+            "blob [host]: 403"
+        );
+        assert_eq!(
+            sanitize("pull crusnmprod.azurecr.io/usnewsmap-ingest"),
+            "pull [host]"
+        );
+        assert_eq!(
+            sanitize("host cosmos-usnm.documents.azure.com:443"),
+            "host [host]"
+        );
+        assert_eq!(
+            sanitize("token from login.microsoftonline.com refused"),
+            "token from [host] refused"
+        );
+    }
+
+    #[test]
+    fn replaces_resource_names() {
+        assert_eq!(
+            sanitize("Request blocked by Auth cosmos-usnm-prod-ab12 : principal lacks RBAC"),
+            "Request blocked by Auth [resource] : principal lacks RBAC"
+        );
+        assert_eq!(
+            sanitize("account stusnmdataxyz: 403"),
+            "account [resource]: 403"
+        );
+    }
+
+    #[test]
+    fn replaces_addresses_ids_and_emails() {
+        assert_eq!(
+            sanitize("connect 10.0.2.4:443 refused"),
+            "connect [ip] refused"
+        );
+        assert_eq!(sanitize("from [fe80::1]"), "from [[ip]]");
+        assert_eq!(
+            sanitize("at 2026-09-29T10:00:00Z, 10:00:00"),
+            "at 2026-09-29T10:00:00Z, 10:00:00"
+        );
+        assert_eq!(
+            sanitize("principal 3fa85f64-5717-4562-b3fc-2c963f66afa6 lacks a role"),
+            "principal [id] lacks a role"
+        );
+        assert_eq!(sanitize("owner ops@example.com"), "owner [email]");
+        // Version numbers aren't addresses.
+        assert_eq!(sanitize("quickwit v0.9.1"), "quickwit v0.9.1");
+    }
+
+    #[test]
+    fn replaces_worker_ids() {
+        assert_eq!(
+            sanitize("lock `quickwit-writer` is held by `caj-usnm-ingest-prod-x7k2p-14-0a1b2c3d`"),
+            "lock `quickwit-writer` is held by `[worker]`"
+        );
+        assert_eq!(
+            sanitize("`pages/batch_x/v01/20260915T101010Z-caj-usnm-backfill-q-7-00ab12cd-a2/part-0000.parquet` already exists"),
+            "`pages/batch_x/v01/[worker]/part-0000.parquet` already exists"
+        );
+        // Batch names and dates are left alone.
+        assert_eq!(
+            sanitize("batch_dlc_1-2_ver01 1896-07-10"),
+            "batch_dlc_1-2_ver01 1896-07-10"
+        );
+    }
+
+    #[test]
+    fn flattens_lines_and_caps_length() {
+        assert_eq!(sanitize("a\nb\tc"), "a b c");
+        let long = "x ".repeat(300);
+        let s = sanitize(&long);
+        assert_eq!(s.chars().count(), MAX_CHARS);
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn short_ids_are_the_last_six_characters() {
+        assert_eq!(short_id("caj-usnm-backfill-q-7-00ab12cd"), "ab12cd");
+        assert_eq!(short_id("abc"), "abc");
+        assert_eq!(short_id(""), "");
+    }
+}

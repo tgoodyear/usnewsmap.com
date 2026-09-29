@@ -50,6 +50,13 @@ pub struct Config {
     /// The built web app to serve alongside the API (`web/dist`); none
     /// serves the API alone.
     pub site_dir: Option<PathBuf>,
+    /// Cosmos DB endpoint of the pipeline state, read-only for `/v1/status`
+    /// (the same variable the ingest jobs use).
+    pub cosmos_endpoint: Option<String>,
+    /// The ingest CLI's local state file, for `/v1/status` in development.
+    pub state_file: Option<PathBuf>,
+    /// How often `/v1/status` is recomputed at most.
+    pub status_refresh: Duration,
 }
 
 impl Config {
@@ -111,6 +118,9 @@ impl Config {
             backend_concurrency: usize::try_from(num("USNM_BACKEND_CONCURRENCY", 8)?.max(1))
                 .map_err(|e| e.to_string())?,
             site_dir: var("USNM_SITE_DIR").map(PathBuf::from),
+            cosmos_endpoint: var("USNM_COSMOS_ENDPOINT"),
+            state_file: var("USNM_STATE_FILE").map(PathBuf::from),
+            status_refresh: Duration::from_secs(num("USNM_STATUS_REFRESH_SECS", 60)?.max(1)),
         })
     }
 }
@@ -132,6 +142,8 @@ mod tests {
         })
         .unwrap();
         assert!(c.rate_limit.is_none());
+        assert_eq!(c.status_refresh, Duration::from_secs(60));
+        assert!(c.cosmos_endpoint.is_none());
         assert!(c.reference_url.starts_with("https://"));
         assert!(Config::from_lookup(|k| (k == "USNM_RATE_BURST").then(|| "0".into())).is_err());
         assert!(Config::from_lookup(|k| (k == "USNM_CACHE_MB").then(|| "x".into())).is_err());
