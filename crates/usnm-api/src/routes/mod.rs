@@ -125,8 +125,11 @@ fn persist(store: Arc<dyn ObjectStore>, path: String, body: Arc<Vec<u8>>) {
 
 /// Serve `compute()` through the in-process cache, then the persistent
 /// cache, with version-aware headers. Concurrent identical requests share one
-/// computation. A warm-up skips the persistent read, so the backend runs and
-/// its caches warm; the result is still persisted if it was slow.
+/// computation. A visitor waits at most the request timeout (plus the
+/// persistent read's allowance), whether it computes the body or waits on an
+/// identical computation, such as a warm-up's with its longer limit. A
+/// warm-up skips the persistent read, so the backend runs and its caches
+/// warm; the result is still persisted if it was slow.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn cached<F, T>(
     state: &AppState,
@@ -151,31 +154,38 @@ where
     // Set when this request fills the in-process entry; otherwise the body
     // came from the cache (or from an identical request computing it).
     let filled = AtomicBool::new(false);
-    let body = state
-        .cache
-        .try_get_with(key, async {
-            filled.store(true, Ordering::Relaxed);
-            if let Some((store, path)) = persistent.as_ref().filter(|_| !warm_up) {
-                let found = read_persisted(store.as_ref(), path).await;
-                metrics.cache("blob", found.is_some());
-                if let Some(body) = found {
-                    return Ok(Arc::new(body));
-                }
+    let lookup = state.cache.try_get_with(key, async {
+        filled.store(true, Ordering::Relaxed);
+        if let Some((store, path)) = persistent.as_ref().filter(|_| !warm_up) {
+            let found = read_persisted(store.as_ref(), path).await;
+            metrics.cache("blob", found.is_some());
+            if let Some(body) = found {
+                return Ok(Arc::new(body));
             }
-            let started = Instant::now();
-            let value = compute.await?;
-            let body = serde_json::to_vec(&value)
-                .map(Arc::new)
-                .map_err(|e| ApiError::Backend(e.to_string()))?;
-            if let Some((store, path)) = persistent {
-                if started.elapsed() >= persist_after {
-                    persist(store, path, body.clone());
-                }
+        }
+        let started = Instant::now();
+        let value = compute.await?;
+        let body = serde_json::to_vec(&value)
+            .map(Arc::new)
+            .map_err(|e| ApiError::Backend(e.to_string()))?;
+        if let Some((store, path)) = persistent {
+            if started.elapsed() >= persist_after {
+                persist(store, path, body.clone());
             }
-            Ok(body)
-        })
-        .await
-        .map_err(|e: Arc<ApiError>| Arc::try_unwrap(e).unwrap_or_else(|e| e.as_ref().clone()));
+        }
+        Ok(body)
+    });
+    // Giving up drops only this request's part: when it was waiting on an
+    // identical computation (a warm-up's, say), that computation carries on.
+    let body = if warm_up {
+        lookup.await
+    } else {
+        let deadline = state.config.search_timeout + PERSISTED_READ_TIMEOUT;
+        tokio::time::timeout(deadline, lookup)
+            .await
+            .unwrap_or_else(|_| Err(Arc::new(ApiError::Timeout)))
+    }
+    .map_err(|e: Arc<ApiError>| Arc::try_unwrap(e).unwrap_or_else(|e| e.as_ref().clone()));
     // A request that waited on an identical one that failed counts as neither.
     let filled = filled.load(Ordering::Relaxed);
     if !warm_up && (filled || body.is_ok()) {

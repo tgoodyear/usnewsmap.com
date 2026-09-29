@@ -376,6 +376,7 @@ async fn ready_at_the_cap_even_if_still_warming() {
     let dir = temp_reference("cap");
     let mut cfg = config();
     cfg.ready_cap = Duration::from_millis(300);
+    cfg.search_timeout = Duration::from_millis(200);
     let backend = Counting::new(Duration::from_secs(30), false);
     let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
 
@@ -391,5 +392,23 @@ async fn ready_at_the_cap_even_if_still_warming() {
     assert_eq!(readyz(&state).await, StatusCode::OK);
     // The warm-up carries on past the cap: the first search is still running.
     assert_eq!(backend.calls(), 1);
+
+    // A visitor asking for that search waits on the warm-up's computation,
+    // but only up to the visitor's own limit (plus the 2 s allowance for a
+    // persistent-cache read); the warm-up keeps going.
+    let first = &prewarm::examples()[0];
+    let started = Instant::now();
+    let (status, body) = get(&state, &format!("/v1/aggregate?{}", first.aggregate)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        backend.calls(),
+        1,
+        "the visitor joined the warm-up's search"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
