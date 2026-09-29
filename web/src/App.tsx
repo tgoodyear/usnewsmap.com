@@ -13,6 +13,7 @@ import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
 import { PlaceTable } from "./components/PlaceTable";
+import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
 import { hasWebGL2 } from "./lib/webgl";
 
@@ -21,6 +22,8 @@ const webgl = typeof document !== "undefined" && hasWebGL2();
 
 export function App() {
   const [view, setView] = useView();
+  const about = useRef<HTMLDialogElement>(null);
+  const openAbout = () => about.current?.showModal();
   const meta = useQuery({ queryKey: ["meta"], queryFn: ({ signal }) => api.meta(signal) });
   const version = meta.data?.index_version ?? "";
   const places = useQuery({
@@ -169,7 +172,11 @@ export function App() {
           <span aria-hidden="true">◉</span> US News Map
         </a>
         <SearchBar key={searchKey(view)} view={view} meta={meta.data} onSearch={search} />
+        <button type="button" className="link-button topbar__about" aria-haspopup="dialog" onClick={openAbout}>
+          About
+        </button>
       </header>
+      <About ref={about} />
 
       {meta.data?.synthetic && (
         <p className="notice notice--demo" role="note">
@@ -359,7 +366,10 @@ export function App() {
         </a>{" "}
         (Library of Congress and National Endowment for the Humanities).
         {meta.data && ` ${indexSummary(meta.data)}`}{" "}
-        <a href="/status">Pipeline status</a>
+        <button type="button" className="link-button" aria-haspopup="dialog" onClick={openAbout}>
+          About
+        </button>{" "}
+        · <a href="/status">Pipeline status</a>
       </footer>
     </div>
   );

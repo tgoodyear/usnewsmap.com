@@ -223,3 +223,20 @@ test("the status page shows the published version without the pipeline state", a
   expect(json.headers()["cache-control"]).toBe("public, max-age=30");
   expect((await json.json()).backfill.available).toBe(false);
 });
+
+test("About opens from the header and the footer and keeps the search", async ({ page }) => {
+  await page.goto("/?q=gold");
+  const dialog = page.getByRole("dialog", { name: "About US News Map" });
+  await page.getByRole("banner").getByRole("button", { name: "About" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("link", { name: "Trevor Goodyear" })).toHaveAttribute("href", "https://goodyeartechnical.com/");
+  await expectAccessible(page);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(/\?q=gold/);
+
+  await page.getByRole("contentinfo").getByRole("button", { name: "About" }).click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
+});

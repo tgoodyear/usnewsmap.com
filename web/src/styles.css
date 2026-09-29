@@ -82,9 +82,20 @@ input, select {
 }
 .brand { font-weight: 700; font-size: 1.1rem; text-decoration: none; color: var(--ink); white-space: nowrap; }
 .brand span { color: var(--bar-active); }
+/* Buttons that look like links still need a 24px touch target. */
+.topbar__about, .credits .link-button { min-height: 24px; padding: 2px 4px; white-space: nowrap; }
+
+.about {
+  width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.about::backdrop { background: rgb(0 0 0 / 0.45); }
+.about__body { padding: 16px 20px; line-height: 1.5; }
+.about h2 { margin: 0 0 8px; font-size: 1.25rem; }
+.about form { display: flex; justify-content: flex-end; margin-top: 12px; }
 
 .search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1; }
-.search__q { flex: 1 1 220px; min-width: 180px; }
+.search__q { flex: 1 1 160px; min-width: 160px; }
 .search__options { display: contents; }
 .search__toggle { display: none; }
 /* Last on wide screens, after the options; next to the box on phones. */
@@ -177,7 +188,9 @@ input, select {
 @media (max-width: 640px) {
   /* Phones: the brand on its own line, then the search box and its button;
      the options open below with an extra tap. */
-  .topbar { flex-direction: column; align-items: stretch; gap: 8px; padding: 8px 12px; }
+  .topbar { position: relative; flex-direction: column; align-items: stretch; gap: 8px; padding: 8px 12px; }
+  /* About stays on the brand's line, at the right. */
+  .topbar__about { position: absolute; top: 10px; right: 12px; }
   .search { flex-wrap: wrap; }
   .search__q { flex: 1 1 0; min-width: 0; }
   .search__go { order: 0; }
