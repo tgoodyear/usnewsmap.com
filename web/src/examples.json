@@ -8,14 +8,14 @@
   },
   {
     "aggregate": "q=%22yellow+fever%22&bucket=month",
-    "blurb": "Follow reports of an epidemic through the port cities.",
+    "blurb": "The share of pages that mention yellow fever, month by month.",
     "id": "yellow-fever",
     "title": "Yellow fever",
     "view": { "bucket": "month", "norm": "rel", "q": "\"yellow fever\"" }
   },
   {
     "aggregate": "q=%22free+silver%22&bucket=month",
-    "blurb": "The money question that divided the country in the 1890s.",
+    "blurb": "Month-by-month coverage of the free silver debate.",
     "id": "free-silver",
     "title": "Free silver",
     "view": { "bucket": "month", "q": "\"free silver\"" }
