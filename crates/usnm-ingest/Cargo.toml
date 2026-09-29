@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 usnm-core.workspace = true
 usnm-store.workspace = true
+usnm-state.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
@@ -18,9 +19,7 @@ bzip2.workspace = true
 chrono.workspace = true
 clap.workspace = true
 flate2.workspace = true
-form_urlencoded.workspace = true
 futures.workspace = true
-httpdate.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-application-insights.workspace = true

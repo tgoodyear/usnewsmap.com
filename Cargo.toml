@@ -6,6 +6,7 @@ members = [
     "crates/usnm-store",
     "crates/usnm-api",
     "crates/usnm-ingest",
+    "crates/usnm-state",
 ]
 
 [workspace.package]
@@ -18,6 +19,7 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 usnm-core = { path = "crates/usnm-core" }
 usnm-search = { path = "crates/usnm-search" }
 usnm-store = { path = "crates/usnm-store" }
+usnm-state = { path = "crates/usnm-state" }
 anyhow = "1"
 arc-swap = "1"
 arrow-array = "60"

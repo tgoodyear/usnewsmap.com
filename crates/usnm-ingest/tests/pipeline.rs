@@ -715,3 +715,73 @@ async fn batches_with_uncatalogued_titles_wait_for_a_later_release() {
     // Nothing is ready to add until the title is catalogued.
     assert!(e.release(2, false).await.is_none());
 }
+
+/// The pipeline state with writes of the release's progress item failing,
+/// as when Cosmos throttles or drops one request.
+struct NoProgress(MemoryDocs, Arc<std::sync::atomic::AtomicUsize>);
+
+#[async_trait::async_trait]
+impl usnm_ingest::docs::DocStore for NoProgress {
+    async fn get(
+        &self,
+        c: &str,
+        pk: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<usnm_ingest::docs::Versioned>> {
+        self.0.get(c, pk, id).await
+    }
+    async fn create(&self, c: &str, pk: &str, doc: &Value) -> anyhow::Result<Option<String>> {
+        self.0.create(c, pk, doc).await
+    }
+    async fn replace(
+        &self,
+        c: &str,
+        pk: &str,
+        doc: &Value,
+        etag: &str,
+    ) -> anyhow::Result<Option<String>> {
+        self.0.replace(c, pk, doc, etag).await
+    }
+    async fn upsert(&self, c: &str, pk: &str, doc: &Value) -> anyhow::Result<()> {
+        if pk == "release-progress" {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("Cosmos upsert in `ops` returned 503 Service Unavailable");
+        }
+        self.0.upsert(c, pk, doc).await
+    }
+    async fn list(
+        &self,
+        c: &str,
+        field: &str,
+        values: &[&str],
+    ) -> anyhow::Result<Vec<usnm_ingest::docs::Versioned>> {
+        self.0.list(c, field, values).await
+    }
+}
+
+/// Recording progress for the status page never fails a release.
+#[tokio::test]
+async fn a_release_publishes_when_its_progress_cannot_be_recorded() {
+    let mut e = env().await;
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    e.state = State::new(Arc::new(NoProgress(
+        MemoryDocs::default(),
+        attempts.clone(),
+    )));
+    let a = e.root.join("batch_fx_p_ver01.tar.gz");
+    write_archive(
+        &a,
+        &fixture_pages().iter().take(40).collect::<Vec<_>>(),
+        true,
+        true,
+    );
+    source::enqueue(&e.state, &[listed("batch_fx_p_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let p = e.release(1, true).await.unwrap();
+    assert!(p.docs > 0);
+    assert!(e.reference.get("current.json").await.unwrap().is_some());
+    // The release did try (the first report is immediate).
+    assert!(attempts.load(std::sync::atomic::Ordering::SeqCst) > 0);
+}

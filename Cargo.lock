@@ -2451,7 +2451,9 @@ dependencies = [
 name = "usnm-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "arc-swap",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -2463,6 +2465,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower",
@@ -2471,6 +2474,7 @@ dependencies = [
  "tracing-subscriber",
  "usnm-core",
  "usnm-search",
+ "usnm-state",
  "usnm-store",
  "zstd 0.13.3",
 ]
@@ -2501,9 +2505,7 @@ dependencies = [
  "chrono",
  "clap",
  "flate2",
- "form_urlencoded",
  "futures",
- "httpdate",
  "opentelemetry",
  "opentelemetry-application-insights",
  "opentelemetry-http",
@@ -2522,6 +2524,7 @@ dependencies = [
  "tracing-subscriber",
  "usnm-api",
  "usnm-core",
+ "usnm-state",
  "usnm-store",
  "zstd 0.13.3",
 ]
@@ -2540,6 +2543,24 @@ dependencies = [
  "tokio",
  "tracing",
  "usnm-core",
+]
+
+[[package]]
+name = "usnm-state"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "form_urlencoded",
+ "httpdate",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "usnm-store",
 ]
 
 [[package]]

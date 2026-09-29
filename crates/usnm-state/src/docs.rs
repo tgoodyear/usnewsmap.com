@@ -12,6 +12,63 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde_json::Value;
 
+/// One field to read from every item with [`DocStore::select`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// The value at a dotted path, e.g. `curated.pages`.
+    Path(&'static str),
+    /// The length of the array at a dotted path.
+    Len(&'static str),
+}
+
+impl Field {
+    /// The property the value comes back under: the path with `.` replaced
+    /// by `_`, plus `_len` for a length (`curated.pages` → `curated_pages`).
+    pub fn alias(&self) -> String {
+        match self {
+            Self::Path(p) => p.replace('.', "_"),
+            Self::Len(p) => format!("{}_len", p.replace('.', "_")),
+        }
+    }
+
+    fn path(&self) -> &'static str {
+        match self {
+            Self::Path(p) | Self::Len(p) => p,
+        }
+    }
+
+    /// Path segments, each ASCII letters, digits and `_` only (they are
+    /// written into query text).
+    pub fn segments(&self) -> anyhow::Result<Vec<&'static str>> {
+        let segments: Vec<&str> = self.path().split('.').collect();
+        anyhow::ensure!(
+            segments.iter().all(|s| !s.is_empty()
+                && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')),
+            "invalid field path `{}`",
+            self.path()
+        );
+        Ok(segments)
+    }
+}
+
+/// `fields` of `doc`, keyed by [`Field::alias`]; missing values are left out.
+pub fn project(doc: &Value, fields: &[Field]) -> Value {
+    let mut out = serde_json::Map::new();
+    for f in fields {
+        let found = f.path().split('.').try_fold(doc, |v, key| v.get(key));
+        match (f, found) {
+            (Field::Path(_), Some(v)) => {
+                out.insert(f.alias(), v.clone());
+            }
+            (Field::Len(_), Some(Value::Array(a))) => {
+                out.insert(f.alias(), Value::from(a.len()));
+            }
+            _ => {}
+        }
+    }
+    Value::Object(out)
+}
+
 /// An item and the ETag it was read with.
 #[derive(Debug, Clone)]
 pub struct Versioned {
@@ -50,6 +107,27 @@ pub trait DocStore: Send + Sync {
         field: &str,
         values: &[&str],
     ) -> anyhow::Result<Vec<Versioned>>;
+
+    /// Only `fields` of every item in `container`, each item as an object
+    /// keyed by [`Field::alias`] (see [`project`]). Cheaper than
+    /// [`DocStore::list`] where items carry large fields the caller doesn't need.
+    async fn select(&self, container: &str, fields: &[Field]) -> anyhow::Result<Vec<Value>> {
+        for f in fields {
+            f.segments()?;
+        }
+        Ok(self
+            .list(container, "id", &[])
+            .await?
+            .iter()
+            .map(|v| project(&v.doc, fields))
+            .collect())
+    }
+
+    /// Request units this store has used so far, where it measures them
+    /// (Cosmos DB); `None` elsewhere.
+    fn request_charge(&self) -> Option<f64> {
+        None
+    }
 }
 
 fn id_of(doc: &Value) -> anyhow::Result<&str> {
@@ -284,6 +362,36 @@ mod tests {
             .unwrap();
         assert_eq!(m.list("c", "status", &["x"]).await.unwrap().len(), 1);
         assert_eq!(m.list("c", "status", &[]).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn select_reads_only_the_named_fields() {
+        let m = MemoryDocs::default();
+        m.upsert(
+            "c",
+            "a",
+            &json!({"id": "a", "status": "curated", "curated": {"pages": 7, "parts": ["x", "y"]}}),
+        )
+        .await
+        .unwrap();
+        m.upsert("c", "b", &json!({"id": "b", "status": "queued"}))
+            .await
+            .unwrap();
+        let fields = [
+            Field::Path("status"),
+            Field::Path("curated.pages"),
+            Field::Len("curated.parts"),
+        ];
+        let got = m.select("c", &fields).await.unwrap();
+        assert_eq!(
+            got,
+            vec![
+                json!({"status": "curated", "curated_pages": 7, "curated_parts_len": 2}),
+                json!({"status": "queued"}),
+            ]
+        );
+        assert!(m.select("c", &[Field::Path("a b")]).await.is_err());
+        assert!(m.select("c", &[Field::Path("a..b")]).await.is_err());
     }
 
     #[tokio::test]

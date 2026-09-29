@@ -1,13 +1,17 @@
 //! Release progress: a "release progress" log line every 30 s while an index
 //! is built, so a long release shows how far it is, how fast it goes, and
 //! whether the disk or memory is running out (Container Apps has no disk
-//! metric for jobs).
+//! metric for jobs). The same counts go to the pipeline state
+//! (`ops/release-progress`) for the public status page.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
+
 use crate::sink::SinkStats;
+use crate::state::{ReleaseProgress, State};
 use crate::telemetry;
 
 pub const INTERVAL: Duration = Duration::from_secs(30);
@@ -167,6 +171,42 @@ impl Progress {
     }
 }
 
+impl Progress {
+    /// Record progress in the pipeline state every `interval` until the
+    /// returned guard is dropped (the caller records the first and last). A failed write is logged and skipped:
+    /// the status page may lag, but the release never stops for it.
+    pub fn report_every(&self, interval: Duration, state: State, version: String) -> Ticker {
+        use tracing::Instrument;
+        let p = self.clone();
+        Ticker(tokio::spawn(
+            async move {
+                let mut tick = tokio::time::interval(interval);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    report(&state, &version, &p.snapshot()).await;
+                }
+            }
+            .instrument(tracing::Span::current()),
+        ))
+    }
+}
+
+/// Write one snapshot to `ops/release-progress`; errors are logged only.
+pub async fn report(state: &State, version: &str, s: &Snapshot) {
+    let p = ReleaseProgress {
+        index_version: version.to_owned(),
+        docs_sent: s.docs_sent,
+        docs_expected: s.docs_expected,
+        mb_sent: s.mb_sent(),
+        updated_at: Utc::now(),
+    };
+    if let Err(e) = state.set_release_progress(&p).await {
+        tracing::warn!(error = %format!("{e:#}"), "could not record release progress; continuing");
+    }
+}
+
 /// Stops the periodic progress lines when dropped.
 pub struct Ticker(tokio::task::JoinHandle<()>);
 
@@ -179,6 +219,89 @@ impl Drop for Ticker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store whose every operation fails, like Cosmos while it's unreachable.
+    struct Broken;
+
+    #[async_trait::async_trait]
+    impl crate::docs::DocStore for Broken {
+        async fn get(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<Option<crate::docs::Versioned>> {
+            anyhow::bail!("unreachable")
+        }
+        async fn create(
+            &self,
+            _: &str,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> anyhow::Result<Option<String>> {
+            anyhow::bail!("unreachable")
+        }
+        async fn replace(
+            &self,
+            _: &str,
+            _: &str,
+            _: &serde_json::Value,
+            _: &str,
+        ) -> anyhow::Result<Option<String>> {
+            anyhow::bail!("unreachable")
+        }
+        async fn upsert(&self, _: &str, _: &str, _: &serde_json::Value) -> anyhow::Result<()> {
+            anyhow::bail!("unreachable")
+        }
+        async fn list(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[&str],
+        ) -> anyhow::Result<Vec<crate::docs::Versioned>> {
+            anyhow::bail!("unreachable")
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_reaches_the_pipeline_state() {
+        let docs = Arc::new(crate::docs::MemoryDocs::default());
+        let stats = Arc::new(SinkStats::default());
+        let p = Progress::new(stats, 100);
+        let ticker = p.report_every(
+            Duration::from_millis(10),
+            State::new(docs.clone()),
+            "v1".into(),
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(ticker);
+        let item = crate::docs::DocStore::get(
+            docs.as_ref(),
+            "ops",
+            "release-progress",
+            "release-progress",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(item.doc["index_version"], "v1");
+        assert_eq!(item.doc["docs_expected"], 100);
+        assert_eq!(item.doc["kind"], "release-progress");
+    }
+
+    #[tokio::test]
+    async fn a_failing_store_only_logs() {
+        let p = Progress::new(Arc::new(SinkStats::default()), 10);
+        // Returns normally, and the ticker keeps running through failures.
+        report(&State::new(Arc::new(Broken)), "v1", &p.snapshot()).await;
+        let ticker = p.report_every(
+            Duration::from_millis(5),
+            State::new(Arc::new(Broken)),
+            "v1".into(),
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!ticker.0.is_finished());
+    }
 
     #[test]
     fn reads_vm_rss() {

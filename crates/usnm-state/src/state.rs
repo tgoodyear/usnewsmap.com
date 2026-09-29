@@ -16,7 +16,13 @@ pub const ISSUES: &str = "issues";
 pub const INDEX_RUNS: &str = "index_runs";
 pub const OPS: &str = "ops";
 /// The `ops` item that paces bulk downloads from LoC across every worker.
-const FETCH_PACER: &str = "loc-bulk-pacer";
+pub const FETCH_PACER: &str = "loc-bulk-pacer";
+/// The `ops` lock held by the one release (Quickwit writer) at a time (08 §8.4.1).
+pub const WRITER_LOCK: &str = "quickwit-writer";
+/// Deltas a version may carry before the next release compacts (08 §8.4.1).
+pub const MAX_DELTAS: usize = 8;
+/// The `ops` item a running release updates with how far it has got.
+pub const RELEASE_PROGRESS: &str = "release-progress";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -135,6 +141,19 @@ pub struct IndexRun {
     pub previous_version: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
+}
+
+/// How far the running release has got: the `ops/release-progress` item,
+/// rewritten every 30 s while an index is built. It is a separate item, not
+/// part of the [`IndexRun`], so these writes never change the run's ETag,
+/// which the release threads through its own conditional updates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseProgress {
+    pub index_version: String,
+    pub docs_sent: u64,
+    pub docs_expected: u64,
+    pub mb_sent: f64,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Typed access to the pipeline's state.
@@ -357,6 +376,15 @@ impl State {
         .is_some())
     }
 
+    /// Record the running release's progress (unconditional: only the
+    /// writer-lock holder writes it).
+    pub async fn set_release_progress(&self, p: &ReleaseProgress) -> anyhow::Result<()> {
+        let mut doc = to_value(p)?;
+        doc["id"] = RELEASE_PROGRESS.into();
+        doc["kind"] = RELEASE_PROGRESS.into();
+        self.docs.upsert(OPS, RELEASE_PROGRESS, &doc).await
+    }
+
     pub async fn unlock(&self, name: &str, owner: &str) -> anyhow::Result<()> {
         if let Some(held) = self.docs.get(OPS, name, name).await? {
             if held.doc["owner"].as_str() == Some(owner) {
@@ -371,7 +399,7 @@ impl State {
 }
 
 /// The pacer's next free slot and the end of its recorded block, if any.
-fn pacer(held: Option<&Versioned>) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+pub fn pacer(held: Option<&Versioned>) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
     let at = |field: &str| -> Option<DateTime<Utc>> {
         held.and_then(|h| serde_json::from_value(h.doc[field].clone()).ok())
     };

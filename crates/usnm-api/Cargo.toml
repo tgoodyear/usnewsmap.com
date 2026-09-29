@@ -10,6 +10,7 @@ rust-version.workspace = true
 usnm-core.workspace = true
 usnm-search.workspace = true
 usnm-store.workspace = true
+usnm-state.workspace = true
 arc-swap.workspace = true
 axum.workspace = true
 base64.workspace = true
@@ -29,7 +30,10 @@ tracing-subscriber.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
 http-body-util.workspace = true
+tempfile.workspace = true
 tower.workspace = true
 
 [lints]
