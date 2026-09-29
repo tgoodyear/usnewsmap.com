@@ -16,6 +16,10 @@ param cosmosFreeTier = bool(readEnvironmentVariable('USNM_COSMOS_FREE_TIER', 'tr
 param alertEmails = readEnvironmentVariable('USNM_ALERT_EMAILS', '')
 param budgetStartDate = readEnvironmentVariable('USNM_BUDGET_START', '')
 param dnsZoneName = readEnvironmentVariable('USNM_DNS_ZONE', '')
+// Google Search Console domain verification, published at the apex next to SPF.
+param dnsApexTxtValues = {
+  'usnewsmap.com': ['google-site-verification=5KCwOzVrZH4QvucrU0UkbqJ1I1jYmjkKNnUuy78VTWg']
+}
 param availabilityFrequency = readEnvironmentVariable('USNM_AVAILABILITY_FREQUENCY', '900')
 param apiCertificateId = readEnvironmentVariable('USNM_API_CERT_ID', '')
 param siteCertificateId = readEnvironmentVariable('USNM_SITE_CERT_ID', '')
