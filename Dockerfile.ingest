@@ -2,9 +2,22 @@
 # Quickwit image, so `release --quickwit-bin` can run the sole metastore
 # writer as a child process (08 §8.4.1). Used by the Container Apps Jobs and
 # the ACI Spot backfill groups.
-FROM rust:1-bookworm AS build
+# Dependencies build in their own layer (cargo-chef), keyed on the manifests
+# and lockfile only, so a code change recompiles just the workspace crates.
+FROM rust:1-bookworm AS chef
+RUN cargo install cargo-chef --locked --version 0.1.78
 WORKDIR /src
+
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
+COPY rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release --locked -p usnm-ingest --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 # The index config and the place overrides are compiled into the binary.
 COPY infra/quickwit ./infra/quickwit
