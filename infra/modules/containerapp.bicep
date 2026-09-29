@@ -109,6 +109,10 @@ var quickwitContainer = {
   env: [
     { name: 'USNM_QW_CONFIG', value: quickwitConfig }
     { name: 'QW_DISABLE_TELEMETRY', value: '1' }
+    // The image sets QW_LISTEN_ADDRESS=0.0.0.0, which overrides the config's
+    // listen_address, and Quickwit refuses 0.0.0.0 without an advertise
+    // address ("listen address `0.0.0.0` is unspecified"). Pin it here.
+    { name: 'QW_LISTEN_ADDRESS', value: '127.0.0.1' }
   ]
   probes: [
     {
