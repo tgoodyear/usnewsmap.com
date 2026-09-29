@@ -15,7 +15,8 @@ ContainerAppConsoleLogs
     Replica = ContainerGroupName,
     Level,
     Message = iff(Target == "quickwit", strcat("quickwit: ", Message), Message),
-    Version = tostring(j.span.version),
+    // "released" is logged after the release span has closed.
+    Version = coalesce(tostring(j.span.version), tostring(j.fields.version)),
     Batch = tostring(j.fields.batch),
     DocsSent = tolong(j.fields.docs_sent),
     DocsExpected = tolong(j.fields.docs_expected),

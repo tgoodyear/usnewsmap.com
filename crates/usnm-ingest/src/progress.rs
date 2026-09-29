@@ -147,18 +147,23 @@ impl Progress {
         }
     }
 
-    /// Log a line every [`INTERVAL`] until the returned guard is dropped.
+    /// Log a line every `interval` until the returned guard is dropped, in
+    /// the caller's span (a spawned task doesn't inherit it).
     pub fn every(&self, interval: Duration) -> Ticker {
+        use tracing::Instrument;
         let p = self.clone();
-        Ticker(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(interval);
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            tick.tick().await;
-            loop {
+        Ticker(tokio::spawn(
+            async move {
+                let mut tick = tokio::time::interval(interval);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 tick.tick().await;
-                p.snapshot().log(None);
+                loop {
+                    tick.tick().await;
+                    p.snapshot().log(None);
+                }
             }
-        }))
+            .instrument(tracing::Span::current()),
+        ))
     }
 }
 
