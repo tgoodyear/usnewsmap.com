@@ -43,11 +43,11 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           <a href="https://gtri.gatech.edu/" {...ext}>
             Georgia Tech Research Institute
           </a>{" "}
-          (
+          (Trevor Goodyear,{" "}
           <a href="https://www.linkedin.com/in/david-ediger-5a771b12" {...ext}>
             David Ediger
-          </a>
-          , Trevor Goodyear and{" "}
+          </a>{" "}
+          and{" "}
           <a href="https://www.linkedin.com/in/zachary-suffern-0966825a" {...ext}>
             Zach Suffern
           </a>
