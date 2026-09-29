@@ -713,6 +713,7 @@ async fn serves_the_site_alongside_the_api() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         assert!(body.contains("id=root"), "{uri}");
         assert!(header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
+        assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache", "{uri}");
     }
 
     // HEAD on an app route: GET's headers and status, no body.
@@ -775,6 +776,10 @@ async fn serves_the_site_alongside_the_api() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert!(header_str(resp.headers(), header::CONTENT_TYPE).starts_with("text/html"));
+    assert_eq!(
+        header_str(resp.headers(), header::CACHE_CONTROL),
+        "no-cache"
+    );
 
     // Missing files are 404s, not the shell.
     for uri in ["/assets/gone-123.js", "/gone.txt"] {
@@ -867,6 +872,11 @@ async fn www_redirects_to_the_apex() {
         let resp = get_host(&s, host, uri).await;
         assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY, "{host}{uri}");
         assert_eq!(header_str(resp.headers(), header::LOCATION), location);
+        assert_eq!(
+            header_str(resp.headers(), header::X_CONTENT_TYPE_OPTIONS),
+            "nosniff"
+        );
+        assert!(header_str(resp.headers(), header::CONTENT_SECURITY_POLICY).contains("default-src"));
     }
     // HTTP/2 puts the host in the URI.
     let resp = get_site(&s, "https://www.usnewsmap.com/status?x=1", None).await;

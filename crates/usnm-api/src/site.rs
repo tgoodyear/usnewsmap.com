@@ -110,14 +110,15 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
 async fn cache_control(req: Request, next: Next) -> Response {
     let immutable = req.uri().path().starts_with("/assets/");
     let mut resp = next.run(req).await;
-    if !resp.status().is_success() {
-        return resp;
-    }
     let html = resp
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
+    // The 404 app shell names this release's assets, like the 200 one.
+    if !resp.status().is_success() && !(html && resp.status() == StatusCode::NOT_FOUND) {
+        return resp;
+    }
     let value = if immutable {
         "public, max-age=31536000, immutable"
     } else if html {

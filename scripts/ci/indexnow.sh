@@ -8,12 +8,12 @@
 # host and serves the key there. The site is already live, so a problem here
 # is a warning, never a failed deploy: this script always exits 0.
 set -uo pipefail
-: "${APP:?}" "${RG:?}"
-cd "$(dirname "$0")/../.."
 skip() {
   echo "::warning::IndexNow: $*; not submitted"
   exit 0
 }
+[ -n "${APP:-}" ] && [ -n "${RG:-}" ] || skip "APP and RG must be set"
+cd "$(dirname "$0")/../.." || skip "could not find the repository root"
 
 key=$(find web/public -maxdepth 1 -type f -name '*.txt' -exec basename {} .txt \; |
   grep -E '^[0-9a-f]{32}$' | head -n 1)

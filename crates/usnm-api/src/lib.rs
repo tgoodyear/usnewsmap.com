@@ -189,6 +189,11 @@ pub fn app(state: Arc<AppState>) -> Router {
     if let Some(dir) = site {
         router = router.fallback_service(site::router(dir));
     }
+    // Inside the header layers, so redirects carry the security headers too.
+    router = router.layer(middleware::from_fn_with_state(
+        site_host,
+        site::www_redirect,
+    ));
     for (name, value) in site::SECURITY_HEADERS {
         router = router.layer(SetResponseHeaderLayer::if_not_present(
             header::HeaderName::from_static(name),
@@ -198,10 +203,6 @@ pub fn app(state: Arc<AppState>) -> Router {
     router
         .layer(cors)
         .layer(CompressionLayer::new())
-        .layer(middleware::from_fn_with_state(
-            site_host,
-            site::www_redirect,
-        ))
         // One span and one log line per request with the route template,
         // never the path or query: query strings carry search text (09 §9.4.2).
         .layer(middleware::from_fn_with_state(state, telemetry::track))

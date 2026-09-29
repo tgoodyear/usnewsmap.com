@@ -5,6 +5,7 @@ describe("pageFor", () => {
   it("knows the app's pages, with or without a trailing slash", () => {
     expect(pageFor("/")).toBe("search");
     expect(pageFor("//")).toBe("search");
+    expect(pageFor("/index.html")).toBe("search");
     expect(pageFor("/status")).toBe("status");
     expect(pageFor("/status/")).toBe("status");
   });
