@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import StatusPage from "./StatusPage";
+import StatusPage, { ErrorText } from "./StatusPage";
 
 const unavailable = {
   available: false,
@@ -69,5 +69,30 @@ describe("StatusPage", () => {
       screen.getByRole("link", { name: "/v1/status" }).getAttribute("href"),
     ).toBe("/v1/status");
     expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/v1/status");
+  });
+
+  it("shows a short error in full and a long one as a closed preview", () => {
+    const short = "x".repeat(60);
+    const long = `quickwit returned 503: ${"y".repeat(300)}`;
+    const { container } = render(
+      <>
+        <ErrorText text={short} />
+        <ErrorText text={long} />
+        <ErrorText text={null} />
+      </>,
+    );
+    // 60 characters: in full, with nothing to expand.
+    expect(screen.getByText(short).tagName).toBe("SPAN");
+    // Longer: a closed <details> whose summary is the first 60 characters.
+    const details = container.querySelector("details.status-error")!;
+    expect(details).toBeTruthy();
+    expect(details.hasAttribute("open")).toBe(false);
+    expect(details.querySelector("summary")!.textContent).toBe(
+      `${long.slice(0, 60)}…`,
+    );
+    expect(details.textContent).toContain(long);
+    expect(container.querySelectorAll("details")).toHaveLength(1);
+    // No error: a dash.
+    expect(container.textContent!.endsWith("–")).toBe(true);
   });
 });

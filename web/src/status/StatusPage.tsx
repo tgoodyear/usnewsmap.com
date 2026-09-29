@@ -552,7 +552,7 @@ function IndexingBody({ i, now }: { i: Indexing; now: number }) {
 /** An error in a table cell: short ones in full, long ones cut to a line
  * that expands on tap, so one long message can't make its row page-tall on
  * a narrow screen. */
-function ErrorText({ text }: { text: string | null | undefined }) {
+export function ErrorText({ text }: { text: string | null | undefined }) {
   if (!text) return <>–</>;
   if (text.length <= ERROR_PREVIEW)
     return <span className="status-error">{text}</span>;
