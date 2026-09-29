@@ -21,8 +21,28 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # What a change touches (scripts/ci/changes.sh): jobs it can't affect are
+  # skipped, so an infra-only fix doesn't wait on Rust, web and image builds.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.f.outputs.rust }}
+      web: ${{ steps.f.outputs.web }}
+      image: ${{ steps.f.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: f
+        run: scripts/ci/changes.sh
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+
   rust:
     name: rust (fmt, clippy, test)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -36,6 +56,8 @@ jobs:
 
   quickwit:
     name: quickwit (parity, ingest release)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       QUICKWIT_VERSION: v0.9.1
@@ -70,6 +92,8 @@ jobs:
 
   image:
     name: container image builds
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
     # Build and smoke-test both images. Publishing happens per environment in
     # `publish`, from the same build cache.
@@ -121,6 +145,8 @@ jobs:
 
   web:
     name: web (lint, typecheck, test, build)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -141,6 +167,8 @@ jobs:
 
   web-e2e:
     name: web end-to-end (Playwright + axe)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -173,8 +201,14 @@ jobs:
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
     # Environment holds its own variables, written by scripts/bootstrap.sh.
-    needs: [rust, quickwit, fixtures, image, infra, web, web-e2e]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.USNM_DEPLOY_ENVIRONMENTS != '' && vars.USNM_DEPLOY_ENVIRONMENTS != '[]'
+    needs: [changes, rust, quickwit, fixtures, image, infra, web, web-e2e]
+    # Only when the images changed, and every check that ran passed: a job
+    # skipped as irrelevant must not block the deploy, and a failed one must.
+    if: >-
+      always() && needs.changes.outputs.image == 'true'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+      && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      && vars.USNM_DEPLOY_ENVIRONMENTS != '' && vars.USNM_DEPLOY_ENVIRONMENTS != '[]'
     strategy:
       fail-fast: false
       matrix:

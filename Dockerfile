@@ -8,9 +8,22 @@ COPY web ./
 # Same origin as the API: VITE_API_BASE stays empty.
 RUN npm run build && node scripts/precompress.mjs dist
 
-FROM rust:1-bookworm AS build
+# Dependencies build in their own layer (cargo-chef), keyed on the manifests
+# and lockfile only, so a code change recompiles just the workspace crates.
+FROM rust:1-bookworm AS chef
+RUN cargo install cargo-chef --locked --version 0.1.78
 WORKDIR /src
+
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
+COPY rust-toolchain.toml ./
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release --locked -p usnm-api --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --locked -p usnm-api
 
