@@ -73,6 +73,11 @@ impl Trigger {
     }
 }
 
+/// Attempts per warm-up query when the backend fails.
+const RETRY_ATTEMPTS: u32 = 6;
+/// The longest pause between attempts.
+const RETRY_PAUSE_MAX: Duration = Duration::from_secs(10);
+
 /// What one warm-up run did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -170,10 +175,37 @@ impl Run<'_> {
         }
     }
 
+    /// One query, retrying backend errors with a doubling pause while the
+    /// run's budget allows. On the first prod start the searcher sidecar
+    /// answered 500 for its first seconds and three warm-up queries failed
+    /// within 5 ms each.
     async fn call(&self, endpoint: Endpoint, uri: &Uri) -> Outcome {
+        let mut pause = self.state.config.prewarm_retry_first;
+        let mut attempt = 1;
+        loop {
+            let (outcome, retry) = self.call_once(endpoint, uri).await;
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if !retry || attempt >= RETRY_ATTEMPTS || remaining <= pause {
+                return outcome;
+            }
+            tracing::info!(
+                endpoint = endpoint.as_str(),
+                attempt,
+                pause_ms = pause.as_millis() as u64,
+                "warm-up query hit a backend error; retrying"
+            );
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(RETRY_PAUSE_MAX);
+            attempt += 1;
+        }
+    }
+
+    /// One attempt, and whether a failure is worth retrying (the backend,
+    /// not the request, failed).
+    async fn call_once(&self, endpoint: Endpoint, uri: &Uri) -> (Outcome, bool) {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Outcome::Skipped;
+            return (Outcome::Skipped, false);
         }
         let limit = self.state.config.prewarm_query_timeout.min(remaining);
         let ctx = Ctx {
@@ -191,10 +223,14 @@ impl Run<'_> {
         })
         .await;
         match served {
-            Err(_) | Ok(Err(ApiError::Timeout)) => Outcome::TimedOut,
-            Ok(Err(e)) => Outcome::Failed(format!("{e:?}")),
-            Ok(Ok(resp)) if resp.status() == StatusCode::OK => Outcome::Ok(resp),
-            Ok(Ok(resp)) => Outcome::Failed(format!("status {}", resp.status())),
+            Err(_) | Ok(Err(ApiError::Timeout)) => (Outcome::TimedOut, false),
+            Ok(Err(e @ ApiError::Backend(_))) => (Outcome::Failed(format!("{e:?}")), true),
+            Ok(Err(e)) => (Outcome::Failed(format!("{e:?}")), false),
+            Ok(Ok(resp)) if resp.status() == StatusCode::OK => (Outcome::Ok(resp), false),
+            Ok(Ok(resp)) => {
+                let retry = resp.status().is_server_error();
+                (Outcome::Failed(format!("status {}", resp.status())), retry)
+            }
         }
     }
 }

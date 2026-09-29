@@ -32,6 +32,7 @@ fn config() -> Config {
     c.data_dir = data_dir();
     c.reference_url = data_dir().display().to_string();
     c.rate_limit = None;
+    c.prewarm_retry_first = Duration::from_millis(10);
     c
 }
 
@@ -55,6 +56,9 @@ struct Counting {
     calls: AtomicUsize,
     delay: Duration,
     fail: bool,
+    /// Calls that fail before the backend starts answering (a searcher that
+    /// is still starting).
+    fail_first: AtomicUsize,
 }
 
 impl Counting {
@@ -64,7 +68,14 @@ impl Counting {
             calls: AtomicUsize::new(0),
             delay,
             fail,
+            fail_first: AtomicUsize::new(0),
         })
+    }
+
+    fn failing_first(n: usize) -> Arc<Self> {
+        let b = Self::new(Duration::ZERO, false);
+        b.fail_first.store(n, Ordering::SeqCst);
+        b
     }
 
     fn calls(&self) -> usize {
@@ -76,6 +87,13 @@ impl Counting {
         tokio::time::sleep(self.delay).await;
         if self.fail {
             return Err(SearchError::Backend("engine down".into()));
+        }
+        let starting = self
+            .fail_first
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if starting {
+            return Err(SearchError::Backend("quickwit returned 500".into()));
         }
         Ok(())
     }
@@ -337,6 +355,19 @@ async fn a_slow_backend_holds_the_swap_for_the_budget_at_most() {
     assert!(reload.await.unwrap().unwrap());
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(state.snapshot.load().refdata.version(), "fixture-v2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_searcher_that_is_still_starting_is_retried() {
+    let dir = temp_reference("starting");
+    let backend = Counting::failing_first(2);
+    let state = Arc::new(reloading_state(&dir, config(), backend.clone()).await);
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    let queries = 1 + 2 * prewarm::examples().len();
+    assert_eq!(report.ok, queries, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+    assert_eq!(visit_examples(&state, &backend, "fixture-v1").await, 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

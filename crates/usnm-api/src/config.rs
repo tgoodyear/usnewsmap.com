@@ -41,6 +41,10 @@ pub struct Config {
     pub prewarm_query_timeout: Duration,
     /// Warm-up: limit on the whole run; queries left when it runs out are skipped.
     pub prewarm_budget: Duration,
+    /// Warm-up: the first pause before retrying a query the backend failed
+    /// (it doubles, up to 10 s). The searcher can still be starting when a
+    /// replica warms up.
+    pub prewarm_retry_first: Duration,
     /// After a start, `/readyz` reports ready once the warm-up finishes or
     /// this much time passes, whichever is first.
     pub ready_cap: Duration,
@@ -120,6 +124,7 @@ impl Config {
             search_timeout: Duration::from_secs(num("USNM_SEARCH_TIMEOUT_SECS", 10)?),
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
             prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 300)?),
+            prewarm_retry_first: Duration::from_secs(1),
             ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 120)?),
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
             cache_bytes: num("USNM_CACHE_MB", 256)? * 1024 * 1024,
