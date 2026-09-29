@@ -199,6 +199,17 @@ impl Env {
     }
 }
 
+/// An index run item as stored, untyped.
+async fn raw_run(e: &Env, version: &str) -> Value {
+    e.state
+        .docs
+        .get("index_runs", version, version)
+        .await
+        .unwrap()
+        .unwrap()
+        .doc
+}
+
 fn listed(name: &str, path: &Path, sha256: Option<String>) -> ListedBatch {
     ListedBatch {
         name: name.into(),
@@ -275,6 +286,29 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     assert_eq!(current["backend"], "memory");
     assert_eq!(current["bounds"]["from"], "1895-01-05");
     assert_eq!(current["synthetic"], true);
+
+    // The run item points at the batch list in the snapshot instead of
+    // carrying it, and the manifest checksums the list like its other files.
+    let item = raw_run(&e, v).await;
+    assert!(item.get("batches").is_none(), "{item}");
+    assert_eq!(item["batch_count"], 2);
+    assert_eq!(item["batch_list"], format!("{v}/batches.json"));
+    let listed = e.reference_json(&format!("{v}/batches.json")).await;
+    assert_eq!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["batch"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["batch_fx_early", "batch_fx_late"]
+    );
+    let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    assert!(manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["path"] == "batches.json"));
 
     // The API loads it: checksums, manifest and version pairing all hold.
     let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
@@ -787,4 +821,208 @@ async fn a_release_publishes_when_its_progress_cannot_be_recorded() {
     assert!(e.reference.get("current.json").await.unwrap().is_some());
     // The release did try (the first report is immediate).
     assert!(attempts.load(std::sync::atomic::Ordering::SeqCst) > 0);
+}
+
+/// Curate one small real batch, then add `n` curated batches that copy its
+/// parts and counts to paths as long as production's (a job replica's
+/// owner id in every attempt path) and list every fixture title.
+async fn synthetic_batches(e: &Env, n: usize) -> Vec<String> {
+    let pages = fixture_pages();
+    let mut one_per_title: BTreeMap<&str, &Page> = BTreeMap::new();
+    for p in pages.iter().filter(|p| !p.text.is_empty()) {
+        one_per_title.entry(p.lccn.as_str()).or_insert(p);
+    }
+    let seed: Vec<&Page> = one_per_title.into_values().collect();
+    let a = e.root.join("batch_fx_seed_ver01.tar.gz");
+    write_archive(&a, &seed, true, true);
+    source::enqueue(&e.state, &[listed("batch_fx_seed_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let (template, _) = e.state.batch("batch_fx_seed").await.unwrap().unwrap();
+    let c = template.curated.clone().unwrap();
+    let part = e.curated.get(&c.parts[0]).await.unwrap().unwrap();
+    let counts = e.curated.get(&c.counts).await.unwrap().unwrap();
+    let mut names = Vec::new();
+    for i in 0..n {
+        let name = format!("xx_synthetic{i:05}");
+        let prefix = format!(
+            "pages/{name}/v01/20260929T101112123456Z-caj-usnm-backfill-4f7x2-kq9zd-1-0badf00d-a1"
+        );
+        let mut curated = c.clone();
+        curated.parts = Vec::new();
+        for k in 0..2 {
+            let path = format!("{prefix}/part-{k:04}.parquet");
+            e.curated
+                .put(&path, part.clone(), "application/octet-stream")
+                .await
+                .unwrap();
+            curated.parts.push(path);
+        }
+        curated.counts = format!("{prefix}/counts.json");
+        e.curated
+            .put(&curated.counts, counts.clone(), "application/json")
+            .await
+            .unwrap();
+        let mut b = template.clone();
+        b.id = name.clone();
+        b.batch = name.clone();
+        b.curated = Some(curated);
+        assert!(e.state.create_batch(&b).await.unwrap());
+        names.push(name);
+    }
+    names
+}
+
+/// A version's batch list grows with the corpus; its Cosmos run item must
+/// not (Cosmos DB refuses items over 2 MB). The list lives in the version's
+/// reference snapshot, and the next incremental release reads it from there.
+#[tokio::test]
+async fn run_items_stay_small_however_many_batches_a_version_has() {
+    const N: usize = 3_000;
+    let e = env().await;
+    synthetic_batches(&e, N).await;
+    let p1 = e.release(1, true).await.unwrap();
+    let v1 = &p1.index_version;
+    let item = serde_json::to_vec(&raw_run(&e, v1).await).unwrap().len();
+    let list = e
+        .reference
+        .get(&format!("{v1}/batches.json"))
+        .await
+        .unwrap()
+        .unwrap()
+        .len();
+    eprintln!(
+        "{} batches: run item {item} bytes, batch list {list} bytes ({} per batch)",
+        N + 1,
+        list / (N + 1)
+    );
+    assert!(item < 64 * 1024, "run item is {item} bytes");
+    // Inline, the list alone would be most of the way to the limit.
+    assert!(list > 1_000_000, "batch list is {list} bytes");
+    let (run, _) = e.state.run(v1).await.unwrap().unwrap();
+    assert_eq!(run.batch_count, Some(N as u64 + 1));
+    assert!(run.batches.is_none());
+
+    // One more batch: the next release is a delta with only that batch.
+    let pages = fixture_pages();
+    let late: Vec<&Page> = pages
+        .iter()
+        .filter(|p| !p.text.is_empty())
+        .rev()
+        .take(5)
+        .collect();
+    let a = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &late, true, true);
+    source::enqueue(&e.state, &[listed("batch_fx_late_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let p2 = e.release(8, false).await.unwrap();
+    assert!(!p2.full);
+    assert_eq!(p2.indexes.len(), 2);
+    assert_eq!(p2.docs, 5);
+    let v2 = &p2.index_version;
+    let listed2 = e.reference_json(&format!("{v2}/batches.json")).await;
+    assert_eq!(listed2.as_array().unwrap().len(), N + 2);
+    assert_eq!(raw_run(&e, v2).await["batch_count"], N + 2);
+    assert!(serde_json::to_vec(&raw_run(&e, v2).await).unwrap().len() < 64 * 1024);
+    // Nothing new since: no release.
+    assert!(e.release(9, false).await.is_none());
+}
+
+/// Runs published before the batch list moved to the snapshot carry it
+/// inline (and their snapshots have no `batches.json`). The next release
+/// reads the inline list and writes the new format.
+#[tokio::test]
+async fn an_incremental_release_builds_on_a_run_with_an_inline_batch_list() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    let b = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    write_archive(&b, &late, false, true);
+    source::enqueue(&e.state, &[listed("batch_fx_early_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let p1 = e.release(1, false).await.unwrap();
+    let v1 = &p1.index_version;
+
+    // Rewrite the published run the way older releases stored it.
+    let list = e.reference_json(&format!("{v1}/batches.json")).await;
+    let mut old = raw_run(&e, v1).await;
+    let doc = old.as_object_mut().unwrap();
+    doc.remove("batch_count");
+    doc.remove("batch_list");
+    doc.insert("batches".into(), list);
+    e.state.docs.upsert("index_runs", v1, &old).await.unwrap();
+    std::fs::remove_file(e.root.join(format!("reference/{v1}/batches.json"))).unwrap();
+    let (run, _) = e.state.run(v1).await.unwrap().unwrap();
+    assert_eq!(run.batches.as_ref().map(Vec::len), Some(1));
+
+    source::enqueue(&e.state, &[listed("batch_fx_late_ver01", &b, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let p2 = e.release(8, false).await.unwrap();
+    assert!(!p2.full);
+    let want_delta = by_id(read_jsonl(
+        &fixtures().join("indexes/pages-delta-fixture-1.jsonl"),
+    ));
+    assert_eq!(e.index(&p2.indexes[1]), want_delta);
+    let item = raw_run(&e, &p2.index_version).await;
+    assert!(item.get("batches").is_none());
+    assert_eq!(item["batch_count"], 2);
+    let list = e
+        .reference_json(&format!("{}/batches.json", p2.index_version))
+        .await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    // The older item keeps its inline list.
+    assert!(raw_run(&e, v1).await["batches"].is_array());
+}
+
+/// A batch list that doesn't match its manifest entry stops the release.
+#[tokio::test]
+async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    let b = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    write_archive(&b, &late, false, true);
+    source::enqueue(&e.state, &[listed("batch_fx_early_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let p1 = e.release(1, false).await.unwrap();
+    // Emptied, the published list would make every batch look new.
+    e.reference
+        .put(
+            &format!("{}/batches.json", p1.index_version),
+            b"[]".to_vec(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    source::enqueue(&e.state, &[listed("batch_fx_late_ver01", &b, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let r = Release {
+        state: e.state.clone(),
+        curated: e.curated.clone(),
+        reference: e.reference.clone(),
+        owner: "releaser".into(),
+        full: false,
+        synthetic: true,
+        now: Utc.with_ymd_and_hms(2026, 10, 8, 3, 0, 0).unwrap(),
+    };
+    let mut sink = JsonlSink::new(e.root.join("idx"));
+    let err = format!("{:#}", r.run(&mut sink).await.unwrap_err());
+    assert!(err.contains("does not match its manifest entry"), "{err}");
 }

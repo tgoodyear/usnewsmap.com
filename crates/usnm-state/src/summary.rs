@@ -1,6 +1,7 @@
 //! The pipeline state as the status page reads it: one query per container
 //! (`batches`, `index_runs`, `ops`), each reading only the fields it shows.
-//! Large fields (a batch's part paths, a run's batch list) are never read.
+//! Large fields (a batch's part paths, an older run's inline batch list) are
+//! never read.
 
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
@@ -29,8 +30,9 @@ pub const BATCH_FIELDS: [Field; 12] = [
     Field::Path("curated.lccns"),
 ];
 
-/// The fields of an index run the status page uses (the batch list only as a count).
-pub const RUN_FIELDS: [Field; 12] = [
+/// The fields of an index run the status page uses. The batch count is
+/// `batch_count`, or for runs written before that, the inline list's length.
+pub const RUN_FIELDS: [Field; 13] = [
     Field::Path("index_version"),
     Field::Path("full"),
     Field::Path("indexes"),
@@ -42,6 +44,7 @@ pub const RUN_FIELDS: [Field; 12] = [
     Field::Path("published_at"),
     Field::Path("previous_version"),
     Field::Path("last_error"),
+    Field::Path("batch_count"),
     Field::Len("batches"),
 ];
 
@@ -101,7 +104,17 @@ pub struct RunSummary {
     #[serde(default)]
     pub last_error: Option<String>,
     #[serde(default)]
+    pub batch_count: Option<u64>,
+    /// The length of an older run's inline batch list.
+    #[serde(default)]
     pub batches_len: Option<u64>,
+}
+
+impl RunSummary {
+    /// Batches in the version, in either item format.
+    pub fn batches(&self) -> Option<u64> {
+        self.batch_count.or(self.batches_len)
+    }
 }
 
 /// A lock item: who holds it and until when (an empty owner is released).
@@ -241,6 +254,19 @@ mod tests {
         )
         .await
         .unwrap();
+        // A run written since the batch list moved to the reference snapshot.
+        docs.upsert(
+            INDEX_RUNS,
+            "v2",
+            &json!({
+                "id": "v2", "index_version": "v2", "full": false, "indexes": ["i1", "i2"],
+                "new_index": "i2", "batch_count": 3, "batch_list": "v2/batches.json",
+                "status": "published", "docs": 12, "pages": 14,
+                "started_at": "2026-09-30T11:00:00Z", "published_at": "2026-09-30T11:30:00Z",
+            }),
+        )
+        .await
+        .unwrap();
         s.set_current_version("v1").await.unwrap();
         s.lock(WRITER_LOCK, "host-1-0000abcd", chrono::Duration::hours(1))
             .await
@@ -266,7 +292,15 @@ mod tests {
             (b.curated_pages, b.curated_ok_pages, &b.curated_lccns[..]),
             (Some(10), Some(9), &["sn1".to_owned()][..])
         );
-        assert_eq!(got.runs[0].batches_len, Some(1));
+        // Both item formats give the batch count.
+        let count = |v: &str| {
+            got.runs
+                .iter()
+                .find(|r| r.index_version == v)
+                .unwrap()
+                .batches()
+        };
+        assert_eq!((count("v1"), count("v2")), (Some(1), Some(3)));
         assert_eq!(got.ops.current_version.as_deref(), Some("v1"));
         assert_eq!(got.ops.writer.as_ref().unwrap().owner, "host-1-0000abcd");
         assert!(got.ops.pacer_blocked_until.is_some());
