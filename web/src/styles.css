@@ -12,6 +12,8 @@
   --bar: #9aa7b5;
   --bar-active: #c4374a;
   --danger: #8f1d2c;
+  --ok: #1e6b3a;
+  --warn: #8a5300;
   --radius: 6px;
   --gap: 12px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -32,6 +34,8 @@
     --bar: #5b6775;
     --bar-active: #f08a8f;
     --danger: #ffb4b4;
+    --ok: #8fd6a4;
+    --warn: #f2c26b;
   }
 }
 
@@ -190,4 +194,80 @@ input, select {
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
+}
+
+/* Pipeline status page (/status). */
+/* A long document that scrolls, unlike the search view's fixed viewport. */
+.app.status-page { height: auto; min-height: 100vh; overflow: visible; }
+.status { width: 100%; max-width: 1100px; margin: 0 auto; padding: 16px; flex: 1; }
+.status h1 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin: 8px 0 12px; }
+.status h2 { font-size: 1.25rem; margin: 0 0 10px; }
+.status h3 { font-size: 1rem; margin: 18px 0 8px; }
+.status .notice { margin: 10px 0; }
+.status-section {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 16px; margin: 16px 0;
+}
+.status-lead { font-size: 1.05rem; margin: 4px 0 8px; }
+.status-meta, .status-note, .status-empty { color: var(--muted); font-size: 0.9rem; }
+.health {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0;
+  padding: 10px 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel);
+}
+.health__icon {
+  display: inline-grid; place-items: center; width: 1.5em; height: 1.5em; border-radius: 50%;
+  font-weight: 700; color: var(--panel); background: var(--muted);
+}
+.health--ok .health__icon { background: var(--ok); }
+.health--attention { border-color: var(--warn); }
+.health--attention .health__icon { background: var(--warn); }
+.health--problem { border-color: var(--danger); }
+.health--problem .health__icon { background: var(--danger); }
+.badge {
+  display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 0.8rem; font-weight: 600;
+  border: 1px solid currentColor; white-space: nowrap;
+}
+.badge--ok { color: var(--ok); }
+.badge--attention { color: var(--warn); }
+.badge--problem { color: var(--danger); }
+.progress {
+  height: 14px; border-radius: 7px; background: color-mix(in srgb, var(--line) 70%, transparent);
+  overflow: hidden; margin: 6px 0 12px;
+}
+.progress__fill { height: 100%; background: var(--accent); border-radius: 7px; transition: width 300ms; }
+.stats {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px 16px; margin: 8px 0 12px;
+}
+.stats div { border-left: 3px solid var(--line); padding-left: 8px; }
+.stats dt { color: var(--muted); font-size: 0.85rem; }
+.stats dd { margin: 2px 0 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.table-scroll { overflow-x: auto; margin: 10px 0; }
+.status-table caption { text-align: left; font-weight: 600; padding: 6px 0; }
+.status-table td { vertical-align: top; font-variant-numeric: tabular-nums; }
+.status code { font-size: 0.95em; overflow-wrap: anywhere; }
+/* Batch names stay whole; narrow screens scroll the table sideways. */
+.status-table code { white-space: nowrap; overflow-wrap: normal; }
+.status-error { display: inline-block; max-width: 40ch; overflow-wrap: anywhere; font-size: 0.88rem; }
+.throughput { margin: 0; }
+.throughput__plot { position: relative; padding-left: 2.2em; }
+.throughput__max { position: absolute; left: 0; top: 0; font-size: 0.8rem; color: var(--muted); }
+.throughput svg { width: 100%; height: 120px; display: block; }
+.throughput__bar { fill: var(--bar); }
+.throughput__bar:hover { fill: var(--bar-active); }
+.throughput__base { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.throughput__axis {
+  display: flex; justify-content: space-between; gap: 12px; padding-left: 2.2em;
+  font-size: 0.82rem; color: var(--muted);
+}
+.throughput__axis span:nth-child(2) { text-align: center; }
+.status details { margin: 8px 0; }
+.status summary { cursor: pointer; }
+.status-json {
+  max-height: 60vh; overflow: auto; background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 10px; font-size: 0.8rem;
+}
+@media (max-width: 640px) {
+  .status { padding: 10px; }
+  .status-section { padding: 10px; }
+  .throughput__axis span:nth-child(2) { display: none; }
 }
