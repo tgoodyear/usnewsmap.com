@@ -209,6 +209,10 @@ pub(crate) async fn track(
             let r = if api { NO_ROUTE } else { SITE_ROUTE };
             span.record("http.route", r);
             span.record("otel.name", format!("{method} {r}"));
+            span.record(
+                "usnm.index_version",
+                state.snapshot.load().refdata.version(),
+            );
             r
         }
     };

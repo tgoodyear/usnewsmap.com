@@ -272,6 +272,7 @@ async fn requests_are_exported_by_route_template_without_search_text() {
             assert_eq!(e["tags"]["ai.cloud.role"], "usnm-api", "{e}");
             let d = &e["data"]["baseData"];
             assert!(d.get("url").is_none(), "no URL is exported: {d}");
+            assert_eq!(d["properties"]["usnm.index_version"], "fixture-v1", "{d}");
             (
                 d["name"].as_str().unwrap().to_owned(),
                 d["responseCode"].as_str().unwrap().to_owned(),
