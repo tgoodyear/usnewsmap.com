@@ -177,6 +177,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .fallback(|| async { ApiError::NotFound("no such endpoint".to_owned()) });
 
     let site = state.config.site_dir.clone();
+    let site_host: Arc<str> = state.config.site_host.as_str().into();
     let mut router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(routes::readyz))
@@ -197,6 +198,10 @@ pub fn app(state: Arc<AppState>) -> Router {
     router
         .layer(cors)
         .layer(CompressionLayer::new())
+        .layer(middleware::from_fn_with_state(
+            site_host,
+            site::www_redirect,
+        ))
         // One span and one log line per request with the route template,
         // never the path or query: query strings carry search text (09 §9.4.2).
         .layer(middleware::from_fn_with_state(state, telemetry::track))

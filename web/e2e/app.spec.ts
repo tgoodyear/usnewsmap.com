@@ -157,7 +157,7 @@ test("exact phrase applies to plain words, like a quoted phrase", async ({ page 
 
 test("the API serves the site: app routes, security headers, cached assets", async ({ page, request }) => {
   test.skip(!process.env.PW_BASE_URL, "only when the API serves the build (CI)");
-  const shell = await request.get("/some/app/route");
+  const shell = await request.get("/status/");
   expect(shell.status()).toBe(200);
   expect(shell.headers()["content-type"]).toContain("text/html");
   expect(shell.headers()["cache-control"]).toBe("no-cache");

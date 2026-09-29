@@ -102,6 +102,7 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 | `USNM_RESPONSE_CACHE_URL` | unset | Persistent response cache (`https://{account}.blob.core.windows.net/cache` or a directory). Entries are `{index_version}/f{format}/{sha256}.json.zst` |
 | `USNM_PERSIST_AFTER_MS` | `500` | Only responses that took at least this long to compute are persisted |
 | `USNM_ALLOWED_ORIGINS` | `https://usnewsmap.com` | Comma-separated CORS origins (GET only) |
+| `USNM_SITE_HOST` | `usnewsmap.com` | The site's hostname. Requests for `www.` plus this name get a 301 to `https://` plus this name, with the same path and query |
 | `USNM_SEARCH_TIMEOUT_SECS` | `10` | Backend timeout; exceeded → `503` problem |
 | `USNM_REFRESH_SECS` | `600` | How often `current.json` is re-read for a newly published version |
 | `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |

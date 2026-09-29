@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /v1/
+Disallow: /api/v1/
+
+Sitemap: https://usnewsmap.com/sitemap.xml
