@@ -14,7 +14,7 @@ use crate::state::{
 };
 
 /// The fields of a batch item the status page uses.
-pub const BATCH_FIELDS: [Field; 11] = [
+pub const BATCH_FIELDS: [Field; 12] = [
     Field::Path("batch"),
     Field::Path("version"),
     Field::Path("status"),
@@ -22,6 +22,7 @@ pub const BATCH_FIELDS: [Field; 11] = [
     Field::Path("lease"),
     Field::Path("last_error"),
     Field::Path("updated_at"),
+    Field::Path("curated_at"),
     Field::Path("curated.version"),
     Field::Path("curated.pages"),
     Field::Path("curated.ok_pages"),
@@ -57,6 +58,8 @@ pub struct BatchSummary {
     pub last_error: Option<String>,
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
+    pub curated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub curated_version: Option<u16>,
     #[serde(default)]
     pub curated_pages: Option<u64>,
@@ -64,6 +67,17 @@ pub struct BatchSummary {
     pub curated_ok_pages: Option<u64>,
     #[serde(default)]
     pub curated_lccns: Vec<String>,
+}
+
+impl BatchSummary {
+    /// When the batch's last curation was committed: its recorded time, or
+    /// for batches curated before that was recorded, `updated_at` while the
+    /// batch is still `curated` (nothing else writes a curated batch).
+    pub fn curated_time(&self) -> Option<DateTime<Utc>> {
+        self.curated_version?;
+        self.curated_at
+            .or((self.status == BatchStatus::Curated).then_some(self.updated_at))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

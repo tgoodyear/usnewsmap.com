@@ -89,6 +89,11 @@ pub struct Batch {
     #[serde(default)]
     pub last_error: Option<String>,
     pub updated_at: DateTime<Utc>,
+    /// When `curated` was committed. `updated_at` changes with every later
+    /// write (a newer version queued, a claim), so throughput counts this.
+    /// Absent on batches curated before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curated_at: Option<DateTime<Utc>>,
 }
 
 /// One issue (lccn + date + edition), partition key `/lccn`.

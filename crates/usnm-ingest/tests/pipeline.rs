@@ -779,6 +779,9 @@ async fn a_release_publishes_when_its_progress_cannot_be_recorded() {
         .await
         .unwrap();
     e.worker("w").run(None).await.unwrap();
+    // The commit records when the batch was curated.
+    let (b, _) = e.state.batch("batch_fx_p").await.unwrap().unwrap();
+    assert!(b.curated_at.is_some_and(|t| t == b.updated_at));
     let p = e.release(1, true).await.unwrap();
     assert!(p.docs > 0);
     assert!(e.reference.get("current.json").await.unwrap().is_some());

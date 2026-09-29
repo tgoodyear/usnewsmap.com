@@ -75,7 +75,7 @@ The API (`usnm-api`) uses the same setup, shared in `crates/usnm-telemetry`, und
 
 | Principal | Type | Role assignments (scope) |
 |-----------|------|--------------------------|
-| `id-usnm-app` (user-assigned, on `ca-usnm`) | MI | `Storage Blob Data Reader` (`reference/`, `qw-index/`); `Storage Blob Data Contributor` (`cache/`); **Cosmos DB Built-in Data Reader** (database `usnm`, for the status page); `Monitoring Metrics Publisher` (`appi-usnm`, to send the API's requests, traces and metrics). Serving replicas **can't** write the index or the pipeline state |
+| `id-usnm-app` (user-assigned, on `ca-usnm`) | MI | `Storage Blob Data Reader` (`reference/`, `qw-index/`); `Storage Blob Data Contributor` (`cache/`); **Cosmos DB Built-in Data Reader** (containers `batches`, `index_runs` and `ops` only, for the status page); `Monitoring Metrics Publisher` (`appi-usnm`, to send the API's requests, traces and metrics). Serving replicas **can't** write the index or the pipeline state |
 | `ca-usnm` system-assigned identity (used only by the `quickwit` sidecar) | MI | `Storage Blob Data Reader` (`qw-index/`) and nothing else |
 | `id-usnm-ingest` (on the ingest jobs) | MI | `Storage Blob Data Contributor` (`curated/`, `reference/`, `qw-index/`); **Cosmos DB Built-in Data Contributor** (database `usnm`); `Monitoring Metrics Publisher` (`appi-usnm`, to send the jobs' traces and metrics) |
 | `caj-usnm-ingest` system-assigned identity (used only by the Quickwit writer the job runs) | MI | `Storage Blob Data Contributor` (`qw-index/`) and nothing else |

@@ -248,7 +248,8 @@ pub struct TitlesPipeline {
     pub batches_waiting_for_titles: Option<usize>,
     /// Curated batches (at their curated version) not in the published version.
     pub unpublished_batches: Option<usize>,
-    /// Of those, the ones whose titles are all catalogued: the next release takes them.
+    /// Batches the next release can take: unpublished ones whose titles are
+    /// all catalogued, plus re-curated ones when it will be a full release.
     pub ready_for_release: Option<usize>,
     /// Published batches curated again at a newer version: only a full release takes them.
     pub recurated_awaiting_full: Option<usize>,
@@ -288,7 +289,6 @@ pub fn backfill(at: DateTime<Utc>, s: &Summary) -> Backfill {
     let (mut in_progress, mut stale, mut retrying, mut newer) = (0, 0, 0, 0);
     let (mut pages, mut ok_pages) = (0, 0);
     let mut active = Vec::new();
-    let mut curated: Vec<&BatchSummary> = Vec::new();
     let mut failed = Vec::new();
     for b in &s.batches {
         *versions.entry(format!("{:02}", b.version)).or_insert(0) += 1;
@@ -324,7 +324,6 @@ pub fn backfill(at: DateTime<Utc>, s: &Summary) -> Backfill {
                 by.curated += 1;
                 pages += b.curated_pages.unwrap_or(0);
                 ok_pages += b.curated_ok_pages.unwrap_or(0);
-                curated.push(b);
             }
             BatchStatus::Failed => {
                 by.failed += 1;
@@ -338,8 +337,13 @@ pub fn backfill(at: DateTime<Utc>, s: &Summary) -> Backfill {
             }
         }
     }
-    // A curated batch's `updated_at` is its commit time (nothing else writes
-    // a curated batch until a newer version is queued).
+    // Every batch's last committed curation, whatever its status now (a
+    // curated batch may be queued again for a newer version).
+    let mut curated: Vec<(&BatchSummary, DateTime<Utc>)> = s
+        .batches
+        .iter()
+        .filter_map(|b| b.curated_time().map(|t| (b, t)))
+        .collect();
     let this_hour = at.duration_trunc(Duration::hours(1)).unwrap_or(at);
     let first_hour = this_hour - Duration::hours(HISTORY_HOURS - 1);
     let mut hours: Vec<HourBin> = (0..HISTORY_HOURS)
@@ -351,13 +355,13 @@ pub fn backfill(at: DateTime<Utc>, s: &Summary) -> Backfill {
         .collect();
     let window_start = at - Duration::hours(RATE_WINDOW_HOURS);
     let mut in_window = 0u64;
-    for b in &curated {
-        if b.updated_at >= first_hour && b.updated_at <= at {
-            let i = ((b.updated_at - first_hour).num_hours()).clamp(0, HISTORY_HOURS - 1) as usize;
+    for &(b, t) in &curated {
+        if t >= first_hour && t <= at {
+            let i = ((t - first_hour).num_hours()).clamp(0, HISTORY_HOURS - 1) as usize;
             hours[i].batches += 1;
             hours[i].pages += b.curated_pages.unwrap_or(0);
         }
-        if b.updated_at > window_start && b.updated_at <= at {
+        if t > window_start && t <= at {
             in_window += 1;
         }
     }
@@ -366,15 +370,15 @@ pub fn backfill(at: DateTime<Utc>, s: &Summary) -> Backfill {
     let eta = (rate > 0.0 && remaining > 0)
         .then(|| at + Duration::seconds((remaining as f64 / rate * 3600.0) as i64));
 
-    curated.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.batch.cmp(&b.batch)));
+    curated.sort_by(|(a, x), (b, y)| y.cmp(x).then(a.batch.cmp(&b.batch)));
     let recent = curated
         .iter()
         .take(RECENT)
-        .map(|b| Recent {
+        .map(|&(b, t)| Recent {
             batch: b.batch.clone(),
             version: b.curated_version.unwrap_or(b.version),
             pages: b.curated_pages.unwrap_or(0),
-            curated_at: b.updated_at,
+            curated_at: t,
         })
         .collect();
     active.sort_by(|a, b| a.since.cmp(&b.since).then(a.batch.cmp(&b.batch)));
@@ -520,6 +524,7 @@ fn titles_pipeline(rd: &RefData, catalog: Option<&CatalogTitles>, s: &Summary) -
     });
     let waiting = catalog.map(|c| curated.iter().filter(|b| missing(b, c)).count());
     let published = rd.published_batches.as_ref();
+    let next_full = rd.current.indexes.len() > MAX_DELTAS;
     let unpublished: Option<Vec<&&BatchSummary>> = published.map(|p| {
         curated
             .iter()
@@ -530,8 +535,18 @@ fn titles_pipeline(rd: &RefData, catalog: Option<&CatalogTitles>, s: &Summary) -
         curated_titles: curated_titles.len(),
         awaiting_sync,
         batches_waiting_for_titles: waiting,
-        ready_for_release: match (&unpublished, catalog) {
-            (Some(u), Some(c)) => Some(u.iter().filter(|b| !missing(b, c)).count()),
+        // A full release (after MAX_DELTAS deltas) also takes re-curated batches.
+        ready_for_release: match (published, catalog) {
+            (Some(p), Some(c)) => Some(
+                curated
+                    .iter()
+                    .filter(|b| match p.get(&b.batch) {
+                        None => true,
+                        Some(v) => next_full && Some(*v) != b.curated_version,
+                    })
+                    .filter(|b| !missing(b, c))
+                    .count(),
+            ),
             _ => None,
         },
         unpublished_batches: unpublished.as_ref().map(Vec::len),
@@ -583,6 +598,7 @@ mod tests {
                     json!({"batch": "batch_r", "version": 2, "status": "queued", "attempts": 2,
                          "last_error": "GET https://chroniclingamerica.loc.gov/x returned 503",
                          "updated_at": at(), "curated_version": 1, "curated_pages": 3,
+                         "curated_at": at() - Duration::hours(30),
                          "curated_lccns": ["sn1"]}),
                 ),
                 batch(
@@ -635,8 +651,9 @@ mod tests {
             t.hours[47].start,
             "2026-09-29T12:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
-        assert_eq!(t.hours.iter().map(|h| h.batches).sum::<u64>(), 3);
-        assert_eq!(t.hours.iter().map(|h| h.pages).sum::<u64>(), 35);
+        // batch_r's curation (queued again for a newer version) still counts.
+        assert_eq!(t.hours.iter().map(|h| h.batches).sum::<u64>(), 4);
+        assert_eq!(t.hours.iter().map(|h| h.pages).sum::<u64>(), 38);
         // Two batches in the last 12 hours: 2/12 per hour, 4 remaining → 24 h.
         assert_eq!(t.rate_per_hour, 0.2);
         assert_eq!(t.remaining, 4);
@@ -657,7 +674,7 @@ mod tests {
             ]
         );
         assert_eq!(b.recent[0].batch, "batch_a");
-        assert_eq!(b.recent.len(), 4);
+        assert_eq!(b.recent.len(), 5);
         let err = b.failed_batches[0].error.as_deref().unwrap();
         assert_eq!(err, "put [url]: 403 from [ip]");
         let text = serde_json::to_string(&b).unwrap();
@@ -789,6 +806,10 @@ mod tests {
         assert_eq!(tp.ready_for_release, Some(2));
         assert_eq!(tp.recurated_awaiting_full, Some(1));
         assert_eq!(t.catalog.data.as_ref().unwrap().titles, 2);
+        // After 8 deltas the next release is full and takes batch_r too.
+        rd.current.indexes = (0..9).map(|i| format!("i{i}")).collect();
+        let t = titles(&rd, Some(&catalog), "", Some(&s), "");
+        assert_eq!(t.pipeline.data.as_ref().unwrap().ready_for_release, Some(3));
 
         let t = titles(&rd, None, "no catalog", None, "no pipeline");
         assert!(!t.catalog.available && !t.pipeline.available);

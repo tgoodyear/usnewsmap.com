@@ -88,14 +88,20 @@ resource ingestCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@
   }
 }
 
-// The API reads batches, index runs and ops items for /v1/status. Read-only,
-// so a compromised serving replica can't change the pipeline's state.
-resource appCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
-  parent: cosmos
-  name: guid(cosmos.id, appPrincipalId, cosmosDataReader)
-  properties: {
-    principalId: appPrincipalId
-    roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataReader}'
-    scope: '${cosmos.id}/dbs/usnm'
+// The API reads batches, index runs and ops items for /v1/status: read-only,
+// and only those containers (not titles or the millions of issues), so a
+// compromised serving replica can neither change the pipeline's state nor
+// read more of it than the page shows.
+var statusContainers = ['batches', 'index_runs', 'ops']
+
+resource appCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = [
+  for c in statusContainers: {
+    parent: cosmos
+    name: guid(cosmos.id, appPrincipalId, cosmosDataReader, c)
+    properties: {
+      principalId: appPrincipalId
+      roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataReader}'
+      scope: '${cosmos.id}/dbs/usnm/colls/${c}'
+    }
   }
-}
+]

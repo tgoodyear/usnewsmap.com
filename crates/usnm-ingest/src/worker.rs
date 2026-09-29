@@ -421,6 +421,7 @@ impl Worker {
         b.last_error = None;
         b.curated = Some(c);
         b.updated_at = Utc::now();
+        b.curated_at = Some(b.updated_at);
         if self.state.replace_batch(&b, &etag).await?.is_none() {
             bail!("{batch}: changed concurrently before commit; the attempt is discarded");
         }

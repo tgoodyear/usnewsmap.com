@@ -86,7 +86,7 @@ fn redact(token: &str) -> String {
     if let Some((scheme, rest)) = token.split_once("://") {
         if scheme
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '+')
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
             && !scheme.is_empty()
         {
             let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
@@ -250,6 +250,10 @@ mod tests {
         // Credentials are never shown, even in a LoC URL.
         assert_eq!(sanitize("https://alice:secret@loc.gov/file"), "[url]");
         assert_eq!(sanitize("azure://qw-index/x"), "[url]");
+        assert_eq!(
+            sanitize("git+ssh://h/x svn.ssh://h/y x-y://z"),
+            "[url] [url] [url]"
+        );
         assert_eq!(
             sanitize("https://user@chroniclingamerica.loc.gov.evil.io/"),
             "[url]"
