@@ -17,6 +17,10 @@ pub enum ApiError {
     TooBroad(String),
     Timeout,
     Backend(String),
+    /// The search backend refused the request (a bug on our side, not an
+    /// outage). Visitors see the same response as `Backend`; the warm-up
+    /// doesn't retry it.
+    BackendRejected(String),
     /// Too many requests from this client; retry after the given wait.
     RateLimited(std::time::Duration),
 }
@@ -46,6 +50,7 @@ impl From<SearchError> for ApiError {
             SearchError::Unsupported(what) => Self::Unsupported(what),
             SearchError::Timeout => Self::Timeout,
             SearchError::Backend(msg) => Self::Backend(msg),
+            SearchError::Rejected(msg) => Self::BackendRejected(msg),
         }
     }
 }
@@ -54,7 +59,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let retry_after = match &self {
             ApiError::RateLimited(wait) => Some(wait.as_secs_f64().ceil().max(1.0) as u64),
-            ApiError::Timeout | ApiError::Backend(_) => Some(30),
+            ApiError::Timeout | ApiError::Backend(_) | ApiError::BackendRejected(_) => Some(30),
             _ => None,
         };
         let rejection = match &self {
@@ -63,7 +68,10 @@ impl IntoResponse for ApiError {
             ApiError::Unsupported(_) => Some("unsupported"),
             ApiError::TooBroad(_) => Some("too_broad"),
             ApiError::RateLimited(_) => Some("rate_limited"),
-            ApiError::NotFound(_) | ApiError::Timeout | ApiError::Backend(_) => None,
+            ApiError::NotFound(_)
+            | ApiError::Timeout
+            | ApiError::Backend(_)
+            | ApiError::BackendRejected(_) => None,
         };
         let (status, kind, title, detail, hint, position) = match self {
             ApiError::Params(ParamError::Query(q)) => (
@@ -130,7 +138,7 @@ impl IntoResponse for ApiError {
                 Some("Wait for the time in Retry-After, then try again."),
                 None,
             ),
-            ApiError::Backend(msg) => {
+            ApiError::Backend(msg) | ApiError::BackendRejected(msg) => {
                 tracing::error!(error = %msg, "search backend error");
                 (
                     StatusCode::SERVICE_UNAVAILABLE,

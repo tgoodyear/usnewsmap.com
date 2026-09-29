@@ -75,7 +75,12 @@ impl QuickwitBackend {
         if !status.is_success() {
             // Never include the response body: Quickwit may echo the query, and
             // query text must not reach logs (09 §9.4.2).
-            return Err(SearchError::Backend(format!("quickwit returned {status}")));
+            let msg = format!("quickwit returned {status}");
+            return Err(if status.is_client_error() {
+                SearchError::Rejected(msg)
+            } else {
+                SearchError::Backend(msg)
+            });
         }
         let parsed: SearchResponse = resp.json().await.map_err(map_err)?;
         check_complete(&parsed)?;

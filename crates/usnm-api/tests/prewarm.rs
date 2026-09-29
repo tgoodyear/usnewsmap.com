@@ -59,6 +59,8 @@ struct Counting {
     /// Calls that fail before the backend starts answering (a searcher that
     /// is still starting).
     fail_first: AtomicUsize,
+    /// Every call is refused as a bad request (a Quickwit 4xx).
+    reject: bool,
 }
 
 impl Counting {
@@ -69,6 +71,18 @@ impl Counting {
             delay,
             fail,
             fail_first: AtomicUsize::new(0),
+            reject: false,
+        })
+    }
+
+    fn rejecting() -> Arc<Self> {
+        Arc::new(Self {
+            inner: fixture_backend(),
+            calls: AtomicUsize::new(0),
+            delay: Duration::ZERO,
+            fail: false,
+            fail_first: AtomicUsize::new(0),
+            reject: true,
         })
     }
 
@@ -87,6 +101,11 @@ impl Counting {
         tokio::time::sleep(self.delay).await;
         if self.fail {
             return Err(SearchError::Backend("engine down".into()));
+        }
+        if self.reject {
+            return Err(SearchError::Rejected(
+                "quickwit returned 400 Bad Request".into(),
+            ));
         }
         let starting = self
             .fail_first
@@ -368,6 +387,19 @@ async fn a_searcher_that_is_still_starting_is_retried() {
     assert_eq!(report.ok, queries, "{report:?}");
     assert_eq!(report.failed, 0, "{report:?}");
     assert_eq!(visit_examples(&state, &backend, "fixture-v1").await, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_rejected_request_is_not_retried() {
+    let dir = temp_reference("rejecting");
+    let backend = Counting::rejecting();
+    let state = Arc::new(reloading_state(&dir, config(), backend.clone()).await);
+    let before = backend.calls();
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert_eq!(report.failed, prewarm::examples().len(), "{report:?}");
+    // One call per example search: none of them was tried again.
+    assert_eq!(backend.calls() - before, prewarm::examples().len());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

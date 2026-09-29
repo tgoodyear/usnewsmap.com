@@ -180,11 +180,15 @@ impl Run<'_> {
     /// answered 500 for its first seconds and three warm-up queries failed
     /// within 5 ms each.
     async fn call(&self, endpoint: Endpoint, uri: &Uri) -> Outcome {
+        // One limit for the query across its attempts, so retries can't
+        // stretch one example past `prewarm_query_timeout`.
+        let deadline =
+            (Instant::now() + self.state.config.prewarm_query_timeout).min(self.deadline);
         let mut pause = self.state.config.prewarm_retry_first;
         let mut attempt = 1;
         loop {
-            let (outcome, retry) = self.call_once(endpoint, uri).await;
-            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            let (outcome, retry) = self.call_once(endpoint, uri, deadline).await;
+            let remaining = deadline.saturating_duration_since(Instant::now());
             if !retry || attempt >= RETRY_ATTEMPTS || remaining <= pause {
                 return outcome;
             }
@@ -202,12 +206,15 @@ impl Run<'_> {
 
     /// One attempt, and whether a failure is worth retrying (the backend,
     /// not the request, failed).
-    async fn call_once(&self, endpoint: Endpoint, uri: &Uri) -> (Outcome, bool) {
-        let remaining = self.deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+    async fn call_once(&self, endpoint: Endpoint, uri: &Uri, deadline: Instant) -> (Outcome, bool) {
+        let now = Instant::now();
+        if self.deadline <= now {
             return (Outcome::Skipped, false);
         }
-        let limit = self.state.config.prewarm_query_timeout.min(remaining);
+        let limit = deadline.saturating_duration_since(now);
+        if limit.is_zero() {
+            return (Outcome::TimedOut, false);
+        }
         let ctx = Ctx {
             snap: self.snap.clone(),
             timeout: limit,
