@@ -698,8 +698,9 @@ async fn serves_the_site_alongside_the_api() {
     assert!(header_str(&h, header::CONTENT_SECURITY_POLICY).contains("connect-src 'self'"));
     assert_eq!(header_str(&h, header::X_CONTENT_TYPE_OPTIONS), "nosniff");
 
-    // The app's pages get the shell too, so a reload keeps working.
-    for uri in ["/status", "/status/"] {
+    // The app's pages get the shell too, so a reload keeps working. The file
+    // itself is served with or without a trailing slash (web/src/route.ts).
+    for uri in ["/status", "/status/", "/index.html", "/index.html/"] {
         let (status, h, body) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
         assert!(body.contains("id=root"), "{uri}");

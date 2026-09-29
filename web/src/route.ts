@@ -3,7 +3,7 @@
  * the pipeline status, and anything else not found. The API answers the same
  * paths with 200 and the rest with 404 (`is_app_page` in
  * crates/usnm-api/src/site.rs). `/index.html` is the home page's file, which
- * the API serves as it is.
+ * the API serves with a 200, with or without a trailing slash.
  */
 export type Page = "search" | "status" | "not-found";
 

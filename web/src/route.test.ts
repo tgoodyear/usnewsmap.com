@@ -6,6 +6,7 @@ describe("pageFor", () => {
     expect(pageFor("/")).toBe("search");
     expect(pageFor("//")).toBe("search");
     expect(pageFor("/index.html")).toBe("search");
+    expect(pageFor("/index.html/")).toBe("search");
     expect(pageFor("/status")).toBe("status");
     expect(pageFor("/status/")).toBe("status");
   });
