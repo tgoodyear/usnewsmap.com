@@ -1,0 +1,191 @@
+// Alerts on the public API and site (09 §9.2), email through the
+// environment's action group. Deployed with the API when alert emails are
+// set.
+//
+// - API 5xx and aggregate latency: log search alerts on the workspace,
+//   reading the requests usnm-api exports to Application Insights
+//   (AppRequests, one row per request except the health probes; the
+//   request name is "<method> <route template>"). Stateful: one
+//   notification when a condition starts, resolved when it clears.
+// - Availability: Application Insights standard tests of the site's home
+//   page and the API's /readyz from three US locations, each with a metric
+//   alert when two of the three fail. Only for hostnames that have a bound
+//   certificate (the tests check TLS). Results are written by the
+//   availability service itself; the component's DisableLocalAuth only
+//   restricts what clients send, and Microsoft's list of scenarios that
+//   don't work with Entra-only ingestion doesn't include availability tests.
+//   Each test run is billed ($0.0005 per location per run in East US 2):
+//   every 5 minutes from 3 locations is about $13 a month per URL.
+
+param location string
+param tags object
+param nameSuffix string
+param workspaceId string
+param appInsightsId string
+param actionGroupId string
+
+@description('Site home page to test, e.g. https://usnewsmap.com/; empty skips the test.')
+param siteUrl string = ''
+
+@description('API readiness URL to test, e.g. https://api.usnewsmap.com/readyz; empty skips the test.')
+param apiReadyUrl string = ''
+
+@description('Seconds between availability test runs from each location: 300, 600 or 900.')
+@minValue(300)
+@maxValue(900)
+param availabilityFrequency int = 300
+
+// At least 5 server errors in 10 minutes that are also more than 2% of the
+// requests. The count floor keeps one or two failures on a quiet site from
+// paging; the ratio keeps a handful among many requests from paging. 503s
+// from search timeouts count (09 §9.1: every 5xx is bad).
+var serverErrors = '''
+AppRequests
+| where AppRoleName == "usnm-api"
+| summarize Requests = sum(ItemCount), Errors = sumif(ItemCount, toint(ResultCode) >= 500)
+| where Errors >= 5 and Errors * 50 > Requests
+'''
+
+// p95 of /v1/aggregate above 3 s over 15 minutes, counting only answered
+// requests (5xx have their own alert). A cold query takes 2-7 s and a warm
+// one about 0.15 s, so a single cold search can push a small sample's p95
+// over 3 s. It takes at least 20 requests and at least 3 slower than 3 s
+// (so more than one or two cold searches) before this fires. Right after a
+// new index version is published every search is cold, so a busy hour then
+// can trip it; that is worth knowing but not urgent (severity 3).
+var slowAggregate = '''
+AppRequests
+| where AppRoleName == "usnm-api"
+| where Name in ("GET /v1/aggregate", "GET /api/v1/aggregate")
+| where toint(ResultCode) < 500
+| summarize Requests = sum(ItemCount), Slow = sumif(ItemCount, DurationMs > 3000),
+    P95 = percentile(DurationMs, 95)
+| where Requests >= 20 and Slow >= 3 and P95 > 3000
+'''
+
+var rules = [
+  {
+    name: 'api-server-errors'
+    displayName: 'API server errors'
+    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests. scripts/logs.sh <env> api-errors shows which routes and codes.'
+    severity: 2
+    frequency: 'PT5M'
+    window: 'PT10M'
+    query: serverErrors
+  }
+  {
+    name: 'api-aggregate-slow'
+    displayName: 'Slow aggregate searches'
+    description: 'p95 of /v1/aggregate was over 3 s in the last 15 minutes (at least 20 requests, 3 of them over 3 s). scripts/logs.sh <env> api-requests shows latency by route.'
+    severity: 3
+    frequency: 'PT5M'
+    window: 'PT15M'
+    query: slowAggregate
+  }
+]
+
+resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
+  for r in rules: {
+    name: 'alert-usnm-${r.name}-${nameSuffix}'
+    location: location
+    tags: tags
+    kind: 'LogAlert'
+    properties: {
+      displayName: r.displayName
+      description: r.description
+      severity: r.severity
+      enabled: true
+      evaluationFrequency: r.frequency
+      windowSize: r.window
+      scopes: [workspaceId]
+      // AppRequests exists only once the first request has been exported.
+      skipQueryValidation: true
+      autoMitigate: true
+      criteria: {
+        allOf: [
+          {
+            query: r.query
+            timeAggregation: 'Count'
+            operator: 'GreaterThan'
+            threshold: 0
+            failingPeriods: {
+              numberOfEvaluationPeriods: 1
+              minFailingPeriodsToAlert: 1
+            }
+          }
+        ]
+      }
+      actions: { actionGroups: [actionGroupId] }
+    }
+  }
+]
+
+var tests = filter(
+  [
+    { name: 'site', displayName: 'Site home page', url: siteUrl }
+    { name: 'api-ready', displayName: 'API ready', url: apiReadyUrl }
+  ],
+  t => !empty(t.url)
+)
+
+// East US (Virginia), North Central US (Chicago), West US (San Jose).
+var testLocations = ['us-va-ash-azr', 'us-il-ch1-azr', 'us-ca-sjc-azr']
+
+// The portal lists a test under the component that its hidden-link tag names.
+var linkTag = { 'hidden-link:${appInsightsId}': 'Resource' }
+
+resource webtest 'Microsoft.Insights/webtests@2022-06-15' = [
+  for t in tests: {
+    name: 'webtest-usnm-${t.name}-${nameSuffix}'
+    location: location
+    tags: union(tags, linkTag)
+    kind: 'standard'
+    properties: {
+      SyntheticMonitorId: 'webtest-usnm-${t.name}-${nameSuffix}'
+      Name: t.displayName
+      Description: 'GET ${t.url} expects 200 and a certificate valid for 7 more days.'
+      Enabled: true
+      Frequency: availabilityFrequency
+      Timeout: 30
+      Kind: 'standard'
+      // A failure counts only after three attempts fail in a row.
+      RetryEnabled: true
+      Locations: [for l in testLocations: { Id: l }]
+      Request: {
+        RequestUrl: t.url
+        HttpVerb: 'GET'
+        ParseDependentRequests: false
+      }
+      ValidationRules: {
+        ExpectedHttpStatusCode: 200
+        SSLCheck: true
+        SSLCertRemainingLifetimeCheck: 7
+      }
+    }
+  }
+]
+
+resource unavailable 'Microsoft.Insights/metricAlerts@2018-03-01' = [
+  for (t, i) in tests: {
+    name: 'alert-usnm-${t.name}-unavailable-${nameSuffix}'
+    location: 'global'
+    tags: union(tags, linkTag)
+    properties: {
+      description: '${t.displayName} (${t.url}) failed from at least 2 of 3 locations. Check the Availability page of the Application Insights resource, then scripts/logs.sh <env> api-errors.'
+      severity: 1
+      enabled: true
+      scopes: [webtest[i].id, appInsightsId]
+      evaluationFrequency: 'PT1M'
+      // At least one run per location in the window.
+      windowSize: availabilityFrequency <= 300 ? 'PT5M' : (availabilityFrequency <= 600 ? 'PT10M' : 'PT15M')
+      criteria: {
+        'odata.type': 'Microsoft.Azure.Monitor.WebtestLocationAvailabilityCriteria'
+        webTestId: webtest[i].id
+        componentId: appInsightsId
+        failedLocationCount: 2
+      }
+      autoMitigate: true
+      actions: [{ actionGroupId: actionGroupId }]
+    }
+  }
+]

@@ -61,6 +61,7 @@ output workspaceName string = workspace.name
 // The workspace's id in the Log Analytics query API (scripts/logs.sh).
 output workspaceCustomerId string = workspace.properties.customerId
 output appInsightsName string = appInsights.name
+output appInsightsId string = appInsights.id
 // The ingestion endpoint and instrumentation key, not a credential: with
 // local auth disabled, ingestion needs an Entra token as well.
 output appInsightsConnectionString string = appInsights.properties.ConnectionString

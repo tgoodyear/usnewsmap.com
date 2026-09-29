@@ -65,6 +65,11 @@ param budgetStartDate string = ''
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
+@description('Seconds between availability test runs of the site and API from each of 3 locations (tests exist only with dnsZoneName and alert emails). 300, 600 or 900. Each run costs $0.0005: 300 is about $13 a month per URL.')
+@minValue(300)
+@maxValue(900)
+param availabilityFrequency int = 300
+
 @description('Public DNS zone for the site (e.g. usnewsmap.com); empty skips it. Delegate the domain to the NAME_SERVERS output.')
 param dnsZoneName string = ''
 
@@ -275,6 +280,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     allowedOrigins: siteOrigins
     minReplicas: apiMinReplicas
     searchBackend: searchBackend
+    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
   }
 }
 
@@ -330,6 +336,25 @@ module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingest
     nameSuffix: env
     workspaceId: monitoring.outputs.workspaceId
     actionGroupId: monitoring.outputs.actionGroupId
+  }
+}
+
+// API server errors and latency, from the requests it exports; availability
+// tests of the site and the API on the custom domain once its certificates
+// are bound.
+module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
+  scope: rg
+  name: 'api-alerts'
+  params: {
+    location: location
+    tags: tags
+    nameSuffix: env
+    workspaceId: monitoring.outputs.workspaceId
+    appInsightsId: monitoring.outputs.appInsightsId
+    actionGroupId: monitoring.outputs.actionGroupId
+    siteUrl: !empty(dnsZoneName) && !empty(siteCertificateId) ? 'https://${dnsZoneName}/' : ''
+    apiReadyUrl: !empty(dnsZoneName) && !empty(apiCertificateId) ? 'https://api.${dnsZoneName}/readyz' : ''
+    availabilityFrequency: availabilityFrequency
   }
 }
 

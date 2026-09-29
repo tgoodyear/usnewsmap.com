@@ -1,0 +1,24 @@
+// API server errors: 5xx requests by route and status, and the API's
+// warning and error log lines (search backend errors, cache failures,
+// reload failures), newest first. Requests come from AppRequests, log lines
+// from ContainerAppConsoleLogs (container "api"). Lines that could carry the
+// managed identity endpoint's secret are dropped.
+let requests = AppRequests
+    | where AppRoleName == "usnm-api" and toint(ResultCode) >= 500
+    | summarize Count = sum(ItemCount), First = min(TimeGenerated), Last = max(TimeGenerated)
+        by Route = Name, Status = ResultCode, Replica = AppRoleInstance
+    | extend Source = "request", Detail = "";
+let logs = ContainerAppConsoleLogs
+    | where ContainerName == "api"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | where Log has_any ("ERROR", "WARN")
+    | extend j = parse_json(Log)
+    | where tostring(j.level) in ("ERROR", "WARN")
+    | extend Error = tostring(j.fields.error)
+    | summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated)
+        by Detail = substring(strcat(tostring(j.fields.message), iff(isempty(Error), "", strcat(": ", Error))), 0, 300),
+        Route = tostring(j.span["http.route"]), Replica = ContainerGroupName
+    | extend Source = "log", Status = "";
+union requests, logs
+| project Last, First, Source, Count, Route, Status, Detail, Replica
+| order by Last desc
