@@ -300,18 +300,24 @@ fn root(t: &IndexTarget) -> anyhow::Result<&str> {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let telemetry = telemetry::init();
     let result = run(&cli).await;
-    // Every failure ends with one JSON line, which the job-failure alert and
-    // the `errors-by-batch` query look for.
-    if let Err(e) = &result {
-        tracing::error!(command = cli.command.name(), error = %format!("{e:#}"), "command failed");
-    }
+    // Every failure ends with one JSON line (the whole error chain), which
+    // the job-failure alert and the `errors-by-batch` query look for.
+    // Returning an exit code rather than the error keeps Rust from printing
+    // it again as plain text after that line.
+    let code = match &result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!(command = cli.command.name(), error = %format!("{e:#}"), "command failed");
+            std::process::ExitCode::FAILURE
+        }
+    };
     // Before exit on every path: whatever telemetry is still buffered is lost.
     telemetry.shutdown().await;
-    result
+    code
 }
 
 impl Command {

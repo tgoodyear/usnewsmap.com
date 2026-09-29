@@ -52,7 +52,7 @@ The ingest and backfill jobs are short-lived and leave nothing on disk, so every
 - **Alerts** (`infra/modules/ingest-alerts.bicep`, log search alerts on the workspace, severity 2, email through the action group; deployed with the jobs when alert emails are set):
   - *Ingest or backfill job failed*: a `command failed` line, or a platform event for a replica that was killed or exited non-zero, in the last 15 minutes (checked every 5 minutes).
   - *Release stalled*: a release logged `building index` in the last 3 hours, hasn't finished, and has logged no `release progress` for 10 minutes (every 10 minutes).
-  - *Backfill stalled*: backfill workers logged in the last 15 minutes but none curated a batch in the last hour, and LoC isn't rate limiting (every 15 minutes).
+  - *Backfill stalled*: backfill workers logged both at the start and at the end of the last hour but none curated a batch in it, and LoC isn't rate limiting (every 15 minutes). Workers are silent while curating, so a silent hang is caught only when the 24 h replica timeout fails the job.
 
 **Maintenance windows: none apply to this stack.**
 

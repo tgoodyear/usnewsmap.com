@@ -61,19 +61,23 @@ started
 | project Replica, Started, LastProgress
 '''
 
-// Backfill workers are running (logged in the last 15 minutes) but none has
-// curated a batch in an hour. Not while LoC's rate limit holds downloads
-// (a "throttled" line: every worker waits an hour).
+// Backfill workers have been running for the last hour (they logged in its
+// first 15 minutes and in its last 15) but none has curated a batch in it.
+// Not while LoC's rate limit holds downloads (a "throttled" line: every
+// worker waits an hour). A worker is silent while it curates a batch, so a
+// run where every worker hangs silently isn't caught here; the job's 24 h
+// replica timeout ends it, and the job-failed alert reports that.
 var backfillStalled = '''
 let logs = ContainerAppConsoleLogs
     | where ContainerName == "curate"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | extend Message = tostring(parse_json(Log).fields.message);
-let active = toscalar(logs | where TimeGenerated > ago(15m) | count);
+let early = toscalar(logs | where TimeGenerated between (ago(60m) .. ago(45m)) | count);
+let late = toscalar(logs | where TimeGenerated > ago(15m) | count);
 let curated = toscalar(logs | where TimeGenerated > ago(60m) | where Message == "curated" | count);
 let throttled = toscalar(logs | where TimeGenerated > ago(75m) | where Message startswith "throttled" | count);
-print Active = active, Curated = curated, Throttled = throttled
-| where Active > 0 and Curated == 0 and Throttled == 0
+print Early = early, Late = late, Curated = curated, Throttled = throttled
+| where Early > 0 and Late > 0 and Curated == 0 and Throttled == 0
 '''
 
 var rules = [
@@ -96,7 +100,7 @@ var rules = [
   {
     name: 'backfill-stalled'
     displayName: 'Backfill stalled'
-    description: 'Backfill workers are running but none has curated a batch in an hour (and LoC is not rate limiting). scripts/logs.sh <env> curation-throughput and errors-by-batch show the recent work.'
+    description: 'Backfill workers have run for the last hour but none has curated a batch in it (and LoC is not rate limiting). scripts/logs.sh <env> curation-throughput and errors-by-batch show the recent work.'
     frequency: 'PT15M'
     window: 'PT2H'
     query: backfillStalled
