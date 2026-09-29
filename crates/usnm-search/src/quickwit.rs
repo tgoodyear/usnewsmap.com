@@ -26,9 +26,12 @@ const MAX_PLACES: u32 = 5_000;
 pub struct QuickwitBackend {
     base_url: String,
     client: reqwest::Client,
+    /// Limit on a search request, if different from the client's.
+    search_timeout: Option<Duration>,
 }
 
 impl QuickwitBackend {
+    /// `timeout` limits every request: searches, index lookups and health checks.
     pub fn new(base_url: &str, timeout: Duration) -> Result<Self, SearchError> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
@@ -37,7 +40,15 @@ impl QuickwitBackend {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_owned(),
             client,
+            search_timeout: None,
         })
+    }
+
+    /// Give searches their own limit, leaving index lookups and health
+    /// checks on the client's.
+    pub fn with_search_timeout(mut self, timeout: Duration) -> Self {
+        self.search_timeout = Some(timeout);
+        self
     }
 
     async fn search(
@@ -55,13 +66,11 @@ impl QuickwitBackend {
             self.base_url,
             indexes.ids().join(",")
         );
-        let resp = self
-            .client
-            .post(url)
-            .json(body)
-            .send()
-            .await
-            .map_err(map_err)?;
+        let mut req = self.client.post(url).json(body);
+        if let Some(t) = self.search_timeout {
+            req = req.timeout(t);
+        }
+        let resp = req.send().await.map_err(map_err)?;
         let status = resp.status();
         if !status.is_success() {
             // Never include the response body: Quickwit may echo the query, and

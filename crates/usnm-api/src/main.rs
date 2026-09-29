@@ -30,12 +30,13 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         BackendKind::Memory => Engine::Memory {
             indexes_dir: config.data_dir.join("indexes"),
         },
-        // The client's limit fits a warm-up query; each visitor's request is
-        // still cut at `search_timeout` by the handlers.
-        BackendKind::Quickwit(url) => Engine::Shared(Arc::new(QuickwitBackend::new(
-            url,
-            config.search_timeout.max(config.prewarm_query_timeout),
-        )?)),
+        // A search's limit fits a warm-up query (the handlers still cut each
+        // visitor's search at `search_timeout`); index lookups and health
+        // checks keep the short one.
+        BackendKind::Quickwit(url) => Engine::Shared(Arc::new(
+            QuickwitBackend::new(url, config.search_timeout)?
+                .with_search_timeout(config.search_timeout.max(config.prewarm_query_timeout)),
+        )),
     };
     let loader = Loader {
         reference: usnm_store::open(&config.reference_url)?,
