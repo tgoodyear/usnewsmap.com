@@ -36,14 +36,14 @@ Container images are **private**, in ACR Basic. CI on `main` signs in to Azure w
 | Cosmos DB | `ControlPlaneRequests`, `PartitionKeyStatistics` |
 | Blob service (data and tiles accounts) | `StorageWrite`, `StorageDelete` |
 
-- **Per-request categories are left out** because they would consume the ≈150 MB/day cap: blob reads (public tile fetches, and Quickwit's split reads on every search), Cosmos `DataPlaneRequests` and the per-query statistics (every ingest write), and Container Apps HTTP logs (Application Insights already samples requests). Writes, deletes and control-plane changes are the audit trail.
+- **Per-request categories are left out** because they would consume the ≈150 MB/day cap: blob reads (public tile fetches, and Quickwit's split reads on every search), Cosmos `DataPlaneRequests` and the per-query statistics (every ingest write), and Container Apps HTTP logs (every API request with its query string, which holds the search text; the API reports its requests itself, without paths or query strings, §8.1.2). Writes, deletes and control-plane changes are the audit trail.
 - **Also left out:**
   - Application Insights is workspace-based, so its telemetry is already in `log-usnm`. Its resource logs would store every row twice.
   - Metrics-only resources (DNS zones, private endpoints, Container Apps and jobs) have no logs. Azure Monitor keeps their platform metrics for 93 days at no cost.
 - **Retention** is the workspace's 30 days. Tables can go as low as 4 days, but 31 days are included in the ingestion price, so a 14-day limit would save nothing.
 - **Bicep writes the settings, not a `deployIfNotExists` policy.** Every resource here is created by the template, and nothing is created at runtime. The template can choose categories per resource, while the built-in policy initiatives enable whole category groups (`allLogs`/`audit`), which include the per-request logs above. Remediation would also need a policy identity with role-assignment rights, and it lags creation by minutes. The policy is therefore audit-only: it catches drift without writing anything.
 
-### 8.1.2 Ingest job logs, telemetry and alerts
+### 8.1.2 Logs, telemetry and alerts: ingest jobs and API
 
 The ingest and backfill jobs are short-lived and leave nothing on disk, so everything needed to diagnose a run goes out while it runs.
 
@@ -53,6 +53,17 @@ The ingest and backfill jobs are short-lived and leave nothing on disk, so every
   - *Ingest or backfill job failed*: a `command failed` line, or a platform event for a replica that was killed or exited non-zero, in the last 15 minutes (checked every 5 minutes).
   - *Release stalled*: a release logged `building index` in the last day (the job's replica timeout), hasn't finished, and has logged no `release progress` for 10 minutes (every 15 minutes).
   - *Backfill stalled*: backfill workers logged both at the start and at the end of the last hour but none curated a batch in it, and LoC isn't rate limiting (every 15 minutes). Workers are silent while curating, so a silent hang is caught only when the 24 h replica timeout fails the job.
+
+The API (`usnm-api`) uses the same setup, shared in `crates/usnm-telemetry`, under the cloud role `usnm-api`:
+
+- **Requests.** Every request except the `/healthz` and `/readyz` probes becomes one Application Insights request (`AppRequests`): name `<method> <route template>` (for example `GET /v1/aggregate`; `(site)` for the web app's files, `(no route)` for an unknown API path), result code, duration, and success, which is false only for a 5xx. `usnm.index_version` is the version the response came from (for search responses) or the one serving when it finished. The same request writes one console line (`message: request`, with `method`, `route`, `status`, `ms`), so Log Analytics has it without Application Insights. Neither records the path, the query string or the client address (09 §9.4.2). Warnings and errors logged while a request is handled also go to `AppTraces`, linked to the request.
+- **Metrics** (`AppMetrics`): `api.requests` (by `route` and `status_class`, probes included), `api.request_duration_seconds` (by `route`), `api.backend_duration_seconds` (search backend time for aggregate and hits, by `endpoint` and `outcome`), `api.cache_lookups` (by `layer`: `memory` or `blob`, and `result`: `hit` or `miss`), `api.rejected_queries` (by `reason`: `syntax`, `bad_parameter`, `unsupported`, `too_broad`, `rate_limited`), `api.reference_reloads` (by `outcome`: `published` or `failed`) and `api.index_version` (1, with the serving version in `index_version`).
+- **Identity.** The app gets `APPLICATIONINSIGHTS_CONNECTION_STRING` and exports as `id-usnm-app` (selected by `AZURE_CLIENT_ID`), which has Monitoring Metrics Publisher on the component.
+- **Queries:** `scripts/logs.sh <env> api-requests` (requests, 4xx, 5xx, 5xx rate and p50/p95 by route) and `api-errors` (5xx by route and status, and the API's warning and error lines).
+- **Alerts** (`infra/modules/api-alerts.bicep`, deployed with the API when alert emails are set):
+  - *API server errors* (severity 2): at least 5 responses with a 5xx in 10 minutes that are also more than 2% of requests (checked every 5 minutes).
+  - *Slow aggregate searches* (severity 3): p95 of `/v1/aggregate` over 3 s in 15 minutes, with at least 20 requests and at least 3 of them over 3 s. A cold search takes 2–7 s and a cached one about 0.15 s, so one or two cold searches don't trigger it; a busy period right after a new index version (when every search is cold) can.
+  - *Site or API unavailable* (severity 1): a standard availability test `GET https://{domain}/` (the site and the API are one app; `/readyz` is already probed by Container Apps), every 15 minutes (`USNM_AVAILABILITY_FREQUENCY`: 300, 600 or 900 s) from East US, North Central US and West US, expecting 200 and a certificate valid for 7 more days, with retries. The alert fires when 2 of the 3 locations fail. Each test exists only once its hostname's certificate is bound. The results are written by the availability service, not sent by a client, so the component's `DisableLocalAuth` doesn't apply to them; Microsoft's list of features that don't work with Entra-only ingestion doesn't include availability tests. The first deployment should confirm rows in `AppAvailabilityResults`. Each run from one location costs $0.0005, so both tests at 5 minutes cost about $26 a month (09 §9.5).
 
 **Maintenance windows: none apply to this stack.**
 
@@ -64,7 +75,7 @@ The ingest and backfill jobs are short-lived and leave nothing on disk, so every
 
 | Principal | Type | Role assignments (scope) |
 |-----------|------|--------------------------|
-| `id-usnm-app` (user-assigned, on `ca-usnm`) | MI | `Storage Blob Data Reader` (`reference/`, `qw-index/`); `Storage Blob Data Contributor` (`cache/`); **Cosmos DB Built-in Data Reader** (database `usnm`, for the status page). Serving replicas **can't** write the index or the pipeline state |
+| `id-usnm-app` (user-assigned, on `ca-usnm`) | MI | `Storage Blob Data Reader` (`reference/`, `qw-index/`); `Storage Blob Data Contributor` (`cache/`); **Cosmos DB Built-in Data Reader** (database `usnm`, for the status page); `Monitoring Metrics Publisher` (`appi-usnm`, to send the API's requests, traces and metrics). Serving replicas **can't** write the index or the pipeline state |
 | `ca-usnm` system-assigned identity (used only by the `quickwit` sidecar) | MI | `Storage Blob Data Reader` (`qw-index/`) and nothing else |
 | `id-usnm-ingest` (on the ingest jobs) | MI | `Storage Blob Data Contributor` (`curated/`, `reference/`, `qw-index/`); **Cosmos DB Built-in Data Contributor** (database `usnm`); `Monitoring Metrics Publisher` (`appi-usnm`, to send the jobs' traces and metrics) |
 | `caj-usnm-ingest` system-assigned identity (used only by the Quickwit writer the job runs) | MI | `Storage Blob Data Contributor` (`qw-index/`) and nothing else |

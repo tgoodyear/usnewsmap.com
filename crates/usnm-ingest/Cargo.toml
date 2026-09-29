@@ -10,6 +10,7 @@ rust-version.workspace = true
 usnm-core.workspace = true
 usnm-store.workspace = true
 usnm-state.workspace = true
+usnm-telemetry.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
@@ -21,9 +22,6 @@ clap.workspace = true
 flate2.workspace = true
 futures.workspace = true
 opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
-opentelemetry-application-insights.workspace = true
-opentelemetry-http.workspace = true
 parquet.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 rustix.workspace = true
@@ -34,12 +32,11 @@ tar.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
 tracing.workspace = true
-tracing-opentelemetry.workspace = true
-tracing-subscriber.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
 usnm-api = { path = "../usnm-api" }
+usnm-telemetry = { workspace = true, features = ["testing"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net"] }
 

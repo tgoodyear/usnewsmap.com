@@ -11,6 +11,7 @@ usnm-core.workspace = true
 usnm-search.workspace = true
 usnm-store.workspace = true
 usnm-state.workspace = true
+usnm-telemetry.workspace = true
 arc-swap.workspace = true
 axum.workspace = true
 base64.workspace = true
@@ -19,6 +20,7 @@ form_urlencoded.workspace = true
 futures.workspace = true
 governor.workspace = true
 moka.workspace = true
+opentelemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -26,15 +28,17 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tower-http.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+usnm-telemetry = { workspace = true, features = ["testing"] }
 anyhow.workspace = true
 async-trait.workspace = true
 http-body-util.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
 tower.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

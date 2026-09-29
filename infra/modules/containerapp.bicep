@@ -34,6 +34,8 @@ param searchBackend string = 'fixtures'
 param quickwitImage string = 'quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
 @description('Private registry the images come from (pulled with the app identity); empty for a public registry.')
 param registryServer string = ''
+@description('Application Insights connection string (names the ingestion endpoint; not a credential). Empty: the API exports no telemetry.')
+param appInsightsConnectionString string = ''
 @description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
@@ -77,6 +79,11 @@ var apiEnv = [
   // Selects the user-assigned identity at the managed identity endpoint.
   { name: 'AZURE_CLIENT_ID', value: identityClientId }
 ]
+// Requests, traces and metrics go to Application Insights as id-usnm-app,
+// with an Entra token (08 §8.1.2).
+var telemetryEnv = empty(appInsightsConnectionString)
+  ? []
+  : [{ name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }]
 var backendEnv = quickwit
   ? [
       { name: 'USNM_BACKEND', value: 'quickwit' }
@@ -89,7 +96,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv)
+  env: concat(backendEnv, apiEnv, telemetryEnv)
   probes: [
     {
       type: 'Liveness'

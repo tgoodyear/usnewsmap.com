@@ -1,22 +1,30 @@
 use std::sync::Arc;
 
-use tracing_subscriber::EnvFilter;
 use usnm_api::config::{BackendKind, Config};
 use usnm_api::status::PipelineSource;
-use usnm_api::{app, spawn_background, AppState, Engine, Loader};
+use usnm_api::{app, spawn_background, telemetry, AppState, Engine, Loader};
 use usnm_search::quickwit::QuickwitBackend;
 use usnm_state::cosmos::CosmosDocs;
 use usnm_store::credential;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+async fn main() -> std::process::ExitCode {
+    let exporters = usnm_telemetry::init(telemetry::SERVICE);
+    let result = serve().await;
+    // A failure is one JSON line (not also plain text from Rust's handler).
+    let code = match &result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!(error = %e, "usnm-api failed");
+            std::process::ExitCode::FAILURE
+        }
+    };
+    // Flush what's buffered before exit, on every path.
+    exporters.shutdown().await;
+    code
+}
 
+async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
     // Each published version gets a fresh snapshot. The memory backend reloads
     // exactly the indexes the new version names; Quickwit is shared because
@@ -75,6 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_response_store(store);
     }
     let state = Arc::new(state);
+    telemetry::observe_index_version(
+        &state,
+        &opentelemetry::global::meter(telemetry::SERVICE.name),
+    );
     spawn_background(state.clone());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "listening");
