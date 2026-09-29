@@ -141,7 +141,7 @@ fn state(s: &Stores) -> anyhow::Result<State> {
     let docs: Arc<dyn DocStore> = match (&s.cosmos, &s.state_file) {
         (Some(endpoint), _) => Arc::new(CosmosDocs::new(
             endpoint,
-            "usnm",
+            usnm_state::DATABASE,
             credential::from_env_for(credential::COSMOS_RESOURCE),
         )?),
         (None, Some(path)) => Arc::new(FileDocs::open(path)?),

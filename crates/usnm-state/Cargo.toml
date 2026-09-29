@@ -1,0 +1,27 @@
+[package]
+name = "usnm-state"
+version = "0.1.0"
+description = "US News Map pipeline state: the Cosmos DB document store (Entra ID) and the typed items the pipeline and the status page read"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+usnm-store.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+form_urlencoded.workspace = true
+httpdate.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "net"] }
+
+[lints]
+workspace = true

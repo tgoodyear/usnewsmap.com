@@ -7,17 +7,18 @@
 
 pub mod archive;
 pub mod catalog;
-pub mod cosmos;
 pub mod curated;
-pub mod docs;
 pub mod progress;
 pub mod release;
 pub mod sink;
 pub mod source;
-pub mod state;
 pub mod telemetry;
 pub mod titles;
 pub mod worker;
+
+// Pipeline state lives in its own crate so the API can read it without
+// the pipeline's dependencies (Parquet, Quickwit, telemetry export).
+pub use usnm_state::{cosmos, docs, state};
 
 /// A process-unique id for leases and attempt paths.
 pub fn owner_id() -> String {

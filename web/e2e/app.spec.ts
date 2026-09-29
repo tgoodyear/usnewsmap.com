@@ -199,3 +199,27 @@ test("the search options open with an extra tap on phones", async ({ page, isMob
   await page.goto("/?q=gold&mode=any");
   await expect(page.getByLabel("Match")).toBeVisible();
 });
+
+test("the status page shows the published version without the pipeline state", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/");
+  await page.getByRole("link", { name: "Pipeline status" }).click();
+  await expect(page).toHaveURL(/\/status$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pipeline status");
+  // CI's API serves the fixtures with no Cosmos: the reference sections
+  // work and the pipeline sections say so.
+  await expect(page.getByRole("heading", { name: "Indexing and releases" })).toBeVisible();
+  await expect(page.getByText("fixture-v1", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 of 8 deltas used", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText(/^Not available\./)).toHaveCount(3);
+  await expect(page.locator(".health")).toContainText("Pipeline state not available");
+  await expect(page.getByRole("link", { name: "/v1/status" })).toHaveAttribute("href", "/v1/status");
+  await page.getByText("Raw response").click();
+  await expect(page.locator(".status-json")).toContainText('"schema": 1');
+  await expectAccessible(page);
+  expect(errors).toEqual([]);
+
+  const json = await page.request.get("/v1/status");
+  expect(json.headers()["cache-control"]).toBe("public, max-age=30");
+  expect((await json.json()).backfill.available).toBe(false);
+});

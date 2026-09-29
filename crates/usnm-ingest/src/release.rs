@@ -40,10 +40,7 @@ use crate::source::hex;
 use crate::state::{Curated, IndexRun, RunBatch, RunStatus, State};
 use crate::worker::Counts;
 
-pub const WRITER_LOCK: &str = "quickwit-writer";
-
-/// Deltas a version may carry before the next release compacts (08 §8.4.1).
-pub const MAX_DELTAS: usize = 8;
+pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
 
 pub struct Release {
     pub state: State,
@@ -333,7 +330,7 @@ impl Release {
 
         let outcome = async {
             let docs = self
-                .build_index(lease, sink, &index_id, &scope, &catalog)
+                .build_index(lease, sink, &version, &index_id, &scope, &catalog)
                 .await?;
             let bounds = self
                 .write_snapshot(&version, &version_batches, &catalog)
@@ -450,6 +447,7 @@ impl Release {
         &self,
         lease: &WriterLease,
         sink: &mut dyn IndexSink,
+        version: &str,
         index_id: &str,
         scope: &[RunBatch],
         catalog: &Catalog,
@@ -472,7 +470,12 @@ impl Release {
         let expected = scope.iter().map(|b| b.curated.ok_pages).sum();
         let progress = Progress::new(sink.stats(), expected);
         progress.snapshot().log(None);
+        progress::report(&self.state, version, &progress.snapshot()).await;
         let _ticker = progress.every(progress::INTERVAL);
+        // The same counts for the status page, in their own `ops` item: the
+        // run item's ETag stays the release's alone.
+        let _reporter =
+            progress.report_every(progress::INTERVAL, self.state.clone(), version.to_owned());
         let mut docs = 0u64;
         for b in scope {
             for path in &b.curated.parts {
@@ -501,6 +504,7 @@ impl Release {
         }
         sink.finish(docs).await?;
         progress.snapshot().log(None);
+        progress::report(&self.state, version, &progress.snapshot()).await;
         Ok(docs)
     }
 

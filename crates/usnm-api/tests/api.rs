@@ -780,3 +780,25 @@ async fn without_a_site_only_the_api_answers() {
     let (status, _, _) = get_site(&s, "/v1/meta", None).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn status_without_pipeline_state() {
+    let state = state_with(None).await;
+    for uri in ["/v1/status", "/api/v1/status"] {
+        let (status, headers, body) = get(&state, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(
+            header_str(&headers, header::CACHE_CONTROL),
+            "public, max-age=30"
+        );
+        assert_eq!(
+            header_str(&headers, header::CONTENT_TYPE),
+            "application/json"
+        );
+        assert_eq!(body["schema"], 1);
+        assert_eq!(body["published"]["index_version"], "fixture-v1");
+        assert_eq!(body["published"]["indexes"].as_array().unwrap().len(), 2);
+        assert_eq!(body["backfill"]["available"], false);
+        assert_eq!(body["indexing"]["available"], false);
+    }
+}

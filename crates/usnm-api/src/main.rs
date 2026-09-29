@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
 use usnm_api::config::{BackendKind, Config};
+use usnm_api::status::PipelineSource;
 use usnm_api::{app, spawn_background, telemetry, AppState, Engine, Loader};
 use usnm_search::quickwit::QuickwitBackend;
+use usnm_state::cosmos::CosmosDocs;
+use usnm_store::credential;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -51,8 +54,30 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .map(usnm_store::open)
         .transpose()?;
+    // The pipeline state, read-only, for /v1/status. The status page would
+    // rather say "busy" than wait out Cosmos throttling for minutes.
+    let pipeline = match (&config.cosmos_endpoint, &config.state_file) {
+        (Some(endpoint), _) => PipelineSource::Docs(Arc::new(
+            CosmosDocs::new(
+                endpoint,
+                usnm_state::DATABASE,
+                credential::from_env_for(credential::COSMOS_RESOURCE),
+            )?
+            .with_rate_limit_retry(std::time::Duration::from_secs(10)),
+        )),
+        (None, Some(path)) => PipelineSource::File(path.clone()),
+        (None, None) => PipelineSource::None,
+    };
+    tracing::info!(
+        pipeline_state = match &pipeline {
+            PipelineSource::Docs(_) => "cosmos",
+            PipelineSource::File(_) => "file",
+            PipelineSource::None => "none",
+        },
+        "status page source"
+    );
     let bind = config.bind.clone();
-    let mut state = AppState::with_loader(config, snapshot, Some(loader));
+    let mut state = AppState::with_loader(config, snapshot, Some(loader)).with_pipeline(pipeline);
     if let Some(store) = responses {
         tracing::info!(store = ?store, "persistent response cache enabled");
         state = state.with_response_store(store);

@@ -143,6 +143,7 @@ async fn enqueue_one(state: &State, l: &ListedBatch) -> anyhow::Result<Outcome> 
             curated: None,
             last_error: None,
             updated_at: Utc::now(),
+            curated_at: None,
         };
         return Ok(if state.create_batch(&fresh).await? {
             Outcome::New
