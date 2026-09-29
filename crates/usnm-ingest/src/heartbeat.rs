@@ -8,7 +8,7 @@
 //! stop it from reporting the stage the batch is stuck in, and it stops when
 //! its [`Heartbeat`] guard is dropped at the end of the batch.
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -66,9 +66,10 @@ impl std::fmt::Display for Stage {
 #[derive(Debug)]
 pub struct BatchProgress {
     started: Instant,
-    stage: AtomicU8,
-    /// Milliseconds after `started` when the current stage began.
-    stage_at_ms: AtomicU64,
+    /// The stage in the low 8 bits, and the milliseconds after `started`
+    /// when it began above them: one atomic, so a snapshot never pairs one
+    /// stage with another's start.
+    stage: AtomicU64,
     /// The download's own byte counter, once it has started.
     archive_bytes: OnceLock<Arc<AtomicU64>>,
     pages: AtomicU64,
@@ -80,8 +81,7 @@ impl BatchProgress {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             started: Instant::now(),
-            stage: AtomicU8::new(Stage::WaitingForSlot as u8),
-            stage_at_ms: AtomicU64::new(0),
+            stage: AtomicU64::new(Stage::WaitingForSlot as u64),
             archive_bytes: OnceLock::new(),
             pages: AtomicU64::new(0),
             parts: AtomicU64::new(0),
@@ -89,17 +89,26 @@ impl BatchProgress {
     }
 
     pub fn set_stage(&self, stage: Stage) {
-        let ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        self.stage_at_ms.store(ms, Ordering::Relaxed);
-        self.stage.store(stage as u8, Ordering::Relaxed);
+        // 56 bits of milliseconds is over two million years.
+        let ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX >> 8);
+        self.stage.store(
+            (ms.min(u64::MAX >> 8) << 8) | stage as u64,
+            Ordering::Relaxed,
+        );
     }
 
     pub fn stage(&self) -> Stage {
-        let n = self.stage.load(Ordering::Relaxed);
-        Stage::ALL
-            .get(usize::from(n))
+        self.stage_and_start().0
+    }
+
+    /// The current stage and when it began.
+    fn stage_and_start(&self) -> (Stage, Duration) {
+        let packed = self.stage.load(Ordering::Relaxed);
+        let stage = Stage::ALL
+            .get(usize::from(packed as u8))
             .copied()
-            .unwrap_or(Stage::WaitingForSlot)
+            .unwrap_or(Stage::WaitingForSlot);
+        (stage, Duration::from_millis(packed >> 8))
     }
 
     /// Report the bytes of this download as it runs.
@@ -119,9 +128,9 @@ impl BatchProgress {
 
     pub fn snapshot(&self) -> Snapshot {
         let elapsed = self.started.elapsed();
-        let stage_at = Duration::from_millis(self.stage_at_ms.load(Ordering::Relaxed));
+        let (stage, stage_at) = self.stage_and_start();
         Snapshot {
-            stage: self.stage(),
+            stage,
             elapsed,
             in_stage: elapsed.saturating_sub(stage_at),
             archive_bytes: self
@@ -281,5 +290,19 @@ mod tests {
         }
         assert_eq!(Stage::WaitingForSlot.to_string(), "waiting_for_slot");
         assert_eq!(mb(1_048_576 + 104_858), 1.1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stage_and_its_start_are_stored_together() {
+        let p = BatchProgress::new();
+        tokio::time::sleep(Duration::from_millis(90_500)).await;
+        p.set_stage(Stage::Committing);
+        assert_eq!(
+            p.stage_and_start(),
+            (Stage::Committing, Duration::from_millis(90_500))
+        );
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let s = p.snapshot();
+        assert_eq!((s.stage, s.in_stage.as_secs()), (Stage::Committing, 10));
     }
 }

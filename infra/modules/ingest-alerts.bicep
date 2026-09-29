@@ -83,12 +83,14 @@ print Early = early, Late = late, Curated = curated, Throttled = throttled
 '''
 
 // One backfill replica has logged nothing for 15 minutes, although it hasn't
-// ended: no "curation finished" or "command failed" line, and no platform
-// event that stopped it or its execution. A worker logs "curate progress"
-// every minute while it holds a batch (and a batch it can't finish in 45
-// minutes is abandoned with a "curation timed out" line), so 15 minutes of
-// silence means the process or its runtime is stuck, or its logs stopped
-// arriving. Only replicas that have logged "claimed" are checked: images
+// ended: no "curation finished" or "command failed" line, no platform event
+// that stopped the replica, and no stop of its execution. Job-level stop
+// events don't name the execution, so each is matched to the latest
+// execution that started before it (the replica name is the execution's
+// name plus a suffix). A worker logs "curate progress" every minute while it
+// holds a batch (and a batch it can't finish in 45 minutes is abandoned with
+// a "curation timed out" line), so 15 minutes of silence means the process or
+// its runtime is stuck, or its logs stopped arriving. Only replicas that have logged "claimed" are checked: images
 // from before the heartbeat were silent for minutes by design. The window is
 // a day, the job's replica timeout.
 var backfillReplicaSilent = '''
@@ -98,25 +100,32 @@ let lines = ContainerAppConsoleLogs
     | extend Message = tostring(parse_json(Log).fields.message), Replica = ContainerGroupName;
 let replicas = lines
     | summarize
+        FirstLine = min(TimeGenerated),
         LastLine = max(TimeGenerated),
         Watched = countif(Message in ("claimed", "curate progress")),
         Ended = countif(Message in ("curation finished", "command failed"))
-        by Replica;
+        by Replica
+    | extend Execution = extract(@"^(.+)-[a-z0-9]+$", 1, Replica);
 let platform = ContainerAppSystemLogs
     | where JobName startswith "caj-usnm-backfill-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET";
 let replicaStops = platform
     | where Reason in ("ContainerTerminated", "PodDeletion", "ProcessExited", "SuccessfulDelete")
     | extend Replica = iff(isnotempty(ReplicaName), ReplicaName, extract(@"(caj-usnm-backfill-[a-z0-9-]+)", 1, Log))
-    | summarize Stopped = max(TimeGenerated) by Replica;
-let jobStop = toscalar(platform
+    | summarize by Replica;
+let executions = replicas | summarize Started = min(FirstLine) by Execution | extend k = 1;
+let executionStops = platform
     | where Reason in ("Suspended", "DeadlineExceeded", "BackoffLimitExceeded")
-    | summarize max(TimeGenerated));
+    | project StopAt = TimeGenerated, k = 1
+    | join kind=inner executions on k
+    | where Started <= StopAt
+    | summarize arg_max(Started, Execution) by StopAt
+    | summarize by Execution;
 replicas
 | where Watched > 0 and Ended == 0
 | where LastLine < ago(15m)
 | join kind=leftanti replicaStops on Replica
-| where isnull(jobStop) or jobStop < LastLine
+| join kind=leftanti executionStops on Execution
 | project Replica, LastLine, SilentMinutes = round((now() - LastLine) / 1m, 1)
 '''
 
