@@ -95,6 +95,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | `GET /v1/export/aggregate.csv` | Same as `/aggregate` as tidy CSV (`place_id,lat,lon,bucket_start,hits,baseline,rel`) | 1 day |
 | `GET /v1/export/hits.csv` | Hits (≤ 10,000 rows) with page keys and LoC URLs | 1 day |
 | `GET /v1/docs`, `GET /v1/openapi.json` | API documentation | 1 day |
+| `GET /v1/status` | Pipeline status for the public `/status` page: backfill, indexing, titles catalog (§6.3.6) | 30 s |
 | `GET /healthz`, `GET /readyz` | Liveness; readiness (reference data loaded, backend reachable, and after a start the cache warm-up finished or its 2-minute cap passed, §6.6) | none |
 
 ### 6.3.3 `GET /v1/aggregate` response
@@ -159,6 +160,24 @@ Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer 
 ### 6.3.5 Errors
 
 This is RFC 9457 `application/problem+json`, with `type` values such as `/errors/query-syntax`, `/errors/query-too-broad`, `/errors/rate-limited`, `/errors/backend-timeout`, plus a `hint` field. Syntax errors return **400** with a caret position, broad queries **422**, backend timeouts **503** with `Retry-After`, and rate limits **429**.
+
+### 6.3.6 `GET /v1/status`
+
+The data behind the public status page (`/status` on the site). No sign-in, like every other route, and it goes through the same rate limiter. The response is JSON with `schema: 1`:
+
+| Field | From | Contents |
+|-------|------|----------|
+| `generated_at`, `stale`, `error`, `pipeline` | the API | When the document was built; `stale: true` with a sanitized `error` if the latest read of the pipeline state failed and an earlier reading is shown; `pipeline.read_at` is when that reading was taken |
+| `published` | the reference data the API serves | Version, `published_at`, pages, titles, places, bounds, the index set (base + deltas, `deltas` of `max_deltas` = 8) and, when the snapshot manifest records it, the number of batches |
+| `backfill` | Cosmos `batches`, `ops/loc-bulk-pacer` | Batches by status, in progress (live lease) and stopped (expired lease), retrying, percent curated, pages curated; batches curated per hour for 48 h, the rate over the last 12 h and an ETA; whether LoC downloads are throttled and until when; batches in progress, failed (up to 100) and the 20 most recently curated |
+| `indexing` | Cosmos `index_runs`, `ops/current`, `ops/quickwit-writer`, `ops/release-progress` | The 20 most recent index runs (version, full or delta, status, batches, docs, pages, start, publish, duration, sanitized error), the writer lock, and a running release's progress (docs sent of expected, MB sent), which the release writes every 30 s |
+| `titles` | `catalog/titles.json`, `catalog/places.json`, Cosmos `batches`, the snapshot manifest | Catalog size; titles in curated batches that the catalog lacks (they wait for `titles-sync`) and the batches held back for them; curated batches not yet published, and how many of those the next release can take |
+
+Sections that need Cosmos are `{"available": false, "reason": …}` when the API has no pipeline state configured (the fixtures, CI, local development without `USNM_STATE_FILE`) or its first read fails; `published` always works.
+
+**Cost and caching.** Each API replica recomputes the document at most once per 60 s (`USNM_STATUS_REFRESH_SECS`), whatever the traffic; with the production cap of 2 replicas, that is at most two refreshes a minute. Concurrent requests share one computation, and a request that arrives during a refresh gets the previous document instead of waiting. Each refresh runs three Cosmos queries, one per container, projecting only the fields shown (never a batch's part list or a run's batch list), and logs the request units they cost. The client retries 429s for 10 s at most, and a refresh that takes over 20 s counts as failed. Browsers may cache the response for 30 s (`Cache-Control: public, max-age=30`).
+
+**What it never shows.** Worker ids appear only as their last six characters. Error text is sanitized before it leaves the API: URLs other than `loc.gov` ones, Azure hostnames, this deployment's resource names, IP addresses, GUIDs, email addresses and worker ids are replaced with placeholders, and each error is cut to 200 characters. There is no query text in it, because the pipeline has none.
 
 ## 6.4 Query language and validation
 

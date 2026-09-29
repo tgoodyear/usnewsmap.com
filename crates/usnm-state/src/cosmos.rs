@@ -2,11 +2,13 @@
 //!
 //! Local (key) auth is disabled on the account, so every request carries a
 //! managed identity token (`type=aad`). Only point reads, create, conditional
-//! replace, upsert and a one-field query are used; 429s are retried for up to
-//! five minutes, each wait the longer of the service's `x-ms-retry-after-ms`
-//! (capped at 30 s) and a doubling backoff, plus jitter.
+//! replace, upsert, a one-field query and a projection query are used; 429s
+//! are retried for up to five minutes by default, each wait the longer of the
+//! service's `x-ms-retry-after-ms` (capped at 30 s) and a doubling backoff,
+//! plus jitter.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,7 +18,7 @@ use reqwest::{Method, RequestBuilder, Response, StatusCode, Url};
 use serde_json::{json, Value};
 use usnm_store::credential::Credential;
 
-use crate::docs::{DocStore, Versioned};
+use crate::docs::{DocStore, Field, Versioned};
 
 const API_VERSION: &str = "2018-12-31";
 /// How long one request keeps retrying 429s. Cosmos often suggests a wait of a
@@ -40,6 +42,8 @@ pub struct CosmosDocs {
     sessions: Mutex<HashMap<String, BTreeMap<String, String>>>,
     retry_initial: Duration,
     retry_for: Duration,
+    /// Request units charged so far, in thousandths.
+    charge_milli: AtomicU64,
 }
 
 impl CosmosDocs {
@@ -69,7 +73,15 @@ impl CosmosDocs {
             sessions: Mutex::default(),
             retry_initial: Duration::from_millis(100),
             retry_for: RATE_LIMIT_RETRY_FOR,
+            charge_milli: AtomicU64::new(0),
         })
+    }
+
+    /// Retry 429s for at most `d` per request instead of five minutes: for a
+    /// reader that would rather report "busy" than wait (the status page).
+    pub fn with_rate_limit_retry(mut self, d: Duration) -> Self {
+        self.retry_for = d;
+        self
     }
 
     fn docs_url(&self, container: &str, id: Option<&str>) -> anyhow::Result<Url> {
@@ -136,6 +148,15 @@ impl CosmosDocs {
             }
             let resp = req.send().await.context("Cosmos request")?;
             self.remember_session(container, &resp);
+            if let Some(charge) = resp
+                .headers()
+                .get("x-ms-request-charge")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<f64>().ok())
+            {
+                self.charge_milli
+                    .fetch_add((charge * 1000.0) as u64, Ordering::Relaxed);
+            }
             if resp.status() != StatusCode::TOO_MANY_REQUESTS {
                 return Ok(resp);
             }
@@ -301,6 +322,53 @@ impl DocStore for CosmosDocs {
                 "parameters": [{"name": "@values", "value": values}],
             })
         };
+        let mut out: Vec<Versioned> = self
+            .query(container, &body)
+            .await?
+            .into_iter()
+            .map(|d| {
+                let (doc, etag) = clean(d);
+                Versioned { doc, etag }
+            })
+            .collect();
+        out.sort_by(|a, b| a.doc["id"].as_str().cmp(&b.doc["id"].as_str()));
+        Ok(out)
+    }
+
+    async fn select(&self, container: &str, fields: &[Field]) -> anyhow::Result<Vec<Value>> {
+        let body = json!({"query": projection(fields)?, "parameters": []});
+        Ok(self
+            .query(container, &body)
+            .await?
+            .into_iter()
+            .map(|d| clean(d).0)
+            .collect())
+    }
+
+    fn request_charge(&self) -> Option<f64> {
+        Some(self.charge_milli.load(Ordering::Relaxed) as f64 / 1000.0)
+    }
+}
+
+/// `SELECT c["a"]["b"] AS a_b, ARRAY_LENGTH(c["x"]) AS x_len FROM c`: a plain
+/// projection, which the gateway serves across partitions without a query plan.
+fn projection(fields: &[Field]) -> anyhow::Result<String> {
+    anyhow::ensure!(!fields.is_empty(), "select needs at least one field");
+    let mut columns = Vec::with_capacity(fields.len());
+    for f in fields {
+        let path: String = f.segments()?.iter().map(|s| format!("[\"{s}\"]")).collect();
+        let expr = match f {
+            Field::Path(_) => format!("c{path}"),
+            Field::Len(_) => format!("ARRAY_LENGTH(c{path})"),
+        };
+        columns.push(format!("{expr} AS {}", f.alias()));
+    }
+    Ok(format!("SELECT {} FROM c", columns.join(", ")))
+}
+
+impl CosmosDocs {
+    /// Run a query across partitions and return every page of results.
+    async fn query(&self, container: &str, body: &Value) -> anyhow::Result<Vec<Value>> {
         let url = self.docs_url(container, None)?;
         let mut out = Vec::new();
         let mut continuation: Option<String> = None;
@@ -334,15 +402,11 @@ impl DocStore for CosmosDocs {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned);
             let page: Value = resp.json().await?;
-            for d in page["Documents"].as_array().cloned().unwrap_or_default() {
-                let (doc, etag) = clean(d);
-                out.push(Versioned { doc, etag });
-            }
+            out.extend(page["Documents"].as_array().cloned().unwrap_or_default());
             if continuation.is_none() {
                 break;
             }
         }
-        out.sort_by(|a, b| a.doc["id"].as_str().cmp(&b.doc["id"].as_str()));
         Ok(out)
     }
 }
@@ -389,6 +453,8 @@ mod tests {
         let mut out = HeaderMap::new();
         let mut items = s.items.lock().unwrap();
         if h.get("x-ms-documentdb-isquery").is_some() {
+            s.seen.lock().unwrap().push(body.clone());
+            out.insert("x-ms-request-charge", "2.5".parse().unwrap());
             let docs: Vec<Value> = items
                 .iter()
                 .map(|(d, e)| {
@@ -519,7 +585,22 @@ mod tests {
         let all = c.list("batches", "status", &["curated"]).await.unwrap();
         assert_eq!(all.len(), 2);
         assert!(all[0].doc.get("_rid").is_none());
+        // A projection query names only the fields, and its charge is counted.
+        let before = c.request_charge().unwrap();
+        c.select(
+            "batches",
+            &[Field::Path("status"), Field::Len("curated.parts")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(c.request_charge().unwrap() - before, 2.5);
         let seen = fake.seen.lock().unwrap();
+        assert!(
+            seen.iter().any(|s| s.contains(
+                r#"SELECT c[\"status\"] AS status, ARRAY_LENGTH(c[\"curated\"][\"parts\"]) AS curated_parts_len FROM c"#
+            )),
+            "{seen:?}"
+        );
         assert!(seen.contains(&"[\"b1\"]".to_owned()));
         // Writes return session tokens; later requests echo the latest one.
         assert!(seen.contains(&"session=0:1#1".to_owned()), "{seen:?}");

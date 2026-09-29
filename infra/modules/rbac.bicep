@@ -1,7 +1,8 @@
 // Least-privilege data-plane access for the managed identities (08 §8.2).
-// Serving replicas can read reference data and the index and write only the
-// response cache; the ingest identity writes the lake and Cosmos state. Both
-// send telemetry to Application Insights.
+// Serving replicas can read reference data and the index, read the Cosmos
+// pipeline state (for the public status page) and write only the response
+// cache; the ingest identity writes the lake and Cosmos state. Both send
+// telemetry to Application Insights.
 
 param storageName string
 param cosmosName string
@@ -13,6 +14,8 @@ var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var blobContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 // Cosmos DB Built-in Data Contributor (data-plane role).
 var cosmosDataContributor = '00000000-0000-0000-0000-000000000002'
+// Cosmos DB Built-in Data Reader: read items and run queries, nothing else.
+var cosmosDataReader = '00000000-0000-0000-0000-000000000001'
 // Monitoring Metrics Publisher: sends any telemetry (traces too) to the
 // component, which accepts Entra-authenticated ingestion only.
 var metricsPublisher = '3913510d-42f4-4e42-8a64-420c390055eb'
@@ -84,3 +87,21 @@ resource ingestCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@
     scope: '${cosmos.id}/dbs/usnm'
   }
 }
+
+// The API reads batches, index runs and ops items for /v1/status: read-only,
+// and only those containers (not titles or the millions of issues), so a
+// compromised serving replica can neither change the pipeline's state nor
+// read more of it than the page shows.
+var statusContainers = ['batches', 'index_runs', 'ops']
+
+resource appCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = [
+  for c in statusContainers: {
+    parent: cosmos
+    name: guid(cosmos.id, appPrincipalId, cosmosDataReader, c)
+    properties: {
+      principalId: appPrincipalId
+      roleDefinitionId: '${cosmos.id}/sqlRoleDefinitions/${cosmosDataReader}'
+      scope: '${cosmos.id}/dbs/usnm/colls/${c}'
+    }
+  }
+]

@@ -1,9 +1,14 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { ApiError, VersionChangedError } from "./api/client";
 import "./styles.css";
+
+// The status page is its own route, loaded only when visited. The API serves
+// index.html for app paths, so /status works as a direct link.
+const StatusPage = lazy(() => import("./status/StatusPage"));
+const onStatus = window.location.pathname.replace(/\/+$/, "") === "/status";
 
 const client: QueryClient = new QueryClient({
   // A new index version was published mid-session: refetch /v1/meta. Every
@@ -30,7 +35,13 @@ const client: QueryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={client}>
-      <App />
+      {onStatus ? (
+        <Suspense fallback={<p role="status">Loading…</p>}>
+          <StatusPage />
+        </Suspense>
+      ) : (
+        <App />
+      )}
     </QueryClientProvider>
   </StrictMode>,
 );

@@ -5,6 +5,7 @@ import type {
   Meta,
   PlacesResponse,
   Problem,
+  Status,
 } from "./types";
 
 /** API origin: same-origin (the API serves the site; the dev server proxies) unless configured. */
@@ -120,6 +121,8 @@ export const api = {
   // Always revalidate: /v1/meta is cacheable for 5 minutes, and after a
   // version change a cached copy would name the old version again.
   meta: (signal?: AbortSignal) => getJson<Meta>("/v1/meta", signal, "no-cache"),
+  /** The pipeline status page's data; the API recomputes it at most once a minute. */
+  status: (signal?: AbortSignal) => getJson<Status>("/v1/status", signal, "no-cache"),
   places: (version: string, signal?: AbortSignal) =>
     getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, signal),
   aggregate: (p: SearchParams, version: string, signal?: AbortSignal) =>

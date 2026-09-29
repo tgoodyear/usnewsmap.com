@@ -358,7 +358,8 @@ export function App() {
           Chronicling America
         </a>{" "}
         (Library of Congress and National Endowment for the Humanities).
-        {meta.data && ` ${indexSummary(meta.data)}`}
+        {meta.data && ` ${indexSummary(meta.data)}`}{" "}
+        <a href="/status">Pipeline status</a>
       </footer>
     </div>
   );
