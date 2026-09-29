@@ -183,7 +183,7 @@ input, select {
 .timeline__cursor { stroke: var(--ink); stroke-width: 2; vector-effect: non-scaling-stroke; }
 
 /* margin-top: auto keeps the footer at the bottom of the window when the page is short. */
-.credits { font-size: 0.8rem; color: var(--muted); padding: 6px 16px; flex: none; margin-top: auto; }
+.credits { font-size: 0.8rem; color: var(--muted); padding: 6px 16px; flex: none; margin-top: auto; text-align: center; }
 
 @media (max-width: 640px) {
   /* Phones: the brand on its own line, then the search box and its button;
