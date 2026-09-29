@@ -300,7 +300,7 @@ One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth
 | `batches` | `/batch` | LoC batch | ~3k | `versions_seen[]`, `current_version`, `status ∈ {discovered, queued, downloading, curated, indexed, failed}`, `attempts`, `source_sha256`, `pages`, `lccns[]`, `curated_path`, `indexed_in[]`, `lease {owner, until}` |
 | `issues` | `/lccn` | issue (lccn + date + edition) | ~3–4M | page count, empty-OCR pages, `batch`, `batch_version`, `ocr_source`, `indexed_in` (index version). Enables "what's missing for this title?" checks |
 | `index_runs` | `/index_version` | index build | tens | `status`, partitions done / total, doc counts, golden-query check results, `published_at`, `previous_version` |
-| `ops` | `/kind` | misc | few | `current` pointer (mirrors `reference/current.json`), locks, schedules |
+| `ops` | `/kind` | misc | few | `current` pointer (mirrors `reference/current.json`), locks, the LoC download pacer, the running release's progress (`release-progress`), schedules |
 
 **Why issues and not pages?** Page-level state (23M items, ~12 GB) would fit the free tier's 25 GB, but writing it costs about 140M RU: roughly 38 hours of the whole free throughput. It would also duplicate what the Parquet files already record. Issue-level state (~3–4M items, ~2 GB) answers the practical questions (coverage gaps, reprocessing status) at about a sixth of the write cost. Page-level detail is always available by scanning Parquet.
 
@@ -320,4 +320,4 @@ One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth
 
 **Client:** the pipeline talks to the Cosmos **REST API** directly (`crates/usnm-ingest/src/cosmos.rs`) with Entra ID tokens: point read, create, **replace with `If-Match`** (for claims, commits and locks), upsert and a one-field query, retrying 429s. That is the whole surface the pipeline needs, and it avoids depending on the beta Rust SDK. Finding newly curated batches uses a status query rather than the change feed; at ~3k batch items the query costs little.
 
-**Resilience:** the API doesn't read Cosmos on the request path. If Cosmos is throttled or down, the site keeps serving and only the pipeline pauses. Continuous backup (7-day, free tier) covers mistakes, and state can be rebuilt from Parquet plus the LoC batch list if ever lost.
+**Resilience:** the API doesn't read Cosmos on the search path. Only the status page (`/v1/status`, [06 §6.3.6](06-api-design.md#636-get-v1status)) reads it, read-only, at most once a minute and three queries at a time. If Cosmos is throttled or down, the site keeps serving, the status page shows its last reading as stale, and only the pipeline pauses. Continuous backup (7-day, free tier) covers mistakes, and state can be rebuilt from Parquet plus the LoC batch list if ever lost.

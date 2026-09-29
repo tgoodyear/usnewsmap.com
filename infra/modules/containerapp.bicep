@@ -20,6 +20,8 @@ param image string
 param identityId string
 param identityClientId string
 param storageBlobEndpoint string
+@description('Cosmos DB endpoint of the pipeline state, read (Data Reader, private endpoint) for the public status page.')
+param cosmosEndpoint string
 param allowedOrigins array
 param storageAccountName string
 param minReplicas int
@@ -70,6 +72,8 @@ var apiEnv = [
   { name: 'USNM_RESPONSE_CACHE_URL', value: '${storageBlobEndpoint}cache' }
   { name: 'USNM_ALLOWED_ORIGINS', value: join(allowedOrigins, ',') }
   { name: 'USNM_TRUSTED_PROXY_HOPS', value: string(trustedProxyHops) }
+  // Read-only pipeline state for /v1/status (the name the ingest jobs use).
+  { name: 'USNM_COSMOS_ENDPOINT', value: cosmosEndpoint }
   // Selects the user-assigned identity at the managed identity endpoint.
   { name: 'AZURE_CLIENT_ID', value: identityClientId }
 ]

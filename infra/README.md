@@ -13,7 +13,7 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `tiles` | Public basemap account (anonymous read of the `tiles` container, CORS for the site, no keys) |
 | `cosmos` | Cosmos DB for NoSQL. It uses the free tier with 7-day continuous backup, or serverless with periodic backup; **local auth disabled**, **public network access disabled**, and database `usnm` holding `titles`, `batches`, `issues`, `index_runs` and `ops` |
 | `private-endpoints` | `pe-usnm-blob` and `pe-usnm-cosmos` in `snet-pe`, registered in the private DNS zones |
-| `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, Cosmos Built-in Data Contributor on `usnm`, and Monitoring Metrics Publisher on Application Insights |
+| `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`, Cosmos Built-in Data **Reader** on `usnm` (the status page). `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, Cosmos Built-in Data Contributor on `usnm`, and Monitoring Metrics Publisher on Application Insights |
 | `containerapps-env` | VNet-integrated, workload-profiles environment that uses only the Consumption profile (no management fee) |
 | `containerapp` | The API (`ca-usnm-{env}`): 0.25 vCPU / 0.5 GiB, external ingress, health probes, and 0–1 to 2 replicas on an HTTP scaler. With `searchBackend: quickwit`, also a read-only Quickwit 0.9.1 sidecar (1 vCPU / 2 GiB, localhost only) and a system-assigned identity with Blob Data **Reader** on `qw-index` only |
 | `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
@@ -70,6 +70,7 @@ Check the result:
 ```sh
 curl "$(scripts/settings.sh prod API_URL)/v1/meta"   # "synthetic": true until the corpus is loaded
 curl "$(scripts/settings.sh prod API_URL)/readyz"
+curl "$(scripts/settings.sh prod API_URL)/v1/status"  # "pipeline": {"available": true, …} once the Cosmos role has propagated
 ```
 
 After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API app, which carries the site, onto the commit. To pin a specific build instead, run `scripts/settings.sh prod USNM_IMAGE_TAG <commit sha>` (default `main`) and `scripts/provision.sh prod`.

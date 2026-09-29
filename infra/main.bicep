@@ -272,6 +272,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
     storageAccountName: storage.outputs.name
+    cosmosEndpoint: cosmos.outputs.endpoint
     allowedOrigins: siteOrigins
     minReplicas: apiMinReplicas
     searchBackend: searchBackend
