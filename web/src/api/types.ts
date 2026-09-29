@@ -13,7 +13,11 @@ export interface Meta {
   titles: number;
   /** Every page in the published version. Absent from APIs older than this field. */
   pages?: number;
-  capabilities: { fuzzy: boolean; max_slop: number; nested_aggregations: boolean };
+  capabilities: {
+    fuzzy: boolean;
+    max_slop: number;
+    nested_aggregations: boolean;
+  };
   limits: {
     max_query_chars: number;
     max_terms: number;
@@ -28,7 +32,12 @@ export interface PlaceFeature {
   type: "Feature";
   id: string;
   geometry: { type: "Point"; coordinates: [number, number] };
-  properties: { name: string; state: string; precision: string; titles: number };
+  properties: {
+    name: string;
+    state: string;
+    precision: string;
+    titles: number;
+  };
 }
 
 export interface PlacesResponse {
@@ -100,7 +109,8 @@ export interface Problem {
 }
 
 /** A `/v1/status` section that needs the pipeline state: its data, or why there is none. */
-export type Section<T> = ({ available: true } & T) | { available: false; reason: string };
+export type Section<T> =
+  ({ available: true } & T) | { available: false; reason: string };
 
 export interface HourBin {
   start: string;
@@ -110,7 +120,12 @@ export interface HourBin {
 
 export interface Backfill {
   total: number;
-  by_status: { queued: number; downloading: number; curated: number; failed: number };
+  by_status: {
+    queued: number;
+    downloading: number;
+    curated: number;
+    failed: number;
+  };
   in_progress: number;
   stale_leases: number;
   retrying: number;
@@ -126,7 +141,11 @@ export interface Backfill {
     remaining: number;
     eta: string | null;
   };
-  loc: { next_slot: string | null; blocked_until: string | null; throttled: boolean };
+  loc: {
+    next_slot: string | null;
+    blocked_until: string | null;
+    throttled: boolean;
+  };
   in_progress_batches: {
     batch: string;
     version: number;
@@ -136,8 +155,19 @@ export interface Backfill {
     lease_expired: boolean;
     attempts: number;
   }[];
-  recent: { batch: string; version: number; pages: number; curated_at: string }[];
-  failed_batches: { batch: string; version: number; attempts: number; error: string | null; updated_at: string }[];
+  recent: {
+    batch: string;
+    version: number;
+    pages: number;
+    curated_at: string;
+  }[];
+  failed_batches: {
+    batch: string;
+    version: number;
+    attempts: number;
+    error: string | null;
+    updated_at: string;
+  }[];
   listed_limit: number;
 }
 
@@ -172,6 +202,8 @@ export interface Indexing {
   } | null;
   last_published_at: string | null;
   failed_runs: number;
+  /** Failed runs not yet superseded by a later successful publish. */
+  failed_since_last_publish?: number;
   runs: IndexRun[];
 }
 

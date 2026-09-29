@@ -227,7 +227,11 @@ pub struct Indexing {
     /// The release being built, with its progress, if one is running.
     pub release: Option<ReleaseProgress>,
     pub last_published_at: Option<DateTime<Utc>>,
+    /// Failed runs among the recent ones, whenever they happened.
     pub failed_runs: u64,
+    /// Failed runs that started after the last successful publish: the
+    /// ones not yet superseded by a version that did publish.
+    pub failed_since_last_publish: u64,
     /// Most recent first.
     pub runs: Vec<Run>,
 }
@@ -444,6 +448,7 @@ pub fn indexing(at: DateTime<Utc>, s: &Summary) -> Indexing {
             mb_sent: p.mb_sent,
             updated_at: p.updated_at,
         });
+    let last_published_at = runs.iter().filter_map(|r| r.published_at).max();
     Indexing {
         current_version: s.ops.current_version.clone(),
         writer: Writer {
@@ -452,10 +457,15 @@ pub fn indexing(at: DateTime<Utc>, s: &Summary) -> Indexing {
             until: writer.map(|w| w.until),
         },
         release,
-        last_published_at: runs.iter().filter_map(|r| r.published_at).max(),
+        last_published_at,
         failed_runs: runs
             .iter()
             .filter(|r| r.status == RunStatus::Failed)
+            .count() as u64,
+        failed_since_last_publish: runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Failed)
+            .filter(|r| last_published_at.is_none_or(|p| r.started_at > p))
             .count() as u64,
         runs: runs
             .iter()
@@ -746,6 +756,8 @@ mod tests {
             Some("lock `quickwit-writer` is held by `[worker]` until later")
         );
         assert_eq!(i.failed_runs, 1);
+        // v2 failed after v1 published, and nothing has published since.
+        assert_eq!(i.failed_since_last_publish, 1);
         assert!(i.writer.held);
         assert_eq!(i.writer.holder.as_deref(), Some("adf00d"));
         assert_eq!(i.release.as_ref().unwrap().percent, 25.0);
@@ -761,6 +773,16 @@ mod tests {
             "new_index": "d3", "status": "failed", "started_at": "2026-09-29T12:20:00Z"}),
         ));
         assert!(indexing(at(), &crashed).release.is_none());
+
+        // A version published after the failure supersedes it.
+        let mut recovered = s.clone();
+        recovered.runs.push(run(
+            json!({"index_version": "v5", "full": false, "indexes": ["b1", "d4"], "new_index": "d4",
+            "status": "published", "started_at": "2026-09-29T02:00:00Z",
+            "published_at": "2026-09-29T02:30:00Z"}),
+        ));
+        let r = indexing(at(), &recovered);
+        assert_eq!((r.failed_runs, r.failed_since_last_publish), (1, 0));
 
         // Progress from a release that is no longer running isn't shown.
         s.ops.writer.as_mut().unwrap().until = at() - Duration::minutes(1);

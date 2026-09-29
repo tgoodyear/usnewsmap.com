@@ -248,6 +248,9 @@ input, select {
 /* Batch names stay whole; narrow screens scroll the table sideways. */
 .status-table code { white-space: nowrap; overflow-wrap: normal; }
 .status-error { display: inline-block; max-width: 40ch; overflow-wrap: anywhere; font-size: 0.88rem; }
+.status details.status-error { margin: 0; }
+/* One line, cut with an ellipsis, however narrow the cell. */
+details.status-error > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
 .throughput { margin: 0; }
 .throughput__plot { position: relative; padding-left: 2.2em; }
 .throughput__max { position: absolute; left: 0; top: 0; font-size: 0.8rem; color: var(--muted); }
