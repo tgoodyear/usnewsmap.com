@@ -113,6 +113,10 @@ pub enum SearchError {
     Timeout,
     #[error("search backend error: {0}")]
     Backend(String),
+    /// The backend refused the request itself (a Quickwit 4xx): unlike
+    /// `Backend`, trying again won't help.
+    #[error("search backend rejected the request: {0}")]
+    Rejected(String),
 }
 
 #[async_trait]

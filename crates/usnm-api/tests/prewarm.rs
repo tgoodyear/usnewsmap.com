@@ -32,6 +32,7 @@ fn config() -> Config {
     c.data_dir = data_dir();
     c.reference_url = data_dir().display().to_string();
     c.rate_limit = None;
+    c.prewarm_retry_first = Duration::from_millis(10);
     c
 }
 
@@ -55,6 +56,11 @@ struct Counting {
     calls: AtomicUsize,
     delay: Duration,
     fail: bool,
+    /// Calls that fail before the backend starts answering (a searcher that
+    /// is still starting).
+    fail_first: AtomicUsize,
+    /// Every call is refused as a bad request (a Quickwit 4xx).
+    reject: bool,
 }
 
 impl Counting {
@@ -64,7 +70,26 @@ impl Counting {
             calls: AtomicUsize::new(0),
             delay,
             fail,
+            fail_first: AtomicUsize::new(0),
+            reject: false,
         })
+    }
+
+    fn rejecting() -> Arc<Self> {
+        Arc::new(Self {
+            inner: fixture_backend(),
+            calls: AtomicUsize::new(0),
+            delay: Duration::ZERO,
+            fail: false,
+            fail_first: AtomicUsize::new(0),
+            reject: true,
+        })
+    }
+
+    fn failing_first(n: usize) -> Arc<Self> {
+        let b = Self::new(Duration::ZERO, false);
+        b.fail_first.store(n, Ordering::SeqCst);
+        b
     }
 
     fn calls(&self) -> usize {
@@ -76,6 +101,18 @@ impl Counting {
         tokio::time::sleep(self.delay).await;
         if self.fail {
             return Err(SearchError::Backend("engine down".into()));
+        }
+        if self.reject {
+            return Err(SearchError::Rejected(
+                "quickwit returned 400 Bad Request".into(),
+            ));
+        }
+        let starting = self
+            .fail_first
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if starting {
+            return Err(SearchError::Backend("quickwit returned 500".into()));
         }
         Ok(())
     }
@@ -337,6 +374,58 @@ async fn a_slow_backend_holds_the_swap_for_the_budget_at_most() {
     assert!(reload.await.unwrap().unwrap());
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(state.snapshot.load().refdata.version(), "fixture-v2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_searcher_that_is_still_starting_is_retried() {
+    let dir = temp_reference("starting");
+    let backend = Counting::failing_first(2);
+    let state = Arc::new(reloading_state(&dir, config(), backend.clone()).await);
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    let queries = 1 + 2 * prewarm::examples().len();
+    assert_eq!(report.ok, queries, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+    assert_eq!(visit_examples(&state, &backend, "fixture-v1").await, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn slow_failures_share_one_limit_per_query() {
+    let dir = temp_reference("slow-failing");
+    let backend = Counting::new(Duration::from_millis(100), true);
+    let mut cfg = config();
+    let limit = Duration::from_millis(350);
+    cfg.prewarm_query_timeout = limit;
+    cfg.prewarm_budget = Duration::from_secs(30);
+    let state = Arc::new(reloading_state(&dir, cfg, backend).await);
+    let started = std::time::Instant::now();
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    let n = prewarm::examples().len();
+    // Every example got its turn: none used up the run's budget.
+    assert_eq!(report.skipped, 0, "{report:?}");
+    assert_eq!(report.failed + report.timed_out, n, "{report:?}");
+    // Each gave up at about its own limit. Resetting the limit on every
+    // attempt would take about three times as long here.
+    let bound = limit * n as u32 + Duration::from_millis(800);
+    assert!(
+        started.elapsed() < bound,
+        "{:?} >= {bound:?}",
+        started.elapsed()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_rejected_request_is_not_retried() {
+    let dir = temp_reference("rejecting");
+    let backend = Counting::rejecting();
+    let state = Arc::new(reloading_state(&dir, config(), backend.clone()).await);
+    let before = backend.calls();
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert_eq!(report.failed, prewarm::examples().len(), "{report:?}");
+    // One call per example search: none of them was tried again.
+    assert_eq!(backend.calls() - before, prewarm::examples().len());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
