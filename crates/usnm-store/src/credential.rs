@@ -24,8 +24,9 @@ pub const STORAGE_RESOURCE: &str = "https://storage.azure.com/";
 pub const COSMOS_RESOURCE: &str = "https://cosmos.azure.com";
 
 /// Token audience for Azure Monitor ingestion (Application Insights with
-/// local auth disabled; the scope is `https://monitor.azure.com/.default`).
-pub const MONITOR_RESOURCE: &str = "https://monitor.azure.com";
+/// local auth disabled). With the trailing slash, as Microsoft's exporters
+/// request it (scope `https://monitor.azure.com//.default`).
+pub const MONITOR_RESOURCE: &str = "https://monitor.azure.com/";
 
 const REFRESH_MARGIN: Duration = Duration::from_secs(300);
 

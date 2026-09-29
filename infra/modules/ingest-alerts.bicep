@@ -42,7 +42,8 @@ union console, platform
 // A release that started ("building index") and hasn't ended ("published"
 // or "command failed") but has logged no "release progress" line for 10
 // minutes: the job hung, or died without a word. Progress is logged every
-// 30 s while the index builds.
+// 30 s while the index builds. The window is a day, the job's replica
+// timeout: a full release can take most of it (04 §4.1.1).
 var releaseStalled = '''
 let lines = ContainerAppConsoleLogs
     | where ContainerName == "ingest"
@@ -93,8 +94,8 @@ var rules = [
     name: 'release-stalled'
     displayName: 'Release stalled'
     description: 'A release is building an index but has logged no progress for 10 minutes. scripts/logs.sh <env> release-progress shows the last lines.'
-    frequency: 'PT10M'
-    window: 'PT3H'
+    frequency: 'PT15M'
+    window: 'P1D'
     query: releaseStalled
   }
   {
