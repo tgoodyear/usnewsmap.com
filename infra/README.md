@@ -87,7 +87,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `alertEmails` | `USNM_ALERT_EMAILS` | empty (comma-separated) |
 | `budgetStartDate` | `USNM_BUDGET_START` | empty. The first day of a month; the budget is created only with alert emails and this set. Azure can't change a budget's start date, so keep it fixed |
 | `dnsZoneName` | `USNM_DNS_ZONE` | empty (no zone). The site's domain, e.g. `usnewsmap.com` |
-| `availabilityFrequency` | `USNM_AVAILABILITY_FREQUENCY` | `300`. Seconds between availability test runs (300, 600 or 900); both tests from 3 locations cost about $26 a month at 300 and $9 at 900 |
+| `availabilityFrequency` | `USNM_AVAILABILITY_FREQUENCY` | `900`. Seconds between availability test runs (300, 600 or 900); the one test (the site home page) from 3 locations costs about $4 a month at 900 and $13 at 300 |
 | `githubRepo`, `githubRepoIds` | `USNM_GITHUB_REPO`, `USNM_GITHUB_REPO_IDS` | this repository; bootstrap sets both (the second is GitHub's immutable-ID form, `owner@id/name@id`) |
 | `allowedOrigins` | — | empty. Extra CORS origins; the site's own hostname and the domain (with `www`) are always allowed |
 | `deployPolicies` | — | `true`: assign the guard-rail policies (the `usnm-guardrails` stack defines them) |

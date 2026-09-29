@@ -84,14 +84,14 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Container Apps Jobs (weekly incremental ingest, stats, pre-warm) | Mostly within the free grant | $0 | $1 | $3 |
 | Egress | The site, tiles and API responses via Azure egress (first 100 GB free) | $0 | $0 | $5 |
 | Log Analytics / App Insights | Daily cap keeps it within 5 GB/month free. Each API request adds a request row (~1 KB) and a console line (~0.2 KB) | $0 | $0 | $3 |
-| Availability tests | 2 standard tests (site, API `/readyz`) × 3 locations, every 5 minutes, $0.0005 per run; every 15 minutes (`USNM_AVAILABILITY_FREQUENCY=900`) costs about $9 | $26 | $26 | $26 |
+| Availability tests | 1 standard test (the site home page) × 3 locations, every 15 minutes, $0.0005 per run | $4 | $4 | $4 |
 | Cosmos DB (document state) | Free tier: 1,000 RU/s + 25 GB (serverless ~$1–3 if the free tier is taken) | $0 | $0 | $3 |
 | **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
 | Container registry | ACR Basic (private images) | $5 | $5 | $5 |
-| **Total** | | **~$77** | **~$98** | **~$140** |
+| **Total** | | **~$55** | **~$76** | **~$118** |
 
-"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The availability tests at 5-minute intervals also put the typical month **over $80** (~$72 without them). Running them every 15 minutes brings it to about $81. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
+"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
 
 **The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$87–102, over the $80 target** now that private networking (~$17) and the registry (~$5) are in. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
 

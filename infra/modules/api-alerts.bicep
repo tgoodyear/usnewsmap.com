@@ -7,15 +7,17 @@
 //   (AppRequests, one row per request except the health probes; the
 //   request name is "<method> <route template>"). Stateful: one
 //   notification when a condition starts, resolved when it clears.
-// - Availability: Application Insights standard tests of the site's home
-//   page and the API's /readyz from three US locations, each with a metric
-//   alert when two of the three fail. Only for hostnames that have a bound
-//   certificate (the tests check TLS). Results are written by the
+// - Availability: an Application Insights standard test of the site's home
+//   page from three US locations, with a metric alert when two of the three
+//   fail. The site and the API are one container app, so the home page
+//   exercises DNS, TLS, ingress and the app; /readyz is already probed by
+//   Container Apps and failing searches raise the 5xx alert. Only when the
+//   site's hostname has a bound certificate (the test checks TLS). Results are written by the
 //   availability service itself; the component's DisableLocalAuth only
 //   restricts what clients send, and Microsoft's list of scenarios that
 //   don't work with Entra-only ingestion doesn't include availability tests.
-//   Each test run is billed ($0.0005 per location per run in East US 2):
-//   every 5 minutes from 3 locations is about $13 a month per URL.
+//   Each run is billed ($0.0005 per location per run in East US 2): every
+//   15 minutes from 3 locations is about $4 a month.
 
 param location string
 param tags object
@@ -27,14 +29,11 @@ param actionGroupId string
 @description('Site home page to test, e.g. https://usnewsmap.com/; empty skips the test.')
 param siteUrl string = ''
 
-@description('API readiness URL to test, e.g. https://api.usnewsmap.com/readyz; empty skips the test.')
-param apiReadyUrl string = ''
-
 // A string: the setting arrives as text, and only these values are valid
 // for a standard test.
 @description('Seconds between availability test runs from each location.')
 @allowed(['300', '600', '900'])
-param availabilityFrequency string = '300'
+param availabilityFrequency string = '900'
 
 // At least 5 server errors in 10 minutes that are also more than 2% of the
 // requests. The count floor keeps one or two failures on a quiet site from
@@ -124,7 +123,6 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
 var tests = filter(
   [
     { name: 'site', displayName: 'Site home page', url: siteUrl }
-    { name: 'api-ready', displayName: 'API ready', url: apiReadyUrl }
   ],
   t => !empty(t.url)
 )
