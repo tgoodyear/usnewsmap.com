@@ -1,13 +1,20 @@
 //! Where index documents go: JSONL files (the API's memory backend, local
 //! development and tests) or a Quickwit writer node (08 §8.4.1).
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
+use opentelemetry::KeyValue;
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+
+use crate::telemetry;
 
 /// The index config every base and delta shares (05 §5.5.1).
 pub const INDEX_TEMPLATE: &str = include_str!("../../../infra/quickwit/pages-index.yaml");
@@ -44,18 +51,75 @@ pub trait IndexSink: Send {
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()>;
     /// `memory` or `quickwit`, recorded in `current.json`.
     fn backend(&self) -> &'static str;
+    /// Counters for release progress, shared with whoever reports it. A
+    /// sink that doesn't count reports zeros.
+    fn stats(&self) -> Arc<SinkStats> {
+        Arc::default()
+    }
+}
+
+/// What a sink has sent so far, and where to look for its resources.
+#[derive(Debug, Default)]
+pub struct SinkStats {
+    docs_sent: AtomicU64,
+    bytes_sent: AtomicU64,
+    retries_429: AtomicU64,
+    retries_503: AtomicU64,
+    /// The file system whose free space the progress line reports.
+    pub work_dir: Option<PathBuf>,
+    /// The Quickwit writer node's process, for its memory use.
+    pub node_pid: Option<u32>,
+}
+
+impl SinkStats {
+    pub fn docs_sent(&self) -> u64 {
+        self.docs_sent.load(Ordering::Relaxed)
+    }
+    pub fn bytes_sent(&self) -> u64 {
+        self.bytes_sent.load(Ordering::Relaxed)
+    }
+    pub fn retries_429(&self) -> u64 {
+        self.retries_429.load(Ordering::Relaxed)
+    }
+    pub fn retries_503(&self) -> u64 {
+        self.retries_503.load(Ordering::Relaxed)
+    }
+
+    fn sent(&self, docs: u64, bytes: u64) {
+        self.docs_sent.fetch_add(docs, Ordering::Relaxed);
+        self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+        let m = telemetry::metrics();
+        m.docs_sent.add(docs, &[]);
+        m.bytes_sent.add(bytes, &[]);
+    }
+
+    fn retried(&self, status: u16) {
+        match status {
+            429 => self.retries_429.fetch_add(1, Ordering::Relaxed),
+            _ => self.retries_503.fetch_add(1, Ordering::Relaxed),
+        };
+        telemetry::metrics()
+            .retries
+            .add(1, &[KeyValue::new("status", i64::from(status))]);
+    }
 }
 
 /// `{dir}/{index_id}.jsonl`, the layout the memory backend loads.
 pub struct JsonlSink {
     dir: PathBuf,
     current: Option<(PathBuf, std::io::BufWriter<std::fs::File>)>,
+    stats: Arc<SinkStats>,
 }
 
 impl JsonlSink {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
         Self {
-            dir: dir.into(),
+            stats: Arc::new(SinkStats {
+                work_dir: Some(dir.clone()),
+                ..SinkStats::default()
+            }),
+            dir,
             current: None,
         }
     }
@@ -78,8 +142,10 @@ impl IndexSink for JsonlSink {
     async fn add(&mut self, doc: &Value) -> anyhow::Result<()> {
         use std::io::Write;
         let (_, w) = self.current.as_mut().context("no index created")?;
-        serde_json::to_writer(&mut *w, doc)?;
-        w.write_all(b"\n")?;
+        let mut line = serde_json::to_vec(doc)?;
+        line.push(b'\n');
+        w.write_all(&line)?;
+        self.stats.sent(1, line.len() as u64);
         Ok(())
     }
 
@@ -103,6 +169,10 @@ impl IndexSink for JsonlSink {
     fn backend(&self) -> &'static str {
         "memory"
     }
+
+    fn stats(&self) -> Arc<SinkStats> {
+        self.stats.clone()
+    }
 }
 
 /// Ingests into a Quickwit node that runs the indexer (the sole metastore writer).
@@ -115,6 +185,7 @@ pub struct QuickwitSink {
     /// First pause after pushback; doubles up to 8 s.
     retry_initial: Duration,
     retry_for: Duration,
+    stats: Arc<SinkStats>,
 }
 
 impl QuickwitSink {
@@ -130,7 +201,19 @@ impl QuickwitSink {
             buf: Vec::new(),
             retry_initial: Duration::from_millis(500),
             retry_for: INGEST_RETRY_FOR,
+            stats: Arc::default(),
         })
+    }
+
+    /// Report the free disk of `node`'s work directory and its memory in
+    /// release progress. Call before sending anything.
+    pub fn watching(mut self, node: &QuickwitNode) -> Self {
+        self.stats = Arc::new(SinkStats {
+            work_dir: Some(node.work_dir.clone()),
+            node_pid: node.pid(),
+            ..SinkStats::default()
+        });
+        self
     }
 
     async fn send(&mut self, commit: &str) -> anyhow::Result<()> {
@@ -142,6 +225,7 @@ impl QuickwitSink {
         let url = format!("{}/api/v1/{id}/ingest?commit={commit}", self.base);
         let deadline = tokio::time::Instant::now() + self.retry_for;
         let mut pause = self.retry_initial;
+        let mut attempt = 1u32;
         let (status, text) = loop {
             let resp = self
                 .http
@@ -159,9 +243,18 @@ impl QuickwitSink {
             if !pushback || tokio::time::Instant::now() + pause > deadline {
                 break (status, text);
             }
-            tracing::debug!(index = id, %status, ?pause, "Quickwit pushed back; retrying");
+            tracing::warn!(
+                index = id,
+                status = status.as_u16(),
+                attempt,
+                pause_ms = pause.as_millis() as u64,
+                error = %text.chars().take(200).collect::<String>(),
+                "Quickwit pushed back; retrying"
+            );
+            self.stats.retried(status.as_u16());
             tokio::time::sleep(pause).await;
             pause = (pause * 2).min(Duration::from_secs(8));
+            attempt += 1;
         };
         if !status.is_success() {
             bail!(
@@ -176,6 +269,8 @@ impl QuickwitSink {
                 text.chars().take(500).collect::<String>()
             );
         }
+        let docs = body.iter().filter(|&&b| b == b'\n').count() as u64;
+        self.stats.sent(docs, body.len() as u64);
         Ok(())
     }
 
@@ -261,20 +356,132 @@ impl IndexSink for QuickwitSink {
     fn backend(&self) -> &'static str {
         "quickwit"
     }
+
+    fn stats(&self) -> Arc<SinkStats> {
+        self.stats.clone()
+    }
 }
 
-/// The last `n` lines of a log file (empty if it can't be read).
-fn log_tail(path: &Path, n: usize) -> String {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
+/// Lines of the writer's output kept for error messages.
+const TAIL_LINES: usize = 50;
+
+/// The last lines of the writer node's output, ANSI colors removed.
+#[derive(Clone, Default)]
+pub struct Tail(Arc<Mutex<VecDeque<String>>>);
+
+impl Tail {
+    fn push(&self, line: String) {
+        let mut t = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if t.len() == TAIL_LINES {
+            t.pop_front();
+        }
+        t.push_back(line);
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        let t = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        t.iter().cloned().collect()
+    }
+}
+
+/// Remove ANSI escape sequences (Quickwit colors its log even when piped).
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters and intermediates, then one final byte @–~.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: up to BEL or ESC \.
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            // Any other escape is two characters.
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The level a writer line is forwarded at: warnings and errors, and the
+/// lines that say the node is up. `stderr` lines without a level (a panic,
+/// the CLI's final `Error: …`) are warnings at least.
+fn forward_level(line: &str, stderr: bool) -> Option<tracing::Level> {
+    // `2026-09-29T00:20:17.017Z  WARN quickwit_config::…: peer seeds are empty`
+    let level = line.split_whitespace().take(3).find_map(|w| match w {
+        "ERROR" => Some(tracing::Level::ERROR),
+        "WARN" => Some(tracing::Level::WARN),
+        "INFO" => Some(tracing::Level::INFO),
+        "DEBUG" => Some(tracing::Level::DEBUG),
+        "TRACE" => Some(tracing::Level::TRACE),
+        _ => None,
+    });
+    match level {
+        Some(l) if l <= tracing::Level::WARN => Some(l),
+        Some(tracing::Level::INFO)
+            if line.contains("REST server is ready")
+                || line.contains("starting REST server listening on")
+                || line.contains("has transitioned to ready state") =>
+        {
+            Some(tracing::Level::INFO)
+        }
+        Some(_) => None,
+        None if line.starts_with("Error") => Some(tracing::Level::ERROR),
+        None if stderr && !line.trim().is_empty() => Some(tracing::Level::WARN),
+        None => None,
+    }
+}
+
+/// Read the writer's `stream` line by line into `tail`, forwarding lines
+/// through `tracing` (target `quickwit`) at their level.
+fn forward(
+    stream: impl AsyncRead + Unpin + Send + 'static,
+    stderr: bool,
+    tail: Tail,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stream).lines();
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(l)) => strip_ansi(&l),
+                // Invalid UTF-8 ends `lines`; nothing more can be read anyway.
+                Ok(None) | Err(_) => break,
+            };
+            match forward_level(&line, stderr) {
+                Some(tracing::Level::ERROR) => tracing::error!(target: "quickwit", "{line}"),
+                Some(tracing::Level::WARN) => tracing::warn!(target: "quickwit", "{line}"),
+                Some(_) => tracing::info!(target: "quickwit", "{line}"),
+                None => {}
+            }
+            tail.push(line);
+        }
+    })
 }
 
 /// A Quickwit indexer node run as a child process for the length of a
-/// release: the one writer of the file-backed metastore.
+/// release: the one writer of the file-backed metastore. Its output goes to
+/// the job's console: warnings, errors and readiness through `tracing`, and
+/// the last lines into error messages.
 pub struct QuickwitNode {
     child: tokio::process::Child,
     pub url: String,
+    work_dir: PathBuf,
+    tail: Tail,
+    readers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl QuickwitNode {
@@ -306,7 +513,6 @@ impl QuickwitNode {
         }
         let config_path = work_dir.join("writer.yaml");
         std::fs::write(&config_path, config)?;
-        let log = std::fs::File::create(work_dir.join("quickwit-writer.log"))?;
         let mut cmd = tokio::process::Command::new(bin);
         // Quickwit's environment overrides its config file, and the official
         // image sets QW_LISTEN_ADDRESS=0.0.0.0, QW_DATA_DIR and QW_CONFIG: the
@@ -319,22 +525,35 @@ impl QuickwitNode {
                 cmd.env_remove(&key);
             }
         }
-        let child = cmd
+        let mut child = cmd
             .args(["run", "--config"])
             .arg(&config_path)
             .env("QW_DISABLE_TELEMETRY", "1")
             // AZURE_CLIENT_ID selects the pipeline's user-assigned identity;
             // Quickwit's credential chain uses the system-assigned one (08 §8.2).
             .env_remove("AZURE_CLIENT_ID")
+            // The node's own telemetry setting isn't the pipeline's.
+            .env_remove(telemetry::CONNECTION_STRING_VAR)
             .stdin(Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("starting {}", bin.display()))?;
+        let tail = Tail::default();
+        let mut readers = Vec::new();
+        if let Some(out) = child.stdout.take() {
+            readers.push(forward(out, false, tail.clone()));
+        }
+        if let Some(err) = child.stderr.take() {
+            readers.push(forward(err, true, tail.clone()));
+        }
         let mut node = Self {
             child,
             url: format!("http://127.0.0.1:{port}"),
+            work_dir: work_dir.to_owned(),
+            tail,
+            readers,
         };
         let http = reqwest::Client::new();
         for _ in 0..120 {
@@ -352,10 +571,21 @@ impl QuickwitNode {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+        // Let the readers take in what an exited node wrote last.
+        if node.child.try_wait()?.is_some() {
+            for r in node.readers.iter_mut() {
+                let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
+            }
+        }
         bail!(
-            "Quickwit writer did not become ready; the end of quickwit-writer.log:\n{}",
-            log_tail(&work_dir.join("quickwit-writer.log"), 20)
+            "Quickwit writer did not become ready; its last output:\n{}",
+            node.tail.lines().join("\n")
         )
+    }
+
+    /// The node's process id, while it runs.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
     }
 
     /// Stop the node and wait for it to exit.
@@ -373,6 +603,9 @@ impl QuickwitNode {
             }
             Err(_) => self.child.kill().await?,
         }
+        for r in self.readers.iter_mut() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
+        }
         Ok(())
     }
 }
@@ -384,12 +617,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn log_tail_keeps_the_last_lines() {
-        let f = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(f.path(), "a\nb\nc\n").unwrap();
-        assert_eq!(log_tail(f.path(), 2), "b\nc");
-        assert_eq!(log_tail(f.path(), 10), "a\nb\nc");
-        assert_eq!(log_tail(Path::new("/nonexistent/log"), 5), "");
+    fn tail_keeps_the_last_lines() {
+        let t = Tail::default();
+        for i in 0..TAIL_LINES + 3 {
+            t.push(i.to_string());
+        }
+        let lines = t.lines();
+        assert_eq!(lines.len(), TAIL_LINES);
+        assert_eq!(lines[0], "3");
+        assert_eq!(lines[TAIL_LINES - 1], (TAIL_LINES + 2).to_string());
+    }
+
+    #[test]
+    fn strips_ansi_colors() {
+        // As Quickwit 0.9 writes it to a pipe.
+        let raw = "\u{1b}[2m2026-09-29T00:20:17.017Z\u{1b}[0m \u{1b}[33m WARN\u{1b}[0m \
+                   \u{1b}[2mquickwit_config\u{1b}[0m\u{1b}[2m:\u{1b}[0m peer seeds are empty \
+                   \u{1b}[3mkey\u{1b}[0m\u{1b}[2m=\u{1b}[0mvalue";
+        assert_eq!(
+            strip_ansi(raw),
+            "2026-09-29T00:20:17.017Z  WARN quickwit_config: peer seeds are empty key=value"
+        );
+        assert_eq!(strip_ansi("\u{1b}]0;title\u{7}plain"), "plain");
+        assert_eq!(strip_ansi("no escapes"), "no escapes");
+        // A trailing lone escape doesn't panic.
+        assert_eq!(strip_ansi("x\u{1b}"), "x");
+    }
+
+    #[test]
+    fn forwards_warnings_errors_and_readiness() {
+        use tracing::Level;
+        let line = |level: &str, msg: &str| {
+            format!("2026-09-29T00:20:17.017Z {level} quickwit_serve: {msg}")
+        };
+        assert_eq!(
+            forward_level(&line(" WARN", "no shards available"), false),
+            Some(Level::WARN)
+        );
+        assert_eq!(
+            forward_level(&line("ERROR", "data dir volume too small"), false),
+            Some(Level::ERROR)
+        );
+        assert_eq!(
+            forward_level(&line(" INFO", "REST server is ready"), false),
+            Some(Level::INFO)
+        );
+        assert_eq!(
+            forward_level(
+                &line(" INFO", "starting REST server listening on 127.0.0.1:7380"),
+                false
+            ),
+            Some(Level::INFO)
+        );
+        assert_eq!(
+            forward_level(&line(" INFO", "starting janitor service"), false),
+            None
+        );
+        assert_eq!(forward_level(&line("DEBUG", "x"), true), None);
+        assert_eq!(
+            forward_level("Error: failed to bind", false),
+            Some(Level::ERROR)
+        );
+        assert_eq!(
+            forward_level("thread 'main' panicked at src/main.rs", true),
+            Some(Level::WARN)
+        );
+        assert_eq!(forward_level("some unlevelled stdout line", false), None);
+        assert_eq!(forward_level("", true), None);
+    }
+
+    /// A writer that exits at startup: the error carries its last output.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_writer_that_exits_explains_why() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("quickwit");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\n\
+             printf '\\033[2m2026-09-29T00:20:17Z\\033[0m \\033[33m WARN\\033[0m quickwit_config: peer seeds are empty\\n'\n\
+             echo 'Error: data dir volume too small' >&2\n\
+             exit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = QuickwitNode::start(&bin, dir.path(), 7399, "file:///m", "file:///i")
+            .await
+            .err()
+            .expect("the writer exited")
+            .to_string();
+        assert!(err.contains("did not become ready"), "{err}");
+        assert!(
+            err.contains("2026-09-29T00:20:17Z  WARN quickwit_config: peer seeds are empty"),
+            "{err}"
+        );
+        assert!(err.contains("Error: data dir volume too small"), "{err}");
     }
 
     #[tokio::test]
@@ -446,6 +769,10 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 4);
         assert!(seen.iter().all(|b| b == b"{\"doc_id\":\"a\"}\n"));
+        // Progress counts what was accepted, and the retries by status.
+        let stats = s.stats();
+        assert_eq!((stats.docs_sent(), stats.bytes_sent()), (1, 15));
+        assert_eq!((stats.retries_429(), stats.retries_503()), (1, 2));
     }
 
     #[tokio::test]

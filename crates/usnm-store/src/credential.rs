@@ -1,4 +1,5 @@
-//! Entra ID access tokens for Azure data services (Blob Storage, Cosmos DB).
+//! Entra ID access tokens for Azure services (Blob Storage, Cosmos DB, Azure
+//! Monitor ingestion).
 //!
 //! In Container Apps the managed identity endpoint (`IDENTITY_ENDPOINT` +
 //! `IDENTITY_HEADER`) issues tokens; `AZURE_CLIENT_ID` selects the
@@ -21,6 +22,10 @@ pub const STORAGE_RESOURCE: &str = "https://storage.azure.com/";
 
 /// Token audience for the Cosmos DB data plane.
 pub const COSMOS_RESOURCE: &str = "https://cosmos.azure.com";
+
+/// Token audience for Azure Monitor ingestion (Application Insights with
+/// local auth disabled; the scope is `https://monitor.azure.com/.default`).
+pub const MONITOR_RESOURCE: &str = "https://monitor.azure.com";
 
 const REFRESH_MARGIN: Duration = Duration::from_secs(300);
 

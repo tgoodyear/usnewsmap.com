@@ -320,6 +320,8 @@ pub async fn fetch(url: &str, dest: &Path) -> anyhow::Result<String> {
 pub struct Download {
     pub reader: ChannelReader,
     pub digest: tokio::sync::oneshot::Receiver<anyhow::Result<String>>,
+    /// Bytes downloaded so far.
+    pub bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Start streaming `url` (https, `file://` or a local path), retrying server
@@ -350,6 +352,11 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<bytes::Bytes>>(16);
     let (done, digest) = tokio::sync::oneshot::channel();
     let url = url.to_owned();
+    let bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counter = bytes.clone();
+    let count = move |n: usize| {
+        counter.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+    };
     tokio::spawn(async move {
         let mut hash = Sha256::new();
         let result: anyhow::Result<()> = async {
@@ -364,6 +371,7 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
                         }
                         buf.truncate(n);
                         hash.update(&buf);
+                        count(n);
                         if tx.send(Ok(buf.into())).await.is_err() {
                             bail!("reader stopped");
                         }
@@ -375,6 +383,7 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
                         let chunk =
                             chunk.with_context(|| format!("{url}: download interrupted"))?;
                         hash.update(&chunk);
+                        count(chunk.len());
                         if tx.send(Ok(chunk)).await.is_err() {
                             bail!("reader stopped");
                         }
@@ -401,6 +410,7 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
             current: bytes::Bytes::new(),
         },
         digest,
+        bytes,
     })
 }
 

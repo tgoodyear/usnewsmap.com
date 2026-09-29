@@ -10,10 +10,12 @@ pub mod catalog;
 pub mod cosmos;
 pub mod curated;
 pub mod docs;
+pub mod progress;
 pub mod release;
 pub mod sink;
 pub mod source;
 pub mod state;
+pub mod telemetry;
 pub mod titles;
 pub mod worker;
 

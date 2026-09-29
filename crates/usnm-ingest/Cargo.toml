@@ -21,8 +21,13 @@ flate2.workspace = true
 form_urlencoded.workspace = true
 futures.workspace = true
 httpdate.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-application-insights.workspace = true
+opentelemetry-http.workspace = true
 parquet.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -30,6 +35,7 @@ tar.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 zstd.workspace = true
 

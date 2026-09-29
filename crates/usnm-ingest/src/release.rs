@@ -26,12 +26,15 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use tracing::field::Empty;
+use tracing::Instrument;
 use usnm_core::text::TextStatus;
 use usnm_core::time::{date_from_day, day_number, ym_number};
 use usnm_store::ObjectStore;
 
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
+use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
 use crate::state::{Curated, IndexRun, RunBatch, RunStatus, State};
@@ -188,10 +191,38 @@ impl Release {
     }
 
     /// [`Release::run`] for a caller that already holds the writer lock.
+    /// Runs in a `release` span (a request in Application Insights).
     pub async fn run_held(
         &self,
         sink: &mut dyn IndexSink,
         lease: &WriterLease,
+    ) -> anyhow::Result<Option<Published>> {
+        let span = tracing::info_span!(
+            "release",
+            otel.kind = "consumer",
+            version = Empty,
+            full = Empty,
+            batches = Empty,
+            docs = Empty,
+            otel.status_code = Empty,
+            otel.status_description = Empty,
+        );
+        let result = self
+            .run_in_span(sink, lease, &span)
+            .instrument(span.clone())
+            .await;
+        if let Err(e) = &result {
+            span.record("otel.status_code", "ERROR");
+            span.record("otel.status_description", format!("{e:#}").as_str());
+        }
+        result
+    }
+
+    async fn run_in_span(
+        &self,
+        sink: &mut dyn IndexSink,
+        lease: &WriterLease,
+        span: &tracing::Span,
     ) -> anyhow::Result<Option<Published>> {
         self.confirm(lease).await?;
         let current = Catalog::load(self.reference.as_ref()).await?;
@@ -295,6 +326,9 @@ impl Release {
             bail!("index run `{version}` already exists");
         }
         let (_, mut etag) = self.state.run(&version).await?.context("run vanished")?;
+        span.record("version", version.as_str());
+        span.record("full", full);
+        span.record("batches", scope.len());
         tracing::info!(%version, index = %index_id, full, batches = scope.len(), "building index");
 
         let outcome = async {
@@ -317,6 +351,7 @@ impl Release {
             }
         };
         run.docs = docs;
+        span.record("docs", docs);
         etag = self.state.update_run(&run, &etag).await?;
 
         // Publish: the version pointer is the last write (04 §4.7), and only
@@ -432,6 +467,12 @@ impl Release {
             bail!("titles missing from the catalog: {missing:?}");
         }
         sink.create(index_id).await?;
+        // A line every 30 s and after each batch (the saved query
+        // `release-progress` and the stall alert read them).
+        let expected = scope.iter().map(|b| b.curated.ok_pages).sum();
+        let progress = Progress::new(sink.stats(), expected);
+        progress.snapshot().log(None);
+        let _ticker = progress.every(progress::INTERVAL);
         let mut docs = 0u64;
         for b in scope {
             for path in &b.curated.parts {
@@ -456,8 +497,10 @@ impl Release {
                 }
                 docs += part_docs.len() as u64;
             }
+            progress.snapshot().log(Some(&b.batch));
         }
         sink.finish(docs).await?;
+        progress.snapshot().log(None);
         Ok(docs)
     }
 

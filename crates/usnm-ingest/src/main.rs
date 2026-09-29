@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use clap::{Args, Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
 use usnm_ingest::docs::{DocStore, FileDocs};
 use usnm_ingest::release::Release;
 use usnm_ingest::sink::{IndexSink, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::source::{self, ListedBatch};
 use usnm_ingest::state::{BatchStatus, State};
+use usnm_ingest::telemetry;
 use usnm_ingest::titles;
 use usnm_ingest::worker::{self, Worker};
 use usnm_ingest::{cosmos::CosmosDocs, owner_id};
@@ -280,7 +280,7 @@ async fn release_locked(
             let dir = cli.work_dir.join("quickwit");
             std::fs::create_dir_all(&dir)?;
             let n = QuickwitNode::start(bin, &dir, t.quickwit_port, metastore, root(t)?).await?;
-            let sink = QuickwitSink::new(&n.url, root(t)?)?;
+            let sink = QuickwitSink::new(&n.url, root(t)?)?.watching(&n);
             node = Some(n);
             Box::new(sink)
         }
@@ -301,13 +301,33 @@ fn root(t: &IndexTarget) -> anyhow::Result<&str> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
     let cli = Cli::parse();
+    let telemetry = telemetry::init();
+    let result = run(&cli).await;
+    // Every failure ends with one JSON line, which the job-failure alert and
+    // the `errors-by-batch` query look for.
+    if let Err(e) = &result {
+        tracing::error!(command = cli.command.name(), error = %format!("{e:#}"), "command failed");
+    }
+    // Before exit on every path: whatever telemetry is still buffered is lost.
+    telemetry.shutdown().await;
+    result
+}
+
+impl Command {
+    fn name(&self) -> &'static str {
+        match self {
+            Command::Enqueue { .. } => "enqueue",
+            Command::Curate { .. } => "curate",
+            Command::Release { .. } => "release",
+            Command::TitlesSync { .. } => "titles-sync",
+            Command::Geocode => "geocode",
+            Command::Run { .. } => "run",
+        }
+    }
+}
+
+async fn run(cli: &Cli) -> anyhow::Result<()> {
     let state = state(&cli.stores)?;
     match &cli.command {
         Command::Enqueue { list, batches } => enqueue(&state, list, batches).await.map(drop),
