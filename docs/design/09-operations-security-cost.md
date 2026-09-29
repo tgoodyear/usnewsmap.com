@@ -17,9 +17,10 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 - **Traces:** OpenTelemetry from the SPA (App Insights JS) → API → search backend. The trace id is propagated with `traceparent`. Spans: `parse`, `cache`, `backend.aggregate`, `postprocess`, `encode`.
 - **Metrics:** request rate, error rate and latency per endpoint; cache hit ratio (moka and Blob); backend latency; searcher CPU/memory/split-cache hits; ingest pages/s; batches queued/claimed/failed (Cosmos); public-access window state; index doc count by version.
 - **Logs:** structured JSON (`tracing` → OTLP). **No query text is logged at info level**. Canonical query hashes are logged instead; query text goes only into the k-anonymized daily aggregate used for pre-warming.
+- **API (as built):** one Application Insights request per request except the health probes, named by method and route template, and one console line with method, route, status and milliseconds; metrics for requests, latency, search backend time, cache hits and misses (in-process and Blob), rejected queries, reference reloads and the serving index version (08 §8.1.2). `scripts/logs.sh <env> api-requests` and `api-errors` summarize them. Browser telemetry and `traceparent` propagation from the SPA are not built yet.
 - **Ingest jobs:** JSON console logs in Log Analytics, traces and metrics in Application Insights (08 §8.1.2). To look at a run: `scripts/logs.sh <env> release-progress`, `curation-throughput`, `errors-by-batch` or `job-executions` (queries in `ops/queries/`), then the `release` and `curate` traces in Application Insights.
 - **Dashboards:** an Azure Workbook "USNM Overview" with golden signals, cost to date, ingest status, and the top canonical queries (k ≥ 5).
-- **Alerts (Action Group → email + optional Teams/Slack webhook):** SLO burn rate (fast 2%/1 h, slow 5%/6 h); `/readyz` failing from 2 of 3 regions; an ingest or backfill job failed (any failure, within 15 minutes); a release stalled (no progress line for 10 minutes); a backfill stalled (no batch curated in an hour while workers run); oldest `queued` batch > 48 h; **`publicNetworkAccess` changed on `stusnmdata`/`cosmos-usnm`, or enabled without an open window**; budget at 80% forecast; App Insights daily cap reached.
+- **Alerts (Action Group → email + optional Teams/Slack webhook):** SLO burn rate (fast 2%/1 h, slow 5%/6 h); built: API 5xx (at least 5 in 10 minutes and over 2% of requests), `/v1/aggregate` p95 over 3 s for 15 minutes, and the site's home page or `/readyz` failing from 2 of 3 locations (standard availability tests, 08 §8.1.2); an ingest or backfill job failed (any failure, within 15 minutes); a release stalled (no progress line for 10 minutes); a backfill stalled (no batch curated in an hour while workers run); oldest `queued` batch > 48 h; **`publicNetworkAccess` changed on `stusnmdata`/`cosmos-usnm`, or enabled without an open window**; budget at 80% forecast; App Insights daily cap reached.
 
 ## 9.3 Runbooks (kept in `ops/runbooks/`)
 
@@ -53,7 +54,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 
 - The application collects **no accounts, cookies or PII**. The site is anonymous by design. The one bounded exception is platform access logs, described next.
 - **IP addresses:** the API never writes client IPs to its logs or telemetry, and App Insights IP collection stays masked (the default). Container Apps doesn't emit per-request access logs by default, and the lean profile leaves them off. **Exception:** if HTTP access logs are turned on to investigate abuse (or Front Door logs in the growth profile), they contain raw client IPs, go only to Log Analytics, and are **retained for at most 30 days**. Those logs would also record the request URI, and every search puts its text in `q`. So a Log Analytics **ingestion-time transformation** (data collection rule) is attached before such logs are enabled; it **drops the query string** from the URI fields (`requestUri`, `RequestUri_s` and equivalents), so only the path is stored. A deployment check refuses to enable access-log diagnostic settings without that transformation. The API rate-limiter keys are **salted hashes** held only in memory.
-- **Query text** is treated as potentially sensitive (genealogy searches contain family names). It is never logged per request. The API's request logs and traces record the **path only**; the `tracing` layer strips `?…` from URIs and span attributes. Access logs, if enabled, are scrubbed as described above. Only daily aggregates with k ≥ 5 are kept.
+- **Query text** is treated as potentially sensitive (genealogy searches contain family names). It is never logged per request. The API's request logs and traces record the **route template only** (`/v1/aggregate`, never the path or query string), and a test checks that search text in a query string reaches neither the exported telemetry nor the console log. Access logs, if enabled, are scrubbed as described above. Only daily aggregates with k ≥ 5 are kept.
 - A privacy page states all of the above, and there is nothing to consent to because no cookies are set.
 - This replaces the legacy practice of storing IPs, cookies and full headers for every search, indefinitely.
 
@@ -82,14 +83,15 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Blob: reference, response cache, tiles (Hot) + transactions | ~20–40 GB | $1 | $2 | $4 |
 | Container Apps Jobs (weekly incremental ingest, stats, pre-warm) | Mostly within the free grant | $0 | $1 | $3 |
 | Egress | The site, tiles and API responses via Azure egress (first 100 GB free) | $0 | $0 | $5 |
-| Log Analytics / App Insights | Daily cap keeps it within 5 GB/month free | $0 | $0 | $3 |
+| Log Analytics / App Insights | Daily cap keeps it within 5 GB/month free. Each API request adds a request row (~1 KB) and a console line (~0.2 KB) | $0 | $0 | $3 |
+| Availability tests | 1 standard test (the site home page) × 3 locations, every 15 minutes, $0.0005 per run | $4 | $4 | $4 |
 | Cosmos DB (document state) | Free tier: 1,000 RU/s + 25 GB (serverless ~$1–3 if the free tier is taken) | $0 | $0 | $3 |
 | **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
 | Container registry | ACR Basic (private images) | $5 | $5 | $5 |
-| **Total** | | **~$51** | **~$72** | **~$114** |
+| **Total** | | **~$55** | **~$76** | **~$118** |
 
-"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The typical month stays under $80 with ~$8 of headroom. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
+"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
 
 **The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$87–102, over the $80 target** now that private networking (~$17) and the registry (~$5) are in. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
 

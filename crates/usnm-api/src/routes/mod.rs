@@ -10,6 +10,7 @@ pub use meta::{meta, places, readyz};
 
 use std::future::Future;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,7 @@ use sha2::{Digest, Sha256};
 use usnm_store::ObjectStore;
 
 use crate::error::ApiError;
+use crate::telemetry::ServedVersion;
 use crate::version::{self, Pinning};
 use crate::AppState;
 
@@ -117,11 +119,18 @@ where
         .clone()
         .map(|store| (store, persisted_path(serving, &key)));
     let persist_after = state.config.persist_after;
+    let metrics = &state.metrics;
+    // Set when this request fills the in-process entry; otherwise the body
+    // came from the cache (or from an identical request computing it).
+    let filled = AtomicBool::new(false);
     let body = state
         .cache
-        .try_get_with(key, async move {
+        .try_get_with(key, async {
+            filled.store(true, Ordering::Relaxed);
             if let Some((store, path)) = &persistent {
-                if let Some(body) = read_persisted(store.as_ref(), path).await {
+                let found = read_persisted(store.as_ref(), path).await;
+                metrics.cache("blob", found.is_some());
+                if let Some(body) = found {
                     return Ok(Arc::new(body));
                 }
             }
@@ -138,7 +147,13 @@ where
             Ok(body)
         })
         .await
-        .map_err(|e: Arc<ApiError>| Arc::try_unwrap(e).unwrap_or_else(|e| e.as_ref().clone()))?;
+        .map_err(|e: Arc<ApiError>| Arc::try_unwrap(e).unwrap_or_else(|e| e.as_ref().clone()));
+    // A request that waited on an identical one that failed counts as neither.
+    let filled = filled.load(Ordering::Relaxed);
+    if filled || body.is_ok() {
+        metrics.cache("memory", !filled);
+    }
+    let body = body?;
     let mut resp = body.as_ref().clone().into_response();
     let headers = resp.headers_mut();
     headers.extend(version::cache_headers(
@@ -148,6 +163,8 @@ where
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    resp.extensions_mut()
+        .insert(ServedVersion(serving.to_owned()));
     Ok(resp)
 }
 

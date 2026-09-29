@@ -6,6 +6,7 @@ members = [
     "crates/usnm-store",
     "crates/usnm-api",
     "crates/usnm-ingest",
+    "crates/usnm-telemetry",
 ]
 
 [workspace.package]
@@ -18,6 +19,7 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 usnm-core = { path = "crates/usnm-core" }
 usnm-search = { path = "crates/usnm-search" }
 usnm-store = { path = "crates/usnm-store" }
+usnm-telemetry = { path = "crates/usnm-telemetry" }
 anyhow = "1"
 arc-swap = "1"
 arrow-array = "60"
@@ -37,7 +39,7 @@ governor = "0.10"
 httpdate = "1"
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 moka = { version = "0.12", features = ["future"] }
-# Telemetry to Application Insights (usnm-ingest). opentelemetry-application-insights
+# Telemetry to Application Insights (usnm-telemetry). opentelemetry-application-insights
 # 0.46 needs Rust 1.95; 0.45 (opentelemetry 0.32) keeps the workspace's rust-version.
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }

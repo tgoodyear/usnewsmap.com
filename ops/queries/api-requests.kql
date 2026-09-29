@@ -1,0 +1,18 @@
+// API requests by route: count, 4xx and 5xx, 5xx rate, p50/p95/max latency.
+// From the requests usnm-api exports to Application Insights (AppRequests,
+// health probes excluded). The route is the matched template, e.g.
+// "GET /v1/aggregate"; "(site)" is the web app's files and "(no route)" an
+// unknown API path. Paths and query strings are never recorded (09 §9.4.2).
+AppRequests
+| where AppRoleName == "usnm-api"
+| summarize
+    Requests = sum(ItemCount),
+    Client4xx = sumif(ItemCount, toint(ResultCode) between (400 .. 499)),
+    Server5xx = sumif(ItemCount, toint(ResultCode) >= 500),
+    P50ms = round(percentile(DurationMs, 50), 1),
+    P95ms = round(percentile(DurationMs, 95), 1),
+    MaxMs = round(max(DurationMs), 1)
+    by Route = Name
+| extend ErrorRate = strcat(round(100.0 * Server5xx / Requests, 2), "%")
+| project Route, Requests, Client4xx, Server5xx, ErrorRate, P50ms, P95ms, MaxMs
+| order by Requests desc

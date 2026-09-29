@@ -1,6 +1,7 @@
 // Least-privilege data-plane access for the managed identities (08 §8.2).
 // Serving replicas can read reference data and the index and write only the
-// response cache; the ingest identity writes the lake and Cosmos state.
+// response cache; the ingest identity writes the lake and Cosmos state. Both
+// send telemetry to Application Insights.
 
 param storageName string
 param cosmosName string
@@ -60,16 +61,19 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
   name: appInsightsName
 }
 
-// The ingest and backfill jobs export traces and metrics as id-usnm-ingest.
-resource ingestTelemetry 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: appInsights
-  name: guid(appInsights.id, ingestPrincipalId, metricsPublisher)
-  properties: {
-    principalId: ingestPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', metricsPublisher)
+// The ingest and backfill jobs export traces and metrics as id-usnm-ingest,
+// the API as id-usnm-app.
+resource telemetry 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for principal in [ingestPrincipalId, appPrincipalId]: {
+    scope: appInsights
+    name: guid(appInsights.id, principal, metricsPublisher)
+    properties: {
+      principalId: principal
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', metricsPublisher)
+    }
   }
-}
+]
 
 resource ingestCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
   parent: cosmos

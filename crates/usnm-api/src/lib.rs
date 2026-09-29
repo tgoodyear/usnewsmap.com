@@ -17,7 +17,6 @@ use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
-use tower_http::trace::TraceLayer;
 use usnm_search::{IndexSet, SearchBackend};
 use usnm_store::ObjectStore;
 
@@ -27,6 +26,7 @@ pub mod ratelimit;
 pub mod refdata;
 mod routes;
 pub mod site;
+pub mod telemetry;
 pub mod version;
 
 use config::Config;
@@ -96,6 +96,7 @@ pub struct AppState {
     pub limiter: Option<Limiter>,
     /// Caps concurrent backend queries across all requests.
     pub permits: Semaphore,
+    pub metrics: telemetry::Metrics,
 }
 
 impl AppState {
@@ -121,11 +122,18 @@ impl AppState {
             loader,
             cache,
             responses: None,
+            metrics: telemetry::Metrics::global(),
         }
     }
 
     pub fn with_response_store(mut self, store: Arc<dyn ObjectStore>) -> Self {
         self.responses = Some(store);
+        self
+    }
+
+    /// Record metrics with these instruments instead of the global meter's.
+    pub fn with_metrics(mut self, metrics: telemetry::Metrics) -> Self {
+        self.metrics = metrics;
         self
     }
 }
@@ -158,7 +166,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .nest("/v1", v1.clone())
         // Kept for clients that used the same-origin `/api/v1` prefix.
         .nest("/api/v1", v1)
-        .with_state(state);
+        .route_layer(middleware::from_fn(telemetry::record_route))
+        .with_state(state.clone());
     if let Some(dir) = site {
         router = router.fallback_service(site::router(dir));
     }
@@ -171,10 +180,9 @@ pub fn app(state: Arc<AppState>) -> Router {
     router
         .layer(cors)
         .layer(CompressionLayer::new())
-        // Log the path only: query strings carry search text (09 §9.4.2).
-        .layer(TraceLayer::new_for_http().make_span_with(|req: &Request| {
-            tracing::info_span!("request", method = %req.method(), path = %req.uri().path())
-        }))
+        // One span and one log line per request with the route template,
+        // never the path or query: query strings carry search text (09 §9.4.2).
+        .layer(middleware::from_fn_with_state(state, telemetry::track))
 }
 
 async fn rate_limit(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
@@ -217,6 +225,16 @@ pub async fn reload_if_changed(state: &AppState) -> Result<bool, String> {
     let Some(loader) = &state.loader else {
         return Ok(false);
     };
+    let result = reload(state, loader).await;
+    match &result {
+        Ok(true) => state.metrics.reload("published"),
+        Ok(false) => {}
+        Err(_) => state.metrics.reload("failed"),
+    }
+    result
+}
+
+async fn reload(state: &AppState, loader: &Loader) -> Result<bool, String> {
     let next = loader.current().await?;
     if next.index_version == state.snapshot.load().refdata.version() {
         return Ok(false);

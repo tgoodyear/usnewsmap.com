@@ -2,6 +2,7 @@
 //! sorted by date, with snippets.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
@@ -152,13 +153,16 @@ pub async fn hits(
             offset,
             limit,
         };
+        let t = Instant::now();
         let result = with_timeout(
             &st,
             snap2
                 .backend
                 .hits(&rd.index_set(), &req.query, &req.filters, &page),
         )
-        .await?;
+        .await;
+        st.metrics.backend("hits", t.elapsed(), &result);
+        let result = result?;
         let highlight = highlight_terms(&req.query).join(" ");
         let next = offset + result.hits.len();
         let next_cursor = (next < result.total as usize && next <= MAX_OFFSET).then(|| {
