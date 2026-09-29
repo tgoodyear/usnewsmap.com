@@ -21,6 +21,8 @@ param staticIp string
 param verificationId string
 @description('CAs allowed to issue for the domain: Container Apps managed certificates come from DigiCert.')
 param caaIssuers array = ['digicert.com']
+@description('More TXT values at the apex, such as site-verification tokens.')
+param apexTxtValues array = []
 
 resource zone 'Microsoft.Network/dnsZones@2018-05-01' = {
   name: zoneName
@@ -43,13 +45,14 @@ resource caa 'Microsoft.Network/dnsZones/CAA@2018-05-01' = {
 
 // The domain sends no mail: SPF allows no senders, DMARC rejects anything
 // that claims it, and every DKIM selector has an empty (revoked) key. These
-// carry over the records the domain had before moving to Azure DNS.
+// carry over the records the domain had before moving to Azure DNS. The apex
+// TXT set also holds any site-verification tokens (apexTxtValues).
 resource spf 'Microsoft.Network/dnsZones/TXT@2018-05-01' = {
   parent: zone
   name: '@'
   properties: {
     TTL: 3600
-    TXTRecords: [{ value: ['v=spf1 -all'] }]
+    TXTRecords: concat([{ value: ['v=spf1 -all'] }], map(apexTxtValues, v => { value: [v] }))
   }
 }
 

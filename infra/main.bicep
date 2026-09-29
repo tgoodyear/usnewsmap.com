@@ -71,6 +71,8 @@ param availabilityFrequency string = '900'
 
 @description('Public DNS zone for the site (e.g. usnewsmap.com); empty skips it. Delegate the domain to the NAME_SERVERS output.')
 param dnsZoneName string = ''
+@description('More TXT values at the zone apex, keyed by zone name (site-verification tokens). They are public, so they live in git.')
+param dnsApexTxtValues object = {}
 
 @description('Managed certificate for api.{dnsZoneName}, recorded by scripts/bootstrap.sh after it issues one.')
 param apiCertificateId string = ''
@@ -416,6 +418,7 @@ module dns 'modules/dns.bicep' = if (!empty(dnsZoneName)) {
     appFqdn: deployApi ? api!.outputs.fqdn : ''
     staticIp: containerEnv.outputs.staticIp
     verificationId: containerEnv.outputs.customDomainVerificationId
+    apexTxtValues: dnsApexTxtValues[?dnsZoneName] ?? []
   }
 }
 
