@@ -54,10 +54,9 @@ const THROTTLE_BLOCK: Duration = Duration::hours(1);
 /// 4 workers), the time from one outcome line to the next on a worker (a
 /// whole batch, claim and wait for a slot included) was 275 s at the median,
 /// 745 s at p99 and 1,082 s at most; the largest archive (3.8 GB) took 974 s.
-/// 45 minutes is 3.6 times that p99.
-/// It also fits in the 2 h lease after the longest wait for a slot (an hour
-/// of LoC block plus a turn behind every other worker), so an abandoned batch
-/// is released before its lease runs out and another worker could claim it.
+/// 45 minutes is 3.6 times that p99. The lease is renewed when the slot is
+/// granted, so the limit ends well inside it however long the wait was, and
+/// an abandoned batch is released before another worker could claim it.
 pub const BATCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(45 * 60);
 
 /// A batch that ran past [`Worker::batch_limit`].
@@ -261,6 +260,11 @@ impl Worker {
         // A failed commit (e.g. a newer version was queued meanwhile) is
         // handled like a failed curation: clear the lease and re-queue.
         let work = async {
+            // The wait for a slot can outlast the lease (a LoC block that
+            // is extended, or many workers): renew it before downloading.
+            if !self.renew_lease(batch).await? {
+                bail!("lost the lease while waiting for a download slot; another worker has the batch");
+            }
             let (c, t) = self.curate_timed(batch, &name, &progress).await?;
             let (pages, parts) = (c.pages, c.parts.len());
             progress.set_stage(Stage::Committing);
@@ -581,6 +585,27 @@ impl Worker {
             .await
     }
 
+    /// Extend this worker's lease on `claimed` to a full lease from now.
+    /// `false` if another worker has claimed the batch since, or a new
+    /// version was queued. An expired lease that is still this worker's can
+    /// be renewed: no one else has claimed the batch, and the ETag check
+    /// fails if someone does meanwhile.
+    async fn renew_lease(&self, claimed: &Batch) -> anyhow::Result<bool> {
+        let Some((mut b, etag)) = self.state.batch(&claimed.batch).await? else {
+            return Ok(false);
+        };
+        if b.version != claimed.version || b.lease.as_ref().is_none_or(|l| l.owner != self.owner) {
+            return Ok(false);
+        }
+        let now = Utc::now();
+        b.lease = Some(Lease {
+            owner: self.owner.clone(),
+            until: now + self.lease,
+        });
+        b.updated_at = now;
+        Ok(self.state.replace_batch(&b, &etag).await?.is_some())
+    }
+
     /// Point the batch at the curated attempt: the commit, and the last write.
     pub async fn commit(&self, batch: &str, c: Curated) -> anyhow::Result<()> {
         let (mut b, etag) = self.state.batch(batch).await?.context("batch vanished")?;
@@ -740,6 +765,66 @@ mod tests {
             .await
             .expect("the download's connection was closed")
             .unwrap();
+    }
+
+    fn worker(state: &State, dir: &std::path::Path, owner: &str) -> Worker {
+        Worker {
+            state: state.clone(),
+            curated: Arc::new(usnm_store::LocalStore::new(dir.join("curated"))),
+            owner: owner.into(),
+            lease: Duration::hours(2),
+            fetch_interval: None,
+            batch_limit: BATCH_LIMIT,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lease_lost_during_the_slot_wait_is_not_downloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/batch_a_ver01.tar.bz2",
+            listener.local_addr().unwrap()
+        );
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        source::enqueue(&state, &[listed("batch_a_ver01", url)])
+            .await
+            .unwrap();
+        let w1 = worker(&state, dir.path(), "w1");
+        let (claimed, _) = w1.claim().await.unwrap().unwrap();
+        // While w1 waits, its lease runs out and w2 claims the batch.
+        let (mut b, etag) = state.batch("batch_a").await.unwrap().unwrap();
+        b.lease.as_mut().unwrap().until = Utc::now() - Duration::seconds(1);
+        state.replace_batch(&b, &etag).await.unwrap().unwrap();
+        let w2 = worker(&state, dir.path(), "w2");
+        w2.claim().await.unwrap().unwrap();
+
+        assert_eq!(w1.run_one(&claimed).await.unwrap(), Outcome::Failed);
+        let (b, _) = state.batch("batch_a").await.unwrap().unwrap();
+        assert_eq!(b.lease.unwrap().owner, "w2");
+        assert_eq!((b.status, b.attempts), (BatchStatus::Downloading, 2));
+        // No request was made.
+        let accepted =
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept()).await;
+        assert!(accepted.is_err(), "w1 downloaded a batch it no longer held");
+    }
+
+    #[tokio::test]
+    async fn an_expired_lease_still_held_is_renewed_and_the_batch_curated() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        source::enqueue(&state, &[listed("batch_b_ver01", archive(dir.path()))])
+            .await
+            .unwrap();
+        let w = worker(&state, dir.path(), "w1");
+        let (claimed, _) = w.claim().await.unwrap().unwrap();
+        let (mut b, etag) = state.batch("batch_b").await.unwrap().unwrap();
+        b.lease.as_mut().unwrap().until = Utc::now() - Duration::seconds(1);
+        state.replace_batch(&b, &etag).await.unwrap().unwrap();
+
+        assert_eq!(w.run_one(&claimed).await.unwrap(), Outcome::Ok);
+        let (b, _) = state.batch("batch_b").await.unwrap().unwrap();
+        assert_eq!(b.status, BatchStatus::Curated);
     }
 
     #[tokio::test]
