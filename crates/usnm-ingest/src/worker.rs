@@ -13,11 +13,16 @@
 //!   before it leaves the batch retryable.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{bail, Context};
 use chrono::{Duration, NaiveDate, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
+use opentelemetry::KeyValue;
+use tracing::field::Empty;
+use tracing::Instrument;
 use usnm_core::text::TextStatus;
 use usnm_core::time::day_number;
 use usnm_store::ObjectStore;
@@ -26,6 +31,7 @@ use crate::archive;
 use crate::curated::{CuratedRow, PartWriter};
 use crate::source;
 use crate::state::{Batch, BatchStatus, Curated, Issue, Lease, State};
+use crate::telemetry;
 
 /// Attempts before a batch is marked failed (an operator re-queues it).
 pub const MAX_ATTEMPTS: u32 = 5;
@@ -54,6 +60,17 @@ pub type Counts = BTreeMap<String, BTreeMap<u32, u32>>;
 
 /// (pages, empty pages) per (lccn, date, edition).
 type Issues = BTreeMap<(String, NaiveDate, u16), (u32, u32)>;
+
+/// How long one curation took, and how much it read.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Timings {
+    /// Archive bytes downloaded.
+    pub archive_bytes: u64,
+    /// Download, parse and part uploads (they overlap: the archive is streamed).
+    pub stream_secs: f64,
+    /// Counts and issue items.
+    pub issues_secs: f64,
+}
 
 struct Written {
     parts: Vec<String>,
@@ -129,28 +146,73 @@ impl Worker {
                     self.wait_for_fetch_slot(interval).await?;
                 }
             }
+            // One span per batch (a request in Application Insights); the
+            // time excludes the wait for a download slot.
+            let span = tracing::info_span!(
+                "curate",
+                otel.kind = "consumer",
+                batch = %name,
+                attempt = batch.attempts,
+                pages = Empty,
+                outcome = Empty,
+                otel.status_code = Empty,
+            );
+            let started = Instant::now();
             // A failed commit (e.g. a newer version was queued meanwhile) is
             // handled like a failed curation: clear the lease and re-queue.
-            let result = match self.curate(&batch).await {
-                Ok(c) => self.commit(&batch.batch, c).await,
-                Err(e) => Err(e),
+            let result = async {
+                let (c, t) = self.curate_timed(&batch).await?;
+                let (pages, parts) = (c.pages, c.parts.len());
+                let commit_started = Instant::now();
+                self.commit(&batch.batch, c).await?;
+                Ok::<_, anyhow::Error>((pages, parts, t, commit_started.elapsed()))
+            }
+            .instrument(span.clone())
+            .await;
+            let secs = started.elapsed().as_secs_f64();
+            let m = telemetry::metrics();
+            let outcome = match &result {
+                Ok(_) => "ok",
+                Err(e) if e.downcast_ref::<source::Throttled>().is_some() => "throttled",
+                Err(_) => "failed",
             };
+            span.record("outcome", outcome);
+            m.curate_batches
+                .add(1, &[KeyValue::new("outcome", outcome)]);
+            m.curate_duration
+                .record(secs, &[KeyValue::new("outcome", outcome)]);
+            // The outcome lines belong to the batch's span (and trace).
             match result {
-                Ok(()) => {
-                    tracing::info!(batch = %name, "curated");
+                Ok((pages, parts, t, commit)) => {
+                    span.record("pages", pages);
+                    m.curate_pages.add(pages, &[]);
+                    span.in_scope(|| {
+                        tracing::info!(
+                            batch = %name,
+                            pages,
+                            parts,
+                            archive_mb = round1(t.archive_bytes as f64 / 1_048_576.0),
+                            secs = round1(secs),
+                            stream_secs = round1(t.stream_secs),
+                            issues_secs = round1(t.issues_secs),
+                            commit_secs = round1(commit.as_secs_f64()),
+                            "curated"
+                        )
+                    });
                     done += 1;
                 }
                 // LoC is refusing downloads from this IP. Every worker waits
                 // out the block, and the batch doesn't lose an attempt.
-                Err(e) if e.downcast_ref::<source::Throttled>().is_some() => {
-                    tracing::warn!(batch = %name, error = %format!("{e:#}"), "throttled; downloads pause for an hour");
+                Err(e) if outcome == "throttled" => {
+                    span.in_scope(|| tracing::warn!(batch = %name, error = %format!("{e:#}"), "throttled; downloads pause for an hour"));
                     self.state
                         .block_fetches(Utc::now() + THROTTLE_BLOCK)
                         .await?;
                     self.release(&batch.batch, &format!("{e:#}"), false).await?;
                 }
                 Err(e) => {
-                    tracing::error!(batch = %name, error = %format!("{e:#}"), "curation failed");
+                    span.record("otel.status_code", "ERROR");
+                    span.in_scope(|| tracing::error!(batch = %name, secs = round1(secs), error = %format!("{e:#}"), "curation failed"));
                     self.release(&batch.batch, &format!("{e:#}"), true).await?;
                     failed.insert(batch.batch);
                 }
@@ -175,6 +237,11 @@ impl Worker {
 
     /// Curate the claimed version of `b` into a new attempt path.
     pub async fn curate(&self, b: &Batch) -> anyhow::Result<Curated> {
+        self.curate_timed(b).await.map(|(c, _)| c)
+    }
+
+    async fn curate_timed(&self, b: &Batch) -> anyhow::Result<(Curated, Timings)> {
+        let started = Instant::now();
         // Paced: one request per slot, and a failed attempt is retried later
         // through the pacer. Unpaced: retry server errors straight away.
         let download = if self.fetch_interval.is_some() {
@@ -197,6 +264,11 @@ impl Worker {
         let w = self.write_parts(b, download.reader, &prefix).await?;
         // The parts are only an uncommitted attempt until this matches.
         let sha = download.digest.await.context("download task stopped")??;
+        let mut timings = Timings {
+            archive_bytes: download.bytes.load(Ordering::Relaxed),
+            stream_secs: started.elapsed().as_secs_f64(),
+            issues_secs: 0.0,
+        };
         if let Some(want) = &b.source_sha256 {
             if !want.eq_ignore_ascii_case(&sha) {
                 bail!("archive sha256 {sha} does not match the published {want}");
@@ -206,6 +278,7 @@ impl Worker {
             bail!("the archive holds no pages");
         }
         let counts_path = format!("{prefix}/counts.json");
+        let issues_started = Instant::now();
         self.put_new(
             &counts_path,
             serde_json::to_vec(&w.counts)?,
@@ -213,7 +286,8 @@ impl Worker {
         )
         .await?;
         self.upsert_issues(b, w.issues).await?;
-        Ok(Curated {
+        timings.issues_secs = issues_started.elapsed().as_secs_f64();
+        let curated = Curated {
             version: b.version,
             lccns: w.counts.keys().cloned().collect(),
             parts: w.parts,
@@ -223,7 +297,8 @@ impl Worker {
             source_sha256: sha,
             first: w.first.to_string(),
             last: w.last.to_string(),
-        })
+        };
+        Ok((curated, timings))
     }
 
     async fn put_new(&self, path: &str, body: Vec<u8>, content_type: &str) -> anyhow::Result<()> {
@@ -377,4 +452,8 @@ impl Worker {
         let _ = self.state.replace_batch(&b, &etag).await?;
         Ok(())
     }
+}
+
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
 }

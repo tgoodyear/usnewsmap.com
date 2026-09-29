@@ -4,6 +4,7 @@
 
 param storageName string
 param cosmosName string
+param appInsightsName string
 param appPrincipalId string
 param ingestPrincipalId string
 
@@ -11,6 +12,9 @@ var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var blobContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 // Cosmos DB Built-in Data Contributor (data-plane role).
 var cosmosDataContributor = '00000000-0000-0000-0000-000000000002'
+// Monitoring Metrics Publisher: sends any telemetry (traces too) to the
+// component, which accepts Entra-authenticated ingestion only.
+var metricsPublisher = '3913510d-42f4-4e42-8a64-420c390055eb'
 
 var grants = [
   { container: 'reference', principal: appPrincipalId, role: blobReader }
@@ -50,6 +54,21 @@ resource blobGrants 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 
 resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
   name: cosmosName
+}
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
+  name: appInsightsName
+}
+
+// The ingest and backfill jobs export traces and metrics as id-usnm-ingest.
+resource ingestTelemetry 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: appInsights
+  name: guid(appInsights.id, ingestPrincipalId, metricsPublisher)
+  properties: {
+    principalId: ingestPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', metricsPublisher)
+  }
 }
 
 resource ingestCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {

@@ -24,6 +24,8 @@ param ingestClientId string
 param storageAccountName string
 param storageBlobEndpoint string
 param cosmosEndpoint string
+@description('Application Insights connection string: the ingestion endpoint and instrumentation key. The jobs authenticate with id-usnm-ingest (Monitoring Metrics Publisher); the component accepts nothing else.')
+param appInsightsConnectionString string
 param jobNameSuffix string
 @description('Weekly schedule for the ingest job (UTC cron). Empty: manual only.')
 param cron string = ''
@@ -38,6 +40,8 @@ var env = [
   // Selects id-usnm-ingest at the managed identity endpoint.
   { name: 'AZURE_CLIENT_ID', value: ingestClientId }
   { name: 'RUST_LOG', value: 'info' }
+  // Traces and metrics to Application Insights, signed with the identity above.
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
 ]
 
 resource ingest 'Microsoft.App/jobs@2024-03-01' = {

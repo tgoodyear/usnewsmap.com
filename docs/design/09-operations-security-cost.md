@@ -17,8 +17,9 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 - **Traces:** OpenTelemetry from the SPA (App Insights JS) → API → search backend. The trace id is propagated with `traceparent`. Spans: `parse`, `cache`, `backend.aggregate`, `postprocess`, `encode`.
 - **Metrics:** request rate, error rate and latency per endpoint; cache hit ratio (moka and Blob); backend latency; searcher CPU/memory/split-cache hits; ingest pages/s; batches queued/claimed/failed (Cosmos); public-access window state; index doc count by version.
 - **Logs:** structured JSON (`tracing` → OTLP). **No query text is logged at info level**. Canonical query hashes are logged instead; query text goes only into the k-anonymized daily aggregate used for pre-warming.
+- **Ingest jobs:** JSON console logs in Log Analytics, traces and metrics in Application Insights (08 §8.1.2). To look at a run: `scripts/logs.sh <env> release-progress`, `curation-throughput`, `errors-by-batch` or `job-executions` (queries in `ops/queries/`), then the `release` and `curate` traces in Application Insights.
 - **Dashboards:** an Azure Workbook "USNM Overview" with golden signals, cost to date, ingest status, and the top canonical queries (k ≥ 5).
-- **Alerts (Action Group → email + optional Teams/Slack webhook):** SLO burn rate (fast 2%/1 h, slow 5%/6 h); `/readyz` failing from 2 of 3 regions; ingest job failures ≥ 3 in 24 h; oldest `queued` batch > 48 h; **`publicNetworkAccess` changed on `stusnmdata`/`cosmos-usnm`, or enabled without an open window**; budget at 80% forecast; App Insights daily cap reached.
+- **Alerts (Action Group → email + optional Teams/Slack webhook):** SLO burn rate (fast 2%/1 h, slow 5%/6 h); `/readyz` failing from 2 of 3 regions; an ingest or backfill job failed (any failure, within 15 minutes); a release stalled (no progress line for 10 minutes); a backfill stalled (no batch curated in an hour while workers run); oldest `queued` batch > 48 h; **`publicNetworkAccess` changed on `stusnmdata`/`cosmos-usnm`, or enabled without an open window**; budget at 80% forecast; App Insights daily cap reached.
 
 ## 9.3 Runbooks (kept in `ops/runbooks/`)
 

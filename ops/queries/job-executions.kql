@@ -1,0 +1,26 @@
+// Ingest and backfill job replicas: when they ran and how they ended.
+// Console lines per replica, with the platform's reasons (exit codes,
+// deadline or backoff limit) from ContainerAppSystemLogs.
+// Lines that could carry the managed identity endpoint's secret are dropped.
+let console = ContainerAppConsoleLogs
+    | where ContainerName in ("ingest", "curate")
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | extend j = parse_json(Log)
+    | summarize
+        Start = min(TimeGenerated),
+        LastLine = max(TimeGenerated),
+        Curated = countif(tostring(j.fields.message) == "curated"),
+        Published = countif(tostring(j.fields.message) == "published"),
+        Errors = countif(tostring(j.level) == "ERROR"),
+        Failure = take_anyif(tostring(j.fields.error), tostring(j.fields.message) == "command failed")
+        by Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName;
+let platform = ContainerAppSystemLogs
+    | where JobName startswith "caj-usnm-" or ContainerAppName startswith "caj-usnm-"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | where isnotempty(ReplicaName)
+    | summarize Reasons = make_set(Reason, 10), Platform = take_anyif(Log, Log has "exit code")
+        by Replica = ReplicaName;
+console
+| join kind=leftouter platform on Replica
+| project Start, LastLine, Job, Replica, Curated, Published, Errors, Failure, Reasons, Platform
+| order by Start desc
