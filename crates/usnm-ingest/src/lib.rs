@@ -8,6 +8,7 @@
 pub mod archive;
 pub mod catalog;
 pub mod curated;
+pub mod heartbeat;
 pub mod progress;
 pub mod release;
 pub mod sink;

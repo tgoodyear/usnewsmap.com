@@ -1,20 +1,22 @@
 // Curation throughput per hour: batches, pages, archive MB, failures.
-// From the "curated", "curation failed" and "throttled" lines of the ingest
-// and backfill jobs.
+// From the "curated", "curation failed", "curation timed out" and
+// "throttled" lines of the ingest and backfill jobs. Secs is from the
+// download slot to the commit (the wait for a slot is left out).
 // Lines that could carry the managed identity endpoint's secret are dropped.
 ContainerAppConsoleLogs
 | where ContainerName in ("ingest", "curate")
 | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
-| where Log has_any ("curated", "failed", "throttled")
+| where Log has_any ("curated", "failed", "timed", "throttled")
 | extend j = parse_json(Log)
 | extend Message = tostring(j.fields.message)
-| where Message in ("curated", "curation failed", "throttled; downloads pause for an hour")
+| where Message in ("curated", "curation failed", "curation timed out", "throttled; downloads pause for an hour")
 | summarize
     Batches = countif(Message == "curated"),
     Failed = countif(Message == "curation failed"),
+    TimedOut = countif(Message == "curation timed out"),
     Throttled = countif(Message startswith "throttled"),
-    Pages = sum(tolong(j.fields.pages)),
-    ArchiveMb = round(sum(todouble(j.fields.archive_mb)), 1),
+    Pages = sumif(tolong(j.fields.pages), Message == "curated"),
+    ArchiveMb = round(sumif(todouble(j.fields.archive_mb), Message == "curated"), 1),
     AvgSecs = round(avgif(todouble(j.fields.secs), Message == "curated"), 1),
     MaxSecs = round(maxif(todouble(j.fields.secs), Message == "curated"), 1),
     Replicas = dcount(ContainerGroupName)
