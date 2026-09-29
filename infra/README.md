@@ -21,6 +21,7 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `diagnostics` | Diagnostic settings, sending resource logs to Log Analytics for every resource that has them: the workspace, registry, VNet, Container Apps environment (app and job console output, platform events), Cosmos control plane, and both storage accounts (blob writes and deletes; queue, table and file services in full). Per-request categories are left out to stay under the cap (08 §8.1.1) |
 | `ingest-alerts` (with `ingestJobs: true` and alert emails) | Log search alerts on the workspace: an ingest or backfill job failed, a release stalled, a backfill stalled (08 §8.1.2) |
 | `api-alerts` (with the API and alert emails) | Log search alerts on API 5xx and slow `/v1/aggregate`; with `dnsZoneName`, standard availability tests of the site and `api.{domain}/readyz` (each once its certificate is bound) and an alert when 2 of 3 locations fail (08 §8.1.2) |
+| `workbooks` (with the jobs or the API) | Azure Monitor workbooks "usnewsmap pipeline" (with the jobs) and "usnewsmap API" (with the API), defined in `infra/workbooks/` and listed under Application Insights `appi-usnm-{env}` → Workbooks. They query the same workspace (08 §8.1.2) |
 | `budget`, `alerts` | $80 monthly budget (alerts at $40, $60, $75, plus an $80 forecast alert; needs alert emails and `USNM_BUDGET_START`) and an alert on control-plane writes to the data accounts (needs alert emails) |
 | `policy-*` | Custom policies assigned to both resource groups. They deny IaaS compute, deny storage shared keys, deny Cosmos, Log Analytics and Application Insights local auth, deny a registry admin user or anonymous pull, audit public network access on the data accounts, and audit resources that have resource logs but no diagnostic setting |
 
@@ -168,7 +169,7 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
    scripts/logs.sh prod errors-by-batch 1d
    scripts/logs.sh prod job-executions 2d
    ```
-   The workspace id is the stack output `LOG_ANALYTICS_WORKSPACE_ID`; the queries run with your own sign-in (Log Analytics Reader or more). Traces (`release`, `curate`) and metrics are in Application Insights `appi-usnm-<env>`. With alert emails set, a failed job, a stalled release or a stalled backfill sends an email (08 §8.1.2).
+   The workspace id is the stack output `LOG_ANALYTICS_WORKSPACE_ID`; the queries run with your own sign-in (Log Analytics Reader or more). Traces (`release`, `curate`) and metrics are in Application Insights `appi-usnm-<env>`. With alert emails set, a failed job, a stalled release or a stalled backfill sends an email (08 §8.1.2). The same views, as charts: the "usnewsmap pipeline" workbook under Application Insights `appi-usnm-<env>` → Workbooks.
 4. Switch the API to the published indexes: `scripts/settings.sh <env> USNM_SEARCH_BACKEND quickwit`, then `scripts/provision.sh <env>`.
 
 The storage and Cosmos accounts stay private throughout: the jobs run inside the VNet.
