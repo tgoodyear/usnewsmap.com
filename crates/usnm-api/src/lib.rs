@@ -166,10 +166,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .nest("/v1", v1.clone())
         // Kept for clients that used the same-origin `/api/v1` prefix.
         .nest("/api/v1", v1)
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            telemetry::record_route,
-        ))
+        .route_layer(middleware::from_fn(telemetry::record_route))
         .with_state(state.clone());
     if let Some(dir) = site {
         router = router.fallback_service(site::router(dir));

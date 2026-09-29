@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use usnm_store::ObjectStore;
 
 use crate::error::ApiError;
+use crate::telemetry::ServedVersion;
 use crate::version::{self, Pinning};
 use crate::AppState;
 
@@ -162,6 +163,8 @@ where
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    resp.extensions_mut()
+        .insert(ServedVersion(serving.to_owned()));
     Ok(resp)
 }
 

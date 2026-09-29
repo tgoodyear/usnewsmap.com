@@ -163,6 +163,11 @@ pub fn observe_index_version(state: &Arc<AppState>, meter: &Meter) {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rejection(pub &'static str);
 
+/// The index version a response was computed from, attached by the search
+/// endpoints' response cache for the request span.
+#[derive(Debug, Clone)]
+pub(crate) struct ServedVersion(pub String);
+
 /// The route a request matched, written by [`record_route`] for [`track`].
 #[derive(Clone, Default)]
 struct RouteSlot(Arc<OnceLock<String>>);
@@ -209,12 +214,17 @@ pub(crate) async fn track(
             let r = if api { NO_ROUTE } else { SITE_ROUTE };
             span.record("http.route", r);
             span.record("otel.name", format!("{method} {r}"));
-            span.record(
-                "usnm.index_version",
-                state.snapshot.load().refdata.version(),
-            );
             r
         }
+    };
+    // The version the response came from; the one serving now for responses
+    // that don't say (a reload may have swapped it in since).
+    match resp.extensions().get::<ServedVersion>() {
+        Some(ServedVersion(v)) => span.record("usnm.index_version", v.as_str()),
+        None => span.record(
+            "usnm.index_version",
+            state.snapshot.load().refdata.version(),
+        ),
     };
     span.record("http.response.status_code", status.as_u16());
     // Client errors (4xx) are the client's outcome, not a failure (09 §9.1).
@@ -246,12 +256,8 @@ pub(crate) async fn track(
 }
 
 /// Route middleware: tells [`track`] and the request span which route
-/// template matched, and which index version is serving.
-pub(crate) async fn record_route(
-    State(state): State<Arc<AppState>>,
-    req: Request,
-    next: Next,
-) -> Response {
+/// template matched.
+pub(crate) async fn record_route(req: Request, next: Next) -> Response {
     if let Some(matched) = req.extensions().get::<MatchedPath>() {
         let route = matched.as_str();
         if let Some(slot) = req.extensions().get::<RouteSlot>() {
@@ -260,10 +266,6 @@ pub(crate) async fn record_route(
         let span = tracing::Span::current();
         span.record("http.route", route);
         span.record("otel.name", format!("{} {route}", req.method()));
-        span.record(
-            "usnm.index_version",
-            state.snapshot.load().refdata.version(),
-        );
     }
     next.run(req).await
 }
