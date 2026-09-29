@@ -3,7 +3,10 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import StatusPage from "./StatusPage";
 
-const unavailable = { available: false, reason: "This server is not connected to the pipeline state." };
+const unavailable = {
+  available: false,
+  reason: "This server is not connected to the pipeline state.",
+};
 
 const body = {
   schema: 1,
@@ -27,7 +30,12 @@ const body = {
   },
   backfill: unavailable,
   indexing: unavailable,
-  titles: { catalog: { available: false, reason: "none" }, published_titles: 6, published_places: 6, pipeline: unavailable },
+  titles: {
+    catalog: { available: false, reason: "none" },
+    published_titles: 6,
+    published_places: 6,
+    pipeline: unavailable,
+  },
 };
 
 afterEach(() => {
@@ -39,18 +47,27 @@ describe("StatusPage", () => {
   it("shows the published version and says which sections aren't available", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(body), {
+            headers: { "content-type": "application/json" },
+          }),
+      ),
     );
     render(
       <QueryClientProvider client={new QueryClient()}>
         <StatusPage />
       </QueryClientProvider>,
     );
-    expect(await screen.findByRole("heading", { level: 1, name: "Pipeline status" })).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Pipeline status" }),
+    ).toBeTruthy();
     expect(await screen.findByText("fixture-v1")).toBeTruthy();
     expect(screen.getAllByText(/^Not available\./)).toHaveLength(3);
     expect(screen.getByText(/1 of 8 deltas used/)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "/v1/status" }).getAttribute("href")).toBe("/v1/status");
+    expect(
+      screen.getByRole("link", { name: "/v1/status" }).getAttribute("href"),
+    ).toBe("/v1/status");
     expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/v1/status");
   });
 });

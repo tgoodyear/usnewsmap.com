@@ -49,7 +49,13 @@ const backfill = {
   ok_pages: 90,
   versions: { "01": 10 },
   newer_versions_pending: 0,
-  throughput: { hours: [], rate_window_hours: 12, rate_per_hour: 1, remaining: 5, eta: null },
+  throughput: {
+    hours: [],
+    rate_window_hours: 12,
+    rate_per_hour: 1,
+    remaining: 5,
+    eta: null,
+  },
   loc: { next_slot: null, blocked_until: null, throttled: false },
   in_progress_batches: [],
   recent: [],
@@ -70,24 +76,60 @@ describe("status formatting", () => {
   it("says when the pipeline can't be seen", () => {
     const h = health(status(), NOW);
     expect(h.level).toBe("unknown");
-    expect(h.parts).toEqual(["Pipeline state not available", "last release 2 h ago"]);
+    expect(h.parts).toEqual([
+      "Pipeline state not available",
+      "last release 2 h ago",
+    ]);
   });
 
   it("summarizes a running backfill", () => {
     const h = health(status({ backfill }), NOW);
-    expect(h).toEqual({ level: "ok", parts: ["Backfill running (2 in progress)", "last release 2 h ago", "no failures"] });
+    expect(h).toEqual({
+      level: "ok",
+      parts: [
+        "Backfill running (2 in progress)",
+        "last release 2 h ago",
+        "no failures",
+      ],
+    });
   });
 
   it("flags failures, throttling and stale data", () => {
     const b = {
       ...backfill,
       by_status: { ...backfill.by_status, failed: 2 },
-      loc: { next_slot: null, blocked_until: "2026-09-29T12:40:00Z", throttled: true },
+      loc: {
+        next_slot: null,
+        blocked_until: "2026-09-29T12:40:00Z",
+        throttled: true,
+      },
     };
     const h = health(status({ backfill: b }), NOW);
     expect(h.level).toBe("attention");
     expect(h.parts[0]).toMatch(/^Downloads paused by LoC until /);
     expect(h.parts.at(-1)).toBe("2 failures");
-    expect(health(status({ backfill, stale: true }), NOW).level).toBe("problem");
+    expect(health(status({ backfill, stale: true }), NOW).level).toBe(
+      "problem",
+    );
+  });
+
+  it("doesn't count index runs a later publish superseded", () => {
+    const indexing = {
+      available: true as const,
+      current_version: "v5",
+      writer: { held: false, holder: null, until: null },
+      release: null,
+      last_published_at: "2026-09-29T10:00:00Z",
+      failed_runs: 2,
+      failed_since_last_publish: 0,
+      runs: [],
+    };
+    const h = health(status({ backfill, indexing }), NOW);
+    expect(h.level).toBe("ok");
+    expect(h.parts.at(-1)).toBe("no failures");
+    const unresolved = { ...indexing, failed_since_last_publish: 1 };
+    expect(
+      health(status({ backfill, indexing: unresolved }), NOW).parts.at(-1),
+    ).toBe("1 failure");
   });
 });
