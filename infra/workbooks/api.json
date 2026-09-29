@@ -1,0 +1,330 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "## usnewsmap API\nRequests from `AppRequests` (health probes excluded), metrics from `AppMetrics`, availability tests from `AppAvailabilityResults` and the API's console lines from `ContainerAppConsoleLogs` (08 §8.1.2). Times are UTC. No search text is recorded anywhere this reads."
+      },
+      "name": "title"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "06f37658-1265-53b4-97d7-2747401da781",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 172800000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ],
+              "allowCustom": true
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let requests = AppRequests\n    | where AppRoleName == \"usnm-api\";\nlet totals = requests\n    | summarize Requests = sum(ItemCount), Server5xx = sumif(ItemCount, toint(ResultCode) >= 500);\nlet p95 = requests\n    | where Name !endswith \"(site)\" and Name !endswith \"(no route)\"\n    | summarize P95 = percentile(DurationMs, 95);\ntotals\n| extend P95 = toscalar(p95)\n| mv-expand Tile = pack_array(\n    pack(\"Name\", \"Requests\", \"Value\", todouble(Requests)),\n    pack(\"Name\", \"5xx error rate, %\", \"Value\", iff(Requests == 0, 0.0, round(100.0 * Server5xx / Requests, 2))),\n    pack(\"Name\", \"p95 latency of API routes, ms\", \"Value\", round(P95, 0)))\n| project Name = tostring(Tile.Name), Value = todouble(Tile.Value)",
+        "size": 0,
+        "title": "Requests in the time range",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "tiles",
+        "timeContextFromParameter": "TimeRange",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Name",
+            "formatter": 1
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 12,
+            "formatOptions": {
+              "palette": "auto"
+            },
+            "numberFormat": {
+              "unit": 0,
+              "options": {
+                "style": "decimal"
+              }
+            }
+          },
+          "showBorder": false
+        }
+      },
+      "name": "tiles"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where AppRoleName == \"usnm-api\"\n| summarize Requests = sum(ItemCount) by bin(TimeGenerated, {TimeRange:grain}), Route = Name\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Requests by route",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "requests-by-route",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where AppRoleName == \"usnm-api\"\n| summarize Requests = sum(ItemCount) by bin(TimeGenerated, {TimeRange:grain}), Status = strcat(substring(ResultCode, 0, 1), \"xx\")\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Requests by status class",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "requests-by-status",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where AppRoleName == \"usnm-api\"\n| summarize\n    Requests = sum(ItemCount),\n    Client4xx = sumif(ItemCount, toint(ResultCode) between (400 .. 499)),\n    Server5xx = sumif(ItemCount, toint(ResultCode) >= 500),\n    P50ms = round(percentile(DurationMs, 50), 1),\n    P95ms = round(percentile(DurationMs, 95), 1),\n    MaxMs = round(max(DurationMs), 1)\n    by Route = Name\n| order by Requests desc\n| take 50",
+        "size": 0,
+        "title": "Latency by route, ms",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "latency-table",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppRequests\n| where AppRoleName == \"usnm-api\"\n| where Name !endswith \"(site)\" and Name !endswith \"(no route)\"\n| summarize P95ms = percentile(DurationMs, 95) by bin(TimeGenerated, {TimeRange:grain}), Route = Name\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "p95 latency by API route, ms",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "latency-p95",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.backend_duration_seconds\"\n| extend Series = strcat(tostring(Properties.endpoint), \", \", tostring(Properties.outcome))\n| summarize MeanSecs = sum(Sum) / sum(ItemCount), MaxSecs = max(Max) by Series",
+        "size": 0,
+        "title": "Search backend time by endpoint and outcome, s (mean and max)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No search reached the backend in the time range."
+      },
+      "name": "backend-table",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.backend_duration_seconds\"\n| summarize MaxSecs = max(Max) by bin(TimeGenerated, {TimeRange:grain}), Series = strcat(tostring(Properties.endpoint), \", \", tostring(Properties.outcome))\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Search backend time, slowest per interval, s",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No search reached the backend in the time range."
+      },
+      "name": "backend-max",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.cache_lookups\"\n| extend Layer = tostring(Properties.layer), Hit = tostring(Properties.result) == \"hit\"\n| summarize Lookups = sum(Sum), Hits = sumif(Sum, Hit) by Layer\n| extend HitRatePercent = round(100.0 * Hits / Lookups, 1), Misses = Lookups - Hits\n| project Layer, Lookups, Hits, Misses, HitRatePercent",
+        "size": 0,
+        "title": "Response cache lookups by layer",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No cache lookups in the time range."
+      },
+      "name": "cache-table",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.cache_lookups\"\n| extend Layer = tostring(Properties.layer), Hit = tostring(Properties.result) == \"hit\"\n| summarize HitRatePercent = round(100.0 * sumif(Sum, Hit) / sum(Sum), 1) by bin(TimeGenerated, {TimeRange:grain}), Layer\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Response cache hit rate by layer, %",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No cache lookups in the time range."
+      },
+      "name": "cache-rate",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.rejected_queries\"\n| summarize Rejected = sum(Sum) by bin(TimeGenerated, {TimeRange:grain}), Reason = tostring(Properties.reason)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Rejected queries by reason",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No rejected queries in the time range."
+      },
+      "name": "rejected",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppAvailabilityResults\n| summarize SuccessPercent = round(100.0 * countif(Success == true) / count(), 1)\n    by bin(TimeGenerated, {TimeRange:grain}), Location = strcat(Name, \", \", Location)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Availability tests: success % by test and location",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No availability results in the time range."
+      },
+      "name": "availability",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"api\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"warm-up finished\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"warm-up finished\"\n| project TimeGenerated, Trigger = tostring(j.fields[\"trigger\"]), Version = tostring(j.fields[\"version\"]),\n    Queries = tolong(j.fields[\"queries\"]), Ok = tolong(j.fields[\"ok\"]), Failed = tolong(j.fields[\"failed\"]),\n    TimedOut = tolong(j.fields[\"timed_out\"]), Skipped = tolong(j.fields[\"skipped\"]), Ms = tolong(j.fields[\"ms\"]),\n    Replica = ContainerGroupName\n| order by TimeGenerated desc\n| take 100",
+        "size": 0,
+        "title": "Cache warm-up runs",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No warm-up runs in the time range.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "warm-up"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"api\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"publishing new index version\", \"reload failed\", \"initial load failed\", \"loaded memory index\")\n| extend j = parse_json(Log)\n| extend Message = tostring(j.fields.message)\n| where Message in (\"publishing new index version\", \"reload failed; keeping current version\", \"initial load failed; retrying\")\n| summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated)\n    by Event = Message, Version = tostring(j.fields.version), Error = substring(tostring(j.fields.error), 0, 300), Replica = ContainerGroupName\n| order by Last desc\n| take 100",
+        "size": 0,
+        "title": "Reference data loads: new versions published, failed reloads, failed initial loads",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No reference data loads in the time range.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "reloads"
+    }
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

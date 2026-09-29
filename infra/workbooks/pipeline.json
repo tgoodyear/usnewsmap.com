@@ -1,0 +1,386 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "## usnewsmap pipeline\nThe ingest and backfill jobs, from their console lines in `ContainerAppConsoleLogs` and the platform's events in `ContainerAppSystemLogs` (08 §8.1.2). Times are UTC. The release history, the release picker and the version tiles cover the last 30 days (the workspace's retention); everything else follows the time range. The saved queries in `ops/queries/` read the same lines."
+      },
+      "name": "title"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "06f37658-1265-53b4-97d7-2747401da781",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 172800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 172800000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ],
+              "allowCustom": true
+            }
+          },
+          {
+            "id": "b49ec1db-ebf8-5c7d-af6d-202b6329f5c6",
+            "version": "KqlParameterItem/1.0",
+            "name": "Release",
+            "label": "Release",
+            "type": 2,
+            "isRequired": false,
+            "query": "ContainerAppConsoleLogs\n| where ContainerName == \"ingest\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"building index\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"building index\"\n| summarize Started = max(TimeGenerated) by value = tostring(j.fields.version)\n| order by Started desc\n| take 50\n| extend label = strcat(value, \" (\", format_datetime(Started, \"yyyy-MM-dd HH:mm\"), \" UTC)\"), selected = row_number() == 1\n| project value, label, selected",
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "timeContext": {
+              "durationMs": 2592000000
+            },
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "crossComponentResources": [
+              "__WORKSPACE_ID__"
+            ]
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"curated\", \"failed\", \"throttled\", \"rate limiting\", \"backing off\", \"released\", \"pushed back\")\n| extend Message = tostring(parse_json(Log).fields.message)\n| summarize\n    Curated = countif(Message == \"curated\"),\n    Failed = countif(Message == \"curation failed\"),\n    Throttled = countif(Message in (\"throttled; downloads pause for an hour\", \"LoC is rate limiting; stopping until the next run\")),\n    FetchRetries = countif(Message == \"fetch failed; backing off\"),\n    Pushbacks = countif(Message == \"Quickwit pushed back; retrying\"),\n    Releases = countif(Message == \"released\")\n| mv-expand Tile = pack_array(\n    pack(\"Name\", \"Batches curated\", \"Value\", Curated),\n    pack(\"Name\", \"Curation failures\", \"Value\", Failed),\n    pack(\"Name\", \"LoC rate-limit pauses\", \"Value\", Throttled),\n    pack(\"Name\", \"Download retries\", \"Value\", FetchRetries),\n    pack(\"Name\", \"Quickwit pushbacks\", \"Value\", Pushbacks),\n    pack(\"Name\", \"Releases\", \"Value\", Releases))\n| project Name = tostring(Tile.Name), Value = tolong(Tile.Value)",
+        "size": 0,
+        "title": "Batches and releases in the time range",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "tiles",
+        "timeContextFromParameter": "TimeRange",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Name",
+            "formatter": 1
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 12,
+            "formatOptions": {
+              "palette": "auto"
+            },
+            "numberFormat": {
+              "unit": 0,
+              "options": {
+                "style": "decimal"
+              }
+            }
+          },
+          "showBorder": false
+        }
+      },
+      "name": "tiles"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let released = ContainerAppConsoleLogs\n    | where ContainerName == \"ingest\"\n    | where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n    | where Log has \"released\"\n    | extend j = parse_json(Log)\n    | where tostring(j.fields.message) == \"released\"\n    | summarize arg_max(TimeGenerated, j)\n    | project Name = \"Published version\", Value = tostring(j.fields.version),\n        Detail = strcat(tolong(j.fields.pages), \" pages, \", iff(tobool(j.fields.full), \"full\", \"delta\"), \", \", format_datetime(TimeGenerated, \"yyyy-MM-dd HH:mm\"), \" UTC\"), Order = 1;\nlet serving = AppMetrics\n    | where Name == \"api.index_version\"\n    | summarize arg_max(TimeGenerated, Properties)\n    | project Name = \"API serving\", Value = tostring(Properties.index_version),\n        Detail = strcat(\"reported \", format_datetime(TimeGenerated, \"yyyy-MM-dd HH:mm\"), \" UTC\"), Order = 2;\nunion released, serving\n| order by Order asc\n| project Name, Value, Detail",
+        "size": 0,
+        "title": "Index version (last 30 days)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "tiles",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "noDataMessage": "No release and no API report in the last 30 days.",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Name",
+            "formatter": 1
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 1
+          },
+          "secondaryContent": {
+            "columnMatch": "Detail",
+            "formatter": 1
+          },
+          "showBorder": false
+        }
+      },
+      "name": "version"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"curated\", \"curation failed\", \"throttled\")\n| extend Message = tostring(parse_json(Log).fields.message)\n| where Message in (\"curated\", \"curation failed\", \"throttled; downloads pause for an hour\")\n| summarize\n    Curated = countif(Message == \"curated\"),\n    Failed = countif(Message == \"curation failed\"),\n    Throttled = countif(Message startswith \"throttled\")\n    by bin(TimeGenerated, 1h)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Batches per hour: curated, failed, throttled",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange"
+      },
+      "name": "curated-per-hour",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"ingest\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"pushed back\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"Quickwit pushed back; retrying\"\n| summarize Pushbacks = count() by bin(TimeGenerated, 10m), Status = tostring(j.fields.status)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Quickwit pushbacks per 10 minutes, by HTTP status",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No Quickwit pushbacks in the time range."
+      },
+      "name": "pushbacks",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"curated\" and Log has \"secs\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"curated\"\n| extend Minutes = todouble(j.fields.secs) / 60\n| where isnotnull(Minutes)\n| summarize Batches = count() by Minutes = bin(Minutes, 5)\n| order by Minutes asc",
+        "size": 0,
+        "title": "Curation time per batch (batches per 5-minute bucket)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No curated batches with timings in the time range."
+      },
+      "name": "curate-duration",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"curated\" and Log has \"archive_mb\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"curated\"\n| extend ArchiveMb = todouble(j.fields.archive_mb)\n| where isnotnull(ArchiveMb)\n| summarize Batches = count() by ArchiveMb = bin(ArchiveMb, 100)\n| order by ArchiveMb asc",
+        "size": 0,
+        "title": "Archive size per batch (batches per 100 MB bucket)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No curated batches with archive sizes in the time range."
+      },
+      "name": "curate-archive",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"ingest\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"building index\", \"release progress\", \"published\", \"released\", \"command failed\")\n| extend j = parse_json(Log)\n| extend Message = tostring(j.fields.message)\n| where Message in (\"building index\", \"release progress\", \"published\", \"released\", \"command failed\")\n| summarize\n    Started = minif(TimeGenerated, Message == \"building index\"),\n    Released = minif(TimeGenerated, Message == \"released\"),\n    FailedAt = minif(TimeGenerated, Message == \"command failed\"),\n    LastLine = max(TimeGenerated),\n    Version = take_anyif(tostring(j.fields.version), Message == \"building index\"),\n    Full = take_anyif(tobool(j.fields.full), Message == \"building index\"),\n    Batches = take_anyif(tolong(j.fields.batches), Message == \"building index\"),\n    Docs = take_anyif(tolong(j.fields.docs), Message == \"released\"),\n    Pages = take_anyif(tolong(j.fields.pages), Message == \"released\"),\n    Error = take_anyif(substring(tostring(j.fields.error), 0, 300), Message == \"command failed\")\n    by Replica = ContainerGroupName\n| where isnotempty(Started)\n| extend Status = case(\n    isnotempty(Released), \"released\",\n    isnotempty(FailedAt), \"failed\",\n    LastLine > ago(10m), \"running\",\n    \"stopped without a result\")\n| extend Minutes = round(todouble(datetime_diff(\"second\", coalesce(Released, FailedAt, LastLine), Started)) / 60, 1)\n| project Started, Version, Type = iff(Full, \"full\", \"delta\"), Status, Minutes, Batches, Docs, Pages, Replica, Error\n| order by Started desc\n| take 100",
+        "size": 0,
+        "title": "Releases (last 30 days): from \"building index\" to \"released\"",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "noDataMessage": "No release started in the last 30 days.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "release-history"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Release {Release}\nFrom its `release progress` lines, logged every 30 s and after each batch. Pick another release above."
+      },
+      "name": "release-heading"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"ingest\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"release progress\" and Log has \"{Release}\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"release progress\" and tostring(j.span.version) == \"{Release}\"\n| project TimeGenerated, DocsSent = tolong(j.fields.docs_sent), DocsExpected = tolong(j.fields.docs_expected)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Documents sent and expected",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "linechart",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "noDataMessage": "No progress lines for this release."
+      },
+      "name": "release-docs",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"ingest\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"release progress\" and Log has \"{Release}\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"release progress\" and tostring(j.span.version) == \"{Release}\"\n| project TimeGenerated, DocsPerSec = todouble(j.fields.docs_per_sec), Retries503 = tolong(j.fields.retries_503), Retries429 = tolong(j.fields.retries_429)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Documents per second, and 429 and 503 retries so far",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "linechart",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "noDataMessage": "No progress lines for this release."
+      },
+      "name": "release-rate",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"ingest\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"release progress\" and Log has \"{Release}\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"release progress\" and tostring(j.span.version) == \"{Release}\"\n| project TimeGenerated, DiskFreeMb = todouble(j.fields.disk_free_mb)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Free disk of the work directory, MB",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "linechart",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "noDataMessage": "No progress lines for this release."
+      },
+      "name": "release-disk",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"ingest\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has \"release progress\" and Log has \"{Release}\"\n| extend j = parse_json(Log)\n| where tostring(j.fields.message) == \"release progress\" and tostring(j.span.version) == \"{Release}\"\n| project TimeGenerated, PipelineRssMb = todouble(j.fields.rss_mb), QuickwitRssMb = todouble(j.fields.quickwit_rss_mb)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Memory (RSS) of the pipeline and the Quickwit writer, MB",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "linechart",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "noDataMessage": "No progress lines for this release."
+      },
+      "name": "release-memory",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName in (\"ingest\", \"curate\")\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"WARN\", \"ERROR\")\n| extend j = parse_json(Log)\n| extend Level = tostring(j.level)\n| where Level in (\"WARN\", \"ERROR\") and tostring(j.target) != \"quickwit\"\n| extend Batch = coalesce(tostring(j.fields.batch), tostring(j.span.batch), extract(@\"/ocr/([^/?]+)\\.tar\", 1, tostring(j.fields.url)))\n| where isnotempty(Batch)\n| summarize\n    Errors = countif(Level == \"ERROR\"),\n    Warnings = countif(Level == \"WARN\"),\n    Messages = make_set(tostring(j.fields.message), 5),\n    LastError = take_anyif(substring(tostring(j.fields.error), 0, 300), Level == \"ERROR\"),\n    First = min(TimeGenerated),\n    Last = max(TimeGenerated)\n    by Batch\n| order by Errors desc, Last desc\n| take 200",
+        "size": 0,
+        "title": "Warnings and errors by batch",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No batch warnings or errors in the time range.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "errors-by-batch"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let console = ContainerAppConsoleLogs\n    | where ContainerName in (\"ingest\", \"curate\")\n    | where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n    | where Log has \"command failed\"\n    | extend j = parse_json(Log)\n    | where tostring(j.level) == \"ERROR\" and tostring(j.fields.message) == \"command failed\"\n    | project TimeGenerated, Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName,\n        Source = \"command failed\", Detail = substring(tostring(j.fields.error), 0, 500);\nlet platform = ContainerAppSystemLogs\n    | where JobName startswith \"caj-usnm-\" or ContainerAppName startswith \"caj-usnm-\"\n    | where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n    | where Reason in (\"BackoffLimitExceeded\", \"DeadlineExceeded\")\n        or (Log contains \"terminated with exit code\" and Log !contains \"exit code '0'\")\n    | project TimeGenerated, Job = coalesce(JobName, ContainerAppName), Replica = ReplicaName,\n        Source = Reason, Detail = substring(Log, 0, 500);\nunion console, platform\n| order by TimeGenerated desc\n| take 200",
+        "size": 0,
+        "title": "Job failures: \"command failed\" lines and replicas the platform saw fail",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No job failures in the time range.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "job-failures"
+    }
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

@@ -357,6 +357,21 @@ module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
   }
 }
 
+// Dashboards over the workspace: the pipeline workbook with the jobs, the
+// API workbook with the API. No alert emails needed.
+module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deployApi) {
+  scope: rg
+  name: 'workbooks'
+  params: {
+    location: location
+    tags: tags
+    workspaceId: monitoring.outputs.workspaceId
+    appInsightsId: monitoring.outputs.appInsightsId
+    pipeline: ingestJobs && useAcr
+    api: deployApi
+  }
+}
+
 module alerts 'modules/alerts.bicep' = if (!empty(emails)) {
   scope: rg
   name: 'alerts'
