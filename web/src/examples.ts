@@ -1,31 +1,20 @@
 import type { ViewState } from "./state/url";
+import examples from "./examples.json";
 
 export interface Example {
   id: string;
   title: string;
   blurb: string;
   view: Partial<ViewState>;
+  /**
+   * The `/v1/aggregate` query string the app sends for `view`, without `v`.
+   * The API warms exactly these searches before it serves a new index
+   * version (crates/usnm-api/src/prewarm.rs); examples.test.ts checks they
+   * match what the app sends.
+   */
+  aggregate: string;
 }
 
 // Preset searches (F-30). They use phrases present in the synthetic fixtures
-// and in the real corpus alike.
-export const EXAMPLES: Example[] = [
-  {
-    id: "cross-of-gold",
-    title: "Cross of Gold, 1896",
-    blurb: "Watch Bryan's speech spread from Chicago to both coasts, week by week.",
-    view: { q: '"cross of gold"', from: "1896-06-01", to: "1896-12-31", bucket: "week" },
-  },
-  {
-    id: "yellow-fever",
-    title: "Yellow fever",
-    blurb: "Follow reports of an epidemic through the port cities.",
-    view: { q: '"yellow fever"', bucket: "month", norm: "rel" },
-  },
-  {
-    id: "free-silver",
-    title: "Free silver",
-    blurb: "The money question that divided the country in the 1890s.",
-    view: { q: '"free silver"', bucket: "month" },
-  },
-];
+// and in the real corpus alike. The API reads the same file at build time.
+export const EXAMPLES: Example[] = examples as Example[];

@@ -156,6 +156,7 @@ pub async fn hits(
         let t = Instant::now();
         let result = with_timeout(
             &st,
+            st.config.search_timeout,
             snap2
                 .backend
                 .hits(&rd.index_set(), &req.query, &req.filters, &page),
@@ -212,6 +213,7 @@ pub async fn hits(
     };
     cached(
         &state,
+        false,
         key,
         &pinning,
         &serving,

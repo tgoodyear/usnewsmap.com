@@ -2,18 +2,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{OriginalUri, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 use usnm_core::params::RawParams;
 use usnm_core::query;
 
-use super::cached;
+use super::{cached, Ctx};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
 pub async fn readyz(State(state): State<Arc<AppState>>) -> Response {
+    // Not ready until the first version's caches are warm (or the cap passes),
+    // so the first visitors after a start don't wait on cold searches.
+    if state.warming.load(std::sync::atomic::Ordering::Relaxed) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "warming up").into_response();
+    }
     let backend = state.snapshot.load().backend.clone();
     match tokio::time::timeout(Duration::from_secs(2), backend.health()).await {
         Ok(Ok(())) => (StatusCode::OK, "ready").into_response(),
@@ -63,9 +68,15 @@ pub async fn places(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, ApiError> {
+    let ctx = Ctx::serving(&state);
+    places_in(&state, ctx, &uri).await
+}
+
+pub(crate) async fn places_in(state: &AppState, ctx: Ctx, uri: &Uri) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
     raw.reject_only(&["v"])?;
-    let snap = state.snapshot.load_full();
+    let warm_up = ctx.warm_up;
+    let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();
     let pinning = match version::check(raw.get("v"), &serving, uri.path(), "") {
         Ok(p) => p,
@@ -101,5 +112,15 @@ pub async fn places(
             "features": features
         }))
     };
-    cached(&state, key, &pinning, &serving, uri.path(), "", compute).await
+    cached(
+        state,
+        warm_up,
+        key,
+        &pinning,
+        &serving,
+        uri.path(),
+        "",
+        compute,
+    )
+    .await
 }

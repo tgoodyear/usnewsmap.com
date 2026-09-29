@@ -35,6 +35,15 @@ pub struct Config {
     pub persist_after: Duration,
     pub allowed_origins: Vec<String>,
     pub search_timeout: Duration,
+    /// Warm-up (`crate::prewarm`): limit on each query. Well above
+    /// `search_timeout`, because a cold search can take longer than a visitor
+    /// is allowed to wait.
+    pub prewarm_query_timeout: Duration,
+    /// Warm-up: limit on the whole run; queries left when it runs out are skipped.
+    pub prewarm_budget: Duration,
+    /// After a start, `/readyz` reports ready once the warm-up finishes or
+    /// this much time passes, whichever is first.
+    pub ready_cap: Duration,
     pub refresh_interval: Duration,
     pub cache_bytes: u64,
     /// Cube cell budget; above it buckets are coarsened (ADR-0003).
@@ -109,6 +118,9 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             search_timeout: Duration::from_secs(num("USNM_SEARCH_TIMEOUT_SECS", 10)?),
+            prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
+            prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 300)?),
+            ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 120)?),
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
             cache_bytes: num("USNM_CACHE_MB", 256)? * 1024 * 1024,
             max_cells: usnm_core::cube::MAX_CELLS,
@@ -135,6 +147,9 @@ mod tests {
         assert_eq!(c.reference_url, "fixtures/data");
         assert_eq!(c.rate_limit.unwrap().per_minute.get(), 120);
         assert_eq!(c.persist_after, Duration::from_millis(500));
+        assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
+        assert_eq!(c.prewarm_budget, Duration::from_secs(300));
+        assert_eq!(c.ready_cap, Duration::from_secs(120));
         let c = Config::from_lookup(|k| match k {
             "USNM_RATE_PER_MIN" => Some("0".into()),
             "USNM_REFERENCE_URL" => Some("https://a.blob.core.windows.net/reference".into()),

@@ -25,6 +25,8 @@ COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --locked -p usnm-api --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# The home page's example searches, which the API warms (include_str!).
+COPY web/src/examples.json ./web/src/examples.json
 RUN cargo build --release --locked -p usnm-api
 
 FROM gcr.io/distroless/cc-debian12:nonroot

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use usnm_api::config::{BackendKind, Config};
 use usnm_api::status::PipelineSource;
-use usnm_api::{app, spawn_background, telemetry, AppState, Engine, Loader};
+use usnm_api::{app, spawn_background, spawn_startup_warm_up, telemetry, AppState, Engine, Loader};
 use usnm_search::quickwit::QuickwitBackend;
 use usnm_state::cosmos::CosmosDocs;
 use usnm_store::credential;
@@ -33,9 +33,13 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         BackendKind::Memory => Engine::Memory {
             indexes_dir: config.data_dir.join("indexes"),
         },
-        BackendKind::Quickwit(url) => {
-            Engine::Shared(Arc::new(QuickwitBackend::new(url, config.search_timeout)?))
-        }
+        // A search's limit fits a warm-up query (the handlers still cut each
+        // visitor's search at `search_timeout`); index lookups and health
+        // checks keep the short one.
+        BackendKind::Quickwit(url) => Engine::Shared(Arc::new(
+            QuickwitBackend::new(url, config.search_timeout)?
+                .with_search_timeout(config.search_timeout.max(config.prewarm_query_timeout)),
+        )),
     };
     let loader = Loader {
         reference: usnm_store::open(&config.reference_url)?,
@@ -87,6 +91,8 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         &state,
         &opentelemetry::global::meter(telemetry::SERVICE.name),
     );
+    // Listening (so liveness passes) but not ready until the caches are warm.
+    spawn_startup_warm_up(state.clone());
     spawn_background(state.clone());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "listening");

@@ -104,6 +104,9 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 | `USNM_ALLOWED_ORIGINS` | `https://usnewsmap.com` | Comma-separated CORS origins (GET only) |
 | `USNM_SEARCH_TIMEOUT_SECS` | `10` | Backend timeout; exceeded → `503` problem |
 | `USNM_REFRESH_SECS` | `600` | How often `current.json` is re-read for a newly published version |
+| `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |
+| `USNM_PREWARM_BUDGET_SECS` | `300` | Cache warm-up: limit on the whole run; the rest is skipped |
+| `USNM_READY_CAP_SECS` | `120` | After a start, `/readyz` reports ready once the warm-up ends or this much time passes |
 | `USNM_CACHE_MB` | `256` | In-process response cache size |
 | `USNM_RATE_PER_MIN` | `120` | Per-client token bucket refill rate on `/v1` (`0` disables) |
 | `USNM_RATE_BURST` | `40` | Per-client bucket size |

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use axum::extract::{OriginalUri, State};
+use axum::http::Uri;
 use axum::response::Response;
 use chrono::NaiveDate;
 use serde::Serialize;
@@ -11,7 +12,7 @@ use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{ParamError, RawParams};
 use usnm_core::time::{BucketSpec, BucketUnit};
 
-use super::cached;
+use super::{cached, Ctx};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
@@ -38,9 +39,19 @@ pub async fn coverage(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, ApiError> {
+    let ctx = Ctx::serving(&state);
+    coverage_in(&state, ctx, &uri).await
+}
+
+pub(crate) async fn coverage_in(
+    state: &AppState,
+    ctx: Ctx,
+    uri: &Uri,
+) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
     raw.reject_only(&["from", "to", "bucket", "state", "v"])?;
-    let snap = state.snapshot.load_full();
+    let warm_up = ctx.warm_up;
+    let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();
     let (lo, hi) = snap.refdata.bounds();
     let date = |k: &str, d: NaiveDate| {
@@ -126,7 +137,8 @@ pub async fn coverage(
         })
     };
     cached(
-        &state,
+        state,
+        warm_up,
         key,
         &pinning,
         &serving,

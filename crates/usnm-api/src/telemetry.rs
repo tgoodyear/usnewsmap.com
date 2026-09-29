@@ -55,6 +55,10 @@ pub struct Metrics {
     rejected: Counter<u64>,
     /// Reference-data reloads by `outcome` (published, failed).
     reloads: Counter<u64>,
+    /// One warm-up run, by `trigger` (startup, publish).
+    prewarm_duration: Histogram<f64>,
+    /// Warm-up queries by `outcome` (ok, timeout, error, skipped).
+    prewarm_queries: Counter<u64>,
     index_version: OnceLock<ObservableGauge<u64>>,
 }
 
@@ -86,6 +90,15 @@ impl Metrics {
             reloads: meter
                 .u64_counter("api.reference_reloads")
                 .with_description("Reference-data reloads by outcome (published, failed)")
+                .build(),
+            prewarm_duration: meter
+                .f64_histogram("api.prewarm_duration_seconds")
+                .with_unit("s")
+                .with_description("One cache warm-up run, by trigger (startup, publish)")
+                .build(),
+            prewarm_queries: meter
+                .u64_counter("api.prewarm_queries")
+                .with_description("Cache warm-up queries by outcome (ok, timeout, error, skipped)")
                 .build(),
             index_version: OnceLock::new(),
         }
@@ -136,6 +149,24 @@ impl Metrics {
 
     pub(crate) fn reload(&self, outcome: &'static str) {
         self.reloads.add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+
+    pub(crate) fn prewarm(&self, trigger: &'static str, report: &crate::prewarm::Report) {
+        self.prewarm_duration.record(
+            report.elapsed.as_secs_f64(),
+            &[KeyValue::new("trigger", trigger)],
+        );
+        for (outcome, n) in [
+            ("ok", report.ok),
+            ("timeout", report.timed_out),
+            ("error", report.failed),
+            ("skipped", report.skipped),
+        ] {
+            if n > 0 {
+                self.prewarm_queries
+                    .add(n as u64, &[KeyValue::new("outcome", outcome)]);
+            }
+        }
     }
 }
 
