@@ -15,7 +15,8 @@ case "${GITHUB_EVENT_NAME:-}" in
   push)
     before=${BEFORE_SHA:-}
     [ -n "$before" ] && ! [[ $before =~ ^0+$ ]] || all "no previous commit"
-    range="$before...$GITHUB_SHA"
+    # Two dots: the trees before and after the push (a force push included).
+    range="$before..$GITHUB_SHA"
     ;;
   *) all "event ${GITHUB_EVENT_NAME:-unknown}" ;;
 esac
@@ -28,7 +29,7 @@ matches '^\.github/' && all "workflow changed"
 # (index config, place overrides) and the fixtures the tests read.
 rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|scripts/(ci/|quickwit-fixtures\.sh))'
 web='^(web/|fixtures/|scripts/ci/)'
-image="$rust|^(web/|Dockerfile)"
+image="$rust|^(web/|Dockerfile|\.dockerignore$)"
 for part in rust web image; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
