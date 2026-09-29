@@ -43,7 +43,15 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           <a href="https://gtri.gatech.edu/" {...ext}>
             Georgia Tech Research Institute
           </a>{" "}
-          (David Ediger, Trevor Goodyear and Zach Suffern). It won a prize in the Library of Congress's Chronicling America Data
+          (
+          <a href="https://www.linkedin.com/in/david-ediger-5a771b12" {...ext}>
+            David Ediger
+          </a>
+          , Trevor Goodyear and{" "}
+          <a href="https://www.linkedin.com/in/zachary-suffern-0966825a" {...ext}>
+            Zach Suffern
+          </a>
+          ). It won a prize in the Library of Congress's Chronicling America Data
           Challenge and was featured in Slate and The Washington Post. Georgia Tech's{" "}
           <a
             href="https://web.archive.org/web/20161228012501/http://www.news.gatech.edu/2016/03/06/what-going-viral-looked-120-years-ago/"
