@@ -66,6 +66,8 @@ pub struct RefData {
     pub titles: HashMap<String, Title>,
     /// Pages published per place, as sorted `(day, pages)`.
     pub baselines: HashMap<String, Vec<(u32, u32)>>,
+    /// Every page in the published version (the sum of the baselines).
+    pub pages: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,12 +143,18 @@ impl RefData {
             .enumerate()
             .map(|(i, p)| (p.id.clone(), i))
             .collect();
+        let pages = baselines
+            .values()
+            .flatten()
+            .map(|&(_, n)| u64::from(n))
+            .sum();
         Ok(Self {
             current,
             places,
             place_index,
             titles: titles.into_iter().map(|t| (t.lccn.clone(), t)).collect(),
             baselines,
+            pages,
         })
     }
 
