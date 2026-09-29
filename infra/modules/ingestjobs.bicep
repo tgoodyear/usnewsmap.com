@@ -3,15 +3,19 @@
 // the private endpoints with managed identities.
 //
 // - `caj-usnm-ingest-{env}`: `usnm-ingest run` (enqueue from LoC's listing,
-//   curate, release into Quickwit). Weekly on `cron`, or manual when it is
-//   empty. The Quickwit writer it starts authenticates with the job's
-//   system-assigned identity (Blob Data Contributor on `qw-index` only); the
-//   pipeline itself uses `id-usnm-ingest`.
-// - `caj-usnm-backfill-{env}`: manual; `workers` parallel replicas of
-//   `usnm-ingest curate --enqueue`: each enqueues LoC's listing (idempotent,
-//   safe in parallel), then claims batches from the Cosmos queue until none
-//   are left (~22 h at 8 workers for the full corpus, 04 §4.1.1).
-//   Archives are streamed, so no scratch disk is needed.
+//   curate, titles-sync, release into Quickwit). Weekly on `cron`, or manual
+//   when it is empty. This is how batches LoC publishes after the backfill
+//   reach the site. The Quickwit writer it starts authenticates with the
+//   job's system-assigned identity (Blob Data Contributor on `qw-index`
+//   only); the pipeline itself uses `id-usnm-ingest`.
+// - `caj-usnm-backfill-{env}`: manual, for the initial corpus (or a large
+//   LoC publication); `workers` parallel replicas of `usnm-ingest curate
+//   --enqueue`: each enqueues LoC's listing (idempotent, safe in parallel),
+//   then claims batches from the Cosmos queue until none are left or its
+//   max runtime has passed. LoC's download limit sets the pace: about 2.5
+//   days for the full corpus (04 §4.4), so the job is started again after
+//   each execution until the queue is empty. Archives are streamed, so no
+//   scratch disk is needed.
 
 param location string
 param tags object
@@ -32,6 +36,19 @@ param cron string = ''
 @minValue(1)
 @maxValue(32)
 param workers int = 8
+
+// Both jobs: the platform kills a replica after replicaTimeout, which the
+// ingest-job-failed alert reports as a failure. Curation stops claiming at a
+// max runtime instead, and a batch already downloading then takes at most 45
+// minutes more (the per-batch watchdog), so each command ends on its own.
+var replicaTimeoutSecs = 86400
+// Backfill: 22 h + 45 min watchdog = 22 h 45 min, leaving 75 minutes of
+// margin under the 24 h timeout for the startup enqueue and the last commit.
+var backfillMaxRuntimeSecs = 79200
+// Ingest run: curation stops 10 h after the start; titles-sync (about 4.5 h
+// at most, for a catalog built from nothing) and a release (a full rebuild of
+// the corpus is estimated at 6 h) still fit in the 24 h timeout.
+var ingestCurateMaxRuntimeSecs = 36000
 
 var env = [
   { name: 'USNM_COSMOS_ENDPOINT', value: cosmosEndpoint }
@@ -63,7 +80,7 @@ resource ingest 'Microsoft.App/jobs@2024-03-01' = {
         ? null
         : { cronExpression: cron, parallelism: 1, replicaCompletionCount: 1 }
       // A full rebuild of the corpus can take many hours.
-      replicaTimeout: 86400
+      replicaTimeout: replicaTimeoutSecs
       replicaRetryLimit: 0
     }
     template: {
@@ -73,6 +90,8 @@ resource ingest 'Microsoft.App/jobs@2024-03-01' = {
           image: image
           args: [
             'run'
+            '--curate-max-runtime-secs'
+            string(ingestCurateMaxRuntimeSecs)
             '--quickwit-bin'
             '/usr/local/bin/quickwit'
             '--quickwit-metastore'
@@ -103,7 +122,7 @@ resource backfill 'Microsoft.App/jobs@2024-03-01' = {
       registries: [{ server: registryServer, identity: ingestIdentityId }]
       triggerType: 'Manual'
       manualTriggerConfig: { parallelism: workers, replicaCompletionCount: workers }
-      replicaTimeout: 86400
+      replicaTimeout: replicaTimeoutSecs
       // A worker that dies leaves its batch leased; another replica or run
       // picks it up once the lease expires.
       replicaRetryLimit: 1
@@ -113,7 +132,7 @@ resource backfill 'Microsoft.App/jobs@2024-03-01' = {
         {
           name: 'curate'
           image: image
-          args: ['curate', '--enqueue']
+          args: ['curate', '--enqueue', '--max-runtime-secs', string(backfillMaxRuntimeSecs)]
           // bzip2 decoding is single-threaded: one vCPU per worker.
           resources: { cpu: json('1.0'), memory: '2Gi' }
           env: env

@@ -15,6 +15,12 @@
 //!   while it is held ([`crate::heartbeat`]), and one outcome line. A batch
 //!   still unfinished [`BATCH_LIMIT`] after its download slot is abandoned
 //!   like a failed one, and the worker moves on.
+//! - **Stop:** a worker with a [`Worker::deadline`] claims nothing once it
+//!   has passed, and a batch still waiting for its download slot then is
+//!   released without costing an attempt. A batch past its slot is finished
+//!   (or abandoned by the watchdog), so a worker stops at most
+//!   [`BATCH_LIMIT`] after the deadline, and exits cleanly well before the
+//!   job's replica timeout would kill it.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::Ordering;
@@ -86,6 +92,8 @@ enum Outcome {
     Failed,
     Throttled,
     TimedOut,
+    /// The deadline passed while the batch waited for a download slot.
+    Stopped,
 }
 
 impl Outcome {
@@ -95,6 +103,7 @@ impl Outcome {
             Outcome::Failed => "failed",
             Outcome::Throttled => "throttled",
             Outcome::TimedOut => "timed_out",
+            Outcome::Stopped => "stopped",
         }
     }
 }
@@ -111,6 +120,9 @@ pub struct Worker {
     /// The watchdog: how long a batch may take from its download slot to its
     /// commit ([`BATCH_LIMIT`]).
     pub batch_limit: std::time::Duration,
+    /// When to stop claiming batches and waiting for download slots
+    /// (`curate --max-runtime-secs`); `None` runs until the queue is empty.
+    pub deadline: Option<tokio::time::Instant>,
 }
 
 /// Pages per (lccn → day → pages), stored beside the parts.
@@ -188,25 +200,51 @@ impl Worker {
         Ok(None)
     }
 
-    /// Claim and curate batches until none are left; returns how many were
-    /// curated. A batch that fails is re-queued for a later run, not retried
-    /// straight away (the failure is often the source, e.g. a throttled download).
+    /// Claim and curate batches until none are left or the deadline has
+    /// passed; returns how many were curated. A batch that fails is re-queued
+    /// for a later run, not retried straight away (the failure is often the
+    /// source, e.g. a throttled download).
     pub async fn run(&self, max_batches: Option<usize>) -> anyhow::Result<usize> {
         let mut done = 0;
         let mut failed = HashSet::new();
         while max_batches.is_none_or(|m| done < m) {
+            if self.past_deadline() {
+                self.log_stop(done).await?;
+                break;
+            }
             let Some((batch, _)) = self.claim_except(&failed).await? else {
                 break;
             };
             match self.run_one(&batch).await? {
                 Outcome::Ok => done += 1,
                 Outcome::Throttled => {}
+                Outcome::Stopped => {
+                    self.log_stop(done).await?;
+                    break;
+                }
                 Outcome::Failed | Outcome::TimedOut => {
                     failed.insert(batch.batch);
                 }
             }
         }
         Ok(done)
+    }
+
+    fn past_deadline(&self) -> bool {
+        self.deadline
+            .is_some_and(|d| tokio::time::Instant::now() >= d)
+    }
+
+    /// The line that says why this worker stopped with work left, and how
+    /// much is left for the next run.
+    async fn log_stop(&self, curated: usize) -> anyhow::Result<()> {
+        let queued = self.state.batches(&[BatchStatus::Queued]).await?.len();
+        tracing::info!(
+            curated,
+            queued,
+            "max runtime reached; claiming no more batches"
+        );
+        Ok(())
     }
 
     /// Curate one claimed batch: wait for a download slot, curate, commit,
@@ -247,11 +285,40 @@ impl Worker {
         if let Some(interval) = self.fetch_interval {
             if source::local_path(&batch.source_url).is_none() {
                 let waiting = Instant::now();
-                self.wait_for_fetch_slot(interval, &name)
-                    .instrument(span.clone())
-                    .await?;
+                let wait = self
+                    .wait_for_fetch_slot(interval, &name)
+                    .instrument(span.clone());
+                // Past the deadline the worker stops waiting: the batch goes
+                // back to the queue as it was, attempt and all.
+                let granted = match self.deadline {
+                    Some(deadline) => tokio::select! {
+                        r = wait => r.map(|()| true)?,
+                        () = tokio::time::sleep_until(deadline) => false,
+                    },
+                    None => wait.await.map(|()| true)?,
+                };
                 let wait_secs = round1(waiting.elapsed().as_secs_f64());
                 span.record("wait_secs", wait_secs);
+                if !granted {
+                    span.record("outcome", Outcome::Stopped.as_str());
+                    telemetry::metrics()
+                        .curate_batches
+                        .add(1, &[KeyValue::new("outcome", Outcome::Stopped.as_str())]);
+                    span.in_scope(|| {
+                        tracing::info!(
+                            batch = %name,
+                            wait_secs,
+                            "max runtime reached before the download slot; batch released"
+                        )
+                    });
+                    self.release(
+                        &batch.batch,
+                        "released unstarted: the worker reached its max runtime while waiting for a download slot",
+                        false,
+                    )
+                    .await?;
+                    return Ok(Outcome::Stopped);
+                }
                 span.in_scope(|| tracing::info!(batch = %name, wait_secs, "download slot granted"));
             }
         }
@@ -741,6 +808,7 @@ mod tests {
             lease: Duration::hours(2),
             fetch_interval: None,
             batch_limit: std::time::Duration::from_millis(500),
+            deadline: None,
         };
         let run = tokio::time::timeout(std::time::Duration::from_secs(30), w.run(None));
         assert_eq!(
@@ -775,6 +843,7 @@ mod tests {
             lease: Duration::hours(2),
             fetch_interval: None,
             batch_limit: BATCH_LIMIT,
+            deadline: None,
         }
     }
 
@@ -843,6 +912,7 @@ mod tests {
             lease: Duration::hours(2),
             fetch_interval: None,
             batch_limit: BATCH_LIMIT,
+            deadline: None,
         };
         let (b, _) = w.claim().await.unwrap().unwrap();
         let c = w.curate(&b).await.unwrap();
@@ -853,5 +923,103 @@ mod tests {
         assert!(b.last_error.is_none());
         // And nobody can claim it again.
         assert!(w.claim().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_worker_past_its_deadline_claims_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        source::enqueue(&state, &[listed("batch_b_ver01", archive(dir.path()))])
+            .await
+            .unwrap();
+        let w = Worker {
+            deadline: Some(tokio::time::Instant::now()),
+            ..worker(&state, dir.path(), "w1")
+        };
+        assert_eq!(w.run(None).await.unwrap(), 0);
+        let (b, _) = state.batch("batch_b").await.unwrap().unwrap();
+        assert_eq!((b.status, b.attempts), (BatchStatus::Queued, 0));
+        assert!(b.lease.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_deadline_during_the_slot_wait_releases_the_batch_unstarted() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/batch_a_ver01.tar.bz2",
+            listener.local_addr().unwrap()
+        );
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        source::enqueue(&state, &[listed("batch_a_ver01", url)])
+            .await
+            .unwrap();
+        // LoC is blocking downloads for the next hour.
+        state
+            .block_fetches(Utc::now() + Duration::hours(1))
+            .await
+            .unwrap();
+        let w = Worker {
+            fetch_interval: Some(Duration::seconds(75)),
+            deadline: Some(tokio::time::Instant::now() + std::time::Duration::from_millis(300)),
+            ..worker(&state, dir.path(), "w1")
+        };
+        let run = tokio::time::timeout(std::time::Duration::from_secs(10), w.run(None));
+        assert_eq!(run.await.expect("the worker stops waiting").unwrap(), 0);
+
+        // Back in the queue as it was: no lease, and the attempt given back.
+        let (a, _) = state.batch("batch_a").await.unwrap().unwrap();
+        assert_eq!((a.status, a.attempts), (BatchStatus::Queued, 0));
+        assert!(a.lease.is_none());
+        // No request was made.
+        let accepted =
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept()).await;
+        assert!(
+            accepted.is_err(),
+            "the worker downloaded after its deadline"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_batch_under_way_at_the_deadline_is_finished_and_no_other_claimed() {
+        let dir = tempfile::tempdir().unwrap();
+        // Serves the archive, but only after the deadline has passed.
+        let body = std::fs::read(archive(dir.path())).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let slow = format!(
+            "http://{}/batch_a_ver01.tar.gz",
+            listener.local_addr().unwrap()
+        );
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 4096];
+            let _ = sock.read(&mut req).await;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
+            sock.write_all(head.as_bytes()).await.unwrap();
+            sock.write_all(&body).await.unwrap();
+            sock.shutdown().await.unwrap();
+        });
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        source::enqueue(
+            &state,
+            &[
+                listed("batch_a_ver01", slow),
+                listed("batch_b_ver01", archive(dir.path())),
+            ],
+        )
+        .await
+        .unwrap();
+        let w = Worker {
+            deadline: Some(tokio::time::Instant::now() + std::time::Duration::from_millis(100)),
+            ..worker(&state, dir.path(), "w1")
+        };
+        let run = tokio::time::timeout(std::time::Duration::from_secs(30), w.run(None));
+        assert_eq!(run.await.unwrap().unwrap(), 1);
+
+        let (a, _) = state.batch("batch_a").await.unwrap().unwrap();
+        assert_eq!(a.status, BatchStatus::Curated);
+        let (b, _) = state.batch("batch_b").await.unwrap().unwrap();
+        assert_eq!((b.status, b.attempts), (BatchStatus::Queued, 0));
     }
 }

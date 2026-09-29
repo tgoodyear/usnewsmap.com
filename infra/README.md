@@ -16,7 +16,7 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`, Cosmos Built-in Data **Reader** on the `batches`, `index_runs` and `ops` containers (the status page), and Monitoring Metrics Publisher on Application Insights. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, Cosmos Built-in Data Contributor on `usnm`, and Monitoring Metrics Publisher on Application Insights |
 | `containerapps-env` | VNet-integrated, workload-profiles environment that uses only the Consumption profile (no management fee) |
 | `containerapp` | The API (`ca-usnm-{env}`): 0.25 vCPU / 0.5 GiB, external ingress, health probes, and 0–1 to 2 replicas on an HTTP scaler, and the Application Insights connection string (requests, traces and metrics, sent as `id-usnm-app`). With `searchBackend: quickwit`, also a read-only Quickwit 0.9.1 sidecar (1 vCPU / 2 GiB, localhost only) and a system-assigned identity with Blob Data **Reader** on `qw-index` only |
-| `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
+| `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual: new LoC batches after the backfill) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual, for the initial corpus), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
 | `monitoring` | Log Analytics (30-day retention, ~150 MB/day cap) and Application Insights, both with local (key) auth disabled. An action group is created when alert emails are set |
 | `diagnostics` | Diagnostic settings, sending resource logs to Log Analytics for every resource that has them: the workspace, registry, VNet, Container Apps environment (app and job console output, platform events), Cosmos control plane, and both storage accounts (blob writes and deletes; queue, table and file services in full). Per-request categories are left out to stay under the cap (08 §8.1.1) |
 | `ingest-alerts` (with `ingestJobs: true` and alert emails) | Log search alerts on the workspace: an ingest or backfill job failed, a release stalled, a backfill stalled, a backfill replica went silent (08 §8.1.2) |
@@ -148,15 +148,17 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
 
 ## Ingest jobs
 
-1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `scripts/settings.sh <env> USNM_INGEST_JOBS true` and `scripts/provision.sh <env>` on an environment already on the registry). Optionally set a weekly schedule with `scripts/settings.sh <env> USNM_INGEST_CRON "17 3 * * 1"` (UTC) and `USNM_BACKFILL_WORKERS` (default 4).
+1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `scripts/settings.sh <env> USNM_INGEST_JOBS true` and `scripts/provision.sh <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4). The weekly schedule comes after the first release (step 5).
 2. The catalog (`reference/catalog/titles.json`, `places.json`) is built by `titles-sync`, which `run` calls before every release. Coordinate corrections live in git, in `catalog/overrides/places.json` (`[{city, state, lat, lon}]`), and ship in the ingest image; the next run applies them.
 3. Backfill, then publish the first version:
    ```sh
    RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
    # Queue every batch from LoC's listing and curate it. Downloads are paced to
    # LoC's limit (10 bulk requests per 10 minutes per IP), one every 75 s across
-   # all workers, so this takes about 2.5 days. Each execution stops after 24 h:
-   # start it again until the queue is empty (it resumes where it left off).
+   # all workers, so this takes about 2.5 days. Each worker stops claiming 22 h
+   # after it starts and exits 0 once its current batch is done (by about
+   # 22 h 45 min). Start the job again when an execution has ended, until the
+   # queue is empty (it resumes where it left off).
    az containerapp job start -n "$(scripts/settings.sh prod BACKFILL_JOB)" -g "$RG"
    # When that has finished: curate any leftovers, build the base index, publish.
    az containerapp job start -n "$(scripts/settings.sh prod INGEST_JOB)" -g "$RG"
@@ -171,7 +173,9 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
    scripts/logs.sh prod job-executions 2d
    ```
    The workspace id is the stack output `LOG_ANALYTICS_WORKSPACE_ID`; the queries run with your own sign-in (Log Analytics Reader or more). Traces (`release`, `curate`) and metrics are in Application Insights `appi-usnm-<env>`. With alert emails set, a failed job, a stalled release, a stalled backfill or a backfill replica silent for 15 minutes sends an email (08 §8.1.2). The same views, as charts: the "usnewsmap pipeline" workbook under Application Insights `appi-usnm-<env>` → Workbooks.
+   The last lines of each worker say why it stopped: `max runtime reached; claiming no more batches` (with the number of batches still queued) when the execution should be started again, or only `curation finished` when the queue was empty.
 4. Switch the API to the published indexes: `scripts/settings.sh <env> USNM_SEARCH_BACKEND quickwit`, then `scripts/provision.sh <env>`.
+5. Poll LoC weekly for new batches: `scripts/settings.sh <env> USNM_INGEST_CRON "17 3 * * 1"` (Mondays 03:17 UTC), then `scripts/provision.sh <env>` while no ingest execution is running. The setting lives only in `.azure/<env>/.env`. Each run fetches LoC's listing once, curates and releases what is new, and exits 0 when there is nothing (08 §8.4). It stops curating 10 h in and releases what it has; if its log says `max runtime reached; claiming no more batches` with batches still queued, start the backfill job to curate the rest. Manual starts of either job still work on a schedule.
 
 The storage and Cosmos accounts stay private throughout: the jobs run inside the VNet.
 

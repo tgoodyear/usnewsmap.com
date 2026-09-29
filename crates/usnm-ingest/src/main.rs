@@ -90,6 +90,13 @@ enum Command {
         /// per 10 minutes per IP); 0 doesn't pace.
         #[arg(long, default_value_t = worker::FETCH_INTERVAL_SECS)]
         fetch_interval_secs: u32,
+        /// Seconds after the start to stop claiming batches and waiting for
+        /// download slots. A batch already downloading is finished (within
+        /// the 45-minute watchdog), then the command exits 0; the rest stays
+        /// queued for the next run. Keep it plus 45 minutes under the job's
+        /// replica timeout.
+        #[arg(long)]
+        max_runtime_secs: Option<u64>,
     },
     /// Build a new index and reference snapshot from curated batches, then publish.
     Release {
@@ -132,6 +139,12 @@ enum Command {
         full: bool,
         #[arg(long)]
         synthetic: bool,
+        /// As `curate --max-runtime-secs`, counted from the start of `run`:
+        /// batches still queued then wait for the next run, and what was
+        /// curated is released. Leave room for titles-sync and the release
+        /// under the job's replica timeout.
+        #[arg(long)]
+        curate_max_runtime_secs: Option<u64>,
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -216,6 +229,7 @@ async fn curate(
     state: &State,
     max: Option<usize>,
     fetch_interval_secs: u32,
+    deadline: Option<tokio::time::Instant>,
 ) -> anyhow::Result<()> {
     let worker = Worker {
         state: state.clone(),
@@ -225,6 +239,7 @@ async fn curate(
         fetch_interval: (fetch_interval_secs > 0)
             .then_some(chrono::Duration::seconds(i64::from(fetch_interval_secs))),
         batch_limit: worker::BATCH_LIMIT,
+        deadline,
     };
     let n = worker.run(max).await?;
     tracing::info!(curated = n, "curation finished");
@@ -334,7 +349,13 @@ impl Command {
     }
 }
 
+/// `secs` from `start`, if given.
+fn deadline(start: tokio::time::Instant, secs: Option<u64>) -> Option<tokio::time::Instant> {
+    secs.map(|s| start + std::time::Duration::from_secs(s))
+}
+
 async fn run(cli: &Cli) -> anyhow::Result<()> {
+    let start = tokio::time::Instant::now();
     let state = state(&cli.stores)?;
     match &cli.command {
         Command::Enqueue { list, batches } => enqueue(&state, list, batches).await.map(drop),
@@ -365,11 +386,19 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             enqueue: first,
             list,
             fetch_interval_secs,
+            max_runtime_secs,
         } => {
             if *first {
                 enqueue(&state, list, &[]).await?;
             }
-            curate(&cli.stores, &state, *max_batches, *fetch_interval_secs).await
+            curate(
+                &cli.stores,
+                &state,
+                *max_batches,
+                *fetch_interval_secs,
+                deadline(start, *max_runtime_secs),
+            )
+            .await
         }
         Command::Release {
             full,
@@ -381,10 +410,18 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             batches,
             full,
             synthetic,
+            curate_max_runtime_secs,
             target,
         } => {
             let listed = enqueue(&state, list, batches).await?;
-            curate(&cli.stores, &state, None, worker::FETCH_INTERVAL_SECS).await?;
+            curate(
+                &cli.stores,
+                &state,
+                None,
+                worker::FETCH_INTERVAL_SECS,
+                deadline(start, *curate_max_runtime_secs),
+            )
+            .await?;
             // Every curated title needs a catalog entry before release.
             let lccns = listed.into_iter().flat_map(|b| b.lccns);
             if titles_sync(&cli.stores, &state, lccns, false, titles::LOC_ITEMS).await? {
