@@ -14,8 +14,13 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
       className="about"
       aria-labelledby="about-title"
       onClick={(e) => {
-        // A click on the dialog element itself, not its content, is the backdrop.
-        if (e.target === e.currentTarget) e.currentTarget.close();
+        // Backdrop clicks target the dialog, but so do clicks on its border and
+        // scrollbar; only a click outside its box is on the backdrop.
+        const dialog = e.currentTarget;
+        if (e.target !== dialog) return;
+        const r = dialog.getBoundingClientRect();
+        const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+        if (!inside) dialog.close();
       }}
     >
       <div className="about__body">
@@ -38,7 +43,7 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           <a href="https://gtri.gatech.edu/" {...ext}>
             Georgia Tech Research Institute
           </a>{" "}
-          (Trevor Goodyear). It won a prize in the Library of Congress's Chronicling America Data
+          (David Ediger, Trevor Goodyear and Zach Suffern). It won a prize in the Library of Congress's Chronicling America Data
           Challenge and was featured in Slate and The Washington Post. Georgia Tech's{" "}
           <a
             href="https://web.archive.org/web/20161228012501/http://www.news.gatech.edu/2016/03/06/what-going-viral-looked-120-years-ago/"

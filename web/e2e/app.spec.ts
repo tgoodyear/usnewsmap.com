@@ -240,3 +240,19 @@ test("About opens from the header and the footer and keeps the search", async ({
   await dialog.getByRole("button", { name: "Close" }).click();
   await expect(dialog).toBeHidden();
 });
+
+test("About closes on a backdrop click but not on a click inside its box", async ({ page }) => {
+  // A short window, so the dialog scrolls and has a scrollbar.
+  await page.setViewportSize({ width: 390, height: 400 });
+  await page.goto("/");
+  const dialog = page.getByRole("dialog", { name: "About US News Map" });
+  await page.getByRole("banner").getByRole("button", { name: "About" }).click();
+  await expect(dialog).toBeVisible();
+  const box = (await dialog.boundingBox())!;
+  // The dialog's own edge (border, scrollbar): stays open.
+  await page.mouse.click(box.x + box.width - 2, box.y + box.height / 2);
+  await expect(dialog).toBeVisible();
+  // The backdrop, left of the dialog: closes.
+  await page.mouse.click(Math.max(1, box.x / 2), box.y + box.height / 2);
+  await expect(dialog).toBeHidden();
+});
