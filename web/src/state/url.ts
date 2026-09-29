@@ -2,6 +2,7 @@
 // permalink, and only non-default values are written.
 
 import { useCallback, useSyncExternalStore } from "react";
+import type { SearchParams } from "../api/client";
 import type { BucketUnit, Mode } from "../api/types";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
@@ -127,6 +128,11 @@ export function serializeView(v: ViewState): string {
   if (v.c) s.set("c", `${v.c[0].toFixed(3)},${v.c[1].toFixed(3)}`);
   const out = s.toString();
   return out ? `?${out}` : "";
+}
+
+/** The search a view asks the API for (the rest of the view is display state). */
+export function searchParams(v: ViewState): SearchParams {
+  return { q: v.q, mode: v.mode, near: v.near, from: v.from, to: v.to, bucket: v.bucket, state: v.state };
 }
 
 function subscribe(cb: () => void): () => void {

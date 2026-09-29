@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { searchQuery, type SearchParams } from "./api/client";
+import { searchQuery } from "./api/client";
 import { EXAMPLES } from "./examples";
-import { DEFAULTS, parseView, serializeView } from "./state/url";
+import { DEFAULTS, parseView, searchParams, serializeView } from "./state/url";
 
 /** Sorted `key=value` pairs, so parameter order doesn't matter. */
 function pairs(query: URLSearchParams | string): string[] {
@@ -23,17 +23,8 @@ describe("examples", () => {
     for (const ex of EXAMPLES) {
       // A click from the home page: the example over the defaults, through the URL.
       const view = parseView(serializeView({ ...DEFAULTS, ...ex.view }));
-      // The search parameters App.tsx derives from the view.
-      const params: SearchParams = {
-        q: view.q,
-        mode: view.mode,
-        near: view.near,
-        from: view.from,
-        to: view.to,
-        bucket: view.bucket,
-        state: view.state,
-      };
-      const sent = searchQuery(params, "VERSION");
+      // The search App.tsx sends for the view.
+      const sent = searchQuery(searchParams(view), "VERSION");
       sent.delete("v");
       expect(pairs(ex.aggregate), ex.id).toEqual(pairs(sent));
     }

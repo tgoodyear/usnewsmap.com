@@ -7,7 +7,7 @@ import { alignCube, prefixSums, relative, windowValues } from "./engine/cube";
 import { EXAMPLES } from "./examples";
 import { bucketIndex, bucketLabel, bucketStart } from "./lib/time";
 import { cssColor } from "./lib/scale";
-import { useView, type ViewState } from "./state/url";
+import { searchParams, useView, type ViewState } from "./state/url";
 import { SearchBar, searchKey } from "./components/SearchBar";
 import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
@@ -31,19 +31,8 @@ export function App() {
   });
 
   // Parsed afresh on every URL change; a stable key keeps queries cached.
-  const stateList = view.state.join(",");
-  const params: SearchParams = useMemo(
-    () => ({
-      q: view.q,
-      mode: view.mode,
-      near: view.near,
-      from: view.from,
-      to: view.to,
-      bucket: view.bucket,
-      state: stateList ? stateList.split(",") : [],
-    }),
-    [view.q, view.mode, view.near, view.from, view.to, view.bucket, stateList],
-  );
+  const paramsKey = JSON.stringify(searchParams(view));
+  const params = useMemo(() => JSON.parse(paramsKey) as SearchParams, [paramsKey]);
 
   const agg = useQuery({
     queryKey: ["aggregate", version, params],
