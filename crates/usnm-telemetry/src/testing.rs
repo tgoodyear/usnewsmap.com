@@ -34,8 +34,8 @@ impl Seen {
     }
 }
 
-/// The fake ingestion endpoint. Returns a connection string naming it (with
-/// an all-zero instrumentation key) and what it receives.
+/// The fake ingestion endpoint. Returns its base URL (the connection
+/// string's `IngestionEndpoint`) and what it receives.
 pub async fn fake_ingestion() -> (String, Seen) {
     let seen = Seen::default();
     let app = axum::Router::new().fallback({
@@ -65,10 +65,7 @@ pub async fn fake_ingestion() -> (String, Seen) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let conn = format!(
-        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=http://{addr}/"
-    );
-    (conn, seen)
+    (format!("http://{addr}/"), seen)
 }
 
 /// An [`EntraClient`] with the static token `tok`, which also sends to plain

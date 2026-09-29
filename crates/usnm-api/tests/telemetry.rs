@@ -173,7 +173,10 @@ fn metric_total(envs: &[Value], name: &str, attrs: &[(&str, &str)]) -> f64 {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn requests_are_exported_by_route_template_without_search_text() {
-    let (conn, seen) = fake_ingestion().await;
+    let (endpoint, seen) = fake_ingestion().await;
+    let conn = format!(
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint={endpoint}"
+    );
     let (tracer, meter_provider) =
         usnm_telemetry::providers(&conn, Plain::with_token("tok"), SERVICE).unwrap();
     let meter = meter_provider.meter(SERVICE.name);

@@ -66,9 +66,8 @@ param budgetStartDate string = ''
 param deployPolicies bool = true
 
 @description('Seconds between availability test runs of the site and API from each of 3 locations (tests exist only with dnsZoneName and alert emails). 300, 600 or 900. Each run costs $0.0005: 300 is about $13 a month per URL.')
-@minValue(300)
-@maxValue(900)
-param availabilityFrequency int = 300
+@allowed(['300', '600', '900'])
+param availabilityFrequency string = '300'
 
 @description('Public DNS zone for the site (e.g. usnewsmap.com); empty skips it. Delegate the domain to the NAME_SERVERS output.')
 param dnsZoneName string = ''

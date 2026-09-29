@@ -10,7 +10,10 @@ use usnm_telemetry::testing::{fake_ingestion, Plain};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exports_with_a_bearer_token_and_flushes_on_shutdown() {
-    let (conn, seen) = fake_ingestion().await;
+    let (endpoint, seen) = fake_ingestion().await;
+    let conn = format!(
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint={endpoint}"
+    );
     let (tracer, meter) = providers(&conn, Plain::with_token("tok"), SERVICE).unwrap();
     meter
         .meter("usnm-ingest")

@@ -30,10 +30,11 @@ param siteUrl string = ''
 @description('API readiness URL to test, e.g. https://api.usnewsmap.com/readyz; empty skips the test.')
 param apiReadyUrl string = ''
 
-@description('Seconds between availability test runs from each location: 300, 600 or 900.')
-@minValue(300)
-@maxValue(900)
-param availabilityFrequency int = 300
+// A string: the setting arrives as text, and only these values are valid
+// for a standard test.
+@description('Seconds between availability test runs from each location.')
+@allowed(['300', '600', '900'])
+param availabilityFrequency string = '300'
 
 // At least 5 server errors in 10 minutes that are also more than 2% of the
 // requests. The count floor keeps one or two failures on a quiet site from
@@ -145,7 +146,7 @@ resource webtest 'Microsoft.Insights/webtests@2022-06-15' = [
       Name: t.displayName
       Description: 'GET ${t.url} expects 200 and a certificate valid for 7 more days.'
       Enabled: true
-      Frequency: availabilityFrequency
+      Frequency: int(availabilityFrequency)
       Timeout: 30
       Kind: 'standard'
       // A failure counts only after three attempts fail in a row.
@@ -177,7 +178,7 @@ resource unavailable 'Microsoft.Insights/metricAlerts@2018-03-01' = [
       scopes: [webtest[i].id, appInsightsId]
       evaluationFrequency: 'PT1M'
       // At least one run per location in the window.
-      windowSize: availabilityFrequency <= 300 ? 'PT5M' : (availabilityFrequency <= 600 ? 'PT10M' : 'PT15M')
+      windowSize: { '300': 'PT5M', '600': 'PT10M', '900': 'PT15M' }[availabilityFrequency]
       criteria: {
         'odata.type': 'Microsoft.Azure.Monitor.WebtestLocationAvailabilityCriteria'
         webTestId: webtest[i].id
