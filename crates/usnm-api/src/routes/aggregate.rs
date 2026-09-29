@@ -134,34 +134,39 @@ async fn compute(
     let t = Instant::now();
     // The planner checks places-with-hits × buckets before issuing the cube,
     // so an oversized cube is coarsened here instead of failing in the engine.
-    let agg = loop {
-        let planned = with_timeout(
-            &state,
-            plan::aggregate(
-                snap.backend.as_ref(),
-                &indexes,
-                &req.query,
-                &req.filters,
-                &spec,
-                state.config.max_cells,
-            ),
-        )
-        .await?;
-        match planned {
-            Planned::Complete(agg) => break agg,
-            Planned::TooManyCells { upper_bound } => match coarser(spec.unit) {
-                Some(unit) => {
-                    spec = BucketSpec::new(unit, spec.from, spec.to);
-                    coarsened = true;
-                }
-                None => {
-                    return Err(ApiError::TooBroad(format!(
-                        "this search would produce about {upper_bound} map cells even by year"
-                    )))
-                }
-            },
+    let agg = async {
+        loop {
+            let planned = with_timeout(
+                &state,
+                plan::aggregate(
+                    snap.backend.as_ref(),
+                    &indexes,
+                    &req.query,
+                    &req.filters,
+                    &spec,
+                    state.config.max_cells,
+                ),
+            )
+            .await?;
+            match planned {
+                Planned::Complete(agg) => break Ok(agg),
+                Planned::TooManyCells { upper_bound } => match coarser(spec.unit) {
+                    Some(unit) => {
+                        spec = BucketSpec::new(unit, spec.from, spec.to);
+                        coarsened = true;
+                    }
+                    None => {
+                        return Err(ApiError::TooBroad(format!(
+                            "this search would produce about {upper_bound} map cells even by year"
+                        )))
+                    }
+                },
+            }
         }
-    };
+    }
+    .await;
+    state.metrics.backend("aggregate", t.elapsed(), &agg);
+    let agg = agg?;
     let backend_ms = t.elapsed().as_millis();
 
     let mut place_ids: Vec<&str> = agg

@@ -6,6 +6,8 @@ use serde::Serialize;
 use usnm_core::params::ParamError;
 use usnm_search::SearchError;
 
+use crate::telemetry::Rejection;
+
 #[derive(Debug, Clone)]
 pub enum ApiError {
     Params(ParamError),
@@ -54,6 +56,14 @@ impl IntoResponse for ApiError {
             ApiError::RateLimited(wait) => Some(wait.as_secs_f64().ceil().max(1.0) as u64),
             ApiError::Timeout | ApiError::Backend(_) => Some(30),
             _ => None,
+        };
+        let rejection = match &self {
+            ApiError::Params(ParamError::Query(_)) => Some("syntax"),
+            ApiError::Params(_) | ApiError::BadRequest(_) => Some("bad_parameter"),
+            ApiError::Unsupported(_) => Some("unsupported"),
+            ApiError::TooBroad(_) => Some("too_broad"),
+            ApiError::RateLimited(_) => Some("rate_limited"),
+            ApiError::NotFound(_) | ApiError::Timeout | ApiError::Backend(_) => None,
         };
         let (status, kind, title, detail, hint, position) = match self {
             ApiError::Params(ParamError::Query(q)) => (
@@ -149,6 +159,9 @@ impl IntoResponse for ApiError {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         if let Some(secs) = retry_after {
             headers.insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+        if let Some(reason) = rejection {
+            resp.extensions_mut().insert(Rejection(reason));
         }
         resp
     }
