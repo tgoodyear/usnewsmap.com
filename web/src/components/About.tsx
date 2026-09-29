@@ -55,8 +55,9 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           <a href="https://www.linkedin.com/in/zachary-suffern-0966825a" {...ext}>
             Zach Suffern
           </a>
-          ). It won a prize in the Library of Congress's Chronicling America Data
-          Challenge and was featured in Slate and The Washington Post. Georgia Tech's{" "}
+          ). It was featured in Slate and The Washington Post and won a prize in the Chronicling
+          America Data Challenge, which the National Endowment for the Humanities ran with the Library
+          of Congress. Georgia Tech's{" "}
           <a
             href="https://web.archive.org/web/20161228012501/http://www.news.gatech.edu/2016/03/06/what-going-viral-looked-120-years-ago/"
             {...ext}
