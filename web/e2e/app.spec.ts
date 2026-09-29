@@ -256,3 +256,10 @@ test("About closes on a backdrop click but not on a click inside its box", async
   await page.mouse.click(Math.max(1, box.x / 2), box.y + box.height / 2);
   await expect(dialog).toBeHidden();
 });
+
+test("the footer credits link to the Library of Congress and the NEH", async ({ page }) => {
+  await page.goto("/");
+  const footer = page.getByRole("contentinfo");
+  await expect(footer.getByRole("link", { name: "Library of Congress" })).toHaveAttribute("href", "https://www.loc.gov/");
+  await expect(footer.getByRole("link", { name: "National Endowment for the Humanities" })).toHaveAttribute("href", "https://www.neh.gov/");
+});

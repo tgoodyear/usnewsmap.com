@@ -89,7 +89,15 @@ export default function StatusPage() {
         >
           Chronicling America
         </a>{" "}
-        (Library of Congress and National Endowment for the Humanities).
+        (
+        <a href="https://www.loc.gov/" target="_blank" rel="noopener noreferrer">
+          Library of Congress
+        </a>{" "}
+        and{" "}
+        <a href="https://www.neh.gov/" target="_blank" rel="noopener noreferrer">
+          National Endowment for the Humanities
+        </a>
+        ).
       </footer>
     </div>
   );
