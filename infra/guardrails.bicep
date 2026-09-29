@@ -85,7 +85,7 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
   name: guardrailPolicyNames.auditPublicAccess
   properties: {
     displayName: 'US News Map: data services should have public network access disabled'
-    description: 'Audit only: the network-guard job closes public access outside an open backfill window. The public tiles account is tagged usnm-public=true and exempt.'
+    description: 'Denies public network access on storage and Cosmos accounts. The public tiles account is tagged usnm-public=true and exempt. A Spot backfill window would need a policy exemption.'
     policyType: 'Custom'
     mode: 'Indexed'
     policyRule: {
@@ -110,7 +110,10 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
           }
         ]
       }
-      then: { effect: 'audit' }
+      // Deny since the backfill moved inside the VNet and no longer opens a
+      // public-access window. The definition keeps its original name: renaming
+      // it would delete a definition that is still assigned.
+      then: { effect: 'deny' }
     }
   }
 }

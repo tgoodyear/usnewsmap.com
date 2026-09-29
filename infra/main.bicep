@@ -374,17 +374,6 @@ module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deplo
   }
 }
 
-module alerts 'modules/alerts.bicep' = if (!empty(emails)) {
-  scope: rg
-  name: 'alerts'
-  params: {
-    name: 'alert-usnm-data-account-change-${env}'
-    actionGroupId: monitoring.outputs.actionGroupId
-    storageId: storage.outputs.id
-    cosmosId: cosmos.outputs.id
-  }
-}
-
 // The guard-rail definitions are shared by every environment in the
 // subscription and deployed by their own stack (guardrails.bicep); this
 // environment only assigns them.
