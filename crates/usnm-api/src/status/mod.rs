@@ -415,6 +415,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runs_show_their_batch_count_in_either_item_format() {
+        let docs = seeded().await;
+        // Written before the batch list moved to the reference snapshot.
+        docs.mem
+            .upsert(
+                "index_runs",
+                "v1",
+                &json!({"id": "v1", "index_version": "v1", "full": true, "indexes": ["b1"],
+                        "new_index": "b1", "status": "published", "docs": 9, "pages": 10,
+                        "batches": [{"batch": "x1", "curated": {}}, {"batch": "x2", "curated": {}}],
+                        "started_at": "2026-09-28T10:00:00Z",
+                        "published_at": "2026-09-28T11:00:00Z"}),
+            )
+            .await
+            .unwrap();
+        docs.mem
+            .upsert(
+                "index_runs",
+                "v2",
+                &json!({"id": "v2", "index_version": "v2", "full": true, "indexes": ["b2"],
+                        "new_index": "b2", "status": "published", "docs": 90, "pages": 100,
+                        "batch_count": 3000, "batch_list": "v2/batches.json",
+                        "started_at": "2026-09-29T10:00:00Z",
+                        "published_at": "2026-09-29T11:00:00Z"}),
+            )
+            .await
+            .unwrap();
+        let app = app(PipelineSource::Docs(docs), Duration::from_secs(60)).await;
+        let v = parse(&app.status.get(&app).await.0);
+        let runs: Vec<(&str, u64)> = v["indexing"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["index_version"].as_str().unwrap(),
+                    r["batches"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(runs, [("v2", 3000), ("v1", 2)]);
+    }
+
+    #[tokio::test]
     async fn a_failed_reading_serves_the_last_good_one_as_stale() {
         let docs = seeded().await;
         let app = app(PipelineSource::Docs(docs.clone()), Duration::from_millis(1)).await;

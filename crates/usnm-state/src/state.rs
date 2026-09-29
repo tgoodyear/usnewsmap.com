@@ -110,7 +110,9 @@ pub struct Issue {
     pub ocr_source: String,
 }
 
-/// The batches a published version was built from.
+/// One batch a version was built from, at the curation it was built from.
+/// A version's list lives in its reference snapshot (`{version}/batches.json`),
+/// not in the [`IndexRun`] item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunBatch {
     pub batch: String,
@@ -125,7 +127,16 @@ pub enum RunStatus {
     Failed,
 }
 
+/// The file in a version's reference snapshot that lists the batches it was
+/// built from (a JSON array of [`RunBatch`]).
+pub const RUN_BATCHES_FILE: &str = "batches.json";
+
 /// One index build (partition key `/index_version`).
+///
+/// The item holds only bounded fields. The version's batch list, which grows
+/// with the corpus (500–650 bytes per batch), is in the reference store at
+/// [`IndexRun::batch_list`], so the item stays far below Cosmos DB's 2 MB
+/// item limit however many batches a version has.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexRun {
     pub id: String,
@@ -135,7 +146,17 @@ pub struct IndexRun {
     pub indexes: Vec<String>,
     /// The index this run wrote.
     pub new_index: String,
-    pub batches: Vec<RunBatch>,
+    /// Batches in the version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_count: Option<u64>,
+    /// Path of the version's batch list in the reference store
+    /// (`{version}/batches.json`), set once the snapshot is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_list: Option<String>,
+    /// The batch list inline, as runs written before it moved to the
+    /// reference snapshot have it. New runs leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batches: Option<Vec<RunBatch>>,
     pub status: RunStatus,
     pub docs: u64,
     pub pages: u64,

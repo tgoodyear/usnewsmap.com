@@ -466,7 +466,7 @@ pub fn indexing(at: DateTime<Utc>, s: &Summary) -> Indexing {
                 status: r.status,
                 new_index: r.new_index.clone(),
                 indexes: r.indexes.len(),
-                batches: r.batches_len,
+                batches: r.batches(),
                 docs: r.docs,
                 pages: r.pages,
                 started_at: r.started_at,
@@ -712,7 +712,7 @@ mod tests {
                 ),
                 run(
                     json!({"index_version": "v3", "full": false, "indexes": ["b1", "d2"], "new_index": "d2",
-                       "status": "building", "started_at": "2026-09-29T12:00:00Z"}),
+                       "status": "building", "batch_count": 3, "started_at": "2026-09-29T12:00:00Z"}),
                 ),
             ],
             ..Summary::default()
@@ -738,7 +738,9 @@ mod tests {
             ["v3", "v2", "v1"]
         );
         assert_eq!(i.runs[2].duration_secs, Some(3600));
+        // An older run's inline list length, or a newer run's batch_count.
         assert_eq!(i.runs[2].batches, Some(2));
+        assert_eq!(i.runs[0].batches, Some(3));
         assert_eq!(
             i.runs[1].error.as_deref(),
             Some("lock `quickwit-writer` is held by `[worker]` until later")

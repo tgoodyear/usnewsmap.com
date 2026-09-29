@@ -37,7 +37,7 @@ use crate::curated::{read_part, CuratedRow};
 use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
-use crate::state::{Curated, IndexRun, RunBatch, RunStatus, State};
+use crate::state::{Curated, IndexRun, RunBatch, RunStatus, State, RUN_BATCHES_FILE};
 use crate::worker::Counts;
 
 pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
@@ -262,8 +262,8 @@ impl Release {
             let prev = previous
                 .as_ref()
                 .expect("incremental has a previous version");
-            let published: HashMap<&str, &Curated> = prev
-                .batches
+            let prev_batches = self.run_batches(prev).await?;
+            let published: HashMap<&str, &Curated> = prev_batches
                 .iter()
                 .map(|b| (b.batch.as_str(), &b.curated))
                 .collect();
@@ -293,7 +293,7 @@ impl Release {
                 );
                 return Ok(None);
             }
-            let mut all = prev.batches.clone();
+            let mut all = prev_batches;
             all.extend(new.iter().cloned());
             (new, all, catalog, prev.indexes.clone())
         };
@@ -310,7 +310,9 @@ impl Release {
             full,
             indexes: indexes.clone(),
             new_index: index_id.clone(),
-            batches: version_batches.clone(),
+            batch_count: Some(version_batches.len() as u64),
+            batch_list: None,
+            batches: None,
             status: RunStatus::Building,
             docs: 0,
             pages: version_batches.iter().map(|b| b.curated.pages).sum(),
@@ -348,6 +350,7 @@ impl Release {
             }
         };
         run.docs = docs;
+        run.batch_list = Some(format!("{version}/{RUN_BATCHES_FILE}"));
         span.record("docs", docs);
         etag = self.state.update_run(&run, &etag).await?;
 
@@ -423,6 +426,60 @@ impl Release {
             }
         }
         bail!("too many index runs today")
+    }
+
+    /// The batches a published version was built from. Runs written before
+    /// the list moved to the reference snapshot carry it inline; newer runs
+    /// point at the snapshot's `batches.json`, which is checked against its
+    /// manifest entry like the API checks the files it loads.
+    async fn run_batches(&self, run: &IndexRun) -> anyhow::Result<Vec<RunBatch>> {
+        if let Some(batches) = &run.batches {
+            return Ok(batches.clone());
+        }
+        let path = run.batch_list.as_deref().with_context(|| {
+            format!(
+                "index run `{}` has neither a batch list nor inline batches",
+                run.index_version
+            )
+        })?;
+        let (dir, name) = path
+            .rsplit_once('/')
+            .with_context(|| format!("batch list path `{path}` has no directory"))?;
+        let manifest_path = format!("{dir}/manifest.json");
+        let manifest: Value = serde_json::from_slice(
+            &self
+                .reference
+                .get(&manifest_path)
+                .await?
+                .with_context(|| format!("`{manifest_path}` is missing"))?,
+        )
+        .context(manifest_path.clone())?;
+        let entry = manifest["files"]
+            .as_array()
+            .and_then(|files| files.iter().find(|f| f["path"] == name))
+            .with_context(|| format!("`{manifest_path}` does not list `{name}`"))?;
+        let bytes = self
+            .reference
+            .get(path)
+            .await?
+            .with_context(|| format!("`{path}` is missing"))?;
+        let digest = hex(&Sha256::digest(&bytes));
+        if entry["bytes"].as_u64() != Some(bytes.len() as u64)
+            || !entry["sha256"]
+                .as_str()
+                .is_some_and(|s| s.eq_ignore_ascii_case(&digest))
+        {
+            bail!("`{path}` does not match its manifest entry");
+        }
+        let batches: Vec<RunBatch> = serde_json::from_slice(&bytes).context(path.to_owned())?;
+        if let Some(n) = run.batch_count {
+            anyhow::ensure!(
+                batches.len() as u64 == n,
+                "`{path}` lists {} batches; the run recorded {n}",
+                batches.len()
+            );
+        }
+        Ok(batches)
     }
 
     async fn load_snapshot_catalog(&self, version: &str) -> anyhow::Result<Catalog> {
@@ -508,8 +565,8 @@ impl Release {
         Ok(docs)
     }
 
-    /// Write `{version}/` (titles, places, baselines, manifest last) and
-    /// return the version's date bounds.
+    /// Write `{version}/` (titles, places, baselines, the batch list,
+    /// manifest last) and return the version's date bounds.
     async fn write_snapshot(
         &self,
         version: &str,
@@ -565,6 +622,7 @@ impl Release {
             ("titles.json", serde_json::to_vec(&titles)?),
             ("places.json", serde_json::to_vec(&places)?),
             ("baselines.json", serde_json::to_vec(&baselines)?),
+            (RUN_BATCHES_FILE, serde_json::to_vec(batches)?),
         ] {
             files.push(json!({
                 "path": name,
