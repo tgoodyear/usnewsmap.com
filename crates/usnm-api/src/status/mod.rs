@@ -1,9 +1,9 @@
-//! `GET /v1/status`: the public pipeline status page's data (06 §6.3.2).
+//! `GET /v1/status`: the public pipeline status page's data (06 §6.3.6).
 //!
 //! The document combines the version the API is serving (its reference
 //! data, always available) with the pipeline state in Cosmos DB (batches,
 //! index runs, locks and the LoC download pacer) and the titles catalog.
-//! It is computed at most once per refresh interval (60 s): concurrent
+//! It is computed at most once per refresh interval (60 s) per replica: concurrent
 //! requests share one computation, and a request that arrives while one is
 //! running gets the previous document rather than waiting. When the pipeline
 //! state can't be read, the last good reading is served with `stale: true`
@@ -164,7 +164,17 @@ impl StatusService {
     async fn compute(&self, app: &crate::AppState) -> Status {
         let now = Utc::now();
         let reference = app.loader.as_ref().map(|l| l.reference.clone());
-        let (pipeline, catalog) = tokio::join!(self.read_pipeline(), read_catalog(reference));
+        let catalog = async {
+            tokio::time::timeout(READ_TIMEOUT, read_catalog(reference))
+                .await
+                .unwrap_or_else(|_| {
+                    Err(format!(
+                        "reading the titles catalog took over {} s",
+                        READ_TIMEOUT.as_secs()
+                    ))
+                })
+        };
+        let (pipeline, catalog) = tokio::join!(self.read_pipeline(), catalog);
         let (reading, stale, error, reason) = match pipeline {
             Ok(Some(s)) => {
                 if let Some(ru) = s.request_charge {

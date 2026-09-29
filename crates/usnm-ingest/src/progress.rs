@@ -193,8 +193,18 @@ impl Progress {
     }
 }
 
-/// Write one snapshot to `ops/release-progress`; errors are logged only.
+/// Longest a progress write may take: the release awaits the first and last
+/// writes, and Cosmos retries 429s for minutes.
+const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Write one snapshot to `ops/release-progress`; errors and timeouts are
+/// logged only. (A write cut short is harmless: it is an idempotent upsert
+/// of an item nothing else depends on.)
 pub async fn report(state: &State, version: &str, s: &Snapshot) {
+    report_within(state, version, s, REPORT_TIMEOUT).await
+}
+
+async fn report_within(state: &State, version: &str, s: &Snapshot, limit: Duration) {
     let p = ReleaseProgress {
         index_version: version.to_owned(),
         docs_sent: s.docs_sent,
@@ -202,8 +212,12 @@ pub async fn report(state: &State, version: &str, s: &Snapshot) {
         mb_sent: s.mb_sent(),
         updated_at: Utc::now(),
     };
-    if let Err(e) = state.set_release_progress(&p).await {
-        tracing::warn!(error = %format!("{e:#}"), "could not record release progress; continuing");
+    match tokio::time::timeout(limit, state.set_release_progress(&p)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(error = %format!("{e:#}"), "could not record release progress; continuing")
+        }
+        Err(_) => tracing::warn!("recording release progress timed out; continuing"),
     }
 }
 
@@ -287,6 +301,58 @@ mod tests {
         assert_eq!(item.doc["index_version"], "v1");
         assert_eq!(item.doc["docs_expected"], 100);
         assert_eq!(item.doc["kind"], "release-progress");
+    }
+
+    /// A store whose writes never finish, like Cosmos retrying 429s.
+    struct Stuck;
+
+    #[async_trait::async_trait]
+    impl crate::docs::DocStore for Stuck {
+        async fn get(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<Option<crate::docs::Versioned>> {
+            Ok(None)
+        }
+        async fn create(
+            &self,
+            _: &str,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> anyhow::Result<Option<String>> {
+            std::future::pending().await
+        }
+        async fn replace(
+            &self,
+            _: &str,
+            _: &str,
+            _: &serde_json::Value,
+            _: &str,
+        ) -> anyhow::Result<Option<String>> {
+            std::future::pending().await
+        }
+        async fn upsert(&self, _: &str, _: &str, _: &serde_json::Value) -> anyhow::Result<()> {
+            std::future::pending().await
+        }
+        async fn list(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[&str],
+        ) -> anyhow::Result<Vec<crate::docs::Versioned>> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stuck_store_delays_a_report_by_the_timeout_at_most() {
+        let p = Progress::new(Arc::new(SinkStats::default()), 10);
+        let started = Instant::now();
+        let limit = Duration::from_millis(50);
+        report_within(&State::new(Arc::new(Stuck)), "v1", &p.snapshot(), limit).await;
+        assert!(started.elapsed() >= limit && started.elapsed() < limit * 20);
     }
 
     #[tokio::test]

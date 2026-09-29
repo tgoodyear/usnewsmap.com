@@ -101,39 +101,57 @@ fn redact(token: &str) -> String {
             };
         }
     }
-    let lower = token.to_ascii_lowercase();
+    // Paths, key=value pairs and lists put identifiers between these, so
+    // each component is checked (and replaced) on its own.
+    let mut out = String::with_capacity(token.len());
+    let mut component = String::new();
+    for c in token.chars() {
+        if COMPONENT_DELIMITERS.contains(&c) {
+            out.push_str(redact_component(&component));
+            component.clear();
+            out.push(c);
+        } else {
+            component.push(c);
+        }
+    }
+    out.push_str(redact_component(&component));
+    out
+}
+
+/// Separators inside a token between which identifiers appear.
+const COMPONENT_DELIMITERS: [char; 7] = ['/', '=', '&', ',', ';', '?', '#'];
+
+/// One component of a token, or its placeholder.
+fn redact_component(c: &str) -> &str {
+    if c.is_empty() {
+        return c;
+    }
+    let lower = c.to_ascii_lowercase();
+    // `host:port`, `user@host`.
     if lower
-        .split(['/', '@', '?', '#', '='])
+        .split('@')
         .any(|part| is_private_host(strip_port(part)))
     {
-        return "[host]".to_owned();
+        return "[host]";
     }
-    // Paths and names that embed a worker id (host-pid-nanos) name the
-    // replica; only the segment holding it is replaced.
-    if token.split('/').any(has_worker_id) {
-        return token
-            .split('/')
-            .map(|seg| if has_worker_id(seg) { "[worker]" } else { seg })
-            .collect::<Vec<_>>()
-            .join("/");
+    // Worker ids (host-pid-nanos) name the replica.
+    if has_worker_id(c) {
+        return "[worker]";
     }
-    if token.split('/').any(|part| {
-        RESOURCE_PREFIXES
-            .iter()
-            .any(|p| part.to_ascii_lowercase().starts_with(p))
-    }) {
-        return "[resource]".to_owned();
+    let pieces = || lower.split(':');
+    if pieces().any(|p| RESOURCE_PREFIXES.iter().any(|r| p.starts_with(r))) {
+        return "[resource]";
     }
-    if token.contains('@') && token.rsplit('@').next().is_some_and(|d| d.contains('.')) {
-        return "[email]".to_owned();
+    if c.contains('@') && c.rsplit('@').next().is_some_and(|d| d.contains('.')) {
+        return "[email]";
     }
-    if is_ipv4(strip_port(token)) || is_ipv6(token) {
-        return "[ip]".to_owned();
+    if is_ipv4(strip_port(c)) || is_ipv6(c) {
+        return "[ip]";
     }
-    if is_guid(token) {
-        return "[id]".to_owned();
+    if pieces().any(is_guid) {
+        return "[id]";
     }
-    token.to_owned()
+    c
 }
 
 fn strip_port(host: &str) -> &str {
@@ -233,11 +251,11 @@ mod tests {
     fn replaces_azure_hosts_without_a_scheme() {
         assert_eq!(
             sanitize("blob stusnmdataabc.blob.core.windows.net/curated/x: 403"),
-            "blob [host]: 403"
+            "blob [host]/curated/x: 403"
         );
         assert_eq!(
             sanitize("pull crusnmprod.azurecr.io/usnewsmap-ingest"),
-            "pull [host]"
+            "pull [host]/usnewsmap-ingest"
         );
         assert_eq!(
             sanitize("host cosmos-usnm.documents.azure.com:443"),
@@ -246,6 +264,26 @@ mod tests {
         assert_eq!(
             sanitize("token from login.microsoftonline.com refused"),
             "token from [host] refused"
+        );
+    }
+
+    #[test]
+    fn checks_each_component_of_key_value_pairs_and_lists() {
+        assert_eq!(
+            sanitize("account=stusnmdataxyz resource=cosmos-usnm-prod"),
+            "account=[resource] resource=[resource]"
+        );
+        assert_eq!(
+            sanitize("endpoint=10.0.2.4:443&client_id=3fa85f64-5717-4562-b3fc-2c963f66afa6"),
+            "endpoint=[ip]&client_id=[id]"
+        );
+        assert_eq!(
+            sanitize("host=cosmos.documents.azure.com;owner=ops@example.com,principal:3FA85F64-5717-4562-B3FC-2C963F66AFA6"),
+            "host=[host];owner=[email],[id]"
+        );
+        assert_eq!(
+            sanitize("batch=batch_az_acacia_ver01"),
+            "batch=batch_az_acacia_ver01"
         );
     }
 

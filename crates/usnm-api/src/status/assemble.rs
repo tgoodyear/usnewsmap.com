@@ -421,17 +421,17 @@ pub fn indexing(at: DateTime<Utc>, s: &Summary) -> Indexing {
         .filter(|w| !w.owner.is_empty() && w.until > at);
     let mut runs: Vec<&RunSummary> = s.runs.iter().collect();
     runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
-    let building: HashSet<&str> = runs
-        .iter()
+    // Only the newest run can be the one running: an older run left
+    // `building` by a crashed release stays that way.
+    let running = runs
+        .first()
         .filter(|r| r.status == RunStatus::Building)
-        .map(|r| r.index_version.as_str())
-        .collect();
-    // Progress counts only while its run is still being built by a live writer.
+        .map(|r| r.index_version.as_str());
     let release = s
         .ops
         .release_progress
         .as_ref()
-        .filter(|p| writer.is_some() && building.contains(p.index_version.as_str()))
+        .filter(|p| writer.is_some() && running == Some(p.index_version.as_str()))
         .map(|p| ReleaseProgress {
             index_version: p.index_version.clone(),
             docs_sent: p.docs_sent,
@@ -734,6 +734,14 @@ mod tests {
             i.last_published_at,
             Some("2026-09-28T11:00:00Z".parse().unwrap())
         );
+
+        // An older run left `building` by a crash isn't the running one.
+        let mut crashed = s.clone();
+        crashed.runs.push(run(
+            json!({"index_version": "v4", "full": false, "indexes": ["b1", "d3"],
+            "new_index": "d3", "status": "failed", "started_at": "2026-09-29T12:20:00Z"}),
+        ));
+        assert!(indexing(at(), &crashed).release.is_none());
 
         // Progress from a release that is no longer running isn't shown.
         s.ops.writer.as_mut().unwrap().until = at() - Duration::minutes(1);
