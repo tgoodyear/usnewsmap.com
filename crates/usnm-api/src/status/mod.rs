@@ -71,6 +71,8 @@ pub struct Status {
 struct Entry {
     at: Instant,
     body: Arc<Vec<u8>>,
+    /// The published version the document describes.
+    version: String,
 }
 
 /// The last good pipeline reading.
@@ -107,38 +109,43 @@ impl StatusService {
         self.latest.read().expect("status cache").clone()
     }
 
-    fn fresh(&self) -> Option<Arc<Vec<u8>>> {
-        self.cached()
-            .filter(|e| e.at.elapsed() < self.refresh)
-            .map(|e| e.body.clone())
+    fn fresh(&self) -> Option<Arc<Entry>> {
+        self.cached().filter(|e| e.at.elapsed() < self.refresh)
     }
 
-    /// The current document, refreshing it if it is older than the interval.
-    pub async fn get(&self, app: &crate::AppState) -> Arc<Vec<u8>> {
-        if let Some(body) = self.fresh() {
-            return body;
+    /// The current document and the published version it describes,
+    /// refreshed if it is older than the interval.
+    pub async fn get(&self, app: &crate::AppState) -> (Arc<Vec<u8>>, String) {
+        let entry = self.entry(app).await;
+        (entry.body.clone(), entry.version.clone())
+    }
+
+    async fn entry(&self, app: &crate::AppState) -> Arc<Entry> {
+        if let Some(e) = self.fresh() {
+            return e;
         }
         // Someone else is refreshing: serve what there is instead of queueing.
         let guard = match self.refreshing.try_lock() {
             Ok(g) => g,
             Err(_) => {
                 if let Some(e) = self.cached() {
-                    return e.body.clone();
+                    return e;
                 }
                 self.refreshing.lock().await
             }
         };
-        if let Some(body) = self.fresh() {
-            return body;
+        if let Some(e) = self.fresh() {
+            return e;
         }
         let status = self.compute(app).await;
-        let body = Arc::new(serde_json::to_vec(&status).unwrap_or_else(|_| b"{}".to_vec()));
-        *self.latest.write().expect("status cache") = Some(Arc::new(Entry {
+        let entry = Arc::new(Entry {
             at: Instant::now(),
-            body: body.clone(),
-        }));
+            body: Arc::new(serde_json::to_vec(&status).unwrap_or_else(|_| b"{}".to_vec())),
+            version: status.published.index_version.clone(),
+        });
+        *self.latest.write().expect("status cache") = Some(entry.clone());
         drop(guard);
-        body
+        entry
     }
 
     async fn read_pipeline(&self) -> Result<Option<Summary>, String> {
@@ -367,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn without_pipeline_state_the_reference_sections_still_work() {
         let app = app(PipelineSource::None, Duration::from_secs(60)).await;
-        let v = parse(&app.status.get(&app).await);
+        let v = parse(&app.status.get(&app).await.0);
         assert_eq!(v["schema"], 1);
         assert_eq!(v["stale"], false);
         assert_eq!(v["pipeline"]["available"], false);
@@ -388,7 +395,14 @@ mod tests {
         let docs = seeded().await;
         let app = app(PipelineSource::Docs(docs.clone()), Duration::from_secs(60)).await;
         let gets = (0..10).map(|_| app.status.get(&app));
-        let bodies = futures::future::join_all(gets).await;
+        let bodies: Vec<_> = futures::future::join_all(gets)
+            .await
+            .into_iter()
+            .map(|(body, version)| {
+                assert_eq!(version, "fixture-v1");
+                body
+            })
+            .collect();
         // Two selects (batches, index runs) for the one refresh.
         assert_eq!(docs.selects.load(Ordering::SeqCst), 2);
         assert!(bodies.windows(2).all(|w| w[0] == w[1]));
@@ -404,11 +418,11 @@ mod tests {
     async fn a_failed_reading_serves_the_last_good_one_as_stale() {
         let docs = seeded().await;
         let app = app(PipelineSource::Docs(docs.clone()), Duration::from_millis(1)).await;
-        let first = parse(&app.status.get(&app).await);
+        let first = parse(&app.status.get(&app).await.0);
         assert_eq!(first["stale"], false);
         docs.broken.store(true, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(5)).await;
-        let v = parse(&app.status.get(&app).await);
+        let v = parse(&app.status.get(&app).await.0);
         assert_eq!(v["stale"], true);
         assert_eq!(v["backfill"]["total"], 1);
         assert_eq!(v["pipeline"]["read_at"], first["pipeline"]["read_at"]);
@@ -420,7 +434,7 @@ mod tests {
         // Recovers once the state is readable again.
         docs.broken.store(false, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(5)).await;
-        let v = parse(&app.status.get(&app).await);
+        let v = parse(&app.status.get(&app).await.0);
         assert_eq!(
             (v["stale"].clone(), v["error"].clone()),
             (json!(false), Value::Null)
@@ -432,7 +446,7 @@ mod tests {
         let docs = seeded().await;
         docs.broken.store(true, Ordering::SeqCst);
         let app = app(PipelineSource::Docs(docs), Duration::from_secs(60)).await;
-        let v = parse(&app.status.get(&app).await);
+        let v = parse(&app.status.get(&app).await.0);
         assert_eq!(v["stale"], false);
         assert_eq!(v["pipeline"]["available"], false);
         assert_eq!(v["backfill"]["available"], false);
@@ -453,7 +467,7 @@ mod tests {
         .await
         .unwrap();
         let app = app(PipelineSource::File(path), Duration::from_secs(60)).await;
-        let v = parse(&app.status.get(&app).await);
+        let v = parse(&app.status.get(&app).await.0);
         assert_eq!(v["backfill"]["by_status"]["failed"], 1);
     }
 }

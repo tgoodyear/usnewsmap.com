@@ -90,7 +90,12 @@ fn redact(token: &str) -> String {
             && !scheme.is_empty()
         {
             let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-            let host = authority.rsplit('@').next().unwrap_or_default();
+            // Credentials in the authority are never shown, even for LoC.
+            let host = if authority.contains('@') {
+                ""
+            } else {
+                authority
+            };
             let host = strip_port(host).to_ascii_lowercase();
             let public =
                 scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http");
@@ -177,8 +182,10 @@ fn is_ipv4(s: &str) -> bool {
             .all(|p| !p.is_empty() && p.len() <= 3 && p.parse::<u8>().is_ok())
 }
 
-/// Hex groups and colons with a `::` or a hex letter (so times like 10:00:00 don't match).
+/// Hex groups and colons with a `::` or a hex letter (so times like 10:00:00
+/// don't match), with or without a zone (`fe80::1%eth0`).
 fn is_ipv6(s: &str) -> bool {
+    let s = s.split_once('%').map_or(s, |(addr, _)| addr);
     let colons = s.matches(':').count();
     colons >= 2
         && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
@@ -240,6 +247,8 @@ mod tests {
             "GET [url] failed"
         );
         assert_eq!(sanitize("http://127.0.0.1:7280/api/v1"), "[url]");
+        // Credentials are never shown, even in a LoC URL.
+        assert_eq!(sanitize("https://alice:secret@loc.gov/file"), "[url]");
         assert_eq!(sanitize("azure://qw-index/x"), "[url]");
         assert_eq!(
             sanitize("https://user@chroniclingamerica.loc.gov.evil.io/"),
@@ -306,6 +315,10 @@ mod tests {
             "connect [ip] refused"
         );
         assert_eq!(sanitize("from [fe80::1]"), "from [[ip]]");
+        assert_eq!(
+            sanitize("via fe80::1%eth0 and fe80::1%25en0"),
+            "via [ip] and [ip]"
+        );
         assert_eq!(
             sanitize("at 2026-09-29T10:00:00Z, 10:00:00"),
             "at 2026-09-29T10:00:00Z, 10:00:00"

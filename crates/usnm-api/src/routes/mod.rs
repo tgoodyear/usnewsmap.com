@@ -8,22 +8,6 @@ pub use coverage::coverage;
 pub use hits::hits;
 pub use meta::{meta, places, readyz};
 
-/// The pipeline status document (see [`crate::status`]).
-pub async fn status(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> Response {
-    let body = state.status.get(&state).await;
-    let mut resp = body.as_ref().clone().into_response();
-    let headers = resp.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=30"),
-    );
-    resp
-}
-
 use std::future::Future;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -213,4 +197,23 @@ pub(crate) fn uses_fuzzy(node: &usnm_core::query::Node) -> bool {
         Node::And(c) | Node::Or(c) => c.iter().any(uses_fuzzy),
         Node::Not(n) => uses_fuzzy(n),
     }
+}
+
+/// The pipeline status document (see [`crate::status`]).
+pub async fn status(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> Response {
+    let (body, version) = state.status.get(&state).await;
+    let mut resp = body.as_ref().clone().into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=30"),
+    );
+    // The version the document describes, which may be older than the
+    // snapshot serving now if it was built before a reload.
+    resp.extensions_mut().insert(ServedVersion(version));
+    resp
 }
