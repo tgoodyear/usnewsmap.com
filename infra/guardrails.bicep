@@ -85,13 +85,33 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
   name: guardrailPolicyNames.auditPublicAccess
   properties: {
     displayName: 'US News Map: data services should have public network access disabled'
-    description: 'Audit only: the network-guard job closes public access outside an open backfill window. The public tiles account is tagged usnm-public=true and exempt.'
+    description: 'Public network access on storage and Cosmos accounts, except the accounts the assignment lists by resource id (the public tiles account). Audit by default; each environment assignment sets deny together with its own ids. A Spot backfill window would need a policy exemption.'
     policyType: 'Custom'
     mode: 'Indexed'
+    parameters: {
+      effect: {
+        type: 'String'
+        allowedValues: ['audit', 'deny', 'disabled']
+        defaultValue: 'audit'
+        metadata: {
+          displayName: 'Effect'
+          description: 'Audit by default, so updating this shared definition never denies an environment whose assignment has not yet listed its public accounts.'
+        }
+      }
+      publicAccountIds: {
+        type: 'Array'
+        defaultValue: []
+        metadata: {
+          displayName: 'Public accounts'
+          description: 'Resource ids of accounts that serve public data and may allow public network access.'
+        }
+      }
+    }
     policyRule: {
       if: {
         allOf: [
-          { field: 'tags[\'usnm-public\']', notEquals: 'true' }
+          // Exempt by resource id, which a caller can't change, rather than by a tag they could add.
+          { not: { field: 'id', in: '[parameters(\'publicAccountIds\')]' } }
           {
             anyOf: [
               {
@@ -110,7 +130,11 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
           }
         ]
       }
-      then: { effect: 'audit' }
+      // Each environment's assignment sets deny and its public account ids in
+      // one update (main.bicep); the backfill runs inside the VNet and opens no
+      // public-access window. The definition keeps its original name: renaming
+      // it would delete a definition that is still assigned.
+      then: { effect: '[parameters(\'effect\')]' }
     }
   }
 }

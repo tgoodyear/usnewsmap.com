@@ -180,14 +180,19 @@ module storage 'modules/storage.bicep' = {
   }
 }
 
+// The tiles account serves public map data. The public-network policy exempts it
+// by resource id, so its assignment must be in place before the account is written.
+var tilesName = 'stusnmt${suffix}'
+var tilesId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.Storage/storageAccounts', tilesName)
+
 module tiles 'modules/tiles.bicep' = {
   scope: rg
   name: 'tiles'
+  dependsOn: [policies]
   params: {
     location: location
-    // Exempt from the "data services private" audit: public map data only.
     tags: union(tags, { 'usnm-public': 'true' })
-    name: 'stusnmt${suffix}'
+    name: tilesName
     allowedOrigins: siteOrigins
   }
 }
@@ -374,17 +379,6 @@ module workbooks 'modules/workbooks.bicep' = if ((ingestJobs && useAcr) || deplo
   }
 }
 
-module alerts 'modules/alerts.bicep' = if (!empty(emails)) {
-  scope: rg
-  name: 'alerts'
-  params: {
-    name: 'alert-usnm-data-account-change-${env}'
-    actionGroupId: monitoring.outputs.actionGroupId
-    storageId: storage.outputs.id
-    cosmosId: cosmos.outputs.id
-  }
-}
-
 // The guard-rail definitions are shared by every environment in the
 // subscription and deployed by their own stack (guardrails.bicep); this
 // environment only assigns them.
@@ -398,6 +392,10 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   name: 'policy-assignments'
   params: {
     definitionIds: guardrailPolicyIds
+    definitionParameters: {
+      // Deny and the exemption arrive together, in the same assignment update.
+      '${guardrailPolicyNames.auditPublicAccess}': { effect: { value: 'deny' }, publicAccountIds: { value: [tilesId] } }
+    }
   }
 }
 
@@ -406,6 +404,10 @@ module spotPolicies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   name: 'policy-assignments-spot'
   params: {
     definitionIds: guardrailPolicyIds
+    // No public accounts live here.
+    definitionParameters: {
+      '${guardrailPolicyNames.auditPublicAccess}': { effect: { value: 'deny' } }
+    }
   }
 }
 

@@ -22,8 +22,8 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | `ingest-alerts` (with `ingestJobs: true` and alert emails) | Log search alerts on the workspace: an ingest or backfill job failed, a release stalled, a backfill stalled, a backfill replica went silent (08 §8.1.2) |
 | `api-alerts` (with the API and alert emails) | Log search alerts on API 5xx and slow `/v1/aggregate`; with `dnsZoneName`, standard availability tests of the site and `api.{domain}/readyz` (each once its certificate is bound) and an alert when 2 of 3 locations fail (08 §8.1.2) |
 | `workbooks` (with the jobs or the API) | Azure Monitor workbooks "usnewsmap pipeline" (with the jobs) and "usnewsmap API" (with the API), defined in `infra/workbooks/` and listed under Application Insights `appi-usnm-{env}` → Workbooks. They query the same workspace (08 §8.1.2) |
-| `budget`, `alerts` | $80 monthly budget (alerts at $40, $60, $75, plus an $80 forecast alert; needs alert emails and `USNM_BUDGET_START`) and an alert on control-plane writes to the data accounts (needs alert emails) |
-| `policy-*` | Custom policies assigned to both resource groups. They deny IaaS compute, deny storage shared keys, deny Cosmos, Log Analytics and Application Insights local auth, deny a registry admin user or anonymous pull, audit public network access on the data accounts, and audit resources that have resource logs but no diagnostic setting |
+| `budget` | $80 monthly budget (alerts at $40, $60, $75, plus an $80 forecast alert; needs alert emails and `USNM_BUDGET_START`) |
+| `policy-*` | Custom policies assigned to both resource groups. They deny IaaS compute, deny storage shared keys, deny Cosmos, Log Analytics and Application Insights local auth, deny a registry admin user or anonymous pull, deny public network access on the data accounts (the public tiles account is exempt), and audit resources that have resource logs but no diagnostic setting |
 
 ### What this slice runs
 

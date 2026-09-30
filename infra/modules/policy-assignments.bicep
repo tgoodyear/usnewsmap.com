@@ -1,6 +1,8 @@
 // Assign the project guardrails to one resource group.
 
 param definitionIds array
+@description('Assignment parameters by definition name, e.g. { name: { param: { value: x } } }.')
+param definitionParameters object = {}
 
 resource assignments 'Microsoft.Authorization/policyAssignments@2024-04-01' = [
   for id in definitionIds: {
@@ -8,6 +10,7 @@ resource assignments 'Microsoft.Authorization/policyAssignments@2024-04-01' = [
     properties: {
       policyDefinitionId: id
       enforcementMode: 'Default'
+      parameters: definitionParameters[?last(split(id, '/'))] ?? {}
     }
   }
 ]
