@@ -72,6 +72,8 @@ var quickwitConfig = join([
 
 var apiEnv = [
   { name: 'USNM_RESPONSE_CACHE_URL', value: '${storageBlobEndpoint}cache' }
+  // The anonymous search log (06 §6.8, ADR-0012).
+  { name: 'USNM_SEARCH_LOG_URL', value: '${storageBlobEndpoint}searches' }
   { name: 'USNM_ALLOWED_ORIGINS', value: join(allowedOrigins, ',') }
   { name: 'USNM_TRUSTED_PROXY_HOPS', value: string(trustedProxyHops) }
   // Read-only pipeline state for /v1/status (the name the ingest jobs use).

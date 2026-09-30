@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use usnm_api::config::{BackendKind, Config};
+use usnm_api::searchlog::{LogConfig, SearchLog};
 use usnm_api::status::PipelineSource;
 use usnm_api::{app, spawn_background, spawn_startup_warm_up, telemetry, AppState, Engine, Loader};
 use usnm_search::quickwit::QuickwitBackend;
@@ -82,6 +83,24 @@ async fn serve(
         },
         "status page source"
     );
+    // The anonymous search log (06 §6.8): its writer appends every few
+    // minutes and once more at shutdown.
+    let search_log = config
+        .search_log_url
+        .as_deref()
+        .map(usnm_store::open)
+        .transpose()?
+        .map(|store| {
+            tracing::info!(store = ?store, "search log enabled");
+            SearchLog::start(
+                store,
+                LogConfig {
+                    flush_interval: config.search_log_flush,
+                    ..LogConfig::default()
+                },
+                &opentelemetry::global::meter(telemetry::SERVICE.name),
+            )
+        });
     let bind = config.bind.clone();
     let mut state = AppState::with_loader(config, snapshot, Some(loader))
         .with_pipeline(pipeline)
@@ -89,6 +108,9 @@ async fn serve(
     if let Some(store) = responses {
         tracing::info!(store = ?store, "persistent response cache enabled");
         state = state.with_response_store(store);
+    }
+    if let Some(log) = &search_log {
+        state = state.with_search_log(log.clone());
     }
     let state = Arc::new(state);
     telemetry::observe_index_version(
@@ -101,12 +123,17 @@ async fn serve(
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, "listening");
     // Peer addresses feed the rate limiter when there is no trusted proxy.
-    axum::serve(
+    let served = axum::serve(
         listener,
         app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown())
-    .await?;
+    .await;
+    // Container Apps allows 30 s after SIGTERM; the requests have drained.
+    if let Some(log) = search_log {
+        log.shutdown(std::time::Duration::from_secs(10)).await;
+    }
+    served?;
     Ok(())
 }
 

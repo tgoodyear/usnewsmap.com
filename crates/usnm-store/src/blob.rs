@@ -1,8 +1,9 @@
 //! Azure Blob Storage over its REST API with Entra ID bearer tokens.
 //!
-//! Only two operations are needed (Get Blob, and Put Blob with
-//! `If-None-Match: *`), so this talks to the REST API directly with the
-//! workspace's `reqwest` client rather than pulling in the Azure SDK.
+//! Only a few operations are needed (Get Blob, Get Blob Properties, Put Blob,
+//! and Append Block for the search log), so this talks to the REST API
+//! directly with the workspace's `reqwest` client rather than pulling in the
+//! Azure SDK.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -12,7 +13,7 @@ use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode, Url};
 
 use crate::credential::Credential;
-use crate::{validate_path, ObjectStore, StoreError, MAX_OBJECT_BYTES};
+use crate::{validate_path, ObjectStore, StoreError, MAX_APPEND_BYTES, MAX_OBJECT_BYTES};
 
 /// Blob service REST API version (bearer tokens need 2017-11-09 or later).
 pub const API_VERSION: &str = "2023-11-03";
@@ -108,6 +109,40 @@ impl BlobStore {
     }
 }
 
+impl BlobStore {
+    /// Put Blob for an empty append blob unless the blob exists.
+    async fn create_append_blob(&self, path: &str, content_type: &str) -> Result<(), StoreError> {
+        let resp = self
+            .request(Method::PUT, path)
+            .await?
+            .header("x-ms-blob-type", "AppendBlob")
+            .header(IF_NONE_MATCH, "*")
+            .header(CONTENT_TYPE, content_type)
+            .header(CONTENT_LENGTH, 0)
+            .send()
+            .await
+            .map_err(|e| transport("append", path, e))?;
+        match (resp.status(), error_code(&resp)) {
+            // Another writer created it first.
+            (StatusCode::CREATED, _)
+            | (StatusCode::CONFLICT, "BlobAlreadyExists")
+            | (StatusCode::PRECONDITION_FAILED, "ConditionNotMet") => Ok(()),
+            (s, _) => Err(StoreError::Http {
+                op: "append",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+}
+
+fn error_code(resp: &reqwest::Response) -> &str {
+    resp.headers()
+        .get("x-ms-error-code")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+}
+
 fn transport(op: &'static str, path: &str, e: reqwest::Error) -> StoreError {
     // Strip the URL: the error's own text is enough and paths are logged separately.
     StoreError::Io(format!("{op} `{path}`: {}", e.without_url()))
@@ -190,12 +225,7 @@ impl ObjectStore for BlobStore {
             .send()
             .await
             .map_err(|e| transport("put", path, e))?;
-        let code = resp
-            .headers()
-            .get("x-ms-error-code")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        match (resp.status(), code) {
+        match (resp.status(), error_code(&resp)) {
             (StatusCode::CREATED, _) => Ok(true),
             // Only "the blob already exists" is a normal create-only miss;
             // lease, immutability and blob-type conflicts are errors.
@@ -206,6 +236,62 @@ impl ObjectStore for BlobStore {
                 path: path.into(),
                 status: s.as_u16(),
             }),
+        }
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool, StoreError> {
+        let resp = self
+            .request(Method::HEAD, path)
+            .await?
+            .send()
+            .await
+            .map_err(|e| transport("head", path, e))?;
+        match resp.status() {
+            s if s.is_success() => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            s => Err(StoreError::Http {
+                op: "head",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+
+    /// Append Block; on a missing blob, create an empty append blob and try once more.
+    async fn append(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), StoreError> {
+        if body.len() > MAX_APPEND_BYTES {
+            return Err(StoreError::TooLarge(path.into()));
+        }
+        let mut created = false;
+        loop {
+            let resp = self
+                .request(Method::PUT, path)
+                .await?
+                .query(&[("comp", "appendblock")])
+                .header(CONTENT_LENGTH, body.len())
+                .body(body.clone())
+                .send()
+                .await
+                .map_err(|e| transport("append", path, e))?;
+            match resp.status() {
+                StatusCode::CREATED => return Ok(()),
+                StatusCode::NOT_FOUND if !created => {
+                    self.create_append_blob(path, content_type).await?;
+                    created = true;
+                }
+                s => {
+                    return Err(StoreError::Http {
+                        op: "append",
+                        path: path.into(),
+                        status: s.as_u16(),
+                    })
+                }
+            }
         }
     }
 }

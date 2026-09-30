@@ -9,11 +9,11 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | Module | Resources |
 |--------|-----------|
 | `network` | VNet `10.40.0.0/24`: `snet-cae` (/27, delegated to Container Apps) and `snet-pe` (/28). Private DNS zones for Blob and Cosmos, linked to the VNet |
-| `storage` | Data lake account: flat namespace, **no shared keys**, **public network access disabled**, versioning and 14-day soft delete, containers `curated`, `reference`, `cache`, `qw-index`. Lifecycle rules expire old response-cache entries and prune blob versions. Write and delete logs go to Log Analytics |
+| `storage` | Data lake account: flat namespace, **no shared keys**, **public network access disabled**, versioning and 14-day soft delete, containers `curated`, `reference`, `cache`, `qw-index` and `searches` (the search log, ADR-0012). Lifecycle rules expire old response-cache entries and the search log's staging files and prune blob versions; nothing expires `searches/days/` or `searches/import/`. Write and delete logs go to Log Analytics |
 | `tiles` | Public basemap account (anonymous read of the `tiles` container, CORS for the site, no keys) |
 | `cosmos` | Cosmos DB for NoSQL. It uses the free tier with 7-day continuous backup, or serverless with periodic backup; **local auth disabled**, **public network access disabled**, and database `usnm` holding `titles`, `batches`, `issues`, `index_runs` and `ops` |
 | `private-endpoints` | `pe-usnm-blob` and `pe-usnm-cosmos` in `snet-pe`, registered in the private DNS zones |
-| `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`, Cosmos Built-in Data **Reader** on the `batches`, `index_runs` and `ops` containers (the status page), and Monitoring Metrics Publisher on Application Insights. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, Cosmos Built-in Data Contributor on `usnm`, and Monitoring Metrics Publisher on Application Insights |
+| `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`, a custom role on `searches` (read, create and append blobs, no delete), Cosmos Built-in Data **Reader** on the `batches`, `index_runs` and `ops` containers (the status page), and Monitoring Metrics Publisher on Application Insights. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, Cosmos Built-in Data Contributor on `usnm`, and Monitoring Metrics Publisher on Application Insights |
 | `containerapps-env` | VNet-integrated, workload-profiles environment that uses only the Consumption profile (no management fee) |
 | `containerapp` | The API (`ca-usnm-{env}`): 0.25 vCPU / 0.5 GiB, external ingress, health probes, and 0–1 to 2 replicas on an HTTP scaler, and the Application Insights connection string (requests, traces and metrics, sent as `id-usnm-app`). With `searchBackend: quickwit`, also a read-only Quickwit 0.9.1 sidecar (1 vCPU / 2 GiB, localhost only) and a system-assigned identity with Blob Data **Reader** on `qw-index` only |
 | `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual: new LoC batches after the backfill) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual, for the initial corpus), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
@@ -87,6 +87,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `searchBackend` | `USNM_SEARCH_BACKEND` | `fixtures`, or `quickwit` once indexes are published |
 | `cosmosFreeTier` | `USNM_COSMOS_FREE_TIER` | `true` (one free-tier account per subscription) |
 | `alertEmails` | `USNM_ALERT_EMAILS` | empty (comma-separated) |
+| `searchLogReaders` | `USNM_SEARCH_LOG_READERS` | empty. Comma-separated Entra object ids (people or groups) given Storage Blob Data Reader on `searches`, for `scripts/searches.sh` |
 | `budgetStartDate` | `USNM_BUDGET_START` | empty. The first day of a month; the budget is created only with alert emails and this set. Azure can't change a budget's start date, so keep it fixed |
 | `dnsZoneName` | `USNM_DNS_ZONE` | empty (no zone). The site's domain, e.g. `usnewsmap.com` |
 | `availabilityFrequency` | `USNM_AVAILABILITY_FREQUENCY` | `900`. Seconds between availability test runs (300, 600 or 900); the one test (the site home page) from 3 locations costs about $4 a month at 900 and $13 at 300 |
@@ -178,6 +179,29 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
 5. Poll LoC weekly for new batches: `scripts/settings.sh <env> USNM_INGEST_CRON "17 3 * * 1"` (Mondays 03:17 UTC), then `scripts/provision.sh <env>` while no ingest execution is running. The setting lives only in `.azure/<env>/.env`. Each run fetches LoC's listing once, curates and releases what is new, and exits 0 when there is nothing (08 §8.4). It stops curating 6 h in and releases what it has; if its log says `max runtime reached; claiming no more batches` with batches still queued, start the backfill job to curate the rest. A scheduled job can still be started by hand.
 
 The storage and Cosmos accounts stay private throughout: the jobs run inside the VNet.
+
+## Search log
+
+The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../docs/design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staging files go after 7 days. To read it:
+
+```sh
+scripts/settings.sh prod USNM_SEARCH_LOG_READERS "$(az ad signed-in-user show --query id -o tsv)"
+scripts/provision.sh prod
+scripts/searches.sh prod 30      # searches per day, top queries, queries that found nothing
+```
+
+The data account is reachable only through its private endpoint, so run `searches.sh` from a network that reaches it. The first day file appears an hour after the first full UTC day with the log deployed.
+
+The searches the Quickwit sidecar logged before the search log existed can be imported once, after the provision above has created the container:
+
+```sh
+scripts/import-search-log.py prod --dry-run   # counts only
+az role assignment create --role "Storage Blob Data Contributor" --assignee "$(az ad signed-in-user show --query id -o tsv)" \
+  --scope "$(az storage account show -n "$(scripts/settings.sh prod STORAGE_ACCOUNT)" --query id -o tsv)/blobServices/default/containers/searches"
+scripts/import-search-log.py prod             # writes searches/import/{day}.jsonl, never over an existing file
+az role assignment delete --role "Storage Blob Data Contributor" --assignee "$(az ad signed-in-user show --query id -o tsv)" \
+  --scope "$(az storage account show -n "$(scripts/settings.sh prod STORAGE_ACCOUNT)" --query id -o tsv)/blobServices/default/containers/searches"
+```
 
 ## Checks
 

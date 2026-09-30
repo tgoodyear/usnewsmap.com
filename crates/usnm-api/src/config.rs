@@ -73,6 +73,11 @@ pub struct Config {
     pub state_file: Option<PathBuf>,
     /// How often `/v1/status` is recomputed at most.
     pub status_refresh: Duration,
+    /// Where the anonymous search log goes (`searches/` container), if
+    /// anywhere (06 §6.8).
+    pub search_log_url: Option<String>,
+    /// How often the search log appends its batch.
+    pub search_log_flush: Duration,
 }
 
 impl Config {
@@ -144,6 +149,8 @@ impl Config {
             cosmos_endpoint: var("USNM_COSMOS_ENDPOINT"),
             state_file: var("USNM_STATE_FILE").map(PathBuf::from),
             status_refresh: Duration::from_secs(num("USNM_STATUS_REFRESH_SECS", 60)?.max(1)),
+            search_log_url: var("USNM_SEARCH_LOG_URL"),
+            search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
         })
     }
 }
@@ -162,6 +169,8 @@ mod tests {
         assert_eq!(c.prewarm_budget, Duration::from_secs(300));
         assert_eq!(c.ready_cap, Duration::from_secs(120));
         assert_eq!(c.site_host, "usnewsmap.com");
+        assert!(c.search_log_url.is_none());
+        assert_eq!(c.search_log_flush, Duration::from_secs(300));
         let c = Config::from_lookup(|k| match k {
             "USNM_RATE_PER_MIN" => Some("0".into()),
             "USNM_REFERENCE_URL" => Some("https://a.blob.core.windows.net/reference".into()),

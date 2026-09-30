@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
-use crate::{validate_path, ObjectStore, StoreError, MAX_OBJECT_BYTES};
+use crate::{validate_path, ObjectStore, StoreError, MAX_APPEND_BYTES, MAX_OBJECT_BYTES};
 
 #[derive(Debug, Clone)]
 pub struct LocalStore {
@@ -93,6 +93,43 @@ impl ObjectStore for LocalStore {
         .await
         .map_err(|e| StoreError::Io(e.to_string()))?
     }
+
+    async fn exists(&self, path: &str) -> Result<bool, StoreError> {
+        validate_path(path)?;
+        let full = self.root.join(path);
+        match tokio::fs::metadata(&full).await {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(io(&full, e)),
+        }
+    }
+
+    async fn append(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        _content_type: &str,
+    ) -> Result<(), StoreError> {
+        use std::io::Write;
+        validate_path(path)?;
+        if body.len() > MAX_APPEND_BYTES {
+            return Err(StoreError::TooLarge(path.into()));
+        }
+        let full = self.root.join(path);
+        tokio::task::spawn_blocking(move || {
+            let dir = full.parent().expect("validated paths have a parent");
+            std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+            // One write with O_APPEND, so concurrent appends don't interleave.
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&full)
+                .and_then(|mut f| f.write_all(&body))
+                .map_err(|e| io(&full, e))
+        })
+        .await
+        .map_err(|e| StoreError::Io(e.to_string()))?
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +148,15 @@ mod tests {
         s.put("v1/a.json", b"three".to_vec(), "").await.unwrap();
         assert_eq!(s.get("v1/a.json").await.unwrap().unwrap(), b"three");
         assert!(s.get("../etc/passwd").await.is_err());
+        assert!(s.exists("v1/a.json").await.unwrap());
+        assert!(!s.exists("v1/b.json").await.unwrap());
+        s.append("log/a.jsonl", b"1\n".to_vec(), "").await.unwrap();
+        s.append("log/a.jsonl", b"2\n".to_vec(), "").await.unwrap();
+        assert_eq!(s.get("log/a.jsonl").await.unwrap().unwrap(), b"1\n2\n");
+        assert!(s
+            .append("log/a.jsonl", vec![b'x'; MAX_APPEND_BYTES + 1], "")
+            .await
+            .is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

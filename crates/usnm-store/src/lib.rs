@@ -1,5 +1,5 @@
-//! Object storage for published reference data and the persistent response
-//! cache (04 §4.3, 06 §6.5).
+//! Object storage for published reference data, the persistent response
+//! cache and the search log (04 §4.3, 06 §6.5, 06 §6.8).
 //!
 //! Production reads and writes Azure Blob Storage over its private endpoint
 //! with the app's managed identity (08 §8.3): Entra ID bearer tokens only, no
@@ -19,6 +19,10 @@ pub use local::LocalStore;
 
 /// Largest object `get` will read into memory.
 pub const MAX_OBJECT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Largest body one [`ObjectStore::append`] call takes (Blob Storage's
+/// Append Block limit for the API version used here).
+pub const MAX_APPEND_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -57,6 +61,18 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     /// Create or replace an object. Only the publisher uses this, for the
     /// version pointer (`current.json`); everything else is create-only.
     async fn put(&self, path: &str, body: Vec<u8>, content_type: &str) -> Result<(), StoreError>;
+
+    /// Whether an object exists.
+    async fn exists(&self, path: &str) -> Result<bool, StoreError> {
+        Ok(self.get(path).await?.is_some())
+    }
+
+    /// Add `body` to the end of an object, creating it first if it doesn't
+    /// exist (an append blob on Blob Storage). One call's bytes stay
+    /// together when several writers append at once. At most
+    /// [`MAX_APPEND_BYTES`] per call. Only the search log (`usnm-api`) uses this.
+    async fn append(&self, path: &str, body: Vec<u8>, content_type: &str)
+        -> Result<(), StoreError>;
 }
 
 /// Open a store: an `https://{account}.blob.core.windows.net/{container}[/prefix]`

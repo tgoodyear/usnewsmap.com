@@ -1,14 +1,17 @@
 // Least-privilege data-plane access for the managed identities (08 §8.2).
 // Serving replicas can read reference data and the index, read the Cosmos
-// pipeline state (for the public status page) and write only the response
-// cache; the ingest identity writes the lake and Cosmos state. Both send
-// telemetry to Application Insights.
+// pipeline state (for the public status page), write the response cache and
+// add to the search log; the ingest identity writes the lake and Cosmos
+// state. Both send telemetry to Application Insights. Operators named in
+// searchLogReaders can read the search log.
 
 param storageName string
 param cosmosName string
 param appInsightsName string
 param appPrincipalId string
 param ingestPrincipalId string
+@description('Entra object ids (people or groups) that may read the search log.')
+param searchLogReaders array = []
 
 var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var blobContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
@@ -52,6 +55,58 @@ resource blobGrants 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
       principalId: g.principal
       principalType: 'ServicePrincipal'
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', g.role)
+    }
+  }
+]
+
+// The search log (ADR-0012): the API reads and creates blobs and appends to
+// them in searches/ and can't delete anything. Azure RBAC can't make block
+// blobs append-only, so "write" also allows an overwrite; the API writes
+// day files create-only (If-None-Match: *) and never overwrites them.
+resource searchLogWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: guid(resourceGroup().id, 'usnm-search-log-writer')
+  properties: {
+    // Role names are unique per tenant: include the subscription and group.
+    roleName: 'usnm search log writer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    description: 'The API: read, create and append to blobs. No delete.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: []
+        dataActions: [
+          'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'
+          'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'
+          'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action'
+        ]
+      }
+    ]
+    assignableScopes: [resourceGroup().id]
+  }
+}
+
+resource searches 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' existing = {
+  parent: account::blobs
+  name: 'searches'
+}
+
+resource searchLogApp 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: searches
+  name: guid(searches.id, appPrincipalId, 'usnm-search-log-writer')
+  properties: {
+    principalId: appPrincipalId
+    principalType: 'ServicePrincipal'
+    // Custom roles are addressed at subscription level wherever they're defined.
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchLogWriter.name)
+  }
+}
+
+resource searchLogRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for reader in searchLogReaders: {
+    scope: searches
+    name: guid(searches.id, reader, blobReader)
+    properties: {
+      principalId: reader
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
     }
   }
 ]
