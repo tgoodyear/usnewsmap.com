@@ -9,6 +9,11 @@ const SITE = "https://usnewsmap.com";
 
 type Captured = { body: string; contentType: string };
 
+// Requests still being proxied when a test finishes would fail with "route.fetch: Test ended".
+test.afterEach(async ({ page }) => {
+  await page.context().unrouteAll({ behavior: "ignoreErrors" });
+});
+
 /** Routes for every page of the context, so a second page is covered too. */
 async function asProduction(page: Page, baseURL: string | undefined): Promise<Captured[]> {
   const reports: Captured[] = [];
