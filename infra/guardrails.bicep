@@ -85,13 +85,24 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
   name: guardrailPolicyNames.auditPublicAccess
   properties: {
     displayName: 'US News Map: data services should have public network access disabled'
-    description: 'Denies public network access on storage and Cosmos accounts. The public tiles account is tagged usnm-public=true and exempt. A Spot backfill window would need a policy exemption.'
+    description: 'Denies public network access on storage and Cosmos accounts, except the accounts the assignment lists by resource id (the public tiles account). A Spot backfill window would need a policy exemption.'
     policyType: 'Custom'
     mode: 'Indexed'
+    parameters: {
+      publicAccountIds: {
+        type: 'Array'
+        defaultValue: []
+        metadata: {
+          displayName: 'Public accounts'
+          description: 'Resource ids of accounts that serve public data and may allow public network access.'
+        }
+      }
+    }
     policyRule: {
       if: {
         allOf: [
-          { field: 'tags[\'usnm-public\']', notEquals: 'true' }
+          // Exempt by resource id, which a caller can't change, rather than by a tag they could add.
+          { not: { field: 'id', in: '[parameters(\'publicAccountIds\')]' } }
           {
             anyOf: [
               {

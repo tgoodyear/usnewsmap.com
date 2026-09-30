@@ -180,14 +180,19 @@ module storage 'modules/storage.bicep' = {
   }
 }
 
+// The tiles account serves public map data. The public-network policy exempts it
+// by resource id, so its assignment must be in place before the account is written.
+var tilesName = 'stusnmt${suffix}'
+var tilesId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.Storage/storageAccounts', tilesName)
+
 module tiles 'modules/tiles.bicep' = {
   scope: rg
   name: 'tiles'
+  dependsOn: [policies]
   params: {
     location: location
-    // Exempt from the "data services private" audit: public map data only.
     tags: union(tags, { 'usnm-public': 'true' })
-    name: 'stusnmt${suffix}'
+    name: tilesName
     allowedOrigins: siteOrigins
   }
 }
@@ -387,6 +392,9 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   name: 'policy-assignments'
   params: {
     definitionIds: guardrailPolicyIds
+    definitionParameters: {
+      '${guardrailPolicyNames.auditPublicAccess}': { publicAccountIds: { value: [tilesId] } }
+    }
   }
 }
 
