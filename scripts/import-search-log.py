@@ -32,7 +32,9 @@ What counts as one search, from the log:
 
 What an imported record can't have: the words as typed (q is the canonical
 query), the match mode (folded into the query), the page count (Quickwit
-didn't log it) and the index version.
+didn't log it) and the index version. The log has no request headers, so
+Do Not Track, Global Privacy Control, bot user agents and other origins
+can't be applied; the privacy page says so.
 """
 
 import argparse

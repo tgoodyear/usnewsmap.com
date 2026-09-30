@@ -61,8 +61,12 @@ pub const FORMAT: u32 = 1;
 pub const STAGE_UNTIL: Duration = Duration::from_secs(45 * 60);
 
 /// A day is written to `days/` this long after it ends (UTC): after
-/// [`STAGE_UNTIL`], with room for a write in flight and clock skew.
+/// [`STAGE_UNTIL`] plus [`WRITE_LIMIT`], with room for clock skew.
 pub const CLOSE_AFTER: Duration = Duration::from_secs(3600);
+
+/// The longest one batch write may take; a slower one counts as failed and
+/// is retried under the same name.
+pub const WRITE_LIMIT: Duration = Duration::from_secs(60);
 
 /// Staged batches are deleted this many days after they are written (the
 /// `expire-search-staging` lifecycle rule in `infra/modules/storage.bicep`).
@@ -472,7 +476,6 @@ impl Writer {
     /// under the same name at the next flush, until its day's
     /// [`STAGE_UNTIL`] has passed.
     async fn flush(&mut self) {
-        let now = Utc::now();
         let mut by_day: BTreeMap<NaiveDate, Vec<Record>> = BTreeMap::new();
         for r in self.pending.drain(..) {
             by_day.entry(r.day).or_default().push(r);
@@ -493,17 +496,26 @@ impl Writer {
         }
         let mut kept = Vec::new();
         for batch in std::mem::take(&mut self.batches) {
-            if !stageable(batch.day, now) || self.closed.contains(&batch.day) {
+            // The clock is read before each write, and a write gets at most
+            // WRITE_LIMIT, so every write ends before the day can close.
+            if !stageable(batch.day, Utc::now()) || self.closed.contains(&batch.day) {
                 // Its day file is written, or about to be.
                 self.metrics.records("lost", batch.records);
                 continue;
             }
             // Create-only: `false` means an earlier try wrote it.
-            match self
+            let write = self
                 .store
-                .put_new(&batch.path, batch.body.clone(), CONTENT_TYPE)
-                .await
-            {
+                .put_new(&batch.path, batch.body.clone(), CONTENT_TYPE);
+            let written = match tokio::time::timeout(WRITE_LIMIT, write).await {
+                Ok(r) => r,
+                Err(_) => Err(usnm_store::StoreError::Io(format!(
+                    "put `{}`: no answer in {} s",
+                    batch.path,
+                    WRITE_LIMIT.as_secs()
+                ))),
+            };
+            match written {
                 Ok(_) => {
                     self.metrics.write("stage", true);
                     self.metrics.records("written", batch.records);
@@ -542,6 +554,7 @@ impl Writer {
             }
             match close_day(self.store.as_ref(), day).await {
                 Ok(()) => {
+                    self.metrics.write("close", true);
                     self.closed.insert(day);
                 }
                 Err(e) => {
@@ -832,7 +845,8 @@ mod tests {
         assert!(stageable(day, at("2026-09-29T12:00:00Z")));
         assert!(stageable(day, at("2026-09-30T00:44:59Z")));
         assert!(!stageable(day, at("2026-09-30T00:45:00Z")));
-        assert!(STAGE_UNTIL < CLOSE_AFTER);
+        // A write that starts at the limit ends 14 minutes before the day closes.
+        assert!(STAGE_UNTIL + WRITE_LIMIT + Duration::from_secs(14 * 60) <= CLOSE_AFTER);
     }
 
     #[test]
