@@ -395,6 +395,12 @@ The second Copilot review raised two:
 | `phi` took the upper of the two middle values for an even number of places, not the median | The median now averages the middle pair, with a test. `phi` moved from 4.67 to 4.65 (free silver) and 5.03 to 4.85 (boll weevil); tables updated |
 | A week that crosses a month or year boundary goes wholly to the earlier period, so weekly searches aren't fully independent of the bucket unit | Documented in `dispersion_for` and §11.4.1 step 3: exact for day, month and year buckets, slightly different for weeks, which can't be split from weekly totals |
 
+The third Copilot review raised one:
+
+| Raised | Resolution |
+|---|---|
+| The date range is inclusive, so a window of exactly three years was measured by month instead of by year | The comparison counts the last day, and a test checks that exactly three years gives the same result by month and by year. None of the seven searches is near the boundary; their output is unchanged |
+
 ## 11.13 Appendix: full output
 
 <details>

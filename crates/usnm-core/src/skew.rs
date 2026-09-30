@@ -214,7 +214,8 @@ pub fn dispersion_for(
     cells: &[Cell],
 ) -> (Dispersion, f64) {
     use std::collections::BTreeMap;
-    let by_year = spec.to >= spec.from + chrono::Months::new(36);
+    // `to` is inclusive: 1880-01-01 to 1882-12-31 is three years.
+    let by_year = spec.to + chrono::Days::new(1) >= spec.from + chrono::Months::new(36);
     let key = |b: usize| {
         let d = spec.bucket_start(b);
         if by_year {
@@ -1192,6 +1193,16 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(phi_a, phi_b);
         assert!((2.4..4.0).contains(&phi_a), "phi {phi_a}");
+        // Exactly three years (inclusive end) is measured by year: the same
+        // cells by month and by year give the same result.
+        let three = BucketSpec::new(BucketUnit::Month, day("1880-01-01"), day("1882-12-31"));
+        let three_years = BucketSpec::new(BucketUnit::Year, day("1880-01-01"), day("1882-12-31"));
+        let (h3, n3, c3) = simulate_cells(&mut rng, 200, 36, 0.3, 3);
+        let (h3y, n3y, c3y) = coarsen(&c3, 12, 36);
+        assert_eq!(
+            dispersion_for(&three, &h3, &n3, &c3),
+            dispersion_for(&three_years, &h3y, &n3y, &c3y)
+        );
         // A window under three years is measured by month; nothing
         // measurable falls back.
         let short = BucketSpec::new(BucketUnit::Week, day("1896-06-01"), day("1896-12-31"));
