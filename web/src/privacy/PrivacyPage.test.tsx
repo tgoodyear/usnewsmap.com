@@ -25,6 +25,6 @@ describe("PrivacyPage", () => {
     expect(text).toContain("never stored with your IP address, browser details, location or any identifier");
     expect(text).toContain("Do Not Track or Global Privacy Control, your searches are not recorded");
     expect(text).toContain("at least five times");
-    expect(text).toContain("copied from the search engine's own log");
+    expect(text).not.toContain("copied from the search engine's own log");
   });
 });

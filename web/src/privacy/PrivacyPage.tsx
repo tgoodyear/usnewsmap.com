@@ -63,8 +63,7 @@ export default function PrivacyPage() {
           is stored with only the filters you chose (such as dates, states and match type), the number of pages
           found and the day it happened. It is never stored with your IP address, browser details, location or any
           identifier. If your browser sends Do Not Track or Global Privacy Control, your searches are not recorded.
-          Searches from late September 2026, before this record existed, were copied from the search engine's own
-          log, which didn't include those signals, so they couldn't be honored. Only the site's maintainer can read
+          Only the site's maintainer can read
           this record. If a list of searches is ever published, it will include only searches made at
           least five times.
         </p>

@@ -86,8 +86,8 @@ pub struct Record {
     pub v: u32,
     /// The UTC day of the search: the only time kept.
     pub day: NaiveDate,
-    /// `api` (recorded by the API) or `import` (from the search engine's
-    /// console log before the search log existed; see `scripts/import-search-log.py`).
+    /// `api` (recorded by the API). `import` is reserved for records copied
+    /// from elsewhere; none exist.
     pub source: String,
     /// The words as submitted: trimmed, runs of spaces and control
     /// characters folded to one space, at most 256 characters. Imports have
