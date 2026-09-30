@@ -182,7 +182,7 @@ The storage and Cosmos accounts stay private throughout: the jobs run inside the
 
 ## Search log
 
-The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../docs/design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches go after 7 days. To read it:
+The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../docs/design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 14 more. To read it:
 
 ```sh
 scripts/settings.sh prod USNM_SEARCH_LOG_READERS "$(az ad signed-in-user show --query id -o tsv)"

@@ -99,7 +99,8 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           // The search log's staged batches (one blob per replica per flush)
           // are timed by their creation. The API copies each day, shuffled,
           // to searches/days/ an hour after it ends; these go a week after
-          // they're written (STAGING_DAYS in crates/usnm-api/src/searchlog.rs).
+          // they're written (STAGING_DAYS in crates/usnm-api/src/searchlog.rs),
+          // then stay in soft delete for 14 days (ADR-0012 counts that).
           name: 'expire-search-staging'
           enabled: true
           type: 'Lifecycle'
