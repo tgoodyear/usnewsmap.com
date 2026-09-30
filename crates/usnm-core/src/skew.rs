@@ -174,10 +174,20 @@ pub fn dispersion(national_hits: &[u64], national_pages: &[u64], cells: &[Cell])
     if places == 0 {
         return Dispersion { phi: None, places };
     }
-    per_place.sort_by(f64::total_cmp);
     Dispersion {
-        phi: Some(per_place[places / 2].max(1.0)),
+        phi: Some(median(&mut per_place).max(1.0)),
         places,
+    }
+}
+
+/// Median of a non-empty slice (the mean of the middle pair for even lengths).
+fn median(v: &mut [f64]) -> f64 {
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
     }
 }
 
@@ -190,6 +200,13 @@ pub const FALLBACK_PHI: f64 = 4.0;
 /// spans three years or more, and into calendar months otherwise (buckets
 /// already coarser than that are used as they are). Returns the dispersion
 /// and the `phi` to use, [`FALLBACK_PHI`] when none could be measured.
+///
+/// Each bucket goes to the period of its first day. Day, month and year
+/// buckets fall wholly inside one period, so for them the result is the
+/// same whichever unit was asked for. A week that crosses a month or year
+/// boundary goes wholly to the earlier period, so with week buckets `phi`
+/// can differ slightly from the same search by day (the cells only carry
+/// weekly totals, so its pages can't be split exactly).
 pub fn dispersion_for(
     spec: &BucketSpec,
     national_hits: &[u64],
@@ -1151,6 +1168,12 @@ mod tests {
                 places: 0
             }
         );
+    }
+
+    #[test]
+    fn median_averages_the_middle_pair() {
+        assert_eq!(median(&mut [3.0, 1.0, 2.0]), 2.0);
+        assert_eq!(median(&mut [4.0, 1.0, 3.0, 2.0]), 2.5);
     }
 
     #[test]
