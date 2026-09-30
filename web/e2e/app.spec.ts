@@ -229,10 +229,11 @@ test("About opens from the header and the footer and keeps the search", async ({
   const dialog = page.getByRole("dialog", { name: "About US News Map" });
   await page.getByRole("banner").getByRole("button", { name: "About" }).click();
   await expect(dialog).toBeVisible();
-  // Both mentions (GTRI credit, maintainer) link to his site.
+  // The GTRI credit links to LinkedIn; the maintainer line links to his site.
   const trevor = dialog.getByRole("link", { name: "Trevor Goodyear" });
   await expect(trevor).toHaveCount(2);
-  for (const link of await trevor.all()) await expect(link).toHaveAttribute("href", "https://goodyeartechnical.com/");
+  await expect(trevor.nth(0)).toHaveAttribute("href", "https://www.linkedin.com/in/goodyear/");
+  await expect(trevor.nth(1)).toHaveAttribute("href", "https://goodyeartechnical.com/");
   await expectAccessible(page);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
