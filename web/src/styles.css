@@ -213,6 +213,12 @@ input, select {
 /* Pipeline status page (/status). */
 /* A long document that scrolls, unlike the search view's fixed viewport. */
 .app.status-page { height: auto; min-height: 100vh; min-height: 100dvh; overflow: visible; }
+.app.privacy-page { height: auto; min-height: 100vh; min-height: 100dvh; overflow: visible; }
+.privacy { width: 100%; max-width: 720px; margin: 0 auto; padding: 16px; flex: 1; line-height: 1.55; }
+.privacy h1 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin: 8px 0 4px; }
+.privacy h2 { font-size: 1.15rem; margin: 22px 0 6px; }
+.privacy ul { padding-left: 1.25em; }
+.privacy-updated { color: var(--muted); font-size: 0.9rem; margin-top: 0; }
 .status { width: 100%; max-width: 1100px; margin: 0 auto; padding: 16px; flex: 1; }
 .status h1 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin: 8px 0 12px; }
 .status h2 { font-size: 1.25rem; margin: 0 0 10px; }

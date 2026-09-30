@@ -59,6 +59,9 @@ pub struct Metrics {
     prewarm_duration: Histogram<f64>,
     /// Warm-up queries by `outcome` (ok, timeout, error, skipped).
     prewarm_queries: Counter<u64>,
+    /// Valid page views from the web app, by `outcome` (forwarded, bot,
+    /// opted_out, other_origin, dropped, off).
+    beacons: Counter<u64>,
     index_version: OnceLock<ObservableGauge<u64>>,
 }
 
@@ -99,6 +102,13 @@ impl Metrics {
             prewarm_queries: meter
                 .u64_counter("api.prewarm_queries")
                 .with_description("Cache warm-up queries by outcome (ok, timeout, error, skipped)")
+                .build(),
+            beacons: meter
+                .u64_counter("api.beacons")
+                .with_description(
+                    "Valid page views from the web app, by outcome (forwarded, bot, opted_out, \
+                     other_origin, dropped, off)",
+                )
                 .build(),
             index_version: OnceLock::new(),
         }
@@ -145,6 +155,10 @@ impl Metrics {
                 KeyValue::new("result", if hit { "hit" } else { "miss" }),
             ],
         );
+    }
+
+    pub(crate) fn beacon(&self, outcome: &'static str) {
+        self.beacons.add(1, &[KeyValue::new("outcome", outcome)]);
     }
 
     pub(crate) fn reload(&self, outcome: &'static str) {

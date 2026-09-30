@@ -8,7 +8,10 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <title>US News Map</title>
     <!-- Every other URL is a search permalink, the status page or a 404, all
-         noindex (the API sets X-Robots-Tag), so the home page is canonical. -->
+         noindex (the API sets X-Robots-Tag), so the home page is canonical.
+         The one exception, /privacy, gets its own title, canonical link and
+         og:url from the API (shell_for in crates/usnm-api/src/site.rs), which
+         matches these three tags exactly as written here. -->
     <link rel="canonical" href="https://usnewsmap.com/" />
 
     <meta property="og:type" content="website" />

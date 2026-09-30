@@ -4,7 +4,7 @@
     {
       "type": 1,
       "content": {
-        "json": "## usnewsmap API\nRequests from `AppRequests` (health probes excluded), metrics from `AppMetrics`, availability tests from `AppAvailabilityResults` and the API's console lines from `ContainerAppConsoleLogs` (08 §8.1.2). Times are UTC. No search text is recorded anywhere this reads."
+        "json": "## usnewsmap API\nRequests from `AppRequests` (health probes excluded), metrics from `AppMetrics`, availability tests from `AppAvailabilityResults`, the web app's page views from `AppPageViews` and the API's console lines from `ContainerAppConsoleLogs` (08 §8.1.2). Times are UTC. No search text is recorded anywhere this reads."
       },
       "name": "title"
     },
@@ -324,6 +324,146 @@
         }
       },
       "name": "reloads"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Traffic\nPage views the web app reports through `POST /v1/beacon`, which the API forwards to `AppPageViews` (cloud role `usnm-web`). Each is a page name (`search`, `status`, `privacy`, `not-found`), never a path or query string. Referrers are origins only (`direct` for none, `internal` for the site itself). The country comes from the visitor's address at ingestion; Application Insights stores `0.0.0.0` in its place. Visitors with Do Not Track or Global Privacy Control, and crawlers, are not counted (`api.beacons` by outcome)."
+      },
+      "name": "traffic-title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union isfuzzy=true\n    (AppPageViews\n    | where AppRoleName == \"usnm-web\"\n    | summarize PageViews = sum(ItemCount) by bin(TimeGenerated, {TimeRange:grain}), Page = Name),\n    (datatable(TimeGenerated: datetime, Page: string, PageViews: long)[])\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Page views by page",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No page views in the time range."
+      },
+      "name": "traffic-by-page",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.beacons\"\n| summarize Reports = sum(Sum) by bin(TimeGenerated, {TimeRange:grain}), Outcome = tostring(Properties.outcome)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Page views received by outcome",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "barchart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No page views received in the time range."
+      },
+      "name": "traffic-outcomes",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union isfuzzy=true\n    (AppPageViews\n    | where AppRoleName == \"usnm-web\"\n    | summarize PageViews = sum(ItemCount) by Referrer = tostring(Properties.referrer_origin)),\n    (datatable(Referrer: string, PageViews: long)[])\n| top 20 by PageViews",
+        "size": 0,
+        "title": "Top referrers",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No page views in the time range."
+      },
+      "name": "traffic-referrers",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union isfuzzy=true\n    (AppPageViews\n    | where AppRoleName == \"usnm-web\"\n    | where isnotempty(tostring(Properties.utm_source)) or isnotempty(tostring(Properties.utm_campaign))\n    | summarize PageViews = sum(ItemCount) by Source = tostring(Properties.utm_source), Medium = tostring(Properties.utm_medium), Campaign = tostring(Properties.utm_campaign)),\n    (datatable(Source: string, Medium: string, Campaign: string, PageViews: long)[])\n| top 20 by PageViews",
+        "size": 0,
+        "title": "Campaign tags (utm_source, utm_medium, utm_campaign)",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No tagged page views in the time range."
+      },
+      "name": "traffic-utm",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union isfuzzy=true\n    (AppPageViews\n    | where AppRoleName == \"usnm-web\"\n    | summarize PageViews = sum(ItemCount) by Country = iff(isempty(ClientCountryOrRegion), \"(unknown)\", ClientCountryOrRegion)),\n    (datatable(Country: string, PageViews: long)[])\n| top 20 by PageViews",
+        "size": 0,
+        "title": "Countries",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No page views in the time range."
+      },
+      "name": "traffic-countries",
+      "customWidth": "33"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union isfuzzy=true\n    (AppPageViews\n    | where AppRoleName == \"usnm-web\"\n    | summarize PageViews = sum(ItemCount) by Device = tostring(Properties.device_type)),\n    (datatable(Device: string, PageViews: long)[])",
+        "size": 0,
+        "title": "Device type",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "piechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No page views in the time range."
+      },
+      "name": "traffic-devices",
+      "customWidth": "33"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "union isfuzzy=true\n    (AppPageViews\n    | where AppRoleName == \"usnm-web\"\n    | summarize PageViews = sum(ItemCount) by Browser = tostring(Properties.browser)),\n    (datatable(Browser: string, PageViews: long)[])",
+        "size": 0,
+        "title": "Browser",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "piechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No page views in the time range."
+      },
+      "name": "traffic-browsers",
+      "customWidth": "33"
     }
   ],
   "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"

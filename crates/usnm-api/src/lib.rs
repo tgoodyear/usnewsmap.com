@@ -11,7 +11,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderValue, Method};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use moka::future::Cache;
 use tokio::sync::Semaphore;
@@ -102,6 +102,9 @@ pub struct AppState {
     /// The pipeline status document (`/v1/status`).
     pub status: status::StatusService,
     pub metrics: telemetry::Metrics,
+    /// Where `/v1/beacon` forwards the web app's page views; `None` (no
+    /// Application Insights) accepts and drops them.
+    pub page_views: Option<usnm_telemetry::PageViews>,
     /// Set while the first version warms up after a start: `/readyz` says
     /// not ready (see [`spawn_startup_warm_up`]).
     pub warming: AtomicBool,
@@ -132,6 +135,7 @@ impl AppState {
             cache,
             responses: None,
             metrics: telemetry::Metrics::global(),
+            page_views: None,
             warming: AtomicBool::new(false),
         }
     }
@@ -144,6 +148,12 @@ impl AppState {
     /// Read the pipeline state (read-only) for `/v1/status`.
     pub fn with_pipeline(mut self, source: status::PipelineSource) -> Self {
         self.status = status::StatusService::new(source, self.config.status_refresh);
+        self
+    }
+
+    /// Forward the web app's page views (`/v1/beacon`) to Application Insights.
+    pub fn with_page_views(mut self, page_views: Option<usnm_telemetry::PageViews>) -> Self {
+        self.page_views = page_views;
         self
     }
 
@@ -172,6 +182,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/hits", get(routes::hits))
         .route("/coverage", get(routes::coverage))
         .route("/status", get(routes::status))
+        .route("/beacon", post(routes::beacon))
         .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         // Unknown API paths are problem details, never the site's index.
         .fallback(|| async { ApiError::NotFound("no such endpoint".to_owned()) });

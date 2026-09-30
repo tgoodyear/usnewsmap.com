@@ -10,7 +10,7 @@ use usnm_store::credential;
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let exporters = usnm_telemetry::init(telemetry::SERVICE);
-    let result = serve().await;
+    let result = serve(exporters.page_views()).await;
     // A failure is one JSON line (not also plain text from Rust's handler).
     let code = match &result {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -24,7 +24,9 @@ async fn main() -> std::process::ExitCode {
     code
 }
 
-async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+async fn serve(
+    page_views: Option<usnm_telemetry::PageViews>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
     // Each published version gets a fresh snapshot. The memory backend reloads
     // exactly the indexes the new version names; Quickwit is shared because
@@ -81,7 +83,9 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         "status page source"
     );
     let bind = config.bind.clone();
-    let mut state = AppState::with_loader(config, snapshot, Some(loader)).with_pipeline(pipeline);
+    let mut state = AppState::with_loader(config, snapshot, Some(loader))
+        .with_pipeline(pipeline)
+        .with_page_views(page_views);
     if let Some(store) = responses {
         tracing::info!(store = ?store, "persistent response cache enabled");
         state = state.with_response_store(store);

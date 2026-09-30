@@ -15,7 +15,7 @@ Start with the **[design document](docs/design/README.md)**: background, require
 | `crates/usnm-core` | Domain types: page keys and doc ids, day/bucket math, the query language parser, canonical request parameters, text normalization, the sparse cube |
 | `crates/usnm-search` | `SearchBackend` trait, the Quickwit translator and client, an in-memory reference backend, and the sharded aggregate planner |
 | `crates/usnm-store` | Object storage: Azure Blob over REST with managed identity (Entra ID only), or a local directory with the same layout |
-| `crates/usnm-api` | The public search API (axum): `/v1/meta`, `/v1/places`, `/v1/aggregate`, `/v1/hits`, `/v1/coverage`, health probes |
+| `crates/usnm-api` | The public search API (axum): `/v1/meta`, `/v1/places`, `/v1/aggregate`, `/v1/hits`, `/v1/coverage`, `/v1/status`, `POST /v1/beacon` (the site's page views), health probes; it also serves the site |
 | `crates/usnm-ingest` | The ingest pipeline (`usnm-ingest`): enqueue LoC batches, curate them to Parquet, build sealed indexes and reference snapshots, publish. State in Cosmos DB |
 | `web/` | The single-page app: React + MapLibre + deck.gl (see [`web/README.md`](web/README.md)) |
 | `infra/` | Bicep for the lean Azure profile, deployed as one deployment stack per environment (see [`infra/README.md`](infra/README.md)) |
