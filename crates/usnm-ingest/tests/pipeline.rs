@@ -172,6 +172,7 @@ impl Env {
             lease: chrono::Duration::hours(2),
             fetch_interval: None,
             batch_limit: usnm_ingest::worker::BATCH_LIMIT,
+            deadline: None,
         }
     }
 
@@ -255,7 +256,11 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     assert_eq!(e.index("pages-base-20261001-1"), want_base);
     assert_eq!(p1.docs, want_base.len() as u64);
 
-    // Nothing new: no release.
+    // Nothing new (a weekly run when LoC published nothing): the listing
+    // queues nothing, the worker finds nothing to claim, and nothing is released.
+    let again = source::enqueue(&e.state, &list).await.unwrap();
+    assert_eq!((again.new, again.unchanged), (0, 1));
+    assert_eq!(e.worker("w1").run(None).await.unwrap(), 0);
     assert!(e.release(2, false).await.is_none());
 
     // Week 2: the second batch → a delta on top of the base.
