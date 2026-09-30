@@ -192,17 +192,6 @@ scripts/searches.sh prod 30      # searches per day, top queries, queries that f
 
 The data account is reachable only through its private endpoint, so run `searches.sh` from a network that reaches it. The first day file appears an hour after the first full UTC day with the log deployed.
 
-The searches the Quickwit sidecar logged before the search log existed can be imported once, after the provision above has created the container:
-
-```sh
-scripts/import-search-log.py prod --dry-run   # counts only
-az role assignment create --role "Storage Blob Data Contributor" --assignee "$(az ad signed-in-user show --query id -o tsv)" \
-  --scope "$(az storage account show -n "$(scripts/settings.sh prod STORAGE_ACCOUNT)" --query id -o tsv)/blobServices/default/containers/searches"
-scripts/import-search-log.py prod             # writes searches/import/{day}.jsonl, never over an existing file
-az role assignment delete --role "Storage Blob Data Contributor" --assignee "$(az ad signed-in-user show --query id -o tsv)" \
-  --scope "$(az storage account show -n "$(scripts/settings.sh prod STORAGE_ACCOUNT)" --query id -o tsv)/blobServices/default/containers/searches"
-```
-
 ## Checks
 
 CI runs `bicep lint` on every module and treats any warning as a failure, then `bicep build`. PSRule needs Azure credentials (an OIDC federated identity for this repo), so it comes with the deploy pipeline. There's no `what-if` preview: deployment stacks don't support it yet (ADR-0011).
