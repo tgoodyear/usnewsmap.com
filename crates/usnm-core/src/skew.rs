@@ -41,14 +41,26 @@ pub struct Counts {
     pub expected: f64,
 }
 
+/// Hits credited to the other places in a bucket where they have none but
+/// this place has some (a continuity correction, as in a Jeffreys prior).
+pub const ZERO_REFERENCE_HITS: f64 = 0.5;
+
 /// The share of the other places' pages that matched in the cell's bucket;
 /// `None` when the place published every page of that bucket (or the bucket
-/// is outside the national series).
+/// is outside the national series). When the others have no hits but this
+/// place has some, the rate is [`ZERO_REFERENCE_HITS`] over the others'
+/// pages instead of 0: a rate of 0 would make the place's hits impossible
+/// under the model and give them no expected count to be compared with.
 pub fn reference_rate(national_hits: &[u64], national_pages: &[u64], c: &Cell) -> Option<f64> {
     let (h, n) = (national_hits.get(c.bucket)?, national_pages.get(c.bucket)?);
     let other_pages = n.checked_sub(c.pages).filter(|&p| p > 0)?;
     let other_hits = h.saturating_sub(c.hits);
-    Some(other_hits as f64 / other_pages as f64)
+    let other_hits = if other_hits == 0 && c.hits > 0 {
+        ZERO_REFERENCE_HITS
+    } else {
+        other_hits as f64
+    };
+    Some(other_hits / other_pages as f64)
 }
 
 /// Observed and expected hits per place (indexes `0..places`), comparing each
@@ -801,6 +813,39 @@ mod tests {
             hits: 0,
         }];
         assert_eq!(place_counts(&hits, &pages, &stray, 1)[0].observed, 0);
+    }
+
+    #[test]
+    fn hits_only_here_still_have_an_expected_count() {
+        // The term appears only in place 0 (5 hits on 100 pages); the other
+        // 10,000 pages have none. Without the correction place 0 would
+        // expect 0 hits and have 5, which the model can't score.
+        let cells = [
+            Cell {
+                place: 0,
+                bucket: 0,
+                pages: 100,
+                hits: 5,
+            },
+            Cell {
+                place: 1,
+                bucket: 0,
+                pages: 10_000,
+                hits: 0,
+            },
+        ];
+        let c = place_counts(&[5], &[10_100], &cells, 2);
+        assert!(close(c[0].expected, 100.0 * 0.5 / 10_000.0, 1e-12));
+        // Place 1 is compared with place 0's 5% and expects 500.
+        assert!(close(c[1].expected, 500.0, 1e-12));
+        let (_, scores) = score_all(&c, 1.0, 0.9);
+        assert!(scores
+            .iter()
+            .all(|s| s.estimate.is_finite() && s.upper.is_finite()));
+        assert!(scores[0].lift.unwrap() > 50.0);
+        // The direction is clear; the size above 1 is set by the correction
+        // (the map's colour scale stops at 8 times anyway).
+        assert_eq!((scores[0].direction(), scores[1].direction()), (1, -1));
     }
 
     #[test]

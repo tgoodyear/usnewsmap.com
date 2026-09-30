@@ -58,15 +58,15 @@ Score each place by how much more or less often its pages matched than the other
 
 For a search with national hits `H_b` and national pages `N_b` in bucket `b` (both in the aggregate response), and a place with `P_pb` pages (the coverage cube) and `O_pb` hits (the aggregate cube) in bucket `b`:
 
-1. **Expected hits, against the others, standardized by time.** `E_p = sum over b of P_pb * (H_b - O_pb) / (N_b - P_pb)`. This is indirect standardization, as in a standardized mortality ratio: the place's own pages, each weighted by how often the other places' pages matched in that month or year. It accounts for the number of newspapers, how much of each was digitized, and when. Leaving the place out of its own reference changes the result most for the biggest places: Washington has 30% of all pages. Buckets where the place published every page have no reference and are left out of both `O_p` and `E_p`.
+1. **Expected hits, against the others, standardized by time.** `E_p = sum over b of P_pb * (H_b - O_pb) / (N_b - P_pb)`. This is indirect standardization, as in a standardized mortality ratio: the place's own pages, each weighted by how often the other places' pages matched in that month or year. It accounts for the number of newspapers, how much of each was digitized, and when. Leaving the place out of its own reference changes the result most for the biggest places: Washington has 30% of all pages. Buckets where the place published every page have no reference and are left out of both `O_p` and `E_p`. In a bucket where the others have no hits but the place has some, the others are credited with half a hit (a continuity correction, as in a Jeffreys prior); a reference rate of 0 would give the place's hits no expected count at all. In that case the direction is clear but the size of the lift is set by the correction, and the colour scale stops at 8 times (§11.6).
 2. **Lift.** `O_p / E_p`. 1 means "as often as the others", 2 means twice as often.
 3. **Dispersion.** Hits are pages, and a newspaper can print the same item in issue after issue, so counts vary more than independent pages would. `phi` is measured per search: each place's cells are merged into calendar years (calendar months for windows under three years), then consecutive cells into chunks that each expect at least 5 hits at the place's own lift; the place's dispersion is the Pearson chi-square of its chunks, with binomial variance, per degree of freedom; `phi` is the median over places with at least 3 chunks, and at least 1. The fixed calendar resolution makes `phi` the same whichever bucket unit the search uses (§11.5.7). A place whose interest rises and falls over the window also adds to `phi`, so it errs toward wider intervals. When no place expects enough hits (small searches), `phi` is 4, about the middle of the measured values (2.3 to 11.6, §11.5.7). Dividing `O_p` and `E_p` by `phi` treats a place as having `1/phi` as much independent evidence.
-4. **Shrinkage (empirical Bayes).** The lift gets a gamma prior with mean `mu` and shape `alpha`, both fitted per search by maximizing the negative binomial marginal likelihood of all places' counts. `mu` is fitted because the typical place need not match the page-weighted reference: for yellow fever it is 0.86, for Klondike 1.40. The posterior for each place is `Gamma(alpha + O_p/phi, rate alpha/mu + E_p/phi)`. This is the Poisson-gamma model used in disease mapping (Clayton and Kaldor 1987); DuMouchel (1999) uses a mixture of two gammas for the same purpose, which is a possible refinement (§11.10).
+4. **Shrinkage (empirical Bayes).** The lift gets a gamma prior with mean `mu` and shape `alpha`, both fitted per search by maximizing the negative binomial marginal likelihood of all places' counts. `mu` is fitted because the typical place need not match the page-weighted reference: for yellow fever it is 0.85, for Klondike 1.40. The posterior for each place is `Gamma(alpha + O_p/phi, rate alpha/mu + E_p/phi)`. This is the Poisson-gamma model used in disease mapping (Clayton and Kaldor 1987); DuMouchel (1999) uses a mixture of two gammas for the same purpose, which is a possible refinement (§11.10).
 5. **What is shown.** The posterior median as the place's estimate (the colour scale is logarithmic, and the median of a skewed posterior sits better on it than the mean); the 90% central credible interval for "clearly above 1", "clearly below 1" or "can't tell"; and lists of places sorted by the interval's lower bound (most clearly over-represented) and upper bound (most clearly under-represented). Ranking by a lower credible bound follows DuMouchel's EB05. The posterior probability that the lift is above 1 is available for tooltips.
 
 A village with one page and one hit has a raw lift near 20, but its estimate stays near the prior and its interval includes 1 (§11.5.6), so it is drawn as "can't tell". How far a place moves depends on `alpha`: when places differ a lot (boll weevil, `alpha` 0.52) the prior is wide and a single hit moves the estimate further. That is why the interval, not a page-count cut-off, decides what is drawn prominently.
 
-**States** use the same steps with `O` and `E` summed over each state's places, the place-level `phi`, and their own `alpha` and `mu` fitted across states. A state's score is dominated by its biggest cities, and the District of Columbia, with 30% of pages, is compared with everything else.
+**States** use the same steps with the state as the unit: each state's cells are summed per bucket and compared with the other states' pages in that bucket, so a term common across a whole state isn't part of its own reference. They use the place-level `phi`, and their own `alpha` and `mu` fitted across states. A state's score is dominated by its biggest cities, and the District of Columbia, with 30% of pages, is compared with everything else.
 
 ### 11.4.2 Comparison set
 
@@ -179,58 +179,58 @@ The alternative to §11.4.1 step 1 is `E = total hits * place pages / total page
 
 | Search | Flag changes | Largest gap |
 |---|---|---|
-| yellow fever | 161 of 398 | Miami, FL: 18.0 expected with time, 280.8 without |
-| free silver | 164 of 398 | Chicago, IL: 9.3 with, 280.1 without |
+| yellow fever | 162 of 398 | Miami, FL: 18.0 expected with time, 280.8 without |
+| free silver | 164 of 398 | Chicago, IL: 9.8 with, 280.1 without |
 | cross of gold | 0 of 58 | (one half-year window) |
 | boll weevil | 23 of 262 | Deland, FL: 7.0 with, 28.2 without |
 | klondike | 17 of 163 | Milford, DE: 5.1 with, 18.6 without |
 | mormon | 76 of 336 | Mariposa, CA: 19.5 with, 2.7 without |
 | baking powder | 44 of 282 | Hardy, AR: 17.3 with, 4.8 without |
 
-Over long windows a term's national rate moves a lot, and places are digitized for different decades. Chicago's pages mostly fall outside the years when "free silver" was frequent, so a plain share of pages would expect 30 times as many hits there (280.1 against 9.3) and understate Chicago's lift by the same factor.
+Over long windows a term's national rate moves a lot, and places are digitized for different decades. Chicago's pages mostly fall outside the years when "free silver" was frequent, so a plain share of pages would expect 29 times as many hits there (280.1 against 9.8) and understate Chicago's lift by the same factor.
 
-Leaving each place out of its own reference changes fewer flags (0 to 2 per search) but moves the biggest places: Washington's raw lift for boll weevil is 0.360 against a national rate that includes Washington and 0.284 against the others; for yellow fever, 1.093 and 1.125. The unit tests `compares_each_place_with_the_others_in_the_same_buckets` and `a_big_place_is_not_compared_with_itself` check both effects on small examples.
+Leaving each place out of its own reference changes fewer flags (0 or 1 per search) but moves the biggest places: Washington's raw lift for boll weevil is 0.360 against a national rate that includes Washington and 0.284 against the others; for yellow fever, 1.093 and 1.116. The unit tests `compares_each_place_with_the_others_in_the_same_buckets` and `a_big_place_is_not_compared_with_itself` check both effects on small examples.
 
-The bucket unit still matters a little, because it sets how finely time is standardized: scoring the three monthly searches by year instead changes the flags of 4 places (yellow fever), 2 (free silver) and 2 (Klondike), with `phi` identical.
+The bucket unit still matters a little, because it sets how finely time is standardized: scoring the three monthly searches by year instead changes the flags of 5 places (yellow fever), 2 (free silver) and 2 (Klondike), with `phi` identical.
 
 ### 11.5.6 Shrinkage and ranking
 
-Yellow fever, whole corpus, by month (`phi` 3.07 from 143 places, `alpha` 2.146, `mu` 0.863):
+Yellow fever, whole corpus, by month (`phi` 3.08 from 144 places, `alpha` 2.322, `mu` 0.846):
 
 Top 5 by raw hits:
 
 | Place | Pages | Hits | Expected | Raw lift | Estimate | 90% interval |
 |---|---|---|---|---|---|---|
-| New-York, NY | 699,264 | 15,124 | 13,232.8 | 1.14 | 1.14 | 1.12 to 1.17 |
-| Washington, DC | 1,990,131 | 12,658 | 11,252.6 | 1.12 | 1.12 | 1.10 to 1.15 |
-| Wilmington, DE | 192,859 | 3,413 | 3,372.1 | 1.01 | 1.01 | 0.96 to 1.06 |
+| New-York, NY | 699,264 | 15,124 | 13,236.0 | 1.14 | 1.14 | 1.12 to 1.17 |
+| Washington, DC | 1,990,131 | 12,658 | 11,337.8 | 1.12 | 1.12 | 1.09 to 1.15 |
+| Wilmington, DE | 192,859 | 3,413 | 3,373.4 | 1.01 | 1.01 | 0.96 to 1.06 |
 | Birmingham, AL | 164,346 | 3,316 | 1,207.4 | 2.75 | 2.73 | 2.60 to 2.87 |
-| Washington City, DC | 118,302 | 3,114 | 3,576.2 | 0.87 | 0.87 | 0.83 to 0.92 |
+| Washington City, DC | 118,302 | 3,114 | 3,751.7 | 0.83 | 0.83 | 0.79 to 0.87 |
 
 Top 5 by raw lift:
 
 | Place | Pages | Hits | Expected | Raw lift | Estimate | 90% interval |
 |---|---|---|---|---|---|---|
-| Little Rock Ark., AR | 1 | 1 | 0.0 | 21.68 | 0.86 | 0.22 to 2.20 |
-| Philadelphia, PA | 9,339 | 41 | 2.0 | 20.81 | 4.85 | 3.08 to 7.19 |
-| Langston City, OK | 4 | 1 | 0.1 | 19.97 | 0.86 | 0.22 to 2.19 |
-| Littleton, NC | 4 | 1 | 0.1 | 15.81 | 0.86 | 0.22 to 2.19 |
-| Hydaburg, AK | 56 | 1 | 0.1 | 9.10 | 0.85 | 0.22 to 2.18 |
+| Little Rock Ark., AR | 1 | 1 | 0.0 | 21.68 | 0.84 | 0.23 to 2.09 |
+| Langston City, OK | 4 | 1 | 0.1 | 19.97 | 0.84 | 0.23 to 2.09 |
+| Littleton, NC | 4 | 1 | 0.1 | 15.81 | 0.84 | 0.23 to 2.08 |
+| Hydaburg, AK | 56 | 1 | 0.1 | 9.10 | 0.83 | 0.23 to 2.07 |
+| Stamford, CT | 8 | 1 | 0.1 | 7.25 | 0.83 | 0.23 to 2.06 |
 
 Top 8 by the lower bound of the interval:
 
 | Place | Pages | Hits | Expected | Raw lift | Estimate | 90% interval |
 |---|---|---|---|---|---|---|
-| Mobile, AL | 1,351 | 336 | 47.3 | 7.10 | 6.22 | 5.30 to 7.24 |
-| Key West, FL | 51,153 | 204 | 38.3 | 5.33 | 4.57 | 3.72 to 5.54 |
-| Philadelphia, PA | 9,339 | 41 | 2.0 | 20.81 | 4.85 | 3.08 to 7.19 |
-| Montgomery, AL | 135,189 | 2,058 | 646.8 | 3.18 | 3.15 | 2.96 to 3.36 |
+| Mobile, AL | 1,351 | 336 | 47.3 | 7.10 | 6.14 | 5.23 to 7.14 |
+| Key West, FL | 51,153 | 204 | 38.9 | 5.25 | 4.44 | 3.61 to 5.38 |
+| Montgomery, AL | 135,189 | 2,058 | 646.8 | 3.18 | 3.15 | 2.95 to 3.35 |
 | Birmingham, AL | 164,346 | 3,316 | 1,207.4 | 2.75 | 2.73 | 2.60 to 2.87 |
-| Huntsville, AL | 2,796 | 201 | 73.7 | 2.73 | 2.54 | 2.06 to 3.08 |
-| Monticello, AR | 4,283 | 132 | 48.3 | 2.73 | 2.46 | 1.90 to 3.11 |
-| Marysville, CA | 3,999 | 298 | 155.4 | 1.92 | 1.86 | 1.57 to 2.19 |
+| Huntsville, AL | 2,796 | 201 | 73.7 | 2.73 | 2.52 | 2.05 to 3.06 |
+| Monticello, AR | 4,283 | 132 | 48.3 | 2.73 | 2.43 | 1.88 to 3.08 |
+| Marysville, CA | 3,999 | 298 | 155.4 | 1.92 | 1.86 | 1.57 to 2.18 |
+| Batesville, AR | 18,005 | 265 | 136.6 | 1.94 | 1.87 | 1.56 to 2.22 |
 
-The one-hit places fall back to the prior (0.86) with intervals that include 1, so the map draws them as "can't tell". The places the lower bound ranks first have tens to thousands of hits each. Places with many pages still appear when their lift is large (Montgomery, Birmingham), because the ranking is by how clearly a place differs. Philadelphia's 2.0 expected hits come from years when few other places have pages; §11.10 lists that as a limit.
+The one-hit places fall back to the prior (about 0.84) with intervals that include 1, so the map draws them as "can't tell". The places the lower bound ranks first have tens to thousands of hits each. Places with many pages still appear when their lift is large (Montgomery, Birmingham), because the ranking is by how clearly a place differs. An earlier run without the zero-reference correction put Philadelphia third, with 41 hits against 2.0 expected, because some of its hits fell in months when no other place's pages matched, and those hits had no expected count to be compared with; with the correction it drops out of the list.
 
 Klondike, 1896 to 1901, by month (`phi` 3.94, `alpha` 1.229, `mu` 1.401), top 8 by lower bound:
 
@@ -269,7 +269,7 @@ Ranking by significance alone (a z-score) brings the big places back: in the uni
 
 | Search | phi (places measured) | Above / below with phi = 1 | With the measured phi |
 |---|---|---|---|
-| yellow fever | 3.07 (143) | 43 / 138 | 24 / 91 |
+| yellow fever | 3.08 (144) | 42 / 138 | 23 / 91 |
 | free silver | 4.67 (94) | 48 / 70 | 27 / 32 |
 | cross of gold | 2.33 (5) | 4 / 5 | 0 / 0 |
 | boll weevil | 5.03 (76) | 41 / 129 | 34 / 103 |
@@ -290,6 +290,7 @@ In the simulations (§11.5.8), `phi` comes out at 3.78 with 240 fine buckets and
 | `no_difference_between_places_means_no_skew` | 400 places, heavy-tailed exposure (median 20 expected hits), every lift 1 | `alpha` about 31,000, `mu` 0.998; 0 places flagged; estimates between 0.997 and 1.002, while the highest raw lift is 4.4 at a place with 0.46 expected hits |
 | `recovers_the_spread_between_places_and_calibrates_intervals` | 20 runs of 400 places, lifts from `Gamma(4, 4)` | Fitted `alpha` 3.4 to 5.3 (median 3.9, true 4); 90% intervals contain the true lift for 90.3% of 8,000 places |
 | `one_page_one_hit_does_not_top_the_map` | a village (1 hit, 0.01 expected) and a city (2,000 hits, 1,000 expected) | Village: raw lift 100, estimate 1.36, interval 0.76 to 2.21; city: estimate 1.99, interval 1.92 to 2.07; only the city is flagged |
+| `hits_only_here_still_have_an_expected_count` | the term appears only in one place (5 hits on 100 pages; 10,000 other pages with none) | Both places get a finite expected count; the first is flagged above 1 and the other below |
 | `stays_calibrated_when_the_prior_is_wrong` | lifts not gamma: 85% log-normal with mean 1.3, 15% at 0.05 (like a paper in another language) | Coverage 88.5%; fitted `mu` 1.02 to 1.17 (the true mean lift is 1.11) |
 | `intervals_with_few_units` | 42 units, as in the states layer, 200 runs | Coverage 89.8% |
 | `reprinting_with_real_differences_stays_calibrated_once_dispersion_is_used` | `Gamma(4, 4)` lifts, items in runs of 6, 10 runs of 300 places | Coverage 53.9% with `phi = 1`, 89.6% with `phi = 6` |
@@ -310,7 +311,7 @@ The special functions are checked against known values: `ln_gamma`; the regulari
 
 - A third option in the colour menu, next to "Pages" and "Share of pages published": **"Compared with other places"** (`norm=skew`).
 - **Colour:** the estimate on a diverging, colour-blind-safe scale in log2, centred on 1, clamped at 1/8 and 8, with legend ticks at 1/8, 1/4, 1/2, 1, 2, 4 and 8 times. Places whose interval includes 1 are drawn at reduced opacity. County- and state-precision places, drawn as hollow rings today, get the colour on the ring. The heat layer is not offered in this view.
-- **Which places, and how big:** every place with pages in the window, including those with no hits (the under-represented list is mostly places with 0 hits). Circle area follows expected hits, the amount of evidence behind each colour. Circles change size when switching into this view; the alternative, area by hits, would hide the places with 0 hits that fill the under-represented list.
+- **Which places, and how big:** every place with pages in the window, including those with no hits (the under-represented list is mostly places with 0 hits). Circle area follows expected hits, the amount of evidence behind each colour, with a visible minimum size so a place with pages but almost no expected hits (a few pages, or pages only from months when the term was absent elsewhere) is still drawn, as "can't tell" unless its interval excludes 1. Circles change size when switching into this view; the alternative, area by hits, would hide the places with 0 hits that fill the under-represented list.
 - **Tooltip and table:** "Mobile, AL: 336 pages matched where 47 were expected from its 1,351 pages. About 6.2 times the other places (5.3 to 7.2)." The place table gains Expected and Compared columns, and the panel gets two short lists, most clearly above and most clearly below, sorted by the interval bounds, only places whose interval excludes 1. The UI does not use the word "significant".
 - **Legend line:** "Compared with 397 other places in 42 states over the same months", with the index version.
 - **Playback:** at load, build an expected-hits cube (each coverage cell's pages times the other places' rate in its bucket) and prefix-sum it like the page sums, so each frame is O(places). `alpha`, `mu` and `phi` stay fixed at the full-window values so colours don't jump because of a refit; for short trailing windows the intervals are then only a guide, since the spread between places can differ from the full window's.
@@ -320,13 +321,13 @@ The special functions are checked against known values: `ln_gamma`; the regulari
 ## 11.7 Performance and cost
 
 - **Search backend:** no new queries. The inputs are the aggregate and coverage responses the site already requests.
-- **CPU:** scoring the seven searches (the fit, dispersion and every place's interval) took 0.8 to 18 ms each in the Rust release build on an Apple silicon laptop; the whole-corpus monthly searches are the slowest. A synthetic worst case, 3,000 places (about the full corpus, 06 §6.1) with no difference between them so every posterior shape is large, took 48 ms. JavaScript will be slower; the scoring runs once per response, not per frame.
+- **CPU:** scoring the seven searches (the fit, dispersion and every place's interval) took 0.8 to 16 ms each in the Rust release build on an Apple silicon laptop; the whole-corpus monthly searches are the slowest. A synthetic worst case, 3,000 places (about the full corpus, 06 §6.1) with no difference between them so every posterior shape is large, took 48 ms. JavaScript will be slower; the scoring runs once per response, not per frame.
 - **Memory:** one more prefix-sum array the size of the existing page sums (07 §7.3).
 - **Azure cost:** none. No new resources, storage, endpoint or ingest steps.
 
 ## 11.8 The backfill
 
-Scores are relative to what is published. Responses are pinned to an index version, so a permalink keeps its numbers, but the same search on a later version can change: when states that have no pages today (for example Maine, Montana or New Mexico) are published, "the others" change, and so do the reference rates behind every expected count. The legend states what the comparison covered, and the citation already includes the index version (07 §7.5). No recomputation job is needed: baselines are rebuilt with every release (04 §4.4).
+Scores are relative to what is published. A permalink or citation records the index version its numbers came from, but once a newer version is published a request for the old one is redirected to the new one (06 §6.5), so revisiting the link shows the new version's scores. They can differ: when states that have no pages today (for example Maine, Montana or New Mexico) are published, "the others" change, and so do the reference rates behind every expected count. The legend states what the comparison covered and which version it came from, and the citation includes the index version (07 §7.5), so a reader can tell when numbers were measured on an earlier version. No recomputation job is needed: baselines are rebuilt with every release (04 §4.4).
 
 ## 11.9 Search log and privacy
 
@@ -337,7 +338,7 @@ Nothing changes. The score is computed in the browser from responses the site al
 **Limits that remain after phase 1:**
 
 - **Language** (§11.5.9). Until phase 2, places with mostly non-English pages read as under-represented for English terms; phase 1 only marks the places whose titles are all non-English.
-- **The reference rate is treated as exact.** In buckets where the other places have few pages, it isn't, and a place can get a large lift from a handful of hits (Philadelphia for yellow fever: 41 hits against 2.0 expected). The legend's place count helps; a later version could add the reference's own uncertainty.
+- **The reference rate is treated as exact.** In buckets where the other places have few pages or few hits, it isn't, and a place can get a large lift from a handful of hits. The zero-reference correction (§11.4.1) handles the extreme case; the legend's place count helps; a later version could add the reference's own uncertainty.
 - **OCR quality** varies by title and era. A title with poor OCR matches fewer pages for every term and will read as under-represented. A words-per-page denominator (the curated corpus has `word_count`) would partly correct it, and needs a change to the snapshot.
 - **Pages differ in size.** 04 §4.3.1 estimates that later eight-column broadsheet pages carry two to five times the text of an 1879 small-town page, so they are more likely to contain any term. Same fix as above; not measured here.
 - **Place is the title's place of publication.** A paper's readers and news sources lie beyond its town. The score measures where the pages were printed.
@@ -369,7 +370,7 @@ An internal review (a separate reviewer asked for an adversarial reading of the 
 |---|---|
 | `phi` measured on the search's own buckets depended on the bucket unit (yellow fever 1.30 by month, 2.29 by year), so flags changed with the bucket menu; for "cross of gold" it silently fell back to 1 | `dispersion_for` measures on calendar years (months for short windows) with chunks of at least 5 expected hits and binomial variance, reports how many places it used, and falls back to 4, not 1. New tests for bucket invariance and drifting interest (§11.5.7) |
 | Each place was part of the rate it was compared against (Washington holds 30% of pages) | Reference rates leave the place out; buckets where it is the only publisher are dropped (§11.4.1 step 1, §11.5.5) |
-| The prior mean fixed at 1 was rejected by the data (the typical place differs from the page-weighted reference) | The prior mean is fitted with `alpha` (yellow fever 0.86, Klondike 1.40); new test with a non-gamma, mean-1.3 population and a spike near 0 (§11.5.8) |
+| The prior mean fixed at 1 was rejected by the data (the typical place differs from the page-weighted reference) | The prior mean is fitted with `alpha` (yellow fever 0.85, Klondike 1.40); new test with a non-gamma, mean-1.3 population and a spike near 0 (§11.5.8) |
 | A single gamma fits poorly where non-English places pile up at 0; the posterior mean is a poor colour on a log scale when `alpha` is small; "no cut-off is needed" was overstated | Colour by posterior median; the interval decides prominence, stated with the boll weevil case; non-English places marked and left out of the fit in phase 1; two-gamma prior listed for phase 2 |
 | Places with 0 hits weren't drawn, yet they fill the under-represented list | In this view every place with pages is drawn, sized by expected hits (§11.6) |
 | The `/v1/skew` cache plan understated parsing, cache misses outside the search log, coarsening and model versioning | Phase 1 computes in the browser from responses it already has; the endpoint moves to phase 2 with those items listed (§11.4.3) |
@@ -377,6 +378,15 @@ An internal review (a separate reviewer asked for an adversarial reading of the 
 | `gamma_quantile` was slow for large shapes (the reviewer measured about 190 ms for 400 places at `alpha`'s bound) and inaccurate above shape 5 million | Newton's method from a Wilson and Hilferty start, the approximation alone above shape 10,000, and an iteration limit that grows with the shape; 3,000 places at the bound now take 48 ms; new accuracy tests (§11.7) |
 | The simulations only tested the model's own assumptions | Added a misspecified prior, 42 units, and real differences combined with reprinting (§11.5.8) |
 | Minor: Poisson variance for pages, multiple comparisons, plug-in intervals, per-frame cost, states' `phi`, a mislabelled ranking, refitting the prior for the naive comparison, the titles R², the 0.13%, CSV shape, response naming, cross-references, rounding, one median definition, the menu label, ring-drawn places and the heat layer | Binomial variance in `dispersion`; limits added (§11.10); expected-hits prefix sums; states use the place `phi`; the naive comparison refits the prior; Spearman added and the titles conclusion softened; per-place CSV; the rest corrected in place |
+
+The first Copilot review raised four more points:
+
+| Raised | Resolution |
+|---|---|
+| A place with hits in a bucket where the others have none got no expected count for them, and a confident, extreme estimate | Continuity correction in `reference_rate`, with a test (§11.4.1 step 1). It changed the yellow fever results: Philadelphia (41 hits, 2.0 expected) left the top of the list |
+| Summing place-level expected hits for a state keeps the state's other places in its reference | States are scored as units, each compared with the other states (§11.4.1) |
+| A place with pages but no expected hits would get a zero-size circle | A visible minimum size (§11.6) |
+| A permalink doesn't keep its numbers after a newer version is published, because old versions are redirected | Reworded: the link and citation record the version; revisiting shows the new version's scores (§11.8) |
 
 ## 11.13 Appendix: full output
 
@@ -392,73 +402,73 @@ states and territories with pages 42
 years with pages 198  of which with pages from fewer than 5 states 60  first year with 5+ states 1776
 
 ## yellow_fever: "yellow fever"  1751-05-09 to 1963-12-31 by month (2552 buckets)
-hits 66769  pages 6557925  places with pages 398  with hits 265  coverage cells 61770  scoring 17914 us
+hits 66769  pages 6557925  places with pages 398  with hits 265  coverage cells 61770  scoring 16162 us
 raw hits vs pages: spearman 0.825 (all places)  R^2 of log-log 0.561 (places with hits)
 raw hits vs titles (whole corpus): spearman 0.381  R^2 of log-log 0.217
 share-of-pages colour today: max 1.0000 at Little Rock Ark., AR (1 pages, 1 hits); 2 of 265 places with hits are in the top half of the scale
-dispersion phi 3.07 from 143 places
-prior: alpha 2.146  mean 0.863  (prior sd of lift 0.59)
-90% interval above 1 / below 1 / includes 1: 24 / 91 / 283  (phi = 1: 43 / 138)
-same search by year: phi 3.07 from 143 places, above/below 24 / 87, 4 places change flag
+dispersion phi 3.08 from 144 places
+prior: alpha 2.322  mean 0.846  (prior sd of lift 0.55)
+90% interval above 1 / below 1 / includes 1: 23 / 91 / 284  (phi = 1: 42 / 138)
+same search by year: phi 3.08 from 144 places, above/below 24 / 87, 5 places change flag
 top 10 that are also among the 10 places with most pages: raw hits 7  share of pages 0  estimate 2  lower bound 2
 top 10 by share of pages: 9 have fewer pages than the median place (1764)
-without time standardization: 161 places change flag; largest gap Miami, FL expected 18.0 with time vs 280.8 without (0.06x)
-with the place in its own reference rate: 2 places change flag; Washington, DC raw lift 1.093 vs 1.125 against the others
+without time standardization: 162 places change flag; largest gap Miami, FL expected 18.0 with time vs 280.8 without (0.06x)
+with the place in its own reference rate: 1 places change flag; Washington, DC raw lift 1.093 vs 1.116 against the others
 top 5 by raw hits:
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
-  New-York, NY | 699264 | 15124 | 13232.8 | 1.14 | 1.14 | 1.12 to 1.17 | 1.00
-  Washington, DC | 1990131 | 12658 | 11252.6 | 1.12 | 1.12 | 1.10 to 1.15 | 1.00
-  Wilmington, DE | 192859 | 3413 | 3372.1 | 1.01 | 1.01 | 0.96 to 1.06 | 0.65
+  New-York, NY | 699264 | 15124 | 13236.0 | 1.14 | 1.14 | 1.12 to 1.17 | 1.00
+  Washington, DC | 1990131 | 12658 | 11337.8 | 1.12 | 1.12 | 1.09 to 1.15 | 1.00
+  Wilmington, DE | 192859 | 3413 | 3373.4 | 1.01 | 1.01 | 0.96 to 1.06 | 0.64
   Birmingham, AL | 164346 | 3316 | 1207.4 | 2.75 | 2.73 | 2.60 to 2.87 | 1.00
-  Washington City, DC | 118302 | 3114 | 3576.2 | 0.87 | 0.87 | 0.83 to 0.92 | 0.00
+  Washington City, DC | 118302 | 3114 | 3751.7 | 0.83 | 0.83 | 0.79 to 0.87 | 0.00
 top 5 by raw lift:
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
-  Little Rock Ark., AR | 1 | 1 | 0.0 | 21.68 | 0.86 | 0.22 to 2.20 | 0.41
-  Philadelphia, PA | 9339 | 41 | 2.0 | 20.81 | 4.85 | 3.08 to 7.19 | 1.00
-  Langston City, OK | 4 | 1 | 0.1 | 19.97 | 0.86 | 0.22 to 2.19 | 0.41
-  Littleton, NC | 4 | 1 | 0.1 | 15.81 | 0.86 | 0.22 to 2.19 | 0.41
-  Hydaburg, AK | 56 | 1 | 0.1 | 9.10 | 0.85 | 0.22 to 2.18 | 0.40
+  Little Rock Ark., AR | 1 | 1 | 0.0 | 21.68 | 0.84 | 0.23 to 2.09 | 0.39
+  Langston City, OK | 4 | 1 | 0.1 | 19.97 | 0.84 | 0.23 to 2.09 | 0.39
+  Littleton, NC | 4 | 1 | 0.1 | 15.81 | 0.84 | 0.23 to 2.08 | 0.39
+  Hydaburg, AK | 56 | 1 | 0.1 | 9.10 | 0.83 | 0.23 to 2.07 | 0.39
+  Stamford, CT | 8 | 1 | 0.1 | 7.25 | 0.83 | 0.23 to 2.06 | 0.38
 top 8 by lower bound (most clearly over-represented):
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
-  Mobile, AL | 1351 | 336 | 47.3 | 7.10 | 6.22 | 5.30 to 7.24 | 1.00
-  Key West, FL | 51153 | 204 | 38.3 | 5.33 | 4.57 | 3.72 to 5.54 | 1.00
-  Philadelphia, PA | 9339 | 41 | 2.0 | 20.81 | 4.85 | 3.08 to 7.19 | 1.00
-  Montgomery, AL | 135189 | 2058 | 646.8 | 3.18 | 3.15 | 2.96 to 3.36 | 1.00
+  Mobile, AL | 1351 | 336 | 47.3 | 7.10 | 6.14 | 5.23 to 7.14 | 1.00
+  Key West, FL | 51153 | 204 | 38.9 | 5.25 | 4.44 | 3.61 to 5.38 | 1.00
+  Montgomery, AL | 135189 | 2058 | 646.8 | 3.18 | 3.15 | 2.95 to 3.35 | 1.00
   Birmingham, AL | 164346 | 3316 | 1207.4 | 2.75 | 2.73 | 2.60 to 2.87 | 1.00
-  Huntsville, AL | 2796 | 201 | 73.7 | 2.73 | 2.54 | 2.06 to 3.08 | 1.00
-  Monticello, AR | 4283 | 132 | 48.3 | 2.73 | 2.46 | 1.90 to 3.11 | 1.00
-  Marysville, CA | 3999 | 298 | 155.4 | 1.92 | 1.86 | 1.57 to 2.19 | 1.00
+  Huntsville, AL | 2796 | 201 | 73.7 | 2.73 | 2.52 | 2.05 to 3.06 | 1.00
+  Monticello, AR | 4283 | 132 | 48.3 | 2.73 | 2.43 | 1.88 to 3.08 | 1.00
+  Marysville, CA | 3999 | 298 | 155.4 | 1.92 | 1.86 | 1.57 to 2.18 | 1.00
+  Batesville, AR | 18005 | 265 | 136.6 | 1.94 | 1.87 | 1.56 to 2.22 | 1.00
 top 5 by upper bound (most clearly under-represented):
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
-  San Diego, CA | 8964 | 0 | 130.6 | 0.00 | 0.04 | 0.01 to 0.11 | 0.00
-  Pittsburg, PA | 48710 | 3 | 68.2 | 0.04 | 0.11 | 0.04 to 0.26 | 0.00
+  San Diego, CA | 8964 | 0 | 130.6 | 0.00 | 0.04 | 0.01 to 0.12 | 0.00
+  Pittsburg, PA | 48710 | 3 | 68.2 | 0.04 | 0.12 | 0.04 to 0.27 | 0.00
   Flagstaff, AZ | 18728 | 53 | 218.8 | 0.24 | 0.26 | 0.17 to 0.37 | 0.00
-  Tampa, FL | 29059 | 1 | 36.9 | 0.03 | 0.15 | 0.04 to 0.38 | 0.00
   Skagway, AK | 24298 | 45 | 187.4 | 0.24 | 0.26 | 0.17 to 0.38 | 0.00
+  Tampa, FL | 29059 | 1 | 36.9 | 0.03 | 0.16 | 0.04 to 0.39 | 0.00
 
 ## free_silver: "free silver"  1751-05-09 to 1963-12-31 by month (2552 buckets)
-hits 34389  pages 6557925  places with pages 398  with hits 204  coverage cells 61770  scoring 8446 us
+hits 34389  pages 6557925  places with pages 398  with hits 204  coverage cells 61770  scoring 8689 us
 raw hits vs pages: spearman 0.736 (all places)  R^2 of log-log 0.409 (places with hits)
 raw hits vs titles (whole corpus): spearman 0.341  R^2 of log-log 0.126
 share-of-pages colour today: max 0.5000 at Laurel, DE (8 pages, 4 hits); 6 of 204 places with hits are in the top half of the scale
 dispersion phi 4.67 from 94 places
-prior: alpha 2.416  mean 0.983  (prior sd of lift 0.63)
+prior: alpha 2.418  mean 0.982  (prior sd of lift 0.63)
 90% interval above 1 / below 1 / includes 1: 27 / 32 / 339  (phi = 1: 48 / 70)
 same search by year: phi 4.67 from 94 places, above/below 27 / 32, 2 places change flag
 top 10 that are also among the 10 places with most pages: raw hits 7  share of pages 0  estimate 1  lower bound 2
 top 10 by share of pages: 9 have fewer pages than the median place (1764)
-without time standardization: 164 places change flag; largest gap Chicago, IL expected 9.3 with time vs 280.1 without (0.03x)
-with the place in its own reference rate: 1 places change flag; Washington, DC raw lift 1.054 vs 1.084 against the others
+without time standardization: 164 places change flag; largest gap Chicago, IL expected 9.8 with time vs 280.1 without (0.04x)
+with the place in its own reference rate: 1 places change flag; Washington, DC raw lift 1.054 vs 1.069 against the others
 top 5 by raw hits:
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
-  Washington, DC | 1990131 | 6595 | 6084.0 | 1.08 | 1.08 | 1.04 to 1.13 | 1.00
-  New-York, NY | 699264 | 5579 | 5004.5 | 1.11 | 1.11 | 1.06 to 1.17 | 1.00
+  Washington, DC | 1990131 | 6595 | 6167.6 | 1.07 | 1.07 | 1.02 to 1.12 | 0.99
+  New-York, NY | 699264 | 5579 | 5007.5 | 1.11 | 1.11 | 1.06 to 1.17 | 1.00
   San Francisco, CA | 208359 | 2556 | 3173.3 | 0.81 | 0.81 | 0.75 to 0.86 | 0.00
-  Wilmington, DE | 192859 | 2082 | 1661.1 | 1.25 | 1.25 | 1.16 to 1.35 | 1.00
-  Birmingham, AL | 164346 | 1975 | 1325.8 | 1.49 | 1.48 | 1.37 to 1.61 | 1.00
+  Wilmington, DE | 192859 | 2082 | 1661.3 | 1.25 | 1.25 | 1.16 to 1.35 | 1.00
+  Birmingham, AL | 164346 | 1975 | 1325.9 | 1.49 | 1.48 | 1.37 to 1.61 | 1.00
 top 5 by raw lift:
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
-  Pinal City, AZ | 1129 | 1 | 0.1 | 18.71 | 0.93 | 0.26 to 2.32 | 0.46
+  Pinal City, AZ | 1129 | 1 | 0.1 | 15.62 | 0.93 | 0.26 to 2.32 | 0.46
   Columbus, OH | 8 | 1 | 0.1 | 13.18 | 0.93 | 0.26 to 2.32 | 0.46
   Seattle, WA | 8 | 2 | 0.2 | 9.97 | 1.01 | 0.30 to 2.42 | 0.50
   Augusta, GA | 80 | 1 | 0.1 | 9.52 | 0.93 | 0.26 to 2.31 | 0.45
@@ -471,7 +481,7 @@ top 8 by lower bound (most clearly over-represented):
   Leavenworth, KS | 1261 | 96 | 40.5 | 2.37 | 2.03 | 1.41 to 2.82 | 1.00
   Smyrna, DE | 36878 | 252 | 136.4 | 1.85 | 1.77 | 1.41 to 2.19 | 1.00
   Prescott, AZ | 14966 | 246 | 132.9 | 1.85 | 1.77 | 1.41 to 2.19 | 1.00
-  Birmingham, AL | 164346 | 1975 | 1325.8 | 1.49 | 1.48 | 1.37 to 1.61 | 1.00
+  Birmingham, AL | 164346 | 1975 | 1325.9 | 1.49 | 1.48 | 1.37 to 1.61 | 1.00
   Topeka, KS | 7194 | 426 | 261.3 | 1.63 | 1.60 | 1.34 to 1.88 | 1.00
 top 5 by upper bound (most clearly under-represented):
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
@@ -482,12 +492,12 @@ top 5 by upper bound (most clearly under-represented):
   Ocala, FL | 15152 | 79 | 336.1 | 0.24 | 0.26 | 0.17 to 0.36 | 0.00
 
 ## cross_of_gold: "cross of gold"  1896-06-01 to 1896-12-31 by week (31 buckets)
-hits 263  pages 39423  places with pages 58  with hits 32  coverage cells 1481  scoring 761 us
+hits 263  pages 39423  places with pages 58  with hits 32  coverage cells 1481  scoring 759 us
 raw hits vs pages: spearman 0.597 (all places)  R^2 of log-log 0.660 (places with hits)
 raw hits vs titles (whole corpus): spearman 0.555  R^2 of log-log 0.394
 share-of-pages colour today: max 0.2500 at Laurel, DE (4 pages, 1 hits); 1 of 32 places with hits are in the top half of the scale
 dispersion phi 2.33 from 5 places
-prior: alpha 10.104  mean 0.995  (prior sd of lift 0.31)
+prior: alpha 10.129  mean 0.995  (prior sd of lift 0.31)
 90% interval above 1 / below 1 / includes 1: 0 / 0 / 58  (phi = 1: 4 / 5)
 top 10 that are also among the 10 places with most pages: raw hits 9  share of pages 0  estimate 5  lower bound 5
 top 10 by share of pages: 7 have fewer pages than the median place (128)
@@ -499,24 +509,24 @@ top 5 by raw hits:
   San Francisco, CA | 3641 | 31 | 23.9 | 1.30 | 1.13 | 0.79 to 1.56 | 0.72
   Washington, DC | 7011 | 30 | 49.4 | 0.61 | 0.72 | 0.50 to 1.00 | 0.05
   Los Angeles, CA | 2440 | 27 | 15.7 | 1.72 | 1.26 | 0.87 to 1.77 | 0.85
-  Birmingham, AL | 1638 | 23 | 10.2 | 2.25 | 1.35 | 0.91 to 1.92 | 0.90
+  Birmingham, AL | 1638 | 23 | 10.2 | 2.25 | 1.35 | 0.91 to 1.91 | 0.90
 top 5 by raw lift:
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
   Laurel, DE | 4 | 1 | 0.0 | 62.55 | 1.00 | 0.57 to 1.61 | 0.50
   Prescott, AZ | 118 | 5 | 0.7 | 7.00 | 1.14 | 0.68 to 1.77 | 0.67
   Wichita, KS | 90 | 3 | 0.7 | 4.28 | 1.06 | 0.62 to 1.67 | 0.57
   Cleveland, OH | 134 | 3 | 0.9 | 3.19 | 1.05 | 0.61 to 1.65 | 0.56
-  Meeker, CO | 116 | 2 | 0.8 | 2.53 | 1.01 | 0.58 to 1.61 | 0.52
+  Meeker, CO | 116 | 2 | 0.8 | 2.53 | 1.01 | 0.59 to 1.61 | 0.52
 top 8 by lower bound (most clearly over-represented):
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
-  Birmingham, AL | 1638 | 23 | 10.2 | 2.25 | 1.35 | 0.91 to 1.92 | 0.90
+  Birmingham, AL | 1638 | 23 | 10.2 | 2.25 | 1.35 | 0.91 to 1.91 | 0.90
   New-York, NY | 7417 | 58 | 45.4 | 1.28 | 1.17 | 0.87 to 1.53 | 0.81
   Los Angeles, CA | 2440 | 27 | 15.7 | 1.72 | 1.26 | 0.87 to 1.77 | 0.85
   San Francisco, CA | 3641 | 31 | 23.9 | 1.30 | 1.13 | 0.79 to 1.56 | 0.72
   New Haven, CT | 1500 | 15 | 9.7 | 1.55 | 1.13 | 0.73 to 1.66 | 0.69
   Prescott, AZ | 118 | 5 | 0.7 | 7.00 | 1.14 | 0.68 to 1.77 | 0.67
   Texarkana, AR | 612 | 6 | 3.9 | 1.53 | 1.04 | 0.63 to 1.61 | 0.56
-  Flagstaff, AZ | 224 | 4 | 1.7 | 2.31 | 1.05 | 0.62 to 1.65 | 0.57
+  Flagstaff, AZ | 224 | 4 | 1.7 | 2.30 | 1.05 | 0.62 to 1.65 | 0.57
 top 5 by upper bound (most clearly under-represented):
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
   Washington, DC | 7011 | 30 | 49.4 | 0.61 | 0.72 | 0.50 to 1.00 | 0.05
@@ -526,7 +536,7 @@ top 5 by upper bound (most clearly under-represented):
   Ocala, FL | 656 | 0 | 4.2 | 0.00 | 0.82 | 0.46 to 1.32 | 0.26
 
 ## boll_weevil: "boll weevil"  1895-01-01 to 1930-12-31 by year (36 buckets)
-hits 21782  pages 3699444  places with pages 262  with hits 164  coverage cells 3326  scoring 3943 us
+hits 21782  pages 3699444  places with pages 262  with hits 164  coverage cells 3326  scoring 3369 us
 raw hits vs pages: spearman 0.759 (all places)  R^2 of log-log 0.326 (places with hits)
 raw hits vs titles (whole corpus): spearman 0.165  R^2 of log-log 0.059
 share-of-pages colour today: max 0.1250 at Columbia, SC (8 pages, 1 hits); 1 of 164 places with hits are in the top half of the scale
@@ -543,7 +553,7 @@ top 5 by raw hits:
   Birmingham, AL | 162914 | 4396 | 903.8 | 4.86 | 4.85 | 4.59 to 5.13 | 1.00
   Washington, DC | 841532 | 1867 | 6580.1 | 0.28 | 0.28 | 0.26 to 0.31 | 0.00
   Pine Bluff, AR | 64596 | 792 | 315.5 | 2.51 | 2.49 | 2.18 to 2.84 | 1.00
-  New-York, NY | 325934 | 527 | 1871.1 | 0.28 | 0.28 | 0.24 to 0.33 | 0.00
+  New-York, NY | 325934 | 527 | 1871.2 | 0.28 | 0.28 | 0.24 to 0.33 | 0.00
 top 5 by raw lift:
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
   Magnolia, AR | 2392 | 144 | 12.9 | 11.18 | 9.48 | 6.87 to 12.68 | 1.00
@@ -570,7 +580,7 @@ top 5 by upper bound (most clearly under-represented):
   Valdez, AK | 9457 | 0 | 60.0 | 0.00 | 0.02 | 0.00 to 0.16 | 0.00
 
 ## klondike: klondike  1896-01-01 to 1901-12-31 by month (72 buckets)
-hits 22132  pages 437180  places with pages 163  with hits 120  coverage cells 5107  scoring 2602 us
+hits 22132  pages 437180  places with pages 163  with hits 120  coverage cells 5107  scoring 2439 us
 raw hits vs pages: spearman 0.883 (all places)  R^2 of log-log 0.779 (places with hits)
 raw hits vs titles (whole corpus): spearman 0.156  R^2 of log-log 0.030
 share-of-pages colour today: max 0.7500 at Batesville, AR (4 pages, 3 hits); 6 of 120 places with hits are in the top half of the scale
@@ -585,7 +595,7 @@ with the place in its own reference rate: 0 places change flag; Washington, DC r
 top 5 by raw hits:
   place | pages | hits | expected | raw lift | estimate | 90% interval | P(above 1)
   San Francisco, CA | 39426 | 3157 | 2007.6 | 1.57 | 1.57 | 1.48 to 1.66 | 1.00
-  Washington, DC | 78127 | 3144 | 3710.2 | 0.85 | 0.85 | 0.80 to 0.90 | 0.00
+  Washington, DC | 78127 | 3144 | 3710.3 | 0.85 | 0.85 | 0.80 to 0.90 | 0.00
   New-York, NY | 67799 | 2838 | 3672.9 | 0.77 | 0.77 | 0.73 to 0.82 | 0.00
   Los Angeles, CA | 13577 | 1344 | 889.9 | 1.51 | 1.51 | 1.38 to 1.65 | 1.00
   Skagway, AK | 1900 | 1109 | 46.0 | 24.11 | 22.50 | 20.37 to 24.77 | 1.00
@@ -615,7 +625,7 @@ top 5 by upper bound (most clearly under-represented):
   Florence, CO | 3622 | 42 | 168.5 | 0.25 | 0.26 | 0.16 to 0.41 | 0.00
 
 ## mormon: mormon  1850-01-01 to 1930-12-31 by year (81 buckets)
-hits 59718  pages 4623735  places with pages 336  with hits 261  coverage cells 4773  scoring 4223 us
+hits 59718  pages 4623735  places with pages 336  with hits 261  coverage cells 4773  scoring 4308 us
 raw hits vs pages: spearman 0.862 (all places)  R^2 of log-log 0.640 (places with hits)
 raw hits vs titles (whole corpus): spearman 0.359  R^2 of log-log 0.146
 share-of-pages colour today: max 0.5455 at Mariposa, CA (209 pages, 114 hits); 2 of 261 places with hits are in the top half of the scale
@@ -659,7 +669,7 @@ top 5 by upper bound (most clearly under-represented):
   Newtown, CT | 11767 | 44 | 183.9 | 0.24 | 0.25 | 0.16 to 0.38 | 0.00
 
 ## baking_powder: "baking powder"  1880-01-01 to 1920-12-31 by year (41 buckets)
-hits 111479  pages 3190497  places with pages 282  with hits 209  coverage cells 3466  scoring 5063 us
+hits 111479  pages 3190497  places with pages 282  with hits 209  coverage cells 3466  scoring 5137 us
 raw hits vs pages: spearman 0.916 (all places)  R^2 of log-log 0.767 (places with hits)
 raw hits vs titles (whole corpus): spearman 0.302  R^2 of log-log 0.085
 share-of-pages colour today: max 0.2628 at Bessemer, CO (392 pages, 103 hits); 5 of 209 places with hits are in the top half of the scale
