@@ -129,13 +129,25 @@ fn validate(b: Beacon, site_host: &str) -> Result<Valid, String> {
     let Some(&(route, path)) = ROUTES.iter().find(|(r, _)| *r == b.route) else {
         return Err("route must be one of search, status, privacy, not-found".to_owned());
     };
+    // Before trimming, which would hide leading or trailing ones.
+    for (key, value) in [
+        ("title", &b.title),
+        ("referrer_origin", &b.referrer_origin),
+        ("utm_source", &b.utm_source),
+        ("utm_medium", &b.utm_medium),
+        ("utm_campaign", &b.utm_campaign),
+    ] {
+        if value
+            .as_deref()
+            .is_some_and(|v| v.chars().any(char::is_control))
+        {
+            return Err(format!("{key} must not contain control characters"));
+        }
+    }
     let title = match b.title.as_deref().map(str::trim) {
         None | Some("") => None,
         Some(t) if t.chars().count() > MAX_TITLE => {
             return Err(format!("title must be at most {MAX_TITLE} characters"))
-        }
-        Some(t) if t.chars().any(char::is_control) => {
-            return Err("title must not contain control characters".to_owned())
         }
         Some(t) => Some(t.to_owned()),
     };
@@ -168,9 +180,6 @@ fn validate(b: Beacon, site_host: &str) -> Result<Valid, String> {
         }
         if v.chars().count() > MAX_UTM {
             return Err(format!("{key} must be at most {MAX_UTM} characters"));
-        }
-        if v.chars().any(char::is_control) {
-            return Err(format!("{key} must not contain control characters"));
         }
         utm.push((key, v));
     }
@@ -483,6 +492,16 @@ mod tests {
         assert!(validate(b, "usnewsmap.com").is_err());
         let mut b = beacon("search");
         b.title = Some("a\u{7}b".to_owned());
+        assert!(validate(b, "usnewsmap.com").is_err());
+        // Leading and trailing ones too, which trimming would drop.
+        let mut b = beacon("search");
+        b.title = Some("\nUS News Map".to_owned());
+        assert!(validate(b, "usnewsmap.com").is_err());
+        let mut b = beacon("search");
+        b.utm_source = Some("newsletter\t".to_owned());
+        assert!(validate(b, "usnewsmap.com").is_err());
+        let mut b = beacon("search");
+        b.referrer_origin = Some("https://example.com\r\n".to_owned());
         assert!(validate(b, "usnewsmap.com").is_err());
     }
 

@@ -99,9 +99,13 @@ impl PageViews {
     /// Upload what is queued, waiting at most 10 s.
     pub async fn flush(&self) {
         let (ack, done) = oneshot::channel();
-        if self.tx.send(Msg::Flush(ack)).await.is_ok() {
-            let _ = tokio::time::timeout(FLUSH_WAIT, done).await;
-        }
+        // The wait for room in a full queue counts against the limit too.
+        let _ = tokio::time::timeout(FLUSH_WAIT, async {
+            if self.tx.send(Msg::Flush(ack)).await.is_ok() {
+                let _ = done.await;
+            }
+        })
+        .await;
     }
 
     fn envelope(&self, view: PageView, time: chrono::DateTime<chrono::Utc>) -> Value {

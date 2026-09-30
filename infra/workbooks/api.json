@@ -393,7 +393,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "union isfuzzy=true\n    (AppPageViews\n    | where AppRoleName == \"usnm-web\"\n    | where isnotempty(tostring(Properties.utm_source)) or isnotempty(tostring(Properties.utm_campaign))\n    | summarize PageViews = sum(ItemCount) by Source = tostring(Properties.utm_source), Medium = tostring(Properties.utm_medium), Campaign = tostring(Properties.utm_campaign)),\n    (datatable(Source: string, Medium: string, Campaign: string, PageViews: long)[])\n| top 20 by PageViews",
+        "query": "union isfuzzy=true\n    (AppPageViews\n    | where AppRoleName == \"usnm-web\"\n    | where isnotempty(tostring(Properties.utm_source)) or isnotempty(tostring(Properties.utm_medium))\n        or isnotempty(tostring(Properties.utm_campaign))\n    | summarize PageViews = sum(ItemCount) by Source = tostring(Properties.utm_source), Medium = tostring(Properties.utm_medium), Campaign = tostring(Properties.utm_campaign)),\n    (datatable(Source: string, Medium: string, Campaign: string, PageViews: long)[])\n| top 20 by PageViews",
         "size": 0,
         "title": "Campaign tags (utm_source, utm_medium, utm_campaign)",
         "queryType": 0,
