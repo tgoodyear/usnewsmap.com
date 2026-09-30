@@ -95,12 +95,24 @@ test("robots.txt keeps crawlers off the API and names the sitemap", async ({ req
   expect(body).toMatch(new RegExp(`^Sitemap: ${SITE}/sitemap\\.xml$`, "m"));
 });
 
-test("sitemap.xml lists the home page only", async ({ request }) => {
+test("sitemap.xml lists the home page and the privacy page", async ({ request }) => {
   const res = await request.get("/sitemap.xml");
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toMatch(/xml/);
   const locs = [...(await res.text()).matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-  expect(locs).toEqual([`${SITE}/`]);
+  expect(locs).toEqual([`${SITE}/`, `${SITE}/privacy`]);
+});
+
+test("the privacy page renders, with links to it from the other pages", async ({ page }) => {
+  await page.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ status: 404 }));
+  await page.goto("/privacy");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Privacy");
+  await expect(page.locator("h1")).toHaveCount(1);
+  await expect(page).toHaveTitle("Privacy · US News Map");
+  for (const path of ["/", "/status", "/does-not-exist"]) {
+    await page.goto(path);
+    await expect(page.getByRole("link", { name: "Privacy" }), path).toHaveAttribute("href", "/privacy");
+  }
 });
 
 test("the IndexNow key file holds the key", async ({ request }) => {
@@ -132,5 +144,15 @@ test.describe("what the API tells crawlers", () => {
     }
     const home = await request.get("/");
     expect(home.headers()["x-robots-tag"]).toBeUndefined();
+  });
+
+  test("the privacy page is indexable and names itself in the head", async ({ request }) => {
+    const res = await request.get("/privacy");
+    expect(res.status()).toBe(200);
+    expect(res.headers()["x-robots-tag"]).toBeUndefined();
+    const html = await res.text();
+    expect(html).toContain("<title>Privacy · US News Map</title>");
+    expect(html).toContain(`<link rel="canonical" href="${SITE}/privacy" />`);
+    expect(html).toContain(`<meta property="og:url" content="${SITE}/privacy" />`);
   });
 });

@@ -22,6 +22,7 @@
 - Controls are native elements, so Radix and Zustand aren't needed yet.
 - The basemap defaults to OpenFreeMap Positron until the PMTiles extract is published.
 - `/status` is a separate page (lazy-loaded; the app has no router, so `main.tsx` picks it by path with `src/route.ts`) that shows the ingest pipeline's status from `GET /v1/status` and refreshes every 30 s. The footer links to it. Any other path shows a not-found page, and the API sends it with a 404.
+- `/privacy` is the privacy notice (lazy-loaded like `/status`, `src/privacy/PrivacyPage.tsx`). The search page, the status page and the not-found page link to it in their footers. It is the one page besides the home page that search engines index: it is in `sitemap.xml`, and the API gives its copy of `index.html` its own title, canonical link and `og:url` (`shell_for` in `crates/usnm-api/src/site.rs`).
 
 ## 7.2 Layout and wireframes
 
@@ -120,4 +121,13 @@ https://usnewsmap.com/?q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896
 
 ## 7.8 Analytics (privacy-preserving)
 
-We use Application Insights JavaScript SDK **custom events only**: search submitted (query length and mode, **not** the query text for free-text inputs; example-search ids are logged by name), playback used, layer switched, share or export clicked, and errors. Cookies are disabled, and IP collection is masked on the App Insights resource. Popular queries for pre-warming come from the **server** side as daily counts per canonical query string. A query is kept only if at least 5 requests made it that day (a k-anonymity threshold). No IP, user agent or other identifier is stored with it.
+As built, the site counts page views and nothing else (`src/pageview.ts`). When the app starts it works out its page (`search`, `status`, `privacy` or `not-found`) and sends one page view to `POST /v1/beacon` on its own origin (06 §6.3.7). The app has no client-side router, so every page shown is a page load and gets exactly one; searching on the home page changes the URL but not the page, and sends nothing.
+
+- **Contents.** The page name and its fixed title (`TITLES` in `src/route.ts`). On the first page view of a page load, also `document.referrer` cut down to its origin (`internal` if it is the site itself, empty if there is none) and the landing URL's `utm_source`, `utm_medium` and `utm_campaign`, lowercased and cut to 64 characters. Later page views of the same load, if there ever are any, say `internal`. Never the path, the query string or the search; the API refuses any field beyond these.
+- **Sending.** `navigator.sendBeacon` with the JSON as a string (sent as `text/plain`, so no preflight), falling back to `fetch` with `keepalive` if `sendBeacon` is missing or refuses. It never delays the page, and failures are ignored.
+- **When.** Only when the page's origin is `https://usnewsmap.com` in a production build, so `npm run dev`, `vite preview` and the end-to-end runs send nothing, except the tests that load the build as that origin on purpose (below). `VITE_PAGE_VIEWS=1` at build time turns it on for any origin (to try it against a local API) and `0` turns it off. `navigator.doNotTrack === "1"` (or `window.doNotTrack`) and `navigator.globalPrivacyControl === true` turn it off in every case, and the API drops page views that arrive with `DNT: 1` or `Sec-GPC: 1`.
+- **Storage.** Nothing: no cookies, no local or session storage, no IndexedDB, no Cache Storage, and no user, session or device id. An end-to-end test (`e2e/pageview.spec.ts`) loads a search and checks all of those are empty.
+- **CSP.** The request is same-origin, so `connect-src 'self'` already allows it; the policy is unchanged.
+- **Tests.** Unit tests cover the report's fields, the origin and tag handling, the opt-outs and the fallback (`src/pageview.test.ts`). The end-to-end tests load the build as `https://usnewsmap.com` (every request to that origin answered by the local server) and assert the exact body of each page view, that it carries no search text, and that GPC, DNT and other origins send none.
+
+The earlier plan for this section (the Application Insights JavaScript SDK with custom events for searches, playback and sharing) is not built: the SDK can't authenticate to a component with local auth disabled. Popular queries for pre-warming, if they are ever collected, would come from the server side as daily counts per canonical query string, kept only when at least 5 requests made the same one that day, with no IP, user agent or other identifier.

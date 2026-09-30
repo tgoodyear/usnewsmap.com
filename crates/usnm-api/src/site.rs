@@ -5,9 +5,10 @@
 //!   image build wrote next to each one.
 //! - Paths that look like app routes (no file extension, not under
 //!   `/assets/`) get `index.html`, so client-side routes survive a reload.
-//!   The app's own pages (`/`, `/status`) are 200; any other such path gets
-//!   the same shell with a 404, and the app shows a not-found page. Missing
-//!   files are a plain 404.
+//!   The app's own pages (`/`, `/status`, `/privacy`) are 200; any other
+//!   such path gets the same shell with a 404, and the app shows a not-found
+//!   page. Missing files are a plain 404. `/privacy` gets its own title,
+//!   canonical link and `og:url` in the shell, since it is indexed.
 //! - Hashed assets are cached for a year; `index.html` is revalidated on
 //!   every load so a release shows up at once.
 //! - Search permalinks (`/?q=…`) and `/status` carry `X-Robots-Tag: noindex`,
@@ -64,7 +65,34 @@ pub fn router(dir: PathBuf) -> Router {
 /// The paths the app renders a page for (`web/src/route.ts`), with or
 /// without a trailing slash.
 fn is_app_page(path: &str) -> bool {
-    matches!(path.trim_end_matches('/'), "" | "/status")
+    matches!(path.trim_end_matches('/'), "" | "/status" | "/privacy")
+}
+
+/// The shell for `path`: the privacy page's head names that page, not the
+/// home page, because search engines index it.
+fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
+    if path.trim_end_matches('/') != "/privacy" {
+        return index;
+    }
+    let Ok(html) = String::from_utf8(index) else {
+        return Vec::new();
+    };
+    html.replacen(
+        "<title>US News Map</title>",
+        "<title>Privacy · US News Map</title>",
+        1,
+    )
+    .replacen(
+        r#"<link rel="canonical" href="https://usnewsmap.com/" />"#,
+        r#"<link rel="canonical" href="https://usnewsmap.com/privacy" />"#,
+        1,
+    )
+    .replacen(
+        r#"<meta property="og:url" content="https://usnewsmap.com/" />"#,
+        r#"<meta property="og:url" content="https://usnewsmap.com/privacy" />"#,
+        1,
+    )
+    .into_bytes()
 }
 
 /// A path with no file behind it: `index.html` for app routes (404 unless
@@ -84,12 +112,18 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
         StatusCode::NOT_FOUND
     };
     let html = (header::CONTENT_TYPE, "text/html; charset=utf-8".to_owned());
-    // HEAD: the headers GET would send, without reading or sending the body.
+    // HEAD: the headers GET would send, without sending the body.
     if req.method() == Method::HEAD {
-        return match tokio::fs::metadata(&index).await {
-            Ok(meta) => (
+        return match tokio::fs::read(&index).await {
+            Ok(body) => (
                 status,
-                [html, (header::CONTENT_LENGTH, meta.len().to_string())],
+                [
+                    html,
+                    (
+                        header::CONTENT_LENGTH,
+                        shell_for(path, body).len().to_string(),
+                    ),
+                ],
             )
                 .into_response(),
             Err(e) => {
@@ -99,7 +133,7 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
         };
     }
     match tokio::fs::read(&index).await {
-        Ok(body) => (status, [html], body).into_response(),
+        Ok(body) => (status, [html], shell_for(path, body)).into_response(),
         Err(e) => {
             tracing::error!(error = %e, path = %index.display(), "site index missing");
             (StatusCode::NOT_FOUND, "not found").into_response()
@@ -192,12 +226,36 @@ mod tests {
 
     #[test]
     fn app_pages() {
-        for path in ["/", "//", "/status", "/status/"] {
+        for path in ["/", "//", "/status", "/status/", "/privacy", "/privacy/"] {
             assert!(is_app_page(path), "{path}");
         }
-        for path in ["/search/gold", "/statuses", "/does-not-exist", "/status/x"] {
+        for path in [
+            "/search/gold",
+            "/statuses",
+            "/does-not-exist",
+            "/status/x",
+            "/privacy/x",
+        ] {
             assert!(!is_app_page(path), "{path}");
         }
+    }
+
+    #[test]
+    fn the_privacy_page_names_itself_in_the_head() {
+        let index = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/index.html"),
+        )
+        .unwrap();
+        let home = String::from_utf8(shell_for("/", index.clone().into_bytes())).unwrap();
+        assert_eq!(home, index);
+        let privacy = String::from_utf8(shell_for("/privacy/", index.into_bytes())).unwrap();
+        assert!(privacy.contains("<title>Privacy · US News Map</title>"));
+        assert!(
+            privacy.contains(r#"<link rel="canonical" href="https://usnewsmap.com/privacy" />"#)
+        );
+        assert!(privacy
+            .contains(r#"<meta property="og:url" content="https://usnewsmap.com/privacy" />"#));
+        assert!(!privacy.contains(r#"href="https://usnewsmap.com/" />"#));
     }
 
     #[test]
@@ -216,6 +274,8 @@ mod tests {
             "/?",
             "/?t=1896-07-01",
             "/?qq=1",
+            "/privacy",
+            "/privacy?utm_source=x",
             "/favicon.svg",
             "/search?q=gold",
         ];

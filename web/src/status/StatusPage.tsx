@@ -8,6 +8,7 @@ import type {
   Status,
   TitlesPipeline,
 } from "../api/types";
+import { TITLES } from "../route";
 import { count, health, relative, span, when, type Level } from "./format";
 
 const REFRESH_MS = 30_000;
@@ -35,7 +36,7 @@ export default function StatusPage() {
   }, []);
   const now = Math.max(tick, status.dataUpdatedAt);
   useEffect(() => {
-    document.title = "Pipeline status · US News Map";
+    document.title = TITLES.status;
   }, []);
 
   const s = status.data;
@@ -97,7 +98,7 @@ export default function StatusPage() {
         <a href="https://www.neh.gov/" target="_blank" rel="noopener noreferrer">
           National Endowment for the Humanities
         </a>
-        ).
+        ). <a href="/privacy">Privacy</a>
       </footer>
     </div>
   );

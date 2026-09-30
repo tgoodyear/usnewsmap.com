@@ -9,10 +9,12 @@ describe("pageFor", () => {
     expect(pageFor("/index.html/")).toBe("search");
     expect(pageFor("/status")).toBe("status");
     expect(pageFor("/status/")).toBe("status");
+    expect(pageFor("/privacy")).toBe("privacy");
+    expect(pageFor("/privacy/")).toBe("privacy");
   });
 
   it("finds nothing anywhere else", () => {
-    for (const path of ["/does-not-exist", "/statuses", "/status/x", "/search/gold"]) {
+    for (const path of ["/does-not-exist", "/statuses", "/status/x", "/search/gold", "/privacy/x"]) {
       expect(pageFor(path)).toBe("not-found");
     }
   });

@@ -12,6 +12,9 @@
 //!
 //! The Container Apps managed OpenTelemetry agent can't authenticate with
 //! Entra, so each service exports directly.
+//!
+//! The API also forwards the web app's page views ([`pageviews`]) through
+//! the same client, since a browser can't get an Entra token for ingestion.
 
 use std::fmt;
 use std::sync::Arc;
@@ -31,10 +34,16 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use usnm_store::credential::{self, Credential};
 
+pub mod pageviews;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+pub use pageviews::{PageView, PageViews};
+
 pub const CONNECTION_STRING_VAR: &str = "APPLICATIONINSIGHTS_CONNECTION_STRING";
+
+/// The cloud role of the web app's page views, which the API forwards.
+pub const WEB_ROLE: &str = "usnm-web";
 
 /// How often metrics are exported (and once more at shutdown).
 const METRICS_INTERVAL: Duration = Duration::from_secs(30);
@@ -57,6 +66,7 @@ pub struct Service {
 pub struct Telemetry {
     tracer: Option<SdkTracerProvider>,
     meter: Option<SdkMeterProvider>,
+    page_views: Option<PageViews>,
 }
 
 impl Telemetry {
@@ -64,12 +74,24 @@ impl Telemetry {
         self.tracer.is_some() || self.meter.is_some()
     }
 
+    /// The uploader for the web app's page views, if telemetry is on.
+    pub fn page_views(&self) -> Option<PageViews> {
+        self.page_views.clone()
+    }
+
     /// Flush and stop the exporters.
     pub async fn shutdown(self) {
         if !self.is_on() {
             return;
         }
-        let Self { tracer, meter } = self;
+        let Self {
+            tracer,
+            meter,
+            page_views,
+        } = self;
+        if let Some(p) = page_views {
+            p.flush().await;
+        }
         // The SDK's shutdown blocks until the export thread is done, and the
         // export itself runs on this runtime (EntraClient), so block elsewhere.
         let stop = tokio::task::spawn_blocking(move || {
@@ -114,7 +136,7 @@ pub fn init(service: Service) -> Telemetry {
         credential::from_env_for(credential::MONITOR_RESOURCE),
         tokio::runtime::Handle::current(),
     );
-    match providers(&conn, client, service) {
+    match providers(&conn, client.clone(), service) {
         Ok((tracer, meter)) => {
             opentelemetry::global::set_meter_provider(meter.clone());
             tracing_subscriber::registry()
@@ -123,9 +145,16 @@ pub fn init(service: Service) -> Telemetry {
                 .with(otel_layer(&tracer, service))
                 .init();
             tracing::info!(target: "telemetry", "exporting traces and metrics to Application Insights");
+            let sdk = format!("{}:{}", service.name, service.version);
+            let page_views = PageViews::start(&conn, client, WEB_ROLE, &sdk)
+                .inspect_err(
+                    |e| tracing::warn!(target: "telemetry", error = %e, "page views are off"),
+                )
+                .ok();
             Telemetry {
                 tracer: Some(tracer),
                 meter: Some(meter),
+                page_views,
             }
         }
         // Telemetry never stops the service: log and carry on without it.

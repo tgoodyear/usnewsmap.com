@@ -139,6 +139,13 @@ var quickwitContainer = {
     // listen_address, and Quickwit refuses 0.0.0.0 without an advertise
     // address ("listen address `0.0.0.0` is unspecified"). Pin it here.
     { name: 'QW_LISTEN_ADDRESS', value: '127.0.0.1' }
+    // At info, Quickwit logs every search request with its query, which holds
+    // the visitor's search text (09 §9.4.2). Those two targets log warnings
+    // only; the rest keeps Quickwit's default (quickwit=info, tantivy=warn).
+    {
+      name: 'RUST_LOG'
+      value: 'quickwit=info,quickwit_serve::search_api=warn,quickwit_search=warn,tantivy=warn'
+    }
   ]
   probes: [
     {

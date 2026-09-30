@@ -23,6 +23,12 @@ pub enum ApiError {
     BackendRejected(String),
     /// Too many requests from this client; retry after the given wait.
     RateLimited(std::time::Duration),
+    /// A page view the web app sent (`/v1/beacon`) is malformed.
+    BadBeacon(String),
+    /// The request body is larger than the endpoint accepts.
+    TooLarge(String),
+    /// The request body's media type isn't one the endpoint accepts.
+    MediaType(String),
 }
 
 #[derive(Serialize)]
@@ -68,6 +74,9 @@ impl IntoResponse for ApiError {
             ApiError::Unsupported(_) => Some("unsupported"),
             ApiError::TooBroad(_) => Some("too_broad"),
             ApiError::RateLimited(_) => Some("rate_limited"),
+            ApiError::BadBeacon(_) | ApiError::TooLarge(_) | ApiError::MediaType(_) => {
+                Some("bad_beacon")
+            }
             ApiError::NotFound(_)
             | ApiError::Timeout
             | ApiError::Backend(_)
@@ -136,6 +145,30 @@ impl IntoResponse for ApiError {
                 "Too many requests",
                 "This client has sent too many requests.".to_owned(),
                 Some("Wait for the time in Retry-After, then try again."),
+                None,
+            ),
+            ApiError::BadBeacon(msg) => (
+                StatusCode::BAD_REQUEST,
+                "/errors/bad-beacon",
+                "Invalid page view",
+                msg,
+                None,
+                None,
+            ),
+            ApiError::TooLarge(msg) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "/errors/too-large",
+                "Request body too large",
+                msg,
+                None,
+                None,
+            ),
+            ApiError::MediaType(msg) => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "/errors/unsupported-media-type",
+                "Unsupported media type",
+                msg,
+                None,
                 None,
             ),
             ApiError::Backend(msg) | ApiError::BackendRejected(msg) => {

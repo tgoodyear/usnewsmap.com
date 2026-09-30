@@ -1,10 +1,12 @@
 mod aggregate;
+mod beacon;
 mod coverage;
 mod hits;
 mod meta;
 
 pub use aggregate::aggregate;
 pub(crate) use aggregate::aggregate_in;
+pub use beacon::beacon;
 pub use coverage::coverage;
 pub(crate) use coverage::coverage_in;
 pub use hits::hits;

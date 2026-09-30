@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { TITLES } from "../route";
 
 /**
  * A path the app has no page for. The API sends the app shell with a 404 for
@@ -6,7 +7,7 @@ import { useEffect } from "react";
  */
 export function NotFound() {
   useEffect(() => {
-    document.title = "Page not found · US News Map";
+    document.title = TITLES["not-found"];
   }, []);
   return (
     <div className="app">
@@ -30,7 +31,7 @@ export function NotFound() {
         <a href="https://www.loc.gov/" target="_blank" rel="noopener noreferrer">
           Library of Congress
         </a>
-        ).
+        ). <a href="/privacy">Privacy</a>
       </footer>
     </div>
   );

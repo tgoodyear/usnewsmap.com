@@ -377,7 +377,7 @@ export function App() {
         <button type="button" className="link-button" aria-haspopup="dialog" onClick={openAbout}>
           About
         </button>{" "}
-        · <a href="/status">Pipeline status</a>
+        · <a href="/status">Pipeline status</a> · <a href="/privacy">Privacy</a>
       </footer>
     </div>
   );

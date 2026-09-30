@@ -4,14 +4,18 @@ import { QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-qu
 import { App } from "./App";
 import { ApiError, VersionChangedError } from "./api/client";
 import { NotFound } from "./components/NotFound";
+import { trackPageView } from "./pageview";
 import { pageFor } from "./route";
 import "./styles.css";
 
-// The status page is its own route, loaded only when visited. The API serves
-// index.html for app paths, so /status works as a direct link; other paths
-// get it with a 404, and the not-found page.
+// The status and privacy pages are their own routes, loaded only when
+// visited. The API serves index.html for app paths, so /status and /privacy
+// work as direct links; other paths get it with a 404, and the not-found page.
 const StatusPage = lazy(() => import("./status/StatusPage"));
+const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
 const page = pageFor(window.location.pathname);
+// One page view per page shown; each page is a page load (no client router).
+trackPageView(page);
 
 const client: QueryClient = new QueryClient({
   // A new index version was published mid-session: refetch /v1/meta. Every
@@ -41,6 +45,10 @@ createRoot(document.getElementById("root")!).render(
       {page === "status" ? (
         <Suspense fallback={<p role="status">Loading…</p>}>
           <StatusPage />
+        </Suspense>
+      ) : page === "privacy" ? (
+        <Suspense fallback={<p role="status">Loading…</p>}>
+          <PrivacyPage />
         </Suspense>
       ) : page === "not-found" ? (
         <NotFound />

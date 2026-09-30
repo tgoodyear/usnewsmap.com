@@ -1,0 +1,40 @@
+// Site traffic: page views by day, page, referrer, utm_source, country, device and browser.
+// From the page views the web app reports through POST /v1/beacon and the
+// API forwards to Application Insights (AppPageViews, cloud role usnm-web).
+// One row per value: Dimension says which breakdown it belongs to; days are
+// newest first, everything else by page views. Referrers are origins only
+// ("direct" for none, "internal" for the site itself); a country comes from
+// the visitor's address at ingestion, which Application Insights stores as
+// 0.0.0.0. No path, query string or search text is recorded (09 §9.4.2).
+// An empty AppPageViews table (or none yet) gives no rows, not an error.
+let pageviews = union isfuzzy=true
+    (AppPageViews
+    | where AppRoleName == "usnm-web"
+    | summarize PageViews = sum(ItemCount) by
+        Day = startofday(TimeGenerated),
+        Route = Name,
+        Referrer = tostring(Properties.referrer_origin),
+        UtmSource = tostring(Properties.utm_source),
+        Country = iff(isempty(ClientCountryOrRegion), "(unknown)", ClientCountryOrRegion),
+        Device = tostring(Properties.device_type),
+        Browser = tostring(Properties.browser)),
+    (datatable(Day: datetime, Route: string, Referrer: string, UtmSource: string, Country: string,
+        Device: string, Browser: string, PageViews: long)[]);
+union
+    (pageviews | summarize PageViews = sum(PageViews) by Day
+        | project Dimension = "day", Order = 1, Value = format_datetime(Day, "yyyy-MM-dd"), PageViews,
+            Rank = datetime_diff("day", Day, datetime(2000-01-01))),
+    (pageviews | summarize PageViews = sum(PageViews) by Value = Route
+        | extend Dimension = "route", Order = 2, Rank = PageViews),
+    (pageviews | summarize PageViews = sum(PageViews) by Value = Referrer | top 20 by PageViews
+        | extend Dimension = "referrer", Order = 3, Rank = PageViews),
+    (pageviews | where isnotempty(UtmSource) | summarize PageViews = sum(PageViews) by Value = UtmSource
+        | top 20 by PageViews | extend Dimension = "utm_source", Order = 4, Rank = PageViews),
+    (pageviews | summarize PageViews = sum(PageViews) by Value = Country | top 20 by PageViews
+        | extend Dimension = "country", Order = 5, Rank = PageViews),
+    (pageviews | summarize PageViews = sum(PageViews) by Value = Device
+        | extend Dimension = "device", Order = 6, Rank = PageViews),
+    (pageviews | summarize PageViews = sum(PageViews) by Value = Browser
+        | extend Dimension = "browser", Order = 7, Rank = PageViews)
+| order by Order asc, Rank desc
+| project Dimension, Value, PageViews

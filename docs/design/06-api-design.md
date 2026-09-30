@@ -57,7 +57,7 @@
 
 Principles:
 
-- **All reads are GET** with canonical query strings, so browsers (and any future CDN) can cache them.
+- **All reads are GET** with canonical query strings, so browsers (and any future CDN) can cache them. The one POST, `/v1/beacon`, takes the site's page views and changes nothing the API serves (§6.3.7).
 - **Base URL:** `https://api.usnewsmap.com/v1/…`. The site calls the same routes on its own origin (`https://usnewsmap.com/v1/…`), because the API app serves it ([ADR-0010](adr/0010-site-served-by-the-api.md)). The routes are also mounted at `/api/v1/…` for clients of that earlier prefix.
 - **Responses are immutable per `index_version`.**
 - **No cookies and no sessions.**
@@ -96,6 +96,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | `GET /v1/export/hits.csv` | Hits (≤ 10,000 rows) with page keys and LoC URLs | 1 day |
 | `GET /v1/docs`, `GET /v1/openapi.json` | API documentation | 1 day |
 | `GET /v1/status` | Pipeline status for the public `/status` page: backfill, indexing, titles catalog (§6.3.6) | 30 s |
+| `POST /v1/beacon` | One page view from the site, forwarded to Application Insights; answers 204 (§6.3.7) | none |
 | `GET /healthz`, `GET /readyz` | Liveness; readiness (reference data loaded, backend reachable, and after a start the cache warm-up finished or its 2-minute cap passed, §6.6) | none |
 
 ### 6.3.3 `GET /v1/aggregate` response
@@ -159,7 +160,7 @@ Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer 
 
 ### 6.3.5 Errors
 
-This is RFC 9457 `application/problem+json`, with `type` values such as `/errors/query-syntax`, `/errors/query-too-broad`, `/errors/rate-limited`, `/errors/backend-timeout`, plus a `hint` field. Syntax errors return **400** with a caret position, broad queries **422**, backend timeouts **503** with `Retry-After`, and rate limits **429**.
+This is RFC 9457 `application/problem+json`, with `type` values such as `/errors/query-syntax`, `/errors/query-too-broad`, `/errors/rate-limited`, `/errors/backend-timeout`, plus a `hint` field. Syntax errors return **400** with a caret position, broad queries **422**, backend timeouts **503** with `Retry-After`, and rate limits **429**. `POST /v1/beacon` adds `/errors/bad-beacon` (**400**), `/errors/too-large` (**413**) and `/errors/unsupported-media-type` (**415**).
 
 ### 6.3.6 `GET /v1/status`
 
@@ -178,6 +179,34 @@ Sections that need Cosmos are `{"available": false, "reason": …}` when the API
 **Cost and caching.** Each API replica recomputes the document at most once per 60 s (`USNM_STATUS_REFRESH_SECS`), whatever the traffic; with the production cap of 2 replicas, that is at most two refreshes a minute. Concurrent requests share one computation, and a request that arrives during a refresh gets the previous document instead of waiting. Each refresh runs three Cosmos queries, one per container, projecting only the fields shown (never a batch's part list or a run's batch list), and logs the request units they cost. The client retries 429s for 10 s at most, and a refresh that takes over 20 s counts as failed. Browsers may cache the response for 30 s (`Cache-Control: public, max-age=30`).
 
 **What it never shows.** Worker ids appear only as their last six characters. Error text is sanitized before it leaves the API: URLs other than `loc.gov` ones, Azure hostnames, this deployment's resource names, IP addresses, GUIDs, email addresses and worker ids are replaced with placeholders, and each error is cut to 200 characters. There is no query text in it, because the pipeline has none.
+
+### 6.3.7 `POST /v1/beacon`
+
+The site's page views (07 §7.8). The browser can't send to Application Insights itself: the component has local auth disabled and accepts only Entra tokens (ADR-0009). So the site posts each page view here, and the API forwards it with its own managed identity, the same way it sends its traces and metrics (`crates/usnm-telemetry/src/pageviews.rs`). The route goes through the same per-client rate limiter as the others (§6.2) and answers **204** with `Cache-Control: no-store`.
+
+**Request.** `Content-Type` is `text/plain` (what `navigator.sendBeacon` sends for a string) or `application/json`; anything else is **415**. The body is at most 2,048 bytes (**413** over that, whether or not `Content-Length` says so) and is one JSON object:
+
+| Field | Required | Rule |
+|-------|----------|------|
+| `route` | yes | One of the app's page names (`web/src/route.ts`): `search`, `status`, `privacy`, `not-found`. Never a path |
+| `title` | no | At most 100 characters, no control characters |
+| `referrer_origin` | no | Empty (sent as `direct`), `internal`, or an http(s) origin: scheme, host and optional port, lowercased, at most 253 characters. A path, query, fragment or user part is refused. The site's own host and its subdomains become `internal` |
+| `utm_source`, `utm_medium`, `utm_campaign` | no | Lowercased, at most 64 characters, no control characters; empty ones are dropped |
+
+Any other field, a duplicate field, or a body that isn't an object is **400** `/errors/bad-beacon`. A page view can't carry a search because there is no field for the query or the page's address. A test posts search text every way it could be smuggled in and checks it is refused and never exported (`crates/usnm-api/tests/beacon.rs`).
+
+**Not forwarded** (still 204): a request with `DNT: 1` or `Sec-GPC: 1`; an `Origin` that isn't the site (`https://{USNM_SITE_HOST}` or `USNM_ALLOWED_ORIGINS`); a user agent that is empty, doesn't start with `Mozilla/`, or names a crawler, link preview, monitor, script library or headless browser; and every page view when Application Insights isn't configured. Each outcome is counted in `api.beacons` (08 §8.1.2).
+
+**Forwarded** as one `Microsoft.ApplicationInsights.PageView` envelope (`AppPageViews`), batched for up to 5 s or 100 page views:
+
+| Envelope field | Value |
+|----------------|-------|
+| `name` | The route |
+| `url` | `https://{USNM_SITE_HOST}` plus the route's path (`/`, `/status`, `/privacy`); none for `not-found` |
+| `properties` | `referrer_origin` (`direct`, `internal` or the origin), `utm_*` when present, `title` when present, `device_type` (`desktop`, `mobile` or `tablet`) and `browser` (`Chrome`, `Safari`, `Firefox`, `Edge`, `Opera`, `Samsung Internet` or `Other`), both worked out from `User-Agent` in the API |
+| `tags` | `ai.cloud.role: usnm-web`, `ai.internal.sdkVersion`, and `ai.location.ip`: the client address, taken from `X-Forwarded-For` as the rate limiter takes it |
+
+Ingestion derives the city, region and country from `ai.location.ip` and stores `0.0.0.0` in `ClientIP`, because the component keeps IP masking on (`DisableIpMasking: false`). The address goes nowhere else, neither into `properties` nor into the API's logs, and the raw user agent is neither forwarded nor logged. Nothing from the body is logged; a failed upload is logged as a count only.
 
 ## 6.4 Query language and validation
 

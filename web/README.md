@@ -23,6 +23,7 @@ Build-time settings:
 |----------|---------|---------|
 | `VITE_API_BASE` | same origin | API origin. Production leaves it empty: the API serves the site |
 | `VITE_BASEMAP_STYLE` | OpenFreeMap Positron | MapLibre style URL. `none` gives a plain background (offline and tests). The self-hosted PMTiles style replaces the default once the tiles are published |
+| `VITE_PAGE_VIEWS` | unset | `1` sends page views from any origin (to try `POST /v1/beacon` against a local API), `0` never. Unset, only a production build on `https://usnewsmap.com` sends them |
 | `USNM_API_ORIGIN` | `http://127.0.0.1:8080` | API the dev and preview servers proxy `/v1` to |
 
 ## How it works
@@ -32,6 +33,7 @@ Build-time settings:
 - **Version pinning.** Every request carries the `v` from `/v1/meta`, so a whole session reads one published snapshot.
 - **Snippets** are split into text and `<mark>` segments and rendered as text nodes. No API HTML is ever injected.
 - **Accessibility.** A Table tab mirrors the map. Playback works from the keyboard: `Space`, `←`/`→` (`Shift` for 10), `Home`/`End`. The current date is announced in a live region. Reduced motion is honored. Without WebGL2, the table is shown instead of the map.
+- **Page views** (`src/pageview.ts`, 07 §7.8). One per page load, sent with `navigator.sendBeacon` to `/v1/beacon`: the page name and title, and on the first page the referrer's origin and the landing URL's `utm_*` tags. Never the search or other query parameters. Do Not Track and Global Privacy Control turn it off, and nothing is stored in the browser. The privacy page (`/privacy`) describes it for visitors.
 - **Performance.** The map stack is lazy-loaded; the critical-path JS is about 88 KB gzip (budget 250 KB).
 
 Not yet built: compare mode, the first-appearance and state-choropleth layers, the coverage overlay, embed mode, export, and the share dialog beyond copying the link.
@@ -41,5 +43,5 @@ Not yet built: compare mode, the first-appearance and state-choropleth layers, t
 - `index.html` has the canonical link (the home page), Open Graph and Twitter card tags, and JSON-LD for the site and its publisher. `src/seo.test.ts` checks them, and `e2e/seo.spec.ts` checks them in a browser along with what the API sends crawlers.
 - The root element holds a short description of the site, for crawlers and previews that don't run JavaScript. React replaces it on its first render.
 - `public/og-image.png` is the share image, a 1200×630 screenshot of the "Cross of Gold, 1896" example on the live site.
-- `public/robots.txt` tells crawlers not to fetch `/v1/`, and `public/sitemap.xml` lists the home page. Search permalinks and `/status` are left out, since the API marks them `noindex`.
+- `public/robots.txt` tells crawlers not to fetch `/v1/`, and `public/sitemap.xml` lists the home page and `/privacy`. Search permalinks and `/status` are left out, since the API marks them `noindex`. The API serves `/privacy` with its own title, canonical link and `og:url`.
 - `public/<key>.txt` is the IndexNow key. After each production deploy, CI submits the sitemap's URLs to IndexNow (`scripts/ci/indexnow.sh`). A failed submission is logged as a warning and never fails the deploy.
