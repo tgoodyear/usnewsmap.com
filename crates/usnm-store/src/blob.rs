@@ -1,7 +1,7 @@
 //! Azure Blob Storage over its REST API with Entra ID bearer tokens.
 //!
 //! Only a few operations are needed (Get Blob, Get Blob Properties, Put Blob,
-//! and Append Block for the search log), so this talks to the REST API
+//! and List Blobs for the search log), so this talks to the REST API
 //! directly with the workspace's `reqwest` client rather than pulling in the
 //! Azure SDK.
 
@@ -13,7 +13,7 @@ use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode, Url};
 
 use crate::credential::Credential;
-use crate::{validate_path, ObjectStore, StoreError, MAX_APPEND_BYTES, MAX_OBJECT_BYTES};
+use crate::{validate_path, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
 /// Blob service REST API version (bearer tokens need 2017-11-09 or later).
 pub const API_VERSION: &str = "2023-11-03";
@@ -109,31 +109,23 @@ impl BlobStore {
     }
 }
 
-impl BlobStore {
-    /// Put Blob for an empty append blob unless the blob exists.
-    async fn create_append_blob(&self, path: &str, content_type: &str) -> Result<(), StoreError> {
-        let resp = self
-            .request(Method::PUT, path)
-            .await?
-            .header("x-ms-blob-type", "AppendBlob")
-            .header(IF_NONE_MATCH, "*")
-            .header(CONTENT_TYPE, content_type)
-            .header(CONTENT_LENGTH, 0)
-            .send()
-            .await
-            .map_err(|e| transport("append", path, e))?;
-        match (resp.status(), error_code(&resp)) {
-            // Another writer created it first.
-            (StatusCode::CREATED, _)
-            | (StatusCode::CONFLICT, "BlobAlreadyExists")
-            | (StatusCode::PRECONDITION_FAILED, "ConditionNotMet") => Ok(()),
-            (s, _) => Err(StoreError::Http {
-                op: "append",
-                path: path.into(),
-                status: s.as_u16(),
-            }),
-        }
-    }
+/// The text of each `<tag>…</tag>` element, with XML's five entities decoded.
+fn xml_values(xml: &str, tag: &str) -> std::vec::IntoIter<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    xml.split(open.as_str())
+        .skip(1)
+        .filter_map(|rest| {
+            rest.split_once(close.as_str()).map(|(v, _)| {
+                v.replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&apos;", "'")
+                    .replace("&amp;", "&")
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 fn error_code(resp: &reqwest::Response) -> &str {
@@ -257,42 +249,75 @@ impl ObjectStore for BlobStore {
         }
     }
 
-    /// Append Block; on a missing blob, create an empty append blob and try once more.
-    async fn append(
-        &self,
-        path: &str,
-        body: Vec<u8>,
-        content_type: &str,
-    ) -> Result<(), StoreError> {
-        if body.len() > MAX_APPEND_BYTES {
-            return Err(StoreError::TooLarge(path.into()));
-        }
-        let mut created = false;
+    /// List Blobs, following continuation markers.
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        validate_path(prefix)?;
+        // `base` is `{origin}/{container}[/{store prefix}]`.
+        let (container, store_prefix) = match self.base.split_once("://") {
+            Some((scheme, rest)) => {
+                let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+                let (container, sub) = path.split_once('/').unwrap_or((path, ""));
+                (format!("{scheme}://{host}/{container}"), sub.to_owned())
+            }
+            None => return Err(StoreError::InvalidLocation(self.base.clone())),
+        };
+        let full = if store_prefix.is_empty() {
+            format!("{prefix}/")
+        } else {
+            format!("{store_prefix}/{prefix}/")
+        };
+        let strip = if store_prefix.is_empty() {
+            String::new()
+        } else {
+            format!("{store_prefix}/")
+        };
+        let mut names = Vec::new();
+        let mut marker = String::new();
         loop {
+            let token = self.credential.token().await?;
+            let mut query = vec![
+                ("restype", "container"),
+                ("comp", "list"),
+                ("prefix", full.as_str()),
+            ];
+            if !marker.is_empty() {
+                query.push(("marker", marker.as_str()));
+            }
             let resp = self
-                .request(Method::PUT, path)
-                .await?
-                .query(&[("comp", "appendblock")])
-                .header(CONTENT_LENGTH, body.len())
-                .body(body.clone())
+                .http
+                .get(&container)
+                .query(&query)
+                .bearer_auth(token)
+                .header("x-ms-version", API_VERSION)
+                .header("x-ms-date", httpdate::fmt_http_date(SystemTime::now()))
                 .send()
                 .await
-                .map_err(|e| transport("append", path, e))?;
-            match resp.status() {
-                StatusCode::CREATED => return Ok(()),
-                StatusCode::NOT_FOUND if !created => {
-                    self.create_append_blob(path, content_type).await?;
-                    created = true;
-                }
-                s => {
-                    return Err(StoreError::Http {
-                        op: "append",
-                        path: path.into(),
-                        status: s.as_u16(),
-                    })
+                .map_err(|e| transport("list", prefix, e))?;
+            if !resp.status().is_success() {
+                return Err(StoreError::Http {
+                    op: "list",
+                    path: prefix.into(),
+                    status: resp.status().as_u16(),
+                });
+            }
+            let xml = resp
+                .text()
+                .await
+                .map_err(|e| transport("list", prefix, e))?;
+            for name in xml_values(&xml, "Name") {
+                if let Some(path) = name.strip_prefix(&strip) {
+                    if validate_path(path).is_ok() {
+                        names.push(path.to_owned());
+                    }
                 }
             }
+            marker = xml_values(&xml, "NextMarker").next().unwrap_or_default();
+            if marker.is_empty() {
+                break;
+            }
         }
+        names.sort();
+        Ok(names)
     }
 }
 
@@ -303,6 +328,18 @@ mod tests {
 
     fn cred() -> Arc<Credential> {
         Arc::new(Credential::new(StaticToken("t".into())))
+    }
+
+    #[test]
+    fn list_responses() {
+        let xml = "<EnumerationResults><Blobs><Blob><Name>a/b.jsonl</Name></Blob>\
+                   <Blob><Name>a/x&amp;y</Name></Blob></Blobs><NextMarker>m1</NextMarker></EnumerationResults>";
+        assert_eq!(
+            xml_values(xml, "Name").collect::<Vec<_>>(),
+            ["a/b.jsonl", "a/x&y"]
+        );
+        assert_eq!(xml_values(xml, "NextMarker").next().as_deref(), Some("m1"));
+        assert_eq!(xml_values("<NextMarker />", "NextMarker").next(), None);
     }
 
     #[test]

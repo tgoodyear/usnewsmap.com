@@ -59,16 +59,16 @@ resource blobGrants 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   }
 ]
 
-// The search log (ADR-0012): the API reads and creates blobs and appends to
-// them in searches/ and can't delete anything. Azure RBAC can't make block
-// blobs append-only, so "write" also allows an overwrite; the API writes
-// day files create-only (If-None-Match: *) and never overwrites them.
+// The search log (ADR-0012): the API lists, reads and creates blobs in
+// searches/ and can't delete anything. Azure RBAC can't make blobs
+// write-once, so "write" also allows an overwrite; the API writes every
+// blob create-only (If-None-Match: *) and never overwrites one.
 resource searchLogWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(resourceGroup().id, 'usnm-search-log-writer')
   properties: {
     // Role names are unique per tenant: include the subscription and group.
     roleName: 'usnm search log writer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
-    description: 'The API: read, create and append to blobs. No delete.'
+    description: 'The API: list, read and create blobs. No delete.'
     type: 'CustomRole'
     permissions: [
       {
@@ -76,7 +76,6 @@ resource searchLogWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = 
         dataActions: [
           'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'
           'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'
-          'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action'
         ]
       }
     ]

@@ -104,16 +104,22 @@ fn today() -> NaiveDate {
     Utc::now().date_naive()
 }
 
-/// The records in today's staging file (none if it doesn't exist).
+/// The records in today's staged batches.
 fn staged(dir: &std::path::Path) -> Vec<Record> {
-    let path = dir.join(searchlog::staging_path(today()));
-    match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    let Ok(entries) = std::fs::read_dir(dir.join(searchlog::staging_dir(today()))) else {
+        return Vec::new();
+    };
+    entries
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .flat_map(|p| {
+            std::fs::read_to_string(p)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect::<Vec<Record>>()
+        })
+        .collect()
 }
 
 async fn version(state: &Arc<AppState>) -> String {
@@ -268,7 +274,7 @@ async fn nothing_is_recorded_without_a_search_log() {
 }
 
 #[tokio::test]
-async fn batches_are_appended_on_the_interval_and_when_full() {
+async fn batches_are_written_on_the_interval_and_when_full() {
     // On the interval, without a shutdown.
     let dir = temp_dir("interval");
     let (state, log) = app_with(
@@ -322,7 +328,7 @@ async fn batches_are_appended_on_the_interval_and_when_full() {
 
 #[tokio::test]
 async fn a_full_queue_drops_instead_of_waiting() {
-    // A store that never answers: the writer is stuck on its first append.
+    // A store that never answers: the writer is stuck on its first write.
     #[derive(Debug)]
     struct Stuck;
     #[async_trait]
@@ -331,13 +337,13 @@ async fn a_full_queue_drops_instead_of_waiting() {
             Ok(None)
         }
         async fn put_new(&self, _: &str, _: Vec<u8>, _: &str) -> Result<bool, StoreError> {
-            Ok(true)
+            std::future::pending().await
         }
         async fn put(&self, _: &str, _: Vec<u8>, _: &str) -> Result<(), StoreError> {
             Ok(())
         }
-        async fn append(&self, _: &str, _: Vec<u8>, _: &str) -> Result<(), StoreError> {
-            std::future::pending().await
+        async fn list(&self, _: &str) -> Result<Vec<String>, StoreError> {
+            Ok(Vec::new())
         }
     }
     let (state, log) = app_with(
@@ -375,35 +381,42 @@ impl Write for Captured {
 
 #[tokio::test]
 async fn write_errors_are_logged_without_search_text_and_retried() {
-    /// Fails the first append, then works.
+    /// The first write succeeds but reports a failure (as when the
+    /// response is lost); later ones behave.
     #[derive(Debug, Default)]
     struct Flaky {
         failed: Mutex<bool>,
-        written: Mutex<Vec<u8>>,
+        blobs: Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+        calls: Mutex<Vec<String>>,
     }
     #[async_trait]
     impl ObjectStore for Flaky {
         async fn get(&self, _: &str) -> Result<Option<Vec<u8>>, StoreError> {
             Ok(None)
         }
-        async fn put_new(&self, _: &str, _: Vec<u8>, _: &str) -> Result<bool, StoreError> {
+        async fn put_new(&self, path: &str, body: Vec<u8>, _: &str) -> Result<bool, StoreError> {
+            self.calls.lock().unwrap().push(path.to_owned());
+            let mut blobs = self.blobs.lock().unwrap();
+            if blobs.contains_key(path) {
+                return Ok(false);
+            }
+            blobs.insert(path.to_owned(), body);
+            let mut failed = self.failed.lock().unwrap();
+            if !*failed {
+                *failed = true;
+                return Err(StoreError::Http {
+                    op: "put",
+                    path: path.into(),
+                    status: 500,
+                });
+            }
             Ok(true)
         }
         async fn put(&self, _: &str, _: Vec<u8>, _: &str) -> Result<(), StoreError> {
             Ok(())
         }
-        async fn append(&self, path: &str, body: Vec<u8>, _: &str) -> Result<(), StoreError> {
-            let mut failed = self.failed.lock().unwrap();
-            if !*failed {
-                *failed = true;
-                return Err(StoreError::Http {
-                    op: "append",
-                    path: path.into(),
-                    status: 403,
-                });
-            }
-            self.written.lock().unwrap().extend_from_slice(&body);
-            Ok(())
+        async fn list(&self, _: &str) -> Result<Vec<String>, StoreError> {
+            Ok(Vec::new())
         }
     }
 
@@ -436,7 +449,8 @@ async fn write_errors_are_logged_without_search_text_and_retried() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    // The first append fails; shutdown tries again and succeeds.
+    // The first write fails as far as the writer knows; shutdown retries it
+    // under the same name, which finds it already written.
     for _ in 0..100 {
         if *store.failed.lock().unwrap() {
             break;
@@ -445,12 +459,17 @@ async fn write_errors_are_logged_without_search_text_and_retried() {
     }
     log.shutdown(Duration::from_secs(5)).await;
 
-    let written = String::from_utf8(store.written.lock().unwrap().clone()).unwrap();
+    let calls = store.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[0], calls[1], "retried under the same name");
+    let blobs = store.blobs.lock().unwrap().clone();
+    assert_eq!(blobs.len(), 1, "stored once");
+    let written = String::from_utf8(blobs.into_values().next().unwrap()).unwrap();
     assert_eq!(written.lines().count(), 1, "{written}");
     assert!(written.contains("zebrasecret"));
     let console = String::from_utf8(console.0.lock().unwrap().clone()).unwrap();
     assert!(
-        console.contains("search log append failed"),
+        console.contains("search log write failed"),
         "the failure is logged: {console}"
     );
     assert!(console.contains("staging/"), "{console}");
@@ -467,16 +486,27 @@ async fn a_day_file_holds_the_staged_lines_once() {
     assert!(!store.exists(&searchlog::day_path(day)).await.unwrap());
 
     let lines: Vec<String> = (0..200).map(|i| format!("{{\"n\":{i}}}")).collect();
-    for chunk in lines.chunks(50) {
-        store
-            .append(
-                &searchlog::staging_path(day),
-                format!("{}\n", chunk.join("\n")).into_bytes(),
-                "application/x-ndjson",
-            )
+    for (i, chunk) in lines.chunks(50).enumerate() {
+        let path = format!("{}/batch{i}.jsonl", searchlog::staging_dir(day));
+        let body = format!("{}\n", chunk.join("\n")).into_bytes();
+        assert!(store
+            .put_new(&path, body, "application/x-ndjson")
             .await
-            .unwrap();
+            .unwrap());
     }
+    // Another day's batch isn't included.
+    let other = format!(
+        "{}/x.jsonl",
+        searchlog::staging_dir(day.succ_opt().unwrap())
+    );
+    store
+        .put_new(
+            &other,
+            b"{\"n\":\"other\"}\n".to_vec(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
     searchlog::close_day(&store, day).await.unwrap();
     let written =
         String::from_utf8(store.get(&searchlog::day_path(day)).await.unwrap().unwrap()).unwrap();
@@ -489,9 +519,10 @@ async fn a_day_file_holds_the_staged_lines_once() {
     assert_eq!(sorted, want);
 
     // Written once: a second close (another replica) leaves it alone.
+    let late = format!("{}/late.jsonl", searchlog::staging_dir(day));
     store
-        .append(
-            &searchlog::staging_path(day),
+        .put_new(
+            &late,
             b"{\"n\":\"late\"}\n".to_vec(),
             "application/x-ndjson",
         )

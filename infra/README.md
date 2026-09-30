@@ -9,11 +9,11 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 | Module | Resources |
 |--------|-----------|
 | `network` | VNet `10.40.0.0/24`: `snet-cae` (/27, delegated to Container Apps) and `snet-pe` (/28). Private DNS zones for Blob and Cosmos, linked to the VNet |
-| `storage` | Data lake account: flat namespace, **no shared keys**, **public network access disabled**, versioning and 14-day soft delete, containers `curated`, `reference`, `cache`, `qw-index` and `searches` (the search log, ADR-0012). Lifecycle rules expire old response-cache entries and the search log's staging files and prune blob versions; nothing expires `searches/days/` or `searches/import/`. Write and delete logs go to Log Analytics |
+| `storage` | Data lake account: flat namespace, **no shared keys**, **public network access disabled**, versioning and 14-day soft delete, containers `curated`, `reference`, `cache`, `qw-index` and `searches` (the search log, ADR-0012). Lifecycle rules expire old response-cache entries and the search log's staged batches and prune blob versions; nothing expires `searches/days/` or `searches/import/`. Write and delete logs go to Log Analytics |
 | `tiles` | Public basemap account (anonymous read of the `tiles` container, CORS for the site, no keys) |
 | `cosmos` | Cosmos DB for NoSQL. It uses the free tier with 7-day continuous backup, or serverless with periodic backup; **local auth disabled**, **public network access disabled**, and database `usnm` holding `titles`, `batches`, `issues`, `index_runs` and `ops` |
 | `private-endpoints` | `pe-usnm-blob` and `pe-usnm-cosmos` in `snet-pe`, registered in the private DNS zones |
-| `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`, a custom role on `searches` (read, create and append blobs, no delete), Cosmos Built-in Data **Reader** on the `batches`, `index_runs` and `ops` containers (the status page), and Monitoring Metrics Publisher on Application Insights. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, Cosmos Built-in Data Contributor on `usnm`, and Monitoring Metrics Publisher on Application Insights |
+| `identities`, `rbac` | `id-usnm-app`: Blob Data **Reader** on `reference` and `qw-index`, Blob Data **Contributor** on `cache`, a custom role on `searches` (list, read and create blobs, no delete), Cosmos Built-in Data **Reader** on the `batches`, `index_runs` and `ops` containers (the status page), and Monitoring Metrics Publisher on Application Insights. `id-usnm-ingest`: Blob Data Contributor on `curated`, `reference` and `qw-index`, Cosmos Built-in Data Contributor on `usnm`, and Monitoring Metrics Publisher on Application Insights |
 | `containerapps-env` | VNet-integrated, workload-profiles environment that uses only the Consumption profile (no management fee) |
 | `containerapp` | The API (`ca-usnm-{env}`): 0.25 vCPU / 0.5 GiB, external ingress, health probes, and 0–1 to 2 replicas on an HTTP scaler, and the Application Insights connection string (requests, traces and metrics, sent as `id-usnm-app`). With `searchBackend: quickwit`, also a read-only Quickwit 0.9.1 sidecar (1 vCPU / 2 GiB, localhost only) and a system-assigned identity with Blob Data **Reader** on `qw-index` only |
 | `ingestjobs` (with `ingestJobs: true`) | `caj-usnm-ingest-{env}` (`usnm-ingest run`, weekly or manual: new LoC batches after the backfill) and `caj-usnm-backfill-{env}` (N parallel `curate` workers, manual, for the initial corpus), both in the VNet with `id-usnm-ingest`. The ingest job's system-assigned identity, used by its Quickwit writer, gets Blob Data Contributor on `qw-index` only |
@@ -182,7 +182,7 @@ The storage and Cosmos accounts stay private throughout: the jobs run inside the
 
 ## Search log
 
-The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../docs/design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staging files go after 7 days. To read it:
+The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](../docs/design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches go after 7 days. To read it:
 
 ```sh
 scripts/settings.sh prod USNM_SEARCH_LOG_READERS "$(az ad signed-in-user show --query id -o tsv)"

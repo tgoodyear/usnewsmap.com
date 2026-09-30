@@ -16,17 +16,21 @@
 //!
 //! The handler hands a record to a bounded queue and never waits: when the
 //! queue is full the record is dropped and counted. A background task
-//! batches the records and, every `flush_interval` and at shutdown, appends
-//! each day's batch in random order to `staging/{day}.jsonl` (an append
-//! blob). Once a day has been over for [`CLOSE_AFTER`], a replica reads that
-//! day's staging file, shuffles all of its lines and writes them once to
-//! `days/{day}.jsonl`, which is never rewritten. A lifecycle rule deletes
-//! staging files after [`STAGING_DAYS`] days. So the permanent file's line
-//! order says nothing about when in the day a search ran, and the only time
-//! a record carries is its day.
+//! batches the records and, every `flush_interval` and at shutdown, writes
+//! each day's batch in random order to its own blob,
+//! `staging/{day}/{random id}.jsonl`, create-only. A failed write is retried
+//! under the same name, so a write that succeeded without the API hearing
+//! back isn't stored twice. Records for a day that still aren't staged
+//! [`STAGE_UNTIL`] after it ends are dropped. [`CLOSE_AFTER`] after a day
+//! ends, a replica lists that day's staged batches, shuffles all of their
+//! lines together and writes them once to `days/{day}.jsonl`, which is never
+//! rewritten. A lifecycle rule deletes staged batches after
+//! [`STAGING_DAYS`] days. So the permanent file's line order says nothing
+//! about when in the day a search ran, and the only time a record carries is
+//! its day.
 //!
 //! Search text never goes to the console or to telemetry, write errors
-//! included: errors name the blob path (`staging/2026-09-29.jsonl`) and the
+//! included: errors name the blob path (`staging/2026-09-29/….jsonl`) and the
 //! number of records, never their content.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,7 +47,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use usnm_core::params::{RawParams, SearchRequest};
 use usnm_core::query::{Mode, MAX_QUERY_CHARS};
-use usnm_store::{ObjectStore, MAX_APPEND_BYTES};
+use usnm_store::ObjectStore;
 
 // The same crawler, script and headless classification as page views (06 §6.3.7).
 use crate::routes::is_bot;
@@ -51,11 +55,16 @@ use crate::routes::is_bot;
 /// The record format; bump it when a field changes meaning.
 pub const FORMAT: u32 = 1;
 
-/// A day is written to `days/` this long after it ends (UTC), so that
-/// batches still in memory or being retried when it ended are in it.
+/// Records for a day are staged until this long after it ends (UTC), then
+/// dropped as lost if they still aren't, so none can arrive after the day
+/// file is written.
+pub const STAGE_UNTIL: Duration = Duration::from_secs(45 * 60);
+
+/// A day is written to `days/` this long after it ends (UTC): after
+/// [`STAGE_UNTIL`], with room for a write in flight and clock skew.
 pub const CLOSE_AFTER: Duration = Duration::from_secs(3600);
 
-/// Staging files are deleted this many days after their last write (the
+/// Staged batches are deleted this many days after they are written (the
 /// `expire-search-staging` lifecycle rule in `infra/modules/storage.bicep`).
 /// A day not written to `days/` within that time is lost.
 pub const STAGING_DAYS: u64 = 7;
@@ -242,9 +251,20 @@ fn pages(body: &[u8]) -> Option<u64> {
         .map(|b| b.total.hits)
 }
 
-/// `staging/{day}.jsonl`: the day's batches as they were appended.
-pub fn staging_path(day: NaiveDate) -> String {
-    format!("staging/{day}.jsonl")
+/// `staging/{day}`: the day's batches, one blob each.
+pub fn staging_dir(day: NaiveDate) -> String {
+    format!("staging/{day}")
+}
+
+/// A new batch's blob: `staging/{day}/{32 random hex digits}.jsonl`.
+fn batch_path(day: NaiveDate) -> String {
+    let keys = RandomState::new();
+    format!(
+        "{}/{:016x}{:016x}.jsonl",
+        staging_dir(day),
+        keys.hash_one(0u8),
+        keys.hash_one(1u8)
+    )
 }
 
 /// `days/{day}.jsonl`: the day's records in random order, written once.
@@ -264,14 +284,14 @@ fn shuffle<T>(items: &mut [T]) {
 /// Tuning for the writer.
 #[derive(Debug, Clone)]
 pub struct LogConfig {
-    /// How often batches are appended.
+    /// How often batches are written.
     pub flush_interval: Duration,
     /// Records the handlers can queue before new ones are dropped.
     pub queue: usize,
-    /// A batch this big is appended at once.
+    /// A batch this big is written at once.
     pub max_batch: usize,
-    /// Records kept for another try after failed appends; beyond this the
-    /// oldest are dropped.
+    /// Records kept for another try after failed writes; beyond this the
+    /// oldest batches are dropped.
     pub max_pending: usize,
 }
 
@@ -291,7 +311,7 @@ struct LogMetrics {
     /// Searches by `outcome`: queued, dropped (queue full), written, lost
     /// (a failed or late write), and the exclusions (opted_out, bot, other_origin).
     records: Counter<u64>,
-    /// Blob operations by `op` (append, close) and `outcome` (ok, error).
+    /// Blob operations by `op` (stage, close) and `outcome` (ok, error).
     writes: Counter<u64>,
 }
 
@@ -307,7 +327,7 @@ impl LogMetrics {
                 .build(),
             writes: meter
                 .u64_counter("api.search_log_writes")
-                .with_description("Search log blob writes by op (append, close) and outcome")
+                .with_description("Search log blob writes by op (stage, close) and outcome")
                 .build(),
         }
     }
@@ -356,6 +376,7 @@ impl SearchLog {
             rx,
             stopped,
             pending: Vec::new(),
+            batches: Vec::new(),
             closed: BTreeSet::new(),
             metrics: metrics.clone(),
         };
@@ -380,16 +401,24 @@ impl SearchLog {
         self.metrics.records(reason, 1);
     }
 
-    /// Append what's queued and stop the writer, waiting at most `limit`.
+    /// Write what's queued and stop the writer, waiting at most `limit`.
     pub async fn shutdown(&self, limit: Duration) {
         let _ = self.stop.send(true);
         let worker = self.worker.lock().expect("not poisoned").take();
         if let Some(worker) = worker {
             if tokio::time::timeout(limit, worker).await.is_err() {
-                tracing::warn!("search log: the last append didn't finish in time");
+                tracing::warn!("search log: the last write didn't finish in time");
             }
         }
     }
+}
+
+/// One day's records, shuffled, under the blob name it keeps across retries.
+struct Batch {
+    day: NaiveDate,
+    path: String,
+    body: Vec<u8>,
+    records: usize,
 }
 
 struct Writer {
@@ -397,8 +426,10 @@ struct Writer {
     config: LogConfig,
     rx: mpsc::Receiver<Entry>,
     stopped: watch::Receiver<bool>,
-    /// Records waiting for the next append, in arrival order.
+    /// Records not yet in a batch, in arrival order.
     pending: Vec<Record>,
+    /// Batches waiting to be written (again), oldest first.
+    batches: Vec<Batch>,
     /// Days already written to `days/` (or found there).
     closed: BTreeSet<NaiveDate>,
     metrics: LogMetrics,
@@ -436,71 +467,66 @@ impl Writer {
         self.flush().await;
     }
 
-    /// Append the pending records, each day's to its staging file in random
-    /// order. Records whose append failed stay pending.
+    /// Turn the pending records into one batch per day, shuffled, then write
+    /// every batch not yet written. A batch whose write fails is retried
+    /// under the same name at the next flush, until its day's
+    /// [`STAGE_UNTIL`] has passed.
     async fn flush(&mut self) {
-        if self.pending.is_empty() {
-            return;
-        }
+        let now = Utc::now();
         let mut by_day: BTreeMap<NaiveDate, Vec<Record>> = BTreeMap::new();
         for r in self.pending.drain(..) {
             by_day.entry(r.day).or_default().push(r);
         }
-        let mut kept = Vec::new();
         for (day, mut records) in by_day {
-            if self.closed.contains(&day) {
-                // Its day file is already written; nothing reads staging now.
-                self.metrics.records("lost", records.len());
+            shuffle(&mut records);
+            let mut body = Vec::new();
+            for r in &records {
+                serde_json::to_writer(&mut body, r).expect("records serialize");
+                body.push(b'\n');
+            }
+            self.batches.push(Batch {
+                day,
+                path: batch_path(day),
+                body,
+                records: records.len(),
+            });
+        }
+        let mut kept = Vec::new();
+        for batch in std::mem::take(&mut self.batches) {
+            if !stageable(batch.day, now) || self.closed.contains(&batch.day) {
+                // Its day file is written, or about to be.
+                self.metrics.records("lost", batch.records);
                 continue;
             }
-            shuffle(&mut records);
-            let lines: Vec<Vec<u8>> = records
-                .iter()
-                .map(|r| {
-                    let mut line = serde_json::to_vec(r).expect("records serialize");
-                    line.push(b'\n');
-                    line
-                })
-                .collect();
-            let path = staging_path(day);
-            let mut start = 0;
-            while start < lines.len() {
-                // Whole lines, at most one Append Block each.
-                let mut end = start;
-                let mut size = 0;
-                while end < lines.len()
-                    && (end == start || size + lines[end].len() <= MAX_APPEND_BYTES)
-                {
-                    size += lines[end].len();
-                    end += 1;
+            // Create-only: `false` means an earlier try wrote it.
+            match self
+                .store
+                .put_new(&batch.path, batch.body.clone(), CONTENT_TYPE)
+                .await
+            {
+                Ok(_) => {
+                    self.metrics.write("stage", true);
+                    self.metrics.records("written", batch.records);
                 }
-                let body: Vec<u8> = lines[start..end].concat();
-                match self.store.append(&path, body, CONTENT_TYPE).await {
-                    Ok(()) => {
-                        self.metrics.write("append", true);
-                        self.metrics.records("written", end - start);
-                        start = end;
-                    }
-                    Err(e) => {
-                        self.metrics.write("append", false);
-                        // The path and count only: never a record's content.
-                        tracing::warn!(
-                            error = %e,
-                            records = lines.len() - start,
-                            "search log append failed; keeping the records for the next try"
-                        );
-                        kept.extend(records.drain(start..));
-                        break;
-                    }
+                Err(e) => {
+                    self.metrics.write("stage", false);
+                    // The path and count only: never a record's content.
+                    tracing::warn!(
+                        error = %e,
+                        records = batch.records,
+                        "search log write failed; keeping the batch for the next try"
+                    );
+                    kept.push(batch);
                 }
             }
         }
-        if kept.len() > self.config.max_pending {
-            let lost = kept.len() - self.config.max_pending;
-            kept.drain(..lost);
-            self.metrics.records("lost", lost);
+        let mut total: usize = kept.iter().map(|b| b.records).sum();
+        while total > self.config.max_pending {
+            let oldest = kept.remove(0);
+            total -= oldest.records;
+            self.metrics.records("lost", oldest.records);
         }
-        self.pending = kept;
+        self.batches = kept;
     }
 
     /// Write `days/{day}.jsonl` for each day that ended at least
@@ -530,19 +556,30 @@ impl Writer {
     }
 }
 
-/// Whether `day` ended at least [`CLOSE_AFTER`] before `now`.
-pub fn closable(day: NaiveDate, now: DateTime<Utc>) -> bool {
+/// Whether `day` ended at least `after` before `now`.
+fn ended(day: NaiveDate, now: DateTime<Utc>, after: Duration) -> bool {
     day.succ_opt()
         .and_then(|d| d.and_hms_opt(0, 0, 0))
         .is_some_and(|end| {
             now.signed_duration_since(end.and_utc())
                 .to_std()
-                .is_ok_and(|d| d >= CLOSE_AFTER)
+                .is_ok_and(|d| d >= after)
         })
 }
 
-/// Shuffle a day's staged lines and write them to its day file, unless the
-/// file exists (another replica wrote it) or nothing was staged.
+/// Whether records for `day` may still be staged at `now`.
+pub fn stageable(day: NaiveDate, now: DateTime<Utc>) -> bool {
+    !ended(day, now, STAGE_UNTIL)
+}
+
+/// Whether `day` can be written to `days/` at `now`.
+pub fn closable(day: NaiveDate, now: DateTime<Utc>) -> bool {
+    ended(day, now, CLOSE_AFTER)
+}
+
+/// Shuffle all of a day's staged lines together and write them to its day
+/// file, unless the file exists (another replica wrote it) or nothing was
+/// staged.
 pub async fn close_day(
     store: &dyn ObjectStore,
     day: NaiveDate,
@@ -550,15 +587,22 @@ pub async fn close_day(
     if store.exists(&day_path(day)).await? {
         return Ok(());
     }
-    let Some(staged) = store.get(&staging_path(day)).await? else {
-        return Ok(());
-    };
+    let mut staged = Vec::new();
+    for path in store.list(&staging_dir(day)).await? {
+        if let Some(batch) = store.get(&path).await? {
+            staged.push(batch);
+        }
+    }
     let mut lines: Vec<&[u8]> = staged
-        .split(|b| *b == b'\n')
+        .iter()
+        .flat_map(|b| b.split(|c| *c == b'\n'))
         .filter(|l| !l.trim_ascii().is_empty())
         .collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
     shuffle(&mut lines);
-    let mut body = Vec::with_capacity(staged.len() + 1);
+    let mut body = Vec::with_capacity(staged.iter().map(Vec::len).sum::<usize>() + 1);
     for line in lines {
         body.extend_from_slice(line);
         body.push(b'\n');
@@ -780,6 +824,24 @@ mod tests {
         assert!(r.front);
         assert_eq!(r.lang, ["eng"]);
         assert_eq!(r.bucket, "year");
+    }
+
+    #[test]
+    fn records_are_staged_until_45_minutes_after_their_day() {
+        let day = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+        assert!(stageable(day, at("2026-09-29T12:00:00Z")));
+        assert!(stageable(day, at("2026-09-30T00:44:59Z")));
+        assert!(!stageable(day, at("2026-09-30T00:45:00Z")));
+        assert!(STAGE_UNTIL < CLOSE_AFTER);
+    }
+
+    #[test]
+    fn batch_names_are_random_and_valid_paths() {
+        let day = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+        let (a, b) = (batch_path(day), batch_path(day));
+        assert_ne!(a, b);
+        assert!(a.starts_with("staging/2026-09-29/") && a.ends_with(".jsonl"));
+        usnm_store::validate_path(&a).unwrap();
     }
 
     #[test]

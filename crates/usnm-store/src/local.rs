@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
-use crate::{validate_path, ObjectStore, StoreError, MAX_APPEND_BYTES, MAX_OBJECT_BYTES};
+use crate::{validate_path, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
 #[derive(Debug, Clone)]
 pub struct LocalStore {
@@ -104,28 +104,37 @@ impl ObjectStore for LocalStore {
         }
     }
 
-    async fn append(
-        &self,
-        path: &str,
-        body: Vec<u8>,
-        _content_type: &str,
-    ) -> Result<(), StoreError> {
-        use std::io::Write;
-        validate_path(path)?;
-        if body.len() > MAX_APPEND_BYTES {
-            return Err(StoreError::TooLarge(path.into()));
-        }
-        let full = self.root.join(path);
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        validate_path(prefix)?;
+        let root = self.root.clone();
+        let prefix = prefix.to_owned();
         tokio::task::spawn_blocking(move || {
-            let dir = full.parent().expect("validated paths have a parent");
-            std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
-            // One write with O_APPEND, so concurrent appends don't interleave.
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&full)
-                .and_then(|mut f| f.write_all(&body))
-                .map_err(|e| io(&full, e))
+            fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), StoreError> {
+                let entries = match std::fs::read_dir(dir) {
+                    Ok(e) => e,
+                    Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+                    Err(e) => return Err(io(dir, e)),
+                };
+                for entry in entries {
+                    let entry = entry.map_err(|e| io(dir, e))?;
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let path = format!("{rel}/{name}");
+                    // Temporary files and anything else that isn't a valid path.
+                    if validate_path(&path).is_err() {
+                        continue;
+                    }
+                    if entry.path().is_dir() {
+                        walk(&entry.path(), &path, out)?;
+                    } else {
+                        out.push(path);
+                    }
+                }
+                Ok(())
+            }
+            let mut out = Vec::new();
+            walk(&root.join(&prefix), &prefix, &mut out)?;
+            out.sort();
+            Ok(out)
         })
         .await
         .map_err(|e| StoreError::Io(e.to_string()))?
@@ -150,13 +159,14 @@ mod tests {
         assert!(s.get("../etc/passwd").await.is_err());
         assert!(s.exists("v1/a.json").await.unwrap());
         assert!(!s.exists("v1/b.json").await.unwrap());
-        s.append("log/a.jsonl", b"1\n".to_vec(), "").await.unwrap();
-        s.append("log/a.jsonl", b"2\n".to_vec(), "").await.unwrap();
-        assert_eq!(s.get("log/a.jsonl").await.unwrap().unwrap(), b"1\n2\n");
-        assert!(s
-            .append("log/a.jsonl", vec![b'x'; MAX_APPEND_BYTES + 1], "")
-            .await
-            .is_err());
+        assert!(s.put_new("log/d/2.jsonl", b"2".to_vec(), "").await.unwrap());
+        assert!(s.put_new("log/d/1.jsonl", b"1".to_vec(), "").await.unwrap());
+        assert!(s.put_new("logs/x.jsonl", b"x".to_vec(), "").await.unwrap());
+        assert_eq!(
+            s.list("log").await.unwrap(),
+            ["log/d/1.jsonl", "log/d/2.jsonl"]
+        );
+        assert!(s.list("none").await.unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

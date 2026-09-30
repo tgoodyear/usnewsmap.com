@@ -40,21 +40,21 @@ blobs() {
 }
 
 # A day's records: days/{day}.jsonl once the day has closed, otherwise its
-# staging file; import/{day}.jsonl as well.
+# staged batches (staging/{day}/*.jsonl); import/{day}.jsonl as well.
 fetch() {
-  local name=$1 day
-  day=$(basename "$name" .jsonl)
+  local name=$1 day=$2
   [[ $day =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ ! $day < $since ]] || return 0
   az storage blob download --auth-mode login --account-name "$account" \
     --container-name searches --name "$name" --file "$work/$(tr / _ <<< "$name")" \
     --no-progress -o none 2> "$work/err" || { sed 's/^/  /' "$work/err" >&2; die "can't download $name"; }
 }
 closed=$(blobs days/)
-for name in $closed; do fetch "$name"; done
+for name in $closed; do fetch "$name" "$(basename "$name" .jsonl)"; done
 for name in $(blobs staging/); do
-  grep -qxF "days/$(basename "$name")" <<< "$closed" || fetch "$name"
+  day=$(basename "$(dirname "$name")")
+  grep -qxF "days/$day.jsonl" <<< "$closed" || fetch "$name" "$day"
 done
-for name in $(blobs import/); do fetch "$name"; done
+for name in $(blobs import/); do fetch "$name" "$(basename "$name" .jsonl)"; done
 
 shopt -s nullglob
 files=("$work"/*.jsonl)

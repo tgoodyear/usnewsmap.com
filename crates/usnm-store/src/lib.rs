@@ -20,10 +20,6 @@ pub use local::LocalStore;
 /// Largest object `get` will read into memory.
 pub const MAX_OBJECT_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Largest body one [`ObjectStore::append`] call takes (Blob Storage's
-/// Append Block limit for the API version used here).
-pub const MAX_APPEND_BYTES: usize = 4 * 1024 * 1024;
-
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("invalid object path `{0}`")]
@@ -67,12 +63,9 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
         Ok(self.get(path).await?.is_some())
     }
 
-    /// Add `body` to the end of an object, creating it first if it doesn't
-    /// exist (an append blob on Blob Storage). One call's bytes stay
-    /// together when several writers append at once. At most
-    /// [`MAX_APPEND_BYTES`] per call. Only the search log (`usnm-api`) uses this.
-    async fn append(&self, path: &str, body: Vec<u8>, content_type: &str)
-        -> Result<(), StoreError>;
+    /// The paths of the objects under `prefix` (a directory-like path
+    /// without a trailing `/`), sorted. Only the search log (`usnm-api`) uses this.
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError>;
 }
 
 /// Open a store: an `https://{account}.blob.core.windows.net/{container}[/prefix]`

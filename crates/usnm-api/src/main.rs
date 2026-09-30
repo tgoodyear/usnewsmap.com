@@ -83,7 +83,7 @@ async fn serve(
         },
         "status page source"
     );
-    // The anonymous search log (06 §6.8): its writer appends every few
+    // The anonymous search log (06 §6.8): its writer stages a batch every few
     // minutes and once more at shutdown.
     let search_log = config
         .search_log_url

@@ -310,20 +310,29 @@ def main():
     account = args.account or setting(args.env, "STORAGE_ACCOUNT")
     if not re.fullmatch(r"[a-z0-9]{3,24}", account or ""):
         die("no storage account; pass --account or run scripts/provision.sh to save the stack outputs")
-    try:
-        for day in sorted(paths):
-            done = subprocess.run(
-                ["az", "storage", "blob", "upload", "--auth-mode", "login", "--account-name", account,
-                 "--container-name", "searches", "--name", f"import/{day}.jsonl", "--file", paths[day],
-                 "--content-type", "application/x-ndjson", "--overwrite", "false", "--no-progress", "-o", "none"],
-                capture_output=True, text=True, check=False,
-            )
-            status = "uploaded" if done.returncode == 0 else "failed (it may exist already, or access is missing)"
-            print(f"import/{day}.jsonl: {status}", file=sys.stderr)
-    finally:
-        for p in paths.values():
-            os.unlink(p)
-        os.rmdir(out)
+    failed = []
+    for day in sorted(paths):
+        done = subprocess.run(
+            ["az", "storage", "blob", "upload", "--auth-mode", "login", "--account-name", account,
+             "--container-name", "searches", "--name", f"import/{day}.jsonl", "--file", paths[day],
+             "--content-type", "application/x-ndjson", "--overwrite", "false", "--no-progress", "-o", "none"],
+            capture_output=True, text=True, check=False,
+        )
+        if done.returncode == 0:
+            print(f"import/{day}.jsonl: uploaded", file=sys.stderr)
+        elif "BlobAlreadyExists" in done.stderr:
+            # A rerun: the day was imported before and is left as it is.
+            print(f"import/{day}.jsonl: exists already, left alone", file=sys.stderr)
+        else:
+            failed.append(day)
+            print(f"import/{day}.jsonl: upload failed", file=sys.stderr)
+    if failed:
+        # Keep the files so the operator can see what didn't go.
+        die(f"{len(failed)} of {len(paths)} uploads failed (write access to the container? a network path to "
+            f"the private endpoint?); the day files are in {out}")
+    for p in paths.values():
+        os.unlink(p)
+    os.rmdir(out)
 
 
 if __name__ == "__main__":

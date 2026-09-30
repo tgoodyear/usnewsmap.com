@@ -96,15 +96,15 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           }
         }
         {
-          // The search log's staging files keep searches in the order they
-          // were appended. The API copies each day, shuffled, to
-          // searches/days/ an hour after it ends; these go a week after
-          // their last append (STAGING_DAYS in crates/usnm-api/src/searchlog.rs).
+          // The search log's staged batches (one blob per replica per flush)
+          // are timed by their creation. The API copies each day, shuffled,
+          // to searches/days/ an hour after it ends; these go a week after
+          // they're written (STAGING_DAYS in crates/usnm-api/src/searchlog.rs).
           name: 'expire-search-staging'
           enabled: true
           type: 'Lifecycle'
           definition: {
-            filters: { blobTypes: ['appendBlob'], prefixMatch: ['searches/staging/'] }
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['searches/staging/'] }
             actions: {
               baseBlob: { delete: { daysAfterModificationGreaterThan: 7 } }
               version: { delete: { daysAfterCreationGreaterThan: 1 } }
