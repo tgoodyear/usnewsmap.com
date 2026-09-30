@@ -85,10 +85,19 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
   name: guardrailPolicyNames.auditPublicAccess
   properties: {
     displayName: 'US News Map: data services should have public network access disabled'
-    description: 'Denies public network access on storage and Cosmos accounts, except the accounts the assignment lists by resource id (the public tiles account). A Spot backfill window would need a policy exemption.'
+    description: 'Public network access on storage and Cosmos accounts, except the accounts the assignment lists by resource id (the public tiles account). Audit by default; each environment assignment sets deny together with its own ids. A Spot backfill window would need a policy exemption.'
     policyType: 'Custom'
     mode: 'Indexed'
     parameters: {
+      effect: {
+        type: 'String'
+        allowedValues: ['audit', 'deny', 'disabled']
+        defaultValue: 'audit'
+        metadata: {
+          displayName: 'Effect'
+          description: 'Audit by default, so updating this shared definition never denies an environment whose assignment has not yet listed its public accounts.'
+        }
+      }
       publicAccountIds: {
         type: 'Array'
         defaultValue: []
@@ -121,10 +130,11 @@ resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01
           }
         ]
       }
-      // Deny since the backfill moved inside the VNet and no longer opens a
+      // Each environment's assignment sets deny and its public account ids in
+      // one update (main.bicep); the backfill runs inside the VNet and opens no
       // public-access window. The definition keeps its original name: renaming
       // it would delete a definition that is still assigned.
-      then: { effect: 'deny' }
+      then: { effect: '[parameters(\'effect\')]' }
     }
   }
 }

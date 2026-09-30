@@ -393,7 +393,8 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   params: {
     definitionIds: guardrailPolicyIds
     definitionParameters: {
-      '${guardrailPolicyNames.auditPublicAccess}': { publicAccountIds: { value: [tilesId] } }
+      // Deny and the exemption arrive together, in the same assignment update.
+      '${guardrailPolicyNames.auditPublicAccess}': { effect: { value: 'deny' }, publicAccountIds: { value: [tilesId] } }
     }
   }
 }
@@ -403,6 +404,10 @@ module spotPolicies 'modules/policy-assignments.bicep' = if (deployPolicies) {
   name: 'policy-assignments-spot'
   params: {
     definitionIds: guardrailPolicyIds
+    // No public accounts live here.
+    definitionParameters: {
+      '${guardrailPolicyNames.auditPublicAccess}': { effect: { value: 'deny' } }
+    }
   }
 }
 
