@@ -193,6 +193,21 @@ async fn run<C: HttpClient>(mut rx: mpsc::Receiver<Msg>, url: String, client: C)
     }
 }
 
+/// How many of `sent` envelopes the ingestion response says it didn't
+/// accept. A 206 lists them; a body that can't be read counts as all
+/// accepted, as a 200 without one is.
+fn rejected(body: &[u8], sent: usize) -> usize {
+    let Ok(v) = serde_json::from_slice::<Value>(body) else {
+        return 0;
+    };
+    let accepted = v["itemsAccepted"].as_u64();
+    let received = v["itemsReceived"].as_u64().unwrap_or(sent as u64);
+    match accepted {
+        Some(a) => usize::try_from(received.saturating_sub(a)).unwrap_or(sent),
+        None => v["errors"].as_array().map_or(0, Vec::len),
+    }
+}
+
 /// Send and clear `batch`. Failures are logged by count only.
 async fn upload<C: HttpClient>(client: &C, url: &str, batch: &mut Vec<Value>) {
     if batch.is_empty() {
@@ -214,10 +229,12 @@ async fn upload<C: HttpClient>(client: &C, url: &str, batch: &mut Vec<Value>) {
                 .map_err(|e| e.to_string())
                 .and_then(|resp| {
                     let status = resp.status().as_u16();
-                    if (200..300).contains(&status) {
-                        Ok(())
-                    } else {
-                        Err(format!("status {status}"))
+                    if !(200..300).contains(&status) {
+                        return Err(format!("status {status}"));
+                    }
+                    match rejected(resp.body(), items) {
+                        0 => Ok(()),
+                        n => Err(format!("status {status}, {n} of {items} rejected")),
                     }
                 }),
             Err(e) => Err(e.to_string()),
@@ -226,5 +243,22 @@ async fn upload<C: HttpClient>(client: &C, url: &str, batch: &mut Vec<Value>) {
     };
     if let Err(e) = result {
         tracing::warn!(target: "telemetry", error = %e, items, "page view upload failed; dropped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rejected;
+
+    #[test]
+    fn partial_acceptance_is_counted() {
+        let partial = br#"{"itemsReceived":3,"itemsAccepted":1,"errors":[{"index":0,"statusCode":400},{"index":2,"statusCode":500}]}"#;
+        assert_eq!(rejected(partial, 3), 2);
+        assert_eq!(
+            rejected(br#"{"itemsReceived":3,"itemsAccepted":3,"errors":[]}"#, 3),
+            0
+        );
+        assert_eq!(rejected(br#"{"errors":[{"index":1}]}"#, 3), 1);
+        assert_eq!(rejected(b"", 3), 0);
     }
 }

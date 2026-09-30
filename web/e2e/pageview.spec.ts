@@ -9,10 +9,12 @@ const SITE = "https://usnewsmap.com";
 
 type Captured = { body: string; contentType: string };
 
+/** Routes for every page of the context, so a second page is covered too. */
 async function asProduction(page: Page, baseURL: string | undefined): Promise<Captured[]> {
   const reports: Captured[] = [];
-  await page.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ status: 404 }));
-  await page.route(`${SITE}/**`, async (route: Route) => {
+  const context = page.context();
+  await context.route("https://tiles.openfreemap.org/**", (route) => route.fulfill({ status: 404 }));
+  await context.route(`${SITE}/**`, async (route: Route) => {
     const req = route.request();
     const url = new URL(req.url());
     if (url.pathname === "/v1/beacon") {
@@ -70,6 +72,12 @@ test("Global Privacy Control and Do Not Track turn page views off", async ({ pag
   await expect(dnt.getByRole("heading", { level: 1 })).toHaveText("Pipeline status");
   await page.waitForTimeout(500);
   expect(reports).toEqual([]);
+
+  // The same context without either signal does report.
+  const plain = await page.context().newPage();
+  await plain.goto(`${SITE}/status`);
+  await expect.poll(() => reports.length).toBe(1);
+  expect(JSON.parse(reports[0]!.body)).toMatchObject({ route: "status" });
 });
 
 test("other origins (development, these tests) send no page views", async ({ page }) => {
