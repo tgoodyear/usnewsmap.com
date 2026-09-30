@@ -62,6 +62,9 @@ param alertEmails string = ''
 param budgetStartDate string = ''
 
 
+@description('Comma-separated Entra object ids (people or groups) that may read the search log in the searches container (scripts/searches.sh).')
+param searchLogReaders string = ''
+
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
@@ -231,6 +234,7 @@ module rbac 'modules/rbac.bicep' = {
     appInsightsName: monitoring.outputs.appInsightsName
     appPrincipalId: identities.outputs.appPrincipalId
     ingestPrincipalId: identities.outputs.ingestPrincipalId
+    searchLogReaders: filter(map(split(searchLogReaders, ','), r => trim(r)), r => !empty(r))
   }
 }
 

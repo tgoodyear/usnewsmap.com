@@ -1,8 +1,9 @@
 //! Azure Blob Storage over its REST API with Entra ID bearer tokens.
 //!
-//! Only two operations are needed (Get Blob, and Put Blob with
-//! `If-None-Match: *`), so this talks to the REST API directly with the
-//! workspace's `reqwest` client rather than pulling in the Azure SDK.
+//! Only a few operations are needed (Get Blob, Get Blob Properties, Put Blob,
+//! and List Blobs for the search log), so this talks to the REST API
+//! directly with the workspace's `reqwest` client rather than pulling in the
+//! Azure SDK.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -108,6 +109,32 @@ impl BlobStore {
     }
 }
 
+/// The text of each `<tag>…</tag>` element, with XML's five entities decoded.
+fn xml_values(xml: &str, tag: &str) -> std::vec::IntoIter<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    xml.split(open.as_str())
+        .skip(1)
+        .filter_map(|rest| {
+            rest.split_once(close.as_str()).map(|(v, _)| {
+                v.replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&apos;", "'")
+                    .replace("&amp;", "&")
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+fn error_code(resp: &reqwest::Response) -> &str {
+    resp.headers()
+        .get("x-ms-error-code")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+}
+
 fn transport(op: &'static str, path: &str, e: reqwest::Error) -> StoreError {
     // Strip the URL: the error's own text is enough and paths are logged separately.
     StoreError::Io(format!("{op} `{path}`: {}", e.without_url()))
@@ -190,12 +217,7 @@ impl ObjectStore for BlobStore {
             .send()
             .await
             .map_err(|e| transport("put", path, e))?;
-        let code = resp
-            .headers()
-            .get("x-ms-error-code")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        match (resp.status(), code) {
+        match (resp.status(), error_code(&resp)) {
             (StatusCode::CREATED, _) => Ok(true),
             // Only "the blob already exists" is a normal create-only miss;
             // lease, immutability and blob-type conflicts are errors.
@@ -208,6 +230,95 @@ impl ObjectStore for BlobStore {
             }),
         }
     }
+
+    async fn exists(&self, path: &str) -> Result<bool, StoreError> {
+        let resp = self
+            .request(Method::HEAD, path)
+            .await?
+            .send()
+            .await
+            .map_err(|e| transport("head", path, e))?;
+        match resp.status() {
+            s if s.is_success() => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            s => Err(StoreError::Http {
+                op: "head",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+
+    /// List Blobs, following continuation markers.
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        validate_path(prefix)?;
+        // `base` is `{origin}/{container}[/{store prefix}]`.
+        let (container, store_prefix) = match self.base.split_once("://") {
+            Some((scheme, rest)) => {
+                let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+                let (container, sub) = path.split_once('/').unwrap_or((path, ""));
+                (format!("{scheme}://{host}/{container}"), sub.to_owned())
+            }
+            None => return Err(StoreError::InvalidLocation(self.base.clone())),
+        };
+        let full = if store_prefix.is_empty() {
+            format!("{prefix}/")
+        } else {
+            format!("{store_prefix}/{prefix}/")
+        };
+        let strip = if store_prefix.is_empty() {
+            String::new()
+        } else {
+            format!("{store_prefix}/")
+        };
+        let mut names = Vec::new();
+        let mut marker = String::new();
+        loop {
+            let token = self.credential.token().await?;
+            let mut query = vec![
+                ("restype", "container"),
+                ("comp", "list"),
+                ("prefix", full.as_str()),
+            ];
+            if !marker.is_empty() {
+                query.push(("marker", marker.as_str()));
+            }
+            let resp = self
+                .http
+                .get(&container)
+                .query(&query)
+                .bearer_auth(token)
+                .header("x-ms-version", API_VERSION)
+                .header("x-ms-date", httpdate::fmt_http_date(SystemTime::now()))
+                .send()
+                .await
+                .map_err(|e| transport("list", prefix, e))?;
+            if !resp.status().is_success() {
+                return Err(StoreError::Http {
+                    op: "list",
+                    path: prefix.into(),
+                    status: resp.status().as_u16(),
+                });
+            }
+            let xml = resp
+                .text()
+                .await
+                .map_err(|e| transport("list", prefix, e))?;
+            for name in xml_values(&xml, "Name") {
+                if let Some(path) = name.strip_prefix(&strip) {
+                    if validate_path(path).is_ok() {
+                        names.push(path.to_owned());
+                    }
+                }
+            }
+            marker = xml_values(&xml, "NextMarker").next().unwrap_or_default();
+            if marker.is_empty() {
+                break;
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +328,18 @@ mod tests {
 
     fn cred() -> Arc<Credential> {
         Arc::new(Credential::new(StaticToken("t".into())))
+    }
+
+    #[test]
+    fn list_responses() {
+        let xml = "<EnumerationResults><Blobs><Blob><Name>a/b.jsonl</Name></Blob>\
+                   <Blob><Name>a/x&amp;y</Name></Blob></Blobs><NextMarker>m1</NextMarker></EnumerationResults>";
+        assert_eq!(
+            xml_values(xml, "Name").collect::<Vec<_>>(),
+            ["a/b.jsonl", "a/x&y"]
+        );
+        assert_eq!(xml_values(xml, "NextMarker").next().as_deref(), Some("m1"));
+        assert_eq!(xml_values("<NextMarker />", "NextMarker").next(), None);
     }
 
     #[test]

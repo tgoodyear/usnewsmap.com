@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{OriginalUri, State};
-use axum::http::Uri;
+use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
 use serde::Serialize;
 use usnm_core::cube::{Cell, SparseCube};
@@ -13,8 +13,9 @@ use usnm_core::params::{RawParams, SearchRequest};
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::plan::{self, Planned};
 
-use super::{cached, mount_prefix, uses_fuzzy, with_timeout, Ctx};
+use super::{cached_body, mount_prefix, uses_fuzzy, with_timeout, Ctx};
 use crate::error::ApiError;
+use crate::searchlog::{self, Admission, SearchLog};
 use crate::{version, AppState};
 
 #[derive(Serialize)]
@@ -83,18 +84,28 @@ struct Timing {
     total: u128,
 }
 
+/// A visitor's search, and whether it goes in the search log. Every search
+/// on the site requests this endpoint once, so this is where it's counted
+/// (06 §6.8).
 pub async fn aggregate(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let ctx = Ctx::serving(&state);
-    aggregate_in(&state, ctx, &uri).await
+    let log = state
+        .search_log
+        .as_deref()
+        .map(|log| (log, searchlog::admit(&headers, &state.config.site_host)));
+    aggregate_in(&state, ctx, &uri, log).await
 }
 
+/// `log` is `None` for the warm-up, which is never recorded.
 pub(crate) async fn aggregate_in(
     state: &Arc<AppState>,
     ctx: Ctx,
     uri: &Uri,
+    log: Option<(&SearchLog, Admission)>,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
     raw.reject_unknown(&["format"])?;
@@ -117,8 +128,12 @@ pub(crate) async fn aggregate_in(
     let key = format!("{serving}|aggregate|{canonical}");
     let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
     let warm_up = ctx.warm_up;
+    let search = match log {
+        Some((_, Admission::Record)) => Some(searchlog::Search::new(&raw, &req, &serving)),
+        _ => None,
+    };
     let fut = compute(state.clone(), ctx, req, canonical.clone(), prefix);
-    cached(
+    let (resp, body) = cached_body(
         state,
         warm_up,
         key,
@@ -128,7 +143,16 @@ pub(crate) async fn aggregate_in(
         &canonical,
         fut,
     )
-    .await
+    .await?;
+    // Only a search that got its results counts, whichever cache served it.
+    match (log, search) {
+        (Some((log, _)), Some(search)) => {
+            log.record(searchlog::Entry::new(chrono::Utc::now(), search, body))
+        }
+        (Some((log, Admission::Excluded(reason))), _) => log.excluded(reason),
+        _ => {}
+    }
+    Ok(resp)
 }
 
 fn coarser(unit: BucketUnit) -> Option<BucketUnit> {

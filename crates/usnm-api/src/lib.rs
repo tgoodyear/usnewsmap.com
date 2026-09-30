@@ -27,6 +27,7 @@ pub mod prewarm;
 pub mod ratelimit;
 pub mod refdata;
 mod routes;
+pub mod searchlog;
 pub mod site;
 pub mod status;
 pub mod telemetry;
@@ -108,6 +109,8 @@ pub struct AppState {
     /// Set while the first version warms up after a start: `/readyz` says
     /// not ready (see [`spawn_startup_warm_up`]).
     pub warming: AtomicBool,
+    /// The anonymous search log (`None` records nothing).
+    pub search_log: Option<Arc<searchlog::SearchLog>>,
 }
 
 impl AppState {
@@ -137,11 +140,18 @@ impl AppState {
             metrics: telemetry::Metrics::global(),
             page_views: None,
             warming: AtomicBool::new(false),
+            search_log: None,
         }
     }
 
     pub fn with_response_store(mut self, store: Arc<dyn ObjectStore>) -> Self {
         self.responses = Some(store);
+        self
+    }
+
+    /// Record visitors' searches in `log` (see [`searchlog`]).
+    pub fn with_search_log(mut self, log: Arc<searchlog::SearchLog>) -> Self {
+        self.search_log = Some(log);
         self
     }
 

@@ -93,6 +93,52 @@ impl ObjectStore for LocalStore {
         .await
         .map_err(|e| StoreError::Io(e.to_string()))?
     }
+
+    async fn exists(&self, path: &str) -> Result<bool, StoreError> {
+        validate_path(path)?;
+        let full = self.root.join(path);
+        match tokio::fs::metadata(&full).await {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(io(&full, e)),
+        }
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        validate_path(prefix)?;
+        let root = self.root.clone();
+        let prefix = prefix.to_owned();
+        tokio::task::spawn_blocking(move || {
+            fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), StoreError> {
+                let entries = match std::fs::read_dir(dir) {
+                    Ok(e) => e,
+                    Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+                    Err(e) => return Err(io(dir, e)),
+                };
+                for entry in entries {
+                    let entry = entry.map_err(|e| io(dir, e))?;
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let path = format!("{rel}/{name}");
+                    // Temporary files and anything else that isn't a valid path.
+                    if validate_path(&path).is_err() {
+                        continue;
+                    }
+                    if entry.path().is_dir() {
+                        walk(&entry.path(), &path, out)?;
+                    } else {
+                        out.push(path);
+                    }
+                }
+                Ok(())
+            }
+            let mut out = Vec::new();
+            walk(&root.join(&prefix), &prefix, &mut out)?;
+            out.sort();
+            Ok(out)
+        })
+        .await
+        .map_err(|e| StoreError::Io(e.to_string()))?
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +157,16 @@ mod tests {
         s.put("v1/a.json", b"three".to_vec(), "").await.unwrap();
         assert_eq!(s.get("v1/a.json").await.unwrap().unwrap(), b"three");
         assert!(s.get("../etc/passwd").await.is_err());
+        assert!(s.exists("v1/a.json").await.unwrap());
+        assert!(!s.exists("v1/b.json").await.unwrap());
+        assert!(s.put_new("log/d/2.jsonl", b"2".to_vec(), "").await.unwrap());
+        assert!(s.put_new("log/d/1.jsonl", b"1".to_vec(), "").await.unwrap());
+        assert!(s.put_new("logs/x.jsonl", b"x".to_vec(), "").await.unwrap());
+        assert_eq!(
+            s.list("log").await.unwrap(),
+            ["log/d/1.jsonl", "log/d/2.jsonl"]
+        );
+        assert!(s.list("none").await.unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

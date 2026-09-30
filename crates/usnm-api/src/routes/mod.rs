@@ -7,6 +7,7 @@ mod meta;
 pub use aggregate::aggregate;
 pub(crate) use aggregate::aggregate_in;
 pub use beacon::beacon;
+pub(crate) use beacon::is_bot;
 pub use coverage::coverage;
 pub(crate) use coverage::coverage_in;
 pub use hits::hits;
@@ -147,6 +148,29 @@ where
     F: Future<Output = Result<T, ApiError>>,
     T: Serialize,
 {
+    cached_body(
+        state, warm_up, key, pinning, serving, path, canonical, compute,
+    )
+    .await
+    .map(|(resp, _)| resp)
+}
+
+/// [`cached`], also returning the body the response was built from.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn cached_body<F, T>(
+    state: &AppState,
+    warm_up: bool,
+    key: String,
+    pinning: &Pinning,
+    serving: &str,
+    path: &str,
+    canonical: &str,
+    compute: F,
+) -> Result<(Response, Arc<Vec<u8>>), ApiError>
+where
+    F: Future<Output = Result<T, ApiError>>,
+    T: Serialize,
+{
     let persistent = state
         .responses
         .clone()
@@ -205,7 +229,7 @@ where
     );
     resp.extensions_mut()
         .insert(ServedVersion(serving.to_owned()));
-    Ok(resp)
+    Ok((resp, body))
 }
 
 pub(crate) async fn with_timeout<T>(

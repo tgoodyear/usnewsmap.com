@@ -14,6 +14,7 @@ param ingestCron = readEnvironmentVariable('USNM_INGEST_CRON', '')
 param backfillWorkers = int(readEnvironmentVariable('USNM_BACKFILL_WORKERS', '4'))
 param cosmosFreeTier = bool(readEnvironmentVariable('USNM_COSMOS_FREE_TIER', 'true'))
 param alertEmails = readEnvironmentVariable('USNM_ALERT_EMAILS', '')
+param searchLogReaders = readEnvironmentVariable('USNM_SEARCH_LOG_READERS', '')
 param budgetStartDate = readEnvironmentVariable('USNM_BUDGET_START', '')
 param dnsZoneName = readEnvironmentVariable('USNM_DNS_ZONE', '')
 // Google Search Console domain verification, published at the apex next to SPF.

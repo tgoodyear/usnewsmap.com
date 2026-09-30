@@ -17,4 +17,14 @@ describe("PrivacyPage", () => {
     expect(container.textContent).not.toMatch(/\S+@\S+\.\w+/);
     expect(container.textContent).not.toContain("—");
   });
+
+  it("says search words are kept indefinitely, without identifiers, and not under DNT or GPC", () => {
+    const { container } = render(<PrivacyPage />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("keeps the words of every search indefinitely");
+    expect(text).toContain("never stored with your IP address, browser details, location or any identifier");
+    expect(text).toContain("Do Not Track or Global Privacy Control, your searches are not recorded");
+    expect(text).toContain("at least five times");
+    expect(text).toContain("copied from the search engine's own log");
+  });
 });

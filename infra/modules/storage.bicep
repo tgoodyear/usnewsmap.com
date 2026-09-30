@@ -6,7 +6,7 @@ param tags object
 param name string
 
 @description('Blob containers. Access is granted per container in rbac.bicep.')
-var containers = ['curated', 'reference', 'cache', 'qw-index']
+var containers = ['curated', 'reference', 'cache', 'qw-index', 'searches']
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: name
@@ -50,6 +50,8 @@ resource blobContainers 'Microsoft.Storage/storageAccounts/blobServices/containe
 ]
 
 // Versioning is account-wide; only curated/ and reference/ need history.
+// searches/days/ and searches/import/ (the search log, kept indefinitely,
+// ADR-0012) match no rule here, so nothing expires them.
 resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
   parent: account
   name: 'default'
@@ -90,6 +92,23 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['curated/', 'reference/'] }
             actions: {
               version: { delete: { daysAfterCreationGreaterThan: 30 } }
+            }
+          }
+        }
+        {
+          // The search log's staged batches (one blob per replica per flush)
+          // are timed by their creation. The API copies each day, shuffled,
+          // to searches/days/ an hour after it ends; these go a week after
+          // they're written (STAGING_DAYS in crates/usnm-api/src/searchlog.rs),
+          // then stay in soft delete for 14 days (ADR-0012 counts that).
+          name: 'expire-search-staging'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['searches/staging/'] }
+            actions: {
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 7 } }
+              version: { delete: { daysAfterCreationGreaterThan: 1 } }
             }
           }
         }

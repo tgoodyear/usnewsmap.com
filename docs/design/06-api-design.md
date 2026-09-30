@@ -281,3 +281,20 @@ flowchart LR
 | Integration | `testcontainers` Quickwit + a 10k-page fixture corpus: count correctness against a brute-force DataFusion scan |
 | Load | k6 scripts with the benchmark query set against staging; publish p95/p99 in the PR |
 | Synthetic | App Insights availability tests on `/readyz` and an example search, every 5 minutes from 3 regions |
+
+## 6.8 Search log
+
+Every search a visitor runs on the site is kept, indefinitely and without anything that identifies or links a person ([ADR-0012](adr/0012-anonymous-search-log.md)). As built in `crates/usnm-api/src/searchlog.rs`:
+
+- **Where it's counted.** `/v1/aggregate`, which the site requests once per search, records a search when it answers 200, whether the body came from a cache or was computed. The coverage and hits requests that follow aren't counted, nor are errors, `v` redirects (the redirected request counts), health probes or the cache warm-up (§6.5), which calls the handler code without the recording step.
+- **Not recorded:** `DNT: 1` or `Sec-GPC: 1`; a user agent the page-view check (§6.3.7) calls a crawler, script or headless browser; and a request not from the site's own pages: an `Origin` other than `https://{USNM_SITE_HOST}`, a `Sec-Fetch-Site` other than `same-origin`, or neither header. Each outcome is counted in `api.search_log` (08 §8.1.2).
+- **The record** is one JSON line, and nothing else is stored with it:
+
+  ```json
+  {"v":1,"day":"2026-09-29","source":"api","q":"Cross of Gold","query":"\"cross of gold\"","mode":"phrase","near":null,"fuzzy":0,"from":"1896-06-01","to":"1896-12-31","state":["GA","SC"],"lccn":[],"lang":[],"front":false,"bucket":"week","pages":1234,"index_version":"pages-v20260929-3"}
+  ```
+
+  `q` is the text as submitted, trimmed, with whitespace and control characters folded to single spaces and at most 256 characters; `query` is the canonical query (§6.3.1) the search ran; `from` and `to` are after clamping to the corpus; `pages` is `total.hits`; `day` is the UTC day, the only time kept. Imports (below) have `"source":"import"`, the canonical query as `q`, and `null` for `mode`, `pages` and `index_version`.
+- **Writing.** The handler queues the record without waiting (1,024 slots; a full queue drops it). A background task writes each day's records, shuffled, as one new blob, `staging/{day}/{32 random hex digits}.jsonl`, created with `If-None-Match: *`, every 5 minutes (`USNM_SEARCH_LOG_FLUSH_SECS`), when 2,000 are waiting, and at shutdown (at most 10 s after the requests drain). A failed write is retried at the next flush under the same name, so a write that succeeded without the API seeing the response is stored once; at most 20,000 records wait. Records for a day that aren't staged 45 minutes after it ends are dropped and counted as lost. An hour after each UTC day ends, a replica lists that day's batches, shuffles all of their lines together and writes `days/{day}.jsonl` create-only; whichever replica gets there first writes it. Staged batches expire 7 days after they're written, then stay recoverable for the account's 14 days of soft delete. `USNM_SEARCH_LOG_URL` names the container (`https://{account}.blob.core.windows.net/searches`); unset, nothing is recorded.
+- **Logging.** Neither the queue nor the writer logs search text. A failed write logs `search log write failed` with the error (the blob path and HTTP status) and the number of records; a failed day file logs the day.
+- **Reading.** `scripts/searches.sh <env> [days]` (09 §9.4.2). `scripts/import-search-log.py <env>` imports the searches that were in the Quickwit log before this existed.

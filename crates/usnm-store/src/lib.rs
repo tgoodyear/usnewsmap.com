@@ -1,5 +1,5 @@
-//! Object storage for published reference data and the persistent response
-//! cache (04 §4.3, 06 §6.5).
+//! Object storage for published reference data, the persistent response
+//! cache and the search log (04 §4.3, 06 §6.5, 06 §6.8).
 //!
 //! Production reads and writes Azure Blob Storage over its private endpoint
 //! with the app's managed identity (08 §8.3): Entra ID bearer tokens only, no
@@ -57,6 +57,15 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     /// Create or replace an object. Only the publisher uses this, for the
     /// version pointer (`current.json`); everything else is create-only.
     async fn put(&self, path: &str, body: Vec<u8>, content_type: &str) -> Result<(), StoreError>;
+
+    /// Whether an object exists.
+    async fn exists(&self, path: &str) -> Result<bool, StoreError> {
+        Ok(self.get(path).await?.is_some())
+    }
+
+    /// The paths of the objects under `prefix` (a directory-like path
+    /// without a trailing `/`), sorted. Only the search log (`usnm-api`) uses this.
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError>;
 }
 
 /// Open a store: an `https://{account}.blob.core.windows.net/{container}[/prefix]`

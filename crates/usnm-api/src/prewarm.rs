@@ -224,7 +224,7 @@ impl Run<'_> {
         let served = tokio::time::timeout(limit, async move {
             match endpoint {
                 Endpoint::Places => routes::places_in(state, ctx, uri).await,
-                Endpoint::Aggregate => routes::aggregate_in(state, ctx, uri).await,
+                Endpoint::Aggregate => routes::aggregate_in(state, ctx, uri, None).await,
                 Endpoint::Coverage => routes::coverage_in(state, ctx, uri).await,
             }
         })
