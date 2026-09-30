@@ -45,10 +45,12 @@ var replicaTimeoutSecs = 86400
 // Backfill: 22 h + 45 min watchdog = 22 h 45 min, leaving 75 minutes of
 // margin under the 24 h timeout for the startup enqueue and the last commit.
 var backfillMaxRuntimeSecs = 79200
-// Ingest run: curation stops 10 h after the start; titles-sync (about 4.5 h
-// at most, for a catalog built from nothing) and a release (a full rebuild of
-// the corpus is estimated at 6 h) still fit in the 24 h timeout.
-var ingestCurateMaxRuntimeSecs = 36000
+// Ingest run: curation stops 6 h after the start (6 h 45 min at most with the
+// watchdog). titles-sync takes up to about 4.5 h (a catalog built from
+// nothing), and a full rebuild of the corpus about 11 h (23.7M pages at the
+// slowest rate of the September 2026 prod releases, 36,000 docs a minute),
+// so even all three at their longest end by about 22 h 15 min.
+var ingestCurateMaxRuntimeSecs = 21600
 
 var env = [
   { name: 'USNM_COSMOS_ENDPOINT', value: cosmosEndpoint }

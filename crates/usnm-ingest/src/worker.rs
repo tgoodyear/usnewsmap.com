@@ -16,8 +16,8 @@
 //!   still unfinished [`BATCH_LIMIT`] after its download slot is abandoned
 //!   like a failed one, and the worker moves on.
 //! - **Stop:** a worker with a [`Worker::deadline`] claims nothing once it
-//!   has passed, and a batch still waiting for its download slot then is
-//!   released without costing an attempt. A batch past its slot is finished
+//!   has passed, and a batch claimed but not yet downloading then (waiting
+//!   for its download slot) is released without costing an attempt. A batch past its slot is finished
 //!   (or abandoned by the watchdog), so a worker stops at most
 //!   [`BATCH_LIMIT`] after the deadline, and exits cleanly well before the
 //!   job's replica timeout would kill it.
@@ -282,45 +282,55 @@ impl Worker {
                 "claimed"
             )
         });
-        if let Some(interval) = self.fetch_interval {
-            if source::local_path(&batch.source_url).is_none() {
-                let waiting = Instant::now();
-                let wait = self
-                    .wait_for_fetch_slot(interval, &name)
-                    .instrument(span.clone());
-                // Past the deadline the worker stops waiting: the batch goes
-                // back to the queue as it was, attempt and all.
-                let granted = match self.deadline {
-                    Some(deadline) => tokio::select! {
-                        r = wait => r.map(|()| true)?,
-                        () = tokio::time::sleep_until(deadline) => false,
-                    },
-                    None => wait.await.map(|()| true)?,
-                };
-                let wait_secs = round1(waiting.elapsed().as_secs_f64());
-                span.record("wait_secs", wait_secs);
-                if !granted {
-                    span.record("outcome", Outcome::Stopped.as_str());
-                    telemetry::metrics()
-                        .curate_batches
-                        .add(1, &[KeyValue::new("outcome", Outcome::Stopped.as_str())]);
-                    span.in_scope(|| {
-                        tracing::info!(
-                            batch = %name,
-                            wait_secs,
-                            "max runtime reached before the download slot; batch released"
-                        )
-                    });
-                    self.release(
-                        &batch.batch,
-                        "released unstarted: the worker reached its max runtime while waiting for a download slot",
-                        false,
-                    )
-                    .await?;
-                    return Ok(Outcome::Stopped);
+        // Past the deadline the batch goes back to the queue as it was,
+        // attempt and all: when the claim itself ran past it, or while the
+        // batch waits for a download slot.
+        let mut wait_secs = 0.0;
+        let mut granted = !self.past_deadline();
+        if granted {
+            if let Some(interval) = self.fetch_interval {
+                if source::local_path(&batch.source_url).is_none() {
+                    let waiting = Instant::now();
+                    let wait = self
+                        .wait_for_fetch_slot(interval, &name)
+                        .instrument(span.clone());
+                    granted = match self.deadline {
+                        Some(deadline) => tokio::select! {
+                            biased;
+                            () = tokio::time::sleep_until(deadline) => false,
+                            r = wait => r.map(|()| true)?,
+                        },
+                        None => wait.await.map(|()| true)?,
+                    };
+                    wait_secs = round1(waiting.elapsed().as_secs_f64());
+                    span.record("wait_secs", wait_secs);
+                    if granted {
+                        span.in_scope(
+                            || tracing::info!(batch = %name, wait_secs, "download slot granted"),
+                        );
+                    }
                 }
-                span.in_scope(|| tracing::info!(batch = %name, wait_secs, "download slot granted"));
             }
+        }
+        if !granted {
+            span.record("outcome", Outcome::Stopped.as_str());
+            telemetry::metrics()
+                .curate_batches
+                .add(1, &[KeyValue::new("outcome", Outcome::Stopped.as_str())]);
+            span.in_scope(|| {
+                tracing::info!(
+                    batch = %name,
+                    wait_secs,
+                    "max runtime reached before the download; batch released"
+                )
+            });
+            self.release(
+                &batch.batch,
+                "released unstarted: the worker reached its max runtime before the download",
+                false,
+            )
+            .await?;
+            return Ok(Outcome::Stopped);
         }
         progress.set_stage(Stage::Connecting);
         let started = Instant::now();
@@ -940,6 +950,25 @@ mod tests {
         let (b, _) = state.batch("batch_b").await.unwrap().unwrap();
         assert_eq!((b.status, b.attempts), (BatchStatus::Queued, 0));
         assert!(b.lease.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_batch_claimed_after_the_deadline_is_released_unstarted() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::new(Arc::new(MemoryDocs::default()));
+        source::enqueue(&state, &[listed("batch_b_ver01", archive(dir.path()))])
+            .await
+            .unwrap();
+        // The deadline passes while the claim is in flight.
+        let w = Worker {
+            deadline: Some(tokio::time::Instant::now()),
+            ..worker(&state, dir.path(), "w1")
+        };
+        let (claimed, _) = w.claim().await.unwrap().unwrap();
+        assert_eq!(w.run_one(&claimed).await.unwrap(), Outcome::Stopped);
+        let (b, _) = state.batch("batch_b").await.unwrap().unwrap();
+        assert_eq!((b.status, b.attempts), (BatchStatus::Queued, 0));
+        assert!(b.lease.is_none() && b.curated.is_none());
     }
 
     #[tokio::test]

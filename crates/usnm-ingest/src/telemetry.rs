@@ -29,7 +29,8 @@ pub struct Metrics {
     pub bytes_sent: Counter<u64>,
     /// Ingest requests retried after pushback, by HTTP `status`.
     pub retries: Counter<u64>,
-    /// Batches by `outcome`: ok, failed, throttled or timed_out.
+    /// Batches by `outcome`: ok, failed, throttled, timed_out, or stopped
+    /// (released unstarted when the worker reached its max runtime).
     pub curate_batches: Counter<u64>,
     pub curate_pages: Counter<u64>,
     pub curate_duration: Histogram<f64>,
