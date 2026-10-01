@@ -272,11 +272,17 @@ test("About opens from the footer and keeps the search", async ({ page }) => {
     ["Slate", "https://web.archive.org/web/20190307100233/http://www.slate.com/blogs/the_vault/2016/03/07/us_news_map_interactive_lets_you_map_how_historical_newspapers_digitized.html"],
     ["The Washington Post", "https://web.archive.org/web/20160616154229/https://www.washingtonpost.com/news/the-intersect/wp/2016/03/17/the-secret-pre-internet-history-of-viral-memes/"],
     ["Chronicling America Data Challenge", "https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25"],
-    ["NEH and Library of Congress", "https://www.loc.gov/ndnp/"],
   ];
   for (const [name, href] of links) {
     const link = dialog.getByRole("link", { name, exact: true });
     await expect(link).toHaveAttribute("href", href);
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  }
+  // Named twice: the collection (first paragraph) and who ran the data challenge.
+  const ndnp = dialog.getByRole("link", { name: "NEH and Library of Congress", exact: true });
+  await expect(ndnp).toHaveCount(2);
+  for (const link of await ndnp.all()) {
+    await expect(link).toHaveAttribute("href", "https://www.loc.gov/ndnp/");
     await expect(link).toHaveAttribute("rel", "noopener noreferrer");
   }
   await expectAccessible(page);

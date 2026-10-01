@@ -80,9 +80,13 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           >
             The Washington Post
           </a>{" "}
-          and won a prize in the NEH's{" "}
+          and won a prize in the{" "}
           <a href="https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25" {...ext}>
             Chronicling America Data Challenge
+          </a>
+          , run by the{" "}
+          <a href="https://www.loc.gov/ndnp/" {...ext}>
+            NEH and Library of Congress
           </a>
           . Georgia Tech's{" "}
           <a
