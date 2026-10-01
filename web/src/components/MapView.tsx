@@ -12,6 +12,8 @@ import { ScatterplotLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import type { Layer, Norm } from "../state/url";
 import { colorFor } from "../lib/scale";
+import { ALPHA_CLEAR, ALPHA_UNCLEAR, skewColor } from "../lib/skewScale";
+import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
@@ -20,6 +22,7 @@ interface Props {
   points: MapPoint[];
   layer: Layer;
   norm: Norm;
+  /** The largest circle's value: pages with a match, or expected matches in the relative-rate view. */
   maxValue: number;
   maxRel: number;
   selected: string;
@@ -41,6 +44,32 @@ function radiusOf(value: number, maxValue: number): number {
   return value > 0 ? Math.max(3, MAX_RADIUS_PX * Math.sqrt(value / Math.max(maxValue, 1))) : 0;
 }
 
+/** Smallest circle in the relative-rate view, so a place with pages but almost nothing expected is still drawn. */
+const MIN_SKEW_RADIUS_PX = 4;
+
+/**
+ * Relative-rate view (doc 11, 11.6): area ∝ matches expected, the evidence
+ * behind the colour; every place with pages in the window is drawn.
+ */
+function skewRadius(p: MapPoint, maxExpected: number): number {
+  const s = p.skew;
+  if (!s || s.pages <= 0) return 0;
+  return Math.max(MIN_SKEW_RADIUS_PX, MAX_RADIUS_PX * Math.sqrt(s.expected / Math.max(maxExpected, 1e-9)));
+}
+
+function radiusFor(p: MapPoint, norm: Norm, maxValue: number): number {
+  return norm === "skew" ? skewRadius(p, maxValue) : radiusOf(p.value, maxValue);
+}
+
+/** Faded when the 90% range includes 1. */
+function skewAlpha(p: MapPoint): number {
+  return p.skew && p.skew.dir !== 0 ? ALPHA_CLEAR : ALPHA_UNCLEAR;
+}
+
+function skewFill(p: MapPoint): [number, number, number, number] {
+  return skewColor(p.skew?.estimate ?? 1, skewAlpha(p));
+}
+
 // `none` gives a plain background: offline development and tests.
 const STYLE_URL = import.meta.env.VITE_BASEMAP_STYLE ?? "https://tiles.openfreemap.org/styles/positron";
 const PLAIN_STYLE: StyleSpecification = {
@@ -57,10 +86,11 @@ export default function MapView(props: Props) {
   const syncing = useRef(false);
   const tooltip = useRef<HTMLDivElement>(null);
   // What the hit test sees: the drawn points and their scale.
-  const drawn = useRef<{ points: MapPoint[]; maxValue: number; layer: Layer }>({
+  const drawn = useRef<{ points: MapPoint[]; maxValue: number; layer: Layer; norm: Norm }>({
     points: [],
     maxValue: 1,
     layer: "points",
+    norm: "raw",
   });
   // The map is created once; its handlers read the latest viewport props.
   const latest = useRef(props);
@@ -92,14 +122,15 @@ export default function MapView(props: Props) {
     // circles. GPU picking would read pixels back on every mouse move,
     // stalling the pipeline; a few thousand projections cost far less.
     const hit = (x: number, y: number): MapPoint | null => {
-      const { points, maxValue, layer } = drawn.current;
+      const { points, maxValue, layer, norm } = drawn.current;
       if (layer !== "points") return null;
       let best: MapPoint | null = null;
       let bestD = Infinity;
       for (const p of points) {
-        if (p.value <= 0) continue;
+        const radius = radiusFor(p, norm, maxValue);
+        if (radius <= 0) continue;
         const s = m.project(p.position);
-        const r = radiusOf(p.value, maxValue) + HIT_SLOP_PX;
+        const r = radius + HIT_SLOP_PX;
         const d = (s.x - x) ** 2 + (s.y - y) ** 2;
         // Prefer the nearest centre among circles under the pointer.
         if (d <= r * r && d < bestD) {
@@ -121,7 +152,11 @@ export default function MapView(props: Props) {
           tip.hidden = true;
           return;
         }
-        tip.textContent = `${p.name}, ${p.state} · ${p.value.toLocaleString()} pages`;
+        const skew = drawn.current.norm === "skew" ? p.skew : undefined;
+        tip.textContent = skew
+          ? skewSentence(`${p.name}, ${p.state}`, skew)
+          : `${p.name}, ${p.state} · ${p.value.toLocaleString()} pages`;
+        tip.classList.toggle("map-tooltip--wrap", skew !== undefined);
         tip.style.transform = `translate(${e.point.x + 12}px, ${e.point.y + 12}px)`;
         tip.hidden = false;
       });
@@ -176,9 +211,42 @@ export default function MapView(props: Props) {
     // Every place in the search is always drawn; places with no pages yet
     // have zero radius. A fixed-size dataset lets deck.gl update attribute
     // values in place on each playback step instead of rebuilding buffers.
-    drawn.current = { points, maxValue, layer };
+    drawn.current = { points, maxValue, layer, norm };
     const layers =
-      layer === "heat"
+      norm === "skew"
+        ? [
+            new ScatterplotLayer<MapPoint>({
+              id: "skew",
+              data: points,
+              stroked: true,
+              radiusUnits: "pixels",
+              lineWidthUnits: "pixels",
+              getRadius: (p) => skewRadius(p, maxValue),
+              // Hollow rings (county or state precision) carry the colour on the ring.
+              getFillColor: (p) => (p.precision === "city" ? skewFill(p) : [0, 0, 0, 0]),
+              // A hollow ring keeps its colour when selected (the colour is all it shows); the wider
+              // line marks the selection. A filled city circle gets a dark outline instead.
+              getLineColor: (p) =>
+                p.precision !== "city"
+                  ? skewFill(p)
+                  : p.id === selected
+                    ? [20, 20, 20, 255]
+                    : [40, 40, 40, skewAlpha(p) === ALPHA_CLEAR ? 170 : 70],
+              getLineWidth: (p) =>
+                !p.skew || p.skew.pages <= 0
+                  ? 0
+                  : p.precision === "city"
+                    ? p.id === selected ? 3 : 1
+                    : p.id === selected ? 4.5 : 2.5,
+              updateTriggers: {
+                getRadius: [maxValue, points],
+                getFillColor: [points],
+                getLineColor: [points, selected],
+                getLineWidth: [selected, points],
+              },
+            }),
+          ]
+        : layer === "heat"
         ? [
             new HeatmapLayer<MapPoint>({
               id: "heat",

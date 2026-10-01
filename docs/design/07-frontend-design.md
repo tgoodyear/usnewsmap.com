@@ -84,6 +84,7 @@ Every frame is **O(P)**: about 3,000 subtractions, then a single deck.gl attribu
 |-------|----------|-------|
 | **Points** (default) | Circle **area ∝ hits**, i.e. radius ∝ √hits (perceptually honest); fill color = relative frequency on a sequential palette; hollow ring = county- or state-precision place | Replaces the legacy mean/std five-class buckets, which shifted meaning between searches |
 | **Heat** | deck.gl `HeatmapLayer` weighted by hits (or relative) | Good for dense eastern regions |
+| **Relative rate** (`norm=skew`) | Points colored by each place's rate against the other places in the same buckets, on a diverging scale centred on 1×; area ∝ matches expected; faded where it can't tell | [11](11-term-geographic-skew.md); replaces the colour menu with a Pages / Relative rate toggle |
 | **States** | Choropleth of hits per 1,000 pages published in the window; hatched where there is no coverage | Normalized, avoids the "big city" bias |
 | **First appearance** | Categorical time ramp (early = warm, late = cool); animated reveal | Designed for "Cross of Gold"-style spread stories |
 | **Coverage** (overlay) | States and places with **no pages published** in the current window are shaded or hatched, with the tooltip "No digitized newspapers for this period" | A time-aware version of the legacy black-state mask |

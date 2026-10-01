@@ -146,6 +146,24 @@ input, select {
 .segmented button { border: 0; background: var(--panel); padding: 6px 14px; min-height: 36px; cursor: pointer; }
 .segmented button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 
+/* Measure toggle and its explanation. */
+.measure { display: inline-flex; align-items: center; gap: 4px; position: relative; }
+.infotip { position: relative; }
+.infotip__button {
+  width: 28px; height: 28px; min-height: 24px; border-radius: 50%; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); font-weight: 700; font-style: italic; font-family: Georgia, serif;
+}
+.infotip__body {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: min(320px, calc(100vw - 32px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 4px 12px; font-size: 0.9rem; line-height: 1.45; box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+}
+.infotip__body[hidden] { display: none; }
+@media (max-width: 640px) {
+  /* Phones: span the screen instead of hanging off the button. */
+  .infotip__body { position: fixed; top: auto; left: 16px; right: 16px; width: auto; margin-top: 6px; }
+}
+
 .stage { position: relative; flex: 1; display: flex; min-height: 300px; }
 .map-wrap { position: relative; flex: 1; display: flex; min-height: 300px; }
 .map { flex: 1; min-height: 300px; }
@@ -154,6 +172,7 @@ input, select {
   background: var(--panel); color: var(--ink); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 4px 8px; font-size: 0.85rem; white-space: nowrap;
 }
+.map-tooltip--wrap { white-space: normal; width: max-content; max-width: 300px; }
 .map--loading { display: grid; place-items: center; color: var(--muted); }
 
 .legend {
@@ -165,6 +184,24 @@ input, select {
 .legend__ramp span { flex: 1; }
 .legend__ends { display: flex; justify-content: space-between; color: var(--muted); }
 .legend__note { color: var(--muted); margin-top: 4px; }
+.legend--skew { max-width: 270px; }
+.legend--skew .legend__note { margin: 4px 0 0; }
+.legend__ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+.legend__ticks span { flex: 1; text-align: center; }
+.legend__swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--muted); vertical-align: -1px; }
+
+.panel__skew { margin: 8px 0 0; line-height: 1.45; }
+.skew-lists h2 { font-size: 1.1rem; margin: 0 0 4px; }
+.skew-list h3 { font-size: 0.95rem; margin: 12px 0 4px; }
+.skew-list ol { margin: 0; padding-left: 1.4em; }
+.skew-list li { padding: 3px 0; }
+.skew-list__value { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.skew-list__lang { display: block; color: var(--muted); font-size: 0.85rem; }
+.skew-list__empty, .skew-list__note { color: var(--muted); font-size: 0.9rem; margin: 4px 0; }
+.skew-list__note { margin-top: 14px; }
+.tables { flex: 1; display: flex; flex-direction: column; gap: 16px; overflow: auto; min-width: 0; }
+.tables .table-wrap { flex: none; overflow: visible; }
+.tables caption { text-align: left; font-weight: 600; padding: 8px 0; }
 
 .panel {
   width: min(400px, 100%); background: var(--panel); border-left: 1px solid var(--line);

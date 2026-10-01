@@ -15,11 +15,20 @@
 //!    to expected hits (the lift), with its mean and spread fitted to all
 //!    places by maximizing the negative binomial marginal likelihood.
 //! 4. [`Prior::score`]: each place's posterior for the lift,
-//!    `Gamma(alpha + observed / phi, alpha / mean + expected / phi)`: its
+//!    `Gamma(a + observed / phi, a / mean + expected / phi)`, where `a` is
+//!    `alpha` widened by the uncertainty in the fitted mean: its
 //!    median as the estimate, a central credible interval, and the
 //!    probability that the lift is above 1. Places with little evidence stay
 //!    near the prior, so a village with one page and one hit can't claim the
 //!    top of the map.
+//! 5. [`score_search`] and [`score_groups`]: the steps above for one search,
+//!    as the map's relative-rate view runs them, per place and per state.
+//!
+//! The site runs a TypeScript port in the browser (`web/src/engine/skew.ts`).
+//! `fixtures/skew-vectors.json` holds inputs and the scores this module gives
+//! them; both test suites check it (`tests/skew_vectors.rs`), so the two
+//! can't drift. Regenerate it after a deliberate change to the scoring with
+//! `UPDATE_SKEW_VECTORS=1 cargo test -p usnm-core --test skew_vectors`.
 
 use chrono::Datelike;
 
@@ -237,6 +246,9 @@ pub fn dispersion_for(
     }
     let mut merged: BTreeMap<(usize, usize), (u64, u64)> = BTreeMap::new();
     for c in cells {
+        if c.bucket >= national_hits.len().min(national_pages.len()) {
+            continue;
+        }
         if let Some(&s) = slot.get(&key(c.bucket)) {
             let e = merged.entry((c.place, s)).or_default();
             e.0 += c.pages;
@@ -263,6 +275,9 @@ pub fn dispersion_for(
 pub struct Prior {
     pub alpha: f64,
     pub mean: f64,
+    /// Sampling variance of `ln mean`: how uncertain the fitted mean is
+    /// (the inverse of its Fisher information). See [`Prior::shape`].
+    pub mean_var: f64,
 }
 
 /// One place's score.
@@ -318,6 +333,7 @@ impl Prior {
             return Self {
                 alpha: MAX_ALPHA,
                 mean: 1.0,
+                mean_var: 0.0,
             };
         }
         let (so, se) = usable
@@ -339,18 +355,44 @@ impl Prior {
                 break;
             }
         }
+        let alpha = ln_alpha.exp().clamp(MIN_ALPHA, MAX_ALPHA);
+        let mean = ln_mean.exp().clamp(MIN_MEAN, MAX_MEAN);
+        // Fisher information for ln(mean): each place contributes
+        // alpha m / (alpha + m), with m its mean count.
+        let info: f64 = usable
+            .iter()
+            .map(|&(_, e)| {
+                let m = mean * e;
+                alpha * m / (alpha + m)
+            })
+            .sum();
         Self {
-            alpha: ln_alpha.exp().clamp(MIN_ALPHA, MAX_ALPHA),
-            mean: ln_mean.exp().clamp(MIN_MEAN, MAX_MEAN),
+            alpha,
+            mean,
+            mean_var: if info > 0.0 { 1.0 / info } else { 0.0 },
         }
+    }
+
+    /// The shape the places are scored with: `alpha`, widened by the
+    /// uncertainty in the fitted mean. The lift is the mean times a place's
+    /// own factor, `Gamma(alpha, alpha)`; treating `ln mean` as normal with
+    /// variance `v`, the product's squared coefficient of variation is
+    /// `1/alpha + v (1 + 1/alpha)`, and the shape is its inverse. Without
+    /// this, a search with few hits where the places don't differ (`alpha`
+    /// at its bound) puts every place at the fitted mean with a very narrow
+    /// interval, and a mean of 0.9 from 17 hits would mark every place as
+    /// clearly below the others.
+    pub fn shape(&self) -> f64 {
+        1.0 / (1.0 / self.alpha + self.mean_var * (1.0 + 1.0 / self.alpha))
     }
 
     /// Score one place with a central credible interval at `level` (e.g.
     /// 0.9), treating its counts as `phi` times over-dispersed.
     pub fn score(&self, c: Counts, phi: f64, level: f64) -> Score {
         let phi = phi.max(1.0);
-        let shape = self.alpha + c.observed as f64 / phi;
-        let rate = self.alpha / self.mean + c.expected.max(0.0) / phi;
+        let a = self.shape();
+        let shape = a + c.observed as f64 / phi;
+        let rate = a / self.mean + c.expected.max(0.0) / phi;
         let tail = (1.0 - level.clamp(0.0, 1.0)) / 2.0;
         Score {
             observed: c.observed,
@@ -369,6 +411,105 @@ pub fn score_all(counts: &[Counts], phi: f64, level: f64) -> (Prior, Vec<Score>)
     let prior = Prior::fit(counts, phi);
     let scores = counts.iter().map(|&c| prior.score(c, phi, level)).collect();
     (prior, scores)
+}
+
+/// One search scored as the map shows it (doc 11, 11.4.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchScores {
+    pub dispersion: Dispersion,
+    /// The `phi` used: measured, or [`FALLBACK_PHI`].
+    pub phi: f64,
+    pub prior: Prior,
+    /// One per place, in place order.
+    pub scores: Vec<Score>,
+}
+
+/// Every step for one search: observed and expected hits per place,
+/// dispersion at the calendar resolution, the prior fitted to the places
+/// with `in_fit` true (a missing entry counts as true), and every place
+/// scored with it. A place left out of the fit is still scored. The site
+/// fits every place (doc 11, 11.14); the mask is there for a later
+/// language-aware version (11.5.9) and is covered by the shared vectors.
+pub fn score_search(
+    spec: &BucketSpec,
+    national_hits: &[u64],
+    national_pages: &[u64],
+    cells: &[Cell],
+    places: usize,
+    in_fit: &[bool],
+    level: f64,
+) -> SearchScores {
+    let counts = place_counts(national_hits, national_pages, cells, places);
+    let (dispersion, phi) = dispersion_for(spec, national_hits, national_pages, cells);
+    let fit: Vec<Counts> = counts
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| in_fit.get(i).copied().unwrap_or(true))
+        .map(|(_, &c)| c)
+        .collect();
+    let prior = Prior::fit(&fit, phi);
+    let scores = counts.iter().map(|&c| prior.score(c, phi, level)).collect();
+    SearchScores {
+        dispersion,
+        phi,
+        prior,
+        scores,
+    }
+}
+
+/// Cells summed per group (for example a state) and bucket, sorted by group
+/// and bucket. `group_of[place]` names each place's group; cells of places
+/// without one are dropped.
+pub fn group_cells(cells: &[Cell], group_of: &[usize]) -> Vec<Cell> {
+    let mut merged: std::collections::BTreeMap<(usize, usize), (u64, u64)> = Default::default();
+    for c in cells {
+        if let Some(&g) = group_of.get(c.place) {
+            let e = merged.entry((g, c.bucket)).or_default();
+            e.0 += c.pages;
+            e.1 += c.hits;
+        }
+    }
+    merged
+        .into_iter()
+        .map(|((place, bucket), (pages, hits))| Cell {
+            place,
+            bucket,
+            pages,
+            hits,
+        })
+        .collect()
+}
+
+/// Groups of places (states) scored as units: each group's cells are summed
+/// per bucket and compared with the other groups' pages in that bucket, with
+/// a prior fitted across the groups (doc 11, 11.4.1, "States"). `phi` is the
+/// larger of the place-level `phi` and the groups' own: a state's hits vary
+/// more than a place's (on the seven searches in doc 11 the states measured
+/// 2 to 4 times the places' `phi`), and scoring them with the places' value
+/// would make their intervals too narrow.
+// The inputs mirror `score_search` plus the grouping and the places' phi.
+#[allow(clippy::too_many_arguments)]
+pub fn score_groups(
+    spec: &BucketSpec,
+    national_hits: &[u64],
+    national_pages: &[u64],
+    cells: &[Cell],
+    group_of: &[usize],
+    groups: usize,
+    place_phi: f64,
+    level: f64,
+) -> SearchScores {
+    let grouped = group_cells(cells, group_of);
+    let counts = place_counts(national_hits, national_pages, &grouped, groups);
+    let (dispersion, _) = dispersion_for(spec, national_hits, national_pages, &grouped);
+    let phi = dispersion.phi.map_or(place_phi, |p| p.max(place_phi));
+    let (prior, scores) = score_all(&counts, phi, level);
+    SearchScores {
+        dispersion,
+        phi,
+        prior,
+        scores,
+    }
 }
 
 fn golden_max(mut lo: f64, mut hi: f64, f: impl Fn(f64) -> f64) -> f64 {
@@ -1255,6 +1396,175 @@ mod tests {
     }
 
     #[test]
+    fn few_hits_and_no_difference_flags_nothing() {
+        // 12 places at the reference rate with 17 hits between them: the
+        // fitted mean is 0.87 by chance and alpha reaches its bound. Without
+        // the mean's own uncertainty every place's interval is about 0.872
+        // to 0.875, and all 12 would be flagged below 1.
+        let counts: Vec<Counts> = [
+            (5, 4.51),
+            (3, 1.13),
+            (0, 0.48),
+            (1, 1.41),
+            (1, 0.51),
+            (3, 1.37),
+            (2, 2.11),
+            (0, 0.14),
+            (1, 2.85),
+            (1, 0.73),
+            (0, 0.63),
+            (0, 3.6),
+        ]
+        .iter()
+        .map(|&(observed, expected)| Counts { observed, expected })
+        .collect();
+        let (prior, scores) = score_all(&counts, 4.0, 0.9);
+        assert!(prior.alpha > 1e5, "alpha {}", prior.alpha);
+        assert!(close(prior.mean, 17.0 / 19.47, 1e-3), "mean {}", prior.mean);
+        // About 17 / 4 independent hits inform the mean.
+        assert!(
+            close(prior.mean_var, 4.0 / 17.0, 0.01),
+            "{}",
+            prior.mean_var
+        );
+        assert!(prior.shape() < 5.0);
+        assert!(scores.iter().all(|s| s.direction() == 0));
+    }
+
+    #[test]
+    fn places_left_out_of_the_fit_are_still_scored() {
+        use crate::time::BucketUnit;
+        let day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let spec = BucketSpec::new(BucketUnit::Year, day("1880-01-01"), day("1880-12-31"));
+        // Ten places at the reference rate, one (a paper in another
+        // language) with almost no hits.
+        let mut cells: Vec<Cell> = (0..10)
+            .map(|p| Cell {
+                place: p,
+                bucket: 0,
+                pages: 10_000,
+                hits: 100 + p as u64,
+            })
+            .collect();
+        cells.push(Cell {
+            place: 10,
+            bucket: 0,
+            pages: 10_000,
+            hits: 1,
+        });
+        let hits = [cells.iter().map(|c| c.hits).sum::<u64>()];
+        let pages = [cells.iter().map(|c| c.pages).sum::<u64>()];
+        let all = score_search(&spec, &hits, &pages, &cells, 11, &[], 0.9);
+        let mut in_fit = vec![true; 11];
+        in_fit[10] = false;
+        let some = score_search(&spec, &hits, &pages, &cells, 11, &in_fit, 0.9);
+        // Without it the places barely differ, so the prior is much tighter.
+        assert!(some.prior.alpha > 10.0 * all.prior.alpha);
+        // It is still scored, with the prior of the places it was left out
+        // of, so it is pulled toward them more than when it was fitted.
+        assert_eq!(some.scores.len(), 11);
+        assert!(some.scores[10].estimate.is_finite());
+        assert!(some.scores[10].estimate > all.scores[10].estimate);
+        assert_eq!(some.scores[10].observed, 1);
+        assert_eq!(some.phi, all.phi);
+    }
+
+    #[test]
+    fn groups_are_compared_with_the_other_groups() {
+        // Places 0 and 1 form group 0, place 2 group 1, in two buckets.
+        let cells = [
+            Cell {
+                place: 0,
+                bucket: 0,
+                pages: 100,
+                hits: 10,
+            },
+            Cell {
+                place: 1,
+                bucket: 0,
+                pages: 100,
+                hits: 30,
+            },
+            Cell {
+                place: 1,
+                bucket: 1,
+                pages: 50,
+                hits: 5,
+            },
+            Cell {
+                place: 2,
+                bucket: 0,
+                pages: 400,
+                hits: 20,
+            },
+            Cell {
+                place: 2,
+                bucket: 1,
+                pages: 50,
+                hits: 1,
+            },
+        ];
+        let grouped = group_cells(&cells, &[0, 0, 1]);
+        assert_eq!(grouped.len(), 4);
+        assert_eq!((grouped[0].pages, grouped[0].hits), (200, 40));
+        let c = place_counts(&[60, 6], &[600, 100], &grouped, 2);
+        // Group 0 against group 1's 5% and 2%; group 1 against group 0's 20% and 10%.
+        assert!(close(c[0].expected, 200.0 * 0.05 + 50.0 * 0.02, 1e-12));
+        assert!(close(c[1].expected, 400.0 * 0.2 + 50.0 * 0.1, 1e-12));
+        let day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let spec = BucketSpec::new(
+            crate::time::BucketUnit::Year,
+            day("1880-01-01"),
+            day("1881-12-31"),
+        );
+        let g = score_groups(
+            &spec,
+            &[60, 6],
+            &[600, 100],
+            &cells,
+            &[0, 0, 1],
+            2,
+            1.5,
+            0.9,
+        );
+        assert_eq!(g.scores[0].observed, 45);
+        assert_eq!(g.scores[1].observed, 21);
+        // Too few hits to measure the groups' own dispersion: the places' is used.
+        assert_eq!((g.dispersion.phi, g.phi), (None, 1.5));
+    }
+
+    #[test]
+    fn groups_use_their_own_dispersion_when_it_is_larger() {
+        use crate::time::BucketUnit;
+        let day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        // Ten places in two groups, each place steady, but the groups'
+        // interest swings in opposite directions from year to year.
+        let spec = BucketSpec::new(BucketUnit::Year, day("1880-01-01"), day("1889-12-31"));
+        let mut cells = Vec::new();
+        for p in 0..10 {
+            for b in 0..10 {
+                let up = (b % 2 == 0) == (p < 5);
+                cells.push(Cell {
+                    place: p,
+                    bucket: b,
+                    pages: 10_000,
+                    hits: if up { 130 } else { 70 },
+                });
+            }
+        }
+        let mut hits = vec![0u64; 10];
+        let mut pages = vec![0u64; 10];
+        for c in &cells {
+            hits[c.bucket] += c.hits;
+            pages[c.bucket] += c.pages;
+        }
+        let group_of: Vec<usize> = (0..10).map(|p| usize::from(p >= 5)).collect();
+        let g = score_groups(&spec, &hits, &pages, &cells, &group_of, 2, 1.0, 0.9);
+        assert!(g.phi > 10.0, "phi {}", g.phi);
+        assert_eq!(Some(g.phi), g.dispersion.phi);
+    }
+
+    #[test]
     fn degenerate_inputs() {
         let fitted = Prior::fit(&[], 1.0);
         assert_eq!((fitted.alpha, fitted.mean), (MAX_ALPHA, 1.0));
@@ -1266,6 +1576,7 @@ mod tests {
         let s = Prior {
             alpha: 2.0,
             mean: 1.0,
+            mean_var: 0.0,
         }
         .score(zero, 1.0, 0.9);
         assert_eq!(s.lift, None);
