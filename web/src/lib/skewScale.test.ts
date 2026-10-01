@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatTimes, skewColor, skewPosition, tickLabel } from "./skewScale";
 import { formatRange, skewInfo, skewSentence, type SkewInfo } from "./skewText";
-import { languageLabel } from "./languages";
+import { languageLabel, languageName } from "./languages";
 
 describe("relative-rate scale", () => {
   it("is centred on 1× on a log scale and stops at 1/8× and 8×", () => {
@@ -72,6 +72,8 @@ describe("title languages", () => {
     expect(languageLabel([])).toBeNull();
     expect(languageLabel(undefined)).toBeNull();
     expect(languageLabel(["yoruba"])).toBe("Papers in Yoruba");
+    expect(languageLabel(["pennsylvania german", "eng"])).toBe("Papers in Pennsylvania German and English");
+    expect(languageName("old church slavonic")).toBe("Old Church Slavonic");
   });
 });
 

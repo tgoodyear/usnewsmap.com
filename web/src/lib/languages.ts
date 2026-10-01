@@ -1,7 +1,8 @@
 // Title languages for the relative-rate view (doc 11, 11.14). An English
 // search term rarely matches pages printed in another language, so a place
 // with such papers can read low; the view says which languages its papers
-// are in. Codes are the catalog's (crates/usnm-ingest/src/titles.rs).
+// are in. Codes and names follow the catalog's table (crates/usnm-core/src/
+// names.rs once #66 merges; crates/usnm-ingest/src/titles.rs before it).
 
 const NAMES: Record<string, string> = {
   eng: "English", ger: "German", spa: "Spanish", fre: "French", ita: "Italian", pol: "Polish", cze: "Czech",
@@ -15,8 +16,9 @@ const NAMES: Record<string, string> = {
 };
 
 export function languageName(code: string): string {
-  // Unlisted languages arrive as the catalog's lowercase name.
-  return NAMES[code] ?? code.charAt(0).toUpperCase() + code.slice(1);
+  // Unlisted languages arrive as the catalog's lowercase name, which may
+  // have several words ("pennsylvania german"): title-case each word.
+  return NAMES[code] ?? code.replace(/(^|[\s-])(\p{L})/gu, (_, sep: string, ch: string) => sep + ch.toUpperCase());
 }
 
 /**
