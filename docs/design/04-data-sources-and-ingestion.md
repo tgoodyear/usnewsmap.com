@@ -62,6 +62,9 @@ reference/                             (Hot; small; loaded by API; IMMUTABLE per
     titles.json  places.json            the catalog as published with this version (only titles
                                         and places that have pages in it)
     baselines.json                      pages published per place: {place_id: [[day, pages], …]}
+    title_pages.json                    pages published per title: {lccn: pages}, the same pages as the
+                                        baselines summed by title (the status page's pages by
+                                        language). Snapshots from before it was added don't have it
     batches.json                        the batches the version was built from, each with its full
                                         curation record (parts, counts path, pages, lccns, sha256).
                                         The release reads the published version's list to find new

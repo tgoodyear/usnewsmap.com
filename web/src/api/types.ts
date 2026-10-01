@@ -218,6 +218,41 @@ export interface TitlesPipeline {
   recurated_awaiting_full: number | null;
 }
 
+/** One state's (or territory's) share of the published pages. */
+export interface StatePages {
+  /** Postal code, e.g. "IL". */
+  state: string;
+  /** LoC's name for it, or the code when it isn't a known state. */
+  name: string;
+  places: number;
+  titles: number;
+  pages: number;
+  /** Percent of every published page, to one decimal. */
+  percent: number;
+}
+
+/** One language's newspapers and, when the snapshot records them, pages. */
+export interface LanguagePages {
+  /** The catalog's code (e.g. "eng"); null for newspapers with no language recorded. */
+  code: string | null;
+  name: string;
+  titles: number;
+  pages: number | null;
+  percent: number | null;
+}
+
+/**
+ * Pages by language. A newspaper that lists several languages counts in each
+ * one's row, so the rows can add up to more than the version's pages.
+ */
+export interface ByLanguage {
+  /** False for versions published before releases recorded pages per newspaper. */
+  pages_known: boolean;
+  multilingual_titles: number;
+  multilingual_pages: number | null;
+  rows: LanguagePages[];
+}
+
 /** `GET /v1/status` (schema 1): the ingest pipeline's status. */
 export interface Status {
   schema: number;
@@ -238,6 +273,9 @@ export interface Status {
     max_deltas: number;
     next_release_full: boolean;
     batches: number | null;
+    /** Added after schema 1 shipped; older APIs leave them out. */
+    by_state?: StatePages[];
+    by_language?: ByLanguage;
   };
   backfill: Section<Backfill>;
   indexing: Section<Indexing>;

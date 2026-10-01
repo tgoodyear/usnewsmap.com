@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { TITLES } from "../route";
+import { Brand } from "../components/Brand";
 
 const ext = { target: "_blank", rel: "noopener noreferrer" } as const;
 
@@ -14,9 +15,7 @@ export default function PrivacyPage() {
   return (
     <div className="app privacy-page">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="US News Map home">
-          <span aria-hidden="true">◉</span> US News Map
-        </a>
+        <Brand />
       </header>
       <main className="privacy">
         <h1>Privacy</h1>

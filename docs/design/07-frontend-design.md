@@ -21,7 +21,7 @@
 - The timeline is a small SVG bar chart rather than uPlot, because it has one series until compare mode lands.
 - Controls are native elements, so Radix and Zustand aren't needed yet.
 - The basemap defaults to OpenFreeMap Positron until the PMTiles extract is published.
-- `/status` is a separate page (lazy-loaded; the app has no router, so `main.tsx` picks it by path with `src/route.ts`) that shows the ingest pipeline's status from `GET /v1/status` and refreshes every 30 s. The footer links to it. Any other path shows a not-found page, and the API sends it with a 404.
+- `/status` is a separate page (lazy-loaded; the app has no router, so `main.tsx` picks it by path with `src/route.ts`) that shows the ingest pipeline's status from `GET /v1/status` and refreshes every 30 s. It also has two tables of the published pages, "Pages by state" and "Pages by language" (06 §6.3.6), sortable by any column like the search page's place table. The footer links to it. Any other path shows a not-found page, and the API sends it with a 404.
 - `/privacy` is the privacy notice (lazy-loaded like `/status`, `src/privacy/PrivacyPage.tsx`). The search page, the status page and the not-found page link to it in their footers. It is the one page besides the home page that search engines index: it is in `sitemap.xml`, and the API gives its copy of `index.html` its own title, canonical link and `og:url` (`shell_for` in `crates/usnm-api/src/site.rs`).
 
 ## 7.2 Layout and wireframes

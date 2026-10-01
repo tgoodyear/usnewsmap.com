@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
+use usnm_state::state::TITLE_PAGES_FILE;
 use usnm_store::{is_safe_segment, ObjectStore};
 
 /// The reference files the API loads from each snapshot.
@@ -68,6 +69,11 @@ pub struct RefData {
     pub baselines: HashMap<String, Vec<(u32, u32)>>,
     /// Every page in the published version (the sum of the baselines).
     pub pages: u64,
+    /// Pages published per place (each place's baselines summed).
+    pub place_pages: HashMap<String, u64>,
+    /// Pages published per title, from the snapshot's `title_pages.json`;
+    /// `None` for snapshots written before releases recorded it.
+    pub title_pages: Option<HashMap<String, u64>>,
     /// The batches (and their versions) the version was built from, from the
     /// snapshot manifest; `None` for snapshots that don't record them.
     pub published_batches: Option<HashMap<String, u16>>,
@@ -125,19 +131,18 @@ impl RefData {
         }
         let mut raw = Vec::with_capacity(FILES.len());
         for name in FILES {
-            let path = format!("{dir}/{name}");
             let entry = manifest
                 .files
                 .iter()
                 .find(|f| f.path == name)
                 .ok_or_else(|| format!("{dir}/manifest.json does not list {name}"))?;
-            let bytes = fetch(store, &path).await?;
-            let digest = hex(&Sha256::digest(&bytes));
-            if bytes.len() as u64 != entry.bytes || !digest.eq_ignore_ascii_case(&entry.sha256) {
-                return Err(format!("{path} does not match its manifest entry"));
-            }
-            raw.push((path, bytes));
+            raw.push(fetch_checked(store, dir, entry).await?);
         }
+        // Optional: only snapshots whose manifest lists it have it.
+        let title_pages = match manifest.files.iter().find(|f| f.path == TITLE_PAGES_FILE) {
+            Some(entry) => Some(fetch_checked(store, dir, entry).await?),
+            None => None,
+        };
         let published_batches = manifest.built_from.map(|b| {
             b.batches
                 .into_iter()
@@ -145,9 +150,15 @@ impl RefData {
                 .collect()
         });
         // Parsing large snapshots is CPU-bound; keep it off the async workers.
-        let mut refdata = tokio::task::spawn_blocking(move || Self::build(current, &raw))
-            .await
-            .map_err(|e| e.to_string())??;
+        let mut refdata = tokio::task::spawn_blocking(move || {
+            let mut rd = Self::build(current, &raw)?;
+            if let Some((path, bytes)) = title_pages {
+                rd.title_pages = Some(parse(&path, &bytes)?);
+            }
+            Ok::<_, String>(rd)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         refdata.published_batches = published_batches;
         Ok(refdata)
     }
@@ -167,11 +178,11 @@ impl RefData {
             .enumerate()
             .map(|(i, p)| (p.id.clone(), i))
             .collect();
-        let pages = baselines
-            .values()
-            .flatten()
-            .map(|&(_, n)| u64::from(n))
-            .sum();
+        let place_pages: HashMap<String, u64> = baselines
+            .iter()
+            .map(|(id, series)| (id.clone(), series.iter().map(|&(_, n)| u64::from(n)).sum()))
+            .collect();
+        let pages = place_pages.values().sum();
         Ok(Self {
             current,
             places,
@@ -179,6 +190,8 @@ impl RefData {
             titles: titles.into_iter().map(|t| (t.lccn.clone(), t)).collect(),
             baselines,
             pages,
+            place_pages,
+            title_pages: None,
             published_batches: None,
         })
     }
@@ -244,6 +257,21 @@ pub async fn read_current(store: &dyn ObjectStore) -> Result<Current, String> {
         return Err("current.json lists no indexes".into());
     }
     Ok(current)
+}
+
+/// `{dir}/{entry.path}`, checked against its manifest entry.
+async fn fetch_checked(
+    store: &dyn ObjectStore,
+    dir: &str,
+    entry: &ManifestFile,
+) -> Result<(String, Vec<u8>), String> {
+    let path = format!("{dir}/{}", entry.path);
+    let bytes = fetch(store, &path).await?;
+    let digest = hex(&Sha256::digest(&bytes));
+    if bytes.len() as u64 != entry.bytes || !digest.eq_ignore_ascii_case(&entry.sha256) {
+        return Err(format!("{path} does not match its manifest entry"));
+    }
+    Ok((path, bytes))
 }
 
 async fn fetch(store: &dyn ObjectStore, path: &str) -> Result<Vec<u8>, String> {
