@@ -224,14 +224,20 @@ export default function MapView(props: Props) {
               getRadius: (p) => skewRadius(p, maxValue),
               // Hollow rings (county or state precision) carry the colour on the ring.
               getFillColor: (p) => (p.precision === "city" ? skewFill(p) : [0, 0, 0, 0]),
+              // A hollow ring keeps its colour when selected (the colour is all it shows); the wider
+              // line marks the selection. A filled city circle gets a dark outline instead.
               getLineColor: (p) =>
-                p.id === selected
-                  ? [20, 20, 20, 255]
-                  : p.precision === "city"
-                    ? [40, 40, 40, skewAlpha(p) === ALPHA_CLEAR ? 170 : 70]
-                    : skewFill(p),
+                p.precision !== "city"
+                  ? skewFill(p)
+                  : p.id === selected
+                    ? [20, 20, 20, 255]
+                    : [40, 40, 40, skewAlpha(p) === ALPHA_CLEAR ? 170 : 70],
               getLineWidth: (p) =>
-                !p.skew || p.skew.pages <= 0 ? 0 : p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5,
+                !p.skew || p.skew.pages <= 0
+                  ? 0
+                  : p.precision === "city"
+                    ? p.id === selected ? 3 : 1
+                    : p.id === selected ? 4.5 : 2.5,
               updateTriggers: {
                 getRadius: [maxValue, points],
                 getFillColor: [points],

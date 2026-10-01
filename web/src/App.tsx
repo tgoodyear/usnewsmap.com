@@ -20,7 +20,7 @@ import { SkewLegend } from "./components/SkewLegend";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
-import { maxWindowExpected, scoreFrame, totalExpected } from "./engine/skewModel";
+import { maxWindowExpected, scoreFrame } from "./engine/skewModel";
 import { useSkewModel } from "./engine/useSkew";
 import { skewInfo } from "./lib/skewText";
 import { Brand } from "./components/Brand";
@@ -125,12 +125,16 @@ export function App() {
     () => (skewModel ? maxWindowExpected(skewModel.model.places, view.win) : 1),
     [skewModel, view.win],
   );
-  // Biggest circles first, so smaller ones are drawn on top of them.
+  // Biggest circles first, so smaller ones are drawn on top of them. Circle size follows the
+  // current frame's expected matches, so the order does too: in early cumulative frames and
+  // trailing windows it differs from the whole search's.
   const drawOrder = useMemo(() => {
-    if (!skewModel) return [];
-    const s = skewModel.model.places;
-    return Array.from({ length: s.units }, (_, u) => u).sort((a, b) => totalExpected(s, b) - totalExpected(s, a));
-  }, [skewModel]);
+    if (!skewModel || !frame) return [];
+    const units = skewModel.model.places.units;
+    return Array.from({ length: units }, (_, u) => u).sort(
+      (a, b) => (frame.places[b]?.expected ?? 0) - (frame.places[a]?.expected ?? 0),
+    );
+  }, [skewModel, frame]);
   const firstDayById = useMemo(
     () => new Map((data?.places.id ?? []).map((id, i) => [id, data!.places.first_day[i]!])),
     [data],
