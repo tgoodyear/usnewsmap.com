@@ -255,6 +255,7 @@ async fn readyz(state: &Arc<AppState>) -> StatusCode {
 async fn load_examples(state: &Arc<AppState>, backend: &Counting, version: &str) -> (usize, usize) {
     let before = backend.calls();
     let mut coverages = std::collections::HashSet::new();
+    let mut found = 0;
     let (status, _) = get(state, &format!("/v1/places?v={version}")).await;
     assert_eq!(status, StatusCode::OK);
     for ex in prewarm::examples() {
@@ -265,12 +266,17 @@ async fn load_examples(state: &Arc<AppState>, backend: &Counting, version: &str)
         .await;
         assert_eq!(status, StatusCode::OK, "{}: {body}", ex.id);
         assert_eq!(body["index_version"], version);
-        assert!(body["total"]["hits"].as_u64().unwrap() > 0, "{}", ex.id);
+        // Most examples are outside the fixtures' 1895-1897; a search that
+        // finds nothing still costs the backend a call.
+        if body["total"]["hits"].as_u64().unwrap() > 0 {
+            found += 1;
+        }
         let coverage = body["cube"]["baseline_ref"].as_str().unwrap().to_owned();
         let (status, body) = get(state, &coverage).await;
         assert_eq!(status, StatusCode::OK, "{}: {body}", ex.id);
         coverages.insert(coverage);
     }
+    assert!(found > 0, "no example matches the fixtures");
     let distinct = 1 + prewarm::examples().len() + coverages.len();
     (backend.calls() - before, distinct)
 }

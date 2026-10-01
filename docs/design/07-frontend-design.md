@@ -57,7 +57,7 @@ The design keeps the legacy "map-first" identity: a full-bleed map with controls
 
 ### Key states
 
-- **Empty:** example searches as cards ("Cross of Gold 1896", "Scalawag 1865–1880", "Influenza 1918") and a coverage map preview.
+- **Empty:** example searches as cards, three at a time from the 50 in `web/src/examples.json` ("Cross of Gold, 1896", "Influenza, 1918", "Klondike"), chosen at random per page load, with "Show other examples" to page through the rest; and a coverage map preview.
 - **Loading:** a skeleton shimmer on the timeline, the previous results dimmed, and a cancel button.
 - **No results:** suggestions (switch to "all words", enable OCR-tolerant, widen dates), with a link to the coverage layer.
 - **Error:** the problem+json `hint` shown inline.

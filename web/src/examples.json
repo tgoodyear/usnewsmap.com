@@ -19,5 +19,334 @@
     "id": "free-silver",
     "title": "Free silver",
     "view": { "bucket": "month", "q": "\"free silver\"" }
+  },
+  {
+    "aggregate": "q=%22woman+suffrage%22&from=1869-01-01&to=1925-12-31&bucket=month",
+    "blurb": "The campaign for women's votes, up to the Nineteenth Amendment in 1920.",
+    "id": "woman-suffrage",
+    "title": "Woman suffrage",
+    "view": { "bucket": "month", "from": "1869-01-01", "norm": "rel", "q": "\"woman suffrage\"", "to": "1925-12-31" }
+  },
+  {
+    "aggregate": "q=Volstead&mode=phrase&from=1919-01-01&to=1934-12-31&bucket=month",
+    "blurb": "The law that enforced Prohibition from 1920 until repeal in 1933.",
+    "id": "volstead",
+    "title": "Volstead Act",
+    "view": { "bucket": "month", "from": "1919-01-01", "q": "Volstead", "to": "1934-12-31" }
+  },
+  {
+    "aggregate": "q=%22new+deal%22&from=1932-01-01&to=1945-12-31&bucket=month",
+    "blurb": "Roosevelt's programs, from his 1932 campaign through World War II.",
+    "id": "new-deal",
+    "title": "New Deal",
+    "view": { "bucket": "month", "from": "1932-01-01", "norm": "rel", "q": "\"new deal\"", "to": "1945-12-31" }
+  },
+  {
+    "aggregate": "q=%22bull+moose%22&from=1912-01-01&to=1913-06-30&bucket=week",
+    "blurb": "Theodore Roosevelt's run for president on the Progressive ticket in 1912.",
+    "id": "bull-moose",
+    "title": "Bull Moose, 1912",
+    "view": { "bucket": "week", "from": "1912-01-01", "q": "\"bull moose\"", "to": "1913-06-30" }
+  },
+  {
+    "aggregate": "q=Guiteau&mode=phrase&from=1881-07-01&to=1882-07-31&bucket=week",
+    "blurb": "Charles Guiteau shot President Garfield in July 1881 and was tried that winter.",
+    "id": "guiteau",
+    "title": "Garfield assassination, 1881",
+    "view": { "bucket": "week", "from": "1881-07-01", "q": "Guiteau", "to": "1882-07-31" }
+  },
+  {
+    "aggregate": "q=%22income+tax%22&from=1890-01-01&to=1925-12-31&bucket=month",
+    "blurb": "From the 1894 tax the Supreme Court struck down to the Sixteenth Amendment of 1913.",
+    "id": "income-tax",
+    "title": "Income tax",
+    "view": { "bucket": "month", "from": "1890-01-01", "norm": "rel", "q": "\"income tax\"", "to": "1925-12-31" }
+  },
+  {
+    "aggregate": "q=Coxey&mode=phrase&from=1894-01-01&to=1894-12-31&bucket=week",
+    "blurb": "Jacob Coxey led a march of unemployed men to Washington in the spring of 1894.",
+    "id": "coxey",
+    "title": "Coxey's Army, 1894",
+    "view": { "bucket": "week", "from": "1894-01-01", "q": "Coxey", "to": "1894-12-31" }
+  },
+  {
+    "aggregate": "q=%22bank+holiday%22&from=1932-10-01&to=1933-06-30&bucket=week",
+    "blurb": "Roosevelt closed the nation's banks in March 1933, days after taking office.",
+    "id": "bank-holiday",
+    "title": "Bank holiday, 1933",
+    "view": { "bucket": "week", "from": "1932-10-01", "q": "\"bank holiday\"", "to": "1933-06-30" }
+  },
+  {
+    "aggregate": "q=%22social+security%22&from=1934-01-01&to=1963-12-31&bucket=month",
+    "blurb": "The 1935 law, and the first monthly checks in 1940.",
+    "id": "social-security",
+    "title": "Social Security",
+    "view": { "bucket": "month", "from": "1934-01-01", "norm": "rel", "q": "\"social security\"", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=%22battleship+maine%22&from=1898-01-01&to=1898-12-31&bucket=week",
+    "blurb": "The battleship blew up in Havana harbor in February 1898; war followed in April.",
+    "id": "battleship-maine",
+    "title": "USS Maine, 1898",
+    "view": { "bucket": "week", "from": "1898-01-01", "q": "\"battleship maine\"", "to": "1898-12-31" }
+  },
+  {
+    "aggregate": "q=Aguinaldo&mode=phrase&from=1898-01-01&to=1903-12-31&bucket=month",
+    "blurb": "Emilio Aguinaldo led Filipino forces against the US from 1899 until his capture in 1901.",
+    "id": "aguinaldo",
+    "title": "Philippine-American War",
+    "view": { "bucket": "month", "from": "1898-01-01", "q": "Aguinaldo", "to": "1903-12-31" }
+  },
+  {
+    "aggregate": "q=Lusitania&mode=phrase&from=1915-01-01&to=1916-12-31&bucket=week",
+    "blurb": "A German submarine sank the British liner off Ireland in May 1915.",
+    "id": "lusitania",
+    "title": "Lusitania, 1915",
+    "view": { "bucket": "week", "from": "1915-01-01", "q": "Lusitania", "to": "1916-12-31" }
+  },
+  {
+    "aggregate": "q=armistice&mode=phrase&from=1918-07-01&to=1919-06-30&bucket=week",
+    "blurb": "The fighting in World War I stopped on November 11, 1918.",
+    "id": "armistice",
+    "title": "Armistice, 1918",
+    "view": { "bucket": "week", "from": "1918-07-01", "q": "armistice", "to": "1919-06-30" }
+  },
+  {
+    "aggregate": "q=%22pearl+harbor%22&from=1940-01-01&to=1946-12-31&bucket=month",
+    "blurb": "Before and after the Japanese attack of December 7, 1941.",
+    "id": "pearl-harbor",
+    "title": "Pearl Harbor",
+    "view": { "bucket": "month", "from": "1940-01-01", "q": "\"pearl harbor\"", "to": "1946-12-31" }
+  },
+  {
+    "aggregate": "q=Gettysburg&mode=phrase&from=1863-01-01&to=1863-12-31&bucket=week",
+    "blurb": "The battle in July 1863, and Lincoln's address at the cemetery in November.",
+    "id": "gettysburg",
+    "title": "Gettysburg, 1863",
+    "view": { "bucket": "week", "from": "1863-01-01", "q": "Gettysburg", "to": "1863-12-31" }
+  },
+  {
+    "aggregate": "q=Geronimo&mode=phrase&from=1880-01-01&to=1912-12-31&bucket=month",
+    "blurb": "The Apache leader, from his 1886 surrender to his death in 1909.",
+    "id": "geronimo",
+    "title": "Geronimo",
+    "view": { "bucket": "month", "from": "1880-01-01", "q": "Geronimo", "to": "1912-12-31" }
+  },
+  {
+    "aggregate": "q=Korea&mode=phrase&from=1945-01-01&to=1956-12-31&bucket=month",
+    "blurb": "The war began in June 1950 and ended in an armistice in July 1953.",
+    "id": "korea",
+    "title": "Korean War",
+    "view": { "bucket": "month", "from": "1945-01-01", "norm": "rel", "q": "Korea", "to": "1956-12-31" }
+  },
+  {
+    "aggregate": "q=%22atomic+bomb%22&from=1944-01-01&to=1963-12-31&bucket=month",
+    "blurb": "From Hiroshima and Nagasaki in August 1945 through the tests of the 1950s.",
+    "id": "atomic-bomb",
+    "title": "Atomic bomb",
+    "view": { "bucket": "month", "from": "1944-01-01", "norm": "rel", "q": "\"atomic bomb\"", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=Sputnik&mode=phrase&from=1957-07-01&to=1958-12-31&bucket=week",
+    "blurb": "The Soviet Union launched the first satellite in October 1957.",
+    "id": "sputnik",
+    "title": "Sputnik, 1957",
+    "view": { "bucket": "week", "from": "1957-07-01", "q": "Sputnik", "to": "1958-12-31" }
+  },
+  {
+    "aggregate": "q=earthquake&mode=phrase&from=1906-03-01&to=1906-07-31&bucket=week",
+    "blurb": "The earthquake and fire that struck San Francisco on April 18, 1906.",
+    "id": "san-francisco-1906",
+    "title": "San Francisco, 1906",
+    "view": { "bucket": "week", "from": "1906-03-01", "q": "earthquake", "to": "1906-07-31" }
+  },
+  {
+    "aggregate": "q=Johnstown&mode=phrase&from=1889-05-01&to=1889-10-31&bucket=week",
+    "blurb": "A dam failed above Johnstown, Pennsylvania, on May 31, 1889.",
+    "id": "johnstown",
+    "title": "Johnstown Flood, 1889",
+    "view": { "bucket": "week", "from": "1889-05-01", "q": "Johnstown", "to": "1889-10-31" }
+  },
+  {
+    "aggregate": "q=Titanic&mode=phrase&from=1912-04-01&to=1912-06-30&bucket=day",
+    "blurb": "The liner sank on April 15, 1912. Follow the news day by day.",
+    "id": "titanic",
+    "title": "Titanic, 1912",
+    "view": { "bucket": "day", "from": "1912-04-01", "q": "Titanic", "to": "1912-06-30" }
+  },
+  {
+    "aggregate": "q=Galveston&mode=phrase&from=1900-08-15&to=1900-11-30&bucket=week",
+    "blurb": "The September 1900 hurricane, the deadliest natural disaster in US history.",
+    "id": "galveston",
+    "title": "Galveston, 1900",
+    "view": { "bucket": "week", "from": "1900-08-15", "q": "Galveston", "to": "1900-11-30" }
+  },
+  {
+    "aggregate": "q=influenza&mode=phrase&from=1917-06-01&to=1920-06-30&bucket=week",
+    "blurb": "Week by week through the flu pandemic, which peaked in the fall of 1918.",
+    "id": "influenza",
+    "title": "Influenza, 1918",
+    "view": { "bucket": "week", "from": "1917-06-01", "norm": "rel", "q": "influenza", "to": "1920-06-30" }
+  },
+  {
+    "aggregate": "q=%22infantile+paralysis%22&from=1910-01-01&to=1960-12-31&bucket=month",
+    "blurb": "Polio's old name, from the 1916 epidemic to the vaccine in 1955.",
+    "id": "polio",
+    "title": "Infantile paralysis",
+    "view": { "bucket": "month", "from": "1910-01-01", "norm": "rel", "q": "\"infantile paralysis\"", "to": "1960-12-31" }
+  },
+  {
+    "aggregate": "q=%22flying+machine%22&from=1896-01-01&to=1915-12-31&bucket=month",
+    "blurb": "Early aviation. The Wright brothers first flew in December 1903.",
+    "id": "flying-machine",
+    "title": "Flying machines",
+    "view": { "bucket": "month", "from": "1896-01-01", "norm": "rel", "q": "\"flying machine\"", "to": "1915-12-31" }
+  },
+  {
+    "aggregate": "q=radio&mode=phrase&from=1915-01-01&to=1935-12-31&bucket=month",
+    "blurb": "Share of pages that mention radio, before and after commercial broadcasting began in 1920.",
+    "id": "radio",
+    "title": "Radio",
+    "view": { "bucket": "month", "from": "1915-01-01", "norm": "rel", "q": "radio", "to": "1935-12-31" }
+  },
+  {
+    "aggregate": "q=Lindbergh&mode=phrase&from=1927-04-01&to=1927-12-31&bucket=week",
+    "blurb": "Charles Lindbergh flew alone from New York to Paris in May 1927.",
+    "id": "lindbergh",
+    "title": "Lindbergh, 1927",
+    "view": { "bucket": "week", "from": "1927-04-01", "q": "Lindbergh", "to": "1927-12-31" }
+  },
+  {
+    "aggregate": "q=%22panama+canal%22&from=1898-01-01&to=1920-12-31&bucket=month",
+    "blurb": "The US began building in 1904 and opened the canal in August 1914.",
+    "id": "panama-canal",
+    "title": "Panama Canal",
+    "view": { "bucket": "month", "from": "1898-01-01", "norm": "rel", "q": "\"panama canal\"", "to": "1920-12-31" }
+  },
+  {
+    "aggregate": "q=%22pacific+railroad%22&from=1860-01-01&to=1872-12-31&bucket=month",
+    "blurb": "The first transcontinental line, joined at Promontory Summit in May 1869.",
+    "id": "pacific-railroad",
+    "title": "Pacific Railroad",
+    "view": { "bucket": "month", "from": "1860-01-01", "q": "\"pacific railroad\"", "to": "1872-12-31" }
+  },
+  {
+    "aggregate": "q=television&mode=phrase&from=1925-01-01&to=1963-12-31&bucket=year",
+    "blurb": "Year-by-year share of pages that mention television.",
+    "id": "television",
+    "title": "Television",
+    "view": { "bucket": "year", "from": "1925-01-01", "norm": "rel", "q": "television", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=%22pullman+strike%22&from=1894-05-01&to=1894-12-31&bucket=week",
+    "blurb": "The 1894 railroad strike, and the federal troops sent to Chicago in July.",
+    "id": "pullman-strike",
+    "title": "Pullman strike, 1894",
+    "view": { "bucket": "week", "from": "1894-05-01", "q": "\"pullman strike\"", "to": "1894-12-31" }
+  },
+  {
+    "aggregate": "q=%22child+labor%22&from=1895-01-01&to=1940-12-31&bucket=month",
+    "blurb": "Campaigns against child labor, up to the federal limits of 1938.",
+    "id": "child-labor",
+    "title": "Child labor",
+    "view": { "bucket": "month", "from": "1895-01-01", "norm": "rel", "q": "\"child labor\"", "to": "1940-12-31" }
+  },
+  {
+    "aggregate": "q=%22pure+food%22&from=1898-01-01&to=1912-12-31&bucket=month",
+    "blurb": "The campaign that led to the Pure Food and Drug Act of 1906.",
+    "id": "pure-food",
+    "title": "Pure food",
+    "view": { "bucket": "month", "from": "1898-01-01", "norm": "rel", "q": "\"pure food\"", "to": "1912-12-31" }
+  },
+  {
+    "aggregate": "q=%22ellis+island%22&from=1890-01-01&to=1955-12-31&bucket=year",
+    "blurb": "The New York immigration station, open from 1892 to 1954.",
+    "id": "ellis-island",
+    "title": "Ellis Island",
+    "view": { "bucket": "year", "from": "1890-01-01", "norm": "rel", "q": "\"ellis island\"", "to": "1955-12-31" }
+  },
+  {
+    "aggregate": "q=Bartholdi&mode=phrase&from=1876-01-01&to=1890-12-31&bucket=month",
+    "blurb": "Bartholdi's statue, dedicated in New York harbor in October 1886.",
+    "id": "bartholdi",
+    "title": "Statue of Liberty",
+    "view": { "bucket": "month", "from": "1876-01-01", "q": "Bartholdi", "to": "1890-12-31" }
+  },
+  {
+    "aggregate": "q=%22world+series%22&from=1903-01-01&to=1963-12-31&bucket=month",
+    "blurb": "Baseball's fall championship, first played in 1903.",
+    "id": "world-series",
+    "title": "World Series",
+    "view": { "bucket": "month", "from": "1903-01-01", "norm": "rel", "q": "\"world series\"", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=%22babe+ruth%22&from=1914-01-01&to=1948-12-31&bucket=month",
+    "blurb": "From his debut with Boston in 1914 to his death in 1948.",
+    "id": "babe-ruth",
+    "title": "Babe Ruth",
+    "view": { "bucket": "month", "from": "1914-01-01", "q": "\"babe ruth\"", "to": "1948-12-31" }
+  },
+  {
+    "aggregate": "q=%22olympic+games%22&from=1896-01-01&to=1963-12-31&bucket=month",
+    "blurb": "The modern Games from Athens in 1896, every four years except in wartime.",
+    "id": "olympic-games",
+    "title": "Olympic Games",
+    "view": { "bucket": "month", "from": "1896-01-01", "norm": "rel", "q": "\"olympic games\"", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=%22buffalo+bill%22&from=1872-01-01&to=1920-12-31&bucket=month",
+    "blurb": "William Cody's Wild West show toured from 1883; he died in January 1917.",
+    "id": "buffalo-bill",
+    "title": "Buffalo Bill",
+    "view": { "bucket": "month", "from": "1872-01-01", "q": "\"buffalo bill\"", "to": "1920-12-31" }
+  },
+  {
+    "aggregate": "q=ragtime&mode=phrase&from=1896-01-01&to=1925-12-31&bucket=month",
+    "blurb": "Share of pages that mention ragtime, the popular music of the 1900s and 1910s.",
+    "id": "ragtime",
+    "title": "Ragtime",
+    "view": { "bucket": "month", "from": "1896-01-01", "norm": "rel", "q": "ragtime", "to": "1925-12-31" }
+  },
+  {
+    "aggregate": "q=jazz&mode=phrase&from=1915-01-01&to=1935-12-31&bucket=month",
+    "blurb": "The word jazz, from the late 1910s through the 1920s.",
+    "id": "jazz",
+    "title": "Jazz",
+    "view": { "bucket": "month", "from": "1915-01-01", "norm": "rel", "q": "jazz", "to": "1935-12-31" }
+  },
+  {
+    "aggregate": "q=Klondike&mode=phrase&from=1896-07-01&to=1900-12-31&bucket=month",
+    "blurb": "The Yukon gold rush, set off when gold ships reached the West Coast in July 1897.",
+    "id": "klondike",
+    "title": "Klondike",
+    "view": { "bucket": "month", "from": "1896-07-01", "q": "Klondike", "to": "1900-12-31" }
+  },
+  {
+    "aggregate": "q=%22standard+oil%22&from=1880-01-01&to=1915-12-31&bucket=month",
+    "blurb": "Rockefeller's oil trust, which the Supreme Court broke up in 1911.",
+    "id": "standard-oil",
+    "title": "Standard Oil",
+    "view": { "bucket": "month", "from": "1880-01-01", "norm": "rel", "q": "\"standard oil\"", "to": "1915-12-31" }
+  },
+  {
+    "aggregate": "q=greenback&mode=phrase&from=1862-01-01&to=1890-12-31&bucket=month",
+    "blurb": "Civil War paper money, and the Greenback Party of the 1870s and 1880s.",
+    "id": "greenback",
+    "title": "Greenbacks",
+    "view": { "bucket": "month", "from": "1862-01-01", "norm": "rel", "q": "greenback", "to": "1890-12-31" }
+  },
+  {
+    "aggregate": "q=%22rural+free+delivery%22&from=1893-01-01&to=1915-12-31&bucket=month",
+    "blurb": "Mail carried to farm homes, tried in 1896 and made permanent in 1902.",
+    "id": "rural-free-delivery",
+    "title": "Rural free delivery",
+    "view": { "bucket": "month", "from": "1893-01-01", "norm": "rel", "q": "\"rural free delivery\"", "to": "1915-12-31" }
+  },
+  {
+    "aggregate": "q=Scopes&mode=phrase&from=1925-03-01&to=1925-12-31&bucket=week",
+    "blurb": "A Tennessee teacher was tried for teaching evolution in July 1925.",
+    "id": "scopes",
+    "title": "Scopes trial, 1925",
+    "view": { "bucket": "week", "from": "1925-03-01", "q": "Scopes", "to": "1925-12-31" }
   }
 ]

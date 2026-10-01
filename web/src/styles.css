@@ -135,6 +135,8 @@ input, select {
   display: flex; flex-direction: column; gap: 6px;
 }
 .example span { color: var(--muted); font-size: 0.92rem; }
+.examples__more { margin: 0; }
+.examples__more .link-button { min-height: 24px; padding: 2px 0; }
 
 .results { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .results > .notice { flex: none; }

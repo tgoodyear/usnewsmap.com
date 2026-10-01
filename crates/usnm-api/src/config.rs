@@ -131,7 +131,7 @@ impl Config {
                 .collect(),
             search_timeout: Duration::from_secs(num("USNM_SEARCH_TIMEOUT_SECS", 10)?),
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
-            prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 300)?),
+            prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 900)?),
             prewarm_retry_first: Duration::from_secs(1),
             ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 120)?),
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(c.rate_limit.unwrap().per_minute.get(), 120);
         assert_eq!(c.persist_after, Duration::from_millis(500));
         assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
-        assert_eq!(c.prewarm_budget, Duration::from_secs(300));
+        assert_eq!(c.prewarm_budget, Duration::from_secs(900));
         assert_eq!(c.ready_cap, Duration::from_secs(120));
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.search_log_url.is_none());
