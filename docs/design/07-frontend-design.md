@@ -57,7 +57,7 @@ The design keeps the legacy "map-first" identity: a full-bleed map with controls
 
 ### Key states
 
-- **Empty:** example searches as cards, three at a time from the 50 in `web/src/examples.json` ("Cross of Gold, 1896", "Dred Scott", "Marshall Plan"), with "Show other examples" to page through the rest; and a coverage map preview. The order is random per page load and takes the examples' eras (1828–1860 to 1945–1963) in turn, so the three cards shown together come from different eras.
+- **Empty:** example searches as cards, three at a time from the 50 in `web/src/examples.json` ("Cross of Gold, 1896", "Dred Scott", "Marshall Plan"), with "Show other examples" to page through the rest; and a coverage map preview. The order is random per page load and takes the examples' eras (1828–1860 to 1945–1963) in turn, smallest era first, so through a full pass of "Show other examples" the three cards shown together come from three different eras.
 - **Loading:** a skeleton shimmer on the timeline, the previous results dimmed, and a cancel button.
 - **No results:** suggestions (switch to "all words", enable OCR-tolerant, widen dates), with a link to the coverage layer.
 - **Error:** the problem+json `hint` shown inline.

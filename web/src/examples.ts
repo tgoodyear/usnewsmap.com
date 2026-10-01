@@ -49,14 +49,19 @@ export function examplesAt<T>(order: readonly T[], page: number, n = EXAMPLES_SH
 }
 
 /**
- * A random order that takes one example from each era in turn (the eras in a
- * random order, each era's examples shuffled), so neighbours come from
- * different eras while the eras last.
+ * A random order that takes one example from each era in turn (each era's
+ * examples shuffled), so neighbours come from different eras. The eras go in
+ * a random order, smallest first: the biggest then supply the leftovers at
+ * the end, and the set that wraps around to the start begins with a
+ * different era. With eras of nearly equal size, every set of three in one
+ * pass through the examples spans three eras.
  */
 export function mixByEra<T extends { era: string }>(items: readonly T[], random: () => number): T[] {
   const groups = new Map<string, T[]>();
   for (const item of items) groups.set(item.era, [...(groups.get(item.era) ?? []), item]);
-  const queues = shuffle([...groups.values()], random).map((g) => shuffle(g, random));
+  const queues = shuffle([...groups.values()], random)
+    .sort((a, b) => a.length - b.length)
+    .map((g) => shuffle(g, random));
   const out: T[] = [];
   while (out.length < items.length) {
     for (const q of queues) {

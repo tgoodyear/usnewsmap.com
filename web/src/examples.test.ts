@@ -97,19 +97,19 @@ describe("example rotation", () => {
     expect(new Set(EXAMPLE_ORDER)).toEqual(new Set(EXAMPLES));
   });
 
-  it("mixes eras, so a set spans several", () => {
-    let seed = 7;
-    const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
-    const order = mixByEra(EXAMPLES, random);
-    expect(new Set(order)).toEqual(new Set(EXAMPLES));
-    expect(order).toHaveLength(EXAMPLES.length);
-    // While every era has examples left, each set of three has three eras.
-    const sizes = new Map<string, number>();
-    for (const ex of EXAMPLES) sizes.set(ex.era, (sizes.get(ex.era) ?? 0) + 1);
-    const full = (Math.min(...sizes.values()) * sizes.size) / EXAMPLES_SHOWN;
-    for (let page = 0; page < Math.floor(full); page++) {
-      const eras = examplesAt(order, page).map((e) => e.era);
-      expect(new Set(eras).size, `set ${page}: ${eras.join(", ")}`).toBe(EXAMPLES_SHOWN);
+  it("mixes eras, so every set in a pass spans three", () => {
+    for (let start = 1; start <= 50; start++) {
+      let seed = start;
+      const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+      const order = mixByEra(EXAMPLES, random);
+      expect(order).toHaveLength(EXAMPLES.length);
+      expect(new Set(order)).toEqual(new Set(EXAMPLES));
+      // One pass: every set until each example has shown, including the one
+      // that wraps around to the start.
+      for (let page = 0; page < Math.ceil(order.length / EXAMPLES_SHOWN); page++) {
+        const eras = examplesAt(order, page).map((e) => e.era);
+        expect(new Set(eras).size, `seed ${start}, set ${page}: ${eras.join(", ")}`).toBe(EXAMPLES_SHOWN);
+      }
     }
   });
 
