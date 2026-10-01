@@ -35,7 +35,7 @@ Build-time settings:
 - **Snippets** are split into text and `<mark>` segments and rendered as text nodes. No API HTML is ever injected.
 - **Accessibility.** A Table tab mirrors the map. Playback works from the keyboard: `Space`, `←`/`→` (`Shift` for 10), `Home`/`End`. The current date is announced in a live region. Reduced motion is honored. Without WebGL2, the table is shown instead of the map.
 - **Page views** (`src/pageview.ts`, 07 §7.8). One per page load, sent with `navigator.sendBeacon` to `/v1/beacon`: the page name and title, and on the first page the referrer's origin and the landing URL's `utm_*` tags. Never the search or other query parameters. Do Not Track and Global Privacy Control turn it off, and nothing is stored in the browser. The privacy page (`/privacy`) describes it for visitors.
-- **Performance.** The map stack is lazy-loaded; the critical-path JS is about 98 KB gzip (budget 250 KB).
+- **Performance.** The map stack is lazy-loaded; the critical-path JS is about 99 KB gzip (budget 250 KB).
 
 Not yet built: compare mode, the first-appearance and state-choropleth layers, the coverage overlay, embed mode, export, and the share dialog beyond copying the link.
 
