@@ -21,6 +21,8 @@ export type Unavailable =
   | "few-places";
 
 export interface Prepared {
+  /** The index version the inputs came from. */
+  version: string;
   input: SkewInput;
   /** Place ids in the model's order (the coverage response's). */
   placeIds: string[];
@@ -82,6 +84,7 @@ export function prepareSkew(
   // (doc 11, 11.14): per-language baselines are phase 2.
   const languages = placeIds.map((id) => languageLabel(features.get(id)?.properties.languages));
   return {
+    version: agg.index_version,
     input: {
       spec: { unit: agg.bucket.unit, from: agg.bucket.from, to: agg.bucket.to },
       nationalHits: agg.series.hits,

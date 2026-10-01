@@ -63,10 +63,18 @@ describe("SkewLegend", () => {
   it("says what was compared, over what, and the index version", () => {
     const { container } = render(<SkewLegend places={398} states={42} unit="month" version="pages-v1" />);
     const text = container.textContent ?? "";
-    expect(text).toContain("compared with the other 397 places in 42 states over the same months");
+    expect(text).toContain("compared with the other 397 places with pages in this window, in 42 states, over the same months");
     expect(text).toContain("1× is the same rate");
     expect(text).toContain("Index pages-v1");
     expect(text).not.toMatch(/[—]/);
+  });
+
+  it("says when there is nothing to compare with", () => {
+    const { container } = render(<SkewLegend places={1} states={1} unit="year" version="v" />);
+    expect(container.textContent).toContain("No other place has pages in this window");
+    cleanup();
+    const two = render(<SkewLegend places={2} states={1} unit="year" version="v" />);
+    expect(two.container.textContent).toContain("the other 1 place with pages in this window, in 1 state, over the same years");
   });
 });
 

@@ -2,6 +2,7 @@ import { ALPHA_UNCLEAR, cssSkewColor, SKEW_TICKS, tickLabel } from "../lib/skewS
 import type { BucketUnit } from "../api/types";
 
 interface Props {
+  /** Places and states with pages in the current window. */
   places: number;
   states: number;
   unit: BucketUnit;
@@ -26,9 +27,15 @@ export function SkewLegend({ places, states, unit, version }: Props) {
         ))}
       </div>
       <p className="legend__note">
-        Matches per page compared with the other {(places - 1).toLocaleString("en-US")} places in{" "}
-        {states.toLocaleString("en-US")} {states === 1 ? "state" : "states"} over the same {UNIT_PLURAL[unit]}. 1× is
-        the same rate.
+        {places > 1 ? (
+          <>
+            Matches per page compared with the other {(places - 1).toLocaleString("en-US")}{" "}
+            {places === 2 ? "place" : "places"} with pages in this window, in {states.toLocaleString("en-US")}{" "}
+            {states === 1 ? "state" : "states"}, over the same {UNIT_PLURAL[unit]}. 1× is the same rate.
+          </>
+        ) : (
+          "No other place has pages in this window, so there is nothing to compare with."
+        )}
       </p>
       <p className="legend__note">
         <span className="legend__swatch" style={{ background: cssSkewColor(1, ALPHA_UNCLEAR) }} aria-hidden="true" />{" "}

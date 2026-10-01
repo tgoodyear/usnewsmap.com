@@ -87,8 +87,8 @@ pub(crate) async fn places_in(state: &AppState, ctx: Ctx, uri: &Uri) -> Result<R
         let rd = &snap.refdata;
         let mut title_counts = std::collections::HashMap::<&str, usize>::new();
         // The languages the place's titles are printed in (catalog codes,
-        // e.g. "eng", "ger"). The map's relative-rate view marks places
-        // whose titles are all in other languages (doc 11, 11.5.9).
+        // e.g. "eng", "ger"). The map's relative-rate view names them for a
+        // place where any title isn't in English (doc 11, 11.14).
         let mut languages =
             std::collections::HashMap::<&str, std::collections::BTreeSet<&str>>::new();
         for t in rd.titles.values() {

@@ -106,7 +106,14 @@ export function App() {
   const { state: skew, last: lastSkew } = useSkewModel(typeof prepared === "object" ? prepared : null);
   // While a new fit runs, keep drawing the previous one rather than flipping
   // to page counts and back.
-  const skewModel = skew.status === "ready" ? skew : skew.status === "computing" ? lastSkew : null;
+  // Only within one index version: a fit from another version must never be
+  // drawn against this version's places and labelled with its version.
+  const skewModel =
+    skew.status === "ready"
+      ? skew
+      : skew.status === "computing" && lastSkew?.prepared.version === version
+        ? lastSkew
+        : null;
   const frame = useMemo(
     () => (skewModel ? scoreFrame(skewModel.model, t, view.win) : null),
     [skewModel, t, view.win],
@@ -413,8 +420,8 @@ export function App() {
                       />
                       {norm === "skew" && skewModel ? (
                         <SkewLegend
-                          places={skewModel.prepared.placesWithPages}
-                          states={skewModel.prepared.stateCodes.filter((s) => s).length}
+                          places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
+                          states={frame ? frame.statePages.filter((p) => p > 0).length : 0}
                           unit={data.bucket.unit}
                           version={version}
                         />

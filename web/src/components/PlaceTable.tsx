@@ -112,7 +112,7 @@ export function PlaceTable({ rows, onSelect, selected, skew = false }: Props) {
       <table className="places">
         <caption className="visually-hidden">
           {skew
-            ? "Relative rate of each place with pages up to the current date"
+            ? "Relative rate of each place with pages in the current window"
             : "Places with matching pages up to the current date"}
         </caption>
         <thead>

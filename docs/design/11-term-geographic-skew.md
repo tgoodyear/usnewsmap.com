@@ -317,7 +317,7 @@ The special functions are checked against known values: `ln_gamma`; the regulari
 - **Legend line:** "Matches per page compared with the other 397 places in 42 states over the same months. 1× is the same rate.", with the index version.
 - **Playback:** at load, build an expected-hits cube (each coverage cell's pages times the other places' rate in its bucket) and prefix-sum it like the page sums, so each frame is O(places). `alpha`, `mu` and `phi` stay fixed at the full-window values so colours don't jump because of a refit; for short trailing windows the intervals are then only a guide, since the spread between places can differ from the full window's.
 - **States layer:** the same score per state, replacing "hits per 1,000 pages" in 07 §7.4. The state choropleth isn't built yet, so phase 1 shows the state scores as a table under the place table.
-- **Export:** a separate per-place CSV for the window (`place_id,name,state,pages,hits,expected,estimate,lower,upper,not_english`), because the existing export (06 §6.3.2) is one row per place and bucket. `hits` counts the pages that matched in buckets with other places to compare with, as the score does.
+- **Export:** a separate per-place CSV for the window (`place_id,name,state,pages,hits,expected,estimate,lower,upper,languages`, the last empty or a label such as "Papers in Serbian and English"), because the existing export (06 §6.3.2) is one row per place and bucket. `hits` counts the pages that matched in buckets with other places to compare with, as the score does.
 
 ## 11.7 Performance and cost
 

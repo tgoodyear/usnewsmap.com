@@ -44,7 +44,7 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
 
   const legend = page.locator(".legend");
   await expect(legend).toContainText("Relative rate");
-  await expect(legend).toContainText("compared with the other 5 places in 6 states over the same months");
+  await expect(legend).toContainText("compared with the other 5 places with pages in this window, in 6 states, over the same months");
   await expect(legend).toContainText("Index fixture-v1");
   await expect(page.getByRole("complementary", { name: "Places that differ most clearly" })).toBeVisible();
   // Points only: the heat layer isn't offered in this view.
