@@ -158,7 +158,12 @@ pub fn by_language(rd: &RefData) -> ByLanguage {
     let mut langs: BTreeMap<Option<&str>, (usize, u64)> = BTreeMap::new();
     let (mut multilingual_titles, mut multilingual_pages) = (0, 0);
     for t in rd.titles.values() {
-        let codes: BTreeSet<&str> = t.languages.iter().map(String::as_str).collect();
+        let codes: BTreeSet<&str> = t
+            .languages
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
         let pages = pages_of(&t.lccn).unwrap_or(0);
         if codes.len() > 1 {
             multilingual_titles += 1;
@@ -1033,7 +1038,9 @@ mod tests {
                 (title("a", "P1", &["eng"]), 100),
                 (title("b", "P1", &["eng", "ger"]), 40),
                 (title("c", "P1", &["ger"]), 10),
-                (title("d", "P1", &[]), 5),
+                // No language, or only an empty one: "Not recorded".
+                (title("d", "P1", &[]), 4),
+                (title("g", "P1", &[""]), 1),
                 // A repeated code counts once.
                 (title("e", "P1", &["eng", "eng"]), 1),
                 (title("f", "P1", &["pennsylvania german"]), 4),
@@ -1061,7 +1068,7 @@ mod tests {
             [
                 (Some("eng"), "English", 3, Some(141), Some(88.1)),
                 (Some("ger"), "German", 2, Some(50), Some(31.3)),
-                (None, "Not recorded", 1, Some(5), Some(3.1)),
+                (None, "Not recorded", 2, Some(5), Some(3.1)),
                 (
                     Some("pennsylvania german"),
                     "Pennsylvania German",
@@ -1091,7 +1098,7 @@ mod tests {
             [
                 ("English", 3, None, None),
                 ("German", 2, None, None),
-                ("Not recorded", 1, None, None),
+                ("Not recorded", 2, None, None),
                 ("Pennsylvania German", 1, None, None),
             ]
         );

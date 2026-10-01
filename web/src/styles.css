@@ -305,6 +305,7 @@ details.status-error > summary { white-space: nowrap; overflow: hidden; text-ove
   border-radius: var(--radius); padding: 10px; font-size: 0.8rem;
 }
 .pages-table td.num, .pages-table th.num { white-space: nowrap; }
+.sort-mark { color: var(--muted); font-weight: 400; }
 @media (max-width: 640px) {
   .status { padding: 10px; }
   .status-section { padding: 10px; }

@@ -36,7 +36,10 @@ export function SortableTable<R>({
   initial: Sort;
   foot?: ReactNode[];
 }) {
-  const [sort, setSort] = useState<Sort>(initial);
+  const [chosen, setSort] = useState<Sort>(initial);
+  // A column can go away while the page is open (a rollback to a version
+  // without page counts): then the table goes back to its initial order.
+  const sort = columns.some((c) => c.key === chosen.key) ? chosen : initial;
   const col = columns.find((c) => c.key === sort.key) ?? columns[0]!;
   const name = columns[0]!;
   const sorted = [...rows].sort((a, b) => {
@@ -81,13 +84,19 @@ export function SortableTable<R>({
                   type="button"
                   className="th-button"
                   onClick={() =>
-                    setSort((s) => ({
+                    setSort({
                       key: c.key,
-                      desc: s.key === c.key ? !s.desc : c.numeric === true,
-                    }))
+                      desc:
+                        sort.key === c.key ? !sort.desc : c.numeric === true,
+                    })
                   }
                 >
                   {c.label}
+                  {sort.key === c.key && (
+                    <span className="sort-mark" aria-hidden="true">
+                      {sort.desc ? " ↓" : " ↑"}
+                    </span>
+                  )}
                 </button>
               </th>
             ))}
@@ -259,7 +268,7 @@ export function LanguagesSection({ data }: { data: ByLanguage }) {
                   known && data.multilingual_pages !== null
                     ? ` (${count(data.multilingual_pages)} pages)`
                     : ""
-                }. Those count once in each of their languages, so the rows add up to more than the total.`
+                }. Those count once in each of their languages, so the rows add up to more than ${known ? "all published pages" : "the number of newspapers"}.`
               : "Every newspaper lists one language or none."}
           </p>
           {!known && (
@@ -277,7 +286,7 @@ export function LanguagesSection({ data }: { data: ByLanguage }) {
             }
             columns={languageColumns(known)}
             rows={data.rows}
-            rowKey={(r) => r.code ?? ""}
+            rowKey={(r) => (r.code === null ? "none" : `code:${r.code}`)}
             initial={{ key: known ? "pages" : "titles", desc: true }}
           />
         </>

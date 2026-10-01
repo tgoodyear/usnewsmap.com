@@ -143,7 +143,7 @@ describe("LanguagesSection", () => {
     expect(
       screen.getByText(/1 newspaper lists more than one language \(40 pages\)/)
         .textContent,
-    ).toContain("the rows add up to more than the total");
+    ).toContain("the rows add up to more than all published pages");
     const table = screen.getByRole("table", {
       name: "Published pages by language",
     });
@@ -172,7 +172,7 @@ describe("LanguagesSection", () => {
     expect(
       within(table)
         .getAllByRole("columnheader")
-        .map((h) => h.textContent),
+        .map((h) => h.textContent?.replace(/ [↑↓]$/, "")),
     ).toEqual(["Language", "Newspapers"]);
     expect(
       within(table)
@@ -180,5 +180,31 @@ describe("LanguagesSection", () => {
         .getAttribute("aria-sort"),
     ).toBe("descending");
     expect(bodyRows(table)[0]).toEqual(["English", "3"]);
+  });
+
+  it("goes back to its initial order when the sorted column goes away", () => {
+    const { rerender } = render(<LanguagesSection data={LANGUAGES} />);
+    const share = () => screen.getByRole("button", { name: /Share of pages/ });
+    fireEvent.click(share());
+    expect(share().textContent).toContain("↓");
+    // A rollback to a version without page counts, while the page is open.
+    const old: ByLanguage = {
+      ...LANGUAGES,
+      pages_known: false,
+      multilingual_pages: null,
+      rows: LANGUAGES.rows.map((r) => ({ ...r, pages: null, percent: null })),
+    };
+    rerender(<LanguagesSection data={old} />);
+    const table = screen.getByRole("table");
+    expect(
+      within(table)
+        .getByRole("columnheader", { name: /Newspapers/ })
+        .getAttribute("aria-sort"),
+    ).toBe("descending");
+    expect(bodyRows(table).map((r) => r[0])).toEqual([
+      "English",
+      "German",
+      "Not recorded",
+    ]);
   });
 });
