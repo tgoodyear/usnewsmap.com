@@ -57,6 +57,11 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
   await page.keyboard.press("Enter");
   await expect(info).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByText("pulled toward the typical rate")).toBeVisible();
+  // The explanation fits on the screen, phones included.
+  const box = await page.locator(".infotip__body").boundingBox();
+  const width = page.viewportSize()!.width;
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(width);
   await expectAccessible(page);
   await page.keyboard.press("Escape");
   await expect(info).toHaveAttribute("aria-expanded", "false");
@@ -72,7 +77,7 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
   await page.getByRole("button", { name: "Download CSV" }).click();
   const file = await (await download).path();
   const lines = readFileSync(file, "utf8").trim().split("\n");
-  expect(lines[0]).toBe("place_id,name,state,pages,hits,expected,estimate,lower,upper,not_english");
+  expect(lines[0]).toBe("place_id,name,state,pages,hits,expected,estimate,lower,upper,languages");
   expect(lines).toHaveLength(7);
 
   // The permalink restores the view.
@@ -110,4 +115,25 @@ test("the relative rate needs five places with pages", async ({ page }) => {
   await expect(page.getByRole("status").filter({ hasText: "at least 5 places" })).toBeVisible();
   // Page counts are shown meanwhile.
   await expect(page.locator(".legend")).toContainText("Pages containing the match");
+});
+
+test("playback keeps the relative rate and its scale", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=skew&win=3");
+  await expect(page.locator(".legend")).toContainText("Relative rate");
+  await page.locator("body").press("Home");
+  await expect(page).toHaveURL(/[?&]t=1895-01-01/);
+  // Nothing printed yet: no place is clearly different.
+  await expect(page.getByText("No place is clearly above 1× in this window.")).toBeVisible();
+  await page.locator("body").press("End");
+  await expect(page.locator(".legend")).toContainText("Relative rate");
+  await expect(measure(page).getByRole("button", { name: "Relative rate" })).toHaveAttribute("aria-pressed", "true");
+  expect(errors).toEqual([]);
+});
+
+test("a heat layer in the link gives way to points in the relative rate", async ({ page }) => {
+  await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=skew&layer=heat&state=IL,NY");
+  await expect(page.getByRole("status").filter({ hasText: "at least 5 places" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Map layer" })).toHaveCount(0);
 });

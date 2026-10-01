@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AggregateResponse, CoverageResponse, PlaceFeature } from "../api/types";
-import { isNonEnglish, prepareSkew } from "./skewInput";
+import { prepareSkew } from "./skewInput";
 
 const feature = (id: string, state: string, languages?: string[]): PlaceFeature => ({
   type: "Feature",
@@ -54,9 +54,9 @@ describe("prepareSkew", () => {
     expect(p.placesWithPages).toBe(6);
     expect(p.stateCodes).toEqual(["IL", "NY", "CA"]);
     expect(Array.from(p.input.stateOf)).toEqual([0, 0, 1, 1, 2, 2]);
-    // Only C prints in other languages only; it is left out of the fit.
-    expect(p.nonEnglish).toEqual([false, false, true, false, false, false]);
-    expect(Array.from(p.input.inFit)).toEqual([true, true, false, true, true, true]);
+    // Languages are named, never used to leave a place out of the fit.
+    expect(p.languages).toEqual([null, null, "Papers in German", "Papers in German and English", null, null]);
+    expect(Array.from(p.input.inFit)).toEqual([]);
   });
 
   it("is unavailable when filters remove the baselines, buckets differ or places are few", () => {
@@ -64,12 +64,5 @@ describe("prepareSkew", () => {
     expect(prepareSkew(agg, { ...coverage, count: 3 }, features)).toBe("mismatch");
     const few = { ...coverage, pages: { p: [0, 1, 2, 3], b: [0, 0, 0, 0], h: [1, 1, 1, 1] } };
     expect(prepareSkew(agg, few, features)).toBe("few-places");
-  });
-
-  it("treats a place with no listed languages as English", () => {
-    expect(isNonEnglish(feature("X", "TX"))).toBe(false);
-    expect(isNonEnglish(feature("X", "TX", []))).toBe(false);
-    expect(isNonEnglish(feature("X", "TX", ["spa"]))).toBe(true);
-    expect(isNonEnglish(undefined)).toBe(false);
   });
 });

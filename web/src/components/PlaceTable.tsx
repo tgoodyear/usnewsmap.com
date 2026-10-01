@@ -81,8 +81,14 @@ const SKEW: Column[] = [
     get: (r) => r.skew?.lower ?? nan,
     show: (r) =>
       r.skew
-        ? `${formatRange(r.skew)}${r.skew.dir === 0 ? " (can't tell)" : ""}${r.skew.nonEnglish ? " (not in English)" : ""}`
+        ? `${formatRange(r.skew)}${r.skew.dir === 0 ? " (can't tell)" : ""}`
         : "",
+  },
+  {
+    key: "languages",
+    label: "Languages",
+    get: (r) => r.skew?.languages ?? "",
+    show: (r) => r.skew?.languages ?? "",
   },
 ];
 

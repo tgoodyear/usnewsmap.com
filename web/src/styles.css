@@ -144,6 +144,10 @@ input, select {
   padding: 4px 12px; font-size: 0.9rem; line-height: 1.45; box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
 }
 .infotip__body[hidden] { display: none; }
+@media (max-width: 640px) {
+  /* Phones: span the screen instead of hanging off the button. */
+  .infotip__body { position: fixed; top: auto; left: 16px; right: 16px; width: auto; margin-top: 6px; }
+}
 
 .stage { position: relative; flex: 1; display: flex; min-height: 300px; }
 .map-wrap { position: relative; flex: 1; display: flex; min-height: 300px; }
@@ -177,6 +181,7 @@ input, select {
 .skew-list ol { margin: 0; padding-left: 1.4em; }
 .skew-list li { padding: 3px 0; }
 .skew-list__value { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.skew-list__lang { display: block; color: var(--muted); font-size: 0.85rem; }
 .skew-list__empty, .skew-list__note { color: var(--muted); font-size: 0.9rem; margin: 4px 0; }
 .skew-list__note { margin-top: 14px; }
 .tables { flex: 1; display: flex; flex-direction: column; gap: 16px; overflow: auto; min-width: 0; }

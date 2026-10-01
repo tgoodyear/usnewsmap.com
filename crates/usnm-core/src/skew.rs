@@ -246,6 +246,9 @@ pub fn dispersion_for(
     }
     let mut merged: BTreeMap<(usize, usize), (u64, u64)> = BTreeMap::new();
     for c in cells {
+        if c.bucket >= national_hits.len().min(national_pages.len()) {
+            continue;
+        }
         if let Some(&s) = slot.get(&key(c.bucket)) {
             let e = merged.entry((c.place, s)).or_default();
             e.0 += c.pages;
@@ -424,10 +427,9 @@ pub struct SearchScores {
 /// Every step for one search: observed and expected hits per place,
 /// dispersion at the calendar resolution, the prior fitted to the places
 /// with `in_fit` true (a missing entry counts as true), and every place
-/// scored with it. Places whose titles are all in languages other than
-/// English are left out of the fit (doc 11, 11.5.9): an English term rarely
-/// matches their pages, and a pile of them near 0 would widen the prior for
-/// everyone. They are still scored.
+/// scored with it. A place left out of the fit is still scored. The site
+/// fits every place (doc 11, 11.14); the mask is there for a later
+/// language-aware version (11.5.9) and is covered by the shared vectors.
 pub fn score_search(
     spec: &BucketSpec,
     national_hits: &[u64],
@@ -480,20 +482,34 @@ pub fn group_cells(cells: &[Cell], group_of: &[usize]) -> Vec<Cell> {
 
 /// Groups of places (states) scored as units: each group's cells are summed
 /// per bucket and compared with the other groups' pages in that bucket, with
-/// the place-level `phi` and a prior fitted across the groups (doc 11,
-/// 11.4.1, "States").
+/// a prior fitted across the groups (doc 11, 11.4.1, "States"). `phi` is the
+/// larger of the place-level `phi` and the groups' own: a state's hits vary
+/// more than a place's (on the seven searches in doc 11 the states measured
+/// 2 to 4 times the places' `phi`), and scoring them with the places' value
+/// would make their intervals too narrow.
+// The inputs mirror `score_search` plus the grouping and the places' phi.
+#[allow(clippy::too_many_arguments)]
 pub fn score_groups(
+    spec: &BucketSpec,
     national_hits: &[u64],
     national_pages: &[u64],
     cells: &[Cell],
     group_of: &[usize],
     groups: usize,
-    phi: f64,
+    place_phi: f64,
     level: f64,
-) -> (Prior, Vec<Score>) {
+) -> SearchScores {
     let grouped = group_cells(cells, group_of);
     let counts = place_counts(national_hits, national_pages, &grouped, groups);
-    score_all(&counts, phi, level)
+    let (dispersion, _) = dispersion_for(spec, national_hits, national_pages, &grouped);
+    let phi = dispersion.phi.map_or(place_phi, |p| p.max(place_phi));
+    let (prior, scores) = score_all(&counts, phi, level);
+    SearchScores {
+        dispersion,
+        phi,
+        prior,
+        scores,
+    }
 }
 
 fn golden_max(mut lo: f64, mut hi: f64, f: impl Fn(f64) -> f64) -> f64 {
@@ -1495,9 +1511,57 @@ mod tests {
         // Group 0 against group 1's 5% and 2%; group 1 against group 0's 20% and 10%.
         assert!(close(c[0].expected, 200.0 * 0.05 + 50.0 * 0.02, 1e-12));
         assert!(close(c[1].expected, 400.0 * 0.2 + 50.0 * 0.1, 1e-12));
-        let (_, scores) = score_groups(&[60, 6], &[600, 100], &cells, &[0, 0, 1], 2, 1.0, 0.9);
-        assert_eq!(scores[0].observed, 45);
-        assert_eq!(scores[1].observed, 21);
+        let day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let spec = BucketSpec::new(
+            crate::time::BucketUnit::Year,
+            day("1880-01-01"),
+            day("1881-12-31"),
+        );
+        let g = score_groups(
+            &spec,
+            &[60, 6],
+            &[600, 100],
+            &cells,
+            &[0, 0, 1],
+            2,
+            1.5,
+            0.9,
+        );
+        assert_eq!(g.scores[0].observed, 45);
+        assert_eq!(g.scores[1].observed, 21);
+        // Too few hits to measure the groups' own dispersion: the places' is used.
+        assert_eq!((g.dispersion.phi, g.phi), (None, 1.5));
+    }
+
+    #[test]
+    fn groups_use_their_own_dispersion_when_it_is_larger() {
+        use crate::time::BucketUnit;
+        let day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        // Ten places in two groups, each place steady, but the groups'
+        // interest swings in opposite directions from year to year.
+        let spec = BucketSpec::new(BucketUnit::Year, day("1880-01-01"), day("1889-12-31"));
+        let mut cells = Vec::new();
+        for p in 0..10 {
+            for b in 0..10 {
+                let up = (b % 2 == 0) == (p < 5);
+                cells.push(Cell {
+                    place: p,
+                    bucket: b,
+                    pages: 10_000,
+                    hits: if up { 130 } else { 70 },
+                });
+            }
+        }
+        let mut hits = vec![0u64; 10];
+        let mut pages = vec![0u64; 10];
+        for c in &cells {
+            hits[c.bucket] += c.hits;
+            pages[c.bucket] += c.pages;
+        }
+        let group_of: Vec<usize> = (0..10).map(|p| usize::from(p >= 5)).collect();
+        let g = score_groups(&spec, &hits, &pages, &cells, &group_of, 2, 1.0, 0.9);
+        assert!(g.phi > 10.0, "phi {}", g.phi);
+        assert_eq!(Some(g.phi), g.dispersion.phi);
     }
 
     #[test]

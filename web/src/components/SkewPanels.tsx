@@ -13,11 +13,10 @@ const LIST_LENGTH = 5;
 /**
  * The places that differ most clearly (doc 11, 11.6): above 1 sorted by the
  * interval's lower bound, below 1 by its upper bound. Only places whose
- * interval excludes 1; places printed only in other languages are left out
- * (an English term rarely matches their pages).
+ * interval excludes 1. Papers in other languages are named, not left out.
  */
 export function clearest(rows: SkewRow[]): { above: SkewRow[]; below: SkewRow[] } {
-  const usable = rows.filter((r) => !r.skew.nonEnglish && r.skew.dir !== 0);
+  const usable = rows.filter((r) => r.skew.dir !== 0);
   return {
     above: usable
       .filter((r) => r.skew.dir === 1)
@@ -53,6 +52,7 @@ export function SkewLists({ rows, onSelect }: ListsProps) {
               <span className="skew-list__value">
                 {formatTimes(r.skew.estimate)} ({formatRange(r.skew)})
               </span>
+              {r.skew.languages && <span className="skew-list__lang">{r.skew.languages}</span>}
             </li>
           ))}
         </ol>
@@ -114,11 +114,11 @@ export function StateTable({ rows }: StateTableProps) {
 export function skewCsv(rows: SkewRow[]): string {
   const q = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
   const n = (x: number) => (Number.isFinite(x) ? String(Number(x.toPrecision(6))) : "");
-  const lines = ["place_id,name,state,pages,hits,expected,estimate,lower,upper,not_english"];
+  const lines = ["place_id,name,state,pages,hits,expected,estimate,lower,upper,languages"];
   for (const r of rows) {
     const s = r.skew;
     lines.push(
-      [q(r.id), q(r.name), q(r.state), s.pages, s.observed, n(s.expected), n(s.estimate), n(s.lower), n(s.upper), s.nonEnglish ? 1 : 0].join(","),
+      [q(r.id), q(r.name), q(r.state), s.pages, s.observed, n(s.expected), n(s.estimate), n(s.lower), n(s.upper), q(s.languages ?? "")].join(","),
     );
   }
   return `${lines.join("\n")}\n`;

@@ -18,8 +18,8 @@ function random(places: number, buckets: number, seed: number) {
         cells.b.push(b);
         cells.pages.push(pages);
         cells.hits.push(hits);
-        nh[b] += hits;
-        np[b] += pages;
+        nh[b]! += hits;
+        np[b]! += pages;
       }
   return { cells, nh, np };
 }

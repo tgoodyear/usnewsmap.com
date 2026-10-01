@@ -65,11 +65,11 @@ function InfoTip() {
       <div id={id} className="infotip__body" hidden={!open}>
         <p>
           Relative rate compares each place's share of matching pages with the other places' share in the same
-          months or years, so places with more newspapers don't stand out just for their size. 1× is the same rate.
+          time periods, so places with more newspapers don't stand out just for their size. 1× is the same rate.
         </p>
         <p>
-          Places with few pages are pulled toward the typical rate. Places drawn faded could be at 1× (their 90%
-          range includes it).
+          Places with few pages are pulled toward the typical rate. Each place's 90% range is where the model puts
+          its rate with 90% probability. Places drawn faded could be at 1× (their 90% range includes it).
         </p>
       </div>
     </div>

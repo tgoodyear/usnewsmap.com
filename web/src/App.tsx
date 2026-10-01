@@ -20,10 +20,9 @@ import { SkewLegend } from "./components/SkewLegend";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
-import { maxWindowExpected, scoreFrame } from "./engine/skewModel";
+import { maxWindowExpected, scoreFrame, totalExpected } from "./engine/skewModel";
 import { useSkewModel } from "./engine/useSkew";
-import { direction, type Score } from "./engine/skew";
-import type { SkewInfo } from "./lib/skewText";
+import { skewInfo } from "./lib/skewText";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
@@ -96,12 +95,18 @@ export function App() {
   // Relative rate (doc 11): fitted once per search, off the main thread;
   // each frame is then scored from prefix sums.
   const wantSkew = view.norm === "skew";
+  // Once the view has been shown, keep its fit when switching to Pages and
+  // back; until then don't fit at all.
+  const [skewUsed, setSkewUsed] = useState(wantSkew);
+  if (wantSkew && !skewUsed) setSkewUsed(true);
   const prepared: Prepared | Unavailable | null = useMemo(
-    () => (wantSkew && data && coverage.data && places.data ? prepareSkew(data, coverage.data, features) : null),
-    [wantSkew, data, coverage.data, places.data, features],
+    () => (skewUsed && data && coverage.data && places.data ? prepareSkew(data, coverage.data, features) : null),
+    [skewUsed, data, coverage.data, places.data, features],
   );
-  const skew = useSkewModel(typeof prepared === "object" ? prepared : null);
-  const skewModel = skew.status === "ready" ? skew : null;
+  const { state: skew, last: lastSkew } = useSkewModel(typeof prepared === "object" ? prepared : null);
+  // While a new fit runs, keep drawing the previous one rather than flipping
+  // to page counts and back.
+  const skewModel = skew.status === "ready" ? skew : skew.status === "computing" ? lastSkew : null;
   const frame = useMemo(
     () => (skewModel ? scoreFrame(skewModel.model, t, view.win) : null),
     [skewModel, t, view.win],
@@ -114,20 +119,21 @@ export function App() {
   const drawOrder = useMemo(() => {
     if (!skewModel) return [];
     const s = skewModel.model.places;
-    const total = (u: number) => s.expected[u * (s.buckets + 1) + s.buckets]!;
-    return Array.from({ length: s.units }, (_, u) => u).sort((a, b) => total(b) - total(a));
+    return Array.from({ length: s.units }, (_, u) => u).sort((a, b) => totalExpected(s, b) - totalExpected(s, a));
   }, [skewModel]);
+  const firstDayById = useMemo(
+    () => new Map((data?.places.id ?? []).map((id, i) => [id, data!.places.first_day[i]!])),
+    [data],
+  );
   const skewRows: (SkewRow & MapPoint & { firstDay: number })[] = useMemo(() => {
-    if (!skewModel || !frame || !data) return [];
-    const { placeIds, nonEnglish } = skewModel.prepared;
-    const hitsById = new Map(data.places.id.map((id, i) => [id, i]));
-    const firstDay = data.places.first_day;
+    if (!skewModel || !frame) return [];
+    const { placeIds, languages } = skewModel.prepared;
     return drawOrder.flatMap((i) => {
       const id = placeIds[i]!;
       const f = features.get(id);
       if (!f) return [];
-      const info = skewInfo(frame.places[i]!, frame.placePages[i]!, nonEnglish[i]!);
-      const h = hitsById.get(id);
+      const info = skewInfo(frame.places[i]!, frame.placePages[i]!, languages[i] ?? null);
+
       return [
         {
           id,
@@ -138,17 +144,19 @@ export function App() {
           value: info.observed,
           rel: info.pages > 0 ? info.observed / info.pages : Number.NaN,
           skew: info,
-          firstDay: h === undefined ? -1 : firstDay[h]!,
+          firstDay: firstDayById.get(id) ?? -1,
         },
       ];
     });
-  }, [skewModel, frame, data, features, drawOrder]);
+  }, [skewModel, frame, features, drawOrder, firstDayById]);
+  // Lists, table, export and the announcement: places with pages in the frame.
+  const skewListed = useMemo(() => skewRows.filter((r) => r.skew.pages > 0), [skewRows]);
   const stateRows = useMemo(
     () =>
       skewModel && frame
         ? skewModel.prepared.stateCodes.map((state, i) => ({
             state,
-            skew: skewInfo(frame.states[i]!, frame.statePages[i]!, false),
+            skew: skewInfo(frame.states[i]!, frame.statePages[i]!, null),
           }))
         : [],
     [skewModel, frame],
@@ -194,9 +202,13 @@ export function App() {
   // The share-of-pages colour tops out at the 95th percentile of places with
   // hits, not the maximum: the largest share is usually a place with a
   // handful of pages (doc 11, 11.5.4).
-  const maxRel = percentile(
-    points.filter((p) => p.value > 0 && Number.isFinite(p.rel)).map((p) => p.rel),
-    0.95,
+  const maxRel = useMemo(
+    () =>
+      percentile(
+        points.filter((p) => p.value > 0 && Number.isFinite(p.rel)).map((p) => p.rel),
+        0.95,
+      ),
+    [points],
   );
   const relReady = pageSums !== null;
   // Colour by raw counts until relative values are known.
@@ -243,7 +255,7 @@ export function App() {
     view.norm !== "raw" && coverage.error && !(coverage.error instanceof VersionChangedError);
   const skewNotice = wantSkew && !skewModel ? skewStatus(prepared, skew.status, !!coverageFailed) : null;
   const shown = norm === "skew" ? skewRows : points;
-  const clear = norm === "skew" ? clearest(skewRows) : null;
+  const clear = norm === "skew" ? clearest(skewListed) : null;
 
   return (
     <div className={view.q ? "app" : "app app--empty"}>
@@ -343,7 +355,7 @@ export function App() {
                 )}
                 {norm === "skew" && data && (
                   <DownloadCsv
-                    rows={skewRows}
+                    rows={skewListed}
                     filename={`usnewsmap-relative-rate-${version}-${bucketStart(data.bucket.unit, data.bucket.from, t)}.csv`}
                   />
                 )}
@@ -378,7 +390,7 @@ export function App() {
                       )}
                       {norm === "skew" ? (
                         <div className="tables">
-                          <PlaceTable key="skew" skew rows={skewRows} onSelect={select} selected={view.place} />
+                          <PlaceTable key="skew" skew rows={skewListed} onSelect={select} selected={view.place} />
                           <StateTable rows={stateRows} />
                         </div>
                       ) : (
@@ -389,7 +401,7 @@ export function App() {
                     <Suspense fallback={<div className="map map--loading">Loading map…</div>}>
                       <MapView
                         points={shown}
-                        layer={norm === "skew" ? "points" : view.layer}
+                        layer={view.norm === "skew" ? "points" : view.layer}
                         norm={norm}
                         maxValue={norm === "skew" ? maxExpected : maxValue}
                         maxRel={maxRel}
@@ -405,14 +417,13 @@ export function App() {
                           states={skewModel.prepared.stateCodes.filter((s) => s).length}
                           unit={data.bucket.unit}
                           version={version}
-                          nonEnglish={skewModel.prepared.nonEnglish.filter(Boolean).length}
                         />
                       ) : (
                         <Legend norm={norm} />
                       )}
                     </Suspense>
                   )}
-                  {norm === "skew" && !view.place && <SkewLists rows={skewRows} onSelect={select} />}
+                  {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
                   {view.place && (
                     <PlacePanel
                       params={params}
@@ -436,11 +447,11 @@ export function App() {
                 <Announcer
                   message={
                     clear
-                      ? `Relative rate for ${skewRows.filter((r) => r.skew.pages > 0).length.toLocaleString()} places up to ${bucketLabel(
+                      ? `Relative rate for ${skewListed.length.toLocaleString()} places up to ${bucketLabel(
                           data.bucket.unit,
                           bucketStart(data.bucket.unit, data.bucket.from, t),
-                        )}: ${skewRows.filter((r) => r.skew.dir === 1).length} clearly above 1×, ${
-                          skewRows.filter((r) => r.skew.dir === -1).length
+                        )}: ${skewListed.filter((r) => r.skew.dir === 1).length} clearly above 1×, ${
+                          skewListed.filter((r) => r.skew.dir === -1).length
                         } clearly below.`
                       : `Showing ${visible.length.toLocaleString()} places, ${visible
                           .reduce((a, p) => a + p.value, 0)
@@ -538,7 +549,7 @@ function Legend({ norm }: { norm: ViewState["norm"] }) {
         <span>fewer</span>
         <span>more</span>
       </div>
-      {norm === "rel" && <div className="legend__note">Darkest: top 5% of places or more</div>}
+      {norm === "rel" && <div className="legend__note">Darkest: top 5% of places with matches</div>}
       <div className="legend__note">Circle area ∝ pages · hollow ring = county/state location</div>
     </div>
   );
@@ -565,19 +576,6 @@ function ShareButton() {
   );
 }
 
-function skewInfo(s: Score, pages: number, nonEnglish: boolean): SkewInfo {
-  return {
-    estimate: s.estimate,
-    lower: s.lower,
-    upper: s.upper,
-    observed: s.observed,
-    expected: s.expected,
-    pages,
-    dir: direction(s),
-    nonEnglish,
-  };
-}
-
 /** Why the relative rate isn't showing yet, or can't be shown. */
 function skewStatus(
   prepared: Prepared | Unavailable | null,
@@ -596,12 +594,17 @@ function skewStatus(
     };
   if (prepared === "few-places")
     return {
-      text: "The relative rate needs at least 5 places with pages in these dates. Showing page counts.",
+      text: "The relative rate needs at least 5 places with pages between these dates. Showing page counts.",
       error: false,
     };
   if (status === "error")
     return { text: "The relative rate could not be worked out. Showing page counts.", error: true };
-  if (prepared === null || prepared === "mismatch") return { text: "Loading publication counts…", error: false };
+  if (prepared === "mismatch")
+    return {
+      text: "Publication counts don't match this search's time buckets, so the relative rate isn't available. Showing page counts.",
+      error: true,
+    };
+  if (prepared === null) return { text: "Loading publication counts…", error: false };
   return { text: "Comparing places…", error: false };
 }
 

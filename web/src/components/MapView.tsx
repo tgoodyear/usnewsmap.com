@@ -61,9 +61,9 @@ function radiusFor(p: MapPoint, norm: Norm, maxValue: number): number {
   return norm === "skew" ? skewRadius(p, maxValue) : radiusOf(p.value, maxValue);
 }
 
-/** Faded when the 90% range includes 1, or the place prints only in other languages. */
+/** Faded when the 90% range includes 1. */
 function skewAlpha(p: MapPoint): number {
-  return p.skew && p.skew.dir !== 0 && !p.skew.nonEnglish ? ALPHA_CLEAR : ALPHA_UNCLEAR;
+  return p.skew && p.skew.dir !== 0 ? ALPHA_CLEAR : ALPHA_UNCLEAR;
 }
 
 function skewFill(p: MapPoint): [number, number, number, number] {

@@ -2,6 +2,7 @@
 // panel, the lists and the screen-reader summary share these sentences.
 
 import { formatTimes } from "./skewScale";
+import { direction, type Score } from "../engine/skew";
 
 export interface SkewInfo {
   estimate: number;
@@ -15,8 +16,8 @@ export interface SkewInfo {
   pages: number;
   /** 1 clearly above, -1 clearly below, 0 can't tell. */
   dir: -1 | 0 | 1;
-  /** Its titles are all in languages other than English. */
-  nonEnglish: boolean;
+  /** "Papers in German and English" when any of its titles isn't in English, else null. */
+  languages: string | null;
 }
 
 export function formatExpected(x: number): string {
@@ -44,6 +45,24 @@ export function skewSentence(name: string, s: SkewInfo): string {
     s.dir === 0
       ? `Can't tell whether it differs from the other places (${formatRange(s)}).`
       : `About ${formatTimes(s.estimate)} the rate of the other places (${formatRange(s)}).`;
-  const lang = s.nonEnglish ? " Its newspapers are not in English, so English words rarely match." : "";
+  const lang = s.languages ? ` ${s.languages}.` : "";
   return `${counts} ${rate}${lang}`;
+}
+
+/**
+ * A score as the view shows it. A place with no pages or nothing expected in
+ * the frame has no evidence of its own, so it is never "clearly" above or
+ * below, even when the prior alone excludes 1.
+ */
+export function skewInfo(s: Score, pages: number, languages: string | null): SkewInfo {
+  return {
+    estimate: s.estimate,
+    lower: s.lower,
+    upper: s.upper,
+    observed: s.observed,
+    expected: s.expected,
+    pages,
+    dir: pages > 0 && s.expected > 0 ? direction(s) : 0,
+    languages,
+  };
 }

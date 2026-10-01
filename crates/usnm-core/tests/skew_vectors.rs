@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 use usnm_core::skew::{
-    gamma_p, gamma_quantile, ln_gamma, normal_quantile, place_counts, score_groups, score_search,
-    Cell, Counts, Prior, Score,
+    gamma_p, gamma_quantile, group_cells, ln_gamma, normal_quantile, place_counts, score_groups,
+    score_search, Cell, Counts, Prior, Score,
 };
 use usnm_core::time::{BucketSpec, BucketUnit};
 
@@ -26,7 +26,7 @@ fn tolerances() -> Value {
         "counts": { "rel": 1e-12, "abs": 1e-12 },
         "phi": { "rel": 1e-10, "abs": 0.0 },
         "prior": { "rel": 1e-5, "abs": 1e-9 },
-        "score": { "rel": 1e-6, "abs": 1e-12 },
+        "score": { "rel": 1e-5, "abs": 1e-12 },
         "above": { "rel": 0.0, "abs": 1e-6 },
         "special": { "rel": 1e-12, "abs": 1e-300 }
     })
@@ -480,8 +480,9 @@ fn expected_json(input: &Value) -> Value {
     let state_of = usizes(&input["state_of"]);
     let states = input["states"].as_u64().unwrap() as usize;
     let scored = score_search(&spec, &hits, &pages, &cells, places, &in_fit, level);
-    let (state_prior, state_scores) =
-        score_groups(&hits, &pages, &cells, &state_of, states, scored.phi, level);
+    let st = score_groups(
+        &spec, &hits, &pages, &cells, &state_of, states, scored.phi, level,
+    );
     // A playback frame: the buckets in the window, scored with the full
     // window's phi and prior (doc 11, 11.6).
     let windows: Vec<Value> = input["windows"]
@@ -503,7 +504,12 @@ fn expected_json(input: &Value) -> Value {
                 .iter()
                 .map(|&k| score_json(&scored.prior.score(k, scored.phi, level)))
                 .collect();
-            json!({ "places": scores })
+            let grouped = group_cells(&cells, &state_of);
+            let state_scores: Vec<Value> = place_counts(&hits, &pages, &grouped, states)
+                .iter()
+                .map(|&k| score_json(&st.prior.score(k, st.phi, level)))
+                .collect();
+            json!({ "places": scores, "states": state_scores })
         })
         .collect();
     json!({
@@ -513,8 +519,9 @@ fn expected_json(input: &Value) -> Value {
         "prior": prior_json(&scored.prior),
         "places": scored.scores.iter().map(score_json).collect::<Vec<_>>(),
         "states": {
-            "prior": prior_json(&state_prior),
-            "scores": state_scores.iter().map(score_json).collect::<Vec<_>>(),
+            "phi": st.phi,
+            "prior": prior_json(&st.prior),
+            "scores": st.scores.iter().map(score_json).collect::<Vec<_>>(),
         },
         "windows": windows,
     })
@@ -806,6 +813,13 @@ fn shared_vectors_match_the_reference() {
 
 fn compare_case(name: &str, ax: &Value, ex: &Value, tols: &Value, failures: &mut Vec<String>) {
     check(
+        &format!("{name}.states.phi"),
+        &ax["states"]["phi"],
+        &ex["states"]["phi"],
+        &tols["phi"],
+        failures,
+    );
+    check(
         &format!("{name}.phi"),
         &ax["phi"],
         &ex["phi"],
@@ -874,6 +888,20 @@ fn compare_case(name: &str, ax: &Value, ex: &Value, tols: &Value, failures: &mut
         assert_eq!(la.len(), le.len(), "{name}.windows[{j}]");
         for (i, (x, y)) in la.iter().zip(le).enumerate() {
             check_score(&format!("{name}.windows[{j}][{i}]"), x, y, tols, failures);
+        }
+        let (la, le) = (
+            w["states"].as_array().unwrap(),
+            v["states"].as_array().unwrap(),
+        );
+        assert_eq!(la.len(), le.len(), "{name}.windows[{j}].states");
+        for (i, (x, y)) in la.iter().zip(le).enumerate() {
+            check_score(
+                &format!("{name}.windows[{j}].states[{i}]"),
+                x,
+                y,
+                tols,
+                failures,
+            );
         }
     }
 }

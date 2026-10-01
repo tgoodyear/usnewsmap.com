@@ -393,6 +393,8 @@ export function groupCells(cells: Cells, groupOf: ArrayLike<number>): Cells {
     const p = cells.p[i]!;
     if (p >= groupOf.length) continue;
     const g = groupOf[p]!;
+    // A place without a group (negative) is left out, as in group_cells.
+    if (g < 0) continue;
     const key = g * stride + cells.b[i]!;
     const e = merged.get(key);
     if (e) {
@@ -411,18 +413,37 @@ export function groupCells(cells: Cells, groupOf: ArrayLike<number>): Cells {
   };
 }
 
-/** Groups (states) scored as units with the place-level phi and their own prior (score_groups). */
+/**
+ * The phi for groups (states): the larger of the places' and the groups' own
+ * measured dispersion, which is usually 2 to 4 times larger (score_groups).
+ */
+export function groupPhi(
+  spec: BucketSpec,
+  nationalHits: ArrayLike<number>,
+  nationalPages: ArrayLike<number>,
+  grouped: Cells,
+  placePhi: number,
+): { dispersion: Dispersion; phi: number } {
+  const { dispersion: d } = dispersionFor(spec, nationalHits, nationalPages, grouped);
+  return { dispersion: d, phi: d.phi === null ? placePhi : Math.max(d.phi, placePhi) };
+}
+
+/** Groups (states) scored as units with their own prior (score_groups). */
 export function scoreGroups(
+  spec: BucketSpec,
   nationalHits: ArrayLike<number>,
   nationalPages: ArrayLike<number>,
   cells: Cells,
   groupOf: ArrayLike<number>,
   groups: number,
-  phi: number,
+  placePhi: number,
   level: number,
-): { prior: Prior; scores: Score[] } {
-  const counts = placeCounts(nationalHits, nationalPages, groupCells(cells, groupOf), groups);
-  return scoreAll(counts, phi, level);
+): SearchScores {
+  const grouped = groupCells(cells, groupOf);
+  const counts = placeCounts(nationalHits, nationalPages, grouped, groups);
+  const { dispersion: d, phi } = groupPhi(spec, nationalHits, nationalPages, grouped, placePhi);
+  const { prior, scores } = scoreAll(counts, phi, level);
+  return { dispersion: d, phi, prior, scores };
 }
 
 // Special functions (the same algorithms and constants as the Rust).

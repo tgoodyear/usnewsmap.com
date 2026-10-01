@@ -14,7 +14,7 @@ const info = (estimate: number, lower: number, upper: number, extra: Partial<Ske
   expected: 5,
   pages: 100,
   dir: lower > 1 ? 1 : upper < 1 ? -1 : 0,
-  nonEnglish: false,
+  languages: null,
   ...extra,
 });
 const row = (id: string, s: SkewInfo): SkewRow => ({ id, name: `Place ${id}`, state: "AL", skew: s });
@@ -61,12 +61,11 @@ describe("SkewLegend", () => {
   afterEach(cleanup);
 
   it("says what was compared, over what, and the index version", () => {
-    const { container } = render(<SkewLegend places={398} states={42} unit="month" version="pages-v1" nonEnglish={2} />);
+    const { container } = render(<SkewLegend places={398} states={42} unit="month" version="pages-v1" />);
     const text = container.textContent ?? "";
     expect(text).toContain("compared with the other 397 places in 42 states over the same months");
     expect(text).toContain("1× is the same rate");
     expect(text).toContain("Index pages-v1");
-    expect(text).toContain("2 places print only in other languages");
     expect(text).not.toMatch(/[—]/);
   });
 });
@@ -77,26 +76,27 @@ describe("lists, tables and export", () => {
     row("a", info(3, 2.5, 3.5)),
     row("b", info(6, 1.2, 12)),
     row("c", info(0.3, 0.2, 0.45)),
-    row("d", info(0.1, 0.05, 0.2, { nonEnglish: true })),
+    row("d", info(0.1, 0.05, 0.2, { languages: "Papers in German" })),
     row("e", info(1.1, 0.6, 1.8)),
   ];
 
-  it("lists only clear differences, by the bound nearest 1×, without other-language places", () => {
+  it("lists only clear differences, by the bound nearest 1×, naming papers in other languages", () => {
     const { above, below } = clearest(rows);
     expect(above.map((r) => r.id)).toEqual(["a", "b"]);
-    expect(below.map((r) => r.id)).toEqual(["c"]);
+    expect(below.map((r) => r.id)).toEqual(["d", "c"]);
     const onSelect = vi.fn();
     render(<SkewLists rows={rows} onSelect={onSelect} />);
     fireEvent.click(screen.getByRole("button", { name: "Place a, AL" }));
     expect(onSelect).toHaveBeenCalledWith("a");
     expect(screen.getByRole("complementary", { name: "Places that differ most clearly" })).toBeTruthy();
+    expect(screen.getByText("Papers in German")).toBeTruthy();
   });
 
   it("tables places and states with expected counts and ranges", () => {
     const tableRows = rows.map((r) => ({ ...r, precision: "city", position: [0, 0] as [number, number], value: 10, rel: 0.1, firstDay: 0 }));
     render(<PlaceTable skew rows={tableRows} onSelect={() => undefined} selected="" />);
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
-    expect(headers).toEqual(["Place", "State", "Pages published", "Matched", "Expected", "Relative rate", "90% range"]);
+    expect(headers).toEqual(["Place", "State", "Pages published", "Matched", "Expected", "Relative rate", "90% range", "Languages"]);
     // Sorted by relative rate, highest first.
     expect(screen.getAllByRole("rowheader").map((h) => h.textContent)).toEqual(["Place b", "Place a", "Place e", "Place c", "Place d"]);
     expect(screen.getByText("0.60 to 1.8× (can't tell)")).toBeTruthy();
@@ -106,11 +106,11 @@ describe("lists, tables and export", () => {
   });
 
   it("exports one CSV row per place", () => {
-    const csv = skewCsv([row("P1", info(6.14, 5.23, 7.15)), { ...row("P2", info(1, 0.5, 2)), name: 'A, "B"' }]);
+    const csv = skewCsv([row("P1", info(6.14, 5.23, 7.15)), { ...row("P2", info(1, 0.5, 2, { languages: "Papers in German, Serbian and English" })), name: 'A, "B"' }]);
     expect(csv.split("\n")).toEqual([
-      "place_id,name,state,pages,hits,expected,estimate,lower,upper,not_english",
-      "P1,Place P1,AL,100,10,5,6.14,5.23,7.15,0",
-      'P2,"A, ""B""",AL,100,10,5,1,0.5,2,0',
+      "place_id,name,state,pages,hits,expected,estimate,lower,upper,languages",
+      "P1,Place P1,AL,100,10,5,6.14,5.23,7.15,",
+      'P2,"A, ""B""",AL,100,10,5,1,0.5,2,"Papers in German, Serbian and English"',
       "",
     ]);
   });

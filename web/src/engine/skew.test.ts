@@ -61,8 +61,8 @@ interface Case {
     phi_measured: boolean;
     prior: StoredPrior;
     places: StoredScore[];
-    states: { prior: StoredPrior; scores: StoredScore[] };
-    windows: { places: StoredScore[] }[];
+    states: { phi: number; prior: StoredPrior; scores: StoredScore[] };
+    windows: { places: StoredScore[]; states: StoredScore[] }[];
   };
 }
 interface Vectors {
@@ -134,7 +134,8 @@ describe("shared vectors: searches", () => {
       checkPrior(s.prior, c.expected.prior, "prior");
       expect(s.scores).toHaveLength(c.expected.places.length);
       s.scores.forEach((x, k) => checkScore(x, c.expected.places[k]!, `places[${k}]`));
-      const g = scoreGroups(i.national_hits, i.national_pages, i.cells, i.state_of, i.states, s.phi, i.level);
+      const g = scoreGroups(spec, i.national_hits, i.national_pages, i.cells, i.state_of, i.states, s.phi, i.level);
+      near(g.phi, c.expected.states.phi, tol.phi, "states.phi");
       checkPrior(g.prior, c.expected.states.prior, "states.prior");
       g.scores.forEach((x, k) => checkScore(x, c.expected.states.scores[k]!, `states[${k}]`));
     });
@@ -152,6 +153,7 @@ describe("shared vectors: searches", () => {
         level: i.level,
       });
       checkPrior(model.prior, c.expected.prior, "prior");
+      near(model.statePhi, c.expected.states.phi, tol.phi, "states.phi");
       checkPrior(model.statePrior, c.expected.states.prior, "states.prior");
       // The full window is the search's own scores.
       const full = scoreFrame(model, i.national_hits.length - 1, null);
@@ -160,6 +162,7 @@ describe("shared vectors: searches", () => {
       i.windows.forEach((w, j) => {
         const f = scoreFrame(model, w.t, w.win);
         f.places.forEach((x, k) => checkScore(x, c.expected.windows[j]!.places[k]!, `windows[${j}][${k}]`));
+        f.states.forEach((x, k) => checkScore(x, c.expected.windows[j]!.states[k]!, `windows[${j}].states[${k}]`));
       });
     });
   }

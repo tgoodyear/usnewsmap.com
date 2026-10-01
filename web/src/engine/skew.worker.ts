@@ -7,7 +7,13 @@ self.onmessage = (e: MessageEvent<{ id: number; input: SkewInput }>) => {
   const { id, input } = e.data;
   try {
     const model = buildSkew(input);
-    const buffers = [model.places, model.states].flatMap((s) => [s.observed.buffer, s.expected.buffer, s.pages.buffer]);
+    const buffers = [model.places, model.states].flatMap((s) => [
+      s.start.buffer,
+      s.bucket.buffer,
+      s.observed.buffer,
+      s.expected.buffer,
+      s.pages.buffer,
+    ]);
     (self as unknown as Worker).postMessage({ id, model }, buffers);
   } catch (err) {
     (self as unknown as Worker).postMessage({ id, error: String(err) });

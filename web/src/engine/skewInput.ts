@@ -5,6 +5,7 @@
 
 import type { AggregateResponse, CoverageResponse, PlaceFeature } from "../api/types";
 import type { SkewInput } from "./skewModel";
+import { languageLabel } from "../lib/languages";
 
 /** The view is off below this many places with pages in the window (doc 11, 11.4.2). */
 export const MIN_PLACES = 5;
@@ -25,16 +26,10 @@ export interface Prepared {
   placeIds: string[];
   /** State codes in the model's state order. */
   stateCodes: string[];
-  /** Places whose titles are all in languages other than English. */
-  nonEnglish: boolean[];
+  /** "Papers in German and English" where any title isn't in English, else null. */
+  languages: (string | null)[];
   /** Places with pages in the window. */
   placesWithPages: number;
-}
-
-/** Titles all in other languages; unknown (no languages listed) counts as English. */
-export function isNonEnglish(f: PlaceFeature | undefined): boolean {
-  const langs = f?.properties.languages ?? [];
-  return langs.length > 0 && !langs.includes("eng");
 }
 
 export function prepareSkew(
@@ -71,8 +66,10 @@ export function prepareSkew(
   if (placesWithPages < MIN_PLACES) return "few-places";
   const stateCodes: string[] = [];
   const stateIndex = new Map<string, number>();
+  // Places without a known state are left out of the states (-1).
   const stateOf = placeIds.map((id) => {
     const s = features.get(id)?.properties.state ?? "";
+    if (!s) return -1;
     let g = stateIndex.get(s);
     if (g === undefined) {
       g = stateCodes.length;
@@ -81,7 +78,9 @@ export function prepareSkew(
     }
     return g;
   });
-  const nonEnglish = placeIds.map((id) => isNonEnglish(features.get(id)));
+  // Every place is scored and fitted the same way; languages are only shown
+  // (doc 11, 11.14): per-language baselines are phase 2.
+  const languages = placeIds.map((id) => languageLabel(features.get(id)?.properties.languages));
   return {
     input: {
       spec: { unit: agg.bucket.unit, from: agg.bucket.from, to: agg.bucket.to },
@@ -89,14 +88,14 @@ export function prepareSkew(
       nationalPages: agg.series.baseline,
       cells,
       places: placeIds.length,
-      inFit: nonEnglish.map((x) => !x),
+      inFit: [],
       stateOf,
       states: stateCodes.length,
       level: LEVEL,
     },
     placeIds,
     stateCodes,
-    nonEnglish,
+    languages,
     placesWithPages,
   };
 }

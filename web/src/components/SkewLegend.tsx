@@ -6,13 +6,12 @@ interface Props {
   states: number;
   unit: BucketUnit;
   version: string;
-  nonEnglish: number;
 }
 
 const UNIT_PLURAL: Record<BucketUnit, string> = { year: "years", month: "months", week: "weeks", day: "days" };
 
 /** Legend for the relative-rate view: a diverging ramp centred on 1×. */
-export function SkewLegend({ places, states, unit, version, nonEnglish }: Props) {
+export function SkewLegend({ places, states, unit, version }: Props) {
   return (
     <div className="legend legend--skew">
       <div className="legend__title">Relative rate</div>
@@ -34,7 +33,6 @@ export function SkewLegend({ places, states, unit, version, nonEnglish }: Props)
       <p className="legend__note">
         <span className="legend__swatch" style={{ background: cssSkewColor(1, ALPHA_UNCLEAR) }} aria-hidden="true" />{" "}
         Faded: can't tell. Circle area: matches expected.
-        {nonEnglish > 0 && ` ${nonEnglish} ${nonEnglish === 1 ? "place prints" : "places print"} only in other languages.`}
       </p>
       {version && <p className="legend__note">Index {version}</p>}
     </div>
