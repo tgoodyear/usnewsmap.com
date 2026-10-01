@@ -171,9 +171,6 @@ export function App() {
       <header className="topbar">
         <Brand />
         <SearchBar key={searchKey(view)} view={view} meta={meta.data} onSearch={search} />
-        <button type="button" className="link-button topbar__about" aria-haspopup="dialog" onClick={openAbout}>
-          About
-        </button>
       </header>
       <About ref={about} />
 
@@ -364,12 +361,8 @@ export function App() {
           Chronicling America
         </a>{" "}
         (
-        <a href="https://www.loc.gov/" target="_blank" rel="noopener noreferrer">
-          Library of Congress
-        </a>{" "}
-        and{" "}
-        <a href="https://www.neh.gov/" target="_blank" rel="noopener noreferrer">
-          National Endowment for the Humanities
+        <a href="https://www.loc.gov/ndnp/" target="_blank" rel="noopener noreferrer">
+          NEH and Library of Congress
         </a>
         ).
         {meta.data && ` ${indexSummary(meta.data)}`}{" "}
