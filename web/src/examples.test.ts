@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { searchQuery } from "./api/client";
-import { EXAMPLE_ORDER, EXAMPLES, EXAMPLES_SHOWN, examplesAt, shuffle } from "./examples";
+import { EXAMPLE_ORDER, EXAMPLES, EXAMPLES_SHOWN, examplesAt, mixByEra, shuffle } from "./examples";
 import { DEFAULTS, isIsoDate, parseView, searchParams, serializeView } from "./state/url";
 
 /** Sorted `key=value` pairs, so parameter order doesn't matter. */
@@ -95,6 +95,32 @@ describe("example rotation", () => {
     expect(order).toHaveLength(EXAMPLES.length);
     expect(new Set(order.map((e) => e.id))).toEqual(new Set(EXAMPLES.map((e) => e.id)));
     expect(new Set(EXAMPLE_ORDER)).toEqual(new Set(EXAMPLES));
+  });
+
+  it("mixes eras, so a set spans several", () => {
+    let seed = 7;
+    const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+    const order = mixByEra(EXAMPLES, random);
+    expect(new Set(order)).toEqual(new Set(EXAMPLES));
+    expect(order).toHaveLength(EXAMPLES.length);
+    // While every era has examples left, each set of three has three eras.
+    const sizes = new Map<string, number>();
+    for (const ex of EXAMPLES) sizes.set(ex.era, (sizes.get(ex.era) ?? 0) + 1);
+    const full = (Math.min(...sizes.values()) * sizes.size) / EXAMPLES_SHOWN;
+    for (let page = 0; page < Math.floor(full); page++) {
+      const eras = examplesAt(order, page).map((e) => e.era);
+      expect(new Set(eras).size, `set ${page}: ${eras.join(", ")}`).toBe(EXAMPLES_SHOWN);
+    }
+  });
+
+  it("are spread across eras", () => {
+    const sizes = new Map<string, number>();
+    for (const ex of EXAMPLES) {
+      expect(ex.era, ex.id).toMatch(/^\d{4}-\d{4}$/);
+      sizes.set(ex.era, (sizes.get(ex.era) ?? 0) + 1);
+    }
+    expect(sizes.size).toBeGreaterThanOrEqual(EXAMPLES_SHOWN);
+    for (const [era, n] of sizes) expect(n, era).toBeGreaterThanOrEqual(5);
   });
 
   it("shows full sets that reach every example", () => {

@@ -13,6 +13,11 @@ export interface Example {
    * match what the app sends.
    */
   aggregate: string;
+  /**
+   * The span of years the example belongs to, such as "1860-1877". Only used
+   * to mix the examples shown together, so a set spans several eras.
+   */
+  era: string;
 }
 
 // Preset searches (F-30). Each was checked against the real corpus for enough
@@ -43,5 +48,24 @@ export function examplesAt<T>(order: readonly T[], page: number, n = EXAMPLES_SH
   return Array.from({ length: count }, (_, i) => order[(start + i) % order.length]!);
 }
 
+/**
+ * A random order that takes one example from each era in turn (the eras in a
+ * random order, each era's examples shuffled), so neighbours come from
+ * different eras while the eras last.
+ */
+export function mixByEra<T extends { era: string }>(items: readonly T[], random: () => number): T[] {
+  const groups = new Map<string, T[]>();
+  for (const item of items) groups.set(item.era, [...(groups.get(item.era) ?? []), item]);
+  const queues = shuffle([...groups.values()], random).map((g) => shuffle(g, random));
+  const out: T[] = [];
+  while (out.length < items.length) {
+    for (const q of queues) {
+      const next = q.shift();
+      if (next) out.push(next);
+    }
+  }
+  return out;
+}
+
 /** This page load's order: random per visit, the same until the page reloads. */
-export const EXAMPLE_ORDER: readonly Example[] = shuffle(EXAMPLES, Math.random);
+export const EXAMPLE_ORDER: readonly Example[] = mixByEra(EXAMPLES, Math.random);
