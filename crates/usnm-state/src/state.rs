@@ -131,6 +131,11 @@ pub enum RunStatus {
 /// built from (a JSON array of [`RunBatch`]).
 pub const RUN_BATCHES_FILE: &str = "batches.json";
 
+/// The file in a version's reference snapshot with every title's published
+/// pages, `{lccn: pages}` (the status page's pages by language). Snapshots
+/// written before it existed don't have it.
+pub const TITLE_PAGES_FILE: &str = "title_pages.json";
+
 /// One index build (partition key `/index_version`).
 ///
 /// The item holds only bounded fields. The version's batch list, which grows

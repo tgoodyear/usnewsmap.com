@@ -1,8 +1,8 @@
 //! End to end on the synthetic corpus: turn the fixture pages back into two
 //! LoC-style batch archives, run enqueue → curate → release twice (a base,
 //! then a delta), and check the pipeline reproduces the checked-in fixtures
-//! exactly: both indexes, the baselines, titles and places. Then load the
-//! result the way the API does.
+//! exactly: both indexes, the baselines, titles, places and pages per title.
+//! Then load the result the way the API does.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -280,7 +280,12 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
 
     // The reference snapshot matches the fixture's, file for file.
     let v = &p2.index_version;
-    for f in ["baselines.json", "titles.json", "places.json"] {
+    for f in [
+        "baselines.json",
+        "titles.json",
+        "places.json",
+        "title_pages.json",
+    ] {
         let want: Value =
             serde_json::from_slice(&std::fs::read(fixtures().join("fixture-v1").join(f)).unwrap())
                 .unwrap();
@@ -322,6 +327,10 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
         .unwrap();
     assert_eq!(refdata.version(), v);
     assert_eq!(refdata.places.len(), 6);
+    // Pages per title count the same pages as the baselines.
+    let title_pages = refdata.title_pages.as_ref().unwrap();
+    assert_eq!(title_pages.len(), 6);
+    assert_eq!(title_pages.values().sum::<u64>(), refdata.pages);
 
     // A full release (compaction) rebuilds one base with every page.
     let p3 = e.release(15, true).await.unwrap();

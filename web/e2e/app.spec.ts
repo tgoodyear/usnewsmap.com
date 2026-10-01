@@ -224,6 +224,35 @@ test("the status page shows the published version without the pipeline state", a
   expect((await json.json()).backfill.available).toBe(false);
 });
 
+test("the status page lists published pages by state and by language", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/status");
+  // The fixtures: six places in six states, 312 pages each, all in English.
+  const states = page.getByRole("table", { name: "Published pages by state" });
+  await expect(page.getByRole("heading", { level: 2, name: "Pages by state" })).toBeVisible();
+  await expect(states.locator("tbody tr")).toHaveCount(6);
+  await expect(states.locator("tbody tr").first()).toHaveText(/California\s*1\s*1\s*312\s*16\.7%/);
+  await expect(states.locator("tfoot tr")).toHaveText(/Total\s*6\s*6\s*1,872\s*100\.0%/);
+  await expect(page.getByText("6 states and territories have pages", { exact: false })).toBeVisible();
+  // Sorting by name, then reversing it.
+  const byName = states.getByRole("button", { name: "State" });
+  await byName.click();
+  await byName.click();
+  await expect(states.getByRole("columnheader", { name: "State" })).toHaveAttribute("aria-sort", "descending");
+  await expect(states.locator("tbody th").first()).toHaveText("South Carolina");
+
+  const languages = page.getByRole("table", { name: "Published pages by language" });
+  await expect(page.getByRole("heading", { level: 2, name: "Pages by language" })).toBeVisible();
+  await expect(languages.locator("tbody tr")).toHaveCount(1);
+  await expect(languages.locator("tbody tr")).toHaveText(/English\s*6\s*1,872\s*100\.0%/);
+
+  // On a phone the page itself never scrolls sideways; a wide table scrolls in its own box.
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+  await expectAccessible(page);
+  expect(errors).toEqual([]);
+});
+
 test("About opens from the header and the footer and keeps the search", async ({ page }) => {
   await page.goto("/?q=gold");
   const dialog = page.getByRole("dialog", { name: "About US News Map" });

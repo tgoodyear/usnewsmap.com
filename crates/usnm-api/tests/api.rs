@@ -9,7 +9,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use http_body_util::BodyExt;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tower::ServiceExt;
 use usnm_api::config::Config;
 use usnm_api::refdata::RefData;
@@ -927,4 +927,73 @@ async fn status_without_pipeline_state() {
         assert_eq!(body["backfill"]["available"], false);
         assert_eq!(body["indexing"]["available"], false);
     }
+}
+
+#[tokio::test]
+async fn status_has_pages_by_state_and_language() {
+    let state = state_with(None).await;
+    let (_, _, body) = get(&state, "/v1/status").await;
+    let p = &body["published"];
+    // Six fixture places, one per state, 312 pages each: ties go by name.
+    let states = p["by_state"].as_array().unwrap();
+    assert_eq!(states.len(), 6);
+    assert_eq!(
+        states[0],
+        json!({"state": "CA", "name": "California", "places": 1, "titles": 1,
+               "pages": 312, "percent": 16.7})
+    );
+    let names: Vec<&str> = states.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "California",
+            "Georgia",
+            "Illinois",
+            "Nebraska",
+            "New York",
+            "South Carolina"
+        ]
+    );
+    let total: u64 = states.iter().map(|r| r["pages"].as_u64().unwrap()).sum();
+    assert_eq!(total, p["pages"].as_u64().unwrap());
+    assert_eq!(
+        p["by_language"],
+        json!({"pages_known": true, "multilingual_titles": 0, "multilingual_pages": 0,
+               "rows": [{"code": "eng", "name": "English", "titles": 6, "pages": 1872,
+                         "percent": 100.0}]})
+    );
+}
+
+#[tokio::test]
+async fn a_snapshot_without_pages_per_title_still_loads() {
+    let dir = temp_data_dir("no-title-pages");
+    let store = LocalStore::new(&dir);
+    // A snapshot from before releases wrote the file: not in the manifest.
+    std::fs::remove_file(dir.join("fixture-v1/title_pages.json")).unwrap();
+    let manifest = dir.join("fixture-v1/manifest.json");
+    let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    m["files"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|f| f["path"] != "title_pages.json");
+    std::fs::write(&manifest, m.to_string()).unwrap();
+    let rd = RefData::load(&store).await.unwrap();
+    assert!(rd.title_pages.is_none());
+    let lang = usnm_api::status::assemble::by_language(&rd);
+    assert!(!lang.pages_known);
+    assert_eq!((lang.rows[0].titles, lang.rows[0].pages), (6, None));
+    assert_eq!(usnm_api::status::assemble::by_state(&rd).len(), 6);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Listed in the manifest but altered: the version doesn't load.
+    let dir = temp_data_dir("bad-title-pages");
+    let store = LocalStore::new(&dir);
+    let path = dir.join("fixture-v1/title_pages.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replacen("312", "313", 1);
+    std::fs::write(&path, text).unwrap();
+    let err = RefData::load(&store).await.unwrap_err();
+    assert!(err.contains("title_pages.json does not match"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

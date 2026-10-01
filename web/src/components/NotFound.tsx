@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { TITLES } from "../route";
+import { Brand } from "./Brand";
 
 /**
  * A path the app has no page for. The API sends the app shell with a 404 for
@@ -12,9 +13,7 @@ export function NotFound() {
   return (
     <div className="app">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="US News Map home">
-          <span aria-hidden="true">◉</span> US News Map
-        </a>
+        <Brand />
       </header>
       <main className="empty">
         <h1>Page not found</h1>

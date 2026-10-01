@@ -16,6 +16,7 @@ import { PlaceTable } from "./components/PlaceTable";
 import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
 import { hasWebGL2 } from "./lib/webgl";
+import { Brand } from "./components/Brand";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
@@ -168,9 +169,7 @@ export function App() {
   return (
     <div className={view.q ? "app" : "app app--empty"}>
       <header className="topbar">
-        <a className="brand" href="/" aria-label="US News Map home">
-          <span aria-hidden="true">◉</span> US News Map
-        </a>
+        <Brand />
         <SearchBar key={searchKey(view)} view={view} meta={meta.data} onSearch={search} />
         <button type="button" className="link-button topbar__about" aria-haspopup="dialog" onClick={openAbout}>
           About
