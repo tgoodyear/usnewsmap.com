@@ -9,3 +9,5 @@ It mimics the shapes the real pipeline will produce ([04](../docs/design/04-data
 - `fixture-v1/`: the reference snapshot (`places.json`, `titles.json`, `baselines.json`)
 
 Regenerate with `python3 fixtures/generate.py` (deterministic).
+
+`skew-vectors.json` is separate: inputs and expected scores for the relative-rate scoring ([doc 11](../docs/design/11-term-geographic-skew.md)), shared by `crates/usnm-core/tests/skew_vectors.rs` and `web/src/engine/skew.test.ts`. Its synthetic cases are generated; `cross_of_gold` and `klondike` are reduced from public API responses for that doc (counts per place index and bucket, no names). Regenerate with `UPDATE_SKEW_VECTORS=1 cargo test -p usnm-core --test skew_vectors` (add `SKEW_RECORDED_DIR` to re-read the recorded searches).

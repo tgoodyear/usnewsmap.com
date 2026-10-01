@@ -443,10 +443,11 @@ fn term(dir: &Path, name: &str, info: &HashMap<String, Place>) {
         }
     );
     println!(
-        "prior: alpha {:.3}  mean {:.3}  (prior sd of lift {:.2})",
+        "prior: alpha {:.3}  mean {:.3}  (prior sd of lift {:.2})  scored with shape {:.3}",
         main.prior.alpha,
         main.prior.mean,
-        main.prior.mean / main.prior.alpha.sqrt()
+        main.prior.mean / main.prior.alpha.sqrt(),
+        main.prior.shape()
     );
     println!(
         "90% interval above 1 / below 1 / includes 1: {over} / {under} / {}  (phi = 1: {po} / {pu})",

@@ -1,0 +1,77 @@
+import { useEffect, useId, useRef, useState } from "react";
+import type { Norm } from "../state/url";
+
+interface Props {
+  norm: Norm;
+  onChange: (norm: Norm) => void;
+}
+
+export const MEASURE_LABELS: Record<Norm, string> = {
+  raw: "Pages",
+  skew: "Relative rate",
+  rel: "Share of pages",
+};
+
+/**
+ * Pages or relative rate (doc 11, 11.6). The older "share of pages
+ * published" view has no button of its own; a permalink that names it
+ * (`norm=rel`) still opens it, with a third button while it is showing.
+ */
+export function MeasureToggle({ norm, onChange }: Props) {
+  const options: Norm[] = norm === "rel" ? ["raw", "skew", "rel"] : ["raw", "skew"];
+  return (
+    <div className="measure">
+      <div className="segmented" role="group" aria-label="Measure">
+        {options.map((n) => (
+          <button key={n} type="button" aria-pressed={norm === n} onClick={() => onChange(n)}>
+            {MEASURE_LABELS[n]}
+          </button>
+        ))}
+      </div>
+      <InfoTip />
+    </div>
+  );
+}
+
+/** A small disclosure that explains the relative rate. */
+function InfoTip() {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const wrap = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("keydown", close);
+    document.addEventListener("pointerdown", close);
+    return () => {
+      document.removeEventListener("keydown", close);
+      document.removeEventListener("pointerdown", close);
+    };
+  }, [open]);
+  return (
+    <div className="infotip" ref={wrap}>
+      <button
+        type="button"
+        className="infotip__button"
+        aria-expanded={open}
+        aria-controls={id}
+        aria-label="About the relative rate"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span aria-hidden="true">i</span>
+      </button>
+      <div id={id} className="infotip__body" hidden={!open}>
+        <p>
+          Relative rate compares each place's share of matching pages with the other places' share in the same
+          months or years, so places with more newspapers don't stand out just for their size. 1× is the same rate.
+        </p>
+        <p>
+          Places with few pages are pulled toward the typical rate. Places drawn faded could be at 1× (their 90%
+          range includes it).
+        </p>
+      </div>
+    </div>
+  );
+}

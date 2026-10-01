@@ -2,6 +2,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { api, ApiError, type SearchParams } from "../api/client";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
+import { skewSentence, type SkewInfo } from "../lib/skewText";
 
 interface Props {
   params: SearchParams;
@@ -9,13 +10,15 @@ interface Props {
   placeId: string;
   placeName: string;
   windowHits: number;
+  /** The place's relative rate in the current window (relative-rate view). */
+  note?: SkewInfo;
   /** Synthetic fixtures: their LCCNs are invented, so LoC has no such pages. */
   synthetic: boolean;
   onClose: () => void;
 }
 
 /** Place drill-down (F-03): date-sorted pages with snippets and LoC links. */
-export function PlacePanel({ params, version, placeId, placeName, windowHits, synthetic, onClose }: Props) {
+export function PlacePanel({ params, version, placeId, placeName, windowHits, note, synthetic, onClose }: Props) {
   const query = useInfiniteQuery({
     queryKey: ["hits", version, params, placeId],
     queryFn: ({ pageParam, signal }) => api.hits(params, version, placeId, pageParam, signal),
@@ -32,6 +35,7 @@ export function PlacePanel({ params, version, placeId, placeName, windowHits, sy
           ✕
         </button>
       </header>
+      {note && <p className="panel__skew">{skewSentence(placeName, note)}</p>}
       <p className="panel__summary">
         {first ? `${first.total.toLocaleString()} pages in this search` : "Loading…"}
         {first && windowHits !== first.total ? ` · ${windowHits.toLocaleString()} up to the current date` : ""}

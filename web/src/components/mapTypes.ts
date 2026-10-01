@@ -1,3 +1,5 @@
+import type { SkewInfo } from "../lib/skewText";
+
 export interface MapPoint {
   id: string;
   name: string;
@@ -8,4 +10,6 @@ export interface MapPoint {
   value: number;
   /** value / pages published in the window. */
   rel: number;
+  /** The relative rate in the current window (relative-rate view only). */
+  skew?: SkewInfo;
 }

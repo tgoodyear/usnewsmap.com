@@ -38,6 +38,14 @@ describe("view URL", () => {
     expect(parseView("?z=12&c=0,0")).toMatchObject({ z: 12, c: [0, 0] });
   });
 
+  it("keeps the measure in the URL, including the older share of pages", () => {
+    expect(parseView("?q=fever&norm=skew").norm).toBe("skew");
+    expect(serializeView({ ...DEFAULTS, q: "fever", norm: "skew" })).toBe("?q=fever&norm=skew");
+    // Permalinks to the share of pages published still open that view.
+    expect(parseView("?q=fever&norm=rel").norm).toBe("rel");
+    expect(parseView("?q=fever&norm=lift").norm).toBe("raw");
+  });
+
   it("keeps near only in near mode", () => {
     expect(serializeView({ ...DEFAULTS, q: "a b", mode: "near", near: 8 })).toBe(
       "?q=a+b&mode=near&near=8",

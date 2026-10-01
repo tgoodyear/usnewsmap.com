@@ -30,11 +30,12 @@ Build-time settings:
 
 - **The URL is the state** (`src/state/url.ts`). Query, dates, scrubber position, window, layer, measure, selected place, tab and viewport are all in the URL. Only non-default values are written, and every parameter is validated when the URL is parsed.
 - **One aggregate request per search.** `src/engine/cube.ts` builds per-place prefix sums from the sparse cube, so each playback frame, cumulative or trailing window, is a subtraction per place. Relative frequency uses the coverage cube named by `baseline_ref`, aligned to the same places.
+- **Relative rate** (`norm=skew`, [doc 11](../docs/design/11-term-geographic-skew.md)). `src/engine/skew.ts` ports the Rust scoring (`usnm_core::skew`); `src/engine/skewModel.ts` fits a search once, in a web worker (`skew.worker.ts`), and scores each playback frame from prefix sums. `src/engine/skew.test.ts` checks the port against `fixtures/skew-vectors.json`, which `cargo test -p usnm-core --test skew_vectors` checks and regenerates. Older `norm=rel` permalinks still open the share-of-pages view.
 - **Version pinning.** Every request carries the `v` from `/v1/meta`, so a whole session reads one published snapshot.
 - **Snippets** are split into text and `<mark>` segments and rendered as text nodes. No API HTML is ever injected.
 - **Accessibility.** A Table tab mirrors the map. Playback works from the keyboard: `Space`, `←`/`→` (`Shift` for 10), `Home`/`End`. The current date is announced in a live region. Reduced motion is honored. Without WebGL2, the table is shown instead of the map.
 - **Page views** (`src/pageview.ts`, 07 §7.8). One per page load, sent with `navigator.sendBeacon` to `/v1/beacon`: the page name and title, and on the first page the referrer's origin and the landing URL's `utm_*` tags. Never the search or other query parameters. Do Not Track and Global Privacy Control turn it off, and nothing is stored in the browser. The privacy page (`/privacy`) describes it for visitors.
-- **Performance.** The map stack is lazy-loaded; the critical-path JS is about 88 KB gzip (budget 250 KB).
+- **Performance.** The map stack is lazy-loaded; the critical-path JS is about 98 KB gzip (budget 250 KB).
 
 Not yet built: compare mode, the first-appearance and state-choropleth layers, the coverage overlay, embed mode, export, and the share dialog beyond copying the link.
 

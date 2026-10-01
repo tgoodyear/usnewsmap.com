@@ -398,6 +398,10 @@ async fn places_geojson_is_version_pinned() {
     );
     assert_eq!(body["type"], "FeatureCollection");
     assert_eq!(body["features"].as_array().unwrap().len(), 6);
+    // Each place lists its titles' languages (the fixtures are all English).
+    for f in body["features"].as_array().unwrap() {
+        assert_eq!(f["properties"]["languages"], serde_json::json!(["eng"]));
+    }
     assert_eq!(body["features"][0]["geometry"]["type"], "Point");
 }
 

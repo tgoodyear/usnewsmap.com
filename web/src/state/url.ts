@@ -7,7 +7,12 @@ import type { BucketUnit, Mode } from "../api/types";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
 export type Layer = "points" | "heat";
-export type Norm = "raw" | "rel";
+/**
+ * What the map measures: pages with a match (`raw`), the relative rate
+ * against other places (`skew`, doc 11), or the older share of pages
+ * published (`rel`), kept so its permalinks still load.
+ */
+export type Norm = "raw" | "rel" | "skew";
 export type Tab = "map" | "table";
 
 export interface ViewState {
@@ -95,7 +100,7 @@ export function parseView(search: string): ViewState {
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
-    norm: oneOf(s.get("norm"), ["raw", "rel"] as const, DEFAULTS.norm),
+    norm: oneOf(s.get("norm"), ["raw", "rel", "skew"] as const, DEFAULTS.norm),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),
     z: Number.isFinite(z) && z >= MIN_ZOOM && z <= MAX_ZOOM ? z : null,

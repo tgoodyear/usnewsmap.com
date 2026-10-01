@@ -37,6 +37,8 @@ export interface PlaceFeature {
     state: string;
     precision: string;
     titles: number;
+    /** Languages of the place's titles (catalog codes such as "eng"). Absent from older APIs. */
+    languages?: string[];
   };
 }
 
