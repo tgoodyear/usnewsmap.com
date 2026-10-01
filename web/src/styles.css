@@ -43,9 +43,11 @@
 body { margin: 0; }
 /* Links aren't underlined, except inside running text: there the link colour
    is too close to the text colour (under 3:1) to mark a link on its own
-   (WCAG 1.4.1, axe link-in-text-block). Hover and keyboard focus underline. */
+   (WCAG 1.4.1, axe link-in-text-block). That is paragraphs and the footer's
+   source credit (its external links); the footer's "About · Pipeline status ·
+   Privacy" row is a separate list. Hover and keyboard focus underline. */
 a { color: var(--accent); text-decoration: none; }
-p a, a:not(.brand):hover, a:not(.brand):focus-visible, .link-button:hover, .link-button:focus-visible {
+p a, .credits a[href^="http"], a:not(.brand):hover, a:not(.brand):focus-visible, .link-button:hover, .link-button:focus-visible {
   text-decoration: underline;
 }
 button, input, select { font: inherit; color: inherit; }
