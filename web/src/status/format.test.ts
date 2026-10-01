@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Status } from "../api/types";
-import { health, relative, span } from "./format";
+import { health, relative, share, span } from "./format";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
 
@@ -131,5 +131,14 @@ describe("status formatting", () => {
     expect(
       health(status({ backfill, indexing: unresolved }), NOW).parts.at(-1),
     ).toBe("1 failure");
+  });
+});
+
+describe("share", () => {
+  it("shows one decimal and never rounds a share with pages down to zero", () => {
+    expect(share(16.7, 312)).toBe("16.7%");
+    expect(share(100, 1872)).toBe("100.0%");
+    expect(share(0, 3)).toBe("under 0.1%");
+    expect(share(0, 0)).toBe("0.0%");
   });
 });

@@ -37,7 +37,9 @@ use crate::curated::{read_part, CuratedRow};
 use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
-use crate::state::{Curated, IndexRun, RunBatch, RunStatus, State, RUN_BATCHES_FILE};
+use crate::state::{
+    Curated, IndexRun, RunBatch, RunStatus, State, RUN_BATCHES_FILE, TITLE_PAGES_FILE,
+};
 use crate::worker::Counts;
 
 pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
@@ -565,8 +567,8 @@ impl Release {
         Ok(docs)
     }
 
-    /// Write `{version}/` (titles, places, baselines, the batch list,
-    /// manifest last) and return the version's date bounds.
+    /// Write `{version}/` (titles, places, baselines, pages per title, the
+    /// batch list, manifest last) and return the version's date bounds.
     async fn write_snapshot(
         &self,
         version: &str,
@@ -574,7 +576,9 @@ impl Release {
         catalog: &Catalog,
     ) -> anyhow::Result<(NaiveDate, NaiveDate)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
-        let mut lccns = BTreeSet::new();
+        // Every page counted once, by its title: the same pages as the
+        // baselines, which sum them by place instead.
+        let mut title_pages: BTreeMap<String, u64> = BTreeMap::new();
         let (mut first, mut last) = (u32::MAX, u32::MIN);
         for b in batches {
             let path = &b.curated.counts;
@@ -589,12 +593,13 @@ impl Release {
                     .title(&lccn)
                     .with_context(|| format!("title `{lccn}` is missing from the catalog"))?;
                 let series = baselines.entry(title.place_id.clone()).or_default();
+                let total = title_pages.entry(lccn).or_default();
                 for (day, pages) in days {
                     *series.entry(day).or_default() += pages;
+                    *total += u64::from(pages);
                     first = first.min(day);
                     last = last.max(day);
                 }
-                lccns.insert(lccn);
             }
         }
         if first > last {
@@ -604,7 +609,7 @@ impl Release {
         let titles: Vec<&Title> = catalog
             .titles
             .iter()
-            .filter(|t| lccns.contains(&t.lccn))
+            .filter(|t| title_pages.contains_key(&t.lccn))
             .collect();
         let place_ids: BTreeSet<&str> = titles.iter().map(|t| t.place_id.as_str()).collect();
         let places: Vec<&Place> = catalog
@@ -622,6 +627,7 @@ impl Release {
             ("titles.json", serde_json::to_vec(&titles)?),
             ("places.json", serde_json::to_vec(&places)?),
             ("baselines.json", serde_json::to_vec(&baselines)?),
+            (TITLE_PAGES_FILE, serde_json::to_vec(&title_pages)?),
             (RUN_BATCHES_FILE, serde_json::to_vec(batches)?),
         ] {
             files.push(json!({

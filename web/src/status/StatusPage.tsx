@@ -11,6 +11,7 @@ import type {
 import { TITLES } from "../route";
 import { count, health, relative, span, when, type Level } from "./format";
 import { Brand } from "../components/Brand";
+import { LanguagesSection, StatesSection } from "./PagesTables";
 
 const REFRESH_MS = 30_000;
 
@@ -59,6 +60,10 @@ export default function StatusPage() {
         {s && <BackfillSection s={s} now={now} />}
         {s && <IndexingSection s={s} now={now} />}
         {s && <TitlesSection s={s} />}
+        {s?.published.by_state && (
+          <StatesSection rows={s.published.by_state} pages={s.published.pages} />
+        )}
+        {s?.published.by_language && <LanguagesSection data={s.published.by_language} />}
         {s && (
           <section aria-labelledby="technical" className="status-section">
             <h2 id="technical">Technical</h2>

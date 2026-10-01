@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Duration, DurationRound, Utc};
 use serde::Serialize;
+use usnm_core::names;
 use usnm_state::state::{BatchStatus, RunStatus, MAX_DELTAS};
 use usnm_state::summary::{BatchSummary, RunSummary, Summary};
 
@@ -66,6 +67,142 @@ pub struct Published {
     pub next_release_full: bool,
     /// Batches the version was built from, when its snapshot records them.
     pub batches: Option<usize>,
+    /// Pages by state or territory, most first.
+    pub by_state: Vec<StatePages>,
+    pub by_language: ByLanguage,
+}
+
+/// One state's (or territory's) share of the published pages.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StatePages {
+    /// The places' postal code, e.g. `IL`.
+    pub state: String,
+    /// LoC's name for it, or the code if it isn't a known state.
+    pub name: String,
+    pub places: usize,
+    pub titles: usize,
+    pub pages: u64,
+    /// Percent of every page in the version, to one decimal.
+    pub percent: f64,
+}
+
+/// Pages by language. A title that lists several languages counts in each
+/// one's row (as a search filtered to any of them finds its pages), so the
+/// rows add up to more than the version's pages when there are such titles.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ByLanguage {
+    /// The snapshot records pages per title. Older snapshots don't: then
+    /// only the newspaper counts are known.
+    pub pages_known: bool,
+    /// Titles that list more than one language, and their pages.
+    pub multilingual_titles: usize,
+    pub multilingual_pages: Option<u64>,
+    /// Most pages first (most titles, when pages aren't known).
+    pub rows: Vec<LanguagePages>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LanguagePages {
+    /// The catalog's code (MARC, e.g. `eng`, or LoC's own name for a language
+    /// without one); `None` for titles that list no language.
+    pub code: Option<String>,
+    /// LoC's name for it, e.g. "English"; "Not recorded" when `code` is `None`.
+    pub name: String,
+    pub titles: usize,
+    pub pages: Option<u64>,
+    pub percent: Option<f64>,
+}
+
+/// Published pages summed by each place's state (its baselines).
+pub fn by_state(rd: &RefData) -> Vec<StatePages> {
+    let mut states: BTreeMap<&str, StatePages> = BTreeMap::new();
+    for p in &rd.places {
+        let r = states
+            .entry(p.state.as_str())
+            .or_insert_with(|| StatePages {
+                state: p.state.clone(),
+                name: names::state_name(&p.state).unwrap_or(&p.state).to_owned(),
+                places: 0,
+                titles: 0,
+                pages: 0,
+                percent: 0.0,
+            });
+        r.places += 1;
+        r.pages += rd.place_pages.get(&p.id).copied().unwrap_or(0);
+    }
+    for t in rd.titles.values() {
+        if let Some(r) = rd
+            .place(&t.place_id)
+            .and_then(|p| states.get_mut(p.state.as_str()))
+        {
+            r.titles += 1;
+        }
+    }
+    let mut rows: Vec<StatePages> = states.into_values().collect();
+    for r in &mut rows {
+        r.percent = percent(r.pages, rd.pages);
+    }
+    rows.sort_by(|a, b| b.pages.cmp(&a.pages).then_with(|| a.name.cmp(&b.name)));
+    rows
+}
+
+const NOT_RECORDED: &str = "Not recorded";
+
+/// Published pages (when the snapshot has them per title) and titles by language.
+pub fn by_language(rd: &RefData) -> ByLanguage {
+    let pages_of = |lccn: &str| {
+        rd.title_pages
+            .as_ref()
+            .map(|tp| tp.get(lccn).copied().unwrap_or(0))
+    };
+    let mut langs: BTreeMap<Option<&str>, (usize, u64)> = BTreeMap::new();
+    let (mut multilingual_titles, mut multilingual_pages) = (0, 0);
+    for t in rd.titles.values() {
+        let codes: BTreeSet<&str> = t
+            .languages
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        let pages = pages_of(&t.lccn).unwrap_or(0);
+        if codes.len() > 1 {
+            multilingual_titles += 1;
+            multilingual_pages += pages;
+        }
+        let keys: Vec<Option<&str>> = if codes.is_empty() {
+            vec![None]
+        } else {
+            codes.into_iter().map(Some).collect()
+        };
+        for k in keys {
+            let e = langs.entry(k).or_default();
+            e.0 += 1;
+            e.1 += pages;
+        }
+    }
+    let known = rd.title_pages.is_some();
+    let mut rows: Vec<LanguagePages> = langs
+        .into_iter()
+        .map(|(code, (titles, pages))| LanguagePages {
+            name: code.map_or_else(|| NOT_RECORDED.to_owned(), names::language_name),
+            code: code.map(str::to_owned),
+            titles,
+            pages: known.then_some(pages),
+            percent: known.then(|| percent(pages, rd.pages)),
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.pages
+            .cmp(&a.pages)
+            .then_with(|| b.titles.cmp(&a.titles))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    ByLanguage {
+        pages_known: known,
+        multilingual_titles,
+        multilingual_pages: known.then_some(multilingual_pages),
+        rows,
+    }
 }
 
 pub fn published(rd: &RefData) -> Published {
@@ -84,6 +221,8 @@ pub fn published(rd: &RefData) -> Published {
         max_deltas: MAX_DELTAS,
         next_release_full: deltas >= MAX_DELTAS,
         batches: rd.published_batches.as_ref().map(HashMap::len),
+        by_state: by_state(rd),
+        by_language: by_language(rd),
     }
 }
 
@@ -795,6 +934,177 @@ mod tests {
         RefData::load(&usnm_store::LocalStore::new(dir))
             .await
             .unwrap()
+    }
+
+    fn place(id: &str, state: &str) -> crate::refdata::Place {
+        crate::refdata::Place {
+            id: id.into(),
+            ordinal: 0,
+            name: id.into(),
+            state: state.into(),
+            lat: 0.0,
+            lon: 0.0,
+            precision: "city".into(),
+        }
+    }
+
+    fn title(lccn: &str, place_id: &str, languages: &[&str]) -> crate::refdata::Title {
+        crate::refdata::Title {
+            lccn: lccn.into(),
+            name: lccn.into(),
+            place_id: place_id.into(),
+            state: String::new(),
+            languages: languages.iter().map(|l| l.to_string()).collect(),
+        }
+    }
+
+    /// The fixture version with these places, titles and pages instead.
+    async fn with(
+        places: Vec<crate::refdata::Place>,
+        titles: Vec<(crate::refdata::Title, u64)>,
+    ) -> RefData {
+        let mut rd = fixture_refdata().await;
+        rd.place_index = places
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.id.clone(), i))
+            .collect();
+        rd.places = places;
+        rd.place_pages = HashMap::new();
+        for (t, pages) in &titles {
+            *rd.place_pages.entry(t.place_id.clone()).or_default() += pages;
+        }
+        rd.pages = titles.iter().map(|(_, n)| n).sum();
+        rd.title_pages = Some(titles.iter().map(|(t, n)| (t.lccn.clone(), *n)).collect());
+        rd.titles = titles
+            .into_iter()
+            .map(|(t, _)| (t.lccn.clone(), t))
+            .collect();
+        rd
+    }
+
+    #[tokio::test]
+    async fn pages_by_state_sum_each_states_places() {
+        let rd = with(
+            vec![
+                place("P1", "IL"),
+                place("P2", "IL"),
+                place("P3", "NY"),
+                place("P4", "XX"),
+                place("P5", "DC"),
+            ],
+            vec![
+                (title("a", "P1", &["eng"]), 600),
+                (title("b", "P1", &["ger"]), 200),
+                (title("c", "P2", &["eng"]), 100),
+                (title("d", "P3", &["eng"]), 99),
+                (title("e", "P4", &["eng"]), 1),
+                (title("f", "P5", &["eng"]), 0),
+            ],
+        )
+        .await;
+        let rows = by_state(&rd);
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.state.as_str(),
+                    r.name.as_str(),
+                    r.places,
+                    r.titles,
+                    r.pages,
+                    r.percent,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("IL", "Illinois", 2, 3, 900, 90.0),
+                ("NY", "New York", 1, 1, 99, 9.9),
+                // Not a known state: shown by its code.
+                ("XX", "XX", 1, 1, 1, 0.1),
+                ("DC", "District of Columbia", 1, 1, 0, 0.0),
+            ]
+        );
+        assert_eq!(rows.iter().map(|r| r.pages).sum::<u64>(), rd.pages);
+    }
+
+    #[tokio::test]
+    async fn a_title_in_two_languages_counts_in_both() {
+        let rd = with(
+            vec![place("P1", "PA")],
+            vec![
+                (title("a", "P1", &["eng"]), 100),
+                (title("b", "P1", &["eng", "ger"]), 40),
+                (title("c", "P1", &["ger"]), 10),
+                // No language, or only an empty one: "Not recorded".
+                (title("d", "P1", &[]), 4),
+                (title("g", "P1", &[""]), 1),
+                // A repeated code counts once.
+                (title("e", "P1", &["eng", "eng"]), 1),
+                (title("f", "P1", &["pennsylvania german"]), 4),
+            ],
+        )
+        .await;
+        let l = by_language(&rd);
+        assert!(l.pages_known);
+        assert_eq!((l.multilingual_titles, l.multilingual_pages), (1, Some(40)));
+        let got: Vec<_> = l
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r.code.as_deref(),
+                    r.name.as_str(),
+                    r.titles,
+                    r.pages,
+                    r.percent,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Some("eng"), "English", 3, Some(141), Some(88.1)),
+                (Some("ger"), "German", 2, Some(50), Some(31.3)),
+                (None, "Not recorded", 2, Some(5), Some(3.1)),
+                (
+                    Some("pennsylvania german"),
+                    "Pennsylvania German",
+                    1,
+                    Some(4),
+                    Some(2.5)
+                ),
+            ]
+        );
+        // The bilingual title's pages are in both rows: more than the total.
+        let rows: u64 = l.rows.iter().filter_map(|r| r.pages).sum();
+        assert_eq!((rows, rd.pages), (200, 160));
+
+        // An older snapshot without pages per title: newspapers only, most first.
+        let mut old = rd;
+        old.title_pages = None;
+        let l = by_language(&old);
+        assert!(!l.pages_known);
+        assert_eq!((l.multilingual_titles, l.multilingual_pages), (1, None));
+        let got: Vec<_> = l
+            .rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.titles, r.pages, r.percent))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("English", 3, None, None),
+                ("German", 2, None, None),
+                ("Not recorded", 2, None, None),
+                ("Pennsylvania German", 1, None, None),
+            ]
+        );
+        let v = serde_json::to_value(&l).unwrap();
+        assert_eq!(v["rows"][0]["pages"], Value::Null);
+        assert_eq!(v["multilingual_pages"], Value::Null);
     }
 
     #[tokio::test]

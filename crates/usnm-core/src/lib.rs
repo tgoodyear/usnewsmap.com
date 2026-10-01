@@ -7,9 +7,11 @@
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
 //! - [`cube`]: the sparse place × bucket cube (06 §6.3.3)
+//! - [`names`]: LoC's language and state names (04 §4.6)
 
 pub mod cube;
 pub mod ids;
+pub mod names;
 pub mod params;
 pub mod query;
 pub mod text;

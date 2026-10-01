@@ -6,6 +6,15 @@ export function count(x: number): string {
   return n.format(x);
 }
 
+/**
+ * A share of all pages, e.g. "16.7%". The API rounds to one decimal, so a
+ * share that rounds to 0.0 but has pages reads "under 0.1%", not "0.0%".
+ */
+export function share(percent: number, pages: number): string {
+  if (pages > 0 && percent < 0.1) return "under 0.1%";
+  return `${percent.toFixed(1)}%`;
+}
+
 /** "45 s", "12 min", "3 h 5 min", "2 d 4 h": a span of time, coarsest two units. */
 export function span(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
