@@ -71,6 +71,65 @@ describe("StatusPage", () => {
     expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/v1/status");
   });
 
+  it("shows the pages tables when the API sends them, and leaves them out when it doesn't", async () => {
+    const withTables = {
+      ...body,
+      published: {
+        ...body.published,
+        by_state: [
+          {
+            state: "IL",
+            name: "Illinois",
+            places: 1,
+            titles: 1,
+            pages: 1872,
+            percent: 100,
+          },
+        ],
+        by_language: {
+          pages_known: true,
+          multilingual_titles: 0,
+          multilingual_pages: 0,
+          rows: [
+            {
+              code: "eng",
+              name: "English",
+              titles: 6,
+              pages: 1872,
+              percent: 100,
+            },
+          ],
+        },
+      },
+    };
+    for (const [doc, shown] of [
+      [withTables, true],
+      [body, false],
+    ] as const) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(JSON.stringify(doc), {
+              headers: { "content-type": "application/json" },
+            }),
+        ),
+      );
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <StatusPage />
+        </QueryClientProvider>,
+      );
+      expect(await screen.findByText("fixture-v1")).toBeTruthy();
+      for (const name of ["Pages by state", "Pages by language"]) {
+        expect(screen.queryByRole("heading", { level: 2, name }) !== null).toBe(
+          shown,
+        );
+      }
+      cleanup();
+    }
+  });
+
   it("shows a short error in full and a long one as a closed preview", () => {
     const short = "x".repeat(60);
     const long = `quickwit returned 503: ${"y".repeat(300)}`;

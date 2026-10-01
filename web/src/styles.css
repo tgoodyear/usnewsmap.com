@@ -304,8 +304,13 @@ details.status-error > summary { white-space: nowrap; overflow: hidden; text-ove
   max-height: 60vh; overflow: auto; background: var(--bg); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 10px; font-size: 0.8rem;
 }
+.pages-table td.num, .pages-table th.num { white-space: nowrap; }
 @media (max-width: 640px) {
   .status { padding: 10px; }
   .status-section { padding: 10px; }
   .throughput__axis span:nth-child(2) { display: none; }
+  /* The pages tables fit a phone's width: tighter cells, headers may wrap. */
+  .pages-table { font-size: 0.88rem; }
+  .pages-table th, .pages-table td { padding: 6px 4px; }
+  .pages-table thead th.num { white-space: normal; }
 }
