@@ -80,8 +80,15 @@ input, select {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap);
   padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
 }
-.brand { font-weight: 700; font-size: 1.1rem; text-decoration: none; color: var(--ink); white-space: nowrap; }
-.brand span { color: var(--bar-active); }
+.brand {
+  display: inline-flex; align-items: center; gap: 0.4em;
+  font-weight: 700; font-size: 1.1rem; text-decoration: none; color: var(--ink); white-space: nowrap;
+}
+.brand__mark {
+  height: 1em; width: 1.6em; flex: none;
+  fill: none; stroke: var(--bar-active); stroke-width: 1.5px; stroke-linejoin: round;
+}
+.brand__mark path { vector-effect: non-scaling-stroke; }
 /* Buttons that look like links still need a 24px touch target. */
 .topbar__about, .credits .link-button { min-height: 24px; padding: 2px 4px; white-space: nowrap; }
 
