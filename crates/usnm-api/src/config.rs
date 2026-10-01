@@ -39,8 +39,14 @@ pub struct Config {
     /// `search_timeout`, because a cold search can take longer than a visitor
     /// is allowed to wait.
     pub prewarm_query_timeout: Duration,
-    /// Warm-up: limit on the whole run; queries left when it runs out are skipped.
+    /// Warm-up before a publish swaps a new version in: limit on the whole
+    /// run; queries left when it runs out are skipped. The old version serves
+    /// meanwhile, so this only delays the swap.
     pub prewarm_budget: Duration,
+    /// Warm-up after a start: the same limit. Kept shorter than
+    /// `prewarm_budget`, because past `ready_cap` the replica serves visitors
+    /// while it warms, and both share its search sidecar.
+    pub prewarm_startup_budget: Duration,
     /// Warm-up: the first pause before retrying a query the backend failed
     /// (it doubles, up to 10 s). The searcher can still be starting when a
     /// replica warms up.
@@ -132,6 +138,10 @@ impl Config {
             search_timeout: Duration::from_secs(num("USNM_SEARCH_TIMEOUT_SECS", 10)?),
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
             prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 900)?),
+            prewarm_startup_budget: Duration::from_secs(num(
+                "USNM_PREWARM_STARTUP_BUDGET_SECS",
+                300,
+            )?),
             prewarm_retry_first: Duration::from_secs(1),
             ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 120)?),
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
@@ -167,6 +177,7 @@ mod tests {
         assert_eq!(c.persist_after, Duration::from_millis(500));
         assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
         assert_eq!(c.prewarm_budget, Duration::from_secs(900));
+        assert_eq!(c.prewarm_startup_budget, Duration::from_secs(300));
         assert_eq!(c.ready_cap, Duration::from_secs(120));
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.search_log_url.is_none());

@@ -360,6 +360,7 @@ async fn a_slow_backend_holds_the_swap_for_the_budget_at_most() {
     let mut cfg = config();
     cfg.prewarm_query_timeout = Duration::from_millis(200);
     cfg.prewarm_budget = Duration::from_millis(500);
+    cfg.prewarm_startup_budget = Duration::from_millis(500);
     let backend = Counting::new(Duration::from_secs(30), false);
     let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
 
@@ -418,7 +419,7 @@ async fn slow_failures_share_one_limit_per_query() {
     let mut cfg = config();
     let limit = Duration::from_millis(350);
     cfg.prewarm_query_timeout = limit;
-    cfg.prewarm_budget = Duration::from_secs(30);
+    cfg.prewarm_startup_budget = Duration::from_secs(30);
     let state = Arc::new(reloading_state(&dir, cfg, backend).await);
     let started = std::time::Instant::now();
     let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
