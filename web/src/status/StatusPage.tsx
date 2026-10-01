@@ -10,6 +10,7 @@ import type {
 } from "../api/types";
 import { TITLES } from "../route";
 import { count, health, relative, span, when, type Level } from "./format";
+import { Brand } from "../components/Brand";
 
 const REFRESH_MS = 30_000;
 
@@ -43,9 +44,7 @@ export default function StatusPage() {
   return (
     <div className="app status-page">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="US News Map home">
-          <span aria-hidden="true">◉</span> US News Map
-        </a>
+        <Brand />
       </header>
       <main className="status">
         <h1>Pipeline status</h1>
