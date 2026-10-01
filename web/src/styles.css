@@ -41,7 +41,15 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; }
-a { color: var(--accent); }
+/* Links aren't underlined, except inside running text: there the link colour
+   is too close to the text colour (under 3:1) to mark a link on its own
+   (WCAG 1.4.1, axe link-in-text-block). That is paragraphs and the footer's
+   source credit (its external links); the footer's "About · Pipeline status ·
+   Privacy" row is a separate list. Hover and keyboard focus underline. */
+a { color: var(--accent); text-decoration: none; }
+p a, .credits a[href^="http"], a:not(.brand):hover, a:not(.brand):focus-visible, .link-button:hover, .link-button:focus-visible {
+  text-decoration: underline;
+}
 button, input, select { font: inherit; color: inherit; }
 input, select {
   background: var(--panel);
@@ -178,7 +186,7 @@ input, select {
 .places .num { text-align: right; font-variant-numeric: tabular-nums; }
 .places tr[aria-selected="true"] { background: color-mix(in srgb, var(--mark) 40%, transparent); }
 .th-button, .link-button { background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; text-align: inherit; }
-.link-button { color: var(--accent); text-decoration: underline; font-weight: 500; }
+.link-button { color: var(--accent); text-decoration: none; font-weight: 500; }
 
 .timebar { background: var(--panel); border-top: 1px solid var(--line); padding: 8px 16px 12px; }
 .dock { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
