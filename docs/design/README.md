@@ -20,6 +20,7 @@ This document set evaluates the legacy system ([`tgoodyear/usnewsmap`](https://g
 | 08 | [Azure infrastructure & delivery](08-azure-infrastructure.md) | Resource inventory, identity, networking, IaC, environments, CI/CD |
 | 09 | [Operations, security & cost](09-operations-security-cost.md) | Observability, SLOs, privacy, threat model, cost model, backup/DR |
 | 10 | [Roadmap, risks & open questions](10-roadmap-and-risks.md) | Phased delivery plan, validation spikes, risk register, decisions needed from the owner |
+| 11 | [Geographic skew of search terms](11-term-geographic-skew.md) | Proposal: comparing places with what their digitized pages predict (time-standardized lift with empirical-Bayes shrinkage), with measurements on the published index |
 | ADR | [Architecture decision records](adr/) | Short records of each major decision and the alternatives rejected |
 
 ## Executive summary

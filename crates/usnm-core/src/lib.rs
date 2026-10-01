@@ -8,11 +8,13 @@
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
 //! - [`cube`]: the sparse place × bucket cube (06 §6.3.3)
 //! - [`names`]: LoC's language and state names (04 §4.6)
+//! - [`skew`]: where a term is printed more or less than corpus volume predicts (11)
 
 pub mod cube;
 pub mod ids;
 pub mod names;
 pub mod params;
 pub mod query;
+pub mod skew;
 pub mod text;
 pub mod time;
