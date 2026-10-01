@@ -35,28 +35,120 @@ export class ApiError extends Error {
   }
 }
 
-async function getJson<T>(path: string, signal?: AbortSignal, cache?: RequestCache): Promise<T> {
-  const resp = await fetch(`${API_BASE}${path}`, {
-    signal,
-    cache,
-    headers: { accept: "application/json" },
-  });
-  if (!resp.ok) {
-    let problem: Problem = {
-      type: "about:blank",
-      title: resp.statusText || "Request failed",
-      status: resp.status,
-    };
-    if ((resp.headers.get("content-type") ?? "").includes("json")) {
-      try {
-        problem = (await resp.json()) as Problem;
-      } catch {
-        // keep the generic problem
-      }
-    }
-    throw new ApiError(problem);
+/**
+ * How long a request keeps asking about a search the API is still
+ * computing. The API gives a search at most 2 minutes, so a little more.
+ */
+export const MAX_COMPUTE_WAIT_MS = 150_000;
+
+/** Problem types the app handles by waiting, never by retrying at once. */
+const BUSY = "/errors/busy";
+const TIMEOUT = "/errors/backend-timeout";
+
+/** The search ran out of time, on the API or while the page waited for it. */
+const tookTooLong: Problem = {
+  type: TIMEOUT,
+  title: "Search took too long",
+  status: 503,
+  detail: "The search did not finish in time.",
+  hint: "Narrow the date range or add filters, then try again.",
+};
+
+/**
+ * Whether a failed query is worth retrying straight away: not a problem
+ * with the request (4xx), not a version change, and not a search that ran
+ * out of time or found the API busy (both were already waited out here).
+ */
+export function isRetryable(err: unknown): boolean {
+  if (err instanceof VersionChangedError) return false;
+  if (err instanceof ApiError) {
+    const { status, type } = err.problem;
+    return status >= 500 && type !== TIMEOUT && type !== BUSY;
   }
-  return (await resp.json()) as T;
+  return true;
+}
+
+/** Retry-After in milliseconds, within 1–30 s; 2 s when absent or unreadable. */
+function retryAfter(resp: Response): number {
+  const secs = Number(resp.headers.get("retry-after"));
+  return Number.isFinite(secs) && secs > 0 ? Math.min(Math.max(secs, 1), 30) * 1000 : 2000;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    const stop = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    signal?.addEventListener("abort", stop, { once: true });
+  });
+}
+
+async function problemOf(resp: Response): Promise<Problem> {
+  let problem: Problem = {
+    type: "about:blank",
+    title: resp.statusText || "Request failed",
+    status: resp.status,
+  };
+  if ((resp.headers.get("content-type") ?? "").includes("json")) {
+    try {
+      problem = (await resp.json()) as Problem;
+    } catch {
+      // keep the generic problem
+    }
+  }
+  return problem;
+}
+
+export interface GetOptions {
+  signal?: AbortSignal;
+  cache?: RequestCache;
+  /** Called each time the API answers that the response is still being computed. */
+  onComputing?: () => void;
+}
+
+/**
+ * GET a JSON resource. A search the API is still computing (`202`), or
+ * one it is too busy to start (`503` busy), is asked for again after the
+ * Retry-After wait, for at most {@link MAX_COMPUTE_WAIT_MS}; so is a rate
+ * limit (`429`) met while waiting. Aborting `signal` stops the waiting.
+ */
+async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
+  const { signal, cache, onComputing } = opts;
+  const started = Date.now();
+  let waiting = false;
+  for (;;) {
+    const resp = await fetch(`${API_BASE}${path}`, {
+      signal,
+      cache,
+      headers: { accept: "application/json" },
+    });
+    let wait: number | null = null;
+    let problem: Problem | null = null;
+    if (resp.status === 202) {
+      wait = retryAfter(resp);
+      waiting = true;
+      onComputing?.();
+    } else if (!resp.ok) {
+      problem = await problemOf(resp);
+      if (problem.type === BUSY || (resp.status === 429 && waiting)) wait = retryAfter(resp);
+    }
+    if (wait !== null) {
+      if (Date.now() - started + wait > MAX_COMPUTE_WAIT_MS) throw new ApiError(tookTooLong);
+      await sleep(wait, signal);
+      continue;
+    }
+    if (problem) throw new ApiError(problem);
+    return (await resp.json()) as T;
+  }
 }
 
 /** Fetch a version-scoped resource and check it belongs to `version`. */
@@ -64,8 +156,9 @@ async function getPinned<T extends { index_version: string }>(
   path: string,
   version: string,
   signal?: AbortSignal,
+  onComputing?: () => void,
 ): Promise<T> {
-  const body = await getJson<T>(path, signal);
+  const body = await getJson<T>(path, { signal, onComputing });
   if (body.index_version !== version) throw new VersionChangedError(version, body.index_version);
   return body;
 }
@@ -120,13 +213,14 @@ export function searchQuery(p: SearchParams, version: string): URLSearchParams {
 export const api = {
   // Always revalidate: /v1/meta is cacheable for 5 minutes, and after a
   // version change a cached copy would name the old version again.
-  meta: (signal?: AbortSignal) => getJson<Meta>("/v1/meta", signal, "no-cache"),
+  meta: (signal?: AbortSignal) => getJson<Meta>("/v1/meta", { signal, cache: "no-cache" }),
   /** The pipeline status page's data; the API recomputes it at most once a minute. */
-  status: (signal?: AbortSignal) => getJson<Status>("/v1/status", signal, "no-cache"),
+  status: (signal?: AbortSignal) => getJson<Status>("/v1/status", { signal, cache: "no-cache" }),
   places: (version: string, signal?: AbortSignal) =>
     getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, signal),
-  aggregate: (p: SearchParams, version: string, signal?: AbortSignal) =>
-    getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, signal),
+  /** `onComputing` is called while the API is still computing a large search. */
+  aggregate: (p: SearchParams, version: string, signal?: AbortSignal, onComputing?: () => void) =>
+    getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, signal, onComputing),
   /** `ref` is the response's `baseline_ref`, already canonical and versioned. */
   coverage: (ref: string, version: string, signal?: AbortSignal) =>
     getPinned<CoverageResponse>(ref.replace(/^\/(api\/)?v1\//, "/v1/"), version, signal),

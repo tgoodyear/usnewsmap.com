@@ -257,7 +257,7 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 **High-frequency guardrails.** Terms such as `the` match almost every page. Protections:
 
 - (a) The response cache and CDN absorb repeats.
-- (b) There is a hard server timeout of 10 s. On timeout the API returns `503` with a hint to narrow the date range or filters, and nothing expensive is retried.
+- (b) A visitor waits at most 10 s for a search. A slower search answers `202 Accepted` and keeps computing for up to 2 minutes while the browser asks again (06 §6.3.5); past that the API returns `503` with a hint to narrow the date range or filters, and the timeout is not cached.
 - (c) The UI discourages queries made only of stop words (warns before sending).
 - (d) Example searches are pre-warmed after each index-version bump.
 

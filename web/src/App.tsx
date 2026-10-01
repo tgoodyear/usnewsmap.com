@@ -45,9 +45,16 @@ export function App() {
   const paramsKey = JSON.stringify(searchParams(view));
   const params = useMemo(() => JSON.parse(paramsKey) as SearchParams, [paramsKey]);
 
+  // The search the API said it is still computing (a `202`), by query key.
+  const aggKey = JSON.stringify([version, params]);
+  const [computing, setComputing] = useState<string | null>(null);
   const agg = useQuery({
     queryKey: ["aggregate", version, params],
-    queryFn: ({ signal }) => api.aggregate(params, version, signal),
+    queryFn: ({ signal }) => {
+      // A new attempt starts as a plain search until the API says otherwise.
+      setComputing((c) => (c === aggKey ? null : c));
+      return api.aggregate(params, version, signal, () => setComputing(aggKey));
+    },
     enabled: !!version && !!view.q,
     // Keep showing the previous search while the next loads, but never a
     // result from another index version (it would be drawn against this
@@ -63,6 +70,7 @@ export function App() {
   });
 
   const data = agg.data;
+  const stillComputing = agg.isFetching && computing === aggKey;
   const count = data?.bucket.count ?? 0;
   // Scrubbing and playback update the view at once but write the URL only
   // when movement pauses: browsers throttle the History API (Firefox allows
@@ -315,6 +323,11 @@ export function App() {
               A newer index was just published. Updating to it…
             </p>
           )}
+          {stillComputing && (
+            <p className="notice" role="status">
+              Large search, still working… A search that hasn't run recently can take up to two minutes.
+            </p>
+          )}
           {placesFailed && (
             <p className="notice notice--error" role="alert">
               Place locations could not be loaded, so results can't be mapped. Please reload the page.
@@ -495,7 +508,7 @@ export function App() {
               )}
             </>
           )}
-          {!data && agg.isFetching && <p className="notice" role="status">Searching…</p>}
+          {!data && agg.isFetching && !stillComputing && <p className="notice" role="status">Searching…</p>}
         </main>
       )}
       <footer className="credits">

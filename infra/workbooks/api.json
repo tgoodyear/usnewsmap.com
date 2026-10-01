@@ -211,6 +211,44 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.slow_searches\"\n| summarize Searches = sum(Sum) by Endpoint = tostring(Properties.endpoint), Outcome = tostring(Properties.outcome)\n| order by Searches desc",
+        "size": 0,
+        "title": "Searches longer than a visitor waits (outcome ok, timeout or error) or refused as busy, by endpoint",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No search took longer than a visitor waits in the time range."
+      },
+      "name": "slow-searches-table",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.slow_searches\"\n| summarize Searches = sum(Sum) by bin(TimeGenerated, {TimeRange:grain}), Outcome = tostring(Properties.outcome)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Searches longer than a visitor waits, by outcome",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No search took longer than a visitor waits in the time range."
+      },
+      "name": "slow-searches",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
         "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.cache_lookups\"\n| extend Layer = tostring(Properties.layer), Hit = tostring(Properties.result) == \"hit\"\n| summarize Lookups = sum(Sum), Hits = sumif(Sum, Hit) by Layer\n| extend HitRatePercent = round(100.0 * Hits / Lookups, 1), Misses = Lookups - Hits\n| project Layer, Lookups, Hits, Misses, HitRatePercent",
         "size": 0,
         "title": "Response cache lookups by layer",

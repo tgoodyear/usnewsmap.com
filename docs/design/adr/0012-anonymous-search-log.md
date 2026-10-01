@@ -41,5 +41,7 @@ Two things make a naive log identifying on a small site:
 - For up to about 22 days (7 days, a day as a previous version, then 14 days of soft delete), the staged batches keep their creation times, and for 30 days the storage write logs time each write. An operator who can read both, and `AppPageViews`, could place a search within a 5-minute window during that time. The permanent record carries only the day.
 - A search repeated in a browser within its cache lifetime isn't sent again, so it isn't counted again.
 - Changing a bucket or a filter is a new request to `/v1/aggregate`, so it is counted as a new search.
+- A search slower than a visitor waits is answered `202` until it is ready and the browser asks again (06 §6.3.5). Only the 200 is recorded, so it counts once; if the visitor leaves before then, it isn't recorded.
+- The cache warm-up reads the day files to run the most frequent recent searches again (06 §6.5). They stay in memory; the warm-up logs them by rank, never by text.
 - Browsers that send neither `Origin` nor `Sec-Fetch-Site` on a same-origin fetch (Safari before 16.4) are not recorded.
 - Removing a query later (someone searched their own details) means an operator grants themselves Storage Blob Data Contributor on the container and rewrites that day's file; the API can't delete.

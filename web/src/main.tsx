@@ -2,7 +2,7 @@ import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
-import { ApiError, VersionChangedError } from "./api/client";
+import { isRetryable, VersionChangedError } from "./api/client";
 import { NotFound } from "./components/NotFound";
 import { trackPageView } from "./pageview";
 import { pageFor } from "./route";
@@ -29,11 +29,9 @@ const client: QueryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 5 * 60_000,
-      // Problems (4xx) and version changes are not retried.
-      retry: (n, err) =>
-        !(err instanceof VersionChangedError) &&
-        !(err instanceof ApiError && err.problem.status < 500) &&
-        n < 2,
+      // Problems (4xx), version changes, and searches that ran out of
+      // time or found the API busy after waiting are not retried.
+      retry: (n, err) => isRetryable(err) && n < 2,
       refetchOnWindowFocus: false,
     },
   },

@@ -9,7 +9,7 @@ use serde_json::json;
 use usnm_core::params::RawParams;
 use usnm_core::query;
 
-use super::{cached, Ctx};
+use super::{cached, Ctx, Job};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
@@ -72,10 +72,14 @@ pub async fn places(
     places_in(&state, ctx, &uri).await
 }
 
-pub(crate) async fn places_in(state: &AppState, ctx: Ctx, uri: &Uri) -> Result<Response, ApiError> {
+pub(crate) async fn places_in(
+    state: &Arc<AppState>,
+    ctx: Ctx,
+    uri: &Uri,
+) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
     raw.reject_only(&["v"])?;
-    let warm_up = ctx.warm_up;
+    let job = Job::reference("places", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();
     let pinning = match version::check(raw.get("v"), &serving, uri.path(), "") {
@@ -122,15 +126,5 @@ pub(crate) async fn places_in(state: &AppState, ctx: Ctx, uri: &Uri) -> Result<R
             "features": features
         }))
     };
-    cached(
-        state,
-        warm_up,
-        key,
-        &pinning,
-        &serving,
-        uri.path(),
-        "",
-        compute,
-    )
-    .await
+    cached(state, job, key, &pinning, &serving, uri.path(), "", compute).await
 }
