@@ -23,6 +23,8 @@ export type Unavailable =
 export interface Prepared {
   /** The index version the inputs came from. */
   version: string;
+  /** The search (version, query and buckets) the inputs belong to. */
+  search: string;
   input: SkewInput;
   /** Place ids in the model's order (the coverage response's). */
   placeIds: string[];
@@ -85,6 +87,7 @@ export function prepareSkew(
   const languages = placeIds.map((id) => languageLabel(features.get(id)?.properties.languages));
   return {
     version: agg.index_version,
+    search: [agg.index_version, agg.query.canonical, agg.bucket.unit, agg.bucket.from, agg.bucket.to, buckets].join("|"),
     input: {
       spec: { unit: agg.bucket.unit, from: agg.bucket.from, to: agg.bucket.to },
       nationalHits: agg.series.hits,

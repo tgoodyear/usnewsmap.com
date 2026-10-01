@@ -104,14 +104,16 @@ export function App() {
     [skewUsed, data, coverage.data, places.data, features],
   );
   const { state: skew, last: lastSkew } = useSkewModel(typeof prepared === "object" ? prepared : null);
-  // While a new fit runs, keep drawing the previous one rather than flipping
-  // to page counts and back.
-  // Only within one index version: a fit from another version must never be
-  // drawn against this version's places and labelled with its version.
+  // While a refit of the same search (and index version) runs, keep drawing
+  // the previous fit rather than flipping to page counts and back. Another
+  // search's scores must never be shown as this one's.
   const skewModel =
     skew.status === "ready"
       ? skew
-      : skew.status === "computing" && lastSkew?.prepared.version === version
+      : skew.status === "computing" &&
+          typeof prepared === "object" &&
+          prepared !== null &&
+          lastSkew?.prepared.search === prepared.search
         ? lastSkew
         : null;
   const frame = useMemo(
@@ -454,10 +456,9 @@ export function App() {
                 <Announcer
                   message={
                     clear
-                      ? `Relative rate for ${skewListed.length.toLocaleString()} places up to ${bucketLabel(
-                          data.bucket.unit,
-                          bucketStart(data.bucket.unit, data.bucket.from, t),
-                        )}: ${skewListed.filter((r) => r.skew.dir === 1).length} clearly above 1×, ${
+                      ? `Relative rate for ${skewListed.length.toLocaleString()} places ${
+                          view.win === null ? "up to" : "in the window ending"
+                        } ${bucketLabel(data.bucket.unit, bucketStart(data.bucket.unit, data.bucket.from, t))}: ${skewListed.filter((r) => r.skew.dir === 1).length} clearly above 1×, ${
                           skewListed.filter((r) => r.skew.dir === -1).length
                         } clearly below.`
                       : `Showing ${visible.length.toLocaleString()} places, ${visible

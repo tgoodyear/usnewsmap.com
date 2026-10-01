@@ -128,6 +128,8 @@ test("playback keeps the relative rate and its scale", async ({ page }) => {
   await expect(page.getByText("No place is clearly above 1× in this window.")).toBeVisible();
   await page.locator("body").press("End");
   await expect(page.locator(".legend")).toContainText("Relative rate");
+  // The live region describes the trailing window, not everything up to the date.
+  await expect(page.locator("p[aria-live=polite]")).toContainText("in the window ending Dec 1897", { timeout: 5000 });
   await expect(measure(page).getByRole("button", { name: "Relative rate" })).toHaveAttribute("aria-pressed", "true");
   expect(errors).toEqual([]);
 });

@@ -49,6 +49,7 @@ describe("prepareSkew", () => {
     if (typeof p === "string") throw new Error(p);
     expect(p.placeIds).toEqual(ids);
     expect(p.version).toBe("v");
+    expect(p.search).toBe("v|q=x|month|1896-01-01|1896-02-29|2");
     expect(Array.from(p.input.cells.hits)).toEqual([3, 0, 4, 0, 0, 1, 1]);
     expect(Array.from(p.input.cells.pages)).toEqual([10, 20, 30, 40, 50, 60, 5]);
     expect(p.input.nationalPages).toEqual([150, 65]);
