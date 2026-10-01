@@ -95,12 +95,8 @@ export default function StatusPage() {
           Chronicling America
         </a>{" "}
         (
-        <a href="https://www.loc.gov/" target="_blank" rel="noopener noreferrer">
-          Library of Congress
-        </a>{" "}
-        and{" "}
-        <a href="https://www.neh.gov/" target="_blank" rel="noopener noreferrer">
-          National Endowment for the Humanities
+        <a href="https://www.loc.gov/ndnp/" target="_blank" rel="noopener noreferrer">
+          NEH and Library of Congress
         </a>
         ). <a href="/privacy">Privacy</a>
       </footer>

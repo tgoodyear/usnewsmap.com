@@ -253,25 +253,49 @@ test("the status page lists published pages by state and by language", async ({ 
   expect(errors).toEqual([]);
 });
 
-test("About opens from the header and the footer and keeps the search", async ({ page }) => {
+test("About opens from the footer and keeps the search", async ({ page }) => {
   await page.goto("/?q=gold");
   const dialog = page.getByRole("dialog", { name: "About US News Map" });
-  await page.getByRole("banner").getByRole("button", { name: "About" }).click();
+  // About is only in the footer, not the header.
+  await expect(page.getByRole("banner").getByRole("button", { name: "About" })).toHaveCount(0);
+  const open = page.getByRole("contentinfo").getByRole("button", { name: "About" });
+  await open.click();
   await expect(dialog).toBeVisible();
   // The GTRI credit links to LinkedIn; the maintainer line links to his site.
   const trevor = dialog.getByRole("link", { name: "Trevor Goodyear" });
   await expect(trevor).toHaveCount(2);
   await expect(trevor.nth(0)).toHaveAttribute("href", "https://www.linkedin.com/in/goodyear/");
   await expect(trevor.nth(1)).toHaveAttribute("href", "https://goodyeartechnical.com/");
+  const links: [string, string][] = [
+    ["Claudio Saunt", "https://claudiosaunt.com/"],
+    ["Steve Berry", "https://history.uga.edu/directory/people/stephen-berry"],
+    ["Slate", "https://web.archive.org/web/20190307100233/http://www.slate.com/blogs/the_vault/2016/03/07/us_news_map_interactive_lets_you_map_how_historical_newspapers_digitized.html"],
+    ["The Washington Post", "https://web.archive.org/web/20160616154229/https://www.washingtonpost.com/news/the-intersect/wp/2016/03/17/the-secret-pre-internet-history-of-viral-memes/"],
+    ["Chronicling America Data Challenge", "https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25"],
+  ];
+  for (const [name, href] of links) {
+    const link = dialog.getByRole("link", { name, exact: true });
+    await expect(link).toHaveAttribute("href", href);
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  }
+  // Named twice: the collection (first paragraph) and who ran the data challenge.
+  const ndnp = dialog.getByRole("link", { name: "NEH and Library of Congress", exact: true });
+  await expect(ndnp).toHaveCount(2);
+  for (const link of await ndnp.all()) {
+    await expect(link).toHaveAttribute("href", "https://www.loc.gov/ndnp/");
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  }
   await expectAccessible(page);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+  await expect(open).toBeFocused();
   await expect(page).toHaveURL(/\?q=gold/);
 
-  await page.getByRole("contentinfo").getByRole("button", { name: "About" }).click();
+  await open.click();
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Close" }).click();
   await expect(dialog).toBeHidden();
+  await expect(open).toBeFocused();
 });
 
 test("About closes on a backdrop click but not on a click inside its box", async ({ page }) => {
@@ -279,7 +303,7 @@ test("About closes on a backdrop click but not on a click inside its box", async
   await page.setViewportSize({ width: 390, height: 400 });
   await page.goto("/");
   const dialog = page.getByRole("dialog", { name: "About US News Map" });
-  await page.getByRole("banner").getByRole("button", { name: "About" }).click();
+  await page.getByRole("contentinfo").getByRole("button", { name: "About" }).click();
   await expect(dialog).toBeVisible();
   const box = (await dialog.boundingBox())!;
   // The dialog's own edge (border, scrollbar): stays open.
@@ -290,9 +314,8 @@ test("About closes on a backdrop click but not on a click inside its box", async
   await expect(dialog).toBeHidden();
 });
 
-test("the footer credits link to the Library of Congress and the NEH", async ({ page }) => {
+test("the footer credits link to the NEH and Library of Congress newspaper program", async ({ page }) => {
   await page.goto("/");
   const footer = page.getByRole("contentinfo");
-  await expect(footer.getByRole("link", { name: "Library of Congress" })).toHaveAttribute("href", "https://www.loc.gov/");
-  await expect(footer.getByRole("link", { name: "National Endowment for the Humanities" })).toHaveAttribute("href", "https://www.neh.gov/");
+  await expect(footer.getByRole("link", { name: "NEH and Library of Congress" })).toHaveAttribute("href", "https://www.loc.gov/ndnp/");
 });

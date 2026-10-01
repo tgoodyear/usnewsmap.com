@@ -30,16 +30,27 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           <a href="https://chroniclingamerica.loc.gov/" {...ext}>
             Chronicling America
           </a>
-          , the Library of Congress collection of digitized American newspapers, and maps every
-          matching page by where and when it was printed. Play the timeline to watch a word or a story
-          move across the country.
+          , the{" "}
+          <a href="https://www.loc.gov/ndnp/" {...ext}>
+            NEH and Library of Congress
+          </a>{" "}
+          collection of digitized American newspapers, and maps every matching page by where and when
+          it was printed. Play the timeline to watch a word or a story move across the country.
         </p>
         <p>
           The site was built in 2015 and launched in 2016 by the{" "}
           <a href="https://ehistory.org/" {...ext}>
             eHistory.org
           </a>{" "}
-          group at the University of Georgia (Claudio Saunt, Stephen Mihm and Steve Berry) and the{" "}
+          group at the University of Georgia (
+          <a href="https://claudiosaunt.com/" {...ext}>
+            Claudio Saunt
+          </a>{" "}
+          and{" "}
+          <a href="https://history.uga.edu/directory/people/stephen-berry" {...ext}>
+            Steve Berry
+          </a>
+          ) and the{" "}
           <a href="https://gtri.gatech.edu/" {...ext}>
             Georgia Tech Research Institute
           </a>{" "}
@@ -55,9 +66,29 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           <a href="https://www.linkedin.com/in/zachary-suffern-0966825a" {...ext}>
             Zach Suffern
           </a>
-          ). It was featured in Slate and The Washington Post and won a prize in the Chronicling
-          America Data Challenge, which the National Endowment for the Humanities ran with the Library
-          of Congress. Georgia Tech's{" "}
+          ). It was featured in{" "}
+          <a
+            href="https://web.archive.org/web/20190307100233/http://www.slate.com/blogs/the_vault/2016/03/07/us_news_map_interactive_lets_you_map_how_historical_newspapers_digitized.html"
+            {...ext}
+          >
+            Slate
+          </a>{" "}
+          and{" "}
+          <a
+            href="https://web.archive.org/web/20160616154229/https://www.washingtonpost.com/news/the-intersect/wp/2016/03/17/the-secret-pre-internet-history-of-viral-memes/"
+            {...ext}
+          >
+            The Washington Post
+          </a>{" "}
+          and won a prize in the{" "}
+          <a href="https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25" {...ext}>
+            Chronicling America Data Challenge
+          </a>
+          , run by the{" "}
+          <a href="https://www.loc.gov/ndnp/" {...ext}>
+            NEH and Library of Congress
+          </a>
+          . Georgia Tech's{" "}
           <a
             href="https://web.archive.org/web/20161228012501/http://www.news.gatech.edu/2016/03/06/what-going-viral-looked-120-years-ago/"
             {...ext}

@@ -107,10 +107,25 @@ impl Counting {
                 "quickwit returned 400 Bad Request".into(),
             ));
         }
-        let starting = self
-            .fail_first
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok();
+        // A compare-exchange loop rather than fetch_update, which newer toolchains deprecate (in
+        // favour of try_update, newer than the workspace's rust-version).
+        let starting = {
+            let mut current = self.fail_first.load(Ordering::SeqCst);
+            loop {
+                let Some(next) = current.checked_sub(1) else {
+                    break false;
+                };
+                match self.fail_first.compare_exchange(
+                    current,
+                    next,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break true,
+                    Err(actual) => current = actual,
+                }
+            }
+        };
         if starting {
             return Err(SearchError::Backend("quickwit returned 500".into()));
         }
