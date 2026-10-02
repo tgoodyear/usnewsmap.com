@@ -60,6 +60,9 @@ param backfillCron string = ''
 @description('Size in GiB of the NFS share the ingest job\'s Quickwit writer works on (08 §8.4): 128 or more for the merge settings in pages-index.yaml; 0: the replica\'s own disk, too small to merge large indexes.')
 param ingestScratchGiB int = 128
 
+@description('Seconds an ingest release waits for its new index\'s merges before failing without publishing (08 §8.4).')
+param ingestMergeTimeoutSecs int = 14400
+
 @description('Cosmos DB free tier (one per subscription). False makes the account serverless.')
 param cosmosFreeTier bool = true
 
@@ -355,6 +358,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     backfillCron: backfillCron
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''
     scratchGiB: ingestScratch ? ingestScratchGiB : 0
+    mergeTimeoutSecs: ingestMergeTimeoutSecs
     rootImage: '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
   }
 }

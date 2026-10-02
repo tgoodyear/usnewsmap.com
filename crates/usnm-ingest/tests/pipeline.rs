@@ -185,6 +185,7 @@ impl Env {
             full,
             synthetic: true,
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
+            titles_left: None,
         };
         let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
         r.run(&mut sink).await.unwrap()
@@ -407,6 +408,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         full: false,
         synthetic: true,
         now: Utc::now(),
+        titles_left: None,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     assert!(r.run(&mut sink).await.is_err());
@@ -456,6 +458,7 @@ async fn releases_into_a_quickwit_writer_node() {
             full: false,
             synthetic: true,
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
+            titles_left: None,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -832,6 +835,7 @@ async fn a_backend_switch_forces_a_full_release() {
         full: false,
         synthetic: true,
         now: Utc.with_ymd_and_hms(2026, 10, 8, 3, 0, 0).unwrap(),
+        titles_left: None,
     };
     let mut sink = OtherBackend(0);
     let p = r.run(&mut sink).await.unwrap().unwrap();
@@ -867,6 +871,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         full: false,
         synthetic: true,
         now: Utc::now(),
+        titles_left: None,
     };
     let lease = r.lock().await.unwrap();
     // Another writer takes the lock over (e.g. after this one stalled).
@@ -919,6 +924,53 @@ async fn batches_with_uncatalogued_titles_wait_for_a_later_release() {
     assert_eq!(p.pages, 20);
     // Nothing is ready to add until the title is catalogued.
     assert!(e.release(2, false).await.is_none());
+}
+
+/// With titles-sync unfinished, a full base, asked for or forced (there is
+/// no published version yet), is refused; a delta goes ahead.
+#[tokio::test]
+async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let some: Vec<&Page> = pages
+        .iter()
+        .filter(|p| !p.text.is_empty())
+        .take(20)
+        .collect();
+    let a = e.root.join("batch_fx_some_ver01.tar.gz");
+    write_archive(&a, &some, true, true);
+    source::enqueue(&e.state, &[listed("batch_fx_some_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let release = |full: bool, titles_left: Option<String>| Release {
+        state: e.state.clone(),
+        curated: e.curated.clone(),
+        reference: e.reference.clone(),
+        owner: "releaser".into(),
+        full,
+        synthetic: true,
+        now: Utc.with_ymd_and_hms(2026, 10, 1, 3, 0, 0).unwrap(),
+        titles_left,
+    };
+    let why = Some("LoC rate limited titles-sync with 5 of 9 titles left".to_owned());
+    let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+    // Not asked for, but forced: nothing is published yet.
+    let err = release(false, why.clone())
+        .run(&mut sink)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("nothing was released"), "{err}");
+    assert!(release(false, None).run(&mut sink).await.unwrap().is_some());
+    let err = release(true, why.clone())
+        .run(&mut sink)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("5 of 9 titles left"), "{err}");
+    // A delta goes ahead (here with nothing new to add).
+    assert!(release(false, why).run(&mut sink).await.unwrap().is_none());
 }
 
 /// The pipeline state with writes of the release's progress item failing,
@@ -1192,6 +1244,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         full: false,
         synthetic: true,
         now: Utc.with_ymd_and_hms(2026, 10, 8, 3, 0, 0).unwrap(),
+        titles_left: None,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     let err = format!("{:#}", r.run(&mut sink).await.unwrap_err());

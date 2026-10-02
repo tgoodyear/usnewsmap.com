@@ -133,6 +133,12 @@ enum Command {
         refresh: bool,
         #[arg(long, default_value = titles::LOC_ITEMS)]
         items: String,
+        /// Seconds after the start to stop. Until then, when LoC rate limits
+        /// the sync, it sends nothing for 65 minutes and resumes more slowly;
+        /// without it, the first block stops the sync. Either way the
+        /// command fails if titles are left, and the next run continues.
+        #[arg(long)]
+        max_runtime_secs: Option<u64>,
     },
     /// Rebuild `catalog/titles.json` and `places.json` from the cached records
     /// and `overrides/places.json` (no network).
@@ -155,6 +161,13 @@ enum Command {
         /// under the job's replica timeout.
         #[arg(long)]
         curate_max_runtime_secs: Option<u64>,
+        /// As `titles-sync --max-runtime-secs`, counted from the start of
+        /// `run`. A full release (asked for, or forced) goes ahead only once
+        /// titles-sync has fetched every title LoC has, so a rebuild leaves
+        /// no batch out for a missing title; otherwise it fails and the next
+        /// run continues the sync.
+        #[arg(long)]
+        titles_max_runtime_secs: Option<u64>,
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -198,15 +211,17 @@ async fn enqueue(state: &State, list: &str, only: &[String]) -> anyhow::Result<V
 }
 
 /// Fetch missing title records for `listed` titles and every curated batch's
-/// titles, then rebuild the catalog from what is cached. Returns whether LoC
-/// rate limited the run (which then stopped early, keeping what it fetched).
+/// titles, then rebuild the catalog from what is cached. The report says
+/// whether the sync stopped early (rate limited, or at `deadline`), keeping
+/// what it fetched.
 async fn titles_sync(
     cli: &Stores,
     state: &State,
     listed: impl IntoIterator<Item = String>,
     refresh: bool,
     items: &str,
-) -> anyhow::Result<bool> {
+    deadline: Option<tokio::time::Instant>,
+) -> anyhow::Result<titles::SyncReport> {
     let mut lccns: BTreeSet<String> = listed.into_iter().collect();
     for (b, _) in state.batches(&[BatchStatus::Curated]).await? {
         lccns.extend(b.curated.into_iter().flat_map(|c| c.lccns));
@@ -217,12 +232,48 @@ async fn titles_sync(
         &lccns,
         refresh,
         items,
-        titles::LOC_INTERVAL,
+        &titles::Pacing::loc(deadline),
     )
     .await?;
     tracing::info!(?report, "title records");
     geocode(reference.as_ref()).await?;
-    Ok(report.throttled)
+    Ok(report)
+}
+
+/// What titles-sync left undone, if anything: it stopped early, or some
+/// fetches failed (retried next run). Titles LoC doesn't have (404) count
+/// as done: no run will find them.
+fn titles_left(report: &titles::SyncReport) -> Option<String> {
+    if !report.finished() {
+        return Some(unfinished(report));
+    }
+    (!report.failed.is_empty()).then(|| {
+        format!(
+            "titles-sync couldn't fetch {} of {} titles ({}); the next run retries them",
+            report.failed.len(),
+            report.wanted,
+            report
+                .failed
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+/// Why titles-sync stopped early, for an error or a warning.
+fn unfinished(report: &titles::SyncReport) -> String {
+    let why = if report.throttled {
+        "LoC rate limited titles-sync"
+    } else {
+        "titles-sync reached its deadline"
+    };
+    format!(
+        "{why} with {} of {} titles left; the cache kept what was fetched, and the next run continues",
+        report.left, report.wanted
+    )
 }
 
 async fn geocode(reference: &dyn usnm_store::ObjectStore) -> anyhow::Result<()> {
@@ -261,6 +312,7 @@ async fn release(
     state: &State,
     full: bool,
     synthetic: bool,
+    titles_left: Option<String>,
     t: &IndexTarget,
 ) -> anyhow::Result<()> {
     let r = Release {
@@ -271,6 +323,7 @@ async fn release(
         full,
         synthetic,
         now: chrono::Utc::now(),
+        titles_left,
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
@@ -419,6 +472,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             lccns,
             refresh,
             items,
+            max_runtime_secs,
         } => {
             let listed = if lccns.is_empty() {
                 read_list(list)
@@ -429,9 +483,18 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             } else {
                 lccns.clone()
             };
-            if titles_sync(&cli.stores, &state, listed, *refresh, items).await? {
+            let report = titles_sync(
+                &cli.stores,
+                &state,
+                listed,
+                *refresh,
+                items,
+                deadline(start, *max_runtime_secs),
+            )
+            .await?;
+            if !report.finished() {
                 // Fail, so the job reports it and a later run continues.
-                bail!("LoC rate limited titles-sync; the cache kept what was fetched, and the next run continues");
+                bail!("{}", unfinished(&report));
             }
             Ok(())
         }
@@ -459,13 +522,14 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             full,
             synthetic,
             target,
-        } => release(&cli.stores, &state, *full, *synthetic, target).await,
+        } => release(&cli.stores, &state, *full, *synthetic, None, target).await,
         Command::Run {
             list,
             batches,
             full,
             synthetic,
             curate_max_runtime_secs,
+            titles_max_runtime_secs,
             target,
         } => {
             let listed = enqueue(&state, list, batches).await?;
@@ -479,13 +543,19 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             .await?;
             // Every curated title needs a catalog entry before release.
             let lccns = listed.into_iter().flat_map(|b| b.lccns);
-            if titles_sync(&cli.stores, &state, lccns, false, titles::LOC_ITEMS).await? {
-                // Release anyway: it refuses to publish if a curated title is
-                // still missing from the catalog, and a partial backlog of
-                // titles without pages shouldn't hold up new pages.
-                tracing::warn!("LoC rate limited titles-sync; releasing with the catalog as it is");
-            }
-            release(&cli.stores, &state, *full, *synthetic, target).await
+            let report = titles_sync(
+                &cli.stores,
+                &state,
+                lccns,
+                false,
+                titles::LOC_ITEMS,
+                deadline(start, *titles_max_runtime_secs),
+            )
+            .await?;
+            // The release decides: a delta goes ahead, a full base (asked
+            // for or forced) refuses (`Release::titles_left`).
+            let titles_left = titles_left(&report);
+            release(&cli.stores, &state, *full, *synthetic, titles_left, target).await
         }
     }
 }
@@ -493,6 +563,69 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_why_titles_sync_stopped() {
+        let report = titles::SyncReport {
+            wanted: 3122,
+            fetched: 342,
+            throttled: true,
+            left: 2779,
+            ..Default::default()
+        };
+        assert!(unfinished(&report)
+            .starts_with("LoC rate limited titles-sync with 2779 of 3122 titles left"));
+        let late = titles::SyncReport {
+            throttled: false,
+            out_of_time: true,
+            ..report
+        };
+        assert!(unfinished(&late).starts_with("titles-sync reached its deadline"));
+        assert!(titles_left(&late).is_some());
+
+        let done = titles::SyncReport {
+            wanted: 3,
+            fetched: 2,
+            not_found: vec!["sn3".into()],
+            ..Default::default()
+        };
+        assert_eq!(titles_left(&done), None);
+        let failed = titles::SyncReport {
+            failed: vec!["sn2".into()],
+            ..done
+        };
+        assert_eq!(
+            titles_left(&failed).unwrap(),
+            "titles-sync couldn't fetch 1 of 3 titles (sn2); the next run retries them"
+        );
+    }
+
+    #[test]
+    fn run_takes_a_titles_deadline() {
+        let cli = Cli::try_parse_from([
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "run",
+            "--full",
+            "--titles-max-runtime-secs",
+            "28800",
+            "--index-dir",
+            "x",
+        ])
+        .unwrap();
+        let Command::Run {
+            titles_max_runtime_secs,
+            full,
+            ..
+        } = cli.command
+        else {
+            panic!("not a run");
+        };
+        assert_eq!((titles_max_runtime_secs, full), (Some(28800), true));
+    }
 
     #[test]
     fn a_writer_needs_its_scratch_disk() {

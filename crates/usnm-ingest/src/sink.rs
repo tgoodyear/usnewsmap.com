@@ -15,6 +15,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::merges::{self, IndexLayout, MergeWait, NodeEvents};
+use crate::progress;
 use crate::telemetry;
 
 /// The index config every base and delta shares (05 §5.5.1).
@@ -264,13 +265,15 @@ impl QuickwitSink {
         let mut pause = self.retry_initial;
         let mut attempt = 1u32;
         let (status, text) = loop {
-            let resp = self
+            let sent = self
                 .http
                 .post(&url)
                 .header("content-type", "application/json")
                 .body(body.clone())
                 .send()
-                .await?;
+                .await
+                .map_err(anyhow::Error::from);
+            let resp = merges::explained(self.events.as_deref(), sent).await?;
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             // The whole request is resent; `finish` checks the final count, so
@@ -312,6 +315,11 @@ impl QuickwitSink {
     }
 
     async fn count(&self, id: &str) -> anyhow::Result<u64> {
+        let counted = self.count_once(id).await;
+        merges::explained(self.events.as_deref(), counted).await
+    }
+
+    async fn count_once(&self, id: &str) -> anyhow::Result<u64> {
         let v: Value = self
             .http
             .get(format!(
@@ -335,13 +343,15 @@ impl IndexSink for QuickwitSink {
         let config = INDEX_TEMPLATE
             .replace("${INDEX_ID}", index_id)
             .replace("${INDEX_URI}", &format!("{}/{index_id}", self.index_root));
-        let resp = self
+        let sent = self
             .http
             .post(format!("{}/api/v1/indexes", self.base))
             .header("content-type", "application/yaml")
             .body(config)
             .send()
-            .await?;
+            .await
+            .map_err(anyhow::Error::from);
+        let resp = merges::explained(self.events.as_deref(), sent).await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
@@ -419,7 +429,8 @@ impl IndexSink for QuickwitSink {
         let node = self.node();
         let mut out = Vec::new();
         for id in index_ids {
-            out.push(IndexLayout::of(id, &node.splits(id).await?));
+            let splits = merges::explained(self.events.as_deref(), node.splits(id).await).await?;
+            out.push(IndexLayout::of(id, &splits));
         }
         Ok(out)
     }
@@ -558,12 +569,96 @@ fn writer_log_filter(inherited: Option<&str>) -> String {
 /// the job's console: warnings, errors and readiness through `tracing`, and
 /// the last lines into error messages.
 pub struct QuickwitNode {
-    child: tokio::process::Child,
+    pid: Option<u32>,
     pub url: String,
     work_dir: PathBuf,
     tail: Tail,
     events: Arc<NodeEvents>,
-    readers: Vec<tokio::task::JoinHandle<()>>,
+    /// Owns the process: waits for it to exit, then records why (`supervise`).
+    supervisor: tokio::task::JoinHandle<()>,
+    /// Why the process exited, once it has.
+    exit: tokio::sync::watch::Receiver<Option<String>>,
+}
+
+impl Drop for QuickwitNode {
+    /// A node that wasn't stopped (a release that failed) is killed: the
+    /// supervisor owns the child, which is killed when it is dropped.
+    fn drop(&mut self) {
+        self.supervisor.abort();
+    }
+}
+
+/// Why the writer exited, for the release's error: a SIGKILL nobody sent is
+/// almost always the kernel's out-of-memory killer, which the container's
+/// cgroup counts when it can be read.
+pub fn describe_exit(
+    status: std::process::ExitStatus,
+    memory: Option<progress::CgroupMemory>,
+) -> String {
+    #[cfg(unix)]
+    let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
+    let mut why = match (signal, status.code()) {
+        (Some(9), _) => "the Quickwit writer was killed by signal 9 (SIGKILL)".to_owned(),
+        (Some(sig), _) => format!("the Quickwit writer was killed by signal {sig}"),
+        (None, Some(code)) => format!("the Quickwit writer exited with status {code}"),
+        (None, None) => format!("the Quickwit writer exited ({status})"),
+    };
+    let limit = memory
+        .and_then(|m| m.limit)
+        .map(|b| {
+            format!(
+                "; the container's memory limit is {:.1} GiB",
+                b as f64 / f64::from(1u32 << 30)
+            )
+        })
+        .unwrap_or_default();
+    match (signal, memory.and_then(|m| m.oom_kills)) {
+        (Some(9), Some(n)) if n > 0 => why.push_str(&format!(
+            ": it ran out of memory (the container's cgroup counts {n} out-of-memory kill{}{limit})",
+            if n == 1 { "" } else { "s" }
+        )),
+        // The counter can't be read: say what is most likely. A counter
+        // of 0 means someone else sent the signal.
+        (Some(9), None) => why.push_str(&format!(
+            ", most likely by the kernel's out-of-memory killer{}",
+            if limit.is_empty() { String::new() } else { format!(" ({})", &limit[2..]) }
+        )),
+        _ => {}
+    }
+    why
+}
+
+/// Wait for the writer to exit, let the readers take in its last output,
+/// then record why it exited in `events` and on the returned channel.
+fn supervise(
+    mut child: tokio::process::Child,
+    mut readers: Vec<tokio::task::JoinHandle<()>>,
+    tail: Tail,
+    events: Arc<NodeEvents>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::watch::Receiver<Option<String>>,
+) {
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    let task = tokio::spawn(async move {
+        let status = child.wait().await;
+        for r in readers.iter_mut() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
+        }
+        let mut why = match status {
+            Ok(s) => describe_exit(s, progress::cgroup_memory()),
+            Err(e) => format!("the Quickwit writer could not be waited for: {e}"),
+        };
+        let last: Vec<String> = tail.lines().into_iter().rev().take(5).rev().collect();
+        if !last.is_empty() {
+            why.push_str(&format!(". Its last output: {}", last.join(" | ")));
+        }
+        events.writer_exited(&why);
+        let _ = tx.send(Some(why));
+    });
+    (task, rx)
 }
 
 impl QuickwitNode {
@@ -646,18 +741,21 @@ impl QuickwitNode {
         if let Some(err) = child.stderr.take() {
             readers.push(forward(err, true, tail.clone(), events.clone()));
         }
-        let mut node = Self {
-            child,
+        let pid = child.id();
+        let (supervisor, mut exit) = supervise(child, readers, tail.clone(), events.clone());
+        let node = Self {
+            pid,
             url: format!("http://127.0.0.1:{port}"),
             work_dir: work_dir.to_owned(),
             tail,
             events,
-            readers,
+            supervisor,
+            exit: exit.clone(),
         };
         let http = reqwest::Client::new();
         for _ in 0..120 {
             // A node that has already exited won't become ready.
-            if node.child.try_wait()?.is_some() {
+            if exit.borrow().is_some() {
                 break;
             }
             if http
@@ -670,16 +768,13 @@ impl QuickwitNode {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        // Let the readers take in what an exited node wrote last.
-        if node.child.try_wait()?.is_some() {
-            for r in node.readers.iter_mut() {
-                let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
-            }
+        // An exited node: the supervisor records its last output first.
+        let _ = tokio::time::timeout(Duration::from_secs(5), exit.wait_for(Option::is_some)).await;
+        let lines = node.tail.lines().join("\n");
+        match node.exited() {
+            Some(why) => bail!("Quickwit writer did not become ready: {why}; its output:\n{lines}"),
+            None => bail!("Quickwit writer did not become ready; its last output:\n{lines}"),
         }
-        bail!(
-            "Quickwit writer did not become ready; its last output:\n{}",
-            node.tail.lines().join("\n")
-        )
     }
 
     /// What the node's output has reported so far.
@@ -687,36 +782,38 @@ impl QuickwitNode {
         self.events.clone()
     }
 
-    /// The node's process id, while it runs.
+    /// The node's process id.
     pub fn pid(&self) -> Option<u32> {
-        self.child.id()
+        self.pid
+    }
+
+    /// Why the node exited, if it has.
+    pub fn exited(&self) -> Option<String> {
+        self.exit.borrow().clone()
     }
 
     /// Stop the node and wait for it to exit.
     pub async fn stop(mut self) -> anyhow::Result<()> {
-        if let Some(pid) = self.child.id() {
+        if let (Some(pid), None) = (self.pid, self.exited()) {
             // SIGTERM lets Quickwit shut down cleanly; `kill` is a shell builtin.
             let _ = tokio::process::Command::new("sh")
                 .args(["-c", "kill -TERM \"$0\"", &pid.to_string()])
                 .status()
                 .await;
         }
-        match tokio::time::timeout(Duration::from_secs(60), self.child.wait()).await {
-            Ok(status) => {
-                status?;
-            }
-            Err(_) => {
-                // Expected after a release: the closed index's ingest shards
-                // have no pipeline left to drain them, and the ingester waits
-                // for that. Everything is published by now, and the next
-                // writer starts from an empty data directory.
-                tracing::info!("the Quickwit writer did not stop within 60 s; killing it");
-                self.child.kill().await?
-            }
+        let stopped =
+            tokio::time::timeout(Duration::from_secs(60), self.exit.wait_for(Option::is_some))
+                .await;
+        if stopped.is_err() {
+            // Expected after a release: the closed index's ingest shards
+            // have no pipeline left to drain them, and the ingester waits
+            // for that. Everything is published by now, and the next
+            // writer starts from an empty data directory.
+            tracing::info!("the Quickwit writer did not stop within 60 s; killing it");
+            // Dropping the supervisor's child kills it (`kill_on_drop`).
+            self.supervisor.abort();
         }
-        for r in self.readers.iter_mut() {
-            let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
-        }
+        let _ = tokio::time::timeout(Duration::from_secs(5), &mut self.supervisor).await;
         Ok(())
     }
 }
@@ -831,11 +928,106 @@ mod tests {
             .expect("the writer exited")
             .to_string();
         assert!(err.contains("did not become ready"), "{err}");
+        assert!(err.contains("exited with status 1"), "{err}");
         assert!(
             err.contains("2026-09-29T00:20:17Z  WARN quickwit_config: peer seeds are empty"),
             "{err}"
         );
         assert!(err.contains("Error: data dir volume too small"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explains_how_the_writer_exited() {
+        use std::os::unix::process::ExitStatusExt;
+        let killed = std::process::ExitStatus::from_raw(9);
+        let oom = progress::CgroupMemory {
+            limit: Some(7680 << 20),
+            oom_kills: Some(1),
+        };
+        assert_eq!(
+            describe_exit(killed, Some(oom)),
+            "the Quickwit writer was killed by signal 9 (SIGKILL): it ran out of memory (the \
+             container's cgroup counts 1 out-of-memory kill; the container's memory limit is 7.5 GiB)"
+        );
+        let unknown = progress::CgroupMemory {
+            limit: Some(7680 << 20),
+            oom_kills: None,
+        };
+        assert_eq!(
+            describe_exit(killed, Some(unknown)),
+            "the Quickwit writer was killed by signal 9 (SIGKILL), most likely by the kernel's \
+             out-of-memory killer (the container's memory limit is 7.5 GiB)"
+        );
+        assert_eq!(
+            describe_exit(killed, None),
+            "the Quickwit writer was killed by signal 9 (SIGKILL), most likely by the kernel's \
+             out-of-memory killer"
+        );
+        // No out-of-memory kill counted: someone else sent the signal.
+        let none = progress::CgroupMemory {
+            limit: Some(7680 << 20),
+            oom_kills: Some(0),
+        };
+        assert_eq!(
+            describe_exit(killed, Some(none)),
+            "the Quickwit writer was killed by signal 9 (SIGKILL)"
+        );
+        assert_eq!(
+            describe_exit(std::process::ExitStatus::from_raw(15), Some(oom)),
+            "the Quickwit writer was killed by signal 15"
+        );
+        assert_eq!(
+            describe_exit(std::process::ExitStatus::from_raw(1 << 8), None),
+            "the Quickwit writer exited with status 1"
+        );
+    }
+
+    /// A writer the kernel kills mid-release: the exit is recorded with
+    /// its signal and last output, for the release's error.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_killed_writer_is_reported() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "echo 'INFO merging splits'; kill -KILL $$"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let tail = Tail::default();
+        let events = Arc::new(NodeEvents::default());
+        let readers = vec![
+            forward(
+                child.stdout.take().unwrap(),
+                false,
+                tail.clone(),
+                events.clone(),
+            ),
+            forward(
+                child.stderr.take().unwrap(),
+                true,
+                tail.clone(),
+                events.clone(),
+            ),
+        ];
+        let (task, mut exit) = supervise(child, readers, tail, events.clone());
+        tokio::time::timeout(Duration::from_secs(10), exit.wait_for(Option::is_some))
+            .await
+            .unwrap()
+            .unwrap();
+        task.await.unwrap();
+        let why = events.exit().unwrap();
+        assert!(
+            why.starts_with("the Quickwit writer was killed by signal 9 (SIGKILL)"),
+            "{why}"
+        );
+        assert!(
+            why.ends_with("Its last output: INFO merging splits"),
+            "{why}"
+        );
+        let err = events.check().unwrap_err().to_string();
+        assert!(err.contains("not publishing"), "{err}");
     }
 
     #[tokio::test]
