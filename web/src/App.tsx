@@ -17,6 +17,7 @@ import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
 import { MeasureToggle } from "./components/MeasureToggle";
 import { SkewLegend } from "./components/SkewLegend";
+import { useMediaQuery } from "./lib/useMediaQuery";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
@@ -272,6 +273,38 @@ export function App() {
   const shown = norm === "skew" ? skewRows : points;
   const clear = norm === "skew" ? clearest(skewListed) : null;
 
+  // Phones show the legend and the place lists after the playback controls, in the DOM as well as
+  // on screen, so the controls sit right under the map. They move, not the controls: the legend and
+  // lists keep no state of their own, so a rotation across the breakpoint loses nothing.
+  const narrow = useMediaQuery("(max-width: 640px)");
+  const legend = !data ? null : norm === "skew" && skewModel ? (
+    <SkewLegend
+      places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
+      states={frame ? frame.statePages.filter((p) => p > 0).length : 0}
+      unit={data.bucket.unit}
+      version={version}
+    />
+  ) : (
+    <Legend />
+  );
+  const sidePanel = !data ? null : (
+    <>
+      {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
+      {view.place && (
+        <PlacePanel
+          params={params}
+          version={version}
+          placeId={view.place}
+          placeName={selected?.name ?? features.get(view.place)?.properties.name ?? view.place}
+          windowHits={selected?.value ?? 0}
+          note={norm === "skew" ? skewRows.find((r) => r.id === view.place)?.skew : undefined}
+          synthetic={data.synthetic}
+          onClose={() => setView({ place: "" })}
+        />
+      )}
+    </>
+  );
+
   return (
     <div className={view.q ? "app" : "app app--empty"}>
       <header className="topbar">
@@ -437,35 +470,10 @@ export function App() {
                         center={view.c}
                         onViewport={onViewport}
                       />
-                      {norm === "skew" && skewModel ? (
-                        <SkewLegend
-                          places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
-                          states={frame ? frame.statePages.filter((p) => p > 0).length : 0}
-                          unit={data.bucket.unit}
-                          version={version}
-                        />
-                      ) : (
-                        <Legend />
-                      )}
+                      {!narrow && legend}
                     </Suspense>
                   )}
-                  {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
-                  {view.place && (
-                    <PlacePanel
-                      params={params}
-                      version={version}
-                      placeId={view.place}
-                      placeName={selected?.name ?? features.get(view.place)?.properties.name ?? view.place}
-                      windowHits={selected?.value ?? 0}
-                      note={
-                        norm === "skew"
-                          ? skewRows.find((r) => r.id === view.place)?.skew
-                          : undefined
-                      }
-                      synthetic={data.synthetic}
-                      onClose={() => setView({ place: "" })}
-                    />
-                  )}
+                  {!narrow && sidePanel}
                 </div>
               )}
 
@@ -507,6 +515,12 @@ export function App() {
                     onSeek={seek}
                   />
                 </footer>
+              )}
+              {narrow && data && (
+                <div className="after-timebar">
+                  {view.tab === "map" && webgl && legend}
+                  {sidePanel}
+                </div>
               )}
             </>
           )}

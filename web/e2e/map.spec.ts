@@ -60,3 +60,27 @@ test("pinch zoom works while the timeline plays", async ({ page, isMobile }) => 
   // Fingers 40 px apart spread to 280 px: about 2.8 zoom levels in.
   await expect.poll(() => urlZoom(page)).toBeGreaterThan(5);
 });
+
+test("phones put the playback controls between the map and the legend, in reading order", async ({ page, isMobile }) => {
+  await page.goto("/?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week");
+  await expect(page.locator(".summary")).toContainText("places");
+  const order = () =>
+    page.evaluate(() => {
+      const pick = (sel: string) => document.querySelector(sel);
+      const [map, bar, legend] = [pick(".map-wrap"), pick(".timebar"), pick(".legend")];
+      if (!map || !bar || !legend) return "missing";
+      const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      return before(map, bar) && before(bar, legend) ? "map, controls, legend" : "map, legend, controls";
+    });
+  // DOM order, which keyboard and screen-reader users follow, matches what each layout shows.
+  await expect.poll(order).toBe(isMobile ? "map, controls, legend" : "map, legend, controls");
+  await expect(page.locator(".timebar")).toHaveCount(1);
+  if (isMobile) return;
+  // Crossing the breakpoint moves the legend and lists, never the controls, so playback keeps going.
+  const play = page.getByRole("button", { name: /Play|Pause/ });
+  await play.click();
+  await expect(play).toHaveAttribute("aria-pressed", "true");
+  await page.setViewportSize({ width: 400, height: 800 });
+  await expect.poll(order).toBe("map, controls, legend");
+  await expect(play).toHaveAttribute("aria-pressed", "true");
+});
