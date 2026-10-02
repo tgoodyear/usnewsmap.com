@@ -239,6 +239,29 @@ async fn titles_sync(
     Ok(report)
 }
 
+/// What titles-sync left undone, if anything: it stopped early, or some
+/// fetches failed (retried next run). Titles LoC doesn't have (404) count
+/// as done: no run will find them.
+fn titles_left(report: &titles::SyncReport) -> Option<String> {
+    if !report.finished() {
+        return Some(unfinished(report));
+    }
+    (!report.failed.is_empty()).then(|| {
+        format!(
+            "titles-sync couldn't fetch {} of {} titles ({}); the next run retries them",
+            report.failed.len(),
+            report.wanted,
+            report
+                .failed
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
 /// Why titles-sync stopped early, for an error or a warning.
 fn unfinished(report: &titles::SyncReport) -> String {
     let why = if report.throttled {
@@ -530,7 +553,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             .await?;
             // The release decides: a delta goes ahead, a full base (asked
             // for or forced) refuses (`Release::titles_left`).
-            let titles_left = (!report.finished()).then(|| unfinished(&report));
+            let titles_left = titles_left(&report);
             release(&cli.stores, &state, *full, *synthetic, titles_left, target).await
         }
     }
@@ -557,6 +580,23 @@ mod tests {
             ..report
         };
         assert!(unfinished(&late).starts_with("titles-sync reached its deadline"));
+        assert!(titles_left(&late).is_some());
+
+        let done = titles::SyncReport {
+            wanted: 3,
+            fetched: 2,
+            not_found: vec!["sn3".into()],
+            ..Default::default()
+        };
+        assert_eq!(titles_left(&done), None);
+        let failed = titles::SyncReport {
+            failed: vec!["sn2".into()],
+            ..done
+        };
+        assert_eq!(
+            titles_left(&failed).unwrap(),
+            "titles-sync couldn't fetch 1 of 3 titles (sn2); the next run retries them"
+        );
     }
 
     #[test]

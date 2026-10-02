@@ -52,7 +52,8 @@ param scratchGiB int = 0
 param rootImage string = ''
 @description('Seconds a release waits for its new index\'s merges before failing without publishing (08 §8.4). Budgeted under the 24 h replica timeout below.')
 @minValue(600)
-@maxValue(21600)
+// Past 4 h, a full rebuild no longer fits the 24 h replica timeout (below).
+@maxValue(14400)
 param mergeTimeoutSecs int = 14400
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the

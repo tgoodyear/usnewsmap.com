@@ -190,7 +190,7 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
    curl -s https://api.usnewsmap.com/v1/status | jq .titles.pipeline   # awaiting_sync: titles to fetch first
    az containerapp job start -n "$JOB" -g "$RG"
    ```
-   A full run releases only once titles-sync has tried every title the listing and the curated batches name; a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. Once titles-sync finishes, the same execution builds the base. Watch it:
+   A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. Once titles-sync finishes, the same execution builds the base. Watch it:
    ```sh
    scripts/logs.sh prod release-progress 6h    # docs sent, rate, memory (quickwit_rss_mb), merges
    az containerapp job execution list -n "$JOB" -g "$RG" -o table
