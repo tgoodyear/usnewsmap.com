@@ -336,12 +336,16 @@ where
             Some(at) => match tokio::time::timeout_at(at, acquire).await {
                 Ok(acquired) => acquired,
                 Err(_) => {
-                    // An identical request may have found a slot meanwhile.
+                    // An identical request may have found a slot meanwhile,
+                    // and its result may even be in already.
                     if let Some(flight) = flights.get(key) {
                         return Ok(Source::Flight {
                             flight,
                             started: false,
                         });
+                    }
+                    if let Some(body) = state.cache.get(key).await {
+                        return Ok(Source::Cached(body));
                     }
                     if !job.warm_up {
                         state.metrics.slow_search(job.endpoint, "busy");
