@@ -17,6 +17,7 @@ import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
 import { MeasureToggle } from "./components/MeasureToggle";
 import { SkewLegend } from "./components/SkewLegend";
+import { useMediaQuery } from "./lib/useMediaQuery";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
@@ -272,6 +273,32 @@ export function App() {
   const shown = norm === "skew" ? skewRows : points;
   const clear = norm === "skew" ? clearest(skewListed) : null;
 
+  // Phones put the playback controls right under the map, before the legend and the lists, in
+  // the DOM as well as on screen, so keyboard and screen-reader order matches what is shown.
+  const narrow = useMediaQuery("(max-width: 640px)");
+  const timebar =
+    data && count > 0 && data.total.hits > 0 ? (
+      <footer className="timebar">
+        <TimeDock
+          unit={data.bucket.unit}
+          from={data.bucket.from}
+          count={count}
+          t={t}
+          window={view.win}
+          onSeek={seek}
+          onWindow={(win) => setView({ win })}
+        />
+        <Timeline
+          unit={data.bucket.unit}
+          from={data.bucket.from}
+          hits={data.series.hits}
+          t={t}
+          window={view.win}
+          onSeek={seek}
+        />
+      </footer>
+    ) : null;
+
   return (
     <div className={view.q ? "app" : "app app--empty"}>
       <header className="topbar">
@@ -423,6 +450,7 @@ export function App() {
                           share={data.cube.baseline_ref !== null}
                         />
                       )}
+                      {narrow && timebar}
                     </>
                   ) : (
                     <Suspense fallback={<div className="map map--loading">Loading map…</div>}>
@@ -437,6 +465,7 @@ export function App() {
                         center={view.c}
                         onViewport={onViewport}
                       />
+                      {narrow && timebar}
                       {norm === "skew" && skewModel ? (
                         <SkewLegend
                           places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
@@ -487,27 +516,7 @@ export function App() {
                   }
                 />
               )}
-              {count > 0 && data.total.hits > 0 && (
-                <footer className="timebar">
-                  <TimeDock
-                    unit={data.bucket.unit}
-                    from={data.bucket.from}
-                    count={count}
-                    t={t}
-                    window={view.win}
-                    onSeek={seek}
-                    onWindow={(win) => setView({ win })}
-                  />
-                  <Timeline
-                    unit={data.bucket.unit}
-                    from={data.bucket.from}
-                    hits={data.series.hits}
-                    t={t}
-                    window={view.win}
-                    onSeek={seek}
-                  />
-                </footer>
-              )}
+              {!narrow && timebar}
             </>
           )}
           {!data && agg.isFetching && !stillComputing && <p className="notice" role="status">Searching…</p>}
