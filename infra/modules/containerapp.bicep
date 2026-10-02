@@ -45,7 +45,7 @@ var quickwit = searchBackend == 'quickwit'
 // file-backed metastore read-only and polls it (08 §8.4.1); the API looks
 // each index up before serving a version that lists it, because the
 // searcher reads the index list only at start (S-2). Aggregation limits per
-// 05 §5.7; caches sized for the 2 GiB container.
+// 05 §5.7; caches sized for the 4 GiB container.
 var quickwitConfig = join([
   'version: 0.8'
   'cluster_id: usnm-searcher'
@@ -63,8 +63,8 @@ var quickwitConfig = join([
   'searcher:'
   '  aggregation_bucket_limit: 200000'
   '  aggregation_memory_limit: 768MB'
-  '  fast_field_cache_capacity: 384MB'
-  '  split_footer_cache_capacity: 128MB'
+  '  fast_field_cache_capacity: 1GB'
+  '  split_footer_cache_capacity: 256MB'
   '  partial_request_cache_capacity: 32MB'
   '  predicate_cache_capacity: 32MB'
   '  max_num_concurrent_split_searches: 8'
@@ -133,7 +133,7 @@ var quickwitContainer = {
   image: quickwitImage
   // The image has no config for this role; write it from the environment.
   command: ['/bin/sh', '-c', 'printf \'%s\\n\' "$USNM_QW_CONFIG" > /tmp/node.yaml && exec quickwit run --config /tmp/node.yaml']
-  resources: { cpu: json('1.0'), memory: '2Gi' }
+  resources: { cpu: json('2.0'), memory: '4Gi' }
   env: [
     { name: 'USNM_QW_CONFIG', value: quickwitConfig }
     { name: 'QW_DISABLE_TELEMETRY', value: '1' }
