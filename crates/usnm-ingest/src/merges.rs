@@ -416,10 +416,14 @@ async fn poll_until_sealed(
                 settle = Settle::new(wait.stable_polls);
             }
             Some(at) if settled => {
-                let done = match events {
-                    Some(e) => e.finished(index_id),
-                    None => at.elapsed() >= wait.finalize_grace,
-                };
+                // An index that was never written has no ingest-source
+                // pipeline, so no "completed" line will come; there is
+                // nothing for it to merge.
+                let done = expected == 0
+                    || match events {
+                        Some(e) => e.finished(index_id),
+                        None => at.elapsed() >= wait.finalize_grace,
+                    };
                 if done && tokio::time::Instant::now() <= deadline {
                     return check(index_id, expected, &splits);
                 }

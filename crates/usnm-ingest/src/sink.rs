@@ -376,7 +376,12 @@ impl IndexSink for QuickwitSink {
     /// close it (`merges::seal`): nothing is published half merged.
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()> {
         // A forced commit publishes everything still buffered in the node.
-        self.send("force").await?;
+        // `add` always leaves its document in the buffer, so an empty one
+        // means none was added (a batch with no text): there is nothing to
+        // commit, and the node rejects an empty request (411).
+        if !self.buf.is_empty() {
+            self.send("force").await?;
+        }
         let id = self.index.clone().context("no index created")?;
         let mut last = 0;
         for _ in 0..120 {

@@ -621,6 +621,41 @@ async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
     node.stop().await.unwrap();
 }
 
+/// A batch can hold pages but no text (every page's OCR empty or failed):
+/// the release then commits nothing. A real writer starts no ingest-source
+/// pipeline for an index that was never written, so there is no "merge
+/// pipeline completed" line to wait for; the empty index seals anyway.
+/// Runs when `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn a_writer_seals_an_index_that_received_no_documents() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_ingest::sink::{IndexSink, QuickwitNode, QuickwitSink};
+    let dir = tempfile::tempdir().unwrap();
+    let qw = dir.path().join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7397, &meta, &root)
+        .await
+        .unwrap();
+    let id = "pages-delta-20261022-1";
+    let mut sink = QuickwitSink::new(&node.url, &root)
+        .unwrap()
+        .watching(&node)
+        .merges(usnm_ingest::merges::MergeWait {
+            timeout: std::time::Duration::from_secs(45),
+            ..quick_merges()
+        });
+    sink.create(id).await.unwrap();
+    sink.finish(0).await.unwrap();
+    let layout = sink.layout(&[id.to_owned()]).await.unwrap();
+    assert_eq!((layout[0].splits, layout[0].docs), (0, 0));
+    node.stop().await.unwrap();
+}
+
 /// A real LoC bulk OCR archive (see `tests/data/README.md`): the layout,
 /// compression and checksum as LoC publishes them.
 #[tokio::test]
