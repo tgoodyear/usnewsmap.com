@@ -246,20 +246,98 @@ test("the status page shows the published version without the pipeline state", a
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pipeline status");
   // CI's API serves the fixtures with no Cosmos: the reference sections
   // work and the pipeline sections say so.
-  await expect(page.getByRole("heading", { name: "Indexing and releases" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Right now" })).toBeVisible();
+  await expect(page.getByText("What the pipeline is doing right now isn't available on this server.")).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 pages" })).toBeVisible();
+  await expect(page.getByRole("list").filter({ hasText: "Downloaded and processed" }).getByRole("listitem")).toHaveCount(4);
+  // Operator details start collapsed.
+  await expect(page.getByRole("heading", { name: "Index builds (releases)" })).toBeHidden();
+  await page.getByText("Show the pipeline's own numbers and terms").click();
+  await expect(page.getByRole("heading", { name: "Index builds (releases)" })).toBeVisible();
   await expect(page.getByText("fixture-v1", { exact: true })).toBeVisible();
   await expect(page.getByText("1 of 8 deltas used", { exact: false }).first()).toBeVisible();
-  await expect(page.getByText(/^Not available\./)).toHaveCount(3);
-  await expect(page.locator(".health")).toContainText("Pipeline state not available");
+  await expect(page.getByText(/^Not available\./)).toHaveCount(4);
   await expect(page.getByRole("link", { name: "/v1/status" })).toHaveAttribute("href", "/v1/status");
-  await page.getByText("Raw response").click();
+  await page.getByText("Raw response", { exact: true }).last().click();
   await expect(page.locator(".status-json")).toContainText('"schema": 1');
   await expectAccessible(page);
   expect(errors).toEqual([]);
 
   const json = await page.request.get("/v1/status");
   expect(json.headers()["cache-control"]).toBe("public, max-age=30");
-  expect((await json.json()).backfill.available).toBe(false);
+  const doc = await json.json();
+  expect(doc.backfill.available).toBe(false);
+  expect(doc.activity.available).toBe(false);
+});
+
+test("the status page says what the pipeline is doing right now", async ({ page }) => {
+  const errors = watchErrors(page);
+  // The fixture API's document, with the pipeline sections of a full
+  // rebuild paused on loc.gov's rate limit while it looks up newspapers.
+  const base = await (await page.request.get("/v1/status")).json();
+  const now = Date.now();
+  const iso = (min: number) => new Date(now + min * 60_000).toISOString();
+  const doc = {
+    ...base,
+    pipeline: { available: true, read_at: iso(0) },
+    activity: {
+      available: true, now: "titles", source: "job", since: iso(-65), run_started_at: iso(-66),
+      run: "1b2c3d", reported_at: iso(0), done: 342, total: 3464, percent: 9.9, eta: null,
+      paused_until: iso(45), index_version: null, merge: null, next_run: null,
+      last: { outcome: "failed", ended_at: iso(-300), step: "indexing", index_version: "pages-v2",
+              error: "error sending request: tcp connect error: Connection refused (os error 111)" },
+    },
+    backfill: {
+      available: true, total: 2997, by_status: { queued: 0, downloading: 0, curated: 2997, failed: 0 },
+      in_progress: 0, stale_leases: 0, retrying: 0, percent: 100, pages: 23_794_152, ok_pages: 23_768_831,
+      versions: { "01": 2997 }, newer_versions_pending: 0,
+      throughput: { hours: [], rate_window_hours: 12, rate_per_hour: 0, remaining: 0, eta: null },
+      loc: { next_slot: null, blocked_until: null, throttled: false },
+      in_progress_batches: [], recent: [], failed_batches: [], listed_limit: 100,
+    },
+    indexing: {
+      available: true, current_version: base.published.index_version,
+      writer: { held: false, holder: null, until: null }, release: null,
+      last_published_at: iso(-3 * 24 * 60), failed_runs: 1, failed_since_last_publish: 1, runs: [],
+    },
+    titles: {
+      ...base.titles,
+      pipeline: { available: true, curated_titles: 4681, awaiting_sync: 3122, batches_waiting_for_titles: 1955,
+                  unpublished_batches: 2115, ready_for_release: 160, recurated_awaiting_full: 0 },
+    },
+  };
+  await page.route("**/v1/status", (route) => route.fulfill({ json: doc }));
+  await page.goto("/status");
+  const line = page.locator(".status-now__line");
+  await expect(line).toHaveText(
+    /^Looking up newspaper details from the Library of Congress: 342 of 3,464 done \(9\.9%\)\. Paused until \d\d:\d\d UTC because loc\.gov asked us to slow down\.$/,
+  );
+  await expect(page.getByRole("progressbar", { name: "342 of 3,464 newspapers looked up" })).toBeVisible();
+  await expect(page.getByText(/^The previous run stopped at .* because of an error while building the search index; nothing changed on the site\.$/)).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 of 23,794,152 downloaded pages (under 0.1%)" })).toBeVisible();
+
+  // Four steps; the current one is marked, and its state is in words.
+  const steps = page.locator("ol.steps > li");
+  await expect(steps).toHaveCount(4);
+  const current = page.locator('ol.steps > li[aria-current="step"]');
+  await expect(current).toHaveCount(1);
+  await expect(current).toContainText("Newspaper details looked up");
+  await expect(current).toContainText("Paused");
+  await expect(steps.nth(0)).toContainText("Done");
+  await expect(steps.nth(2)).toContainText("Waiting");
+
+  // The steps stack on a phone and sit in a row on a wide screen; the page never scrolls sideways.
+  const boxes = await steps.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().top));
+  const width = page.viewportSize()!.width;
+  if (width < 900) expect(new Set(boxes.map(Math.round)).size).toBe(4);
+  else expect(new Set(boxes.map(Math.round)).size).toBe(1);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+  await expectAccessible(page);
+  await page.getByText("Show the pipeline's own numbers and terms").click();
+  await expect(page.getByRole("heading", { name: "Terms" })).toBeVisible();
+  await expectAccessible(page);
+  expect(errors).toEqual([]);
 });
 
 test("the status page lists published pages by state and by language", async ({ page }) => {
@@ -268,7 +346,7 @@ test("the status page lists published pages by state and by language", async ({ 
   // The fixtures: six places in six states, 312 pages each; four titles in
   // English (one of them also German), one German and one Spanish.
   const states = page.getByRole("table", { name: "Published pages by state" });
-  await expect(page.getByRole("heading", { level: 2, name: "Pages by state" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Pages by state" })).toBeVisible();
   await expect(states.locator("tbody tr")).toHaveCount(6);
   await expect(states.locator("tbody tr").first()).toHaveText(/California\s*1\s*1\s*312\s*16\.7%/);
   await expect(states.locator("tfoot tr")).toHaveText(/Total\s*6\s*6\s*1,872\s*100\.0%/);
@@ -281,7 +359,7 @@ test("the status page lists published pages by state and by language", async ({ 
   await expect(states.locator("tbody th").first()).toHaveText("South Carolina");
 
   const languages = page.getByRole("table", { name: "Published pages by language" });
-  await expect(page.getByRole("heading", { level: 2, name: "Pages by language" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Pages by language" })).toBeVisible();
   await expect(languages.locator("tbody tr")).toHaveCount(3);
   await expect(languages.locator("tbody tr").first()).toHaveText(/English\s*4\s*1,248\s*66\.7%/);
   await expect(page.getByText("1 newspaper lists more than one language", { exact: false })).toBeVisible();

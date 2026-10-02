@@ -21,7 +21,7 @@
 - The timeline is a small SVG bar chart rather than uPlot, because it has one series until compare mode lands.
 - Controls are native elements, so Radix and Zustand aren't needed yet.
 - The basemap defaults to OpenFreeMap Positron until the PMTiles extract is published.
-- `/status` is a separate page (lazy-loaded; the app has no router, so `main.tsx` picks it by path with `src/route.ts`) that shows the ingest pipeline's status from `GET /v1/status` and refreshes every 30 s. It also has two tables of the published pages, "Pages by state" and "Pages by language" (06 §6.3.6), sortable by any column like the search page's place table. The footer links to it. Any other path shows a not-found page, and the API sends it with a 404.
+- `/status` is a separate page (lazy-loaded; the app has no router, so `main.tsx` picks it by path with `src/route.ts`) that says how much of the collection is searchable and what the ingest pipeline is doing at this moment, from `GET /v1/status`, and refreshes every 30 s (§7.10). The footer links to it. Any other path shows a not-found page, and the API sends it with a 404.
 - `/privacy` is the privacy notice (lazy-loaded like `/status`, `src/privacy/PrivacyPage.tsx`). The search page, the status page and the not-found page link to it in their footers. It is the one page besides the home page that search engines index: it is in `sitemap.xml`, and the API gives its copy of `index.html` its own title, canonical link and `og:url` (`shell_for` in `crates/usnm-api/src/site.rs`).
 
 ## 7.2 Layout and wireframes
@@ -158,3 +158,31 @@ Visitors can limit a search to newspapers printed in chosen languages, for examp
 **Accessibility.** The button is a native `<button>` with `aria-expanded` and `aria-controls`; the checklist is a `<fieldset>` with the legend "Newspaper languages" and one labelled checkbox per language. Tab and Space work as usual. Escape closes the list and returns focus to the button; a click outside the list closes it and leaves focus where the click put it. The end-to-end test runs axe with the list open.
 
 **Tests.** `web/src/state/url.test.ts` (parsing, canonical order, round trip), `web/src/components/LanguageFilter.test.tsx` (labels, ordering, keyboard, the place table without the share column), `web/src/components/SearchBar.test.ts` (the options count), `web/src/api/client.test.ts` (`lang` on `/v1/aggregate` and `/v1/hits`), `crates/usnm-api/tests/api.rs` (`lang_filters_by_any_title_language`, the `languages` list in `/v1/meta`) and `web/e2e/language.spec.ts` against the fixture API, whose synthetic titles include one German, one Spanish and one English and German newspaper.
+
+## 7.10 Status page
+
+`/status` (`web/src/status/`) is written for someone who doesn't know the pipeline. It reads, top to bottom:
+
+1. **Right now.** One sentence for what is happening at this moment (`rightNow` in `now.ts`), from `activity` (06 §6.3.6), with a progress bar when the step counts something and short notes under it: when the step started, and how the last run ended if it failed or stopped. The sentences, by `activity.now`:
+   - `titles`: "Looking up newspaper details from the Library of Congress: 342 of 3,464 done (9.9%)." plus "Paused until 20:15 UTC because loc.gov asked us to slow down." during a rate-limit pause, or "At this pace, about 4 h left." otherwise.
+   - `indexing`: "Building the search index: 4.1M of 7.8M pages sent (53%), about 1 h 20 min left."
+   - `merging`: "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live."
+   - `publishing`: "Publishing: the new index is going live (step 4 of 4)."
+   - `downloading` and `listing`: batches processed of all listed, and a loc.gov download pause if there is one.
+   - `idle`: "Idle: the last update went live on Sep 29 at 14:23 UTC." and the next scheduled run, or "No run is scheduled."
+   - The last run, when it ended after the live update: "The last run stopped at 14:09 UTC because of an error while building the search index; nothing changed on the site." ("The previous run" while another runs), "stopped without finishing", or "ran out of time … while looking up newspaper details … The next run continues where it stopped."
+   Times are in UTC. When `activity.source` is `inferred`, a note says when the progress is from.
+2. **Searchable now: X of Y downloaded pages (Z%).** Published pages (`published.pages`) against pages in downloaded batches (`backfill.pages`), with the number of newspapers and the years covered.
+3. **How pages get onto the map.** The four steps as an ordered list (`<ol>`), each with a count, a one-line explanation and its state in words ("Done", "In progress", "Paused", "Waiting"; colour only repeats it). The current step has `aria-current="step"` and a heavier border. On screens under 900 px the steps stack; wider, they sit in a row. The steps and their internal names:
+   1. Downloaded and processed (*curated*): batches processed of those listed, and their pages.
+   2. Newspaper details looked up (*titles-sync*): newspapers in the catalog of those in processed batches, and the batches that wait for the rest.
+   3. Indexed (*release*: build, then merge): pages sent while it runs; otherwise batches not yet searchable and how many are ready.
+   4. Live (*published*): the pages and newspapers the site searches.
+4. **What's searchable now.** The published version in plain words, then "Pages by state" and "Pages by language".
+5. **Technical details**, collapsed in a `<details>`: the glossary, the activity's raw fields, downloads (leases, retries, hourly throughput, versions), index builds (version ids, base and deltas, writer lock, recent runs and their errors), the catalog counts and the raw response.
+
+**Glossary.** The internal terms (batch, curated, backfill, titles-sync, catalog, release, version, base and delta, merge, lease, writer lock, rate limit) are defined in one place, `web/src/status/terms.ts`, which the page shows at the top of Technical details. Other docs use the terms without redefining them.
+
+**Wording.** Plain headings in sentence case, no em dashes; copy goes through the house no-slop review before it ships. The page never shows search text (the status document has none).
+
+**Tests.** `web/src/status/now.test.ts` (each "Right now" state, the step states, the headline), `StatusPage.test.tsx` (list semantics, the current step, the collapsed details) and `web/e2e/app.spec.ts` (the fixture API without pipeline state, and the same document with a paused titles-sync routed in, with axe, on desktop and mobile).

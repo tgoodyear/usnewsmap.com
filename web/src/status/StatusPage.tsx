@@ -9,20 +9,23 @@ import type {
   TitlesPipeline,
 } from "../api/types";
 import { TITLES } from "../route";
-import { count, health, relative, span, when, type Level } from "./format";
+import { count, health, relative, span, when } from "./format";
+import {
+  STATE_LABEL,
+  headline,
+  lastUpdate,
+  longDate,
+  rightNow,
+  steps,
+  utcDate,
+} from "./now";
+import { TERMS } from "./terms";
 import { Brand } from "../components/Brand";
 import { LanguagesSection, StatesSection } from "./PagesTables";
 
 const REFRESH_MS = 30_000;
 
-const LEVEL: Record<Level, { icon: string; label: string }> = {
-  ok: { icon: "✓", label: "Working" },
-  attention: { icon: "!", label: "Needs attention" },
-  problem: { icon: "✕", label: "Out of date" },
-  unknown: { icon: "?", label: "Partly known" },
-};
-
-/** `/status`: what the ingest pipeline is doing, for anyone (no sign-in). */
+/** `/status`: how much of the collection is searchable and what the pipeline is doing now, for anyone (no sign-in). */
 export default function StatusPage() {
   const status = useQuery({
     queryKey: ["status"],
@@ -56,34 +59,11 @@ export default function StatusPage() {
           </p>
         )}
         {!s && !status.error && <p role="status">Loading…</p>}
-        {s && <Overview s={s} now={now} />}
-        {s && <BackfillSection s={s} now={now} />}
-        {s && <IndexingSection s={s} now={now} />}
-        {s && <TitlesSection s={s} />}
-        {s?.published.by_state && (
-          <StatesSection rows={s.published.by_state} pages={s.published.pages} />
-        )}
-        {s?.published.by_language && <LanguagesSection data={s.published.by_language} />}
-        {s && (
-          <section aria-labelledby="technical" className="status-section">
-            <h2 id="technical">Technical</h2>
-            <p>
-              The page reads <a href={`${API_BASE}/v1/status`}>/v1/status</a>{" "}
-              (JSON, schema {s.schema}). The API reads the pipeline state at
-              most once a minute.
-            </p>
-            <details>
-              <summary>Raw response</summary>
-              <pre
-                className="status-json"
-                tabIndex={0}
-                aria-label="Raw /v1/status response"
-              >
-                {JSON.stringify(s, null, 2)}
-              </pre>
-            </details>
-          </section>
-        )}
+        {s && <RightNow s={s} now={now} />}
+        {s && <Headline s={s} />}
+        {s && <Steps s={s} now={now} />}
+        {s && <Searchable s={s} />}
+        {s && <Technical s={s} now={now} />}
       </main>
       <footer className="credits">
         <a href="/">Search</a> · Newspaper pages from{" "}
@@ -104,43 +84,246 @@ export default function StatusPage() {
   );
 }
 
-function Overview({ s, now }: { s: Status; now: number }) {
-  const h = health(s, now);
-  const level = LEVEL[h.level];
+/** "Right now": the pipeline's current activity in one plain sentence. */
+function RightNow({ s, now }: { s: Status; now: number }) {
+  const line = rightNow(s, now);
   return (
-    <section aria-label="Overview" className="status-overview">
-      <p className={`health health--${h.level}`}>
-        <span className="health__icon" aria-hidden="true">
-          {level.icon}
-        </span>
-        <strong>{level.label}:</strong> {h.parts.join(" · ")}
-      </p>
+    <section aria-labelledby="right-now" className="status-section status-now">
+      <h2 id="right-now">Right now</h2>
+      <p className="status-now__line">{line.text}</p>
+      {line.progress && (
+        <Bar
+          value={line.progress.done}
+          max={line.progress.total}
+          label={line.progress.label}
+        />
+      )}
+      {line.notes.map((n) => (
+        <p key={n} className="status-now__note">
+          {n}
+        </p>
+      ))}
       <p className="status-meta">
-        Updated{" "}
+        Checked{" "}
         <time dateTime={s.generated_at}>{relative(s.generated_at, now)}</time>
         {s.pipeline.read_at && s.stale && (
           <>
             {" "}
-            · <span className="badge badge--problem">Stale</span> pipeline state
-            from{" "}
+            · <span className="badge badge--problem">Out of date</span>: the
+            pipeline couldn&apos;t be read, so this shows what it was doing{" "}
             <time dateTime={s.pipeline.read_at}>
               {relative(s.pipeline.read_at, now)}
             </time>
           </>
         )}{" "}
-        · refreshes every 30 s
+        · this page refreshes every 30 s
       </p>
-      {s.error && (
-        <p className="notice notice--error" role="note">
-          The last attempt to read the pipeline state failed: {s.error}
-        </p>
-      )}
       {s.published.synthetic && (
         <p className="notice notice--demo" role="note">
-          Demo data: this server serves a small synthetic corpus.
+          Demo data: this server serves a small synthetic set of pages.
         </p>
       )}
     </section>
+  );
+}
+
+/** "Searchable now: X of Y pages (Z%)". */
+function Headline({ s }: { s: Status }) {
+  const h = headline(s);
+  return (
+    <section aria-labelledby="searchable-now" className="status-section status-headline">
+      <h2 id="searchable-now" className="status-headline__text">
+        {h.text}
+      </h2>
+      {h.share !== null && (
+        <Bar
+          value={s.published.pages}
+          max={s.backfill.available ? s.backfill.pages : s.published.pages}
+          label={h.text}
+        />
+      )}
+      <p>
+        {h.sub}{" "}
+        {h.share !== null &&
+          h.share < 1 &&
+          "The rest are downloaded and on their way through the steps below."}
+      </p>
+    </section>
+  );
+}
+
+/** The four steps a page goes through, as an ordered list. */
+function Steps({ s, now }: { s: Status; now: number }) {
+  const list = steps(s, now);
+  return (
+    <section aria-labelledby="steps" className="status-section">
+      <h2 id="steps">How pages get onto the map</h2>
+      <ol className="steps">
+        {list.map((st, i) => {
+          const current = st.state === "active" || st.state === "paused";
+          return (
+            <li
+              key={st.key}
+              className={`step step--${st.state}${current ? " step--current" : ""}`}
+              aria-current={current ? "step" : undefined}
+            >
+              <span className="step__marker" aria-hidden="true">
+                {st.state === "done" ? "✓" : i + 1}
+              </span>
+              <div className="step__body">
+                <h3 className="step__title">
+                  <span className="visually-hidden">Step {i + 1}: </span>
+                  {st.title}
+                </h3>
+                <p className="step__state">
+                  <span className={`step-badge step-badge--${st.state}`}>
+                    {STATE_LABEL[st.state]}
+                  </span>{" "}
+                  <span className="step__detail">{st.detail}</span>
+                </p>
+                <p className="step__explain">{st.explain}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+/** What the site searches: the published version's facts and its pages tables. */
+function Searchable({ s }: { s: Status }) {
+  const p = s.published;
+  return (
+    <section aria-labelledby="whats-searchable" className="status-section">
+      <h2 id="whats-searchable">What&apos;s searchable now</h2>
+      <p>
+        The site searches the update that went live {utcDate(lastUpdate(s))}:{" "}
+        {count(p.pages)} pages from {count(p.titles)} newspapers in{" "}
+        {count(p.places)} places, dated {longDate(p.bounds.from)} to{" "}
+        {longDate(p.bounds.to)}
+        {p.batches !== null && `, from ${count(p.batches)} batches`}.
+      </p>
+      {p.by_state && <StatesSection rows={p.by_state} pages={p.pages} />}
+      {p.by_language && <LanguagesSection data={p.by_language} />}
+    </section>
+  );
+}
+
+/** Operator details, collapsed: the pipeline's own numbers and terms. */
+function Technical({ s, now }: { s: Status; now: number }) {
+  const h = health(s, now);
+  return (
+    <section aria-labelledby="technical" className="status-section">
+      <h2 id="technical">Technical details</h2>
+      <details className="status-technical">
+        <summary>Show the pipeline&apos;s own numbers and terms</summary>
+        <p className="status-note">
+          These use the pipeline&apos;s internal names; the terms are explained
+          first. Summary: {h.parts.join(" · ")}.
+        </p>
+        {s.error && (
+          <p className="notice notice--error" role="note">
+            The last attempt to read the pipeline state failed: {s.error}
+          </p>
+        )}
+        <h3>Terms</h3>
+        <dl className="terms">
+          {TERMS.map(([term, meaning]) => (
+            <div key={term}>
+              <dt>{term}</dt>
+              <dd>{meaning}</dd>
+            </div>
+          ))}
+        </dl>
+        <ActivityDetails s={s} now={now} />
+        <BackfillSection s={s} now={now} />
+        <IndexingSection s={s} now={now} />
+        <TitlesSection s={s} />
+        <h3>Raw response</h3>
+        <p>
+          The page reads <a href={`${API_BASE}/v1/status`}>/v1/status</a>{" "}
+          (JSON, schema {s.schema}). The API reads the pipeline state at most
+          once a minute.
+        </p>
+        <details>
+          <summary>Raw response</summary>
+          <pre
+            className="status-json"
+            tabIndex={0}
+            aria-label="Raw /v1/status response"
+          >
+            {JSON.stringify(s, null, 2)}
+          </pre>
+        </details>
+      </details>
+    </section>
+  );
+}
+
+function ActivityDetails({ s, now }: { s: Status; now: number }) {
+  const a = s.activity;
+  return (
+    <>
+      <h3>Current activity</h3>
+      {!a ? (
+        <Unavailable reason="This API doesn't report its activity." />
+      ) : !a.available ? (
+        <Unavailable reason={a.reason} />
+      ) : (
+        <>
+          <Stats
+            items={[
+              ["Step", a.now],
+              [
+                "Reported by",
+                a.source === "job"
+                  ? "the ingest job"
+                  : a.source === "inferred"
+                    ? "inferred from locks, leases and caches"
+                    : "nothing running",
+              ],
+              ["Execution", a.run ?? "–"],
+              ["Execution started", <Time key="r" iso={a.run_started_at} now={now} />],
+              ["Step started", <Time key="s" iso={a.since} now={now} />],
+              ["Last report", <Time key="p" iso={a.reported_at} now={now} />],
+              [
+                "Progress",
+                a.done !== null && a.total !== null
+                  ? `${count(a.done)} of ${count(a.total)}`
+                  : "–",
+              ],
+              ["Estimated finish", <Time key="e" iso={a.eta} now={now} />],
+              ["Paused until", <Time key="u" iso={a.paused_until} now={now} />],
+              [
+                "Merges",
+                a.merge
+                  ? `${a.merge.step}: ${count(a.merge.splits)} splits, ${a.merge.merges_running} running, ${a.merge.merges_queued} queued`
+                  : "–",
+              ],
+              ["Next scheduled run", a.next_run ? utcDate(a.next_run) : "none"],
+            ]}
+          />
+          {a.last && (
+            <p>
+              <strong>Last run:</strong> {a.last.outcome.replace("_", " ")}{" "}
+              <Time iso={a.last.ended_at} now={now} />
+              {a.last.index_version && (
+                <>
+                  {" "}
+                  (<code>{a.last.index_version}</code>)
+                </>
+              )}
+              {a.last.error && (
+                <>
+                  : <ErrorText text={a.last.error} />
+                </>
+              )}
+            </p>
+          )}
+        </>
+      )}
+    </>
   );
 }
 
@@ -247,8 +430,8 @@ function Time({ iso, now }: { iso: string | null; now: number }) {
 function BackfillSection({ s, now }: { s: Status; now: number }) {
   const b = s.backfill;
   return (
-    <section aria-labelledby="backfill" className="status-section">
-      <h2 id="backfill">Backfill (curating LoC batches)</h2>
+    <section aria-labelledby="backfill" className="status-subsection">
+      <h3 id="backfill">Downloads (backfill: curating batches)</h3>
       {!b.available ? (
         <Unavailable reason={b.reason} />
       ) : (
@@ -311,7 +494,7 @@ function BackfillBody({ b, now }: { b: Backfill; now: number }) {
           "no download is waiting for a slot."
         )}
       </p>
-      <h3>Batches curated per hour, last 48 hours</h3>
+      <h4>Batches curated per hour, last 48 hours</h4>
       <Throughput hours={t.hours} />
       <Table
         caption="Batches in progress"
@@ -433,9 +616,9 @@ function IndexingSection({ s, now }: { s: Status; now: number }) {
   const i = s.indexing;
   const deltaLabel = `${p.deltas} of ${p.max_deltas} deltas used`;
   return (
-    <section aria-labelledby="indexing" className="status-section">
-      <h2 id="indexing">Indexing and releases</h2>
-      <h3>Published version</h3>
+    <section aria-labelledby="indexing" className="status-subsection">
+      <h3 id="indexing">Index builds (releases)</h3>
+      <h4>Published version</h4>
       <Stats
         items={[
           ["Version", <code key="v">{p.index_version}</code>],
@@ -484,7 +667,7 @@ function IndexingBody({ i, now }: { i: Indexing; now: number }) {
   const r = i.release;
   return (
     <>
-      <h3>Release in progress</h3>
+      <h4>Build in progress</h4>
       {r ? (
         <>
           <p className="status-lead">
@@ -588,8 +771,8 @@ function RunBadge({ status }: { status: string }) {
 function TitlesSection({ s }: { s: Status }) {
   const t = s.titles;
   return (
-    <section aria-labelledby="titles" className="status-section">
-      <h2 id="titles">Titles catalog</h2>
+    <section aria-labelledby="titles" className="status-subsection">
+      <h3 id="titles">Newspaper catalog (titles-sync)</h3>
       <Stats
         items={[
           [

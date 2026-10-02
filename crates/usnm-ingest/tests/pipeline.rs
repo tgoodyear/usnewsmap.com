@@ -544,6 +544,7 @@ fn quick_merges() -> usnm_ingest::merges::MergeWait {
         stable_polls: 3,
         timeout: std::time::Duration::from_secs(120),
         finalize_grace: std::time::Duration::from_secs(5),
+        report: Default::default(),
     }
 }
 

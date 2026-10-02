@@ -63,7 +63,7 @@ describe("StatusPage", () => {
       await screen.findByRole("heading", { level: 1, name: "Pipeline status" }),
     ).toBeTruthy();
     expect(await screen.findByText("fixture-v1")).toBeTruthy();
-    expect(screen.getAllByText(/^Not available\./)).toHaveLength(3);
+    expect(screen.getAllByText(/^Not available\./)).toHaveLength(4);
     expect(screen.getByText(/1 of 8 deltas used/)).toBeTruthy();
     expect(
       screen.getByRole("link", { name: "/v1/status" }).getAttribute("href"),
@@ -122,12 +122,67 @@ describe("StatusPage", () => {
       );
       expect(await screen.findByText("fixture-v1")).toBeTruthy();
       for (const name of ["Pages by state", "Pages by language"]) {
-        expect(screen.queryByRole("heading", { level: 2, name }) !== null).toBe(
+        expect(screen.queryByRole("heading", { level: 3, name }) !== null).toBe(
           shown,
         );
       }
       cleanup();
     }
+  });
+
+  it("leads with what is happening now, then the four steps as a list", async () => {
+    const live = {
+      ...body,
+      activity: {
+        available: true,
+        now: "titles",
+        source: "job",
+        since: new Date(Date.now() - 3_600_000).toISOString(),
+        run_started_at: null,
+        run: "1b2c3d",
+        reported_at: new Date().toISOString(),
+        done: 342,
+        total: 3464,
+        percent: 9.9,
+        eta: null,
+        paused_until: new Date(Date.now() + 2_700_000).toISOString(),
+        index_version: null,
+        merge: null,
+        last: null,
+        next_run: null,
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(live), {
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <StatusPage />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole("heading", { level: 2, name: "Right now" })).toBeTruthy();
+    expect(
+      screen.getByText(/^Looking up newspaper details from the Library of Congress: 342 of 3,464 done \(9\.9%\)\. Paused until \d\d:\d\d UTC because loc\.gov asked us to slow down\.$/),
+    ).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "342 of 3,464 newspapers looked up" })).toBeTruthy();
+    const list = screen.getByRole("list");
+    expect(list.tagName).toBe("OL");
+    const items = Array.from(list.children);
+    expect(items).toHaveLength(4);
+    // The current step is marked for assistive technology and says its state in words.
+    const current = items.filter((li) => li.getAttribute("aria-current") === "step");
+    expect(current).toHaveLength(1);
+    expect(current[0]!.textContent).toContain("Step 2: Newspaper details looked up");
+    expect(current[0]!.textContent).toContain("Paused");
+    // Operator details are collapsed.
+    const technical = screen.getByText("Show the pipeline's own numbers and terms").closest("details")!;
+    expect(technical.hasAttribute("open")).toBe(false);
   });
 
   it("shows a short error in full and a long one as a closed preview", () => {

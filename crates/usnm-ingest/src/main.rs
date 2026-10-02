@@ -4,12 +4,13 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use clap::{Args, Parser, Subcommand};
+use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::docs::{DocStore, FileDocs};
 use usnm_ingest::merges::{self, MergeWait};
-use usnm_ingest::release::Release;
+use usnm_ingest::release::{Published, PublishedUnrecorded, Release, TitlesLeft};
 use usnm_ingest::sink::{IndexSink, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::source::{self, ListedBatch};
-use usnm_ingest::state::{BatchStatus, State};
+use usnm_ingest::state::{BatchStatus, Outcome, State, Step};
 use usnm_ingest::telemetry;
 use usnm_ingest::titles;
 use usnm_ingest::worker::{self, Worker};
@@ -221,6 +222,7 @@ async fn titles_sync(
     refresh: bool,
     items: &str,
     deadline: Option<tokio::time::Instant>,
+    report: &Reporter,
 ) -> anyhow::Result<titles::SyncReport> {
     let mut lccns: BTreeSet<String> = listed.into_iter().collect();
     for (b, _) in state.batches(&[BatchStatus::Curated]).await? {
@@ -232,7 +234,7 @@ async fn titles_sync(
         &lccns,
         refresh,
         items,
-        &titles::Pacing::loc(deadline),
+        &titles::Pacing::loc(deadline).reporting(report.clone()),
     )
     .await?;
     tracing::info!(?report, "title records");
@@ -314,7 +316,8 @@ async fn release(
     synthetic: bool,
     titles_left: Option<String>,
     t: &IndexTarget,
-) -> anyhow::Result<()> {
+    report: &Reporter,
+) -> anyhow::Result<Option<Published>> {
     let r = Release {
         state: state.clone(),
         curated: usnm_store::open(&cli.curated)?,
@@ -328,16 +331,17 @@ async fn release(
     // Held from before the writer node starts until after it stops, and
     // released on every path.
     let lease = r.lock().await?;
-    let result = release_locked(cli, &r, &lease, t).await;
+    let result = release_locked(cli, &r, &lease, t, report).await;
     let unlocked = r.unlock(lease).await;
     let result = result.and_then(|p| unlocked.map(|()| p));
-    match result? {
+    let published = result?;
+    match &published {
         Some(p) => {
             tracing::info!(version = %p.index_version, docs = p.docs, pages = p.pages, full = p.full, "released")
         }
         None => tracing::info!("nothing to release"),
     }
-    Ok(())
+    Ok(published)
 }
 
 /// Start the index target (and writer node), release, stop the node.
@@ -346,10 +350,12 @@ async fn release_locked(
     r: &Release,
     lease: &usnm_ingest::release::WriterLease,
     t: &IndexTarget,
-) -> anyhow::Result<Option<usnm_ingest::release::Published>> {
+    report: &Reporter,
+) -> anyhow::Result<Option<Published>> {
     let mut node = None;
     let wait = MergeWait {
         timeout: std::time::Duration::from_secs(t.merge_timeout_secs),
+        report: report.clone(),
         ..MergeWait::default()
     };
     let mut sink: Box<dyn IndexSink> = match (&t.index_dir, &t.quickwit_url, &t.quickwit_bin) {
@@ -372,7 +378,7 @@ async fn release_locked(
         }
         _ => bail!("choose one of --index-dir, --quickwit-url or --quickwit-bin"),
     };
-    let result = r.run_held(sink.as_mut(), lease).await;
+    let result = r.run_reporting(sink.as_mut(), lease, report).await;
     if let Some(n) = node {
         n.stop().await?;
     }
@@ -462,11 +468,62 @@ fn deadline(start: tokio::time::Instant, secs: Option<u64>) -> Option<tokio::tim
     secs.map(|s| start + std::time::Duration::from_secs(s))
 }
 
+/// The step a command starts at, for those that report what they do on
+/// the status page (`ops/activity`): the ingest job's `run`, and
+/// `titles-sync` and `release` run by hand. Curate workers don't.
+fn first_step(command: &Command) -> Option<Step> {
+    match command {
+        Command::Run { .. } => Some(Step::Listing),
+        Command::TitlesSync { .. } => Some(Step::Titles),
+        Command::Release { .. } => Some(Step::Indexing),
+        Command::Enqueue { .. } | Command::Curate { .. } | Command::Geocode => None,
+    }
+}
+
+/// How a reporting command ended, for `ops/activity`.
+fn outcome(result: &anyhow::Result<Option<Published>>) -> (Outcome, Option<String>) {
+    match result {
+        Ok(Some(_)) => (Outcome::Published, None),
+        Ok(None) => (Outcome::NothingNew, None),
+        Err(e) => {
+            // The site changed even though the command failed afterwards.
+            let kind = if e.is::<PublishedUnrecorded>() {
+                Outcome::Published
+            } else if e.is::<TitlesLeft>() {
+                Outcome::TitlesLeft
+            } else {
+                Outcome::Failed
+            };
+            (kind, Some(format!("{e:#}")))
+        }
+    }
+}
+
 async fn run(cli: &Cli) -> anyhow::Result<()> {
     let start = tokio::time::Instant::now();
     let state = state(&cli.stores)?;
+    let report = match first_step(&cli.command) {
+        Some(step) => Reporter::start(state.clone(), cli.command.name(), &owner_id(), step).await,
+        None => Reporter::off(),
+    };
+    let beat = report.every(activity::HEARTBEAT);
+    let result = command(cli, &state, start, &report).await;
+    drop(beat);
+    let (kind, error) = outcome(&result);
+    report.end(kind, error).await;
+    result.map(drop)
+}
+
+/// Run the command; `Some` when it published a version.
+async fn command(
+    cli: &Cli,
+    state: &State,
+    start: tokio::time::Instant,
+    report: &Reporter,
+) -> anyhow::Result<Option<Published>> {
+    let state = state.clone();
     match &cli.command {
-        Command::Enqueue { list, batches } => enqueue(&state, list, batches).await.map(drop),
+        Command::Enqueue { list, batches } => enqueue(&state, list, batches).await.map(|_| None),
         Command::TitlesSync {
             list,
             lccns,
@@ -483,22 +540,25 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             } else {
                 lccns.clone()
             };
-            let report = titles_sync(
+            let synced = titles_sync(
                 &cli.stores,
                 &state,
                 listed,
                 *refresh,
                 items,
                 deadline(start, *max_runtime_secs),
+                report,
             )
             .await?;
-            if !report.finished() {
+            if !synced.finished() {
                 // Fail, so the job reports it and a later run continues.
-                bail!("{}", unfinished(&report));
+                return Err(TitlesLeft(unfinished(&synced)).into());
             }
-            Ok(())
+            Ok(None)
         }
-        Command::Geocode => geocode(usnm_store::open(&cli.stores.reference)?.as_ref()).await,
+        Command::Geocode => geocode(usnm_store::open(&cli.stores.reference)?.as_ref())
+            .await
+            .map(|()| None),
         Command::Curate {
             max_batches,
             enqueue: first,
@@ -517,12 +577,13 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
                 deadline(start, *max_runtime_secs),
             )
             .await
+            .map(|()| None)
         }
         Command::Release {
             full,
             synthetic,
             target,
-        } => release(&cli.stores, &state, *full, *synthetic, None, target).await,
+        } => release(&cli.stores, &state, *full, *synthetic, None, target, report).await,
         Command::Run {
             list,
             batches,
@@ -533,6 +594,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             target,
         } => {
             let listed = enqueue(&state, list, batches).await?;
+            report.step(Step::Downloading).await;
             curate(
                 &cli.stores,
                 &state,
@@ -542,20 +604,32 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             )
             .await?;
             // Every curated title needs a catalog entry before release.
+            report.step(Step::Titles).await;
             let lccns = listed.into_iter().flat_map(|b| b.lccns);
-            let report = titles_sync(
+            let synced = titles_sync(
                 &cli.stores,
                 &state,
                 lccns,
                 false,
                 titles::LOC_ITEMS,
                 deadline(start, *titles_max_runtime_secs),
+                report,
             )
             .await?;
             // The release decides: a delta goes ahead, a full base (asked
             // for or forced) refuses (`Release::titles_left`).
-            let titles_left = titles_left(&report);
-            release(&cli.stores, &state, *full, *synthetic, titles_left, target).await
+            let titles_left = titles_left(&synced);
+            report.step(Step::Indexing).await;
+            release(
+                &cli.stores,
+                &state,
+                *full,
+                *synthetic,
+                titles_left,
+                target,
+                report,
+            )
+            .await
         }
     }
 }
@@ -597,6 +671,44 @@ mod tests {
         assert_eq!(
             titles_left(&failed).unwrap(),
             "titles-sync couldn't fetch 1 of 3 titles (sn2); the next run retries them"
+        );
+    }
+
+    #[test]
+    fn records_how_a_command_ended() {
+        let published = Published {
+            index_version: "v1".into(),
+            indexes: vec![],
+            full: true,
+            docs: 1,
+            pages: 1,
+        };
+        assert_eq!(outcome(&Ok(Some(published))).0, Outcome::Published);
+        assert_eq!(outcome(&Ok(None)), (Outcome::NothingNew, None));
+        let left: anyhow::Error = TitlesLeft("titles-sync reached its deadline".into()).into();
+        let (kind, error) = outcome(&Err(left.context("run")));
+        assert_eq!(kind, Outcome::TitlesLeft);
+        assert!(error.unwrap().contains("deadline"));
+        let live: anyhow::Error = PublishedUnrecorded("v2 is live, but…".into()).into();
+        let (kind, error) = outcome(&Err(live));
+        assert_eq!(kind, Outcome::Published);
+        assert!(error.is_some());
+        let (kind, _) = outcome(&Err(anyhow::anyhow!("connection refused")));
+        assert_eq!(kind, Outcome::Failed);
+        assert_eq!(
+            first_step(
+                &Cli::try_parse_from([
+                    "usnm-ingest",
+                    "--curated",
+                    "c",
+                    "--reference",
+                    "r",
+                    "curate"
+                ])
+                .unwrap()
+                .command
+            ),
+            None
         );
     }
 

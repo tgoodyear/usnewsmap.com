@@ -305,6 +305,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     minReplicas: apiMinReplicas
     searchBackend: searchBackend
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    ingestCron: ingestJobs && useAcr ? ingestCron : ''
   }
 }
 

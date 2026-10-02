@@ -36,6 +36,8 @@ param quickwitImage string = 'quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f
 param registryServer string = ''
 @description('Application Insights connection string (names the ingestion endpoint; not a credential). Empty: the API exports no telemetry.')
 param appInsightsConnectionString string = ''
+@description('The ingest job\'s cron schedule (UTC), shown on the status page as the next scheduled run. Empty: the job is started by hand.')
+param ingestCron string = ''
 @description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
@@ -86,6 +88,8 @@ var apiEnv = [
 var telemetryEnv = empty(appInsightsConnectionString)
   ? []
   : [{ name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }]
+// The ingest job's schedule, for /v1/status's next scheduled run.
+var scheduleEnv = empty(ingestCron) ? [] : [{ name: 'USNM_INGEST_CRON', value: ingestCron }]
 var backendEnv = quickwit
   ? [
       { name: 'USNM_BACKEND', value: 'quickwit' }
@@ -98,7 +102,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, telemetryEnv)
+  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv)
   probes: [
     {
       // A start loads the published version (retrying while the sidecar
