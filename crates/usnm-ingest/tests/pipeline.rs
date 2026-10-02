@@ -457,7 +457,10 @@ async fn releases_into_a_quickwit_writer_node() {
             synthetic: true,
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
         };
-        let mut sink = QuickwitSink::new(&node.url, &root).unwrap();
+        let mut sink = QuickwitSink::new(&node.url, &root)
+            .unwrap()
+            .watching(&node)
+            .merges(quick_merges());
         published.push(r.run(&mut sink).await.unwrap().unwrap());
     }
     let p = published.last().unwrap();
@@ -468,9 +471,39 @@ async fn releases_into_a_quickwit_writer_node() {
     let current = e.reference_json("current.json").await;
     assert_eq!(current["backend"], "quickwit");
 
+    // The manifest reports the splits of both indexes, merged and closed.
+    let manifest = e.reference_json("pages-v20261008-1/manifest.json").await;
+    let layout = manifest["indexes"].as_array().unwrap();
+    assert_eq!(layout.len(), 2);
+    for (l, id) in layout.iter().zip(&p.indexes) {
+        assert_eq!(l["index_id"], id.as_str());
+        let splits = l["splits"].as_u64().unwrap();
+        assert!((1..=7).contains(&splits), "{l}");
+        assert!(l["bytes"].as_u64().unwrap() > 0, "{l}");
+    }
+    let docs: u64 = layout.iter().map(|l| l["docs"].as_u64().unwrap()).sum();
+    let http = reqwest::Client::new();
+    let base: Value = http
+        .get(format!("{}/api/v1/indexes/{}", node.url, p.indexes[0]))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let source = base["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["source_id"] == "_ingest-source")
+        .unwrap();
+    assert_eq!(
+        source["enabled"], false,
+        "a sealed index takes no more writes"
+    );
+
     // Every fixture document is searchable across base + delta, and a
     // phrase matches exactly as often as in the fixture corpus.
-    let http = reqwest::Client::new();
     let count = |q: &'static str| {
         let url = format!("{}/api/v1/{}/search", node.url, p.indexes.join(","));
         let http = http.clone();
@@ -492,11 +525,99 @@ async fn releases_into_a_quickwit_writer_node() {
         .flat_map(|f| read_jsonl(&fixtures().join(format!("indexes/{f}.jsonl"))))
         .collect();
     assert_eq!(count("*").await, fixture_docs.len() as u64);
+    assert_eq!(docs, fixture_docs.len() as u64);
     let phrase = fixture_docs
         .iter()
         .filter(|d| d["text"].as_str().unwrap().contains("cross of gold"))
         .count() as u64;
     assert_eq!(count("text:\"cross of gold\"").await, phrase);
+    node.stop().await.unwrap();
+}
+
+/// Merge waits for tests: poll often, settle quickly.
+fn quick_merges() -> usnm_ingest::merges::MergeWait {
+    usnm_ingest::merges::MergeWait {
+        poll: std::time::Duration::from_millis(500),
+        stable_polls: 3,
+        timeout: std::time::Duration::from_secs(120),
+        finalize_grace: std::time::Duration::from_secs(5),
+    }
+}
+
+/// A real Quickwit writer merges an index cut into many small splits down
+/// to one before the release may publish it: the planner leaves splits
+/// below its merge factor alone, and closing the index merges them.
+/// Runs when `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_ingest::merges::{self, Node};
+    use usnm_ingest::sink::{QuickwitNode, INDEX_TEMPLATE};
+    let dir = tempfile::tempdir().unwrap();
+    let qw = dir.path().join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    // A previous run's data is cleared when the node starts.
+    std::fs::create_dir_all(qw.join("qwdata/wal")).unwrap();
+    std::fs::write(qw.join("qwdata/wal/stale"), b"x").unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7395, &meta, &root)
+        .await
+        .unwrap();
+    assert!(!qw.join("qwdata/wal/stale").exists());
+
+    let http = reqwest::Client::new();
+    let id = "pages-delta-20261015-1";
+    let config = INDEX_TEMPLATE
+        .replace("${INDEX_ID}", id)
+        .replace("${INDEX_URI}", &format!("{root}/{id}"));
+    http.post(format!("{}/api/v1/indexes", node.url))
+        .header("content-type", "application/yaml")
+        .body(config)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    // Six forced commits: six splits, under the merge factor of 10.
+    let docs: Vec<Value> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|f| read_jsonl(&fixtures().join(format!("indexes/{f}.jsonl"))))
+        .collect();
+    for chunk in docs.chunks(docs.len().div_ceil(6)) {
+        let body: String = chunk.iter().map(|d| format!("{d}\n")).collect();
+        let v: Value = http
+            .post(format!("{}/api/v1/{id}/ingest?commit=force", node.url))
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["num_rejected_docs"], 0);
+    }
+    let n = Node {
+        http: &http,
+        base: &node.url,
+    };
+    assert_eq!(n.splits(id).await.unwrap().len(), 6);
+    let layout = merges::seal(
+        &n,
+        id,
+        docs.len() as u64,
+        Some(&node.events()),
+        &quick_merges(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!((layout.splits, layout.docs), (1, docs.len() as u64));
     node.stop().await.unwrap();
 }
 

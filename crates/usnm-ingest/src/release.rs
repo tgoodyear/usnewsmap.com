@@ -9,6 +9,10 @@
 //!   deltas. Replacements (new batch versions) and catalog changes to
 //!   published titles take effect only here (04 §4.7).
 //!
+//! A Quickwit index is merged into a few large splits and closed before it
+//! is published (`crate::merges`); the version's manifest records the
+//! splits of each of its indexes.
+//!
 //! A curated batch whose titles aren't all in the catalog yet waits for a
 //! later release (it counts as new until it's published): `titles-sync` is
 //! paced and stops on LoC's rate limit, and a backlog of titles shouldn't
@@ -34,6 +38,7 @@ use usnm_store::ObjectStore;
 
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
+use crate::merges::IndexLayout;
 use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
@@ -336,8 +341,14 @@ impl Release {
             let docs = self
                 .build_index(lease, sink, &version, &index_id, &scope, &catalog)
                 .await?;
+            // What every index of the version is made of, for the log and
+            // the manifest: how many splits a cold search opens (05 §5.5.1).
+            let layout = sink.layout(&indexes).await?;
+            for l in &layout {
+                l.log();
+            }
             let bounds = self
-                .write_snapshot(&version, &version_batches, &catalog)
+                .write_snapshot(&version, &version_batches, &catalog, &layout)
                 .await?;
             Ok::<_, anyhow::Error>((docs, bounds))
         }
@@ -569,11 +580,14 @@ impl Release {
 
     /// Write `{version}/` (titles, places, baselines, pages per title, the
     /// batch list, manifest last) and return the version's date bounds.
+    /// The manifest also records `layout`, the splits of each index, when
+    /// the engine has splits.
     async fn write_snapshot(
         &self,
         version: &str,
         batches: &[RunBatch],
         catalog: &Catalog,
+        layout: &[IndexLayout],
     ) -> anyhow::Result<(NaiveDate, NaiveDate)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
@@ -637,7 +651,7 @@ impl Release {
             }));
             self.put_new(&format!("{version}/{name}"), body).await?;
         }
-        let manifest = json!({
+        let mut manifest = json!({
             "index_version": version,
             "files": files,
             "built_from": {
@@ -646,6 +660,9 @@ impl Release {
                 })).collect::<Vec<_>>(),
             },
         });
+        if !layout.is_empty() {
+            manifest["indexes"] = serde_json::to_value(layout)?;
+        }
         self.put_new(
             &format!("{version}/manifest.json"),
             serde_json::to_vec_pretty(&manifest)?,

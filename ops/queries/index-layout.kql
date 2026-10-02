@@ -1,0 +1,24 @@
+// Splits per index: the "index layout" lines a release logs before it
+// publishes, one per index of the new version (base and deltas), and the
+// "merged" line for the index it built. A cold search opens every split of
+// every index it names (05 §5.5.1); the same numbers are in the version's
+// manifest.json under "indexes".
+// Lines that could carry the managed identity endpoint's secret are dropped.
+ContainerAppConsoleLogs
+| where ContainerName == "ingest"
+| where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+| where Log has_any ("index layout", "merged; the index is closed")
+| extend j = parse_json(Log)
+| extend Message = tostring(j.fields.message)
+| where Message in ("index layout", "merged; the index is closed to further writes")
+| project
+    TimeGenerated,
+    Version = tostring(j.span.version),
+    Message,
+    Index = tostring(j.fields.index),
+    Splits = tolong(j.fields.splits),
+    Docs = tolong(j.fields.docs),
+    Mb = tolong(j.fields.mb),
+    SmallestSplitDocs = tolong(j.fields.smallest_split_docs),
+    LargestSplitDocs = tolong(j.fields.largest_split_docs)
+| order by TimeGenerated asc

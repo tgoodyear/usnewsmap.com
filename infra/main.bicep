@@ -51,6 +51,15 @@ param ingestCron string = ''
 @description('Parallel curation workers in the backfill job.')
 param backfillWorkers int = 4
 
+@description('Make every ingest run a full release (a new, merged base). For a one-off rebuild; clear it afterwards.')
+param ingestFull bool = false
+
+@description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
+param backfillCron string = ''
+
+@description('Size in GiB of the NFS share the ingest job\'s Quickwit writer works on (08 §8.4); 0: the replica\'s own disk, too small to merge large indexes.')
+param ingestScratchGiB int = 128
+
 @description('Cosmos DB free tier (one per subscription). False makes the account serverless.')
 param cosmosFreeTier bool = true
 
@@ -262,6 +271,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     cosmosName: cosmos.outputs.name
     dataStorageName: storage.outputs.name
     tilesStorageName: tiles.outputs.name
+    scratchStorageName: ingestScratch ? scratch!.outputs.accountName : ''
   }
 }
 
@@ -305,6 +315,23 @@ module deployer 'modules/deployer.bicep' = {
   }
 }
 
+var ingestScratch = ingestJobs && useAcr && ingestScratchGiB > 0
+
+module scratch 'modules/ingest-scratch.bicep' = if (ingestScratch) {
+  scope: rg
+  name: 'ingest-scratch'
+  params: {
+    location: location
+    tags: tags
+    name: 'stusnms${suffix}'
+    sizeGiB: ingestScratchGiB
+    vnetId: network.outputs.vnetId
+    vnetName: network.outputs.vnetName
+    peSubnetId: network.outputs.peSubnetId
+    containerEnvName: containerEnv.outputs.name
+  }
+}
+
 module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
   scope: rg
   name: 'ingest-jobs'
@@ -323,7 +350,12 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     jobNameSuffix: env
     cron: ingestCron
+    full: ingestFull
     workers: backfillWorkers
+    backfillCron: backfillCron
+    scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''
+    scratchGiB: ingestScratch ? ingestScratchGiB : 0
+    rootImage: '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
   }
 }
 
