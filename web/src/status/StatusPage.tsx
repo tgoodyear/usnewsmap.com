@@ -145,6 +145,7 @@ function Headline({ s }: { s: Status }) {
       <p>
         {h.sub}{" "}
         {h.share !== null &&
+          h.share < 1 &&
           "The rest are downloaded and on their way through the steps below."}
       </p>
     </section>

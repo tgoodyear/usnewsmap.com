@@ -323,7 +323,9 @@ pub fn activity(i: &Inputs) -> Activity {
         titles_counts(s, i.catalog, i.cache),
         i.cache.and_then(|c| c.modified),
     ) {
-        if done < total && at - modified <= TITLES_CACHE_LIVE {
+        // A save from before the last reported run ended is that run's own.
+        let after_last_run = job.is_none_or(|j| modified > j.ended_at.unwrap_or(j.updated_at));
+        if done < total && at - modified <= TITLES_CACHE_LIVE && after_last_run {
             a.now = Now::Titles;
             a.source = "inferred";
             a.done = Some(done);
@@ -583,6 +585,19 @@ mod tests {
             get(&s, &["sn1", "sn2", "sn3"], Some(cache(5))).now,
             Now::Idle
         );
+        // Saved by a run that has since reported its end: not a new run.
+        let mut s = base();
+        let mut j = job(Step::Titles);
+        j.ended_at = Some(at() - Duration::minutes(4));
+        j.outcome = Some(Outcome::TitlesLeft);
+        s.ops.activity = Some(j);
+        let a = get(&s, &[], Some(cache(5)));
+        assert_eq!(
+            (a.now, a.last.unwrap().outcome),
+            (Now::Idle, LastOutcome::TitlesLeft)
+        );
+        // Saved after it ended: a run that doesn't report.
+        assert_eq!(get(&s, &[], Some(cache(3))).now, Now::Titles);
     }
 
     #[test]

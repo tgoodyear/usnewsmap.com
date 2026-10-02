@@ -31,6 +31,9 @@ pub struct Reporter(Option<Arc<Inner>>);
 struct Inner {
     state: State,
     doc: Mutex<Activity>,
+    /// Held from the snapshot through the write, so a slow heartbeat can't
+    /// land after a newer step, pause or end and put the old one back.
+    writing: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for Reporter {
@@ -70,6 +73,7 @@ impl Reporter {
                 outcome: None,
                 error: None,
             }),
+            writing: tokio::sync::Mutex::new(()),
         })));
         r.write().await;
         r
@@ -151,6 +155,7 @@ impl Reporter {
     /// Write the item now; errors and timeouts are logged only.
     pub async fn write(&self) {
         let Some(inner) = &self.0 else { return };
+        let _writing = inner.writing.lock().await;
         let doc = {
             let mut a = inner.doc.lock().unwrap_or_else(|e| e.into_inner());
             a.updated_at = Utc::now();
