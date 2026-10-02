@@ -64,6 +64,8 @@ pub struct NodeEvents(Mutex<Events>);
 
 #[derive(Debug, Default)]
 struct Events {
+    /// Why the writer process ended, once it has.
+    exited: Option<String>,
     disk_full: Option<String>,
     merge_failed: Option<String>,
     /// Indexes whose `_ingest-source` merge pipeline has finished for good.
@@ -104,9 +106,24 @@ impl NodeEvents {
         }
     }
 
-    /// Fails once the writer has run out of disk or a merge has failed.
+    /// Record that the writer process has ended, and why (`sink::describe_exit`).
+    pub fn writer_exited(&self, why: &str) {
+        let mut e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        e.exited.get_or_insert_with(|| why.to_owned());
+    }
+
+    /// Why the writer process ended, if it has.
+    pub fn exit(&self) -> Option<String> {
+        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        e.exited.clone()
+    }
+
+    /// Fails once the writer has exited, run out of disk, or failed a merge.
     pub fn check(&self) -> anyhow::Result<()> {
         let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(why) = &e.exited {
+            bail!("{why}; not publishing");
+        }
         if let Some(line) = &e.disk_full {
             bail!("the Quickwit writer ran out of disk; not publishing. Its output: {line}");
         }
@@ -116,6 +133,23 @@ impl NodeEvents {
             );
         }
         Ok(())
+    }
+
+    /// `err`, from a request to the writer, with the reason the writer
+    /// exited in front if it has (or does within `grace`): a writer the
+    /// kernel killed shows up first as "connection refused", and the exit
+    /// status takes a moment to be reaped.
+    pub async fn explain(&self, err: anyhow::Error, grace: Duration) -> anyhow::Error {
+        let until = tokio::time::Instant::now() + grace;
+        loop {
+            if let Some(why) = self.exit() {
+                return err.context(why);
+            }
+            if tokio::time::Instant::now() >= until {
+                return err;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Whether `index_id`'s merge pipeline has run its final merges and exited.
@@ -142,6 +176,17 @@ pub fn merge_gauges(metrics: &str) -> (u64, u64) {
         gauge("quickwit_indexing_ongoing_merge_operations"),
         gauge("quickwit_indexing_pending_merge_operations"),
     )
+}
+
+/// How long a failed request to the writer waits for its exit to be reaped.
+pub const EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// `r`, with the writer's exit in front of an error if it has exited.
+pub async fn explained<T>(events: Option<&NodeEvents>, r: anyhow::Result<T>) -> anyhow::Result<T> {
+    match (r, events) {
+        (Err(e), Some(ev)) => Err(ev.explain(e, EXIT_GRACE).await),
+        (r, _) => r,
+    }
 }
 
 /// Decides when merging has settled: no merge running or queued, and the
@@ -335,9 +380,9 @@ impl Default for MergeWait {
     }
 }
 
-/// 90 minutes: the merges left when a full rebuild of the corpus stops
-/// ingesting, with room to spare (08 §8.4).
-pub const DEFAULT_TIMEOUT_SECS: u64 = 5400;
+/// 4 hours: the merges left when a full rebuild of the corpus stops
+/// ingesting (about 1.7 hours for 23.8M pages), with room to spare (08 §8.4).
+pub const DEFAULT_TIMEOUT_SECS: u64 = 14400;
 
 /// Lines of "release merges" progress, at most this often.
 const LOG_EVERY: Duration = Duration::from_secs(30);
@@ -384,8 +429,8 @@ async fn poll_until_sealed(
         if let Some(e) = events {
             e.check()?;
         }
-        let (running, queued) = node.gauges().await?;
-        let splits = node.splits(index_id).await?;
+        let (running, queued) = explained(events, node.gauges().await).await?;
+        let splits = explained(events, node.splits(index_id).await).await?;
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let settled = settle.observe(running == 0 && queued == 0, &ids);
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
@@ -410,7 +455,7 @@ async fn poll_until_sealed(
                     splits = splits.len(),
                     "merges settled; closing the index for its final merges"
                 );
-                node.close(index_id).await?;
+                explained(events, node.close(index_id).await).await?;
                 closed_at = Some(tokio::time::Instant::now());
                 step = "finalize";
                 settle = Settle::new(wait.stable_polls);
@@ -473,13 +518,15 @@ mod tests {
 
     #[test]
     fn the_template_sets_the_merge_policy_the_checks_assume() {
-        assert_eq!(template_setting("split_num_docs_target"), Some(1_000_000));
+        assert_eq!(template_setting("split_num_docs_target"), Some(100_000));
         assert_eq!(template_setting("max_finalize_merge_operations"), Some(5));
         assert!(INDEX_TEMPLATE.contains("type: limit_merge"));
         assert_eq!(template_setting("no_such_setting"), None);
-        // 2.7M documents: two full splits, up to five final merges, two left over.
-        assert_eq!(max_splits(2_744_801), 2 + 5 + 2);
+        // 274,480 documents: two full splits, up to five final merges, two left over.
+        assert_eq!(max_splits(274_480), 2 + 5 + 2);
         assert_eq!(max_splits(71_764), 7);
+        // The whole corpus: about 240 splits.
+        assert_eq!(max_splits(23_800_000), 238 + 7);
     }
 
     #[test]
@@ -603,7 +650,7 @@ mod tests {
             })
             .collect();
         let err = check("idx", 140_000, &many).unwrap_err().to_string();
-        assert!(err.contains("at most 7"), "{err}");
+        assert!(err.contains("at most 8"), "{err}");
         assert_eq!(IndexLayout::of("empty", &[]).splits, 0);
     }
 
@@ -807,6 +854,75 @@ mod tests {
             .to_string();
         assert!(err.contains("ran out of disk"), "{err}");
         assert!(fake.closed_at.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_writer_that_dies_is_named_instead_of_the_failed_request() {
+        let events = NodeEvents::default();
+        let refused = anyhow::anyhow!("error sending request: Connection refused");
+        // Not exited (yet): the request's own error, after the grace period.
+        let err = events
+            .explain(anyhow::anyhow!("timed out"), Duration::from_millis(50))
+            .await;
+        assert_eq!(format!("{err:#}"), "timed out");
+
+        events.writer_exited("the Quickwit writer was killed by signal 9 (SIGKILL)");
+        // Only the first exit counts.
+        events.writer_exited("later");
+        let err = format!("{:#}", events.explain(refused, Duration::ZERO).await);
+        assert!(
+            err.starts_with("the Quickwit writer was killed by signal 9 (SIGKILL): "),
+            "{err}"
+        );
+        assert!(err.contains("Connection refused"), "{err}");
+        let err = events.check().unwrap_err().to_string();
+        assert!(
+            err.contains("signal 9") && err.contains("not publishing"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_merge_wait_reports_a_writer_that_died() {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        // The node stops answering once it has "died".
+        let events = Arc::new(NodeEvents::default());
+        let polls = Arc::new(AtomicU32::new(0));
+        let (ev, p) = (events.clone(), polls.clone());
+        let app = axum::Router::new()
+            .route(
+                "/metrics",
+                get(move || async move {
+                    if p.fetch_add(1, Ordering::SeqCst) < 2 {
+                        return (
+                            StatusCode::OK,
+                            "quickwit_indexing_ongoing_merge_operations 1\n",
+                        );
+                    }
+                    ev.writer_exited("the Quickwit writer was killed by signal 9 (SIGKILL)");
+                    (StatusCode::BAD_GATEWAY, "")
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                get(|| async { axum::Json(serde_json::json!({"splits": []})) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let err = seal(&node, "idx", 1000, Some(&events), &quick(), None)
+            .await
+            .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.contains("signal 9"), "{err}");
+        assert_eq!(polls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

@@ -48,6 +48,42 @@ fn parse_vm_rss(status: &str) -> Option<u64> {
     }
 }
 
+/// The container's memory limit and out-of-memory kills so far, from its
+/// cgroup (v2, then v1). `None` where there is no cgroup to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CgroupMemory {
+    pub limit: Option<u64>,
+    pub oom_kills: Option<u64>,
+}
+
+pub fn cgroup_memory() -> Option<CgroupMemory> {
+    let read = |p: &str| std::fs::read_to_string(p).ok();
+    let (limit, events) = match read("/sys/fs/cgroup/memory.events") {
+        Some(events) => (read("/sys/fs/cgroup/memory.max"), events),
+        None => (
+            read("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+            read("/sys/fs/cgroup/memory/memory.oom_control")?,
+        ),
+    };
+    Some(CgroupMemory {
+        limit: limit.as_deref().and_then(parse_memory_limit),
+        oom_kills: parse_oom_kills(&events),
+    })
+}
+
+/// `memory.max` or `memory.limit_in_bytes`: bytes, or none for "max" or
+/// v1's "no limit" (a number near `i64::MAX`).
+fn parse_memory_limit(text: &str) -> Option<u64> {
+    let n: u64 = text.trim().parse().ok()?;
+    (n < 1 << 60).then_some(n)
+}
+
+/// The `oom_kill N` line of `memory.events` (v2) or `memory.oom_control` (v1).
+fn parse_oom_kills(text: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("oom_kill ")?.trim().parse().ok())
+}
+
 /// What one progress line reports.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
@@ -375,6 +411,22 @@ mod tests {
         assert_eq!(parse_vm_rss(status), Some(123_456 * 1024));
         assert_eq!(parse_vm_rss("Name:\tx\n"), None);
         assert_eq!(parse_vm_rss("VmRSS:\tlots kB\n"), None);
+    }
+
+    #[test]
+    fn reads_the_cgroup_memory_files() {
+        let v2 = "low 0\nhigh 0\nmax 12\noom 1\noom_kill 1\noom_group_kill 0\n";
+        assert_eq!(parse_oom_kills(v2), Some(1));
+        let v1 = "oom_kill_disable 0\nunder_oom 0\noom_kill 0\n";
+        assert_eq!(parse_oom_kills(v1), Some(0));
+        assert_eq!(parse_oom_kills("low 0\n"), None);
+        assert_eq!(parse_memory_limit("8053063680\n"), Some(8_053_063_680));
+        assert_eq!(parse_memory_limit("max\n"), None);
+        assert_eq!(parse_memory_limit("9223372036854771712\n"), None);
+        assert_eq!(cgroup_memory().is_some(), {
+            Path::new("/sys/fs/cgroup/memory.events").exists()
+                || Path::new("/sys/fs/cgroup/memory/memory.oom_control").exists()
+        });
     }
 
     #[test]

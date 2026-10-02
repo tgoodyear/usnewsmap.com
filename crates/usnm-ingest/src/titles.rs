@@ -5,9 +5,15 @@
 //!   every title that has pages (LoC's batch listing names them) and isn't
 //!   cached yet, keeping the fields we use in `raw/titles.json`. Then it
 //!   runs `geocode`. Requests are paced under loc.gov's JSON API limit (20 a
-//!   minute; exceeding it blocks for an hour), and a 429 or CAPTCHA page ends
-//!   the run early; the cache keeps what was fetched, so the next run
-//!   continues. The first sync of ~4,400 titles takes about 4.5 hours.
+//!   minute; exceeding it blocks for an hour, and any request during the
+//!   block starts the hour again). LoC also limits below that when it is
+//!   busy: in prod, a 429 or CAPTCHA page came after about 340 requests at
+//!   about 13 a minute. With a deadline, the sync then sends nothing for 65
+//!   minutes and resumes 1.5 times slower; without one, or when the pause
+//!   would pass it, the run stops early. The cache keeps what was fetched,
+//!   so the next run continues. A title takes about 4.5 s (LoC's response
+//!   time, over the 3.5 s pace), so ~3,100 titles take about 4 hours, plus
+//!   an hour for each block.
 //! - **geocode** builds the catalog from that cache alone, so it is
 //!   deterministic and needs no network. A title's place is the city in its
 //!   LoC title, e.g. "(North Platte, Neb.)". Coordinates are, in order: a
@@ -120,6 +126,37 @@ pub fn parse_item(lccn: &str, bytes: &[u8]) -> anyhow::Result<RawTitle> {
 /// beyond that; this stays under it.
 pub const LOC_INTERVAL: Duration = Duration::from_millis(3500);
 
+/// After LoC rate limits us: past its one-hour block, with no request
+/// during it (a request would start the hour again).
+pub const LOC_BLOCK_PAUSE: Duration = Duration::from_secs(65 * 60);
+
+/// The slowest pace after repeated blocks (about 6 requests a minute).
+const MAX_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How `sync` paces its requests and what it does when LoC rate limits it.
+#[derive(Debug, Clone)]
+pub struct Pacing {
+    /// Between the starts of two requests.
+    pub interval: Duration,
+    /// After a 429 or CAPTCHA page, how long to send nothing before
+    /// trying again, 1.5 times slower.
+    pub block_pause: Duration,
+    /// When to stop: no request starts after it, and a pause that would
+    /// end after it stops the sync instead. `None`: stop at the first block.
+    pub deadline: Option<tokio::time::Instant>,
+}
+
+impl Pacing {
+    /// loc.gov's pace, until `deadline`.
+    pub fn loc(deadline: Option<tokio::time::Instant>) -> Self {
+        Self {
+            interval: LOC_INTERVAL,
+            block_pause: LOC_BLOCK_PAUSE,
+            deadline,
+        }
+    }
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct SyncReport {
     pub wanted: usize,
@@ -128,18 +165,31 @@ pub struct SyncReport {
     pub failed: Vec<String>,
     /// Stopped early because LoC rate limited us; the next run continues.
     pub throttled: bool,
+    /// Stopped early at the deadline; the next run continues.
+    pub out_of_time: bool,
+    /// Times LoC rate limited us and the sync waited it out.
+    pub paused: u32,
+    /// Titles not tried because the sync stopped early.
+    pub left: usize,
+}
+
+impl SyncReport {
+    /// Every wanted title was tried (some may be missing or have failed).
+    pub fn finished(&self) -> bool {
+        !self.throttled && !self.out_of_time
+    }
 }
 
 /// Fetch the records of `lccns` that are neither cached nor already in the
-/// catalog (all of them with `refresh`), one at a time, starting a request at
-/// most every `interval`, and save them to [`RAW`]. Failures are reported,
-/// not fatal, and retried by the next run. Rate limiting stops the run.
+/// catalog (all of them with `refresh`), one at a time as `pacing` says, and
+/// save them to [`RAW`]. Failures are reported, not fatal, and retried by the
+/// next run. Rate limiting pauses the sync, or stops it (see [`Pacing`]).
 pub async fn sync(
     reference: &dyn ObjectStore,
     lccns: &BTreeSet<String>,
     refresh: bool,
     items_base: &str,
-    interval: Duration,
+    pacing: &Pacing,
 ) -> anyhow::Result<SyncReport> {
     let mut raw = load_raw(reference).await?;
     let known: HashSet<String> = load_catalog(reference)
@@ -165,32 +215,68 @@ pub async fn sync(
         ..Default::default()
     };
     let base = items_base.trim_end_matches('/');
-    let mut tick = tokio::time::interval(interval.max(Duration::from_millis(1)));
+    let mut interval = pacing.interval.max(Duration::from_millis(1));
+    let mut tick = tokio::time::interval(interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let past = |t: tokio::time::Instant| pacing.deadline.is_some_and(|d| t >= d);
     let mut unsaved = 0;
-    for lccn in todo {
+    let mut next = 0;
+    while let Some(lccn) = todo.get(next) {
         tick.tick().await;
+        if past(tokio::time::Instant::now()) {
+            tracing::warn!(
+                left = todo.len() - next,
+                "titles-sync deadline reached; stopping until the next run"
+            );
+            report.out_of_time = true;
+            break;
+        }
         let url = format!("{base}/{lccn}/?fo=json");
         let r = match source::get_json(&url).await {
-            Ok(Some(b)) => parse_item(&lccn, &b).map(Some),
+            Ok(Some(b)) => parse_item(lccn, &b).map(Some),
             Ok(None) => Ok(None),
             Err(e) if e.is::<source::Throttled>() => {
-                tracing::warn!(error = %e, "LoC is rate limiting; stopping until the next run");
-                report.throttled = true;
-                break;
+                if pacing.deadline.is_none()
+                    || past(tokio::time::Instant::now() + pacing.block_pause)
+                {
+                    tracing::warn!(error = %e, left = todo.len() - next, "LoC is rate limiting; stopping until the next run");
+                    report.throttled = true;
+                    break;
+                }
+                // Keep what was fetched in case the replica stops meanwhile.
+                if unsaved > 0 {
+                    save_raw(reference, &raw).await?;
+                    unsaved = 0;
+                }
+                interval = (interval * 3 / 2).min(MAX_INTERVAL.max(pacing.interval));
+                tracing::warn!(
+                    error = %e,
+                    fetched = report.fetched,
+                    left = todo.len() - next,
+                    pause_secs = pacing.block_pause.as_secs(),
+                    interval_ms = interval.as_millis() as u64,
+                    "LoC is rate limiting; sending nothing for the pause, then resuming more slowly"
+                );
+                report.paused += 1;
+                tokio::time::sleep(pacing.block_pause).await;
+                tick = tokio::time::interval(interval);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // The same title again.
+                continue;
             }
             Err(e) => Err(e),
         };
+        next += 1;
         match r {
             Ok(Some(t)) => {
-                raw.insert(lccn, t);
+                raw.insert(lccn.clone(), t);
                 report.fetched += 1;
                 unsaved += 1;
             }
-            Ok(None) => report.not_found.push(lccn),
+            Ok(None) => report.not_found.push(lccn.clone()),
             Err(e) => {
                 tracing::warn!(%lccn, error = %format!("{e:#}"), "title record fetch failed");
-                report.failed.push(lccn);
+                report.failed.push(lccn.clone());
             }
         }
         // Save as we go, so a stopped run resumes where it was.
@@ -204,6 +290,7 @@ pub async fn sync(
             );
         }
     }
+    report.left = todo.len() - next;
     if unsaved > 0 {
         save_raw(reference, &raw).await?;
     }
@@ -847,6 +934,15 @@ mod tests {
         assert_eq!((nowhere2.lat, nowhere2.precision.as_str()), (42.0, "city"));
     }
 
+    /// No pace, and stop at the first block.
+    fn unpaced() -> Pacing {
+        Pacing {
+            interval: Duration::ZERO,
+            block_pause: Duration::ZERO,
+            deadline: None,
+        }
+    }
+
     /// A loopback stand-in for LoC's item endpoint, counting requests.
     async fn fake_loc() -> (String, Arc<AtomicUsize>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -857,10 +953,13 @@ mod tests {
         );
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = hits.clone();
+        // sn6 is rate limited once, then served.
+        let sn6_hits = Arc::new(AtomicUsize::new(0));
         tokio::spawn(async move {
             loop {
                 let (mut sock, _) = listener.accept().await.unwrap();
                 counter.fetch_add(1, Ordering::SeqCst);
+                let sn6_hits = sn6_hits.clone();
                 tokio::spawn(async move {
                     let mut req = vec![0u8; 4096];
                     let n = sock.read(&mut req).await.unwrap_or(0);
@@ -870,6 +969,14 @@ mod tests {
                         ("200 OK", r#"{"item": {"number_lccn": ["sn1"], "title": "The Akron Beacon (Akron, Ohio) 1890-1900",
                             "location_city": ["akron"], "location_state": ["ohio"], "latlong": [41.08, -81.51],
                             "dates_of_publication": "1890-1900", "language": ["english"]}}"#.to_owned())
+                    } else if path.starts_with("/item/sn6/") {
+                        if sn6_hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                            ("429 Too Many Requests", "<html>slow down</html>".to_owned())
+                        } else {
+                            ("200 OK", r#"{"item": {"number_lccn": ["sn6"], "title": "The Elko Free Press (Elko, Nev.) 1883-1900",
+                                "location_city": ["elko"], "location_state": ["nevada"], "latlong": [40.83, -115.76],
+                                "dates_of_publication": "1883-1900", "language": ["english"]}}"#.to_owned())
+                        }
                     } else if path.starts_with("/item/sn2/") {
                         ("200 OK", "{not json".to_owned())
                     } else if path.starts_with("/item/sn8/") {
@@ -941,7 +1048,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let r = sync(store.as_ref(), &lccns, false, &base, Duration::ZERO)
+        let r = sync(store.as_ref(), &lccns, false, &base, &unpaced())
             .await
             .unwrap();
         assert_eq!((r.wanted, r.fetched), (3, 1));
@@ -964,7 +1071,7 @@ mod tests {
 
         // A second run only retries what failed, and changes nothing.
         let before = hits.load(Ordering::SeqCst);
-        let r = sync(store.as_ref(), &lccns, false, &base, Duration::ZERO)
+        let r = sync(store.as_ref(), &lccns, false, &base, &unpaced())
             .await
             .unwrap();
         assert_eq!((r.wanted, r.fetched), (2, 0));
@@ -974,7 +1081,7 @@ mod tests {
         // Rate limiting stops the run at once: nothing after it is requested.
         let before = hits.load(Ordering::SeqCst);
         let limited: BTreeSet<String> = ["sn8", "sn99"].iter().map(|s| s.to_string()).collect();
-        let r = sync(store.as_ref(), &limited, false, &base, Duration::ZERO)
+        let r = sync(store.as_ref(), &limited, false, &base, &unpaced())
             .await
             .unwrap();
         assert!(r.throttled);
@@ -984,11 +1091,76 @@ mod tests {
         // So does an HTML challenge page, whatever its status.
         let before = hits.load(Ordering::SeqCst);
         let challenged: BTreeSet<String> = ["sn7", "sn99"].iter().map(|s| s.to_string()).collect();
-        let r = sync(store.as_ref(), &challenged, false, &base, Duration::ZERO)
+        let r = sync(store.as_ref(), &challenged, false, &base, &unpaced())
             .await
             .unwrap();
         assert!(r.throttled);
         assert_eq!(hits.load(Ordering::SeqCst) - before, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_a_deadline_a_block_is_waited_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
+        let (base, hits) = fake_loc().await;
+        let set = |v: &[&str]| -> BTreeSet<String> { v.iter().map(|s| s.to_string()).collect() };
+        let now = tokio::time::Instant::now();
+
+        // Rate limited once: nothing is sent during the pause, then the same
+        // title is asked for again and the sync goes on.
+        let pacing = Pacing {
+            interval: Duration::ZERO,
+            block_pause: Duration::from_millis(300),
+            deadline: Some(now + Duration::from_secs(30)),
+        };
+        let started = std::time::Instant::now();
+        let r = sync(store.as_ref(), &set(&["sn6", "sn3"]), false, &base, &pacing)
+            .await
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(r.finished(), "{r:?}");
+        assert_eq!((r.wanted, r.fetched, r.paused, r.left), (2, 1, 1, 0));
+        assert_eq!(r.not_found, ["sn3"]);
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+        // A pause that would end after the deadline stops the sync instead.
+        let before = hits.load(Ordering::SeqCst);
+        let pacing = Pacing {
+            interval: Duration::ZERO,
+            block_pause: Duration::from_secs(3600),
+            deadline: Some(now + Duration::from_secs(30)),
+        };
+        let r = sync(
+            store.as_ref(),
+            &set(&["sn8", "sn99"]),
+            false,
+            &base,
+            &pacing,
+        )
+        .await
+        .unwrap();
+        assert!(r.throttled && !r.finished());
+        assert_eq!((r.paused, r.left), (0, 2));
+        assert_eq!(hits.load(Ordering::SeqCst) - before, 1);
+
+        // Past the deadline, nothing more is asked for.
+        let before = hits.load(Ordering::SeqCst);
+        let pacing = Pacing {
+            deadline: Some(now),
+            ..unpaced()
+        };
+        let r = sync(
+            store.as_ref(),
+            &set(&["sn98", "sn99"]),
+            false,
+            &base,
+            &pacing,
+        )
+        .await
+        .unwrap();
+        assert!(r.out_of_time && !r.finished());
+        assert_eq!((r.wanted, r.fetched, r.left), (2, 0, 2));
+        assert_eq!(hits.load(Ordering::SeqCst), before);
     }
 
     #[test]

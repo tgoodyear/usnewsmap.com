@@ -146,7 +146,7 @@ impl WriterLease {
     }
 
     /// Resolves once a renewal has failed. Long waits (the merges, up to
-    /// 90 minutes) race against it, so a writer that may no longer hold the
+    /// 4 hours by default) race against it, so a writer that may no longer hold the
     /// lock stops within a second instead of at its next checkpoint, long
     /// before the lock expires and another writer could take it.
     async fn lost(&self) {

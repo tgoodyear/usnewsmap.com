@@ -39,10 +39,15 @@ indexing_settings:
   # writer's shutdown, which waits for a commit to drain its shards.
   commit_timeout_secs: 30
   # A cold search opens every split, so an index should be a few large ones
-  # (05 §5.5.1). Splits merge 10 at a time until they hold a million pages
-  # (about 23 GB), which also bounds the writer's scratch disk: the largest
-  # merge needs its inputs and its output on disk at once (08 §8.4).
-  split_num_docs_target: 1000000
+  # (05 §5.5.1), but the writer's memory caps their size. Quickwit 0.9.1
+  # uploads a split to Blob in 100 MB blocks, up to 100 at once, each read
+  # into memory first: a split holds min(its size, 10 GB) of the writer's
+  # memory while it uploads, and the ingest container has 7.5 GiB. A
+  # million-page split (about 23 GB) killed the writer in October 2026.
+  # A merge stops taking splits once it holds this many pages, so merged
+  # splits hold a little over 100,000 pages (about 110,000, 2.6 GB, in
+  # that release) and never 200,000 (08 §8.4).
+  split_num_docs_target: 100000
   merge_policy:
     type: limit_merge
     merge_factor: 10
@@ -55,8 +60,8 @@ indexing_settings:
     # splits that are left. The release checks the result against these
     # settings (crates/usnm-ingest/src/merges.rs).
     max_finalize_merge_operations: 5
-  # The writer shares the ingest job's memory with the release; Quickwit's
-  # default indexing heap is 2 GiB.
+  # The writer shares the ingest job's memory with the release and the
+  # split uploads; Quickwit's default indexing heap is 2 GiB.
   resources:
     heap_size: 1GiB
 search_settings:

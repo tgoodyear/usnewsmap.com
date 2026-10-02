@@ -50,6 +50,10 @@ param scratchStorageName string = ''
 param scratchGiB int = 0
 @description('An image that runs as root, to hand the share to the pipeline\'s user: the pinned Quickwit image.')
 param rootImage string = ''
+@description('Seconds a release waits for its new index\'s merges before failing without publishing (08 §8.4). Budgeted under the 24 h replica timeout below.')
+@minValue(600)
+@maxValue(21600)
+param mergeTimeoutSecs int = 14400
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the
 // ingest-job-failed alert reports as a failure. Curation stops claiming at a
@@ -59,14 +63,18 @@ var replicaTimeoutSecs = 86400
 // Backfill: 22 h + 45 min watchdog = 22 h 45 min, leaving 75 minutes of
 // margin under the 24 h timeout for the startup enqueue and the last commit.
 var backfillMaxRuntimeSecs = 79200
-// Ingest run: curation stops 6 h after the start (6 h 45 min at most with the
-// watchdog). titles-sync takes up to about 4.5 h (a catalog built from
-// nothing), and a full rebuild of the corpus about 11 h (23.7M pages at the
-// slowest rate of the September 2026 prod releases, 36,000 docs a minute),
-// so even all three at their longest end by about 22 h 15 min. The release
-// then waits up to 90 minutes for its merges (`--merge-timeout-secs`,
-// 08 §8.4): 23 h 45 min.
+// Ingest run, with each step's bound counted from the start: curation stops
+// claiming at 6 h (6 h 45 min at most with the watchdog), and titles-sync
+// sends no request after 8 h (`--titles-max-runtime-secs`; LoC rate limits
+// it, and it waits out each one-hour block until then). A full rebuild of
+// the corpus then sends 23.8M pages in about 8.8 h (750 pages a second, the
+// October 2026 rate) or 10.7 h at 620, and waits at most `mergeTimeoutSecs`
+// (4 h; about 1.7 h expected) for its merges, 08 §8.4: 22 h 45 min at the
+// slowest, inside the 24 h timeout. A full run that titles-sync didn't
+// finish releases nothing and fails, so the next execution resumes the sync
+// before it rebuilds (infra/README.md, step 7).
 var ingestCurateMaxRuntimeSecs = 21600
+var ingestTitlesMaxRuntimeSecs = 28800
 
 var scratch = !empty(scratchStorageName)
 // The pipeline runs as uid 10001 (Dockerfile.ingest); a new NFS share's root
@@ -137,6 +145,8 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
               'run'
               '--curate-max-runtime-secs'
               string(ingestCurateMaxRuntimeSecs)
+              '--titles-max-runtime-secs'
+              string(ingestTitlesMaxRuntimeSecs)
               '--quickwit-bin'
               '/usr/local/bin/quickwit'
               '--quickwit-metastore'
@@ -147,7 +157,10 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             full ? ['--full'] : []
           )
           resources: ingestResources
-          env: concat(env, scratchEnv, [{ name: 'QW_AZURE_STORAGE_ACCOUNT', value: storageAccountName }])
+          env: concat(env, scratchEnv, [
+            { name: 'QW_AZURE_STORAGE_ACCOUNT', value: storageAccountName }
+            { name: 'USNM_MERGE_TIMEOUT_SECS', value: string(mergeTimeoutSecs) }
+          ])
           volumeMounts: scratch ? [{ volumeName: 'scratch', mountPath: '/scratch' }] : null
         }
       ]
