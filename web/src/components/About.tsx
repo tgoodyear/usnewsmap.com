@@ -38,7 +38,7 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           it was printed. Play the timeline to watch a word or a story move across the country.
         </p>
         <p>
-          The site was built in 2015 and launched in 2016 by the{" "}
+          The site was launched in 2016 by the{" "}
           <a href="https://ehistory.org/" {...ext}>
             eHistory.org
           </a>{" "}
