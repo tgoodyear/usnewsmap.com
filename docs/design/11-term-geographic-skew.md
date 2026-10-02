@@ -6,10 +6,10 @@
 
 The owner asked: can the map show where a term is covered disproportionately in one place compared with others? A city with several newspapers will have more hits for any term than a town with one, so raw counts mostly show where the newspapers are.
 
-The site shows two things today (07 §7.4):
+When this was written, the site showed two things (07 §7.4):
 
-- **Circle size** is the number of pages with a match. Big places get big circles for every search.
-- **"Share of pages published"** (`norm=rel`) colours each place by `hits / pages published` in the window, scaled to the largest value on the map (`web/src/components/MapView.tsx`). This already divides by corpus volume, but §11.5.4 shows that the largest value is usually a place with a handful of pages, so almost every other place ends up in the bottom half of the colour scale. (This view was removed in October 2026; old `norm=rel` links open on Pages. See §11.14.)
+- **Circle size** was the number of pages with a match. Big places get big circles for every search.
+- **"Share of pages published"** (`norm=rel`) coloured each place by `hits / pages published` in the window, scaled to the largest value on the map. This already divided by corpus volume, but §11.5.4 shows that the largest value is usually a place with a handful of pages, so almost every other place ended up in the bottom half of the colour scale. (This view was removed in October 2026; old `norm=rel` links open on Pages. See §11.14.)
 
 This document compares the ways to answer the question, recommends one, and backs it with measurements on the published index and with simulations.
 
