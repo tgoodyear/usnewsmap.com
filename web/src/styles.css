@@ -168,7 +168,9 @@ input, select {
 
 .stage { position: relative; flex: 1; display: flex; min-height: 300px; }
 .map-wrap { position: relative; flex: 1; display: flex; min-height: 300px; }
-.map { flex: 1; min-height: 300px; }
+/* The map's canvases (MapLibre and the deck.gl overlay) stay in their own stacking context, so the
+   legend and tooltip sit above every circle. */
+.map { flex: 1; min-height: 300px; isolation: isolate; }
 .map-tooltip {
   position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2;
   background: var(--panel); color: var(--ink); border: 1px solid var(--line);
@@ -178,7 +180,7 @@ input, select {
 .map--loading { display: grid; place-items: center; color: var(--muted); }
 
 .legend {
-  position: absolute; left: 12px; bottom: 12px; padding: 8px 10px; font-size: 0.8rem;
+  position: absolute; left: 12px; bottom: 12px; z-index: 1; padding: 8px 10px; font-size: 0.8rem;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); max-width: 240px;
 }
 .legend__title { font-weight: 600; margin-bottom: 4px; }
