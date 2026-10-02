@@ -9,6 +9,10 @@
 //!   deltas. Replacements (new batch versions) and catalog changes to
 //!   published titles take effect only here (04 §4.7).
 //!
+//! A Quickwit index is merged into a few large splits and closed before it
+//! is published (`crate::merges`); the version's manifest records the
+//! splits of each of its indexes.
+//!
 //! A curated batch whose titles aren't all in the catalog yet waits for a
 //! later release (it counts as new until it's published): `titles-sync` is
 //! paced and stops on LoC's rate limit, and a backlog of titles shouldn't
@@ -34,6 +38,7 @@ use usnm_store::ObjectStore;
 
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
+use crate::merges::IndexLayout;
 use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
@@ -138,6 +143,16 @@ impl WriterLease {
             bail!("the writer lock could not be renewed; stopping without publishing");
         }
         Ok(())
+    }
+
+    /// Resolves once a renewal has failed. Long waits (the merges, up to
+    /// 90 minutes) race against it, so a writer that may no longer hold the
+    /// lock stops within a second instead of at its next checkpoint, long
+    /// before the lock expires and another writer could take it.
+    async fn lost(&self) {
+        while !self.lost.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
     }
 }
 
@@ -336,8 +351,14 @@ impl Release {
             let docs = self
                 .build_index(lease, sink, &version, &index_id, &scope, &catalog)
                 .await?;
+            // What every index of the version is made of, for the log and
+            // the manifest: how many splits a cold search opens (05 §5.5.1).
+            let layout = sink.layout(&indexes).await?;
+            for l in &layout {
+                l.log();
+            }
             let bounds = self
-                .write_snapshot(&version, &version_batches, &catalog)
+                .write_snapshot(&version, &version_batches, &catalog, &layout)
                 .await?;
             Ok::<_, anyhow::Error>((docs, bounds))
         }
@@ -561,7 +582,11 @@ impl Release {
             }
             progress.snapshot().log(Some(&b.batch));
         }
-        sink.finish(docs).await?;
+        // The last commit and the merge wait, given up as soon as the lock is.
+        tokio::select! {
+            r = sink.finish(docs) => r?,
+            () = lease.lost() => lease.check()?,
+        }
         progress.snapshot().log(None);
         progress::report(&self.state, version, &progress.snapshot()).await;
         Ok(docs)
@@ -569,11 +594,14 @@ impl Release {
 
     /// Write `{version}/` (titles, places, baselines, pages per title, the
     /// batch list, manifest last) and return the version's date bounds.
+    /// The manifest also records `layout`, the splits of each index, when
+    /// the engine has splits.
     async fn write_snapshot(
         &self,
         version: &str,
         batches: &[RunBatch],
         catalog: &Catalog,
+        layout: &[IndexLayout],
     ) -> anyhow::Result<(NaiveDate, NaiveDate)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
@@ -637,7 +665,7 @@ impl Release {
             }));
             self.put_new(&format!("{version}/{name}"), body).await?;
         }
-        let manifest = json!({
+        let mut manifest = json!({
             "index_version": version,
             "files": files,
             "built_from": {
@@ -646,6 +674,9 @@ impl Release {
                 })).collect::<Vec<_>>(),
             },
         });
+        if !layout.is_empty() {
+            manifest["indexes"] = serde_json::to_value(layout)?;
+        }
         self.put_new(
             &format!("{version}/manifest.json"),
             serde_json::to_vec_pretty(&manifest)?,
@@ -663,5 +694,29 @@ impl Release {
             bail!("`{path}` already exists; reference snapshots are immutable");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_lost_lease_ends_a_wait() {
+        let lost = Arc::new(AtomicBool::new(false));
+        let lease = WriterLease {
+            lost: lost.clone(),
+            renewer: tokio::spawn(async {}),
+        };
+        let flag = lost.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        let r: anyhow::Result<()> = tokio::select! {
+            () = std::future::pending::<()>() => Ok(()),
+            () = lease.lost() => lease.check(),
+        };
+        assert!(r.unwrap_err().to_string().contains("could not be renewed"));
     }
 }

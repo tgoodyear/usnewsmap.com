@@ -33,6 +33,8 @@ param containerEnvName string
 param cosmosName string
 param dataStorageName string
 param tilesStorageName string
+@description('The ingest scratch share\'s account (ingest-scratch.bicep); empty if there is none.')
+param scratchStorageName string = ''
 
 var name = 'to-log-analytics'
 
@@ -132,5 +134,25 @@ module tilesStorageLogs 'storage-diagnostics.bicep' = {
     storageName: tilesStorageName
     workspaceId: workspaceId
     settingName: name
+  }
+}
+
+// The ingest scratch share: deletes only. The Quickwit writer creates,
+// reads and writes many files on it in a release; logging those would fill
+// the daily cap. (A FileStorage account has no blob, queue or table service.)
+resource scratchAccount 'Microsoft.Storage/storageAccounts@2025-01-01' existing = if (!empty(scratchStorageName)) {
+  name: scratchStorageName
+
+  resource file 'fileServices' existing = {
+    name: 'default'
+  }
+}
+
+resource scratchLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(scratchStorageName)) {
+  scope: scratchAccount::file
+  name: name
+  properties: {
+    workspaceId: workspaceId
+    logs: [{ category: 'StorageDelete', enabled: true }]
   }
 }

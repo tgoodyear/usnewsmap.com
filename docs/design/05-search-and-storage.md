@@ -162,6 +162,17 @@ doc_mapping:
     - { name: day,        type: u64,      fast: true, indexed: true, stored: true }
     - { name: sort_key,   type: u64,      fast: true, indexed: false }   # hit order within a day
     # ym, year, place_id, place_shard, lccn, state, language, front_page, edition, seq, batch as in §5.5
+indexing_settings:
+  commit_timeout_secs: 30           # batch ingestion: cut splits at the 1 GiB heap or 30 s, not every 10 s
+  split_num_docs_target: 1000000    # splits stop merging at a million pages (about 23 GB)
+  merge_policy:
+    type: limit_merge
+    merge_factor: 10
+    max_merge_factor: 12
+    max_merge_ops: 4
+    maturation_period: 7d
+    max_finalize_merge_operations: 5
+  resources: { heap_size: 1GiB }
 ```
 
 **What spike S-2 settled, and how it's checked.** CI's `quickwit` job loads the fixture base and delta into Quickwit 0.9.1, stops the writer, and serves them from a read-only polling searcher configured like production. `crates/usnm-search/tests/quickwit_parity.rs` then compares the Quickwit backend with the in-memory reference backend. It covers 11 query shapes × 6 filter sets × 4 bucket units: summaries, full cubes, place-shard partitions of the cube, hit pages and snippets.
@@ -178,6 +189,16 @@ doc_mapping:
 | **Fuzzy terms** | **Not supported.** `term~1` parses but silently matches nothing, and the Elasticsearch-compatible API has no fuzzy query either | The Quickwit backend reports `fuzzy: false` and returns 422 for fuzzy queries rather than wrong counts. F-21 needs another approach; see [10 R-15](10-roadmap-and-risks.md#103-risk-register) |
 
 Still open in S-2: the 1M-page benchmark (§5.8, latency and memory at the sidecar size, split cache) and managed-identity Blob auth against a real account (08 §8.2).
+
+**Splits and merges.** A cold search opens every split of every index it names, with several Blob round trips per split (the footer, then term dictionary, postings and fast-field ranges), so its fixed cost grows with the number of splits, whatever the match count. The first prod releases (September 2026) committed every 10 s, so the writer cut a split about every 10 s while it ingested; each release published about 30 s after ingest stopped and the job exited, so background merges never caught up. Two deltas also filled the writer's disk ("No space left on device"), which killed indexers and failed merges. Searches against them had a fixed cost of about 4.5 to 5 s while the 1 vCPU searcher peaked at 65% CPU.
+
+The settings above, and the release, now make each index a few large splits:
+
+- Splits are cut when the indexing heap fills or after 30 s (about 20,000 pages at the writer's 20 MB/s), then merged 10 at a time (`limit_merge`) until they hold `split_num_docs_target` pages. At about 23 KB of index per page, a million pages is about 23 GB, and the largest merge needs its inputs and its output on disk at once, about 60 GB in all. The writer runs one merge at a time on a scratch share sized for that (08 §8.4).
+- The release waits for the merges before it publishes (`crates/usnm-ingest/src/merges.rs`): first until the merge planner has nothing running or queued and the split list is stable, then it disables the index's ingest source, which shuts its merge pipeline down after up to 5 final merges of the small splits that are left. That also seals the index: later writer runs start no pipelines for it. The wait is bounded (90 minutes by default), and the release fails rather than publish if it runs out, if the writer reports a full disk or a failed merge, if the splits don't hold exactly the documents sent, or if there are more splits than the policy leaves (`docs / 1,000,000 + 5 + 2`).
+- Each release logs an `index layout` line per index of the new version (splits, documents, size, smallest and largest split) and records the same in the version's `manifest.json` under `indexes`, so the result is visible without access to the index storage.
+
+Indexes built before this keep their splits: they are older than any maturation period, so no merge policy touches them again. A full release rebuilds them as one new base ([infra/README](../../infra/README.md#ingest-jobs)).
 
 ### 5.5.2 Azure AI Search index (sketch)
 

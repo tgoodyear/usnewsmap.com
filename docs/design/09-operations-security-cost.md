@@ -94,9 +94,10 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
 | Container registry | ACR Basic (private images) | $5 | $5 | $5 |
-| **Total** | | **~$55** | **~$76** | **~$118** |
+| Ingest scratch share (08 §8.4) | NFS Azure Files, provisioned v2 SSD, 128 GiB at about $0.10/GiB, baseline IOPS and throughput included; its private endpoint ($7.30) and private DNS zone ($0.50); endpoint data processing for releases (a full rebuild moves about 1–2 TB through it, ~$10–20 that month) | $21 | $22 | $41 |
+| **Total** | | **~$76** | **~$98** | **~$159** |
 
-"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
+"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The ingest scratch share (October 2026) puts even a typical month over the $80 target: it is what lets the writer merge an index into a few large splits, which cold searches need (05 §5.5.1). The lever is its size (`USNM_INGEST_SCRATCH_GIB`; a smaller share means a smaller `split_num_docs_target` and more splits), or `0` to remove it. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
 
 **The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$87–102, over the $80 target** now that private networking (~$17) and the registry (~$5) are in. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
 

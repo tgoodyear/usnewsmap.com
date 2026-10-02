@@ -14,6 +14,7 @@ use opentelemetry::KeyValue;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
+use crate::merges::{self, IndexLayout, MergeWait, NodeEvents};
 use crate::telemetry;
 
 /// The index config every base and delta shares (05 §5.5.1).
@@ -34,6 +35,13 @@ const INGEST_QUEUE_MEMORY: &str = "1GiB";
 /// the ingester closed its shards, and every request got 503 "no shards
 /// available" until the release gave up.
 const SPLIT_STORE_BYTES: &str = "4GiB";
+/// The ingest write-ahead log's disk cap (Quickwit's default, set here so
+/// the scratch disk budget in 08 §8.4 adds up): past it, ingest gets 429s.
+const WAL_DISK_BYTES: &str = "4GiB";
+/// One merge at a time (the default is two thirds of the CPUs): the largest
+/// merge needs its inputs and its output on disk at once, about twice
+/// `split_num_docs_target` pages (08 §8.4).
+const MERGE_CONCURRENCY: u32 = 1;
 
 /// How long one ingest request keeps retrying while the node pushes back
 /// (503 "no shards available" once the shard's rate limit is spent, or 429).
@@ -51,6 +59,11 @@ pub trait IndexSink: Send {
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()>;
     /// `memory` or `quickwit`, recorded in `current.json`.
     fn backend(&self) -> &'static str;
+    /// The published splits of `index_ids`, for the release log and
+    /// manifest. Sinks without splits report none.
+    async fn layout(&mut self, _index_ids: &[String]) -> anyhow::Result<Vec<IndexLayout>> {
+        Ok(Vec::new())
+    }
     /// Counters for release progress, shared with whoever reports it. A
     /// sink that doesn't count reports zeros.
     fn stats(&self) -> Arc<SinkStats> {
@@ -186,6 +199,10 @@ pub struct QuickwitSink {
     retry_initial: Duration,
     retry_for: Duration,
     stats: Arc<SinkStats>,
+    /// How `finish` waits for the new index's merges.
+    merge_wait: MergeWait,
+    /// The writer node's output, when this release runs the node.
+    events: Option<Arc<NodeEvents>>,
 }
 
 impl QuickwitSink {
@@ -202,23 +219,43 @@ impl QuickwitSink {
             retry_initial: Duration::from_millis(500),
             retry_for: INGEST_RETRY_FOR,
             stats: Arc::default(),
+            merge_wait: MergeWait::default(),
+            events: None,
         })
     }
 
     /// Report the free disk of `node`'s work directory and its memory in
-    /// release progress. Call before sending anything.
+    /// release progress, and stop the release if its output reports a full
+    /// disk or a failed merge. Call before sending anything.
     pub fn watching(mut self, node: &QuickwitNode) -> Self {
         self.stats = Arc::new(SinkStats {
             work_dir: Some(node.work_dir.clone()),
             node_pid: node.pid(),
             ..SinkStats::default()
         });
+        self.events = Some(node.events.clone());
         self
+    }
+
+    /// How long `finish` may wait for merges, and how it polls.
+    pub fn merges(mut self, wait: MergeWait) -> Self {
+        self.merge_wait = wait;
+        self
+    }
+
+    fn node(&self) -> merges::Node<'_> {
+        merges::Node {
+            http: &self.http,
+            base: &self.base,
+        }
     }
 
     async fn send(&mut self, commit: &str) -> anyhow::Result<()> {
         if self.buf.is_empty() && commit != "force" {
             return Ok(());
+        }
+        if let Some(e) = &self.events {
+            e.check()?;
         }
         let id = self.index.as_deref().context("no index created")?;
         let body = bytes::Bytes::from(std::mem::take(&mut self.buf));
@@ -335,26 +372,56 @@ impl IndexSink for QuickwitSink {
         Ok(())
     }
 
+    /// Commit, confirm the count, then wait for the index's merges and
+    /// close it (`merges::seal`): nothing is published half merged.
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()> {
         // A forced commit publishes everything still buffered in the node.
-        self.send("force").await?;
+        // `add` always leaves its document in the buffer, so an empty one
+        // means none was added (a batch with no text): there is nothing to
+        // commit, and the node rejects an empty request (411).
+        if !self.buf.is_empty() {
+            self.send("force").await?;
+        }
         let id = self.index.clone().context("no index created")?;
         let mut last = 0;
         for _ in 0..120 {
             last = self.count(&id).await?;
-            if last == expected {
-                return Ok(());
-            }
-            if last > expected {
+            if last >= expected {
                 break;
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        bail!("index `{id}` holds {last} documents, expected {expected}")
+        if last != expected {
+            bail!("index `{id}` holds {last} documents, expected {expected}");
+        }
+        let layout = merges::seal(
+            &self.node(),
+            &id,
+            expected,
+            self.events.as_deref(),
+            &self.merge_wait,
+            self.stats.work_dir.as_deref(),
+        )
+        .await?;
+        tracing::info!(
+            index = %id,
+            splits = layout.splits,
+            "merged; the index is closed to further writes"
+        );
+        Ok(())
     }
 
     fn backend(&self) -> &'static str {
         "quickwit"
+    }
+
+    async fn layout(&mut self, index_ids: &[String]) -> anyhow::Result<Vec<IndexLayout>> {
+        let node = self.node();
+        let mut out = Vec::new();
+        for id in index_ids {
+            out.push(IndexLayout::of(id, &node.splits(id).await?));
+        }
+        Ok(out)
     }
 
     fn stats(&self) -> Arc<SinkStats> {
@@ -446,12 +513,13 @@ fn forward_level(line: &str, stderr: bool) -> Option<tracing::Level> {
     }
 }
 
-/// Read the writer's `stream` line by line into `tail`, forwarding lines
-/// through `tracing` (target `quickwit`) at their level.
+/// Read the writer's `stream` line by line into `tail` and `events`,
+/// forwarding lines through `tracing` (target `quickwit`) at their level.
 fn forward(
     stream: impl AsyncRead + Unpin + Send + 'static,
     stderr: bool,
     tail: Tail,
+    events: Arc<NodeEvents>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stream).lines();
@@ -467,9 +535,22 @@ fn forward(
                 Some(_) => tracing::info!(target: "quickwit", "{line}"),
                 None => {}
             }
+            events.observe(&line);
             tail.push(line);
         }
     })
+}
+
+/// The writer's `RUST_LOG`: the job's filter (Quickwit's default `info` when
+/// there is none), with the merge pipeline always at `info`. The release
+/// waits for that pipeline's "completed" line (`merges::NodeEvents`), so a
+/// quieter filter, or one naming only the pipeline's crates, must not hide it.
+fn writer_log_filter(inherited: Option<&str>) -> String {
+    let base = inherited
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .unwrap_or("info");
+    format!("{base},quickwit_indexing::actors::merge_pipeline=info")
 }
 
 /// A Quickwit indexer node run as a child process for the length of a
@@ -481,6 +562,7 @@ pub struct QuickwitNode {
     pub url: String,
     work_dir: PathBuf,
     tail: Tail,
+    events: Arc<NodeEvents>,
     readers: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -496,14 +578,25 @@ impl QuickwitNode {
         index_root: &str,
     ) -> anyhow::Result<Self> {
         let data = work_dir.join("qwdata");
+        // Only this release writes here (it holds the writer lock), and a
+        // previous run's data must not come back: on a persistent scratch
+        // volume, its write-ahead log would replay into an index that a
+        // published version may already list.
+        if data.exists() {
+            tracing::info!(dir = %data.display(), "removing a previous writer's data");
+            std::fs::remove_dir_all(&data)
+                .with_context(|| format!("removing {}", data.display()))?;
+        }
         std::fs::create_dir_all(&data)?;
         let mut config = format!(
             "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
              metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n\
              ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n  \
-             max_queue_memory_usage: {INGEST_QUEUE_MEMORY}\n\
-             indexer:\n  split_store_max_num_bytes: {SPLIT_STORE_BYTES}\n",
+             max_queue_memory_usage: {INGEST_QUEUE_MEMORY}\n  \
+             max_queue_disk_usage: {WAL_DISK_BYTES}\n\
+             indexer:\n  split_store_max_num_bytes: {SPLIT_STORE_BYTES}\n  \
+             merge_concurrency: {MERGE_CONCURRENCY}\n",
             port.checked_add(1)
                 .context("--quickwit-port must be below 65535")?,
             data.display()
@@ -529,6 +622,10 @@ impl QuickwitNode {
             .args(["run", "--config"])
             .arg(&config_path)
             .env("QW_DISABLE_TELEMETRY", "1")
+            .env(
+                "RUST_LOG",
+                writer_log_filter(std::env::var("RUST_LOG").ok().as_deref()),
+            )
             // AZURE_CLIENT_ID selects the pipeline's user-assigned identity;
             // Quickwit's credential chain uses the system-assigned one (08 §8.2).
             .env_remove("AZURE_CLIENT_ID")
@@ -541,18 +638,20 @@ impl QuickwitNode {
             .spawn()
             .with_context(|| format!("starting {}", bin.display()))?;
         let tail = Tail::default();
+        let events = Arc::new(NodeEvents::default());
         let mut readers = Vec::new();
         if let Some(out) = child.stdout.take() {
-            readers.push(forward(out, false, tail.clone()));
+            readers.push(forward(out, false, tail.clone(), events.clone()));
         }
         if let Some(err) = child.stderr.take() {
-            readers.push(forward(err, true, tail.clone()));
+            readers.push(forward(err, true, tail.clone(), events.clone()));
         }
         let mut node = Self {
             child,
             url: format!("http://127.0.0.1:{port}"),
             work_dir: work_dir.to_owned(),
             tail,
+            events,
             readers,
         };
         let http = reqwest::Client::new();
@@ -583,6 +682,11 @@ impl QuickwitNode {
         )
     }
 
+    /// What the node's output has reported so far.
+    pub fn events(&self) -> Arc<NodeEvents> {
+        self.events.clone()
+    }
+
     /// The node's process id, while it runs.
     pub fn pid(&self) -> Option<u32> {
         self.child.id()
@@ -601,7 +705,14 @@ impl QuickwitNode {
             Ok(status) => {
                 status?;
             }
-            Err(_) => self.child.kill().await?,
+            Err(_) => {
+                // Expected after a release: the closed index's ingest shards
+                // have no pipeline left to drain them, and the ingester waits
+                // for that. Everything is published by now, and the next
+                // writer starts from an empty data directory.
+                tracing::info!("the Quickwit writer did not stop within 60 s; killing it");
+                self.child.kill().await?
+            }
         }
         for r in self.readers.iter_mut() {
             let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
@@ -615,6 +726,18 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[test]
+    fn the_writer_always_logs_merge_pipeline_completion() {
+        let pipeline = "quickwit_indexing::actors::merge_pipeline=info";
+        assert_eq!(writer_log_filter(None), format!("info,{pipeline}"));
+        assert_eq!(writer_log_filter(Some(" ")), format!("info,{pipeline}"));
+        assert_eq!(writer_log_filter(Some("warn")), format!("warn,{pipeline}"));
+        assert_eq!(
+            writer_log_filter(Some("usnm_ingest=info")),
+            format!("usnm_ingest=info,{pipeline}")
+        );
+    }
 
     #[test]
     fn tail_keeps_the_last_lines() {

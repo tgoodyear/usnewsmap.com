@@ -42,6 +42,17 @@ The owner made the rule foundational: **every authentication is by an Entra iden
 
 Static Web Apps has no Entra-only deploy path: every deploy path ends in the site's deployment token ([Azure/static-web-apps#1359](https://github.com/Azure/static-web-apps/issues/1359)). For a while that was the one exception to rule 2. [ADR-0010](0010-site-served-by-the-api.md) removed it: the API app serves the site from its image, and the Static Web App is gone.
 
+## The ingest scratch share (exception, proposed in PR #74)
+
+The Quickwit writer in `caj-usnm-ingest` needs more disk than a Container Apps replica has to merge an index into large splits (08 §8.4). Container Apps mounts Azure Files in two ways: SMB, which needs the account key in the environment's storage definition, and NFS, which has no authentication at all and is authorized by network. There is no Entra-authorized volume. The share is NFS, so it breaks rule 1 (every caller an Entra principal) without breaking rule 2 (no shared secrets): there is no key to leak, and shared key access is off on its account.
+
+What reaches it, and what that allows:
+- Only the VNet, through `pe-usnm-file`; public network access is disabled. The Container Apps environment has one subnet, so the API app's replicas can reach the share as well as the ingest job. NFS trusts the Unix ids a client presents, and root squash is off (the job's init container runs as root to hand a directory to the pipeline's user), so a compromised replica in the environment could read or change the writer's files.
+- The share holds only the writer's working data during a release: the write-ahead log, splits being built and merges, all from public LoC text. No secrets, and the writer removes the previous run's data when it starts.
+- The worst case is a compromised API replica changing an index while a release builds it. The release still checks the document count before it publishes, but not the content.
+
+Hardening, if wanted: run the ingest jobs in a second Container Apps environment with its own subnet, and allow NFS (port 2049) to the endpoint from that subnet only.
+
 ## Consequences
 
 - Nothing in the stack can be reached with a leaked key, because no service here accepts one.

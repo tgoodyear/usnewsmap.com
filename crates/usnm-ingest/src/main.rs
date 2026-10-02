@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context};
 use clap::{Args, Parser, Subcommand};
 use usnm_ingest::docs::{DocStore, FileDocs};
+use usnm_ingest::merges::{self, MergeWait};
 use usnm_ingest::release::Release;
 use usnm_ingest::sink::{IndexSink, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::source::{self, ListedBatch};
@@ -63,6 +64,15 @@ struct IndexTarget {
     quickwit_index_root: Option<String>,
     #[arg(long, env = "USNM_QUICKWIT_PORT", default_value_t = 7380)]
     quickwit_port: u16,
+    /// Seconds to wait for the new index's merges before giving up without
+    /// publishing (Quickwit targets).
+    #[arg(long, env = "USNM_MERGE_TIMEOUT_SECS", default_value_t = merges::DEFAULT_TIMEOUT_SECS)]
+    merge_timeout_secs: u64,
+    /// Refuse to start a writer node with less free disk than this (GiB) in
+    /// the work directory: the scratch volume isn't mounted, or a previous
+    /// run's files fill it.
+    #[arg(long, env = "USNM_WORK_MIN_FREE_GIB", default_value_t = 0)]
+    min_free_gib: u64,
 }
 
 #[derive(Subcommand)]
@@ -285,9 +295,13 @@ async fn release_locked(
     t: &IndexTarget,
 ) -> anyhow::Result<Option<usnm_ingest::release::Published>> {
     let mut node = None;
+    let wait = MergeWait {
+        timeout: std::time::Duration::from_secs(t.merge_timeout_secs),
+        ..MergeWait::default()
+    };
     let mut sink: Box<dyn IndexSink> = match (&t.index_dir, &t.quickwit_url, &t.quickwit_bin) {
         (Some(dir), None, None) => Box::new(JsonlSink::new(dir)),
-        (None, Some(url), None) => Box::new(QuickwitSink::new(url, root(t)?)?),
+        (None, Some(url), None) => Box::new(QuickwitSink::new(url, root(t)?)?.merges(wait)),
         (None, None, Some(bin)) => {
             let metastore = t
                 .quickwit_metastore
@@ -295,8 +309,11 @@ async fn release_locked(
                 .context("--quickwit-bin needs --quickwit-metastore")?;
             let dir = cli.work_dir.join("quickwit");
             std::fs::create_dir_all(&dir)?;
+            check_free_disk(&dir, t.min_free_gib)?;
             let n = QuickwitNode::start(bin, &dir, t.quickwit_port, metastore, root(t)?).await?;
-            let sink = QuickwitSink::new(&n.url, root(t)?)?.watching(&n);
+            let sink = QuickwitSink::new(&n.url, root(t)?)?
+                .watching(&n)
+                .merges(wait);
             node = Some(n);
             Box::new(sink)
         }
@@ -307,6 +324,44 @@ async fn release_locked(
         n.stop().await?;
     }
     result
+}
+
+/// Fail before indexing anything if `dir` has less than `min_gib` free. A
+/// previous writer's data in `dir/qwdata` is about to be removed, so it
+/// counts as free.
+fn check_free_disk(dir: &std::path::Path, min_gib: u64) -> anyhow::Result<()> {
+    if min_gib == 0 {
+        return Ok(());
+    }
+    let free = usnm_ingest::progress::disk_free(dir)
+        .with_context(|| format!("reading the free space of {}", dir.display()))?;
+    let stale = dir_size(&dir.join("qwdata"));
+    let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
+    if free.saturating_add(stale) < min_gib.saturating_mul(1 << 30) {
+        bail!(
+            "{} has {:.1} GiB free, under the {min_gib} GiB a release needs for indexing and \
+             merges (08 §8.4); is the scratch volume mounted?",
+            dir.display(),
+            gib(free + stale)
+        );
+    }
+    tracing::info!(dir = %dir.display(), free_gib = gib(free + stale).round(), "work disk");
+    Ok(())
+}
+
+/// Bytes in the files under `path` (0 if it doesn't exist).
+fn dir_size(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size(&e.path()),
+            Ok(_) => e.metadata().map_or(0, |m| m.len()),
+            Err(_) => 0,
+        })
+        .sum()
 }
 
 fn root(t: &IndexTarget) -> anyhow::Result<&str> {
@@ -432,5 +487,53 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             }
             release(&cli.stores, &state, *full, *synthetic, target).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_writer_needs_its_scratch_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        check_free_disk(dir.path(), 0).unwrap();
+        check_free_disk(dir.path(), 1).unwrap();
+        // More than any test machine has: the volume isn't mounted.
+        let err = check_free_disk(dir.path(), 1 << 30)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("scratch volume"), "{err}");
+    }
+
+    #[test]
+    fn a_previous_writers_data_counts_as_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("qwdata/wal");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("a"), vec![0u8; 3000]).unwrap();
+        std::fs::write(dir.path().join("qwdata/b"), vec![0u8; 500]).unwrap();
+        assert_eq!(dir_size(&dir.path().join("qwdata")), 3500);
+        assert_eq!(dir_size(&dir.path().join("missing")), 0);
+    }
+
+    #[test]
+    fn merge_and_disk_settings_default() {
+        let cli = Cli::try_parse_from([
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "release",
+            "--index-dir",
+            "x",
+        ])
+        .unwrap();
+        let Command::Release { target, .. } = cli.command else {
+            panic!("not a release");
+        };
+        assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
+        assert_eq!(target.min_free_gib, 0);
     }
 }

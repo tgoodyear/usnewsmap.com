@@ -149,7 +149,7 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
 
 ## Ingest jobs
 
-1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `scripts/settings.sh <env> USNM_INGEST_JOBS true` and `scripts/provision.sh <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4). The weekly schedule comes after the first release (step 5).
+1. Deploy the jobs: `scripts/bootstrap.sh <env> --ingest` (or `scripts/settings.sh <env> USNM_INGEST_JOBS true` and `scripts/provision.sh <env>` on an environment already on the registry). `USNM_BACKFILL_WORKERS` sets the backfill's workers (default 4), and `USNM_BACKFILL_CRON` an optional schedule for it (a UTC cron such as `"0 9 2-4 10 *"`; empty is manual), which every deployment keeps. The ingest job's Quickwit writer works on an NFS share, `USNM_INGEST_SCRATCH_GIB` in size (default 128; 0 removes it, 08 §8.4). The weekly schedule comes after the first release (step 5).
 2. The catalog (`reference/catalog/titles.json`, `places.json`) is built by `titles-sync`, which `run` calls before every release. Coordinate corrections live in git, in `catalog/overrides/places.json` (`[{city, state, lat, lon}]`), and ship in the ingest image; the next run applies them.
 3. Backfill, then publish the first version:
    ```sh
@@ -167,7 +167,8 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
    Watch with `az containerapp job execution list -n <job> -g "$RG" -o table` and the saved log queries:
    ```sh
    scripts/logs.sh prod list                      # the saved queries (ops/queries/)
-   scripts/logs.sh prod release-progress 6h       # docs sent, rate, retries, free disk, memory
+   scripts/logs.sh prod release-progress 6h       # docs sent, rate, retries, free disk, memory, merges
+   scripts/logs.sh prod index-layout 2d           # splits, docs and size of each index a release published
    scripts/logs.sh prod curation-throughput 1d    # batches and pages per hour
    scripts/logs.sh prod curate-replicas 6h        # each worker's last line, batch and stage
    scripts/logs.sh prod errors-by-batch 1d
@@ -177,6 +178,18 @@ Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `mai
    The last lines of each worker say why it stopped: `max runtime reached; claiming no more batches` (with the number of batches still queued) when the execution should be started again. `curation finished` on its own means the worker found nothing more it could claim. A batch that failed in this execution is queued again but skipped by that worker, so check `scripts/logs.sh prod errors-by-batch 1d` and start the job once more if it lists batches that weren't curated later.
 4. Switch the API to the published indexes: `scripts/settings.sh <env> USNM_SEARCH_BACKEND quickwit`, then `scripts/provision.sh <env>`.
 5. Poll LoC weekly for new batches: `scripts/settings.sh <env> USNM_INGEST_CRON "17 3 * * 1"` (Mondays 03:17 UTC), then `scripts/provision.sh <env>` while no ingest execution is running. The setting lives only in `.azure/<env>/.env`. Each run fetches LoC's listing once, curates and releases what is new, and exits 0 when there is nothing (08 §8.4). It stops curating 6 h in and releases what it has; if its log says `max runtime reached; claiming no more batches` with batches still queued, start the backfill job to curate the rest. A scheduled job can still be started by hand.
+
+6. Check a release's splits. Before it publishes, a release waits for the writer's merges: `release merges` lines (every 30 s: step `settle` then `finalize`, splits, merges running and queued, free disk), then `merges settled; closing the index for its final merges`, then `merged; the index is closed to further writes` with the new index's split count. It then logs one `index layout` line per index of the new version and records the same under `indexes` in `reference/<version>/manifest.json`. `scripts/logs.sh prod index-layout 2d` lists them. A merged index has at most `pages / 1,000,000` (rounded down) `+ 7` splits; the release fails rather than publish more, or if merges don't finish within 90 minutes (fixed for the deployed job, whose 24-hour limit is budgeted around it in `infra/modules/ingestjobs.bicep`; `--merge-timeout-secs` or `USNM_MERGE_TIMEOUT_SECS` changes it for a run started by hand), or if the writer reports a full disk or a failed merge.
+7. Rebuild the indexes as one merged base (one-off). Indexes built before the merge settings (September 2026) keep their many small splits: their splits are past any maturation period, so nothing merges them in place, and they are sealed. A full release builds a new base from every curated batch, merged, and publishes a version with no deltas; the previous version stays in Blob for rollback (`current.json`). It takes the writer lock like any release, so it never runs alongside another writer (08 §8.4.1). Run it when no backfill or ingest execution is running and the backfill has finished:
+   ```sh
+   scripts/settings.sh prod USNM_INGEST_FULL true
+   scripts/provision.sh prod
+   az containerapp job start -n "$(scripts/settings.sh prod INGEST_JOB)" -g "$RG"
+   # When the execution has ended (index-layout shows the new base):
+   scripts/settings.sh prod USNM_INGEST_FULL ""
+   scripts/provision.sh prod
+   ```
+   Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would rebuild the whole corpus. At the September 2026 build rates (37,000 to 74,000 pages a minute), each 10 million pages take 2 to 5 hours, plus the merge wait. Benchmark afterwards with `scripts/bench-cold-searches.py`.
 
 The storage and Cosmos accounts stay private throughout: the jobs run inside the VNet.
 

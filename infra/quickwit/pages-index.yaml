@@ -33,7 +33,28 @@ doc_mapping:
     - { name: sort_key, type: u64, fast: true, indexed: false }
     - { name: batch, type: text, tokenizer: raw }
 indexing_settings:
-  commit_timeout_secs: 10
+  # Batch ingestion: a split is cut when the 1 GiB indexing heap fills or
+  # after 30 s (about 20,000 pages at the writer's 20 MB/s), not every 10 s.
+  # The release forces the last commit. Longer would also hold up the
+  # writer's shutdown, which waits for a commit to drain its shards.
+  commit_timeout_secs: 30
+  # A cold search opens every split, so an index should be a few large ones
+  # (05 §5.5.1). Splits merge 10 at a time until they hold a million pages
+  # (about 23 GB), which also bounds the writer's scratch disk: the largest
+  # merge needs its inputs and its output on disk at once (08 §8.4).
+  split_num_docs_target: 1000000
+  merge_policy:
+    type: limit_merge
+    merge_factor: 10
+    max_merge_factor: 12
+    max_merge_ops: 4
+    # Longer than any release: a split must not stop merging while the
+    # release still waits for it.
+    maturation_period: 7d
+    # When the release closes the index, up to 5 final merges of the small
+    # splits that are left. The release checks the result against these
+    # settings (crates/usnm-ingest/src/merges.rs).
+    max_finalize_merge_operations: 5
   # The writer shares the ingest job's memory with the release; Quickwit's
   # default indexing heap is 2 GiB.
   resources:
