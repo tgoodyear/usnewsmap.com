@@ -1,4 +1,5 @@
-// Title languages for the relative-rate view (doc 11, 11.14). An English
+// Title languages for the relative-rate view (doc 11, 11.14) and the
+// language filter's names (07 §7.9). An English
 // search term rarely matches pages printed in another language, so a place
 // with such papers can read low; the view says which languages its papers
 // are in. Codes and names follow the catalog's table (crates/usnm-core/src/
@@ -15,10 +16,17 @@ const NAMES: Record<string, string> = {
   bul: "Bulgarian", alb: "Albanian", mus: "Creek",
 };
 
-export function languageName(code: string): string {
+/**
+ * The name for a catalog code. `fallback` (such as the API's name for it) is
+ * used for a code this table doesn't list.
+ */
+export function languageName(code: string, fallback?: string): string {
+  const known = NAMES[code];
+  if (known) return known;
+  if (fallback) return fallback;
   // Unlisted languages arrive as the catalog's lowercase name, which may
   // have several words ("pennsylvania german"): title-case each word.
-  return NAMES[code] ?? code.replace(/(^|[\s-])(\p{L})/gu, (_, sep: string, ch: string) => sep + ch.toUpperCase());
+  return code.replace(/(^|[\s-])(\p{L})/gu, (_, sep: string, ch: string) => sep + ch.toUpperCase());
 }
 
 /**
@@ -31,7 +39,7 @@ export function languageLabel(codes: readonly string[] | undefined): string | nu
   if (!list.some((c) => c !== "eng")) return null;
   const names = list
     .filter((c) => c !== "eng")
-    .map(languageName)
+    .map((c) => languageName(c))
     .sort((a, b) => a.localeCompare(b));
   if (list.includes("eng")) names.push("English");
   const joined = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;

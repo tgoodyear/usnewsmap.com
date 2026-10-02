@@ -13,6 +13,11 @@ export interface Meta {
   titles: number;
   /** Every page in the published version. Absent from APIs older than this field. */
   pages?: number;
+  /**
+   * The language filter's choices (07 §7.9): catalog languages the `lang`
+   * parameter accepts, most pages first. Absent from older APIs.
+   */
+  languages?: MetaLanguage[];
   capabilities: {
     fuzzy: boolean;
     max_slop: number;
@@ -26,6 +31,15 @@ export interface Meta {
     max_fuzzy: number;
     min_prefix_chars: number;
   };
+}
+
+export interface MetaLanguage {
+  code: string;
+  name: string;
+  /** Titles that list it; a title in several languages counts in each. */
+  titles: number;
+  /** Null when the snapshot doesn't record pages per title. */
+  pages: number | null;
 }
 
 export interface PlaceFeature {

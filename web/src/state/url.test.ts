@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULTS, isIsoDate, parseView, serializeView } from "./url";
+import { DEFAULTS, isIsoDate, parseView, searchParams, serializeView } from "./url";
 
 describe("view URL", () => {
   it("round-trips and writes only non-defaults", () => {
     const v = parseView(
-      "?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week&t=1896-07-12&win=4&layer=heat&norm=skew&state=il,ny&place=P00412&z=4.2&c=-92.1,39.4",
+      "?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week&t=1896-07-12&win=4&layer=heat&norm=skew&state=il,ny&lang=ger&place=P00412&z=4.2&c=-92.1,39.4",
     );
     expect(v.q).toBe('"cross of gold"');
     expect(v.state).toEqual(["IL", "NY"]);
+    expect(v.lang).toEqual(["ger"]);
     expect(v.win).toBe(4);
     expect(v.c).toEqual([-92.1, 39.4]);
     expect(v.norm).toBe("skew");
@@ -18,7 +19,7 @@ describe("view URL", () => {
 
   it("drops invalid values instead of trusting them", () => {
     const v = parseView(
-      "?mode=evil&bucket=hour&from=1896-6-1&win=-3&layer=3d&z=99&c=500,1&place=%3Cscript%3E&state=Illinois",
+      "?mode=evil&bucket=hour&from=1896-6-1&win=-3&layer=3d&z=99&c=500,1&place=%3Cscript%3E&state=Illinois&lang=%3Cb%3E",
     );
     expect(v).toEqual(DEFAULTS);
   });
@@ -46,6 +47,20 @@ describe("view URL", () => {
     expect(parseView("?q=fever&norm=rel").norm).toBe("raw");
     expect(serializeView(parseView("?q=fever&norm=rel"))).toBe("?q=fever");
     expect(parseView("?q=fever&norm=lift").norm).toBe("raw");
+  });
+
+  it("keeps the language filter in the API's canonical order", () => {
+    const v = parseView("?q=fever&lang=SPA,ger,spa,%20eng");
+    expect(v.lang).toEqual(["eng", "ger", "spa"]);
+    expect(serializeView(v)).toBe("?q=fever&lang=eng%2Cger%2Cspa");
+    expect(parseView(serializeView(v))).toEqual(v);
+    // Unsorted or repeated codes set in code are written canonically too.
+    expect(serializeView({ ...DEFAULTS, q: "fever", lang: ["spa", "ger", "spa"] })).toBe("?q=fever&lang=ger%2Cspa");
+    expect(searchParams(v).lang).toEqual(["eng", "ger", "spa"]);
+    // Anything but three letters is dropped; nothing left means no filter.
+    expect(parseView("?q=fever&lang=german,e1g,,pennsylvania%20german").lang).toEqual([]);
+    expect(serializeView(parseView("?q=fever&lang=xx"))).toBe("?q=fever");
+    expect(parseView("?q=fever&lang=ger,english").lang).toEqual(["ger"]);
   });
 
   it("keeps near only in near mode", () => {

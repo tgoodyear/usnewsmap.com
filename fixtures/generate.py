@@ -42,6 +42,11 @@ TOPICS = {
 # Days after 1896-07-09 when each place first carries the speech (east first, then west).
 SPREAD = {"P00001": 1, "P00002": 4, "P00004": 9, "P00005": 12, "P00003": 20, "P00006": 30}
 
+# Catalog languages of each place's one title, for the language filter. Most
+# are English; one title lists two languages (it counts in both), and two
+# list one other language. The page text stays English: it is templated.
+LANGUAGES = {"P00002": ["eng", "ger"], "P00003": ["spa"], "P00006": ["ger"]}
+
 
 def day_number(d):
     return (d - EPOCH).days
@@ -68,9 +73,10 @@ def main():
     titles, docs_base, docs_delta, baselines, title_pages = [], [], [], {}, {}
     for pid, ordinal, name, state, *_ in PLACES:
         lccn = f"sn99{ordinal:06d}"
+        languages = LANGUAGES.get(pid, ["eng"])
         titles.append({
             "lccn": lccn, "name": f"The Fixture Gazette {ordinal}", "ordinal": ordinal, "place_id": pid,
-            "state": state, "languages": ["eng"], "first": "1895-01-01", "last": "1897-12-31",
+            "state": state, "languages": languages, "first": "1895-01-01", "last": "1897-12-31",
         })
         counts = {}
         d = date(1895, 1, 5)
@@ -94,7 +100,7 @@ def main():
                     "doc_id": f"{lccn}_{d.isoformat()}_ed-1_seq-{seq}",
                     "day": dn, "ym": d.year * 12 + d.month - 1, "year": d.year,
                     "place_id": pid, "place_shard": ordinal % 8, "lccn": lccn,
-                    "state": state, "language": ["eng"], "front_page": seq == 1,
+                    "state": state, "language": languages, "front_page": seq == 1,
                     "edition": 1, "seq": seq,
                     # Hits order within a day: title, then edition, then page (05 §5.5).
                     "sort_key": sort_key(ordinal, 1, seq),

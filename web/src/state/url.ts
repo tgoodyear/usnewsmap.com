@@ -23,6 +23,8 @@ export interface ViewState {
   to: string;
   bucket: BucketUnit | "auto";
   state: string[];
+  /** Newspaper languages (catalog codes such as "ger"), lowercase, sorted, no repeats (07 §7.9). */
+  lang: string[];
   /** Scrubber position (ISO date); empty = end of range. */
   t: string;
   /** Trailing window in buckets; null = cumulative. */
@@ -44,6 +46,7 @@ export const DEFAULTS: ViewState = {
   to: "",
   bucket: "auto",
   state: [],
+  lang: [],
   t: "",
   win: null,
   layer: "points",
@@ -64,6 +67,18 @@ export function isIsoDate(v: string): boolean {
   const [y, m, d] = v.split("-").map(Number) as [number, number, number];
   const date = new Date(Date.UTC(y, m - 1, d));
   return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
+
+/**
+ * Language codes as the API's canonical form has them: three letters,
+ * lowercase, sorted, without repeats. Anything else is dropped.
+ */
+export function parseLangs(v: string | null): string[] {
+  const codes = (v ?? "")
+    .split(",")
+    .map((x) => x.trim().toLowerCase())
+    .filter((x) => /^[a-z]{3}$/.test(x));
+  return [...new Set(codes)].sort().slice(0, 60);
 }
 
 function oneOf<T extends string>(v: string | null, allowed: readonly T[], d: T): T {
@@ -97,6 +112,7 @@ export function parseView(search: string): ViewState {
       .split(",")
       .map((x) => x.trim().toUpperCase())
       .filter((x) => /^[A-Z]{2}$/.test(x)),
+    lang: parseLangs(s.get("lang")),
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
@@ -123,6 +139,7 @@ export function serializeView(v: ViewState): string {
   put("to", v.to, "");
   put("bucket", v.bucket, DEFAULTS.bucket);
   put("state", v.state.join(","), "");
+  put("lang", parseLangs(v.lang.join(",")).join(","), "");
   put("t", v.t, "");
   if (v.win !== null) s.set("win", String(v.win));
   put("layer", v.layer, DEFAULTS.layer);
@@ -137,7 +154,7 @@ export function serializeView(v: ViewState): string {
 
 /** The search a view asks the API for (the rest of the view is display state). */
 export function searchParams(v: ViewState): SearchParams {
-  return { q: v.q, mode: v.mode, near: v.near, from: v.from, to: v.to, bucket: v.bucket, state: v.state };
+  return { q: v.q, mode: v.mode, near: v.near, from: v.from, to: v.to, bucket: v.bucket, state: v.state, lang: v.lang };
 }
 
 function subscribe(cb: () => void): () => void {

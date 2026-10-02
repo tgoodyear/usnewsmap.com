@@ -167,6 +167,18 @@ describe("api client", () => {
     expect(url).toBe("/v1/aggregate?q=a+b&state=GA&v=v1");
   });
 
+  it("sends the language filter to searches and page lists", async () => {
+    respond({ index_version: "v1" });
+    await api.aggregate({ q: "gold", mode: "all", lang: ["ger", "spa"] }, "v1");
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe("/v1/aggregate?q=gold&lang=ger%2Cspa&v=v1");
+    respond({ index_version: "v1" });
+    await api.hits({ q: "gold", mode: "all", lang: ["ger"] }, "v1", "P00006", null);
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
+      "/v1/hits?q=gold&lang=ger&v=v1&place=P00006&limit=20",
+    );
+    expect(searchQuery({ q: "gold", mode: "all", lang: [] }, "v").toString()).toBe("q=gold&v=v");
+  });
+
   it("sends the mode for plain words and query syntax as-is", () => {
     const q = (p: Parameters<typeof searchQuery>[0]) => searchQuery(p, "v").toString();
     expect(q({ q: "cross of gold", mode: "phrase" })).toBe("q=cross+of+gold&mode=phrase&v=v");

@@ -18,7 +18,8 @@
   "place_id": "P00002",
   "state": "NY",
   "languages": [
-   "eng"
+   "eng",
+   "ger"
   ],
   "first": "1895-01-01",
   "last": "1897-12-31"
@@ -30,7 +31,7 @@
   "place_id": "P00003",
   "state": "CA",
   "languages": [
-   "eng"
+   "spa"
   ],
   "first": "1895-01-01",
   "last": "1897-12-31"
@@ -66,7 +67,7 @@
   "place_id": "P00006",
   "state": "NE",
   "languages": [
-   "eng"
+   "ger"
   ],
   "first": "1895-01-01",
   "last": "1897-12-31"

@@ -28,7 +28,7 @@ Build-time settings:
 
 ## How it works
 
-- **The URL is the state** (`src/state/url.ts`). Query, dates, scrubber position, window, layer, measure, selected place, tab and viewport are all in the URL. Only non-default values are written, and every parameter is validated when the URL is parsed.
+- **The URL is the state** (`src/state/url.ts`). Query, dates, states, newspaper languages (`lang`, [07 §7.9](../docs/design/07-frontend-design.md#79-language-filter)), scrubber position, window, layer, measure, selected place, tab and viewport are all in the URL. Only non-default values are written, and every parameter is validated when the URL is parsed.
 - **One aggregate request per search.** `src/engine/cube.ts` builds per-place prefix sums from the sparse cube, so each playback frame, cumulative or trailing window, is a subtraction per place. The place table's share of pages published and the relative rate use the coverage cube named by `baseline_ref`, aligned to the same places.
 - **Relative rate** (`norm=skew`, [doc 11](../docs/design/11-term-geographic-skew.md)). `src/engine/skew.ts` ports the Rust scoring (`usnm_core::skew`); `src/engine/skewModel.ts` fits a search once, in a web worker (`skew.worker.ts`), and scores each playback frame from prefix sums. `src/engine/skew.test.ts` checks the port against `fixtures/skew-vectors.json`, which `cargo test -p usnm-core --test skew_vectors` checks (and rewrites with `UPDATE_SKEW_VECTORS=1`). The share-of-pages measure (`norm=rel`) was removed; old links open on Pages.
 - **Version pinning.** Every request carries the `v` from `/v1/meta`, so a whole session reads one published snapshot.

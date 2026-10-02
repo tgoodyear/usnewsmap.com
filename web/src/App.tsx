@@ -111,10 +111,13 @@ export function App() {
   // back; until then don't fit at all.
   const [skewUsed, setSkewUsed] = useState(wantSkew);
   if (wantSkew && !skewUsed) setSkewUsed(true);
-  const prepared: Prepared | Unavailable | null = useMemo(
-    () => (skewUsed && data && coverage.data && places.data ? prepareSkew(data, coverage.data, features) : null),
-    [skewUsed, data, coverage.data, places.data, features],
-  );
+  const prepared: Prepared | Unavailable | null = useMemo(() => {
+    if (!skewUsed || !data || !places.data) return null;
+    // A language filter: the API sends no baselines, so there is no coverage
+    // to wait for (07 §7.9).
+    if (data.cube.baseline_ref === null || data.series.baseline === null) return "filters";
+    return coverage.data ? prepareSkew(data, coverage.data, features) : null;
+  }, [skewUsed, data, coverage.data, places.data, features]);
   const { state: skew, last: lastSkew } = useSkewModel(typeof prepared === "object" ? prepared : null);
   // While a refit of the same search (and index version) runs, keep drawing
   // the previous fit rather than flipping to page counts and back. Another
@@ -394,7 +397,7 @@ export function App() {
               {data.total.hits === 0 ? (
                 <div className="notice" role="status">
                   <strong>No pages match.</strong> Try “All words” instead of an exact phrase, widen the
-                  dates, or remove state filters.
+                  dates, or remove {view.lang.length > 0 ? "language or state filters" : "state filters"}.
                 </div>
               ) : (
                 <div className="stage">
@@ -411,7 +414,13 @@ export function App() {
                           <StateTable rows={stateRows} />
                         </div>
                       ) : (
-                        <PlaceTable key="raw" rows={visible} onSelect={select} selected={view.place} />
+                        <PlaceTable
+                          key="raw"
+                          rows={visible}
+                          onSelect={select}
+                          selected={view.place}
+                          share={data.cube.baseline_ref !== null}
+                        />
                       )}
                     </>
                   ) : (
@@ -597,7 +606,7 @@ function skewStatus(
     };
   if (prepared === "filters")
     return {
-      text: "The relative rate isn't available with title, language or front-page filters. Showing page counts.",
+      text: "The relative rate isn't available with a language filter yet: pages published are counted per place, not per language. Showing page counts.",
       error: false,
     };
   if (prepared === "few-places")

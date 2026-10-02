@@ -265,7 +265,8 @@ test("the status page shows the published version without the pipeline state", a
 test("the status page lists published pages by state and by language", async ({ page }) => {
   const errors = watchErrors(page);
   await page.goto("/status");
-  // The fixtures: six places in six states, 312 pages each, all in English.
+  // The fixtures: six places in six states, 312 pages each; four titles in
+  // English (one of them also German), one German and one Spanish.
   const states = page.getByRole("table", { name: "Published pages by state" });
   await expect(page.getByRole("heading", { level: 2, name: "Pages by state" })).toBeVisible();
   await expect(states.locator("tbody tr")).toHaveCount(6);
@@ -281,8 +282,9 @@ test("the status page lists published pages by state and by language", async ({ 
 
   const languages = page.getByRole("table", { name: "Published pages by language" });
   await expect(page.getByRole("heading", { level: 2, name: "Pages by language" })).toBeVisible();
-  await expect(languages.locator("tbody tr")).toHaveCount(1);
-  await expect(languages.locator("tbody tr")).toHaveText(/English\s*6\s*1,872\s*100\.0%/);
+  await expect(languages.locator("tbody tr")).toHaveCount(3);
+  await expect(languages.locator("tbody tr").first()).toHaveText(/English\s*4\s*1,248\s*66\.7%/);
+  await expect(page.getByText("1 newspaper lists more than one language", { exact: false })).toBeVisible();
 
   // On a phone the page itself never scrolls sideways; a wide table scrolls in its own box.
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

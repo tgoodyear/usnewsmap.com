@@ -74,7 +74,7 @@ Principles:
 | `from`, `to` | ISO date | `1896-06-01` | Clamped to the corpus bounds |
 | `state` | CSV of USPS codes | `GA,SC` | |
 | `lccn` | CSV | `sn84026749` | |
-| `lang` | CSV ISO 639-2 | `eng,ger` | |
+| `lang` | CSV ISO 639-2 | `eng,ger` | Three-letter catalog codes, any of them. A page matches when its newspaper's catalog record lists any given language, so a title in English and German is found by either. Pages published are kept per place and day only, so with `lang` the response has no baselines (§6.3.3) |
 | `front` | bool | `true` | Front pages only |
 | `bucket` | enum `auto\|year\|month\|week\|day` | `week` | See [05 §5.7](05-search-and-storage.md#57-aggregation-strategy) |
 
@@ -84,7 +84,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 
 | Method & path | Purpose | Cache |
 |---------------|---------|-------|
-| `GET /v1/meta` | `index_version`, corpus bounds, doc count, backend capabilities, build time | 5 min |
+| `GET /v1/meta` | `index_version`, corpus bounds, doc count, backend capabilities, build time, and `languages`: the choices for the site's language filter ([07 §7.9](07-frontend-design.md#79-language-filter)), `[{code, name, titles, pages}]` for each catalog language `lang` accepts, most pages first (`pages` is `null` when the snapshot doesn't record pages per title). A title in several languages counts in each | 5 min |
 | `GET /v1/aggregate` | Q1: totals, national series, per-place cube, first appearance | 1 day (+ `index_version`) |
 | `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date, with snippets; cursor pagination | 1 day |
 | `GET /v1/compare` | Up to 4 queries (`q1…q4`); national series for each + per-place totals (no cube) | 1 day |
