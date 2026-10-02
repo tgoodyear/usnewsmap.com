@@ -106,7 +106,7 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 | `USNM_SEARCH_TIMEOUT_SECS` | `10` | How long a visitor's request waits for a response (plus 2 s with a persistent cache); past it the API answers `202 Accepted` and the search carries on (06 §6.3.5) |
 | `USNM_COMPUTE_CAP_SECS` | `120` | Limit on one search computation and each backend call in it; past it the search fails with a `503` timeout, which is not cached |
 | `USNM_COMPUTE_CONCURRENCY` | `4` | Searches computed at once, including those still running after a `202`; a new one waits for a slot up to the visitor's wait, then gets `503 /errors/busy` |
-| `USNM_ABANDON_AFTER_SECS` | `15` | A computation no request has waited on for this long is cancelled (the visitor changed the search or left) |
+| `USNM_ABANDON_AFTER_SECS` | `15` | A computation no request has waited on for this long is cancelled (the visitor changed the search or left); at least 5 |
 | `USNM_REFRESH_SECS` | `600` | How often `current.json` is re-read for a newly published version |
 | `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |
 | `USNM_PREWARM_BUDGET_SECS` | `300` | Cache warm-up: limit on the whole run; the rest is skipped |

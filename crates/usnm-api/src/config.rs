@@ -19,6 +19,10 @@ pub struct RateLimit {
     pub burst: NonZeroU32,
 }
 
+/// The shortest `USNM_ABANDON_AFTER_SECS`: the 2 s `Retry-After` of a `202`
+/// plus room for a slow network.
+pub const MIN_ABANDON_AFTER_SECS: u64 = 5;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
@@ -166,7 +170,16 @@ impl Config {
             compute_cap: Duration::from_secs(num("USNM_COMPUTE_CAP_SECS", 120)?.max(1)),
             compute_concurrency: usize::try_from(num("USNM_COMPUTE_CONCURRENCY", 4)?.max(1))
                 .map_err(|e| e.to_string())?,
-            abandon_after: Duration::from_secs(num("USNM_ABANDON_AFTER_SECS", 15)?.max(1)),
+            abandon_after: match num("USNM_ABANDON_AFTER_SECS", 15)? {
+                // Well above the 2 s Retry-After, or a slow search still being
+                // polled could be cancelled between two polls.
+                s if s < MIN_ABANDON_AFTER_SECS => {
+                    return Err(format!(
+                        "USNM_ABANDON_AFTER_SECS must be at least {MIN_ABANDON_AFTER_SECS}"
+                    ))
+                }
+                s => Duration::from_secs(s),
+            },
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
             prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 300)?),
             prewarm_top_searches: usize::try_from(num("USNM_PREWARM_TOP_SEARCHES", 20)?)
@@ -230,6 +243,9 @@ mod tests {
         assert!(c.reference_url.starts_with("https://"));
         assert!(Config::from_lookup(|k| (k == "USNM_RATE_BURST").then(|| "0".into())).is_err());
         assert!(Config::from_lookup(|k| (k == "USNM_CACHE_MB").then(|| "x".into())).is_err());
+        assert!(
+            Config::from_lookup(|k| (k == "USNM_ABANDON_AFTER_SECS").then(|| "2".into())).is_err()
+        );
         let slow = Config::from_lookup(|k| (k == "USNM_FIXTURE_SLOW_TERM").then(|| "Slow".into()))
             .unwrap();
         assert_eq!(
