@@ -1,7 +1,8 @@
 // Release progress: how far the index build is, how fast, free disk, memory.
 // The "release progress" lines the ingest job logs every 30 s and after
 // each batch, the "release merges" lines while it waits for the new index's
-// merges, the "index layout" lines (splits per index) before it publishes,
+// merges, the lines as it closes the index and once it is sealed, the
+// "index layout" lines (splits per index) before it publishes,
 // with the release's start and end lines and the Quickwit writer's warnings
 // and errors.
 // Lines that could carry the managed identity endpoint's secret are dropped.
@@ -10,7 +11,10 @@ ContainerAppConsoleLogs
 | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
 | extend j = parse_json(Log)
 | extend Message = tostring(j.fields.message), Target = tostring(j.target), Level = tostring(j.level)
-| where Message in ("building index", "release progress", "release merges", "index layout", "published", "released", "command failed")
+| where Message in ("building index", "release progress", "release merges",
+        "merges settled; closing the index for its final merges",
+        "merged; the index is closed to further writes",
+        "index layout", "published", "released", "command failed")
     or (Target == "quickwit" and Level in ("WARN", "ERROR"))
 | project
     TimeGenerated,
