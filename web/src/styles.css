@@ -275,6 +275,13 @@ input, select {
   .map { min-height: 55vh; }
   .panel { width: 100%; max-height: none; border-left: 0; border-top: 1px solid var(--line); }
   .legend { position: static; margin: 8px 16px; max-width: none; }
+  /* Phones: the playback controls sit right under the map, above the legend and the lists. The
+     stage's children join the results column so the timebar can go between them. */
+  .results > .stage { display: contents; }
+  .stage > * { order: 1; }
+  .results > .timebar { order: 2; border-top: 0; border-bottom: 1px solid var(--line); }
+  .stage > .legend { order: 3; }
+  .stage > .panel { order: 4; }
 }
 
 @media (prefers-reduced-motion: reduce) {
