@@ -9,7 +9,7 @@ use serde_json::json;
 use usnm_core::params::RawParams;
 use usnm_core::query;
 
-use super::{cached, Ctx};
+use super::{cached, Ctx, Job};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
@@ -72,10 +72,14 @@ pub async fn places(
     places_in(&state, ctx, &uri).await
 }
 
-pub(crate) async fn places_in(state: &AppState, ctx: Ctx, uri: &Uri) -> Result<Response, ApiError> {
+pub(crate) async fn places_in(
+    state: &Arc<AppState>,
+    ctx: Ctx,
+    uri: &Uri,
+) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
     raw.reject_only(&["v"])?;
-    let warm_up = ctx.warm_up;
+    let job = Job::reference("places", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();
     let pinning = match version::check(raw.get("v"), &serving, uri.path(), "") {
@@ -86,8 +90,17 @@ pub(crate) async fn places_in(state: &AppState, ctx: Ctx, uri: &Uri) -> Result<R
     let compute = async move {
         let rd = &snap.refdata;
         let mut title_counts = std::collections::HashMap::<&str, usize>::new();
+        // The languages the place's titles are printed in (catalog codes,
+        // e.g. "eng", "ger"). The map's relative-rate view names them for a
+        // place where any title isn't in English (doc 11, 11.14).
+        let mut languages =
+            std::collections::HashMap::<&str, std::collections::BTreeSet<&str>>::new();
         for t in rd.titles.values() {
             *title_counts.entry(t.place_id.as_str()).or_default() += 1;
+            languages
+                .entry(t.place_id.as_str())
+                .or_default()
+                .extend(t.languages.iter().map(String::as_str));
         }
         let features: Vec<_> = rd
             .places
@@ -101,7 +114,8 @@ pub(crate) async fn places_in(state: &AppState, ctx: Ctx, uri: &Uri) -> Result<R
                         "name": p.name,
                         "state": p.state,
                         "precision": p.precision,
-                        "titles": title_counts.get(p.id.as_str()).copied().unwrap_or(0)
+                        "titles": title_counts.get(p.id.as_str()).copied().unwrap_or(0),
+                        "languages": languages.get(p.id.as_str()).map(|l| l.iter().collect::<Vec<_>>()).unwrap_or_default()
                     }
                 })
             })
@@ -112,15 +126,5 @@ pub(crate) async fn places_in(state: &AppState, ctx: Ctx, uri: &Uri) -> Result<R
             "features": features
         }))
     };
-    cached(
-        state,
-        warm_up,
-        key,
-        &pinning,
-        &serving,
-        uri.path(),
-        "",
-        compute,
-    )
-    .await
+    cached(state, job, key, &pinning, &serving, uri.path(), "", compute).await
 }

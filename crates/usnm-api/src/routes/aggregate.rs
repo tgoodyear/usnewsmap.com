@@ -13,7 +13,7 @@ use usnm_core::params::{RawParams, SearchRequest};
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::plan::{self, Planned};
 
-use super::{cached_body, mount_prefix, uses_fuzzy, with_timeout, Ctx};
+use super::{cached_body, mount_prefix, uses_fuzzy, with_timeout, Ctx, Job};
 use crate::error::ApiError;
 use crate::searchlog::{self, Admission, SearchLog};
 use crate::{version, AppState};
@@ -127,7 +127,7 @@ pub(crate) async fn aggregate_in(
     };
     let key = format!("{serving}|aggregate|{canonical}");
     let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
-    let warm_up = ctx.warm_up;
+    let job = Job::search("aggregate", ctx.warm_up, ctx.timeout);
     let search = match log {
         Some((_, Admission::Record)) => Some(searchlog::Search::new(&raw, &req, &serving)),
         _ => None,
@@ -135,7 +135,7 @@ pub(crate) async fn aggregate_in(
     let fut = compute(state.clone(), ctx, req, canonical.clone(), prefix);
     let (resp, body) = cached_body(
         state,
-        warm_up,
+        job,
         key,
         &pinning,
         &serving,
@@ -144,6 +144,11 @@ pub(crate) async fn aggregate_in(
         fut,
     )
     .await?;
+    // Still computing (`202`): nothing counts yet. The client asks again, and
+    // the request that gets the results is the one that counts.
+    let Some(body) = body else {
+        return Ok(resp);
+    };
     // Only a search that got its results counts, whichever cache served it.
     match (log, search) {
         (Some((log, _)), Some(search)) => {
@@ -177,6 +182,12 @@ async fn compute(
     let indexes = rd.index_set();
     let mut spec = req.bucket_spec();
     let mut coarsened = false;
+    if let Some((term, delay)) = &state.config.fixture_slow {
+        // End-to-end tests: stand in for a cold search (memory backend only).
+        if req.query.to_string().to_lowercase().contains(term.as_str()) {
+            tokio::time::sleep(*delay).await;
+        }
+    }
     let t = Instant::now();
     // The planner checks places-with-hits × buckets before issuing the cube,
     // so an oversized cube is coarsened here instead of failing in the engine.

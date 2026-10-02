@@ -247,6 +247,24 @@ async fn requests_are_exported_by_route_template_without_search_text() {
         StatusCode::SERVICE_UNAVAILABLE
     );
 
+    // A search slower than a visitor waits: a 202, then the result once it
+    // has been computed. Neither is a failure.
+    let mut slow_cfg = config();
+    slow_cfg.search_timeout = Duration::from_millis(50);
+    slow_cfg.fixture_slow = Some(("zebrasecret".into(), Duration::from_millis(300)));
+    let slow = Arc::new(
+        AppState::new(slow_cfg, Arc::new(fixture_backend()), refdata().await)
+            .with_metrics(Metrics::new(&meter)),
+    );
+    assert_eq!(status_of(&slow, search).await, StatusCode::ACCEPTED);
+    for _ in 0..200 {
+        if slow.flights.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(status_of(&slow, search).await, StatusCode::OK);
+
     drop(guard);
     tokio::task::spawn_blocking(move || {
         tracer.shutdown().unwrap();
@@ -274,6 +292,14 @@ async fn requests_are_exported_by_route_template_without_search_text() {
             let d = &e["data"]["baseData"];
             assert!(d.get("url").is_none(), "no URL is exported: {d}");
             assert_eq!(d["properties"]["usnm.index_version"], "fixture-v1", "{d}");
+            // Problem responses name their type, so alerts can tell a slow
+            // search from a broken one.
+            match d["responseCode"].as_str().unwrap() {
+                "503" => assert_eq!(d["properties"]["usnm.problem"], "/errors/backend", "{d}"),
+                "400" => assert_eq!(d["properties"]["usnm.problem"], "/errors/query-syntax"),
+                "404" => assert_eq!(d["properties"]["usnm.problem"], "/errors/not-found"),
+                _ => assert!(d["properties"].get("usnm.problem").is_none(), "{d}"),
+            }
             (
                 d["name"].as_str().unwrap().to_owned(),
                 d["responseCode"].as_str().unwrap().to_owned(),
@@ -287,6 +313,8 @@ async fn requests_are_exported_by_route_template_without_search_text() {
         expect("GET /v1/aggregate", "200", true),
         expect("GET /v1/aggregate", "200", true),
         expect("GET /v1/aggregate", "200", true),
+        expect("GET /v1/aggregate", "200", true),
+        expect("GET /v1/aggregate", "202", true),
         expect("GET /v1/aggregate", "400", true),
         expect("GET /v1/aggregate", "503", false),
         expect("GET (no route)", "404", true),
@@ -313,6 +341,14 @@ async fn requests_are_exported_by_route_template_without_search_text() {
         total(
             "api.cache_lookups",
             &[("layer", "memory"), ("result", "hit")]
+        ),
+        2.0
+    );
+    // The slow search, once, when it finished.
+    assert_eq!(
+        total(
+            "api.slow_searches",
+            &[("endpoint", "aggregate"), ("outcome", "ok")]
         ),
         1.0
     );
@@ -376,6 +412,8 @@ async fn requests_are_exported_by_route_template_without_search_text() {
         ("/v1/aggregate", 200),
         ("/v1/aggregate", 200),
         ("/v1/aggregate", 200),
+        ("/v1/aggregate", 200),
+        ("/v1/aggregate", 202),
         ("/v1/aggregate", 400),
         ("/v1/aggregate", 503),
         ("(no route)", 404),

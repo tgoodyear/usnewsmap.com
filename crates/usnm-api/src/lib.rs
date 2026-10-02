@@ -23,6 +23,7 @@ use usnm_store::ObjectStore;
 
 pub mod config;
 pub mod error;
+pub mod flights;
 pub mod prewarm;
 pub mod ratelimit;
 pub mod refdata;
@@ -100,6 +101,8 @@ pub struct AppState {
     pub limiter: Option<Limiter>,
     /// Caps concurrent backend queries across all requests.
     pub permits: Semaphore,
+    /// Response computations in flight, and the slots searches take.
+    pub flights: flights::Flights,
     /// The pipeline status document (`/v1/status`).
     pub status: status::StatusService,
     pub metrics: telemetry::Metrics,
@@ -131,6 +134,7 @@ impl AppState {
                 .rate_limit
                 .map(|l| Limiter::new(l, config.trusted_proxy_hops)),
             permits: Semaphore::new(config.backend_concurrency),
+            flights: flights::Flights::new(config.compute_concurrency),
             status: status::StatusService::new(status::PipelineSource::None, config.status_refresh),
             config,
             snapshot: ArcSwap::from_pointee(snapshot),

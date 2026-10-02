@@ -356,6 +356,8 @@ impl LogMetrics {
 
 /// The handlers' side of the search log.
 pub struct SearchLog {
+    /// Where the log is written, and read back by the cache warm-up.
+    store: Arc<dyn ObjectStore>,
     tx: mpsc::Sender<Entry>,
     stop: watch::Sender<bool>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -375,7 +377,7 @@ impl SearchLog {
         let (stop, stopped) = watch::channel(false);
         let metrics = LogMetrics::new(meter);
         let worker = Writer {
-            store,
+            store: store.clone(),
             config,
             rx,
             stopped,
@@ -385,11 +387,17 @@ impl SearchLog {
             metrics: metrics.clone(),
         };
         Arc::new(Self {
+            store,
             tx,
             stop,
             worker: Mutex::new(Some(tokio::spawn(worker.run()))),
             metrics,
         })
+    }
+
+    /// The store the log is written to.
+    pub fn store(&self) -> &Arc<dyn ObjectStore> {
+        &self.store
     }
 
     /// Queue a search without waiting; a full queue drops it.
@@ -588,6 +596,97 @@ pub fn stageable(day: NaiveDate, now: DateTime<Utc>) -> bool {
 /// Whether `day` can be written to `days/` at `now`.
 pub fn closable(day: NaiveDate, now: DateTime<Utc>) -> bool {
     ended(day, now, CLOSE_AFTER)
+}
+
+/// Largest day file read back for the warm-up.
+const MAX_DAY_BYTES: usize = 32 * 1024 * 1024;
+
+/// Most distinct searches the warm-up counts; past this, searches not yet
+/// seen are skipped (those already counted keep counting), so memory stays
+/// bounded however varied the log is.
+const MAX_DISTINCT: usize = 50_000;
+
+/// The cache key part of the search a record describes: the canonical query
+/// string `/v1/aggregate` computes it under (06 §6.3.1), for the corpus
+/// `bounds` serving now. `None` if it no longer parses.
+pub fn canonical(r: &Record, bounds: (NaiveDate, NaiveDate)) -> Option<String> {
+    let mut s = form_urlencoded::Serializer::new(String::new());
+    // The canonical query, without a mode, parses to the same search
+    // (`Node`'s Display is its canonical rendering).
+    s.append_pair("q", &r.query);
+    s.append_pair("from", &r.from.to_string());
+    s.append_pair("to", &r.to.to_string());
+    s.append_pair("bucket", &r.bucket);
+    for (key, list) in [("state", &r.state), ("lccn", &r.lccn), ("lang", &r.lang)] {
+        if !list.is_empty() {
+            s.append_pair(key, &list.join(","));
+        }
+    }
+    if r.front {
+        s.append_pair("front", "true");
+    }
+    let raw = RawParams::parse(&s.finish()).ok()?;
+    SearchRequest::from_raw(&raw, bounds)
+        .ok()
+        .map(|req| req.canonical())
+}
+
+/// The `n` searches made most often in the `days` days before `today`
+/// (UTC), from the day files: canonical aggregate query strings, most
+/// frequent first, ties in canonical order, so the result depends only on
+/// the files. Searches that matched no pages are fast anyway and left out.
+/// At most [`MAX_DISTINCT`] different searches are counted.
+/// A day file that can't be read is logged with its day and skipped; no
+/// search text is ever logged.
+pub async fn top_searches(
+    store: &dyn ObjectStore,
+    today: NaiveDate,
+    days: u64,
+    n: usize,
+    bounds: (NaiveDate, NaiveDate),
+) -> Vec<String> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for back in 1..=days {
+        let Some(day) = today.checked_sub_days(Days::new(back)) else {
+            break;
+        };
+        let body = match store.get(&day_path(day)).await {
+            Ok(Some(body)) => body,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(%day, error = %e, "warm-up: reading a search log day failed");
+                continue;
+            }
+        };
+        if body.len() > MAX_DAY_BYTES {
+            tracing::warn!(%day, bytes = body.len(), "warm-up: search log day too large; skipped");
+            continue;
+        }
+        // Parsing a large day is CPU work: off the async workers.
+        let keys = tokio::task::spawn_blocking(move || {
+            body.split(|c| *c == b'\n')
+                .filter_map(|line| serde_json::from_slice::<Record>(line).ok())
+                .filter(|r| r.pages != Some(0))
+                .filter_map(|r| canonical(&r, bounds))
+                .collect::<Vec<String>>()
+        })
+        .await
+        .unwrap_or_default();
+        for key in keys {
+            if let Some(n) = counts.get_mut(&key) {
+                *n += 1;
+            } else if counts.len() < MAX_DISTINCT {
+                counts.insert(key, 1);
+            }
+        }
+    }
+    let mut ranked: Vec<(String, u64)> = counts.into_iter().collect();
+    ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(n);
+    ranked.into_iter().map(|(key, _)| key).collect()
 }
 
 /// Shuffle all of a day's staged lines together and write them to its day
@@ -865,6 +964,118 @@ mod tests {
         assert!(!closable(day, at("2026-09-30T00:59:59Z")));
         assert!(closable(day, at("2026-09-30T01:00:00Z")));
         assert!(closable(day, at("2026-10-03T12:00:00Z")));
+    }
+
+    fn bounds() -> (NaiveDate, NaiveDate) {
+        (
+            NaiveDate::from_ymd_opt(1770, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(1963, 12, 31).unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_record_gives_back_its_request_s_cache_key() {
+        let body = Arc::new(br#"{"total":{"hits":3}}"#.to_vec());
+        for query in [
+            "q=Cross+of+Gold&mode=phrase&from=1896-06-01&to=1896-12-31&state=sc,GA",
+            "q=yellow+fever&mode=near&near=5&bucket=month",
+            "q=gold+OR+silver&front=true&lang=ENG&lccn=sn84026749",
+            "q=radio&mode=phrase&bucket=month",
+            "q=telegra*+-wireless",
+            "q=influenza&fuzzy=1&mode=all",
+            "q=%22free+silver%22~3&from=1890-01-01",
+        ] {
+            let raw = RawParams::parse(query).unwrap();
+            let req = SearchRequest::from_raw(&raw, bounds()).unwrap();
+            let entry = Entry::new(
+                at("2026-09-29T12:00:00Z"),
+                Search::new(&raw, &req, "v"),
+                body.clone(),
+            );
+            assert_eq!(
+                canonical(&entry.record(), bounds()).as_deref(),
+                Some(req.canonical().as_str()),
+                "{query}"
+            );
+        }
+    }
+
+    fn line(q: &str, pages: u64) -> String {
+        let raw = RawParams::parse(q).unwrap();
+        let req = SearchRequest::from_raw(&raw, bounds()).unwrap();
+        let body = Arc::new(format!(r#"{{"total":{{"hits":{pages}}}}}"#).into_bytes());
+        let entry = Entry::new(
+            at("2026-09-29T12:00:00Z"),
+            Search::new(&raw, &req, "v"),
+            body,
+        );
+        serde_json::to_string(&entry.record()).unwrap()
+    }
+
+    fn key(q: &str) -> String {
+        SearchRequest::from_raw(&RawParams::parse(q).unwrap(), bounds())
+            .unwrap()
+            .canonical()
+    }
+
+    #[tokio::test]
+    async fn the_most_frequent_searches_come_first() {
+        let dir = std::env::temp_dir().join(format!("usnm-top-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = usnm_store::LocalStore::new(&dir);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let day = |back: u64| today.checked_sub_days(Days::new(back)).unwrap();
+        // Two days in the window, one older, and today's (not a day file yet).
+        let lines = |ls: &[String]| ls.join("\n").into_bytes();
+        store
+            .put(
+                &day_path(day(1)),
+                lines(&[
+                    line("q=radio&bucket=month", 9),
+                    line("q=Radio&mode=phrase&bucket=month", 9),
+                    line("q=television", 4),
+                    line("q=nothing", 0),
+                    line("q=nothing", 0),
+                    line("q=nothing", 0),
+                    "not json".to_owned(),
+                ]),
+                CONTENT_TYPE,
+            )
+            .await
+            .unwrap();
+        store
+            .put(
+                &day_path(day(3)),
+                lines(&[
+                    line("q=yellow+fever&mode=near&near=5", 2),
+                    line("q=television", 4),
+                    line("q=cholera", 1),
+                ]),
+                CONTENT_TYPE,
+            )
+            .await
+            .unwrap();
+        store
+            .put(&day_path(day(9)), lines(&[line("q=old", 1)]), CONTENT_TYPE)
+            .await
+            .unwrap();
+        let top = top_searches(&store, today, 7, 10, bounds()).await;
+        // Counts 2, 2, then 1s in canonical order; zero-hit searches and
+        // days outside the window are left out.
+        assert_eq!(
+            top,
+            [
+                key("q=radio&bucket=month"),
+                key("q=television"),
+                // `q=%22yellow…` sorts before `q=cholera`.
+                key("q=yellow+fever&mode=near&near=5"),
+                key("q=cholera"),
+            ]
+        );
+        assert_eq!(top_searches(&store, today, 7, 1, bounds()).await.len(), 1);
+        assert!(top_searches(&store, today, 7, 0, bounds()).await.is_empty());
+        assert_eq!(top_searches(&store, today, 7, 10, bounds()).await, top);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

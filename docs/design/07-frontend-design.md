@@ -59,6 +59,7 @@ The design keeps the legacy "map-first" identity: a full-bleed map with controls
 
 - **Empty:** example searches as cards, three at a time from the 50 in `web/src/examples.json` ("Cross of Gold, 1896", "Dred Scott", "Marshall Plan"), with "Show other examples" to page through the rest; and a coverage map preview. The order is random per page load and takes the examples' eras (1828–1860 to 1945–1963) in turn, smallest era first, so through a full pass of "Show other examples" the three cards shown together come from three different eras.
 - **Loading:** a skeleton shimmer on the timeline, the previous results dimmed, and a cancel button.
+- **Large search:** when the API answers `202` (06 §6.3.5), a status notice (`role="status"`), "Large search, still working…", stays up while the client asks again after each `Retry-After`. It stops asking when the visitor changes the search (the query's abort signal). After 150 s, a little more than the API's 2-minute limit, it stops and shows the timeout problem. A timed-out or busy search is not retried at once (`isRetryable` in `src/api/client.ts`).
 - **No results:** suggestions (switch to "all words", enable OCR-tolerant, widen dates), with a link to the coverage layer.
 - **Error:** the problem+json `hint` shown inline.
 
@@ -84,6 +85,7 @@ Every frame is **O(P)**: about 3,000 subtractions, then a single deck.gl attribu
 |-------|----------|-------|
 | **Points** (default) | Circle **area ∝ hits**, i.e. radius ∝ √hits (perceptually honest); fill color = relative frequency on a sequential palette; hollow ring = county- or state-precision place | Replaces the legacy mean/std five-class buckets, which shifted meaning between searches |
 | **Heat** | deck.gl `HeatmapLayer` weighted by hits (or relative) | Good for dense eastern regions |
+| **Relative rate** (`norm=skew`) | Points colored by each place's rate against the other places in the same buckets, on a diverging scale centred on 1×; area ∝ matches expected; faded where it can't tell | [11](11-term-geographic-skew.md); replaces the colour menu with a Pages / Relative rate toggle |
 | **States** | Choropleth of hits per 1,000 pages published in the window; hatched where there is no coverage | Normalized, avoids the "big city" bias |
 | **First appearance** | Categorical time ramp (early = warm, late = cool); animated reveal | Designed for "Cross of Gold"-style spread stories |
 | **Coverage** (overlay) | States and places with **no pages published** in the current window are shaded or hatched, with the tooltip "No digitized newspapers for this period" | A time-aware version of the legacy black-state mask |

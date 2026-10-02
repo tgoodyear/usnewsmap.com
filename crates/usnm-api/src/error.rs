@@ -6,7 +6,10 @@ use serde::Serialize;
 use usnm_core::params::ParamError;
 use usnm_search::SearchError;
 
-use crate::telemetry::Rejection;
+use crate::telemetry::{ProblemType, Rejection};
+
+/// Seconds a client is asked to wait after [`ApiError::Busy`].
+pub const BUSY_RETRY_SECS: u64 = 5;
 
 #[derive(Debug, Clone)]
 pub enum ApiError {
@@ -15,7 +18,12 @@ pub enum ApiError {
     BadRequest(String),
     NotFound(String),
     TooBroad(String),
+    /// A search ran past its computation limit (`USNM_COMPUTE_CAP_SECS`),
+    /// or the backend gave up on it.
     Timeout,
+    /// Every slot for search computations is taken and none freed up while
+    /// the visitor waited (`USNM_COMPUTE_CONCURRENCY`).
+    Busy,
     Backend(String),
     /// The search backend refused the request (a bug on our side, not an
     /// outage). Visitors see the same response as `Backend`; the warm-up
@@ -66,6 +74,7 @@ impl IntoResponse for ApiError {
         let retry_after = match &self {
             ApiError::RateLimited(wait) => Some(wait.as_secs_f64().ceil().max(1.0) as u64),
             ApiError::Timeout | ApiError::Backend(_) | ApiError::BackendRejected(_) => Some(30),
+            ApiError::Busy => Some(BUSY_RETRY_SECS),
             _ => None,
         };
         let rejection = match &self {
@@ -79,6 +88,7 @@ impl IntoResponse for ApiError {
             }
             ApiError::NotFound(_)
             | ApiError::Timeout
+            | ApiError::Busy
             | ApiError::Backend(_)
             | ApiError::BackendRejected(_) => None,
         };
@@ -137,6 +147,14 @@ impl IntoResponse for ApiError {
                 "Search took too long",
                 "The search did not finish in time.".to_owned(),
                 Some("Narrow the date range or add filters, then try again."),
+                None,
+            ),
+            ApiError::Busy => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "/errors/busy",
+                "Too many large searches",
+                "Too many large searches are running at the moment.".to_owned(),
+                Some("Wait for the time in Retry-After, then try again."),
                 None,
             ),
             ApiError::RateLimited(_) => (
@@ -204,6 +222,7 @@ impl IntoResponse for ApiError {
         if let Some(reason) = rejection {
             resp.extensions_mut().insert(Rejection(reason));
         }
+        resp.extensions_mut().insert(ProblemType(kind));
         resp
     }
 }

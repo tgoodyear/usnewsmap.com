@@ -505,14 +505,15 @@ async fn ready_at_the_cap_even_if_still_warming() {
     assert_eq!(backend.calls(), 1);
 
     // A visitor asking for that search waits on the warm-up's computation,
-    // but only up to the visitor's own limit (plus the 2 s allowance for a
-    // persistent-cache read); the warm-up keeps going.
+    // but only up to the visitor's own limit, then hears it is still
+    // computing; the warm-up keeps going.
     let first = &prewarm::examples()[0];
     let started = Instant::now();
     let (status, body) = get(&state, &format!("/v1/aggregate?{}", first.aggregate)).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["status"], "computing");
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < Duration::from_secs(1),
         "{:?}",
         started.elapsed()
     );
@@ -521,5 +522,142 @@ async fn ready_at_the_cap_even_if_still_warming() {
         1,
         "the visitor joined the warm-up's search"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A search log record for `q` (query syntax) over 1896, as the API writes them.
+fn record(q: &str, day: chrono::NaiveDate) -> usnm_api::searchlog::Record {
+    usnm_api::searchlog::Record {
+        v: 1,
+        day,
+        source: "api".into(),
+        q: q.into(),
+        query: q.into(),
+        mode: None,
+        near: None,
+        fuzzy: 0,
+        from: chrono::NaiveDate::from_ymd_opt(1896, 1, 1).unwrap(),
+        to: chrono::NaiveDate::from_ymd_opt(1896, 12, 31).unwrap(),
+        state: vec![],
+        lccn: vec![],
+        lang: vec![],
+        front: false,
+        bucket: "month".into(),
+        pages: Some(3),
+        index_version: Some("fixture-v1".into()),
+    }
+}
+
+#[tokio::test]
+async fn the_most_frequent_logged_searches_are_warmed_after_the_examples() {
+    use usnm_api::searchlog::{day_path, LogConfig, SearchLog};
+    use usnm_store::ObjectStore;
+
+    let dir = temp_reference("from-log");
+    let log_dir = dir.join("searches");
+    let store = Arc::new(LocalStore::new(&log_dir));
+    let yesterday = chrono::Utc::now().date_naive().pred_opt().unwrap();
+    // "silver" three times, "gold" twice, "cholera" once: with room for
+    // two, the warm-up takes silver and gold.
+    let lines: Vec<String> = ["silver", "gold", "silver", "cholera", "gold", "silver"]
+        .iter()
+        .map(|q| serde_json::to_string(&record(q, yesterday)).unwrap())
+        .collect();
+    store
+        .put(
+            &day_path(yesterday),
+            lines.join("\n").into_bytes(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    let log = SearchLog::start(
+        store,
+        LogConfig {
+            flush_interval: Duration::from_secs(3600),
+            ..LogConfig::default()
+        },
+        &opentelemetry::global::meter("test"),
+    );
+    let mut cfg = config();
+    cfg.prewarm_top_searches = 2;
+    let backend = Counting::new(Duration::ZERO, false);
+    let state = Arc::new(
+        reloading_state(&dir, cfg, backend.clone())
+            .await
+            .with_search_log(log.clone()),
+    );
+
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert_eq!(report.from_log, 2, "{report:?}");
+    // Places, then a search and its coverage per example and per logged search.
+    let queries = 1 + 2 * prewarm::examples().len() + 2 * 2;
+    assert_eq!(report.queries, queries, "{report:?}");
+    assert_eq!(report.ok, queries, "{report:?}");
+
+    // Both are in the cache now, in the form the web app asks for them.
+    let calls = backend.calls();
+    for q in ["silver", "gold"] {
+        let (status, body) = get(
+            &state,
+            &format!("/v1/aggregate?q={q}&mode=phrase&from=1896-01-01&to=1896-12-31&bucket=month&v=fixture-v1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    assert_eq!(backend.calls(), calls, "served from the cache");
+    // The one not in the top two was not run.
+    let (status, _) = get(
+        &state,
+        "/v1/aggregate?q=cholera&from=1896-01-01&to=1896-12-31&bucket=month&v=fixture-v1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(backend.calls() > calls);
+
+    log.shutdown(Duration::from_secs(5)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn logged_searches_wait_for_the_examples_and_the_budget() {
+    use usnm_api::searchlog::{day_path, LogConfig, SearchLog};
+    use usnm_store::ObjectStore;
+
+    let dir = temp_reference("from-log-budget");
+    let store = Arc::new(LocalStore::new(dir.join("searches")));
+    let yesterday = chrono::Utc::now().date_naive().pred_opt().unwrap();
+    let lines: Vec<String> = ["silver", "gold"]
+        .iter()
+        .map(|q| serde_json::to_string(&record(q, yesterday)).unwrap())
+        .collect();
+    store
+        .put(
+            &day_path(yesterday),
+            lines.join("\n").into_bytes(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    let log = SearchLog::start(
+        store,
+        LogConfig::default(),
+        &opentelemetry::global::meter("test"),
+    );
+    // Each search takes 100 ms: the budget ends during the examples.
+    let mut cfg = config();
+    cfg.prewarm_budget = Duration::from_millis(250);
+    cfg.prewarm_startup_budget = Duration::from_millis(250);
+    let backend = Counting::new(Duration::from_millis(100), false);
+    let state = Arc::new(
+        reloading_state(&dir, cfg, backend)
+            .await
+            .with_search_log(log.clone()),
+    );
+    let started = Instant::now();
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert!(started.elapsed() < Duration::from_secs(2), "{report:?}");
+    assert_eq!(report.from_log, 0, "{report:?}");
+    log.shutdown(Duration::from_secs(5)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }

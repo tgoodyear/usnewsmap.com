@@ -2,10 +2,11 @@
 // environment's action group. Deployed with the API when alert emails are
 // set.
 //
-// - API 5xx and aggregate latency: log search alerts on the workspace,
-//   reading the requests usnm-api exports to Application Insights
+// - API 5xx, aggregate latency and slow searches: log search alerts on the workspace,
+//   reading what usnm-api exports to Application Insights: requests
 //   (AppRequests, one row per request except the health probes; the
-//   request name is "<method> <route template>"). Stateful: one
+//   request name is "<method> <route template>") and, for slow searches,
+//   the api.slow_searches metric (AppMetrics). Stateful: one
 //   notification when a condition starts, resolved when it clears.
 // - Availability: an Application Insights standard test of the site's home
 //   page from three US locations, with a metric alert when two of the three
@@ -37,13 +38,37 @@ param availabilityFrequency string = '900'
 
 // At least 5 server errors in 10 minutes that are also more than 2% of the
 // requests. The count floor keeps one or two failures on a quiet site from
-// paging; the ratio keeps a handful among many requests from paging. 503s
-// from search timeouts count (09 §9.1: every 5xx is bad).
+// paging; the ratio keeps a handful among many requests from paging. Slow
+// searches are left out: a search longer than a visitor waits gets a 202
+// and carries on (06 §6.3.5), and the 503s for a search that ran past its
+// 2-minute limit (/errors/backend-timeout) or found every computation slot
+// taken (/errors/busy) are counted apart. The request span names the
+// problem type in usnm.problem. Ten or more of those in 10 minutes still
+// raise this alert: a searcher that accepts searches but never answers
+// shows up only as timeouts and busy refusals. Fewer are left to the slow
+// search alert below.
 var serverErrors = '''
 AppRequests
 | where AppRoleName == "usnm-api"
-| summarize Requests = sum(ItemCount), Errors = sumif(ItemCount, toint(ResultCode) >= 500)
-| where Errors >= 5 and Errors * 50 > Requests
+| extend Problem = tostring(Properties["usnm.problem"])
+| extend Slow = Problem in ("/errors/backend-timeout", "/errors/busy")
+| summarize Requests = sum(ItemCount),
+    Errors = sumif(ItemCount, toint(ResultCode) >= 500 and not(Slow)),
+    SlowErrors = sumif(ItemCount, toint(ResultCode) >= 500 and Slow)
+| where (Errors >= 5 and Errors * 50 > Requests) or SlowErrors >= 10
+'''
+
+// At least 3 searches in an hour took longer than a visitor waits (outcome
+// ok, timeout or error, counted once per search however often its visitor
+// asked again), or were refused because every computation slot was taken
+// (busy). Cold searches after a new index version is published can trip it.
+// Severity 3, checked every 15 minutes; it emails the same action group as
+// the other alerts.
+var slowSearches = '''
+AppMetrics
+| where AppRoleName == "usnm-api" and Name == "api.slow_searches"
+| summarize Searches = sum(Sum)
+| where Searches >= 3
 '''
 
 // p95 of /v1/aggregate above 3 s over 15 minutes, counting only answered
@@ -67,7 +92,7 @@ var rules = [
   {
     name: 'api-server-errors'
     displayName: 'API server errors'
-    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests. scripts/logs.sh <env> api-errors shows which routes and codes.'
+    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 10 search timeouts and busy refusals. scripts/logs.sh <env> api-errors shows which routes and codes.'
     severity: 2
     frequency: 'PT5M'
     window: 'PT10M'
@@ -81,6 +106,15 @@ var rules = [
     frequency: 'PT5M'
     window: 'PT15M'
     query: slowAggregate
+  }
+  {
+    name: 'api-searches-slow'
+    displayName: 'Searches longer than a visitor waits'
+    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Errors other than timeouts and busy refusals count toward the API server errors alert. The slow-search tiles in the API workbook show these by endpoint and outcome.'
+    severity: 3
+    frequency: 'PT15M'
+    window: 'PT1H'
+    query: slowSearches
   }
 ]
 

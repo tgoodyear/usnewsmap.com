@@ -103,17 +103,23 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 | `USNM_PERSIST_AFTER_MS` | `500` | Only responses that took at least this long to compute are persisted |
 | `USNM_ALLOWED_ORIGINS` | `https://usnewsmap.com` | Comma-separated CORS origins (GET only) |
 | `USNM_SITE_HOST` | `usnewsmap.com` | The site's hostname. Requests for `www.` plus this name get a 301 to `https://` plus this name, with the same path and query |
-| `USNM_SEARCH_TIMEOUT_SECS` | `10` | Backend timeout; exceeded → `503` problem |
+| `USNM_SEARCH_TIMEOUT_SECS` | `10` | How long a visitor's request waits for a response (plus 2 s with a persistent cache); past it the API answers `202 Accepted` and the search carries on (06 §6.3.5) |
+| `USNM_COMPUTE_CAP_SECS` | `120` | Limit on one search computation and each backend call in it; past it the search fails with a `503` timeout, which is not cached |
+| `USNM_COMPUTE_CONCURRENCY` | `4` | Searches computed at once, including those still running after a `202`; a new one waits for a slot up to the visitor's wait, then gets `503 /errors/busy` |
+| `USNM_ABANDON_AFTER_SECS` | `15` | A computation no request has waited on for this long is cancelled (the visitor changed the search or left); at least 5 |
 | `USNM_REFRESH_SECS` | `600` | How often `current.json` is re-read for a newly published version |
 | `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |
 | `USNM_PREWARM_BUDGET_SECS` | `900` | Cache warm-up before a publish swaps a version in: limit on the whole run; the rest is skipped |
 | `USNM_PREWARM_STARTUP_BUDGET_SECS` | `300` | The same limit for the warm-up after a start, which can go on past the readiness cap while the replica serves |
+| `USNM_PREWARM_TOP_SEARCHES` | `20` | Cache warm-up: after the examples, this many of the most frequent searches in the search log (`0` turns it off) |
+| `USNM_PREWARM_LOG_DAYS` | `28` | Cache warm-up: how many days of the search log are counted, back from yesterday |
 | `USNM_READY_CAP_SECS` | `120` | After a start, `/readyz` reports ready once the warm-up ends or this much time passes |
 | `USNM_CACHE_MB` | `256` | In-process response cache size |
 | `USNM_RATE_PER_MIN` | `120` | Per-client token bucket refill rate on `/v1` (`0` disables) |
 | `USNM_RATE_BURST` | `40` | Per-client bucket size |
 | `USNM_TRUSTED_PROXY_HOPS` | `1` | Proxies that append to `X-Forwarded-For` (1 = Container Apps ingress, 2 = a proxy such as Front Door + ingress, 0 = use the peer address) |
-| `USNM_BACKEND_CONCURRENCY` | `8` | Requests that may query the search backend at once; waiting counts against the timeout |
+| `USNM_BACKEND_CONCURRENCY` | `8` | Backend queries allowed at once; waiting for a free one counts against the computation limit |
+| `USNM_FIXTURE_SLOW_TERM`, `USNM_FIXTURE_SLOW_MS` | unset, `5000` | End-to-end tests only, memory backend only: an aggregate search whose query contains the term waits this many milliseconds first, to stand in for a cold search |
 | `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`, `AZURE_CLIENT_ID` | set by Container Apps | Managed identity for Blob; `AZURE_CLIENT_ID` selects the user-assigned identity. Without them, the Azure CLI login is used (`az login`) |
 | `RUST_LOG` | `info` | Log filter (logs are JSON and never include query strings) |
 
