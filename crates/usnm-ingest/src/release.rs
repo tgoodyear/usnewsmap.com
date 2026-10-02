@@ -392,6 +392,7 @@ impl Release {
             published_at: None,
             previous_version: previous.as_ref().map(|p| p.index_version.clone()),
             last_error: None,
+            failed_at: None,
         };
         if !self.state.create_run(&run).await? {
             bail!("index run `{version}` already exists");
@@ -425,6 +426,7 @@ impl Release {
             Ok(v) => v,
             Err(e) => {
                 run.status = RunStatus::Failed;
+                run.failed_at = Some(Utc::now());
                 run.last_error = Some(format!("{e:#}").chars().take(2000).collect());
                 let _ = self.state.update_run(&run, &etag).await;
                 return Err(e);

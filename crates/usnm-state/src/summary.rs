@@ -32,7 +32,7 @@ pub const BATCH_FIELDS: [Field; 12] = [
 
 /// The fields of an index run the status page uses. The batch count is
 /// `batch_count`, or for runs written before that, the inline list's length.
-pub const RUN_FIELDS: [Field; 13] = [
+pub const RUN_FIELDS: [Field; 14] = [
     Field::Path("index_version"),
     Field::Path("full"),
     Field::Path("indexes"),
@@ -44,6 +44,7 @@ pub const RUN_FIELDS: [Field; 13] = [
     Field::Path("published_at"),
     Field::Path("previous_version"),
     Field::Path("last_error"),
+    Field::Path("failed_at"),
     Field::Path("batch_count"),
     Field::Len("batches"),
 ];
@@ -103,6 +104,9 @@ pub struct RunSummary {
     pub previous_version: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
+    /// When the run was marked failed; absent on runs that failed before it was recorded.
+    #[serde(default)]
+    pub failed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub batch_count: Option<u64>,
     /// The length of an older run's inline batch list.

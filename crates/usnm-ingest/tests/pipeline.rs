@@ -1251,3 +1251,66 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
     let err = format!("{:#}", r.run(&mut sink).await.unwrap_err());
     assert!(err.contains("does not match its manifest entry"), "{err}");
 }
+
+/// A sink whose final check fails, as a writer that died mid-merge does.
+struct FailingSink;
+
+#[async_trait::async_trait]
+impl usnm_ingest::sink::IndexSink for FailingSink {
+    async fn create(&mut self, _index_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn add(&mut self, _doc: &Value) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn finish(&mut self, _expected: u64) -> anyhow::Result<()> {
+        anyhow::bail!("the writer exited")
+    }
+    fn backend(&self) -> &'static str {
+        "memory"
+    }
+}
+
+/// A release that fails records the run as failed, with when it failed, for the status page.
+#[tokio::test]
+async fn a_failed_release_records_when_it_failed() {
+    let e = env().await;
+    let a = e.root.join("batch_fx_fail_ver01.tar.gz");
+    write_archive(
+        &a,
+        &fixture_pages().iter().take(20).collect::<Vec<_>>(),
+        true,
+        true,
+    );
+    source::enqueue(&e.state, &[listed("batch_fx_fail_ver01", &a, None)])
+        .await
+        .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 10, 9, 3, 0, 0).unwrap();
+    let r = Release {
+        state: e.state.clone(),
+        curated: e.curated.clone(),
+        reference: e.reference.clone(),
+        owner: "releaser".into(),
+        full: true,
+        synthetic: true,
+        now,
+        titles_left: None,
+    };
+    let before = Utc::now();
+    let err = r.run(&mut FailingSink).await.unwrap_err();
+    assert!(format!("{err:#}").contains("the writer exited"));
+    let (run, _) = e
+        .state
+        .run("pages-v20261009-1")
+        .await
+        .unwrap()
+        .expect("the run is recorded");
+    assert_eq!(run.status, usnm_state::state::RunStatus::Failed);
+    let failed_at = run.failed_at.expect("failed_at is recorded");
+    assert!(
+        failed_at >= before,
+        "failed_at is when it failed, not when it started"
+    );
+    assert!(run.last_error.unwrap().contains("the writer exited"));
+}

@@ -97,8 +97,10 @@ impl From<Outcome> for LastOutcome {
 #[derive(Debug, Clone, Serialize)]
 pub struct LastRun {
     pub outcome: LastOutcome,
-    /// When it ended (for `stopped`, its last report; for a failed index
-    /// run without a report, when the run started).
+    /// When it ended. For `stopped`, its last report. For a failed index run
+    /// without a report: its recorded `failed_at`, else its last progress
+    /// write, else when the run started (runs that failed before `failed_at`
+    /// was recorded).
     pub ended_at: DateTime<Utc>,
     /// The step it was on when it ended, where known.
     pub step: Option<Now>,
@@ -355,7 +357,15 @@ pub fn activity(i: &Inputs) -> Activity {
             a.last = match r.status {
                 RunStatus::Failed => Some(LastRun {
                     outcome: LastOutcome::Failed,
-                    ended_at: r.started_at,
+                    // When it was marked failed; for runs that failed before
+                    // that was recorded, its last progress write, else its start.
+                    ended_at: r.failed_at.unwrap_or_else(|| {
+                        s.ops
+                            .release_progress
+                            .as_ref()
+                            .filter(|p| p.index_version == r.index_version)
+                            .map_or(r.started_at, |p| p.updated_at)
+                    }),
                     step: Some(Now::Indexing),
                     error: r.last_error.as_deref().map(sanitize),
                     index_version: Some(r.index_version.clone()),
@@ -630,6 +640,25 @@ mod tests {
         s.runs.push(run("v2", "failed", at() - Duration::hours(5)));
         let last = get(&s, &[], None).last.unwrap();
         assert_eq!(last.outcome, LastOutcome::Failed);
+        // No failure time and no progress for it: the start is all there is.
+        assert_eq!(last.ended_at, at() - Duration::hours(5));
+        // Its last progress write says when it stopped.
+        s.ops.release_progress = Some(usnm_state::state::ReleaseProgress {
+            index_version: "v2".into(),
+            docs_sent: 10,
+            docs_expected: 10,
+            mb_sent: 1.0,
+            updated_at: at() - Duration::hours(2),
+        });
+        assert_eq!(
+            get(&s, &[], None).last.unwrap().ended_at,
+            at() - Duration::hours(2)
+        );
+        // A recorded failure time wins.
+        s.runs.last_mut().unwrap().failed_at = Some(at() - Duration::minutes(90));
+        let last = get(&s, &[], None).last.unwrap();
+        assert_eq!(last.ended_at, at() - Duration::minutes(90));
+        s.ops.release_progress = None;
         // Sanitized.
         assert!(!last.error.unwrap().contains("10.0.0.4"));
 
