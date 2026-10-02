@@ -179,6 +179,10 @@ pub struct IndexRun {
     pub previous_version: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
+    /// When the run was marked failed. Runs that failed before this was
+    /// recorded leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<DateTime<Utc>>,
 }
 
 /// How far the running release has got: the `ops/release-progress` item,

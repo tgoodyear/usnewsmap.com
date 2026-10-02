@@ -164,7 +164,7 @@ describe("LanguagesSection", () => {
     };
     render(<LanguagesSection data={old} />);
     expect(screen.getByRole("note").textContent).toContain(
-      "Page counts appear after the next release",
+      "Page counts appear when the search index now being rebuilt goes live",
     );
     const table = screen.getByRole("table", {
       name: "Published newspapers by language",
