@@ -274,8 +274,8 @@ export function LanguagesSection({ data }: { data: ByLanguage }) {
           {!known && (
             <p className="notice" role="note">
               The published version doesn&apos;t record pages per newspaper, so
-              this table has newspaper counts only. Page counts appear when the
-              search index now being rebuilt goes live.
+              this table has newspaper counts only. Page counts appear once a
+              newer search index goes live.
             </p>
           )}
           <SortableTable

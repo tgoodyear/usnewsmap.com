@@ -97,8 +97,10 @@ impl From<Outcome> for LastOutcome {
 #[derive(Debug, Clone, Serialize)]
 pub struct LastRun {
     pub outcome: LastOutcome,
-    /// When it ended (for `stopped`, its last report; for a failed index
-    /// run without a report, when the run started).
+    /// When it ended. For `stopped`, its last report. For a failed index run
+    /// without a report: its recorded `failed_at`, else its last progress
+    /// write, else when the run started (runs that failed before `failed_at`
+    /// was recorded).
     pub ended_at: DateTime<Utc>,
     /// The step it was on when it ended, where known.
     pub step: Option<Now>,
