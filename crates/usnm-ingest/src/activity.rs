@@ -162,7 +162,10 @@ impl Reporter {
             a.clone()
         };
         match tokio::time::timeout(WRITE_TIMEOUT, inner.state.set_activity(&doc)).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => tracing::warn!(
+                "another ingest execution is reporting its activity; not overwriting it"
+            ),
             Ok(Err(e)) => {
                 tracing::warn!(error = %format!("{e:#}"), "could not record the job's activity; continuing")
             }
@@ -258,6 +261,28 @@ mod tests {
             (Some("failed"), Some("boom"))
         );
         assert!(v["ended_at"].is_string());
+    }
+
+    #[tokio::test]
+    async fn an_overlapping_execution_doesnt_overwrite_a_live_one() {
+        let docs = Arc::new(MemoryDocs::default());
+        let first = Reporter::start(State::new(docs.clone()), "run", "first", Step::Titles).await;
+        let second =
+            Reporter::start(State::new(docs.clone()), "run", "second", Step::Listing).await;
+        second.step(Step::Indexing).await;
+        let v = stored(&docs).await;
+        assert_eq!(
+            (v["owner"].as_str(), v["step"].as_str()),
+            (Some("first"), Some("titles"))
+        );
+        // Once the first has ended, the next one takes over.
+        first.end(Outcome::TitlesLeft, None).await;
+        second.write().await;
+        let v = stored(&docs).await;
+        assert_eq!(
+            (v["owner"].as_str(), v["step"].as_str()),
+            (Some("second"), Some("indexing"))
+        );
     }
 
     #[tokio::test]

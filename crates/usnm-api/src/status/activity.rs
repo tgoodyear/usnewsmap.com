@@ -22,7 +22,7 @@ use super::sanitize::{sanitize, short_id};
 
 /// A report older than this means the execution stopped without saying
 /// (the job writes one a minute).
-pub const STALE_AFTER: Duration = Duration::minutes(10);
+pub const STALE_AFTER: Duration = Duration::seconds(usnm_state::state::ACTIVITY_STALE_SECS);
 
 /// Without a report, a title cache saved this recently means titles-sync is
 /// running: it saves every 100 titles (about 8 minutes) and before each

@@ -26,6 +26,10 @@ pub const RELEASE_PROGRESS: &str = "release-progress";
 /// The `ops` item the ingest job (`run`, `titles-sync`, `release`) keeps up
 /// to date with the step it is on, for the status page's "Right now" line.
 pub const ACTIVITY: &str = "activity";
+/// An `ops/activity` item not rewritten for this long, and not ended,
+/// belongs to an execution that stopped without saying (it writes a
+/// heartbeat every minute).
+pub const ACTIVITY_STALE_SECS: i64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -503,13 +507,31 @@ impl State {
         self.docs.upsert(OPS, RELEASE_PROGRESS, &doc).await
     }
 
-    /// Record what the ingest job is doing (unconditional: one execution
-    /// runs at a time).
-    pub async fn set_activity(&self, a: &Activity) -> anyhow::Result<()> {
+    /// Record what the ingest job is doing. Executions can overlap (one
+    /// started by hand while another runs), so this writes only over its
+    /// own item, an ended one or a stale one, and only if the item hasn't
+    /// changed since it was read. Returns whether it wrote.
+    pub async fn set_activity(&self, a: &Activity) -> anyhow::Result<bool> {
         let mut doc = to_value(a)?;
         doc["id"] = ACTIVITY.into();
         doc["kind"] = ACTIVITY.into();
-        self.docs.upsert(OPS, ACTIVITY, &doc).await
+        let Some(held) = self.docs.get(OPS, ACTIVITY, ACTIVITY).await? else {
+            return Ok(self.docs.create(OPS, ACTIVITY, &doc).await?.is_some());
+        };
+        let other = held.doc["owner"].as_str().is_some_and(|o| o != a.owner);
+        let ended = !held.doc["ended_at"].is_null();
+        let updated: Option<DateTime<Utc>> =
+            serde_json::from_value(held.doc["updated_at"].clone()).ok();
+        let live =
+            updated.is_some_and(|u| Utc::now() - u <= Duration::seconds(ACTIVITY_STALE_SECS));
+        if other && !ended && live {
+            return Ok(false);
+        }
+        Ok(self
+            .docs
+            .replace(OPS, ACTIVITY, &doc, &held.etag)
+            .await?
+            .is_some())
     }
 
     pub async fn unlock(&self, name: &str, owner: &str) -> anyhow::Result<()> {
