@@ -217,6 +217,8 @@ export interface SearchParams {
   bucket?: string;
   state?: string[];
   lccn?: string[];
+  /** Newspaper languages (catalog codes); any of them (07 §7.9). */
+  lang?: string[];
   front?: boolean;
 }
 
@@ -248,6 +250,7 @@ export function searchQuery(p: SearchParams, version: string): URLSearchParams {
   if (p.bucket && p.bucket !== "auto") s.set("bucket", p.bucket);
   if (p.state?.length) s.set("state", p.state.join(","));
   if (p.lccn?.length) s.set("lccn", p.lccn.join(","));
+  if (p.lang?.length) s.set("lang", p.lang.join(","));
   if (p.front) s.set("front", "true");
   // Pin to the version the page loaded, so every response comes from one snapshot.
   s.set("v", version);

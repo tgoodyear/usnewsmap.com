@@ -45,6 +45,7 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         "places": rd.places.len(),
         "titles": rd.titles.len(),
         "pages": rd.pages,
+        "languages": filter_languages(rd),
         "capabilities": snap.backend.capabilities(),
         "limits": {
             "max_query_chars": query::MAX_QUERY_CHARS,
@@ -61,6 +62,25 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         HeaderValue::from_static("public, max-age=300"),
     );
     resp
+}
+
+/// The choices for the site's language filter: each catalog language the
+/// `lang` parameter accepts, with its titles and (when the snapshot records
+/// them) pages, most pages first. A title in several languages counts in each,
+/// as a search filtered to any of them finds its pages. Languages without a
+/// three-letter code, and titles with none recorded, can't be filtered on, so
+/// they are left out (06 §6.3.2).
+fn filter_languages(rd: &crate::refdata::RefData) -> Vec<serde_json::Value> {
+    crate::status::assemble::by_language(rd)
+        .rows
+        .into_iter()
+        .filter_map(|r| {
+            let code = r.code?;
+            (code.len() == 3 && code.bytes().all(|b| b.is_ascii_lowercase())).then(
+                || json!({"code": code, "name": r.name, "titles": r.titles, "pages": r.pages}),
+            )
+        })
+        .collect()
 }
 
 /// All places as GeoJSON (06 §6.3.2), versioned like the search endpoints.

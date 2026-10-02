@@ -100,6 +100,7 @@ https://usnewsmap.com/?q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896
 ```
 
 - Only non-default values are written. Compare mode uses `q1…q4`.
+- `lang` is the language filter (§7.9).
 - `embed=1` hides chrome, disables scroll-zoom (the legacy `disableScroll` behavior), and shows an "Open in US News Map" link.
 - The **Share** dialog offers the URL, an `<iframe>` snippet, a citation (Chicago/MLA, including `index_version` and access date) and a PNG snapshot (map + timeline rendered client-side).
 
@@ -133,3 +134,27 @@ As built, the site counts page views and nothing else (`src/pageview.ts`). When 
 - **Tests.** Unit tests cover the report's fields, the origin and tag handling, the opt-outs and the fallback (`src/pageview.test.ts`). The end-to-end tests load the build as `https://usnewsmap.com` (every request to that origin answered by the local server) and assert the exact body of each page view, that it carries no search text, and that GPC, DNT and other origins send none.
 
 The earlier plan for this section (the Application Insights JavaScript SDK with custom events for searches, playback and sharing) is not built: the SDK can't authenticate to a component with local auth disabled. Popular queries for pre-warming, if they are ever collected, would come from the server side as daily counts per canonical query string, kept only when at least 5 requests made the same one that day, with no IP, user agent or other identifier.
+
+## 7.9 Language filter
+
+Visitors can limit a search to newspapers printed in chosen languages, for example to see where the German-language press carried a story.
+
+**Where it lives.** In the search form's options, after States: a "Languages" button that opens a checklist below it. The button says what is chosen ("Languages: any", "Languages: German", "Languages: 3 chosen"). On phones it sits inside the "Options (n)" disclosure with the other filters, and a language choice counts as one option in that number. Like States and the dates, a change applies when the visitor presses Search, so a choice and a new query go out as one search.
+
+**The choices.** `GET /v1/meta` lists the catalog's languages for the published version (`languages`, 06 §6.3.2): each language the `lang` parameter accepts, with its newspapers (titles) and, when the snapshot records them, pages. The list is in that order, most pages first (most newspapers when pages aren't known), so English comes first. Each choice reads "German (2 newspapers)", with the name from `web/src/lib/languages.ts` (the catalog's own name for a language that file doesn't list). Languages the catalog records without a three-letter code, and newspapers with no language recorded, can't be filtered on and aren't offered. A code in the URL that isn't in the list (an older link, or a language no published newspaper has) is still shown, checked, at the end of the list, so it can be cleared.
+
+**How it combines.** Languages are "any of": `lang=ger,spa` finds pages from newspapers in German or in Spanish. The other filters narrow it further: dates, States and match mode all apply as well ("German newspapers in Texas and Wisconsin").
+
+**Multilingual newspapers.** The search index stores each page's languages from its newspaper's catalog record, so a page matches when its newspaper lists any chosen language. A newspaper catalogued as English and German is found by English, by German and by both. It also counts in each of its languages in the checklist, so those counts add up to more than the number of newspapers, as on the status page's "Pages by language" table (06 §6.3.6). The filter is by newspaper, not by the language of the words on a page: an English quotation in a German paper is in the German results.
+
+**URL.** `lang=ger,spa`: lowercase codes, sorted and without repeats, which is the API's canonical order (06 §6.3.1). Anything that isn't three letters is dropped when the URL is read. With nothing chosen the parameter is left out, and the search covers every newspaper. The share link is the page URL, so it carries the filter, and the place panel's page list asks `/v1/hits` with the same `lang`.
+
+**Empty and no-match states.** If `/v1/meta` has no `languages` (an older API) and the URL names none, the control isn't shown. A search that matches nothing under a language filter gets the usual "No pages match" notice, which then suggests removing the language filter as well as the state filter.
+
+**Relative rate.** The relative rate compares each place's matches with what its pages published would predict (doc 11). Pages published are kept per place and day, not per language, so the API can't give a baseline for a language-filtered search: `series.baseline` and `cube.baseline_ref` are `null` (06 §6.3.3). Comparing German matches with all of a place's pages would make every mixed-language city look low, so the site doesn't. With a language filter the Relative rate button stays, and choosing it shows "The relative rate isn't available with a language filter yet: pages published are counted per place, not per language. Showing page counts." The map, table and timeline show page counts, and the place table leaves out its "Share of pages published" column for the same reason. Per-language baselines are phase 2 of doc 11 (§11.10); once the snapshot has them, the view can compare German pages with German pages.
+
+**The "Papers in X and English" line.** That line names a place's newspaper languages in the relative-rate lists, tooltips, table and CSV, so a reader can see why a place may read low for an English term. Since the relative rate is off under a language filter, the line never appears with a filter on, and the relative-rate CSV isn't offered then. Without a filter it is unchanged.
+
+**Accessibility.** The button is a native `<button>` with `aria-expanded` and `aria-controls`; the checklist is a `<fieldset>` with the legend "Newspaper languages" and one labelled checkbox per language. Tab and Space work as usual. Escape closes the list and returns focus to the button; a click outside the list closes it and leaves focus where the click put it. The end-to-end test runs axe with the list open.
+
+**Tests.** `web/src/state/url.test.ts` (parsing, canonical order, round trip), `web/src/components/LanguageFilter.test.tsx` (labels, ordering, keyboard, the place table without the share column), `web/src/components/SearchBar.test.ts` (the options count), `web/src/api/client.test.ts` (`lang` on `/v1/aggregate` and `/v1/hits`), `crates/usnm-api/tests/api.rs` (`lang_filters_by_any_title_language`, the `languages` list in `/v1/meta`) and `web/e2e/language.spec.ts` against the fixture API, whose synthetic titles include one German, one Spanish and one English and German newspaper.

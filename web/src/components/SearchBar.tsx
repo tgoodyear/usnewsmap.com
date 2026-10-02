@@ -1,6 +1,7 @@
 import { useId, useState, type FormEvent } from "react";
 import type { Meta, Mode } from "../api/types";
 import { DEFAULTS, type ViewState } from "../state/url";
+import { LanguageFilter, languageChoices } from "./LanguageFilter";
 
 interface Props {
   view: ViewState;
@@ -16,18 +17,19 @@ const MODES: { value: Mode; label: string }[] = [
 ];
 
 /** How many search options differ from the defaults (shown on the toggle). */
-export function activeOptions(view: Pick<ViewState, "mode" | "from" | "to" | "state">): number {
+export function activeOptions(view: Pick<ViewState, "mode" | "from" | "to" | "state" | "lang">): number {
   return [
     view.mode !== DEFAULTS.mode,
     view.from !== DEFAULTS.from,
     view.to !== DEFAULTS.to,
     view.state.length > 0,
+    view.lang.length > 0,
   ].filter(Boolean).length;
 }
 
 /** Identity of the search in the URL; remount the form when it changes. */
 export function searchKey(view: ViewState): string {
-  return [view.q, view.mode, view.near, view.from, view.to, view.state.join()].join("|");
+  return [view.q, view.mode, view.near, view.from, view.to, view.state.join(), view.lang.join()].join("|");
 }
 
 export function SearchBar({ view, meta, onSearch }: Props) {
@@ -36,7 +38,9 @@ export function SearchBar({ view, meta, onSearch }: Props) {
   // changes, so back/forward and example cards replace the draft.
   const [draft, setDraft] = useState(view);
   const [states, setStates] = useState(view.state.join(", "));
-  // On phones the options (match mode, dates, states) sit behind a toggle so
+  // Codes from the URL stay listed after they're unchecked, so they don't vanish.
+  const languages = languageChoices(meta?.languages, [...new Set([...view.lang, ...draft.lang])]);
+  // On phones the options (match mode, dates, states, languages) sit behind a toggle so
   // the header is just the search box. They start open when a search already
   // uses one, so an active filter is never hidden. Wider screens always show
   // them (CSS hides the toggle).
@@ -56,6 +60,7 @@ export function SearchBar({ view, meta, onSearch }: Props) {
         .split(/[\s,]+/)
         .map((s) => s.toUpperCase())
         .filter((s) => /^[A-Z]{2}$/.test(s)),
+      lang: draft.lang,
     });
   };
 
@@ -152,6 +157,14 @@ export function SearchBar({ view, meta, onSearch }: Props) {
             title="Two-letter state codes, separated by commas"
           />
         </label>
+        {languages.length > 0 && (
+          <LanguageFilter
+            id={id}
+            choices={languages}
+            value={draft.lang}
+            onChange={(lang) => setDraft({ ...draft, lang })}
+          />
+        )}
       </div>
     </form>
   );

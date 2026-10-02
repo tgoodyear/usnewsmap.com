@@ -24,6 +24,11 @@ interface Props {
   selected: string;
   /** Columns for the relative-rate view. */
   skew?: boolean;
+  /**
+   * Show the share of pages published. Off when the search has no baselines
+   * (a language filter, 07 §7.9).
+   */
+  share?: boolean;
 }
 
 const NAME: Column = { key: "name", label: "Place", get: (r) => r.name, show: (r) => r.name };
@@ -93,8 +98,8 @@ const SKEW: Column[] = [
 ];
 
 /** Everything on the map as a sortable table (F-27, WCAG). */
-export function PlaceTable({ rows, onSelect, selected, skew = false }: Props) {
-  const columns = skew ? SKEW : RAW;
+export function PlaceTable({ rows, onSelect, selected, skew = false, share = true }: Props) {
+  const columns = skew ? SKEW : share ? RAW : RAW.filter((c) => c.key !== "rel");
   const [sort, setSort] = useState<{ key: string; desc: boolean }>({ key: skew ? "estimate" : "value", desc: true });
   const col = columns.find((c) => c.key === sort.key) ?? columns[2]!;
   const sorted = [...rows].sort((a, b) => {

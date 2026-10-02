@@ -126,6 +126,61 @@ async fn health_and_meta() {
         .sum();
     assert!(pages > 0);
     assert_eq!(meta["pages"], pages);
+    // The language filter's choices: most pages first; the title in English
+    // and German counts in both.
+    assert_eq!(
+        meta["languages"],
+        json!([
+            {"code": "eng", "name": "English", "titles": 4, "pages": 1248},
+            {"code": "ger", "name": "German", "titles": 2, "pages": 624},
+            {"code": "spa", "name": "Spanish", "titles": 1, "pages": 312},
+        ])
+    );
+}
+
+/// `lang` keeps the pages of titles that list any of the given languages; a
+/// title in two languages is found by either. Baselines are per place and day
+/// only, so the response has none (the relative rate is off, 07 §7.9).
+#[tokio::test]
+async fn lang_filters_by_any_title_language() {
+    let s = state_with(None).await;
+    let places = |lang: &str| {
+        let s = &s;
+        let lang = lang.to_owned();
+        async move {
+            let uri = format!("/v1/aggregate?q=%22cross+of+gold%22&lang={lang}");
+            let (status, _, body) = get(s, &uri).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let ids: Vec<String> = body["places"]["id"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect();
+            (ids, body)
+        }
+    };
+    let (ger, body) = places("ger").await;
+    assert_eq!(ger, ["P00002", "P00006"]);
+    assert!(body["series"]["baseline"].is_null());
+    assert!(body["cube"]["baseline_ref"].is_null());
+    assert!(body["total"]["baseline_pages"].is_null());
+    assert!(body["query"]["canonical"]
+        .as_str()
+        .unwrap()
+        .contains("lang=ger&"));
+    let (eng, _) = places("eng").await;
+    assert_eq!(eng, ["P00001", "P00002", "P00004", "P00005"]);
+    // Any of the languages, in canonical (sorted) order.
+    let (both, body) = places("SPA,ger").await;
+    assert_eq!(both, ["P00002", "P00003", "P00006"]);
+    assert!(body["query"]["canonical"]
+        .as_str()
+        .unwrap()
+        .contains("lang=ger%2Cspa&"));
+    let (none, body) = places("fre").await;
+    assert!(none.is_empty());
+    assert_eq!(body["total"]["hits"], 0);
 }
 
 #[tokio::test]
@@ -398,10 +453,24 @@ async fn places_geojson_is_version_pinned() {
     );
     assert_eq!(body["type"], "FeatureCollection");
     assert_eq!(body["features"].as_array().unwrap().len(), 6);
-    // Each place lists its titles' languages (the fixtures are all English).
-    for f in body["features"].as_array().unwrap() {
-        assert_eq!(f["properties"]["languages"], serde_json::json!(["eng"]));
-    }
+    // Each place lists its titles' languages.
+    let langs: Vec<(&str, &Value)> = body["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| (f["id"].as_str().unwrap(), &f["properties"]["languages"]))
+        .collect();
+    assert_eq!(
+        langs,
+        [
+            ("P00001", &json!(["eng"])),
+            ("P00002", &json!(["eng", "ger"])),
+            ("P00003", &json!(["spa"])),
+            ("P00004", &json!(["eng"])),
+            ("P00005", &json!(["eng"])),
+            ("P00006", &json!(["ger"])),
+        ]
+    );
     assert_eq!(body["features"][0]["geometry"]["type"], "Point");
 }
 
@@ -962,9 +1031,13 @@ async fn status_has_pages_by_state_and_language() {
     assert_eq!(total, p["pages"].as_u64().unwrap());
     assert_eq!(
         p["by_language"],
-        json!({"pages_known": true, "multilingual_titles": 0, "multilingual_pages": 0,
-               "rows": [{"code": "eng", "name": "English", "titles": 6, "pages": 1872,
-                         "percent": 100.0}]})
+        json!({"pages_known": true, "multilingual_titles": 1, "multilingual_pages": 312,
+               "rows": [{"code": "eng", "name": "English", "titles": 4, "pages": 1248,
+                         "percent": 66.7},
+                        {"code": "ger", "name": "German", "titles": 2, "pages": 624,
+                         "percent": 33.3},
+                        {"code": "spa", "name": "Spanish", "titles": 1, "pages": 312,
+                         "percent": 16.7}]})
     );
 }
 
@@ -985,7 +1058,7 @@ async fn a_snapshot_without_pages_per_title_still_loads() {
     assert!(rd.title_pages.is_none());
     let lang = usnm_api::status::assemble::by_language(&rd);
     assert!(!lang.pages_known);
-    assert_eq!((lang.rows[0].titles, lang.rows[0].pages), (6, None));
+    assert_eq!((lang.rows[0].titles, lang.rows[0].pages), (4, None));
     assert_eq!(usnm_api::status::assemble::by_state(&rd).len(), 6);
     let _ = std::fs::remove_dir_all(&dir);
 
