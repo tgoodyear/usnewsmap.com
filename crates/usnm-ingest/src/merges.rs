@@ -344,8 +344,29 @@ const LOG_EVERY: Duration = Duration::from_secs(30);
 
 /// Wait until `index_id` is merged as far as its merge policy goes, close
 /// it, and check the result (see the module docs). `expected` is the number
-/// of documents sent; `work_dir` is where the writer keeps its data.
+/// of documents sent; `work_dir` is where the writer keeps its data. Nothing
+/// counts as sealed after `wait.timeout`, and a request to the writer that
+/// hangs past it (plus one poll) is abandoned.
 pub async fn seal(
+    node: &Node<'_>,
+    index_id: &str,
+    expected: u64,
+    events: Option<&NodeEvents>,
+    wait: &MergeWait,
+    work_dir: Option<&Path>,
+) -> anyhow::Result<IndexLayout> {
+    let polls = poll_until_sealed(node, index_id, expected, events, wait, work_dir);
+    match tokio::time::timeout(wait.timeout + wait.poll, polls).await {
+        Ok(result) => result,
+        Err(_) => bail!(
+            "merges into `{index_id}` did not finish within {} s (a request to the writer was \
+             still waiting); not publishing",
+            wait.timeout.as_secs()
+        ),
+    }
+}
+
+async fn poll_until_sealed(
     node: &Node<'_>,
     index_id: &str,
     expected: u64,
@@ -399,7 +420,7 @@ pub async fn seal(
                     Some(e) => e.finished(index_id),
                     None => at.elapsed() >= wait.finalize_grace,
                 };
-                if done {
+                if done && tokio::time::Instant::now() <= deadline {
                     return check(index_id, expected, &splits);
                 }
             }
@@ -732,6 +753,38 @@ mod tests {
             .to_string();
         assert!(err.contains("did not finish"), "{err}");
         assert!(err.contains("finalize"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_writer_that_stops_answering_hits_the_same_deadline() {
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/metrics",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                ""
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let wait = MergeWait {
+            timeout: Duration::from_millis(200),
+            ..quick()
+        };
+        let started = std::time::Instant::now();
+        let err = seal(&node, "idx", 1000, None, &wait, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("did not finish within"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[tokio::test]

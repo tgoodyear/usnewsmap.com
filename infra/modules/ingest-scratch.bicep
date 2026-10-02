@@ -7,17 +7,19 @@
 // output on disk at once, about twice `split_num_docs_target` pages
 // (infra/quickwit/pages-index.yaml): about 60 GB at 23 KB a page.
 //
-// NFS needs no keys (access is by network: the share is reachable only
-// through its private endpoint in the VNet), so it fits Entra-only
-// (ADR-0009): shared key access stays disabled. Container Apps can't mount
-// NFS shares that require encryption in transit, so that is turned off for
-// NFS; nothing leaves the VNet, and HTTPS stays required for the REST API.
+// NFS uses no keys, but no identity either: access is by network, through
+// the private endpoint in the VNet, so anything in the Container Apps
+// subnet can reach the share. That is an exception to ADR-0009, recorded
+// there with its limits. Shared key access stays disabled. Container Apps
+// can't mount NFS shares that require encryption in transit, so that is
+// turned off for NFS; nothing leaves the VNet, and HTTPS stays required for
+// the REST API.
 
 param location string
 param tags object
 param name string
-@description('Share size in GiB (provisioned v2 SSD: 32 or more).')
-@minValue(32)
+@description('Share size in GiB. 128 is the floor for the merge settings in pages-index.yaml: a merge of about 60 GB, plus the write-ahead log, the split cache and the split being built, about 70 GB, with room for pages that index larger. A smaller share needs a smaller split_num_docs_target.')
+@minValue(128)
 param sizeGiB int
 param vnetId string
 param vnetName string

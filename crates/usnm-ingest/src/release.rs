@@ -144,6 +144,16 @@ impl WriterLease {
         }
         Ok(())
     }
+
+    /// Resolves once a renewal has failed. Long waits (the merges, up to
+    /// 90 minutes) race against it, so a writer that may no longer hold the
+    /// lock stops within a second instead of at its next checkpoint, long
+    /// before the lock expires and another writer could take it.
+    async fn lost(&self) {
+        while !self.lost.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
 }
 
 impl Drop for WriterLease {
@@ -572,7 +582,11 @@ impl Release {
             }
             progress.snapshot().log(Some(&b.batch));
         }
-        sink.finish(docs).await?;
+        // The last commit and the merge wait, given up as soon as the lock is.
+        tokio::select! {
+            r = sink.finish(docs) => r?,
+            () = lease.lost() => lease.check()?,
+        }
         progress.snapshot().log(None);
         progress::report(&self.state, version, &progress.snapshot()).await;
         Ok(docs)
@@ -680,5 +694,29 @@ impl Release {
             bail!("`{path}` already exists; reference snapshots are immutable");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_lost_lease_ends_a_wait() {
+        let lost = Arc::new(AtomicBool::new(false));
+        let lease = WriterLease {
+            lost: lost.clone(),
+            renewer: tokio::spawn(async {}),
+        };
+        let flag = lost.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        let r: anyhow::Result<()> = tokio::select! {
+            () = std::future::pending::<()>() => Ok(()),
+            () = lease.lost() => lease.check(),
+        };
+        assert!(r.unwrap_err().to_string().contains("could not be renewed"));
     }
 }
