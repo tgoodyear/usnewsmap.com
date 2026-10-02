@@ -84,10 +84,6 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           <a href="https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25" {...ext}>
             Chronicling America Data Challenge
           </a>
-          , run by the{" "}
-          <a href="https://www.loc.gov/ndnp/" {...ext}>
-            NEH and Library of Congress
-          </a>
           . Georgia Tech's{" "}
           <a
             href="https://web.archive.org/web/20161228012501/http://www.news.gatech.edu/2016/03/06/what-going-viral-looked-120-years-ago/"
