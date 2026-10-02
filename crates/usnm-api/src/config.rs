@@ -19,6 +19,10 @@ pub struct RateLimit {
     pub burst: NonZeroU32,
 }
 
+/// The shortest `USNM_ABANDON_AFTER_SECS`: the 2 s `Retry-After` of a `202`
+/// plus room for a slow network.
+pub const MIN_ABANDON_AFTER_SECS: u64 = 5;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
@@ -34,13 +38,32 @@ pub struct Config {
     /// Responses that took at least this long to compute are persisted.
     pub persist_after: Duration,
     pub allowed_origins: Vec<String>,
+    /// How long a visitor's request waits for a search before the API
+    /// answers `202 Accepted` and the search carries on without it.
     pub search_timeout: Duration,
+    /// The limit on one search computation (each backend call and the whole
+    /// response), whether or not anyone still waits for it. Past it the
+    /// search is cancelled and fails with a timeout, which is not cached.
+    pub compute_cap: Duration,
+    /// Search computations (`/v1/aggregate`, `/v1/hits`) allowed to run at
+    /// once, including those still running after their visitor got a `202`.
+    /// A new one waits for a slot up to the visitor's wait, then gets a `503`.
+    pub compute_concurrency: usize,
+    /// A computation nobody has waited on for this long is cancelled (the
+    /// visitor changed the search or left). Visitors ask again within
+    /// `Retry-After` (2 s) of each `202`.
+    pub abandon_after: Duration,
     /// Warm-up (`crate::prewarm`): limit on each query. Well above
     /// `search_timeout`, because a cold search can take longer than a visitor
     /// is allowed to wait.
     pub prewarm_query_timeout: Duration,
     /// Warm-up: limit on the whole run; queries left when it runs out are skipped.
     pub prewarm_budget: Duration,
+    /// Warm-up: after the examples, this many of the most frequent searches
+    /// in the search log (0 turns it off).
+    pub prewarm_top_searches: usize,
+    /// Warm-up: how many of the search log's most recent days are counted.
+    pub prewarm_log_days: u64,
     /// Warm-up: the first pause before retrying a query the backend failed
     /// (it doubles, up to 10 s). The searcher can still be starting when a
     /// replica warms up.
@@ -78,6 +101,10 @@ pub struct Config {
     pub search_log_url: Option<String>,
     /// How often the search log appends its batch.
     pub search_log_flush: Duration,
+    /// End-to-end tests only, and only with the memory backend: an aggregate
+    /// search whose query contains this term waits this long before it runs,
+    /// to stand in for a cold search on the real corpus.
+    pub fixture_slow: Option<(String, Duration)>,
 }
 
 impl Config {
@@ -116,6 +143,16 @@ impl Config {
                 .ok_or("USNM_RATE_BURST must be at least 1")?,
             }),
         };
+        let fixture_slow = match var("USNM_FIXTURE_SLOW_TERM") {
+            None => None,
+            Some(_) if backend != BackendKind::Memory => {
+                return Err("USNM_FIXTURE_SLOW_TERM works with the memory backend only".into())
+            }
+            Some(term) => Some((
+                term.to_lowercase(),
+                Duration::from_millis(num("USNM_FIXTURE_SLOW_MS", 5000)?),
+            )),
+        };
         Ok(Self {
             bind: var("USNM_BIND").unwrap_or_else(|| "0.0.0.0:8080".to_owned()),
             backend,
@@ -130,8 +167,24 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             search_timeout: Duration::from_secs(num("USNM_SEARCH_TIMEOUT_SECS", 10)?),
+            compute_cap: Duration::from_secs(num("USNM_COMPUTE_CAP_SECS", 120)?.max(1)),
+            compute_concurrency: usize::try_from(num("USNM_COMPUTE_CONCURRENCY", 4)?.max(1))
+                .map_err(|e| e.to_string())?,
+            abandon_after: match num("USNM_ABANDON_AFTER_SECS", 15)? {
+                // Well above the 2 s Retry-After, or a slow search still being
+                // polled could be cancelled between two polls.
+                s if s < MIN_ABANDON_AFTER_SECS => {
+                    return Err(format!(
+                        "USNM_ABANDON_AFTER_SECS must be at least {MIN_ABANDON_AFTER_SECS}"
+                    ))
+                }
+                s => Duration::from_secs(s),
+            },
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
             prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 300)?),
+            prewarm_top_searches: usize::try_from(num("USNM_PREWARM_TOP_SEARCHES", 20)?)
+                .map_err(|e| e.to_string())?,
+            prewarm_log_days: num("USNM_PREWARM_LOG_DAYS", 28)?,
             prewarm_retry_first: Duration::from_secs(1),
             ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 120)?),
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
@@ -151,6 +204,7 @@ impl Config {
             status_refresh: Duration::from_secs(num("USNM_STATUS_REFRESH_SECS", 60)?.max(1)),
             search_log_url: var("USNM_SEARCH_LOG_URL"),
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
+            fixture_slow,
         })
     }
 }
@@ -171,6 +225,12 @@ mod tests {
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.search_log_url.is_none());
         assert_eq!(c.search_log_flush, Duration::from_secs(300));
+        assert_eq!(c.compute_cap, Duration::from_secs(120));
+        assert_eq!(c.compute_concurrency, 4);
+        assert_eq!(c.abandon_after, Duration::from_secs(15));
+        assert_eq!(c.prewarm_top_searches, 20);
+        assert_eq!(c.prewarm_log_days, 28);
+        assert!(c.fixture_slow.is_none());
         let c = Config::from_lookup(|k| match k {
             "USNM_RATE_PER_MIN" => Some("0".into()),
             "USNM_REFERENCE_URL" => Some("https://a.blob.core.windows.net/reference".into()),
@@ -183,5 +243,21 @@ mod tests {
         assert!(c.reference_url.starts_with("https://"));
         assert!(Config::from_lookup(|k| (k == "USNM_RATE_BURST").then(|| "0".into())).is_err());
         assert!(Config::from_lookup(|k| (k == "USNM_CACHE_MB").then(|| "x".into())).is_err());
+        assert!(
+            Config::from_lookup(|k| (k == "USNM_ABANDON_AFTER_SECS").then(|| "2".into())).is_err()
+        );
+        let slow = Config::from_lookup(|k| (k == "USNM_FIXTURE_SLOW_TERM").then(|| "Slow".into()))
+            .unwrap();
+        assert_eq!(
+            slow.fixture_slow,
+            Some(("slow".to_owned(), Duration::from_secs(5)))
+        );
+        // Never with the real search engine.
+        assert!(Config::from_lookup(|k| match k {
+            "USNM_FIXTURE_SLOW_TERM" => Some("slow".into()),
+            "USNM_BACKEND" => Some("quickwit".into()),
+            _ => None,
+        })
+        .is_err());
     }
 }

@@ -15,7 +15,7 @@ use usnm_core::query::highlight_terms;
 use usnm_core::time::date_from_day;
 use usnm_search::HitsQuery;
 
-use super::{cached, uses_fuzzy, with_timeout};
+use super::{cached, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
@@ -156,7 +156,7 @@ pub async fn hits(
         let t = Instant::now();
         let result = with_timeout(
             &st,
-            st.config.search_timeout,
+            st.config.compute_cap,
             snap2
                 .backend
                 .hits(&rd.index_set(), &req.query, &req.filters, &page),
@@ -213,7 +213,7 @@ pub async fn hits(
     };
     cached(
         &state,
-        false,
+        Job::search("hits", false, state.config.compute_cap),
         key,
         &pinning,
         &serving,

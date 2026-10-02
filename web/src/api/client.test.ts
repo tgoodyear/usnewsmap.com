@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, isPlain, searchQuery, VersionChangedError } from "./client";
+import {
+  api,
+  ApiError,
+  isPlain,
+  isRetryable,
+  MAX_COMPUTE_WAIT_MS,
+  searchQuery,
+  VersionChangedError,
+} from "./client";
 
 function respond(body: unknown, status = 200, type = "application/json") {
   vi.stubGlobal(
@@ -8,7 +16,128 @@ function respond(body: unknown, status = 200, type = "application/json") {
   );
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+const computing = () =>
+  new Response(JSON.stringify({ status: "computing", retry_after: 2 }), {
+    status: 202,
+    headers: { "content-type": "application/json", "retry-after": "2" },
+  });
+const problem = (status: number, type: string, retry?: string) =>
+  new Response(JSON.stringify({ type, title: "t", status }), {
+    status,
+    headers: { "content-type": "application/problem+json", ...(retry ? { "retry-after": retry } : {}) },
+  });
+const ok = () =>
+  new Response(JSON.stringify({ index_version: "v1", total: { hits: 1 } }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+
+/** Answer each fetch with the next response in `seq`. */
+function sequence(...seq: (() => Response)[]) {
+  const fn = vi.fn(async () => seq.shift()!());
+  vi.stubGlobal("fetch", fn);
+  return fn;
+}
+
+describe("searches the API is still computing", () => {
+  it("asks again after Retry-After until the result arrives", async () => {
+    vi.useFakeTimers();
+    const fetch = sequence(computing, computing, ok);
+    const onComputing = vi.fn();
+    const result = api.aggregate({ q: "radio" }, "v1", undefined, onComputing);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(result).resolves.toMatchObject({ index_version: "v1" });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(onComputing).toHaveBeenCalledTimes(2);
+    // The same URL each time.
+    const urls = fetch.mock.calls.map((c) => String((c as unknown[])[0]));
+    expect(new Set(urls).size).toBe(1);
+  });
+
+  it("stops asking when the search changes (the signal aborts)", async () => {
+    vi.useFakeTimers();
+    const fetch = sequence(computing, computing, ok);
+    const ctl = new AbortController();
+    const result = api.aggregate({ q: "radio" }, "v1", ctl.signal).catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(500);
+    ctl.abort(new DOMException("changed", "AbortError"));
+    expect((await result as DOMException).name).toBe("AbortError");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up after the longest wait, and that isn't retried", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(async () => computing());
+    vi.stubGlobal("fetch", fetch);
+    const result = api.aggregate({ q: "radio" }, "v1").catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(MAX_COMPUTE_WAIT_MS + 5000);
+    const err = (await result) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.problem.type).toBe("/errors/backend-timeout");
+    expect(fetch.mock.calls.length).toBeLessThanOrEqual(MAX_COMPUTE_WAIT_MS / 2000 + 1);
+    expect(isRetryable(err)).toBe(false);
+  });
+
+  it("holds a request made while waiting to the longest wait", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    // The first answer is a 202; the next request never gets an answer.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_: unknown, init?: RequestInit) => {
+        calls += 1;
+        if (calls === 1) return Promise.resolve(computing());
+        return new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+        );
+      }),
+    );
+    const result = api.aggregate({ q: "radio" }, "v1").catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(MAX_COMPUTE_WAIT_MS + 1000);
+    const err = (await result) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.problem.type).toBe("/errors/backend-timeout");
+  });
+
+  it("waits out a busy API, and a rate limit met while waiting", async () => {
+    vi.useFakeTimers();
+    const fetch = sequence(
+      () => problem(503, "/errors/busy", "5"),
+      computing,
+      () => problem(429, "/errors/rate-limited", "3"),
+      ok,
+    );
+    const result = api.aggregate({ q: "radio" }, "v1");
+    await vi.advanceTimersByTimeAsync(5000 + 2000 + 3000);
+    await expect(result).resolves.toMatchObject({ index_version: "v1" });
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("a rate limit before any 202 is an error, as before", async () => {
+    sequence(() => problem(429, "/errors/rate-limited", "3"));
+    await expect(api.aggregate({ q: "radio" }, "v1")).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("retries only failures worth retrying", () => {
+    const err = (status: number, type: string) => new ApiError({ type, title: "t", status });
+    expect(isRetryable(err(503, "/errors/backend"))).toBe(true);
+    expect(isRetryable(new TypeError("network"))).toBe(true);
+    expect(isRetryable(err(503, "/errors/backend-timeout"))).toBe(false);
+    expect(isRetryable(err(503, "/errors/busy"))).toBe(false);
+    expect(isRetryable(err(400, "/errors/query-syntax"))).toBe(false);
+    expect(isRetryable(new VersionChangedError("a", "b"))).toBe(false);
+  });
+});
 
 describe("api client", () => {
   it("rejects a response from another index version (a followed 307)", async () => {

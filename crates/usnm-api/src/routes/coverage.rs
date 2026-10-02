@@ -12,7 +12,7 @@ use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{ParamError, RawParams};
 use usnm_core::time::{BucketSpec, BucketUnit};
 
-use super::{cached, Ctx};
+use super::{cached, Ctx, Job};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
@@ -44,13 +44,13 @@ pub async fn coverage(
 }
 
 pub(crate) async fn coverage_in(
-    state: &AppState,
+    state: &Arc<AppState>,
     ctx: Ctx,
     uri: &Uri,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
     raw.reject_only(&["from", "to", "bucket", "state", "v"])?;
-    let warm_up = ctx.warm_up;
+    let job = Job::reference("coverage", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();
     let (lo, hi) = snap.refdata.bounds();
@@ -138,7 +138,7 @@ pub(crate) async fn coverage_in(
     };
     cached(
         state,
-        warm_up,
+        job,
         key,
         &pinning,
         &serving,

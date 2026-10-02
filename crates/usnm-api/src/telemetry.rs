@@ -53,6 +53,10 @@ pub struct Metrics {
     cache: Counter<u64>,
     /// Requests refused as the client's fault, by `reason`.
     rejected: Counter<u64>,
+    /// Searches that needed longer than a visitor waits, by `endpoint` and
+    /// `outcome` (ok, timeout, error, abandoned), counted once each when they
+    /// end; and searches that found no free computation slot (busy).
+    slow_searches: Counter<u64>,
     /// Reference-data reloads by `outcome` (published, failed).
     reloads: Counter<u64>,
     /// One warm-up run, by `trigger` (startup, publish).
@@ -89,6 +93,13 @@ impl Metrics {
             rejected: meter
                 .u64_counter("api.rejected_queries")
                 .with_description("Requests refused as the client's fault, by reason")
+                .build(),
+            slow_searches: meter
+                .u64_counter("api.slow_searches")
+                .with_description(
+                    "Searches that took longer than a visitor waits, by endpoint and outcome \
+                     (ok, timeout, error, abandoned, busy)",
+                )
                 .build(),
             reloads: meter
                 .u64_counter("api.reference_reloads")
@@ -157,6 +168,16 @@ impl Metrics {
         );
     }
 
+    pub(crate) fn slow_search(&self, endpoint: &'static str, outcome: &'static str) {
+        self.slow_searches.add(
+            1,
+            &[
+                KeyValue::new("endpoint", endpoint),
+                KeyValue::new("outcome", outcome),
+            ],
+        );
+    }
+
     pub(crate) fn beacon(&self, outcome: &'static str) {
         self.beacons.add(1, &[KeyValue::new("outcome", outcome)]);
     }
@@ -208,6 +229,12 @@ pub fn observe_index_version(state: &Arc<AppState>, meter: &Meter) {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rejection(pub &'static str);
 
+/// The `type` of a problem response (`/errors/backend-timeout`), recorded on
+/// the request span as `usnm.problem`, so alerts can tell a slow search from
+/// a broken one.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProblemType(pub &'static str);
+
 /// The index version a response was computed from, attached by the search
 /// endpoints' response cache for the request span.
 #[derive(Debug, Clone)]
@@ -249,6 +276,7 @@ pub(crate) async fn track(
         http.route = Empty,
         http.response.status_code = Empty,
         usnm.index_version = Empty,
+        usnm.problem = Empty,
     );
     let resp = next.run(req).instrument(span.clone()).await;
     let elapsed = started.elapsed();
@@ -271,6 +299,9 @@ pub(crate) async fn track(
             state.snapshot.load().refdata.version(),
         ),
     };
+    if let Some(ProblemType(kind)) = resp.extensions().get::<ProblemType>() {
+        span.record("usnm.problem", *kind);
+    }
     span.record("http.response.status_code", status.as_u16());
     // Client errors (4xx) are the client's outcome, not a failure (09 §9.1).
     span.record(

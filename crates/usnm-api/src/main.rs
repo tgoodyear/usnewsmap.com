@@ -36,12 +36,16 @@ async fn serve(
         BackendKind::Memory => Engine::Memory {
             indexes_dir: config.data_dir.join("indexes"),
         },
-        // A search's limit fits a warm-up query (the handlers still cut each
-        // visitor's search at `search_timeout`); index lookups and health
-        // checks keep the short one.
+        // A search's limit fits a warm-up query and a search computation
+        // (the handlers cut each one at its own limit); index lookups and
+        // health checks keep the short one.
         BackendKind::Quickwit(url) => Engine::Shared(Arc::new(
-            QuickwitBackend::new(url, config.search_timeout)?
-                .with_search_timeout(config.search_timeout.max(config.prewarm_query_timeout)),
+            QuickwitBackend::new(url, config.search_timeout)?.with_search_timeout(
+                config
+                    .search_timeout
+                    .max(config.prewarm_query_timeout)
+                    .max(config.compute_cap),
+            ),
         )),
     };
     let loader = Loader {

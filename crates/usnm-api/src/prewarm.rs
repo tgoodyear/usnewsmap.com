@@ -4,7 +4,9 @@
 //! timeout, so before a replica serves a version (at start, and before a
 //! reload swaps a new one in) it runs what the site's first visitors load:
 //! the places layer, and each example search from the home page with the
-//! coverage cube its response links to. The requests go through the same
+//! coverage cube its response links to; then, with what is left of the
+//! budget, the searches visitors made most often recently, read from the
+//! search log (06 §6.8), each with its coverage cube. The requests go through the same
 //! handlers as visitors' requests, pinned to the new version, so the search
 //! engine's caches and the response caches (in-process, and the persistent
 //! cache for slow ones) hold exactly the entries those visitors will ask for.
@@ -13,6 +15,10 @@
 //! `config.prewarm_query_timeout` (the searcher's own limit per call still
 //! applies), all within `config.prewarm_budget`. Nothing here fails: a
 //! warm-up that times out or errors is logged and the version serves anyway.
+//!
+//! Searches from the log are logged by rank only (`search-log-3`), never by
+//! their text, and their errors by kind only: an error message can quote
+//! the query.
 
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -20,6 +26,8 @@ use std::time::{Duration, Instant};
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
 use serde::Deserialize;
+
+use usnm_core::params::{RawParams, SearchRequest};
 
 use crate::error::ApiError;
 use crate::routes::{self, Ctx};
@@ -87,6 +95,9 @@ pub struct Report {
     pub failed: usize,
     /// Not run because the budget ran out.
     pub skipped: usize,
+    /// Searches from the search log the run went on to (each with its
+    /// coverage cube, which is counted in `queries` too).
+    pub from_log: usize,
     pub elapsed: Duration,
 }
 
@@ -133,12 +144,21 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
-    async fn query(&mut self, endpoint: Endpoint, example: &str, uri: &str) -> Option<Response> {
+    /// One warm-up request, labelled `example` in the logs. A `private`
+    /// one came from the search log: its error is logged by kind only.
+    async fn query(
+        &mut self,
+        endpoint: Endpoint,
+        example: &str,
+        uri: &str,
+        private: bool,
+    ) -> Option<Response> {
         self.report.queries += 1;
         let started = Instant::now();
         let outcome = match uri.parse::<Uri>() {
+            Err(_) if private => Outcome::Failed("invalid uri".to_owned()),
             Err(e) => Outcome::Failed(e.to_string()),
-            Ok(uri) => self.call(endpoint, &uri).await,
+            Ok(uri) => self.call(endpoint, &uri, private).await,
         };
         let elapsed = started.elapsed();
         match &outcome {
@@ -179,7 +199,7 @@ impl Run<'_> {
     /// run's budget allows. On the first prod start the searcher sidecar
     /// answered 500 for its first seconds and three warm-up queries failed
     /// within 5 ms each.
-    async fn call(&self, endpoint: Endpoint, uri: &Uri) -> Outcome {
+    async fn call(&self, endpoint: Endpoint, uri: &Uri, private: bool) -> Outcome {
         // One limit for the query across its attempts, so retries can't
         // stretch one example past `prewarm_query_timeout`.
         let deadline =
@@ -187,7 +207,7 @@ impl Run<'_> {
         let mut pause = self.state.config.prewarm_retry_first;
         let mut attempt = 1;
         loop {
-            let (outcome, retry) = self.call_once(endpoint, uri, deadline).await;
+            let (outcome, retry) = self.call_once(endpoint, uri, deadline, private).await;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if !retry || attempt >= RETRY_ATTEMPTS || remaining <= pause {
                 return outcome;
@@ -206,7 +226,20 @@ impl Run<'_> {
 
     /// One attempt, and whether a failure is worth retrying (the backend,
     /// not the request, failed).
-    async fn call_once(&self, endpoint: Endpoint, uri: &Uri, deadline: Instant) -> (Outcome, bool) {
+    async fn call_once(
+        &self,
+        endpoint: Endpoint,
+        uri: &Uri,
+        deadline: Instant,
+        private: bool,
+    ) -> (Outcome, bool) {
+        let describe = |e: &ApiError| {
+            if private {
+                kind(e).to_owned()
+            } else {
+                format!("{e:?}")
+            }
+        };
         let now = Instant::now();
         if self.deadline <= now {
             return (Outcome::Skipped, false);
@@ -231,14 +264,30 @@ impl Run<'_> {
         .await;
         match served {
             Err(_) | Ok(Err(ApiError::Timeout)) => (Outcome::TimedOut, false),
-            Ok(Err(e @ ApiError::Backend(_))) => (Outcome::Failed(format!("{e:?}")), true),
-            Ok(Err(e)) => (Outcome::Failed(format!("{e:?}")), false),
+            Ok(Err(e @ ApiError::Backend(_))) => (Outcome::Failed(describe(&e)), true),
+            Ok(Err(e)) => (Outcome::Failed(describe(&e)), false),
             Ok(Ok(resp)) if resp.status() == StatusCode::OK => (Outcome::Ok(resp), false),
             Ok(Ok(resp)) => {
                 let retry = resp.status().is_server_error();
                 (Outcome::Failed(format!("status {}", resp.status())), retry)
             }
         }
+    }
+}
+
+/// An error's kind, without its message.
+fn kind(e: &ApiError) -> &'static str {
+    match e {
+        ApiError::Params(_) | ApiError::BadRequest(_) => "bad_parameter",
+        ApiError::Unsupported(_) => "unsupported",
+        ApiError::NotFound(_) => "not_found",
+        ApiError::TooBroad(_) => "too_broad",
+        ApiError::Timeout => "timeout",
+        ApiError::Busy => "busy",
+        ApiError::Backend(_) => "backend",
+        ApiError::BackendRejected(_) => "backend_rejected",
+        ApiError::RateLimited(_) => "rate_limited",
+        ApiError::BadBeacon(_) | ApiError::TooLarge(_) | ApiError::MediaType(_) => "bad_request",
     }
 }
 
@@ -252,28 +301,96 @@ async fn baseline_ref(resp: Response) -> Option<String> {
     body["cube"]["baseline_ref"].as_str().map(str::to_owned)
 }
 
+/// Limit on reading the search log for the warm-up.
+const LOG_READ_LIMIT: Duration = Duration::from_secs(30);
+
+/// The most frequent recent searches in the search log, as canonical
+/// aggregate query strings, leaving out those in `skip` (the examples).
+/// Empty without a search log, with `prewarm_top_searches` at 0, or when
+/// reading takes longer than the time left.
+async fn from_log(
+    state: &AppState,
+    snap: &Snapshot,
+    skip: &[String],
+    left: Duration,
+) -> Vec<String> {
+    let n = state.config.prewarm_top_searches;
+    let Some(log) = state.search_log.as_deref().filter(|_| n > 0) else {
+        return Vec::new();
+    };
+    let read = crate::searchlog::top_searches(
+        log.store().as_ref(),
+        chrono::Utc::now().date_naive(),
+        state.config.prewarm_log_days,
+        // Room for the examples it may contain.
+        n + skip.len(),
+        snap.refdata.bounds(),
+    );
+    match tokio::time::timeout(left.min(LOG_READ_LIMIT), read).await {
+        Ok(top) => top
+            .into_iter()
+            .filter(|key| !skip.contains(key))
+            .take(n)
+            .collect(),
+        Err(_) => {
+            tracing::warn!("warm-up: reading the search log timed out; skipping its searches");
+            Vec::new()
+        }
+    }
+}
+
 /// Warm the caches for `snap`'s version: the places layer, then each example
-/// search and its coverage cube, as the web app requests them. Logs one line
-/// for the run and records `api.prewarm_*`.
+/// search and its coverage cube, as the web app requests them, then the most
+/// frequent searches from the search log the same way while the budget
+/// lasts. Logs one line for the run and records `api.prewarm_*`.
 pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -> Report {
     let started = Instant::now();
     let version = snap.refdata.version().to_owned();
     let v: String = form_urlencoded::byte_serialize(version.as_bytes()).collect();
+    let deadline = started + state.config.prewarm_budget;
     let mut run = Run {
         state,
-        snap,
-        deadline: started + state.config.prewarm_budget,
+        snap: snap.clone(),
+        deadline,
         report: Report::default(),
     };
-    run.query(Endpoint::Places, "", &format!("/v1/places?v={v}"))
+    run.query(Endpoint::Places, "", &format!("/v1/places?v={v}"), false)
         .await;
     for ex in examples() {
         let uri = format!("/v1/aggregate?{}&v={v}", ex.aggregate);
-        let Some(resp) = run.query(Endpoint::Aggregate, &ex.id, &uri).await else {
+        let Some(resp) = run.query(Endpoint::Aggregate, &ex.id, &uri, false).await else {
             continue;
         };
         if let Some(coverage) = baseline_ref(resp).await {
-            run.query(Endpoint::Coverage, &ex.id, &coverage).await;
+            run.query(Endpoint::Coverage, &ex.id, &coverage, false)
+                .await;
+        }
+    }
+    let bounds = snap.refdata.bounds();
+    let warmed: Vec<String> = examples()
+        .iter()
+        .filter_map(|ex| {
+            let raw = RawParams::parse(&ex.aggregate).ok()?;
+            SearchRequest::from_raw(&raw, bounds)
+                .ok()
+                .map(|r| r.canonical())
+        })
+        .collect();
+    let left = deadline.saturating_duration_since(Instant::now());
+    let top = if left.is_zero() {
+        Vec::new()
+    } else {
+        from_log(state, &snap, &warmed, left).await
+    };
+    run.report.from_log = top.len();
+    for (rank, key) in top.iter().enumerate() {
+        let label = format!("search-log-{}", rank + 1);
+        let uri = format!("/v1/aggregate?{key}&v={v}");
+        let Some(resp) = run.query(Endpoint::Aggregate, &label, &uri, true).await else {
+            continue;
+        };
+        if let Some(coverage) = baseline_ref(resp).await {
+            run.query(Endpoint::Coverage, &label, &coverage, true).await;
         }
     }
     let mut report = run.report;
@@ -286,6 +403,7 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
         timed_out = report.timed_out,
         failed = report.failed,
         skipped = report.skipped,
+        from_log = report.from_log,
         ms = report.elapsed.as_millis() as u64,
         "warm-up finished"
     );
@@ -297,7 +415,6 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use usnm_core::params::{RawParams, SearchRequest};
 
     #[test]
     fn examples_are_valid_aggregate_queries() {

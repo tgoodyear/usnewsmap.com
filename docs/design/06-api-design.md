@@ -160,7 +160,20 @@ Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer 
 
 ### 6.3.5 Errors
 
-This is RFC 9457 `application/problem+json`, with `type` values such as `/errors/query-syntax`, `/errors/query-too-broad`, `/errors/rate-limited`, `/errors/backend-timeout`, plus a `hint` field. Syntax errors return **400** with a caret position, broad queries **422**, backend timeouts **503** with `Retry-After`, and rate limits **429**. `POST /v1/beacon` adds `/errors/bad-beacon` (**400**), `/errors/too-large` (**413**) and `/errors/unsupported-media-type` (**415**).
+This is RFC 9457 `application/problem+json`, with `type` values such as `/errors/query-syntax`, `/errors/query-too-broad`, `/errors/rate-limited`, `/errors/backend-timeout`, `/errors/busy`, plus a `hint` field. Syntax errors return **400** with a caret position, broad queries **422**, rate limits **429**, a search that ran past its computation limit **503** `/errors/backend-timeout` with `Retry-After: 30`, and a search refused because every computation slot is taken **503** `/errors/busy` with `Retry-After: 5` (§6.6). `POST /v1/beacon` adds `/errors/bad-beacon` (**400**), `/errors/too-large` (**413**) and `/errors/unsupported-media-type` (**415**).
+
+**Still computing: `202 Accepted`.** A visitor's request waits up to `USNM_SEARCH_TIMEOUT_SECS` (10 s), plus 2 s for a Blob cache read when there is a persistent cache. If the response isn't ready by then, the API answers:
+
+```http
+HTTP/1.1 202 Accepted
+Retry-After: 2
+Cache-Control: no-store
+Content-Type: application/json
+
+{"status":"computing","retry_after":2}
+```
+
+The computation carries on without the request. The client sends the same request again after `Retry-After`. The new request joins the running computation (one per cache key, however many requests ask) or gets the cached result, and again waits no longer than the visitor's limit. The body never echoes the query. A computation is cancelled at `USNM_COMPUTE_CAP_SECS` (120 s), and any request waiting on it then gets the `/errors/backend-timeout` 503. It is also cancelled once no request has waited on it for `USNM_ABANDON_AFTER_SECS` (15 s): the visitor changed the search or left. Timeouts and other errors are never cached, so asking again starts a new computation. This applies to every cached response (`/v1/aggregate`, `/v1/hits`, `/v1/coverage`, `/v1/places`). The web app shows "Large search, still working…" while it waits, and stops asking when the visitor changes the search or after about 150 s (07).
 
 ### 6.3.6 `GET /v1/status`
 
@@ -255,13 +268,15 @@ The lean profile has no edge CDN in front of the API, so the API caches in three
 - The Blob cache is keyed by the **serving** version (`cache/{index_version}/…`), so its entries can't cross versions either.
 - Each version names an immutable set of sealed Quickwit indexes, and the API queries exactly that set ([08 §8.4.1](08-azure-infrastructure.md#841-quickwit-metastore-one-writer-many-readers)). The results for a given `v` therefore can't change while it's being served.
 
-**Pre-warming.** Before a replica serves a version, at start and before a reload swaps one in, the API warms its caches with what the home page loads first: `/v1/places`, and each example search in `web/src/examples.json` (the web app's example list, compiled into the API) with the coverage cube its response links to. The requests go through the same handlers as a visitor's, pinned to the new version, so the in-process and Blob entries have the keys the web app will ask for. They skip the Blob read so that Quickwit's caches warm too, and slow results are still written to Blob for replicas that start later. Queries run one at a time, each allowed 60 s (`USNM_PREWARM_QUERY_SECS`; Quickwit's own 30 s limit per call still applies), within 5 minutes for the run (`USNM_PREWARM_BUDGET_SECS`). A warm-up that fails or runs out of time is logged and never blocks the version. A visitor whose request matches a warm-up query still running shares its result but waits no longer than a visitor's own limit: the request timeout plus 2 s for a Blob cache read. Warming the most frequent recent queries is not built yet. Index versions are published at most **weekly** to keep the cache hit rate high.
+**Pre-warming.** Before a replica serves a version, at start and before a reload swaps one in, the API warms its caches with what the home page loads first: `/v1/places`, and each example search in `web/src/examples.json` (the web app's example list, compiled into the API) with the coverage cube its response links to. The requests go through the same handlers as a visitor's, pinned to the new version, so the in-process and Blob entries have the keys the web app will ask for. They skip the Blob read so that Quickwit's caches warm too, and slow results are still written to Blob for replicas that start later. Queries run one at a time, each allowed 60 s (`USNM_PREWARM_QUERY_SECS`; Quickwit's own 30 s limit per call still applies), within 5 minutes for the run (`USNM_PREWARM_BUDGET_SECS`). After the examples, with what is left of that budget, the warm-up runs the searches visitors made most often in the search log (§6.8): the day files of the last 28 days (`USNM_PREWARM_LOG_DAYS`), counted by cache key, the top 20 (`USNM_PREWARM_TOP_SEARCHES`, 0 turns it off), most frequent first and ties in key order, each with its coverage cube. Searches that matched no pages are left out (they are fast anyway), as are the examples. Their log lines name them by rank (`search-log-3`) and their errors by kind, never by their text. A warm-up that fails or runs out of time is logged and never blocks the version. A visitor whose request matches a warm-up query still running shares its result but waits no longer than a visitor's own limit, then gets a `202` (§6.3.5). Index versions are published at most **weekly** to keep the cache hit rate high.
+
+**Measuring cold searches.** `scripts/bench-cold-searches.py [base-url]` times three searches of the whole corpus by month (`radio`, `television`, `yellow fever`) one request at a time, cold and then warm, waiting out each `202`. It prints the time to the result, the number of `202`s and the backend time the API reports. Run it once, not in a loop; its numbers are for sizing decisions (more searcher compute, a Quickwit split cache). Its requests are not in the search log: they send no `Origin` or `Sec-Fetch-Site` and a script's user agent.
 
 ## 6.6 Service internals
 
 ```mermaid
 flowchart LR
-  R[axum router] --> MW[tower layers<br/>request-id · timeout 10s · compression · trace · rate-limit]
+  R[axum router] --> MW[tower layers<br/>request-id · compression · trace · rate-limit]
   MW --> H[handlers]
   H --> P[query parser → AST → canonicalize]
   P --> C{moka cache}
@@ -276,7 +291,8 @@ flowchart LR
 
 - **Startup:** read `reference/current.json`, load the reference data, start listening, and warm the caches (§6.5). `/readyz` fails until the warm-up ends or 2 minutes pass (`USNM_READY_CAP_SECS`), whichever is first; past the cap the replica reports ready (and logs that) while the warm-up continues. The container's startup probe allows 480 s for loading and warming.
 - **Hot reload:** a background task polls `current.json` every 10 minutes. When `index_version` changes, it loads the new reference data into a fresh snapshot, warms the caches for it (§6.5) while the old version keeps serving, then swaps it in atomically. In-flight requests finish on the old snapshot.
-- **Concurrency:** one tokio runtime; each request fans out to at most 3 concurrent backend calls; a global semaphore caps backend concurrency so a spike can't overwhelm the searcher.
+- **Concurrency:** one tokio runtime; each request fans out to at most 3 concurrent backend calls; a global semaphore caps backend concurrency so a spike can't overwhelm the searcher (`USNM_BACKEND_CONCURRENCY`, 8).
+- **Computations:** a response the in-process cache doesn't hold is computed in a task of its own, registered under its cache key (`crates/usnm-api/src/flights.rs`), so identical requests share it and it outlives the request that started it (§6.3.5), until nobody has asked about it for 15 s. The task stores a successful body in the in-process cache before it leaves the registry, so a request always finds one or the other; errors go to whoever is waiting and are not kept. Searches (`/v1/aggregate`, `/v1/hits`) also take one of 4 computation slots (`USNM_COMPUTE_CONCURRENCY`) while they run, after the Blob cache read misses, which bounds how many run at once. A new search waits for a slot about as long as its visitor waits, then fails with `503 /errors/busy` and `Retry-After: 5`; requests that join a running search or hit either cache need no slot. The warm-up has a slot of its own, so visitors' searches can't starve it. Waiting briefly instead of refusing at once suits the searcher's single vCPU: a slot that frees up within the wait serves the search, and running more searches at once would only split the same core between them. Each computation, and each backend call in it, is cut at `USNM_COMPUTE_CAP_SECS` (120 s).
 - **Resources:** the `api` container is 0.25 vCPU / 0.5 GiB, sharing a replica with the `quickwit` sidecar (1 vCPU / 2 GiB) and reaching it on `localhost`. KEDA HTTP scaler on concurrent requests; min 1 / max 2 replicas in production, min 0 elsewhere.
 
 ## 6.7 Testing strategy
@@ -293,7 +309,7 @@ flowchart LR
 
 Every search a visitor runs on the site is kept, indefinitely and without anything that identifies or links a person ([ADR-0012](adr/0012-anonymous-search-log.md)). As built in `crates/usnm-api/src/searchlog.rs`:
 
-- **Where it's counted.** `/v1/aggregate`, which the site requests once per search, records a search when it answers 200, whether the body came from a cache or was computed. The coverage and hits requests that follow aren't counted, nor are errors, `v` redirects (the redirected request counts), health probes or the cache warm-up (§6.5), which calls the handler code without the recording step.
+- **Where it's counted.** `/v1/aggregate`, which the site requests once per search, records a search when it answers 200, whether the body came from a cache or was computed. The coverage and hits requests that follow aren't counted, nor are errors, `202` answers for a search still computing (the request that gets the 200 counts, so a search the browser asked about several times counts once, and one whose visitor left before it finished doesn't count), `v` redirects (the redirected request counts), health probes or the cache warm-up (§6.5), which calls the handler code without the recording step.
 - **Not recorded:** `DNT: 1` or `Sec-GPC: 1`; a user agent the page-view check (§6.3.7) calls a crawler, script or headless browser; and a request not from the site's own pages: an `Origin` other than `https://{USNM_SITE_HOST}`, a `Sec-Fetch-Site` other than `same-origin`, or neither header. Each outcome is counted in `api.search_log` (08 §8.1.2).
 - **The record** is one JSON line, and nothing else is stored with it:
 
