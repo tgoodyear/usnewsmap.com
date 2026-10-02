@@ -35,12 +35,10 @@ describe("MeasureToggle", () => {
     expect(onChange).toHaveBeenCalledWith("skew");
   });
 
-  it("shows the older share of pages only while a permalink has it selected", () => {
-    render(<MeasureToggle norm="rel" onChange={() => undefined} />);
-    expect(screen.getByRole("button", { name: "Share of pages" }).getAttribute("aria-pressed")).toBe("true");
-    cleanup();
+  it("has no share of pages button", () => {
     render(<MeasureToggle norm="skew" onChange={() => undefined} />);
     expect(screen.queryByRole("button", { name: "Share of pages" })).toBeNull();
+    expect(screen.getAllByRole("button", { pressed: true }).map((b) => b.textContent)).toEqual(["Relative rate"]);
   });
 
   it("explains the measure in a disclosure that Escape closes", () => {

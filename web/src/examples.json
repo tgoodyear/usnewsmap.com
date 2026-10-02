@@ -5,7 +5,7 @@
     "era": "1828-1860",
     "id": "whigs",
     "title": "Whig Party",
-    "view": { "bucket": "month", "from": "1834-01-01", "norm": "rel", "q": "whigs", "to": "1856-12-31" }
+    "view": { "bucket": "month", "from": "1834-01-01", "q": "whigs", "to": "1856-12-31" }
   },
   {
     "aggregate": "q=abolitionists&mode=phrase&from=1830-01-01&to=1860-12-31&bucket=month",
@@ -13,7 +13,7 @@
     "era": "1828-1860",
     "id": "abolitionists",
     "title": "Abolitionists",
-    "view": { "bucket": "month", "from": "1830-01-01", "norm": "rel", "q": "abolitionists", "to": "1860-12-31" }
+    "view": { "bucket": "month", "from": "1830-01-01", "q": "abolitionists", "to": "1860-12-31" }
   },
   {
     "aggregate": "q=%22Mexican+war%22&from=1846-01-01&to=1849-12-31&bucket=month",
@@ -101,7 +101,7 @@
     "era": "1860-1877",
     "id": "greenback",
     "title": "Greenbacks",
-    "view": { "bucket": "month", "from": "1862-01-01", "norm": "rel", "q": "greenback", "to": "1890-12-31" }
+    "view": { "bucket": "month", "from": "1862-01-01", "q": "greenback", "to": "1890-12-31" }
   },
   {
     "aggregate": "q=%22Ku+Klux%22&from=1868-01-01&to=1872-12-31&bucket=month",
@@ -141,7 +141,7 @@
     "era": "1877-1900",
     "id": "populists",
     "title": "Populist Party",
-    "view": { "bucket": "month", "from": "1890-01-01", "norm": "rel", "q": "populist", "to": "1900-12-31" }
+    "view": { "bucket": "month", "from": "1890-01-01", "q": "populist", "to": "1900-12-31" }
   },
   {
     "aggregate": "q=%22standard+oil%22&from=1880-01-01&to=1915-12-31&bucket=month",
@@ -149,7 +149,7 @@
     "era": "1877-1900",
     "id": "standard-oil",
     "title": "Standard Oil",
-    "view": { "bucket": "month", "from": "1880-01-01", "norm": "rel", "q": "\"standard oil\"", "to": "1915-12-31" }
+    "view": { "bucket": "month", "from": "1880-01-01", "q": "\"standard oil\"", "to": "1915-12-31" }
   },
   {
     "aggregate": "q=%22civil+service+reform%22&from=1870-01-01&to=1898-12-31&bucket=month",
@@ -157,7 +157,7 @@
     "era": "1877-1900",
     "id": "civil-service-reform",
     "title": "Civil service reform",
-    "view": { "bucket": "month", "from": "1870-01-01", "norm": "rel", "q": "\"civil service reform\"", "to": "1898-12-31" }
+    "view": { "bucket": "month", "from": "1870-01-01", "q": "\"civil service reform\"", "to": "1898-12-31" }
   },
   {
     "aggregate": "q=Haymarket&mode=phrase&from=1886-04-01&to=1887-12-31&bucket=week",
@@ -189,7 +189,7 @@
     "era": "1877-1900",
     "id": "jim-crow",
     "title": "Jim Crow laws",
-    "view": { "bucket": "year", "from": "1890-01-01", "norm": "rel", "q": "\"Jim Crow\"", "to": "1963-12-31" }
+    "view": { "bucket": "year", "from": "1890-01-01", "q": "\"Jim Crow\"", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=%22battleship+maine%22&from=1898-01-01&to=1898-12-31&bucket=week",
@@ -213,7 +213,7 @@
     "era": "1900-1929",
     "id": "pure-food",
     "title": "Pure food",
-    "view": { "bucket": "month", "from": "1898-01-01", "norm": "rel", "q": "\"pure food\"", "to": "1912-12-31" }
+    "view": { "bucket": "month", "from": "1898-01-01", "q": "\"pure food\"", "to": "1912-12-31" }
   },
   {
     "aggregate": "q=%22woman+suffrage%22&from=1869-01-01&to=1925-12-31&bucket=month",
@@ -221,7 +221,7 @@
     "era": "1900-1929",
     "id": "woman-suffrage",
     "title": "Woman suffrage",
-    "view": { "bucket": "month", "from": "1869-01-01", "norm": "rel", "q": "\"woman suffrage\"", "to": "1925-12-31" }
+    "view": { "bucket": "month", "from": "1869-01-01", "q": "\"woman suffrage\"", "to": "1925-12-31" }
   },
   {
     "aggregate": "q=%22federal+reserve%22&from=1912-01-01&to=1916-12-31&bucket=month",
@@ -285,7 +285,7 @@
     "era": "1929-1945",
     "id": "new-deal",
     "title": "New Deal",
-    "view": { "bucket": "month", "from": "1932-01-01", "norm": "rel", "q": "\"new deal\"", "to": "1945-12-31" }
+    "view": { "bucket": "month", "from": "1932-01-01", "q": "\"new deal\"", "to": "1945-12-31" }
   },
   {
     "aggregate": "q=%22social+security%22&from=1934-01-01&to=1963-12-31&bucket=month",
@@ -293,7 +293,7 @@
     "era": "1929-1945",
     "id": "social-security",
     "title": "Social Security",
-    "view": { "bucket": "month", "from": "1934-01-01", "norm": "rel", "q": "\"social security\"", "to": "1963-12-31" }
+    "view": { "bucket": "month", "from": "1934-01-01", "q": "\"social security\"", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=%22civilian+conservation+corps%22&from=1933-01-01&to=1942-12-31&bucket=month",
@@ -325,7 +325,7 @@
     "era": "1929-1945",
     "id": "rationing",
     "title": "Wartime rationing",
-    "view": { "bucket": "month", "from": "1941-06-01", "norm": "rel", "q": "rationing", "to": "1946-12-31" }
+    "view": { "bucket": "month", "from": "1941-06-01", "q": "rationing", "to": "1946-12-31" }
   },
   {
     "aggregate": "q=%22relocation+center%22&from=1942-01-01&to=1946-06-30&bucket=month",
@@ -341,7 +341,7 @@
     "era": "1945-1963",
     "id": "atomic-bomb",
     "title": "Atomic bomb",
-    "view": { "bucket": "month", "from": "1944-01-01", "norm": "rel", "q": "\"atomic bomb\"", "to": "1963-12-31" }
+    "view": { "bucket": "month", "from": "1944-01-01", "q": "\"atomic bomb\"", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=%22Marshall+plan%22&from=1947-01-01&to=1952-12-31&bucket=month",
@@ -357,7 +357,7 @@
     "era": "1945-1963",
     "id": "iron-curtain",
     "title": "Iron Curtain",
-    "view": { "bucket": "month", "from": "1946-01-01", "norm": "rel", "q": "\"iron curtain\"", "to": "1963-12-31" }
+    "view": { "bucket": "month", "from": "1946-01-01", "q": "\"iron curtain\"", "to": "1963-12-31" }
   },
   {
     "aggregate": "q=Korea&mode=phrase&from=1945-01-01&to=1956-12-31&bucket=month",
@@ -365,7 +365,7 @@
     "era": "1945-1963",
     "id": "korea",
     "title": "Korean War",
-    "view": { "bucket": "month", "from": "1945-01-01", "norm": "rel", "q": "Korea", "to": "1956-12-31" }
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "Korea", "to": "1956-12-31" }
   },
   {
     "aggregate": "q=%22Senator+McCarthy%22&from=1950-01-01&to=1957-12-31&bucket=month",
@@ -397,6 +397,6 @@
     "era": "1945-1963",
     "id": "civil-rights",
     "title": "Civil rights",
-    "view": { "bucket": "month", "from": "1945-01-01", "norm": "rel", "q": "\"civil rights\"", "to": "1963-12-31" }
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "\"civil rights\"", "to": "1963-12-31" }
   }
 ]

@@ -4,12 +4,13 @@ import { DEFAULTS, isIsoDate, parseView, serializeView } from "./url";
 describe("view URL", () => {
   it("round-trips and writes only non-defaults", () => {
     const v = parseView(
-      "?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week&t=1896-07-12&win=4&layer=heat&norm=rel&state=il,ny&place=P00412&z=4.2&c=-92.1,39.4",
+      "?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week&t=1896-07-12&win=4&layer=heat&norm=skew&state=il,ny&place=P00412&z=4.2&c=-92.1,39.4",
     );
     expect(v.q).toBe('"cross of gold"');
     expect(v.state).toEqual(["IL", "NY"]);
     expect(v.win).toBe(4);
     expect(v.c).toEqual([-92.1, 39.4]);
+    expect(v.norm).toBe("skew");
     expect(parseView(serializeView(v))).toEqual(v);
     expect(serializeView(DEFAULTS)).toBe("");
     expect(serializeView({ ...DEFAULTS, q: "fever" })).toBe("?q=fever");
@@ -38,11 +39,12 @@ describe("view URL", () => {
     expect(parseView("?z=12&c=0,0")).toMatchObject({ z: 12, c: [0, 0] });
   });
 
-  it("keeps the measure in the URL, including the older share of pages", () => {
+  it("keeps the measure in the URL; the removed share of pages opens on Pages", () => {
     expect(parseView("?q=fever&norm=skew").norm).toBe("skew");
     expect(serializeView({ ...DEFAULTS, q: "fever", norm: "skew" })).toBe("?q=fever&norm=skew");
-    // Permalinks to the share of pages published still open that view.
-    expect(parseView("?q=fever&norm=rel").norm).toBe("rel");
+    // Old permalinks to the share of pages published fall back to Pages.
+    expect(parseView("?q=fever&norm=rel").norm).toBe("raw");
+    expect(serializeView(parseView("?q=fever&norm=rel"))).toBe("?q=fever");
     expect(parseView("?q=fever&norm=lift").norm).toBe("raw");
   });
 

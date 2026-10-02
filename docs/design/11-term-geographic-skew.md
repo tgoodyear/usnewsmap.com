@@ -6,10 +6,10 @@
 
 The owner asked: can the map show where a term is covered disproportionately in one place compared with others? A city with several newspapers will have more hits for any term than a town with one, so raw counts mostly show where the newspapers are.
 
-The site shows two things today (07 §7.4):
+When this was written, the site showed two things (07 §7.4):
 
-- **Circle size** is the number of pages with a match. Big places get big circles for every search.
-- **"Share of pages published"** (`norm=rel`) colours each place by `hits / pages published` in the window, scaled to the largest value on the map (`web/src/components/MapView.tsx`). This already divides by corpus volume, but §11.5.4 shows that the largest value is usually a place with a handful of pages, so almost every other place ends up in the bottom half of the colour scale.
+- **Circle size** was the number of pages with a match. Big places get big circles for every search.
+- **"Share of pages published"** (`norm=rel`) coloured each place by `hits / pages published` in the window, scaled to the largest value on the map. This already divided by corpus volume, but §11.5.4 shows that the largest value is usually a place with a handful of pages, so almost every other place ended up in the bottom half of the colour scale. (This view was removed in October 2026; old `norm=rel` links open on Pages. See §11.14.)
 
 This document compares the ways to answer the question, recommends one, and backs it with measurements on the published index and with simulations.
 
@@ -84,7 +84,7 @@ A public `/v1/skew` endpoint for researchers can follow later (phase 2). It woul
 
 - If `alpha` reaches its upper bound (no detectable difference between places), every estimate is close to the prior mean and the map says "can't tell" everywhere. That is the correct answer when places don't differ (the null simulation in §11.5.8). That depends on the scoring shape allowing for the uncertainty in the fitted mean (§11.4.1 step 4); otherwise a mean fitted from few hits that lands away from 1 flags every place.
 - If the coverage cube can't be fetched, the site keeps the raw view, as the relative view does today.
-- The existing "share of pages" view stays. A small fix is worth making independently: scale its colour to a high percentile instead of the maximum (§11.5.4).
+- The existing "share of pages" view stays. A small fix is worth making independently: scale its colour to a high percentile instead of the maximum (§11.5.4). (It was later removed; see §11.14.)
 
 ## 11.5 Evidence
 
@@ -310,7 +310,7 @@ The special functions are checked against known values: `ln_gamma`; the regulari
 
 ## 11.6 Web
 
-- A two-way toggle, **"Pages"** and **"Relative rate"** (`norm=skew`), replacing the colour menu. The older "Share of pages published" (`norm=rel`) still opens from its permalinks, with a third button only while it is showing (§11.14).
+- A two-way toggle, **"Pages"** and **"Relative rate"** (`norm=skew`), replacing the colour menu. The older "Share of pages published" (`norm=rel`) was removed; its permalinks open on Pages (§11.14).
 - **Colour:** the estimate on a diverging, colour-blind-safe scale in log2, centred on 1, clamped at 1/8 and 8, with legend ticks at 1/8, 1/4, 1/2, 1, 2, 4 and 8 times. Places whose interval includes 1 are drawn at reduced opacity. County- and state-precision places, drawn as hollow rings today, get the colour on the ring. The heat layer is not offered in this view.
 - **Which places, and how big:** every place with pages in the window, including those with no hits (the under-represented list is mostly places with 0 hits). Circle area follows expected hits, the amount of evidence behind each colour, with a visible minimum size so a place with pages but almost no expected hits (a few pages, or pages only from months when the term was absent elsewhere) is still drawn, as "can't tell" unless its interval excludes 1. Circles change size when switching into this view; the alternative, area by hits, would hide the places with 0 hits that fill the under-represented list.
 - **Tooltip and table:** "Mobile, AL: 336 pages matched where 47 were expected from its 1,351 pages. About 6.1× the rate of the other places (5.2 to 7.2×)." The place table gains Expected and Relative rate columns and the 90% range, and the panel gets two short lists, most clearly above and most clearly below, sorted by the interval bounds, only places whose interval excludes 1. The UI does not use the word "significant".
@@ -745,7 +745,7 @@ top 5 by upper bound (most clearly under-represented):
 ## 11.14 Phase 1 as built
 
 - **Labels.** The toggle reads "Pages" and "Relative rate". "Pages" is the word the site already uses for raw counts (summary, tooltip, table, legend). "Relative rate" is short enough for a two-button toggle on a phone, which "Compared with other places" is not; the legend line says what it is compared with, and an info button explains the shrinkage and the faded circles.
-- **The older share of pages.** `norm=rel` permalinks still open that view, with a third button, "Share of pages", shown only while it is selected; switching away removes it. Its colour now tops out at the 95th percentile of places with hits instead of the maximum (§11.4.4).
+- **The older share of pages.** Removed in October 2026. Phase 1 kept it for `norm=rel` permalinks, with a third button shown only while it was selected; now those links open on Pages and the toggle has two buttons. The place table keeps its "Share of pages published" column.
 - **Languages.** `/v1/places` lists the languages of each place's titles. Every place is fitted, scored and drawn the same way. Where any of a place's titles isn't in English, its tooltip, list entry, table row and CSV row say so ("Papers in Serbian and English"), so a reader can see why it may read low for an English term.
 - **Where it runs.** The fit runs in a web worker (`web/src/engine/skew.worker.ts`), falling back to the main thread where workers aren't available; frames are scored on the main thread from prefix sums (§11.7). Each new search shows pages with a notice while its fit runs; a refit of the same search (same index version, query and buckets) keeps the previous colours until it is ready, and switching to Pages and back doesn't refit. When the coverage cube is missing or doesn't match the search's buckets, the map shows pages with a notice. A layer=heat permalink shows points in this view. With fewer than 5 places with pages between the search's dates it says so and shows pages.
 - **Shared vectors.** Ten generated cases (lone publishers, the zero-reference correction, reprints and drift by month, half a year by week, few hits by day with the fallback `phi`, no difference with `alpha` at its bound, both sides of the three-year boundary including from 29 February, places left out of the fit, states with their own `phi`) and two recorded searches (cross of gold and Klondike, reduced to counts), each with playback frames for places and states, plus the special functions. Tolerances (relative unless noted): counts 1e-12, `phi` 1e-10, `1/alpha`, `mu` and the shape 1e-5, estimates and bounds 1e-5, P(above 1) 1e-6 absolute, special functions 1e-12. The largest differences measured between the port and the Rust were about 1e-7 for place bounds, 1e-6 for one Klondike state's lower bound (33 states, a flatter fit) and 6e-8 for `1/alpha`; `phi` and the counts were identical.

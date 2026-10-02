@@ -224,21 +224,8 @@ export function App() {
     for (const i of ts) for (const v of windowValues(hitSums, i, view.win, buf)) max = Math.max(max, v);
     return max;
   }, [hitSums, count, view.win]);
-  // The share-of-pages colour tops out at the 95th percentile of places with
-  // hits, not the maximum: the largest share is usually a place with a
-  // handful of pages (doc 11, 11.5.4).
-  const maxRel = useMemo(
-    () =>
-      percentile(
-        points.filter((p) => p.value > 0 && Number.isFinite(p.rel)).map((p) => p.rel),
-        0.95,
-      ),
-    [points],
-  );
-  const relReady = pageSums !== null;
-  // Colour by raw counts until relative values are known.
-  const norm =
-    (view.norm === "rel" && !relReady) || (view.norm === "skew" && !skewModel) ? "raw" : view.norm;
+  // Colour by page counts until the relative rate is ready.
+  const norm = view.norm === "skew" && !skewModel ? "raw" : view.norm;
 
   const urlT = view.t;
   const seek = useCallback(
@@ -277,7 +264,7 @@ export function App() {
         };
   const placesFailed = places.error && !(places.error instanceof VersionChangedError);
   const coverageFailed =
-    view.norm !== "raw" && coverage.error && !(coverage.error instanceof VersionChangedError);
+    view.norm === "skew" && coverage.error && !(coverage.error instanceof VersionChangedError);
   const skewNotice = wantSkew && !skewModel ? skewStatus(prepared, skew.status, !!coverageFailed) : null;
   const shown = norm === "skew" ? skewRows : points;
   const clear = norm === "skew" ? clearest(skewListed) : null;
@@ -404,13 +391,6 @@ export function App() {
                   {skewNotice.text}
                 </p>
               )}
-              {view.norm === "rel" && !relReady && (
-                <p className={coverageFailed ? "notice notice--error" : "notice"} role={coverageFailed ? "alert" : "status"}>
-                  {coverageFailed
-                    ? "Publication counts could not be loaded, so shares of pages published aren't available. Showing page counts."
-                    : "Loading publication counts…"}
-                </p>
-              )}
               {data.total.hits === 0 ? (
                 <div className="notice" role="status">
                   <strong>No pages match.</strong> Try “All words” instead of an exact phrase, widen the
@@ -441,7 +421,6 @@ export function App() {
                         layer={view.norm === "skew" ? "points" : view.layer}
                         norm={norm}
                         maxValue={norm === "skew" ? maxExpected : maxValue}
-                        maxRel={maxRel}
                         selected={view.place}
                         onSelect={select}
                         zoom={view.z}
@@ -456,7 +435,7 @@ export function App() {
                           version={version}
                         />
                       ) : (
-                        <Legend norm={norm} />
+                        <Legend />
                       )}
                     </Suspense>
                   )}
@@ -513,8 +492,6 @@ export function App() {
                     unit={data.bucket.unit}
                     from={data.bucket.from}
                     hits={data.series.hits}
-                    baseline={data.series.baseline}
-                    norm={view.norm}
                     t={t}
                     window={view.win}
                     onSeek={seek}
@@ -568,10 +545,10 @@ function Announcer({ message }: { message: string }) {
   );
 }
 
-function Legend({ norm }: { norm: ViewState["norm"] }) {
+function Legend() {
   return (
     <div className="legend" aria-hidden="true">
-      <div className="legend__title">{norm === "rel" ? "Share of pages published" : "Pages containing the match"}</div>
+      <div className="legend__title">Pages containing the match</div>
       <div className="legend__ramp">
         {[0, 0.25, 0.5, 0.75, 1].map((x) => (
           <span key={x} style={{ background: cssColor(x) }} />
@@ -581,7 +558,6 @@ function Legend({ norm }: { norm: ViewState["norm"] }) {
         <span>fewer</span>
         <span>more</span>
       </div>
-      {norm === "rel" && <div className="legend__note">Darkest: top 5% of places with matches</div>}
       <div className="legend__note">Circle area ∝ pages · hollow ring = county/state location</div>
     </div>
   );
@@ -640,9 +616,3 @@ function skewStatus(
   return { text: "Comparing places…", error: false };
 }
 
-/** The `q` quantile of `values` (nearest rank), or 1e-9 when there are none. */
-function percentile(values: number[], q: number): number {
-  if (values.length === 0) return 1e-9;
-  const sorted = [...values].sort((a, b) => a - b);
-  return Math.max(1e-9, sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)]!);
-}

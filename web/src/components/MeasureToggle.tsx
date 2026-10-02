@@ -9,16 +9,11 @@ interface Props {
 export const MEASURE_LABELS: Record<Norm, string> = {
   raw: "Pages",
   skew: "Relative rate",
-  rel: "Share of pages",
 };
 
-/**
- * Pages or relative rate (doc 11, 11.6). The older "share of pages
- * published" view has no button of its own; a permalink that names it
- * (`norm=rel`) still opens it, with a third button while it is showing.
- */
+/** Pages or relative rate (doc 11, 11.6). */
 export function MeasureToggle({ norm, onChange }: Props) {
-  const options: Norm[] = norm === "rel" ? ["raw", "skew", "rel"] : ["raw", "skew"];
+  const options: Norm[] = ["raw", "skew"];
   return (
     <div className="measure">
       <div className="segmented" role="group" aria-label="Measure">
