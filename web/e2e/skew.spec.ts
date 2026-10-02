@@ -99,15 +99,15 @@ test("a selected place says how its rate compares", async ({ page }) => {
   await expect(panel).toContainText(/the other places \(.* to .*×\)/);
 });
 
-test("an older share-of-pages permalink still opens that view", async ({ page }) => {
+test("an older share-of-pages permalink opens on Pages", async ({ page }) => {
   await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=rel");
-  const share = measure(page).getByRole("button", { name: "Share of pages" });
-  await expect(share).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator(".legend")).toContainText("Share of pages published");
+  await expect(measure(page).getByRole("button", { name: "Pages" })).toHaveAttribute("aria-pressed", "true");
+  await expect(measure(page).getByRole("button", { name: "Share of pages" })).toHaveCount(0);
+  await expect(measure(page).getByRole("button")).toHaveCount(2);
+  await expect(page.locator(".legend")).toContainText("Pages containing the match");
   await expectAccessible(page);
   await measure(page).getByRole("button", { name: "Relative rate" }).click();
   await expect(page).toHaveURL(/[?&]norm=skew/);
-  await expect(share).toHaveCount(0);
 });
 
 test("the relative rate needs five places with pages", async ({ page }) => {

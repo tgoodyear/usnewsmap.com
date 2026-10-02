@@ -72,7 +72,7 @@ The legacy app called the server on **every** animation frame. The new client ge
 - Build a **per-place prefix-sum array** `S[p][b] = Σ_{k≤b} hits[p][k]` as a flat `Uint32Array` of size `P × (B+1)`. The worst realistic case is 3,000 × 211 ≈ 633k × 4 bytes ≈ 2.5 MB. A Web Worker builds it in under 20 ms.
 - **Cumulative** view at bucket `t`: `v[p] = S[p][t]`.
 - **Trailing window** of `w` buckets: `v[p] = S[p][t] − S[p][t−w]`.
-- **Relative** view: the same prefix sums over the baseline cube, `rel = v_hits / v_baseline`.
+- **Share of pages published** (a column in the place table): the same prefix sums over the baseline cube, `rel = v_hits / v_baseline`. The map measure that coloured places by it (`norm=rel`) was removed in October 2026; old `norm=rel` links open on Pages.
 - **First appearance** layer: color by `first_day[p]`, and show only places where `first_day ≤ t` (animates the spread).
 
 Every frame is **O(P)**: about 3,000 subtractions, then a single deck.gl attribute buffer update. That comfortably holds 60 fps, whereas the legacy server round-trip ran at 400 ms per frame.
@@ -83,8 +83,8 @@ Every frame is **O(P)**: about 3,000 subtractions, then a single deck.gl attribu
 
 | Layer | Encoding | Notes |
 |-------|----------|-------|
-| **Points** (default) | Circle **area ∝ hits**, i.e. radius ∝ √hits (perceptually honest); fill color = relative frequency on a sequential palette; hollow ring = county- or state-precision place | Replaces the legacy mean/std five-class buckets, which shifted meaning between searches |
-| **Heat** | deck.gl `HeatmapLayer` weighted by hits (or relative) | Good for dense eastern regions |
+| **Points** (default) | Circle **area ∝ hits**, i.e. radius ∝ √hits (perceptually honest); fill color = hits on a sequential palette; hollow ring = county- or state-precision place | Replaces the legacy mean/std five-class buckets, which shifted meaning between searches |
+| **Heat** | deck.gl `HeatmapLayer` weighted by hits | Good for dense eastern regions |
 | **Relative rate** (`norm=skew`) | Points colored by each place's rate against the other places in the same buckets, on a diverging scale centred on 1×; area ∝ matches expected; faded where it can't tell | [11](11-term-geographic-skew.md); replaces the colour menu with a Pages / Relative rate toggle |
 | **States** | Choropleth of hits per 1,000 pages published in the window; hatched where there is no coverage | Normalized, avoids the "big city" bias |
 | **First appearance** | Categorical time ramp (early = warm, late = cool); animated reveal | Designed for "Cross of Gold"-style spread stories |
@@ -96,7 +96,7 @@ Legends are always visible and state the unit ("pages containing the phrase"). C
 
 ```
 https://usnewsmap.com/?q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896-12-31
-   &bucket=week&t=1896-07-12&win=cum&layer=points&norm=rel&state=&place=P00412&z=4.2&c=-92.1,39.4
+   &bucket=week&t=1896-07-12&win=cum&layer=points&norm=skew&state=&place=P00412&z=4.2&c=-92.1,39.4
 ```
 
 - Only non-default values are written. Compare mode uses `q1…q4`.

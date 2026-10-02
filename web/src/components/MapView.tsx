@@ -24,7 +24,6 @@ interface Props {
   norm: Norm;
   /** The largest circle's value: pages with a match, or expected matches in the relative-rate view. */
   maxValue: number;
-  maxRel: number;
   selected: string;
   onSelect: (id: string) => void;
   zoom: number | null;
@@ -204,7 +203,7 @@ export default function MapView(props: Props) {
     m.jumpTo({ center: target, zoom: z });
   }, [zoom, center]);
 
-  const { points, layer, norm, maxValue, maxRel, selected } = props;
+  const { points, layer, norm, maxValue, selected } = props;
   useEffect(() => {
     const o = overlay.current;
     if (!o) return;
@@ -252,9 +251,8 @@ export default function MapView(props: Props) {
               id: "heat",
               data: points,
               getPosition: (p) => p.position,
-              getWeight: (p) => (norm === "rel" ? p.rel : p.value),
+              getWeight: (p) => p.value,
               radiusPixels: 40,
-              updateTriggers: { getWeight: [norm] },
             }),
           ]
         : [
@@ -268,17 +266,17 @@ export default function MapView(props: Props) {
               getRadius: (p) => radiusOf(p.value, maxValue),
               getFillColor: (p) =>
                 p.precision === "city"
-                  ? colorFor(norm === "rel" ? p.rel / Math.max(maxRel, 1e-9) : p.value / Math.max(maxValue, 1))
+                  ? colorFor(p.value / Math.max(maxValue, 1))
                   : [0, 0, 0, 0],
               getLineColor: (p) =>
                 p.id === selected
                   ? [20, 20, 20, 255]
-                  : colorFor(norm === "rel" ? p.rel / Math.max(maxRel, 1e-9) : p.value / Math.max(maxValue, 1)),
+                  : colorFor(p.value / Math.max(maxValue, 1)),
               getLineWidth: (p) => (p.value <= 0 ? 0 : p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5),
               updateTriggers: {
                 getRadius: [maxValue],
-                getFillColor: [norm, maxValue, maxRel],
-                getLineColor: [norm, maxValue, maxRel, selected],
+                getFillColor: [maxValue],
+                getLineColor: [maxValue, selected],
                 getLineWidth: [selected, points],
               },
             }),
@@ -286,7 +284,7 @@ export default function MapView(props: Props) {
     // No attribute transitions: deck.gl runs them on the GPU with transform
     // feedback and reads buffers back, which stalls every playback step.
     o.setProps({ layers });
-  }, [points, layer, norm, maxValue, maxRel, selected]);
+  }, [points, layer, norm, maxValue, selected]);
 
   return (
     <div className="map-wrap">
