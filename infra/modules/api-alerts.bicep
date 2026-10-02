@@ -105,7 +105,7 @@ var rules = [
   {
     name: 'api-searches-slow'
     displayName: 'Searches longer than a visitor waits'
-    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past their limit, or were refused as busy. Not an outage: see the "Searches longer than a visitor waits" tiles in the API workbook.'
+    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Not an outage: see the slow-search tiles in the API workbook.'
     severity: 3
     frequency: 'PT15M'
     window: 'PT1H'

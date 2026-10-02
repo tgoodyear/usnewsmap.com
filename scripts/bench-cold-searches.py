@@ -14,8 +14,9 @@ searcher needs more compute or a split cache, not for load testing.
 
 "Cold" means not in the API's caches when the pass starts. A search that a
 visitor or an earlier pass already ran may be in the persistent cache
-(minutes to the index version's end) or warm in Quickwit's own caches, and
-then shows up fast: the first column then says "cached".
+(kept for the index version's lifetime) or warm in Quickwit's own caches,
+and then comes back fast: when the first answer took under 1 s with no 202,
+the first column adds "cached" (a guess).
 
 These requests are not in the search log: the API records a search only
 when the request comes from the site's own pages (an Origin of the site or

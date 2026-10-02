@@ -325,7 +325,7 @@ export function App() {
           )}
           {stillComputing && (
             <p className="notice" role="status">
-              Large search, still working… A search that hasn't run recently can take up to two minutes.
+              Large search, still working… This can take up to two minutes.
             </p>
           )}
           {placesFailed && (

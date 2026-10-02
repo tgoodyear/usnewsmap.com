@@ -116,7 +116,7 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 | `USNM_RATE_PER_MIN` | `120` | Per-client token bucket refill rate on `/v1` (`0` disables) |
 | `USNM_RATE_BURST` | `40` | Per-client bucket size |
 | `USNM_TRUSTED_PROXY_HOPS` | `1` | Proxies that append to `X-Forwarded-For` (1 = Container Apps ingress, 2 = a proxy such as Front Door + ingress, 0 = use the peer address) |
-| `USNM_BACKEND_CONCURRENCY` | `8` | Backend queries at once; waiting for one counts against the computation limit |
+| `USNM_BACKEND_CONCURRENCY` | `8` | Backend queries allowed at once; waiting for a free one counts against the computation limit |
 | `USNM_FIXTURE_SLOW_TERM`, `USNM_FIXTURE_SLOW_MS` | unset, `5000` | End-to-end tests only, memory backend only: an aggregate search whose query contains the term waits this many milliseconds first, to stand in for a cold search |
 | `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`, `AZURE_CLIENT_ID` | set by Container Apps | Managed identity for Blob; `AZURE_CLIENT_ID` selects the user-assigned identity. Without them, the Azure CLI login is used (`az login`) |
 | `RUST_LOG` | `info` | Log filter (logs are JSON and never include query strings) |
