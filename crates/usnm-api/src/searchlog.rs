@@ -599,7 +599,12 @@ pub fn closable(day: NaiveDate, now: DateTime<Utc>) -> bool {
 }
 
 /// Largest day file read back for the warm-up.
-const MAX_DAY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DAY_BYTES: usize = 32 * 1024 * 1024;
+
+/// Most distinct searches the warm-up counts; past this, searches not yet
+/// seen are skipped (those already counted keep counting), so memory stays
+/// bounded however varied the log is.
+const MAX_DISTINCT: usize = 50_000;
 
 /// The cache key part of the search a record describes: the canonical query
 /// string `/v1/aggregate` computes it under (06 §6.3.1), for the corpus
@@ -630,6 +635,7 @@ pub fn canonical(r: &Record, bounds: (NaiveDate, NaiveDate)) -> Option<String> {
 /// (UTC), from the day files: canonical aggregate query strings, most
 /// frequent first, ties in canonical order, so the result depends only on
 /// the files. Searches that matched no pages are fast anyway and left out.
+/// At most [`MAX_DISTINCT`] different searches are counted.
 /// A day file that can't be read is logged with its day and skipped; no
 /// search text is ever logged.
 pub async fn top_searches(
@@ -659,15 +665,21 @@ pub async fn top_searches(
             tracing::warn!(%day, bytes = body.len(), "warm-up: search log day too large; skipped");
             continue;
         }
-        for line in body.split(|c| *c == b'\n') {
-            let Ok(r) = serde_json::from_slice::<Record>(line) else {
-                continue;
-            };
-            if r.pages == Some(0) {
-                continue;
-            }
-            if let Some(key) = canonical(&r, bounds) {
-                *counts.entry(key).or_default() += 1;
+        // Parsing a large day is CPU work: off the async workers.
+        let keys = tokio::task::spawn_blocking(move || {
+            body.split(|c| *c == b'\n')
+                .filter_map(|line| serde_json::from_slice::<Record>(line).ok())
+                .filter(|r| r.pages != Some(0))
+                .filter_map(|r| canonical(&r, bounds))
+                .collect::<Vec<String>>()
+        })
+        .await
+        .unwrap_or_default();
+        for key in keys {
+            if let Some(n) = counts.get_mut(&key) {
+                *n += 1;
+            } else if counts.len() < MAX_DISTINCT {
+                counts.insert(key, 1);
             }
         }
     }

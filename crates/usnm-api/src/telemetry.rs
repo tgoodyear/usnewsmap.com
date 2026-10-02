@@ -54,8 +54,8 @@ pub struct Metrics {
     /// Requests refused as the client's fault, by `reason`.
     rejected: Counter<u64>,
     /// Searches that needed longer than a visitor waits, by `endpoint` and
-    /// `outcome` (ok, timeout, error), counted once each when they end; and
-    /// searches refused because every computation slot was taken (busy).
+    /// `outcome` (ok, timeout, error, abandoned), counted once each when they
+    /// end; and searches that found no free computation slot (busy).
     slow_searches: Counter<u64>,
     /// Reference-data reloads by `outcome` (published, failed).
     reloads: Counter<u64>,
@@ -98,7 +98,7 @@ impl Metrics {
                 .u64_counter("api.slow_searches")
                 .with_description(
                     "Searches that took longer than a visitor waits, by endpoint and outcome \
-                     (ok, timeout, error, busy)",
+                     (ok, timeout, error, abandoned, busy)",
                 )
                 .build(),
             reloads: meter

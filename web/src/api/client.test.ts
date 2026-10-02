@@ -88,6 +88,27 @@ describe("searches the API is still computing", () => {
     expect(isRetryable(err)).toBe(false);
   });
 
+  it("holds a request made while waiting to the longest wait", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    // The first answer is a 202; the next request never gets an answer.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_: unknown, init?: RequestInit) => {
+        calls += 1;
+        if (calls === 1) return Promise.resolve(computing());
+        return new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+        );
+      }),
+    );
+    const result = api.aggregate({ q: "radio" }, "v1").catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(MAX_COMPUTE_WAIT_MS + 1000);
+    const err = (await result) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.problem.type).toBe("/errors/backend-timeout");
+  });
+
   it("waits out a busy API, and a rate limit met while waiting", async () => {
     vi.useFakeTimers();
     const fetch = sequence(

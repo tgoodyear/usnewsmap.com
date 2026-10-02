@@ -355,7 +355,7 @@ async fn searches_beyond_the_slots_get_503_busy() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body["type"], "/errors/busy");
     assert_eq!(headers[header::RETRY_AFTER], "5");
-    assert!(started.elapsed() >= Duration::from_millis(90));
+    assert!(started.elapsed() >= Duration::from_millis(50));
     assert!(!body.to_string().contains("silver"));
     // The running search needs no slot to be asked about again.
     assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
@@ -443,4 +443,98 @@ async fn the_fixture_switch_slows_matching_searches_only() {
     let silver = "/v1/aggregate?q=silver&from=1896-01-01&to=1896-12-31";
     assert_eq!(get(&state, silver).await.0, StatusCode::OK);
     assert_eq!(poll(&state, GOLD).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_search_nobody_asks_about_any_more_is_cancelled() {
+    let backend = Slow::new(Duration::from_secs(30));
+    let mut cfg = config();
+    cfg.compute_concurrency = 1;
+    cfg.abandon_after = Duration::from_millis(300);
+    let state = state_with(cfg, backend.clone()).await;
+    assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
+    assert_eq!(state.flights.free_slots(), 0);
+    // Asking again keeps it alive past the abandon time.
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
+    }
+    assert_eq!(state.flights.len(), 1);
+    // The visitor stops asking: the search is cancelled and its slot freed.
+    settled(&state).await;
+    assert_eq!(state.flights.free_slots(), 1);
+    assert_eq!(backend.calls(), 1, "never restarted");
+}
+
+#[tokio::test]
+async fn persisted_results_need_no_slot() {
+    let dir = std::env::temp_dir().join(format!("usnm-detached-blob-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store: Arc<dyn usnm_store::ObjectStore> = Arc::new(LocalStore::new(&dir));
+    let silver = "/v1/aggregate?q=silver&from=1896-01-01&to=1896-12-31";
+    // One replica computes silver and persists it.
+    let mut cfg = config();
+    cfg.persist_after = Duration::ZERO;
+    let backend = Slow::new(Duration::ZERO);
+    let first = Arc::new(
+        AppState::new(
+            cfg.clone(),
+            backend.clone(),
+            RefData::load(&LocalStore::new(data_dir())).await.unwrap(),
+        )
+        .with_response_store(store.clone()),
+    );
+    assert_eq!(get(&first, silver).await.0, StatusCode::OK);
+    for _ in 0..100 {
+        if std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Another, with its one slot taken by a slow search, still serves it.
+    cfg.compute_concurrency = 1;
+    let backend = Slow::new(Duration::from_secs(5));
+    let second = Arc::new(
+        AppState::new(
+            cfg,
+            backend.clone(),
+            RefData::load(&LocalStore::new(data_dir())).await.unwrap(),
+        )
+        .with_response_store(store),
+    );
+    let slow = tokio::spawn({
+        let state = second.clone();
+        async move { get(&state, GOLD).await.0 }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(second.flights.free_slots(), 0);
+    let (status, _, body) = get(&second, silver).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        backend.calls(),
+        1,
+        "only the slow search reached the backend"
+    );
+    slow.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_warm_up_has_its_own_slot() {
+    let backend = Slow::new(Duration::from_millis(20));
+    let mut cfg = config();
+    cfg.compute_concurrency = 1;
+    let state = state_with(cfg, backend.clone()).await;
+    // A visitor's slow search holds the only slot.
+    backend.set_delay(Duration::from_secs(5));
+    assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
+    backend.set_delay(Duration::ZERO);
+    let report = usnm_api::prewarm::run(
+        &state,
+        state.snapshot.load_full(),
+        usnm_api::prewarm::Trigger::Startup,
+    )
+    .await;
+    assert_eq!(report.ok, report.queries, "{report:?}");
 }

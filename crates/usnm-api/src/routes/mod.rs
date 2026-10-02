@@ -26,12 +26,11 @@ use futures::FutureExt;
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::sync::OwnedSemaphorePermit;
 use tokio::time::Instant;
 use usnm_store::ObjectStore;
 
 use crate::error::ApiError;
-use crate::flights::{Flight, Landing};
+use crate::flights::{Entry, Interest, Landing};
 use crate::telemetry::ServedVersion;
 use crate::version::{self, Pinning};
 use crate::{AppState, Snapshot};
@@ -206,7 +205,7 @@ enum Source {
     Cached(Arc<Vec<u8>>),
     /// A computation; `started` when this request started it.
     Flight {
-        flight: Flight,
+        entry: Entry,
         started: bool,
     },
 }
@@ -216,10 +215,10 @@ enum Source {
 /// computation, which runs in a task of its own (see [`crate::flights`]). A
 /// visitor waits at most [`visitor_wait`], whether it computes the body or
 /// waits on an identical computation (such as a warm-up's): past that it gets
-/// `202 Accepted` and the computation carries on, up to `job.limit`, so that
-/// asking again later finds it running or done. A warm-up skips the
-/// persistent read, so the backend runs and its caches warm; the result is
-/// still persisted if it was slow.
+/// `202 Accepted` and the computation carries on, up to `job.limit` and as
+/// long as someone keeps asking, so that asking again later finds it running
+/// or done. A warm-up skips the persistent read, so the backend runs and its
+/// caches warm; the result is still persisted if it was slow.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn cached<F, T>(
     state: &Arc<AppState>,
@@ -263,20 +262,22 @@ where
         .clone()
         .map(|store| (store, persisted_path(serving, &key)));
     let metrics = &state.metrics;
-    let body = match find_or_start(state, job, &key, wait, persistent, compute).await? {
+    let body = match find_or_start(state, job, &key, wait, persistent, compute).await {
         Source::Cached(body) => {
             if !job.warm_up {
                 metrics.cache("memory", true);
             }
             body
         }
-        Source::Flight { flight, started } => {
+        Source::Flight { entry, started } => {
             if started && !job.warm_up {
                 metrics.cache("memory", false);
             }
+            // Keeps the computation from being abandoned while this waits.
+            let _watching = entry.interest.watch();
             let result = match wait {
-                None => flight.await,
-                Some(at) => match tokio::time::timeout_at(at, flight).await {
+                None => entry.flight.await,
+                Some(at) => match tokio::time::timeout_at(at, entry.flight).await {
                     Ok(r) => r,
                     // Giving up drops only this request's wait: the
                     // computation carries on in its own task.
@@ -305,8 +306,7 @@ where
 }
 
 /// Join the computation running for `key`, take its cached body, or start
-/// it. A search first waits for a computation slot: a visitor until `wait`
-/// (then [`ApiError::Busy`]), a warm-up as long as its own limit allows.
+/// it. `wait` is when this request stops waiting (`None` for a warm-up).
 async fn find_or_start<F, T>(
     state: &Arc<AppState>,
     job: Job,
@@ -314,131 +314,129 @@ async fn find_or_start<F, T>(
     wait: Option<Instant>,
     persistent: Option<(Arc<dyn ObjectStore>, String)>,
     compute: F,
-) -> Result<Source, ApiError>
+) -> Source
 where
     F: Future<Output = Result<T, ApiError>> + Send + 'static,
     T: Serialize + Send + 'static,
 {
     let flights = &state.flights;
-    if let Some(flight) = flights.get(key) {
-        return Ok(Source::Flight {
-            flight,
+    if let Some(entry) = flights.get(key) {
+        return Source::Flight {
+            entry,
             started: false,
-        });
+        };
     }
     if let Some(body) = state.cache.get(key).await {
-        return Ok(Source::Cached(body));
+        return Source::Cached(body);
     }
-    let slot = if job.search {
-        let acquire = flights.slots.clone().acquire_owned();
-        let acquired = match wait {
-            None => acquire.await,
-            Some(at) => match tokio::time::timeout_at(at, acquire).await {
-                Ok(acquired) => acquired,
-                Err(_) => {
-                    // An identical request may have found a slot meanwhile,
-                    // and its result may even be in already.
-                    if let Some(flight) = flights.get(key) {
-                        return Ok(Source::Flight {
-                            flight,
-                            started: false,
-                        });
-                    }
-                    if let Some(body) = state.cache.get(key).await {
-                        return Ok(Source::Cached(body));
-                    }
-                    if !job.warm_up {
-                        state.metrics.slow_search(job.endpoint, "busy");
-                    }
-                    return Err(ApiError::Busy);
-                }
-            },
-        };
-        // The semaphore is never closed.
-        Some(acquired.map_err(|e| ApiError::Backend(e.to_string()))?)
-    } else {
-        None
-    };
     loop {
         {
             let mut running = flights.lock();
-            if let Some(flight) = running.get(key) {
-                return Ok(Source::Flight {
-                    flight: flight.clone(),
+            if let Some(entry) = running.get(key) {
+                return Source::Flight {
+                    entry: entry.clone(),
                     started: false,
-                });
+                };
             }
             // A computation stores its body before it leaves the map, so
             // under the lock the body is either running or cached (unless
             // it failed or has been evicted, and then it's computed again).
             if !state.cache.contains_key(key) {
-                let flight = start(state, job, key.to_owned(), slot, persistent, compute);
-                running.insert(key.to_owned(), flight.clone());
-                return Ok(Source::Flight {
-                    flight,
+                let entry = start(state, job, key.to_owned(), wait, persistent, compute);
+                running.insert(key.to_owned(), entry.clone());
+                return Source::Flight {
+                    entry,
                     started: true,
-                });
+                };
             }
         }
         if let Some(body) = state.cache.get(key).await {
-            return Ok(Source::Cached(body));
+            return Source::Cached(body);
         }
     }
 }
 
-/// Spawn the computation for `key`. It holds `slot` while it runs, ends
-/// at `job.limit` at the latest, stores a successful body in the in-process
-/// cache, and leaves the map (see [`Landing`]) after that.
+/// Spawn the computation for `key`. It ends at `job.limit` at the latest,
+/// or once nobody has waited on it for `abandon_after` (not a warm-up's),
+/// stores a successful body in the in-process cache, and leaves the map (see
+/// [`Landing`]) after that. `wait` is when the request that started it stops
+/// waiting: a search that can't get a slot by then fails as busy.
 fn start<F, T>(
     state: &Arc<AppState>,
     job: Job,
     key: String,
-    slot: Option<OwnedSemaphorePermit>,
+    wait: Option<Instant>,
     persistent: Option<(Arc<dyn ObjectStore>, String)>,
     compute: F,
-) -> Flight
+) -> Entry
 where
     F: Future<Output = Result<T, ApiError>> + Send + 'static,
     T: Serialize + Send + 'static,
 {
     let state = state.clone();
+    let interest = Interest::new();
+    let watched = interest.clone();
     let task = tokio::spawn(async move {
         let landing = Landing {
             state: state.clone(),
             key,
         };
-        let _slot = slot;
         let started = Instant::now();
-        let result = tokio::time::timeout(job.limit, produce(&state, job, persistent, compute))
-            .await
-            .unwrap_or(Err(ApiError::Timeout));
+        let work = tokio::time::timeout(job.limit, produce(&state, job, wait, persistent, compute));
+        let after = state.config.abandon_after;
+        let abandoned = async {
+            if job.warm_up {
+                return std::future::pending().await;
+            }
+            let tick = (after / 4).clamp(Duration::from_millis(10), Duration::from_secs(1));
+            loop {
+                tokio::time::sleep(tick).await;
+                if watched.abandoned(after) {
+                    return;
+                }
+            }
+        };
+        let (result, outcome) = tokio::select! {
+            r = work => match r {
+                Ok(Ok(body)) => (Ok(body), "ok"),
+                Ok(Err(ApiError::Busy)) => (Err(ApiError::Busy), "busy"),
+                Ok(Err(ApiError::Timeout)) | Err(_) => (Err(ApiError::Timeout), "timeout"),
+                Ok(Err(e)) => (Err(e), "error"),
+            },
+            () = abandoned => (Err(ApiError::Timeout), "abandoned"),
+        };
         if let Ok(body) = &result {
             state.cache.insert(landing.key.clone(), body.clone()).await;
         }
         drop(landing);
-        if !job.warm_up && job.search && started.elapsed() >= visitor_wait(&state) {
-            let outcome = match &result {
-                Ok(_) => "ok",
-                Err(ApiError::Timeout) => "timeout",
-                Err(_) => "error",
-            };
+        if !job.warm_up
+            && job.search
+            && (outcome == "busy" || started.elapsed() >= visitor_wait(&state))
+        {
             state.metrics.slow_search(job.endpoint, outcome);
         }
         result
     });
-    async move {
-        task.await
-            .unwrap_or_else(|e| Err(ApiError::Backend(format!("computation failed: {e}"))))
+    let flight = async move {
+        task.await.unwrap_or_else(|e| {
+            // Logged once here, not by every waiter.
+            tracing::error!(panicked = e.is_panic(), "a response computation failed");
+            Err(ApiError::Backend("the computation failed".into()))
+        })
     }
     .boxed()
-    .shared()
+    .shared();
+    Entry { flight, interest }
 }
 
 /// The body: from the persistent cache (visitors only), else computed, and
-/// persisted when it was slow.
+/// persisted when it was slow. A search computes only once it has a slot:
+/// a visitor's waits until shortly before `wait` and is otherwise busy; the
+/// warm-up uses its own slot.
 async fn produce<F, T>(
     state: &AppState,
     job: Job,
+    wait: Option<Instant>,
     persistent: Option<(Arc<dyn ObjectStore>, String)>,
     compute: F,
 ) -> Result<Arc<Vec<u8>>, ApiError>
@@ -453,6 +451,29 @@ where
             return Ok(Arc::new(body));
         }
     }
+    let _slot = if job.search {
+        let slots = if job.warm_up {
+            &state.flights.warm_up_slot
+        } else {
+            &state.flights.slots
+        };
+        let acquire = slots.clone().acquire_owned();
+        let acquired = match wait {
+            None => acquire.await,
+            // A little before the request stops waiting, so it hears that
+            // the API is busy rather than a 202 for a search that isn't running.
+            Some(at) => {
+                let margin = visitor_wait(state).min(Duration::from_secs(2)) / 4;
+                tokio::time::timeout_at(at - margin, acquire)
+                    .await
+                    .map_err(|_| ApiError::Busy)?
+            }
+        };
+        // The semaphores are never closed.
+        Some(acquired.map_err(|e| ApiError::Backend(e.to_string()))?)
+    } else {
+        None
+    };
     let started = Instant::now();
     let value = compute.await?;
     let body = serde_json::to_vec(&value)

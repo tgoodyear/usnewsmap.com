@@ -41,6 +41,9 @@ export class ApiError extends Error {
  */
 export const MAX_COMPUTE_WAIT_MS = 150_000;
 
+/** The longest one request waits on the API before a `202` (10 s, plus 2 s for its persistent cache). */
+const REQUEST_WAIT_MS = 12_000;
+
 /** Problem types the app handles by waiting, never by retrying at once. */
 const BUSY = "/errors/busy";
 const TIMEOUT = "/errors/backend-timeout";
@@ -108,6 +111,40 @@ async function problemOf(resp: Response): Promise<Problem> {
   return problem;
 }
 
+/**
+ * `fetch`, abandoned at `deadline` (ms since the epoch) with the timeout
+ * problem, or when `signal` aborts.
+ */
+async function fetchBy(
+  path: string,
+  cache: RequestCache | undefined,
+  signal: AbortSignal | undefined,
+  deadline: number,
+): Promise<Response> {
+  const ctl = new AbortController();
+  let late = false;
+  const timer = setTimeout(() => {
+    late = true;
+    ctl.abort();
+  }, Math.max(0, deadline - Date.now()));
+  const stop = () => ctl.abort(signal!.reason);
+  if (signal?.aborted) stop();
+  else signal?.addEventListener("abort", stop, { once: true });
+  try {
+    return await fetch(`${API_BASE}${path}`, {
+      signal: ctl.signal,
+      cache,
+      headers: { accept: "application/json" },
+    });
+  } catch (e) {
+    if (late) throw new ApiError(tookTooLong);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", stop);
+  }
+}
+
 export interface GetOptions {
   signal?: AbortSignal;
   cache?: RequestCache;
@@ -126,11 +163,10 @@ async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
   const started = Date.now();
   let waiting = false;
   for (;;) {
-    const resp = await fetch(`${API_BASE}${path}`, {
-      signal,
-      cache,
-      headers: { accept: "application/json" },
-    });
+    // Once waiting, every request is held to what is left of the longest wait.
+    const resp = waiting
+      ? await fetchBy(path, cache, signal, started + MAX_COMPUTE_WAIT_MS)
+      : await fetch(`${API_BASE}${path}`, { signal, cache, headers: { accept: "application/json" } });
     let wait: number | null = null;
     let problem: Problem | null = null;
     if (resp.status === 202) {
@@ -139,10 +175,18 @@ async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
       onComputing?.();
     } else if (!resp.ok) {
       problem = await problemOf(resp);
-      if (problem.type === BUSY || (resp.status === 429 && waiting)) wait = retryAfter(resp);
+      if (problem.type === BUSY) {
+        // Large searches are queued behind others: the same wait for the visitor.
+        wait = retryAfter(resp);
+        waiting = true;
+        onComputing?.();
+      } else if (resp.status === 429 && waiting) {
+        wait = retryAfter(resp);
+      }
     }
     if (wait !== null) {
-      if (Date.now() - started + wait > MAX_COMPUTE_WAIT_MS) throw new ApiError(tookTooLong);
+      // The next request may itself wait up to the API's 12 s before answering.
+      if (Date.now() - started + wait + REQUEST_WAIT_MS > MAX_COMPUTE_WAIT_MS) throw new ApiError(tookTooLong);
       await sleep(wait, signal);
       continue;
     }

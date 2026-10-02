@@ -42,16 +42,20 @@ param availabilityFrequency string = '900'
 // searches are left out: a search longer than a visitor waits gets a 202
 // and carries on (06 §6.3.5), and the 503s for a search that ran past its
 // 2-minute limit (/errors/backend-timeout) or found every computation slot
-// taken (/errors/busy) are not counted. The request span names the problem
-// type in usnm.problem. Slow searches have their own alert below.
+// taken (/errors/busy) are counted apart. The request span names the
+// problem type in usnm.problem. Ten or more of those in 10 minutes still
+// raise this alert: a searcher that accepts searches but never answers
+// shows up only as timeouts and busy refusals. Fewer are left to the slow
+// search alert below.
 var serverErrors = '''
 AppRequests
 | where AppRoleName == "usnm-api"
 | extend Problem = tostring(Properties["usnm.problem"])
+| extend Slow = Problem in ("/errors/backend-timeout", "/errors/busy")
 | summarize Requests = sum(ItemCount),
-    Errors = sumif(ItemCount, toint(ResultCode) >= 500
-        and Problem !in ("/errors/backend-timeout", "/errors/busy"))
-| where Errors >= 5 and Errors * 50 > Requests
+    Errors = sumif(ItemCount, toint(ResultCode) >= 500 and not(Slow)),
+    SlowErrors = sumif(ItemCount, toint(ResultCode) >= 500 and Slow)
+| where (Errors >= 5 and Errors * 50 > Requests) or SlowErrors >= 10
 '''
 
 // At least 3 searches in an hour took longer than a visitor waits (outcome
@@ -88,7 +92,7 @@ var rules = [
   {
     name: 'api-server-errors'
     displayName: 'API server errors'
-    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests. scripts/logs.sh <env> api-errors shows which routes and codes.'
+    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 10 search timeouts and busy refusals. scripts/logs.sh <env> api-errors shows which routes and codes.'
     severity: 2
     frequency: 'PT5M'
     window: 'PT10M'

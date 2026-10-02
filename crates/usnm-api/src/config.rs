@@ -45,6 +45,10 @@ pub struct Config {
     /// once, including those still running after their visitor got a `202`.
     /// A new one waits for a slot up to the visitor's wait, then gets a `503`.
     pub compute_concurrency: usize,
+    /// A computation nobody has waited on for this long is cancelled (the
+    /// visitor changed the search or left). Visitors ask again within
+    /// `Retry-After` (2 s) of each `202`.
+    pub abandon_after: Duration,
     /// Warm-up (`crate::prewarm`): limit on each query. Well above
     /// `search_timeout`, because a cold search can take longer than a visitor
     /// is allowed to wait.
@@ -162,6 +166,7 @@ impl Config {
             compute_cap: Duration::from_secs(num("USNM_COMPUTE_CAP_SECS", 120)?.max(1)),
             compute_concurrency: usize::try_from(num("USNM_COMPUTE_CONCURRENCY", 4)?.max(1))
                 .map_err(|e| e.to_string())?,
+            abandon_after: Duration::from_secs(num("USNM_ABANDON_AFTER_SECS", 15)?.max(1)),
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
             prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 300)?),
             prewarm_top_searches: usize::try_from(num("USNM_PREWARM_TOP_SEARCHES", 20)?)
@@ -209,6 +214,7 @@ mod tests {
         assert_eq!(c.search_log_flush, Duration::from_secs(300));
         assert_eq!(c.compute_cap, Duration::from_secs(120));
         assert_eq!(c.compute_concurrency, 4);
+        assert_eq!(c.abandon_after, Duration::from_secs(15));
         assert_eq!(c.prewarm_top_searches, 20);
         assert_eq!(c.prewarm_log_days, 28);
         assert!(c.fixture_slow.is_none());
