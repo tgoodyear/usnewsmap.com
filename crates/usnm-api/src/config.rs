@@ -57,8 +57,14 @@ pub struct Config {
     /// `search_timeout`, because a cold search can take longer than a visitor
     /// is allowed to wait.
     pub prewarm_query_timeout: Duration,
-    /// Warm-up: limit on the whole run; queries left when it runs out are skipped.
+    /// Warm-up before a publish swaps a new version in: limit on the whole
+    /// run; queries left when it runs out are skipped. The old version serves
+    /// meanwhile, so this only delays the swap.
     pub prewarm_budget: Duration,
+    /// Warm-up after a start: the same limit. Kept shorter than
+    /// `prewarm_budget`, because past `ready_cap` the replica serves visitors
+    /// while it warms, and both share its search sidecar.
+    pub prewarm_startup_budget: Duration,
     /// Warm-up: after the examples, this many of the most frequent searches
     /// in the search log (0 turns it off).
     pub prewarm_top_searches: usize,
@@ -181,7 +187,11 @@ impl Config {
                 s => Duration::from_secs(s),
             },
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
-            prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 300)?),
+            prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 900)?),
+            prewarm_startup_budget: Duration::from_secs(num(
+                "USNM_PREWARM_STARTUP_BUDGET_SECS",
+                300,
+            )?),
             prewarm_top_searches: usize::try_from(num("USNM_PREWARM_TOP_SEARCHES", 20)?)
                 .map_err(|e| e.to_string())?,
             prewarm_log_days: num("USNM_PREWARM_LOG_DAYS", 28)?,
@@ -220,7 +230,8 @@ mod tests {
         assert_eq!(c.rate_limit.unwrap().per_minute.get(), 120);
         assert_eq!(c.persist_after, Duration::from_millis(500));
         assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
-        assert_eq!(c.prewarm_budget, Duration::from_secs(300));
+        assert_eq!(c.prewarm_budget, Duration::from_secs(900));
+        assert_eq!(c.prewarm_startup_budget, Duration::from_secs(300));
         assert_eq!(c.ready_cap, Duration::from_secs(120));
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.search_log_url.is_none());

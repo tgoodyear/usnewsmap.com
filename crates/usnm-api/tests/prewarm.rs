@@ -255,6 +255,7 @@ async fn readyz(state: &Arc<AppState>) -> StatusCode {
 async fn load_examples(state: &Arc<AppState>, backend: &Counting, version: &str) -> (usize, usize) {
     let before = backend.calls();
     let mut coverages = std::collections::HashSet::new();
+    let mut found = 0;
     let (status, _) = get(state, &format!("/v1/places?v={version}")).await;
     assert_eq!(status, StatusCode::OK);
     for ex in prewarm::examples() {
@@ -265,12 +266,17 @@ async fn load_examples(state: &Arc<AppState>, backend: &Counting, version: &str)
         .await;
         assert_eq!(status, StatusCode::OK, "{}: {body}", ex.id);
         assert_eq!(body["index_version"], version);
-        assert!(body["total"]["hits"].as_u64().unwrap() > 0, "{}", ex.id);
+        // Most examples are outside the fixtures' 1895-1897; a search that
+        // finds nothing still costs the backend a call.
+        if body["total"]["hits"].as_u64().unwrap() > 0 {
+            found += 1;
+        }
         let coverage = body["cube"]["baseline_ref"].as_str().unwrap().to_owned();
         let (status, body) = get(state, &coverage).await;
         assert_eq!(status, StatusCode::OK, "{}: {body}", ex.id);
         coverages.insert(coverage);
     }
+    assert!(found > 0, "no example matches the fixtures");
     let distinct = 1 + prewarm::examples().len() + coverages.len();
     (backend.calls() - before, distinct)
 }
@@ -354,6 +360,7 @@ async fn a_slow_backend_holds_the_swap_for_the_budget_at_most() {
     let mut cfg = config();
     cfg.prewarm_query_timeout = Duration::from_millis(200);
     cfg.prewarm_budget = Duration::from_millis(500);
+    cfg.prewarm_startup_budget = Duration::from_millis(500);
     let backend = Counting::new(Duration::from_secs(30), false);
     let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
 
@@ -412,7 +419,7 @@ async fn slow_failures_share_one_limit_per_query() {
     let mut cfg = config();
     let limit = Duration::from_millis(350);
     cfg.prewarm_query_timeout = limit;
-    cfg.prewarm_budget = Duration::from_secs(30);
+    cfg.prewarm_startup_budget = Duration::from_secs(30);
     let state = Arc::new(reloading_state(&dir, cfg, backend).await);
     let started = std::time::Instant::now();
     let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
@@ -640,6 +647,7 @@ async fn logged_searches_wait_for_the_examples_and_the_budget() {
     // Each search takes 100 ms: the budget ends during the examples.
     let mut cfg = config();
     cfg.prewarm_budget = Duration::from_millis(250);
+    cfg.prewarm_startup_budget = Duration::from_millis(250);
     let backend = Counting::new(Duration::from_millis(100), false);
     let state = Arc::new(
         reloading_state(&dir, cfg, backend)

@@ -109,7 +109,8 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 | `USNM_ABANDON_AFTER_SECS` | `15` | A computation no request has waited on for this long is cancelled (the visitor changed the search or left); at least 5 |
 | `USNM_REFRESH_SECS` | `600` | How often `current.json` is re-read for a newly published version |
 | `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |
-| `USNM_PREWARM_BUDGET_SECS` | `300` | Cache warm-up: limit on the whole run; the rest is skipped |
+| `USNM_PREWARM_BUDGET_SECS` | `900` | Cache warm-up before a publish swaps a version in: limit on the whole run; the rest is skipped |
+| `USNM_PREWARM_STARTUP_BUDGET_SECS` | `300` | The same limit for the warm-up after a start, which can go on past the readiness cap while the replica serves |
 | `USNM_PREWARM_TOP_SEARCHES` | `20` | Cache warm-up: after the examples, this many of the most frequent searches in the search log (`0` turns it off) |
 | `USNM_PREWARM_LOG_DAYS` | `28` | Cache warm-up: how many days of the search log are counted, back from yesterday |
 | `USNM_READY_CAP_SECS` | `120` | After a start, `/readyz` reports ready once the warm-up ends or this much time passes |

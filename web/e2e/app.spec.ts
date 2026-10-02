@@ -53,13 +53,51 @@ async function expectAccessible(page: Page) {
   expect(results.violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
 }
 
+/** The home page's example cards. */
+const exampleCards = (page: Page) => page.locator("ul.examples button.example");
+
+/** Page through "Show other examples" until the card named `name` shows. */
+async function findExample(page: Page, name: RegExp) {
+  const card = exampleCards(page).filter({ hasText: name });
+  // 17 sets of 3 cover 50 examples; allow for a longer list.
+  for (let i = 0; i < 40 && (await card.count()) === 0; i++) {
+    await page.getByRole("button", { name: "Show other examples" }).click();
+  }
+  return card;
+}
+
+test("the home page shows three examples, and others on request", async ({ page }) => {
+  await page.goto("/");
+  const cards = exampleCards(page);
+  await expect(cards).toHaveCount(3);
+  const first = await cards.allTextContents();
+
+  const more = page.getByRole("button", { name: "Show other examples" });
+  await more.focus();
+  await page.keyboard.press("Enter");
+  await expect(cards).toHaveCount(3);
+  await expect.poll(() => cards.allTextContents()).not.toEqual(first);
+  await expect(more).toBeFocused();
+  await expectAccessible(page);
+
+  // A card runs its search.
+  const title = (await cards.first().locator("strong").textContent()) ?? "";
+  await cards.first().click();
+  await expect(page).toHaveURL(/[?&]q=/);
+  // The search ran (most examples match nothing in the fixtures, which still shows a summary).
+  await expect(page.locator(".summary")).toContainText("pages");
+  // Back returns to the same cards.
+  await page.goBack();
+  await expect(cards.first()).toContainText(title);
+});
+
 test("example search maps, plays, drills down and keeps a permalink", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("newspapers");
   await expect(page.getByRole("note")).toContainText("synthetic");
   await expectAccessible(page);
 
-  await page.getByRole("button", { name: /Cross of Gold, 1896/ }).click();
+  await (await findExample(page, /Cross of Gold, 1896/)).click();
   await expect(page).toHaveURL(/q=%22cross\+of\+gold%22/);
   await expect(page.locator(".summary")).toContainText("6 places");
 

@@ -4,7 +4,7 @@ import { api, ApiError, VersionChangedError, type SearchParams } from "./api/cli
 import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowValues } from "./engine/cube";
-import { EXAMPLES } from "./examples";
+import { EXAMPLE_ORDER, EXAMPLES_SHOWN, examplesAt } from "./examples";
 import { bucketIndex, bucketLabel, bucketStart } from "./lib/time";
 import { cssColor } from "./lib/scale";
 import { searchParams, useView, type ViewState } from "./state/url";
@@ -30,6 +30,9 @@ const webgl = typeof document !== "undefined" && hasWebGL2();
 
 export function App() {
   const [view, setView] = useView();
+  // Which set of examples the home page shows; kept across searches so Back
+  // returns to the same cards.
+  const [examplePage, setExamplePage] = useState(0);
   const about = useRef<HTMLDialogElement>(null);
   const openAbout = () => about.current?.showModal();
   const meta = useQuery({ queryKey: ["meta"], queryFn: ({ signal }) => api.meta(signal) });
@@ -305,8 +308,8 @@ export function App() {
             Type a word or phrase to map every matching page from Chronicling America, then play it
             through time.
           </p>
-          <ul className="examples">
-            {EXAMPLES.map((ex) => (
+          <ul className="examples" id="examples" aria-live="polite">
+            {examplesAt(EXAMPLE_ORDER, examplePage).map((ex) => (
               <li key={ex.id}>
                 <button type="button" className="example" onClick={() => search({ ...ex.view })}>
                   <strong>{ex.title}</strong>
@@ -315,6 +318,18 @@ export function App() {
               </li>
             ))}
           </ul>
+          {EXAMPLE_ORDER.length > EXAMPLES_SHOWN && (
+            <p className="examples__more">
+              <button
+                type="button"
+                className="link-button"
+                aria-controls="examples"
+                onClick={() => setExamplePage((p) => p + 1)}
+              >
+                Show other examples
+              </button>
+            </p>
+          )}
         </main>
       ) : (
         <main className={agg.isFetching ? "results results--loading" : "results"} aria-busy={agg.isFetching}>

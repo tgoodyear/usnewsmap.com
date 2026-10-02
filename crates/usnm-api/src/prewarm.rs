@@ -13,7 +13,8 @@
 //!
 //! Queries run one at a time (the searcher has one vCPU), each with
 //! `config.prewarm_query_timeout` (the searcher's own limit per call still
-//! applies), all within `config.prewarm_budget`. Nothing here fails: a
+//! applies), all within `config.prewarm_budget` before a publish, or
+//! `config.prewarm_startup_budget` after a start. Nothing here fails: a
 //! warm-up that times out or errors is logged and the version serves anyway.
 //!
 //! Searches from the log are logged by rank only (`search-log-3`), never by
@@ -73,6 +74,16 @@ pub enum Trigger {
 }
 
 impl Trigger {
+    /// The limit on a run: past the readiness cap a starting replica serves
+    /// visitors while it warms, so its run stays short; a publish only
+    /// delays the swap, so it can afford to warm every example.
+    fn budget(self, config: &crate::config::Config) -> Duration {
+        match self {
+            Self::Startup => config.prewarm_startup_budget,
+            Self::Publish => config.prewarm_budget,
+        }
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             Self::Startup => "startup",
@@ -347,7 +358,7 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
     let started = Instant::now();
     let version = snap.refdata.version().to_owned();
     let v: String = form_urlencoded::byte_serialize(version.as_bytes()).collect();
-    let deadline = started + state.config.prewarm_budget;
+    let deadline = started + trigger.budget(&state.config);
     let mut run = Run {
         state,
         snap: snap.clone(),
