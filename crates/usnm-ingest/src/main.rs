@@ -162,9 +162,10 @@ enum Command {
         #[arg(long)]
         curate_max_runtime_secs: Option<u64>,
         /// As `titles-sync --max-runtime-secs`, counted from the start of
-        /// `run`. A `--full` run releases only once titles-sync has tried
-        /// every title, so a rebuild leaves no batch out for a missing
-        /// title; otherwise it fails and the next run continues the sync.
+        /// `run`. A full release (asked for, or forced) goes ahead only once
+        /// titles-sync has fetched every title LoC has, so a rebuild leaves
+        /// no batch out for a missing title; otherwise it fails and the next
+        /// run continues the sync.
         #[arg(long)]
         titles_max_runtime_secs: Option<u64>,
         #[command(flatten)]
