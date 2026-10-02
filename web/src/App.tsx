@@ -415,7 +415,8 @@ export function App() {
                         </div>
                       ) : (
                         <PlaceTable
-                          key="raw"
+                          // A new sort when the share column comes or goes, so it never sorts by a hidden column.
+                          key={data.cube.baseline_ref !== null ? "raw" : "raw-no-share"}
                           rows={visible}
                           onSelect={select}
                           selected={view.place}

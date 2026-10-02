@@ -96,7 +96,7 @@ Legends are always visible and state the unit ("pages containing the phrase"). C
 
 ```
 https://usnewsmap.com/?q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896-12-31
-   &bucket=week&t=1896-07-12&win=cum&layer=points&norm=skew&state=&lang=&place=P00412&z=4.2&c=-92.1,39.4
+   &bucket=week&t=1896-07-12&win=cum&layer=points&norm=skew&state=&place=P00412&z=4.2&c=-92.1,39.4
 ```
 
 - Only non-default values are written. Compare mode uses `q1…q4`.
@@ -155,6 +155,6 @@ Visitors can limit a search to newspapers printed in chosen languages, for examp
 
 **The "Papers in X and English" line.** That line names a place's newspaper languages in the relative-rate lists, tooltips, table and CSV, so a reader can see why a place may read low for an English term. Since the relative rate is off under a language filter, the line never appears with a filter on, and the relative-rate CSV isn't offered then. Without a filter it is unchanged.
 
-**Accessibility.** The button is a native `<button>` with `aria-expanded` and `aria-controls`; the checklist is a `<fieldset>` with the legend "Newspaper languages" and one labelled checkbox per language. Tab and Space work as usual, Escape closes the list and returns focus to the button, and so does clicking outside it. The end-to-end test runs axe with the list open.
+**Accessibility.** The button is a native `<button>` with `aria-expanded` and `aria-controls`; the checklist is a `<fieldset>` with the legend "Newspaper languages" and one labelled checkbox per language. Tab and Space work as usual. Escape closes the list and returns focus to the button; a click outside the list closes it and leaves focus where the click put it. The end-to-end test runs axe with the list open.
 
 **Tests.** `web/src/state/url.test.ts` (parsing, canonical order, round trip), `web/src/components/LanguageFilter.test.tsx` (labels, ordering, keyboard, the place table without the share column), `web/src/components/SearchBar.test.ts` (the options count), `web/src/api/client.test.ts` (`lang` on `/v1/aggregate` and `/v1/hits`), `crates/usnm-api/tests/api.rs` (`lang_filters_by_any_title_language`, the `languages` list in `/v1/meta`) and `web/e2e/language.spec.ts` against the fixture API, whose synthetic titles include one German, one Spanish and one English and German newspaper.
