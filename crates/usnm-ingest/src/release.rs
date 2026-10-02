@@ -60,6 +60,11 @@ pub struct Release {
     pub synthetic: bool,
     /// Names versions and stamps `published_at`.
     pub now: DateTime<Utc>,
+    /// Why titles-sync stopped before trying every title, if it did. A delta
+    /// goes ahead without the batches whose titles are missing; a full base
+    /// (asked for, or forced) doesn't, since it would replace the published
+    /// one without them.
+    pub titles_left: Option<String>,
 }
 
 /// The batches whose titles are all in `catalog`. The others are logged and
@@ -268,6 +273,15 @@ impl Release {
             || previous
                 .as_ref()
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
+        if let Some(why) = &self.titles_left {
+            if full {
+                bail!(
+                    "{why}. A full release now would leave out every batch whose title is \
+                     missing, so nothing was released: start the job again"
+                );
+            }
+            tracing::warn!("{why}; releasing with the catalog as it is");
+        }
         let (scope, version_batches, catalog, mut indexes) = if full {
             let all: Vec<RunBatch> = curated
                 .into_iter()

@@ -288,6 +288,7 @@ async fn release(
     state: &State,
     full: bool,
     synthetic: bool,
+    titles_left: Option<String>,
     t: &IndexTarget,
 ) -> anyhow::Result<()> {
     let r = Release {
@@ -298,6 +299,7 @@ async fn release(
         full,
         synthetic,
         now: chrono::Utc::now(),
+        titles_left,
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
@@ -496,7 +498,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             full,
             synthetic,
             target,
-        } => release(&cli.stores, &state, *full, *synthetic, target).await,
+        } => release(&cli.stores, &state, *full, *synthetic, None, target).await,
         Command::Run {
             list,
             batches,
@@ -526,27 +528,12 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
                 deadline(start, *titles_max_runtime_secs),
             )
             .await?;
-            if !report.finished() {
-                release_with_titles_left(*full, &unfinished(&report))?;
-            }
-            release(&cli.stores, &state, *full, *synthetic, target).await
+            // The release decides: a delta goes ahead, a full base (asked
+            // for or forced) refuses (`Release::titles_left`).
+            let titles_left = (!report.finished()).then(|| unfinished(&report));
+            release(&cli.stores, &state, *full, *synthetic, titles_left, target).await
         }
     }
-}
-
-/// After titles-sync stopped early: a delta goes ahead, since the release
-/// holds back only the batches whose titles are missing and a backlog of
-/// titles shouldn't hold up new pages. A full rebuild doesn't: it would
-/// replace the published base with one missing those batches.
-fn release_with_titles_left(full: bool, why: &str) -> anyhow::Result<()> {
-    if full {
-        bail!(
-            "{why}. A full release now would leave out every batch whose title is missing, so \
-             nothing was released: start the job again"
-        );
-    }
-    tracing::warn!("{why}; releasing with the catalog as it is");
-    Ok(())
 }
 
 #[cfg(test)]
@@ -554,7 +541,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_full_rebuild_waits_for_every_title() {
+    fn says_why_titles_sync_stopped() {
         let report = titles::SyncReport {
             wanted: 3122,
             fetched: 342,
@@ -562,13 +549,8 @@ mod tests {
             left: 2779,
             ..Default::default()
         };
-        let why = unfinished(&report);
-        assert!(why.starts_with("LoC rate limited titles-sync with 2779 of 3122 titles left"));
-        assert!(release_with_titles_left(false, &why).is_ok());
-        let err = release_with_titles_left(true, &why)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("nothing was released"), "{err}");
+        assert!(unfinished(&report)
+            .starts_with("LoC rate limited titles-sync with 2779 of 3122 titles left"));
         let late = titles::SyncReport {
             throttled: false,
             out_of_time: true,

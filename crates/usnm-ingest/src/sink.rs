@@ -343,13 +343,15 @@ impl IndexSink for QuickwitSink {
         let config = INDEX_TEMPLATE
             .replace("${INDEX_ID}", index_id)
             .replace("${INDEX_URI}", &format!("{}/{index_id}", self.index_root));
-        let resp = self
+        let sent = self
             .http
             .post(format!("{}/api/v1/indexes", self.base))
             .header("content-type", "application/yaml")
             .body(config)
             .send()
-            .await?;
+            .await
+            .map_err(anyhow::Error::from);
+        let resp = merges::explained(self.events.as_deref(), sent).await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
@@ -427,7 +429,8 @@ impl IndexSink for QuickwitSink {
         let node = self.node();
         let mut out = Vec::new();
         for id in index_ids {
-            out.push(IndexLayout::of(id, &node.splits(id).await?));
+            let splits = merges::explained(self.events.as_deref(), node.splits(id).await).await?;
+            out.push(IndexLayout::of(id, &splits));
         }
         Ok(out)
     }
@@ -616,7 +619,9 @@ pub fn describe_exit(
             ": it ran out of memory (the container's cgroup counts {n} out-of-memory kill{}{limit})",
             if n == 1 { "" } else { "s" }
         )),
-        (Some(9), _) => why.push_str(&format!(
+        // The counter can't be read: say what is most likely. A counter
+        // of 0 means someone else sent the signal.
+        (Some(9), None) => why.push_str(&format!(
             ", most likely by the kernel's out-of-memory killer{}",
             if limit.is_empty() { String::new() } else { format!(" ({})", &limit[2..]) }
         )),
@@ -959,10 +964,13 @@ mod tests {
         );
         // No out-of-memory kill counted: someone else sent the signal.
         let none = progress::CgroupMemory {
-            limit: None,
+            limit: Some(7680 << 20),
             oom_kills: Some(0),
         };
-        assert!(!describe_exit(killed, Some(none)).contains("ran out of memory"));
+        assert_eq!(
+            describe_exit(killed, Some(none)),
+            "the Quickwit writer was killed by signal 9 (SIGKILL)"
+        );
         assert_eq!(
             describe_exit(std::process::ExitStatus::from_raw(15), Some(oom)),
             "the Quickwit writer was killed by signal 15"
