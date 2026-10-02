@@ -273,31 +273,37 @@ export function App() {
   const shown = norm === "skew" ? skewRows : points;
   const clear = norm === "skew" ? clearest(skewListed) : null;
 
-  // Phones put the playback controls right under the map, before the legend and the lists, in
-  // the DOM as well as on screen, so keyboard and screen-reader order matches what is shown.
+  // Phones show the legend and the place lists after the playback controls, in the DOM as well as
+  // on screen, so the controls sit right under the map. They move, not the controls: the legend and
+  // lists keep no state of their own, so a rotation across the breakpoint loses nothing.
   const narrow = useMediaQuery("(max-width: 640px)");
-  const timebar =
-    data && count > 0 && data.total.hits > 0 ? (
-      <footer className="timebar">
-        <TimeDock
-          unit={data.bucket.unit}
-          from={data.bucket.from}
-          count={count}
-          t={t}
-          window={view.win}
-          onSeek={seek}
-          onWindow={(win) => setView({ win })}
+  const legend = !data ? null : norm === "skew" && skewModel ? (
+    <SkewLegend
+      places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
+      states={frame ? frame.statePages.filter((p) => p > 0).length : 0}
+      unit={data.bucket.unit}
+      version={version}
+    />
+  ) : (
+    <Legend />
+  );
+  const sidePanel = !data ? null : (
+    <>
+      {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
+      {view.place && (
+        <PlacePanel
+          params={params}
+          version={version}
+          placeId={view.place}
+          placeName={selected?.name ?? features.get(view.place)?.properties.name ?? view.place}
+          windowHits={selected?.value ?? 0}
+          note={norm === "skew" ? skewRows.find((r) => r.id === view.place)?.skew : undefined}
+          synthetic={data.synthetic}
+          onClose={() => setView({ place: "" })}
         />
-        <Timeline
-          unit={data.bucket.unit}
-          from={data.bucket.from}
-          hits={data.series.hits}
-          t={t}
-          window={view.win}
-          onSeek={seek}
-        />
-      </footer>
-    ) : null;
+      )}
+    </>
+  );
 
   return (
     <div className={view.q ? "app" : "app app--empty"}>
@@ -450,7 +456,6 @@ export function App() {
                           share={data.cube.baseline_ref !== null}
                         />
                       )}
-                      {narrow && timebar}
                     </>
                   ) : (
                     <Suspense fallback={<div className="map map--loading">Loading map…</div>}>
@@ -465,36 +470,10 @@ export function App() {
                         center={view.c}
                         onViewport={onViewport}
                       />
-                      {narrow && timebar}
-                      {norm === "skew" && skewModel ? (
-                        <SkewLegend
-                          places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
-                          states={frame ? frame.statePages.filter((p) => p > 0).length : 0}
-                          unit={data.bucket.unit}
-                          version={version}
-                        />
-                      ) : (
-                        <Legend />
-                      )}
+                      {!narrow && legend}
                     </Suspense>
                   )}
-                  {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
-                  {view.place && (
-                    <PlacePanel
-                      params={params}
-                      version={version}
-                      placeId={view.place}
-                      placeName={selected?.name ?? features.get(view.place)?.properties.name ?? view.place}
-                      windowHits={selected?.value ?? 0}
-                      note={
-                        norm === "skew"
-                          ? skewRows.find((r) => r.id === view.place)?.skew
-                          : undefined
-                      }
-                      synthetic={data.synthetic}
-                      onClose={() => setView({ place: "" })}
-                    />
-                  )}
+                  {!narrow && sidePanel}
                 </div>
               )}
 
@@ -516,7 +495,33 @@ export function App() {
                   }
                 />
               )}
-              {!narrow && timebar}
+              {count > 0 && data.total.hits > 0 && (
+                <footer className="timebar">
+                  <TimeDock
+                    unit={data.bucket.unit}
+                    from={data.bucket.from}
+                    count={count}
+                    t={t}
+                    window={view.win}
+                    onSeek={seek}
+                    onWindow={(win) => setView({ win })}
+                  />
+                  <Timeline
+                    unit={data.bucket.unit}
+                    from={data.bucket.from}
+                    hits={data.series.hits}
+                    t={t}
+                    window={view.win}
+                    onSeek={seek}
+                  />
+                </footer>
+              )}
+              {narrow && data && (
+                <div className="after-timebar">
+                  {view.tab === "map" && webgl && legend}
+                  {sidePanel}
+                </div>
+              )}
             </>
           )}
           {!data && agg.isFetching && !stillComputing && <p className="notice" role="status">Searching…</p>}

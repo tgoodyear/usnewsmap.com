@@ -275,8 +275,6 @@ input, select {
   .map { min-height: 55vh; }
   .panel { width: 100%; max-height: none; border-left: 0; border-top: 1px solid var(--line); }
   .legend { position: static; margin: 8px 16px; max-width: none; }
-  /* Phones render the timebar inside the stage, right under the map (App.tsx). */
-  .stage > .timebar { border-bottom: 1px solid var(--line); }
 }
 
 @media (prefers-reduced-motion: reduce) {

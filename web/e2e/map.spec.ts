@@ -75,4 +75,12 @@ test("phones put the playback controls between the map and the legend, in readin
   // DOM order, which keyboard and screen-reader users follow, matches what each layout shows.
   await expect.poll(order).toBe(isMobile ? "map, controls, legend" : "map, legend, controls");
   await expect(page.locator(".timebar")).toHaveCount(1);
+  if (isMobile) return;
+  // Crossing the breakpoint moves the legend and lists, never the controls, so playback keeps going.
+  const play = page.getByRole("button", { name: /Play|Pause/ });
+  await play.click();
+  await expect(play).toHaveAttribute("aria-pressed", "true");
+  await page.setViewportSize({ width: 400, height: 800 });
+  await expect.poll(order).toBe("map, controls, legend");
+  await expect(play).toHaveAttribute("aria-pressed", "true");
 });
