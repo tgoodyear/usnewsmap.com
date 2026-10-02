@@ -541,6 +541,18 @@ fn forward(
     })
 }
 
+/// The writer's `RUST_LOG`: the job's filter (Quickwit's default `info` when
+/// there is none), with the merge pipeline always at `info`. The release
+/// waits for that pipeline's "completed" line (`merges::NodeEvents`), so a
+/// quieter filter, or one naming only the pipeline's crates, must not hide it.
+fn writer_log_filter(inherited: Option<&str>) -> String {
+    let base = inherited
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .unwrap_or("info");
+    format!("{base},quickwit_indexing::actors::merge_pipeline=info")
+}
+
 /// A Quickwit indexer node run as a child process for the length of a
 /// release: the one writer of the file-backed metastore. Its output goes to
 /// the job's console: warnings, errors and readiness through `tracing`, and
@@ -610,6 +622,10 @@ impl QuickwitNode {
             .args(["run", "--config"])
             .arg(&config_path)
             .env("QW_DISABLE_TELEMETRY", "1")
+            .env(
+                "RUST_LOG",
+                writer_log_filter(std::env::var("RUST_LOG").ok().as_deref()),
+            )
             // AZURE_CLIENT_ID selects the pipeline's user-assigned identity;
             // Quickwit's credential chain uses the system-assigned one (08 §8.2).
             .env_remove("AZURE_CLIENT_ID")
@@ -710,6 +726,18 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[test]
+    fn the_writer_always_logs_merge_pipeline_completion() {
+        let pipeline = "quickwit_indexing::actors::merge_pipeline=info";
+        assert_eq!(writer_log_filter(None), format!("info,{pipeline}"));
+        assert_eq!(writer_log_filter(Some(" ")), format!("info,{pipeline}"));
+        assert_eq!(writer_log_filter(Some("warn")), format!("warn,{pipeline}"));
+        assert_eq!(
+            writer_log_filter(Some("usnm_ingest=info")),
+            format!("usnm_ingest=info,{pipeline}")
+        );
+    }
 
     #[test]
     fn tail_keeps_the_last_lines() {
