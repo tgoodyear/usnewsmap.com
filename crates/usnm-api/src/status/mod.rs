@@ -22,9 +22,12 @@ use usnm_state::docs::{DocStore, FileDocs};
 use usnm_state::summary::{self, Summary};
 use usnm_store::ObjectStore;
 
+pub mod activity;
 pub mod assemble;
 pub mod sanitize;
+pub mod schedule;
 
+use activity::{Activity, TitlesCache};
 use assemble::{Backfill, CatalogTitles, Indexing, Published, Section, Titles};
 
 /// Bump when the document's shape changes incompatibly.
@@ -63,6 +66,8 @@ pub struct Status {
     pub error: Option<String>,
     pub pipeline: Pipeline,
     pub published: Published,
+    /// What the pipeline is doing at this moment ("Right now").
+    pub activity: Section<Activity>,
     pub backfill: Section<Backfill>,
     pub indexing: Section<Indexing>,
     pub titles: Titles,
@@ -88,6 +93,8 @@ pub struct StatusService {
     last_good: RwLock<Option<Arc<Reading>>>,
     /// Held while a refresh runs: one at a time.
     refreshing: Mutex<()>,
+    /// The title-record cache's LCCNs, re-read only when it changes.
+    titles_cache: Mutex<Option<TitlesCache>>,
 }
 
 const NOT_CONFIGURED: &str = "This server is not connected to the pipeline state.";
@@ -102,6 +109,7 @@ impl StatusService {
             latest: RwLock::new(None),
             last_good: RwLock::new(None),
             refreshing: Mutex::new(()),
+            titles_cache: Mutex::new(None),
         }
     }
 
@@ -181,7 +189,16 @@ impl StatusService {
                     ))
                 })
         };
-        let (pipeline, catalog) = tokio::join!(self.read_pipeline(), catalog);
+        let cache = async {
+            tokio::time::timeout(READ_TIMEOUT, self.read_titles_cache(reference_store(app)))
+                .await
+                .unwrap_or_else(|_| Err("reading the title cache timed out".to_owned()))
+        };
+        let (pipeline, catalog, cache) = tokio::join!(self.read_pipeline(), catalog, cache);
+        let cache = cache.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "status: could not read the title cache");
+            None
+        });
         let (reading, stale, error, reason) = match pipeline {
             Ok(Some(s)) => {
                 if let Some(ru) = s.request_charge {
@@ -222,6 +239,22 @@ impl StatusService {
             Some(r) => Section::of(assemble::indexing(r.at, &r.summary)),
             None => Section::unavailable(reason),
         };
+        let next_run = app
+            .config
+            .ingest_cron
+            .as_ref()
+            .and_then(|c| c.next_after(now));
+        let activity: Section<Activity> = match (&reading, &backfill.data) {
+            (Some(r), Some(b)) => Section::of(activity::activity(&activity::Inputs {
+                at: r.at,
+                summary: &r.summary,
+                backfill: b,
+                catalog: catalog.as_ref(),
+                cache: cache.as_ref(),
+                next_run,
+            })),
+            _ => Section::unavailable(reason),
+        };
         Status {
             schema: SCHEMA,
             generated_at: now,
@@ -233,12 +266,61 @@ impl StatusService {
                 reason: reading.is_none().then(|| reason.to_owned()),
             },
             published: assemble::published(rd),
+            activity,
             backfill,
             indexing,
             titles: assemble::titles(rd, catalog.as_ref(), NO_CATALOG, summary, reason),
         }
     }
 }
+
+fn reference_store(app: &crate::AppState) -> Option<Arc<dyn ObjectStore>> {
+    app.loader.as_ref().map(|l| l.reference.clone())
+}
+
+impl StatusService {
+    /// The LCCNs in titles-sync's record cache (`raw/titles.json`) and when
+    /// it was saved, read again only when it has changed since the last
+    /// refresh. `None` without a reference store or a cache.
+    async fn read_titles_cache(
+        &self,
+        store: Option<Arc<dyn ObjectStore>>,
+    ) -> Result<Option<TitlesCache>, String> {
+        let Some(store) = store else {
+            return Ok(None);
+        };
+        let modified = store
+            .modified(TITLES_CACHE)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(DateTime::<Utc>::from);
+        let mut held = self.titles_cache.lock().await;
+        if let Some(c) = held.as_ref() {
+            if modified.is_some() && c.modified == modified {
+                return Ok(Some(c.clone()));
+            }
+        }
+        let Some(bytes) = store.get(TITLES_CACHE).await.map_err(|e| e.to_string())? else {
+            *held = None;
+            return Ok(None);
+        };
+        let lccns = tokio::task::spawn_blocking(move || {
+            serde_json::from_slice::<std::collections::BTreeMap<String, serde::de::IgnoredAny>>(
+                &bytes,
+            )
+            .map(|m| m.into_keys().collect::<HashSet<_>>())
+            .map_err(|e| format!("{TITLES_CACHE}: {e}"))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let cache = TitlesCache { lccns, modified };
+        *held = Some(cache.clone());
+        Ok(Some(cache))
+    }
+}
+
+/// titles-sync's record cache in the reference store (04 §4.6).
+const TITLES_CACHE: &str = "raw/titles.json";
 
 #[derive(Deserialize)]
 struct CatalogTitle {
@@ -383,6 +465,7 @@ mod tests {
             json!({"available": false, "reason": NOT_CONFIGURED})
         );
         assert_eq!(v["indexing"]["available"], false);
+        assert_eq!(v["activity"]["available"], false);
         assert_eq!(v["titles"]["pipeline"]["available"], false);
         assert_eq!(v["titles"]["catalog"]["available"], false);
         assert_eq!(v["published"]["index_version"], "fixture-v1");
@@ -483,6 +566,47 @@ mod tests {
             (v["stale"].clone(), v["error"].clone()),
             (json!(false), Value::Null)
         );
+    }
+
+    #[tokio::test]
+    async fn reports_what_the_ingest_job_is_doing() {
+        let docs = seeded().await;
+        let now = Utc::now();
+        usnm_state::state::State::new(docs.clone())
+            .set_activity(&usnm_state::state::Activity {
+                command: "run".into(),
+                owner: "caj-usnm-ingest-prod-x-1-0a1b2c3d".into(),
+                started_at: now,
+                step: usnm_state::state::Step::Titles,
+                step_started_at: now,
+                updated_at: now,
+                done: Some(342),
+                total: Some(3464),
+                paused_until: Some(now + chrono::Duration::minutes(65)),
+                index_version: None,
+                merge: None,
+                ended_at: None,
+                outcome: None,
+                error: None,
+            })
+            .await
+            .unwrap();
+        let app = app(PipelineSource::Docs(docs), Duration::from_secs(60)).await;
+        let v = parse(&app.status.get(&app).await.0);
+        let a = &v["activity"];
+        assert_eq!(a["available"], true);
+        assert_eq!(
+            (a["now"].as_str(), a["source"].as_str()),
+            (Some("titles"), Some("job"))
+        );
+        assert_eq!(
+            (a["done"].as_u64(), a["total"].as_u64()),
+            (Some(342), Some(3464))
+        );
+        assert!(a["paused_until"].is_string());
+        // Only the last six characters of the execution's id.
+        assert_eq!(a["run"], "1b2c3d");
+        assert_eq!(a["next_run"], Value::Null);
     }
 
     #[tokio::test]

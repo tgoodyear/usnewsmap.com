@@ -23,6 +23,9 @@ pub const WRITER_LOCK: &str = "quickwit-writer";
 pub const MAX_DELTAS: usize = 8;
 /// The `ops` item a running release updates with how far it has got.
 pub const RELEASE_PROGRESS: &str = "release-progress";
+/// The `ops` item the ingest job (`run`, `titles-sync`, `release`) keeps up
+/// to date with the step it is on, for the status page's "Right now" line.
+pub const ACTIVITY: &str = "activity";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -185,6 +188,90 @@ pub struct ReleaseProgress {
     pub docs_expected: u64,
     pub mb_sent: f64,
     pub updated_at: DateTime<Utc>,
+}
+
+/// The step an ingest job execution is on (`ops/activity`), in the order a
+/// `run` takes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Step {
+    /// Reading LoC's batch listing and queueing new batches.
+    Listing,
+    /// Downloading and processing (curating) queued batches.
+    Downloading,
+    /// Fetching newspaper (title) records from loc.gov (titles-sync).
+    Titles,
+    /// Sending pages to the new search index.
+    Indexing,
+    /// Waiting for the new index's merges.
+    Merging,
+    /// Writing the reference snapshot and the version pointer.
+    Publishing,
+}
+
+/// How an execution ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    /// A new version went live.
+    Published,
+    /// It finished with nothing new to publish.
+    NothingNew,
+    /// titles-sync didn't fetch every title in time (LoC rate limits it);
+    /// a full rebuild then publishes nothing and the next execution goes on.
+    TitlesLeft,
+    /// It failed; `error` says why.
+    Failed,
+}
+
+/// Where the merge wait is (`crate::merges` in the ingest crate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeProgress {
+    /// `settle` (the index is open and merging) or `finalize` (closed, last merges).
+    pub step: String,
+    pub splits: u64,
+    pub merges_running: u64,
+    pub merges_queued: u64,
+}
+
+/// What the ingest job execution is doing: the `ops/activity` item. One
+/// execution of `caj-usnm-ingest` runs at a time (it has parallelism 1);
+/// the backfill job's curate workers don't write it. The job rewrites it
+/// on every step change and at least once a minute while it runs, so a
+/// reader can tell a live execution from one that stopped without saying.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Activity {
+    /// The `usnm-ingest` command: `run`, `titles-sync` or `release`.
+    pub command: String,
+    /// The writer's process id ([`crate`] users show its last characters only).
+    pub owner: String,
+    pub started_at: DateTime<Utc>,
+    pub step: Step,
+    pub step_started_at: DateTime<Utc>,
+    /// The last write: a heartbeat while the execution runs.
+    pub updated_at: DateTime<Utc>,
+    /// The step's progress, where it counts something (titles fetched,
+    /// batches curated); indexing reports in `ops/release-progress`.
+    #[serde(default)]
+    pub done: Option<u64>,
+    #[serde(default)]
+    pub total: Option<u64>,
+    /// titles-sync sends nothing to loc.gov until then (LoC rate limited it).
+    #[serde(default)]
+    pub paused_until: Option<DateTime<Utc>>,
+    /// The version being built, from the indexing step on.
+    #[serde(default)]
+    pub index_version: Option<String>,
+    #[serde(default)]
+    pub merge: Option<MergeProgress>,
+    /// Set when the execution ends, with how.
+    #[serde(default)]
+    pub ended_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub outcome: Option<Outcome>,
+    /// The error an execution failed with (the API sanitizes it).
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Typed access to the pipeline's state.
@@ -414,6 +501,15 @@ impl State {
         doc["id"] = RELEASE_PROGRESS.into();
         doc["kind"] = RELEASE_PROGRESS.into();
         self.docs.upsert(OPS, RELEASE_PROGRESS, &doc).await
+    }
+
+    /// Record what the ingest job is doing (unconditional: one execution
+    /// runs at a time).
+    pub async fn set_activity(&self, a: &Activity) -> anyhow::Result<()> {
+        let mut doc = to_value(a)?;
+        doc["id"] = ACTIVITY.into();
+        doc["kind"] = ACTIVITY.into();
+        self.docs.upsert(OPS, ACTIVITY, &doc).await
     }
 
     pub async fn unlock(&self, name: &str, owner: &str) -> anyhow::Result<()> {

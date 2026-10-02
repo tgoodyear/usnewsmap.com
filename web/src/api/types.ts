@@ -267,6 +267,56 @@ export interface ByLanguage {
   rows: LanguagePages[];
 }
 
+/** What the pipeline is doing at this moment (`activity.now`). */
+export type Now =
+  | "listing"
+  | "downloading"
+  | "titles"
+  | "indexing"
+  | "merging"
+  | "publishing"
+  | "idle";
+
+export type LastOutcome =
+  | "published"
+  | "nothing_new"
+  | "titles_left"
+  | "failed"
+  | "stopped";
+
+/** `activity`: the "Right now" line's data (06 §6.3.6). */
+export interface Activity {
+  now: Now;
+  /** "job": the ingest execution reports it; "inferred": worked out from other state; "none" when idle. */
+  source: "job" | "inferred" | "none";
+  since: string | null;
+  run_started_at: string | null;
+  run: string | null;
+  reported_at: string | null;
+  done: number | null;
+  total: number | null;
+  percent: number | null;
+  eta: string | null;
+  /** loc.gov rate limited the title lookups; nothing is sent until then. */
+  paused_until: string | null;
+  index_version: string | null;
+  merge: {
+    step: string;
+    splits: number;
+    merges_running: number;
+    merges_queued: number;
+  } | null;
+  last: {
+    outcome: LastOutcome;
+    ended_at: string;
+    step: Now | null;
+    error: string | null;
+    index_version: string | null;
+  } | null;
+  /** The ingest job's next scheduled start; null when it is started by hand. */
+  next_run: string | null;
+}
+
 /** `GET /v1/status` (schema 1): the ingest pipeline's status. */
 export interface Status {
   schema: number;
@@ -291,6 +341,8 @@ export interface Status {
     by_state?: StatePages[];
     by_language?: ByLanguage;
   };
+  /** Added after schema 1 shipped; older APIs leave it out. */
+  activity?: Section<Activity>;
   backfill: Section<Backfill>;
   indexing: Section<Indexing>;
   titles: {

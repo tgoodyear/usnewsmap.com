@@ -26,8 +26,10 @@ use anyhow::{bail, Context};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::activity::Reporter;
 use crate::progress;
 use crate::sink::INDEX_TEMPLATE;
+use crate::state::MergeProgress;
 
 /// The ingest API's source in every index (Quickwit's ingest v2).
 pub const INGEST_SOURCE: &str = "_ingest-source";
@@ -367,6 +369,9 @@ pub struct MergeWait {
     /// Without the node's output to say the final merges are done, how long
     /// to wait after disabling the source before trusting a quiet node.
     pub finalize_grace: Duration,
+    /// Where the wait's step and counts are recorded for the status page
+    /// (`ops/activity`).
+    pub report: Reporter,
 }
 
 impl Default for MergeWait {
@@ -376,6 +381,7 @@ impl Default for MergeWait {
             stable_polls: 3,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             finalize_grace: Duration::from_secs(60),
+            report: Reporter::off(),
         }
     }
 }
@@ -433,6 +439,12 @@ async fn poll_until_sealed(
         let splits = explained(events, node.splits(index_id).await).await?;
         let ids: Vec<String> = splits.iter().map(|s| s.id.clone()).collect();
         let settled = settle.observe(running == 0 && queued == 0, &ids);
+        wait.report.merges(MergeProgress {
+            step: step.to_owned(),
+            splits: splits.len() as u64,
+            merges_running: running,
+            merges_queued: queued,
+        });
         if last_log.is_none_or(|t| t.elapsed() >= LOG_EVERY) {
             last_log = Some(tokio::time::Instant::now());
             tracing::info!(
@@ -748,6 +760,7 @@ mod tests {
             stable_polls: 2,
             timeout: Duration::from_secs(10),
             finalize_grace: Duration::from_millis(50),
+            report: Reporter::off(),
         }
     }
 

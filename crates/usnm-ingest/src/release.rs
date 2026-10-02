@@ -36,6 +36,7 @@ use usnm_core::text::TextStatus;
 use usnm_core::time::{date_from_day, day_number, ym_number};
 use usnm_store::ObjectStore;
 
+use crate::activity::Reporter;
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
 use crate::merges::IndexLayout;
@@ -43,7 +44,7 @@ use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
 use crate::state::{
-    Curated, IndexRun, RunBatch, RunStatus, State, RUN_BATCHES_FILE, TITLE_PAGES_FILE,
+    Curated, IndexRun, RunBatch, RunStatus, State, Step, RUN_BATCHES_FILE, TITLE_PAGES_FILE,
 };
 use crate::worker::Counts;
 
@@ -66,6 +67,20 @@ pub struct Release {
     /// one without them.
     pub titles_left: Option<String>,
 }
+
+/// A full release refused to start because titles-sync left titles unfetched
+/// (`Release::titles_left`): nothing was published, and the next execution
+/// continues the sync.
+#[derive(Debug)]
+pub struct TitlesLeft(pub String);
+
+impl std::fmt::Display for TitlesLeft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TitlesLeft {}
 
 /// The batches whose titles are all in `catalog`. The others are logged and
 /// left for a later release.
@@ -216,6 +231,17 @@ impl Release {
         sink: &mut dyn IndexSink,
         lease: &WriterLease,
     ) -> anyhow::Result<Option<Published>> {
+        self.run_reporting(sink, lease, &Reporter::off()).await
+    }
+
+    /// [`Release::run_held`], recording its steps (indexing, merging,
+    /// publishing) with `report` for the status page.
+    pub async fn run_reporting(
+        &self,
+        sink: &mut dyn IndexSink,
+        lease: &WriterLease,
+        report: &Reporter,
+    ) -> anyhow::Result<Option<Published>> {
         let span = tracing::info_span!(
             "release",
             otel.kind = "consumer",
@@ -227,7 +253,7 @@ impl Release {
             otel.status_description = Empty,
         );
         let result = self
-            .run_in_span(sink, lease, &span)
+            .run_in_span(sink, lease, &span, report)
             .instrument(span.clone())
             .await;
         if let Err(e) = &result {
@@ -242,6 +268,7 @@ impl Release {
         sink: &mut dyn IndexSink,
         lease: &WriterLease,
         span: &tracing::Span,
+        report: &Reporter,
     ) -> anyhow::Result<Option<Published>> {
         self.confirm(lease).await?;
         let current = Catalog::load(self.reference.as_ref()).await?;
@@ -275,10 +302,11 @@ impl Release {
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
         if let Some(why) = &self.titles_left {
             if full {
-                bail!(
+                return Err(TitlesLeft(format!(
                     "{why}. A full release now would leave out every batch whose title is \
                      missing, so nothing was released: start the job again"
-                );
+                ))
+                .into());
             }
             tracing::warn!("{why}; releasing with the catalog as it is");
         }
@@ -361,10 +389,13 @@ impl Release {
         span.record("batches", scope.len());
         tracing::info!(%version, index = %index_id, full, batches = scope.len(), "building index");
 
+        report.version(&version);
+        report.step(Step::Indexing).await;
         let outcome = async {
             let docs = self
-                .build_index(lease, sink, &version, &index_id, &scope, &catalog)
+                .build_index(lease, sink, &version, &index_id, &scope, &catalog, report)
                 .await?;
+            report.step(Step::Publishing).await;
             // What every index of the version is made of, for the log and
             // the manifest: how many splits a cold search opens (05 §5.5.1).
             let layout = sink.layout(&indexes).await?;
@@ -537,6 +568,8 @@ impl Release {
         )
     }
 
+    // The lease, sink and reporter are the release's, threaded through.
+    #[allow(clippy::too_many_arguments)]
     async fn build_index(
         &self,
         lease: &WriterLease,
@@ -545,6 +578,7 @@ impl Release {
         index_id: &str,
         scope: &[RunBatch],
         catalog: &Catalog,
+        report: &Reporter,
     ) -> anyhow::Result<u64> {
         // Every title must resolve before anything is written.
         let mut missing = BTreeSet::new();
@@ -597,6 +631,7 @@ impl Release {
             progress.snapshot().log(Some(&b.batch));
         }
         // The last commit and the merge wait, given up as soon as the lock is.
+        report.step(Step::Merging).await;
         tokio::select! {
             r = sink.finish(docs) => r?,
             () = lease.lost() => lease.check()?,

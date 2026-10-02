@@ -187,8 +187,8 @@ export function StatesSection({
   const sum = (f: (r: StatePages) => number) =>
     rows.reduce((a, r) => a + f(r), 0);
   return (
-    <section aria-labelledby="by-state" className="status-section">
-      <h2 id="by-state">Pages by state</h2>
+    <section aria-labelledby="by-state" className="status-subsection">
+      <h3 id="by-state">Pages by state</h3>
       {rows.length === 0 ? (
         <p className="status-empty">No pages are published yet.</p>
       ) : (
@@ -255,8 +255,8 @@ function languageColumns(pagesKnown: boolean): Column<LanguagePages>[] {
 export function LanguagesSection({ data }: { data: ByLanguage }) {
   const known = data.pages_known;
   return (
-    <section aria-labelledby="by-language" className="status-section">
-      <h2 id="by-language">Pages by language</h2>
+    <section aria-labelledby="by-language" className="status-subsection">
+      <h3 id="by-language">Pages by language</h3>
       {data.rows.length === 0 ? (
         <p className="status-empty">No pages are published yet.</p>
       ) : (

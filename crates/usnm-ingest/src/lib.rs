@@ -5,6 +5,7 @@
 //! Jobs (weekly) or ACI Spot groups (backfill). Cosmos DB holds the work
 //! queue and document state; Blob holds everything else.
 
+pub mod activity;
 pub mod archive;
 pub mod catalog;
 pub mod curated;

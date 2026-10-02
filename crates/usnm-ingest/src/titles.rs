@@ -33,6 +33,7 @@ use serde_json::Value;
 use usnm_core::names::{language_code, state_by_name, State, STATES};
 use usnm_store::ObjectStore;
 
+use crate::activity::Reporter;
 use crate::catalog::{Catalog, Place, Title, PLACES, TITLES};
 use crate::source;
 
@@ -144,6 +145,9 @@ pub struct Pacing {
     /// When to stop: no request starts after it, and a pause that would
     /// end after it stops the sync instead. `None`: stop at the first block.
     pub deadline: Option<tokio::time::Instant>,
+    /// Where the titles fetched so far and any pause are recorded for the
+    /// status page (`ops/activity`).
+    pub report: Reporter,
 }
 
 impl Pacing {
@@ -153,7 +157,13 @@ impl Pacing {
             interval: LOC_INTERVAL,
             block_pause: LOC_BLOCK_PAUSE,
             deadline,
+            report: Reporter::off(),
         }
+    }
+
+    /// The same, recording progress with `report`.
+    pub fn reporting(self, report: Reporter) -> Self {
+        Self { report, ..self }
     }
 }
 
@@ -221,6 +231,8 @@ pub async fn sync(
     let past = |t: tokio::time::Instant| pacing.deadline.is_some_and(|d| t >= d);
     let mut unsaved = 0;
     let mut next = 0;
+    let total = todo.len() as u64;
+    pacing.report.progress(0, total);
     while let Some(lccn) = todo.get(next) {
         tick.tick().await;
         if past(tokio::time::Instant::now()) {
@@ -258,7 +270,12 @@ pub async fn sync(
                     "LoC is rate limiting; sending nothing for the pause, then resuming more slowly"
                 );
                 report.paused += 1;
+                let until = chrono::Duration::from_std(pacing.block_pause)
+                    .ok()
+                    .map(|p| chrono::Utc::now() + p);
+                pacing.report.paused_until(until).await;
                 tokio::time::sleep(pacing.block_pause).await;
+                pacing.report.paused_until(None).await;
                 tick = tokio::time::interval(interval);
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 // The same title again.
@@ -267,6 +284,7 @@ pub async fn sync(
             Err(e) => Err(e),
         };
         next += 1;
+        pacing.report.progress(next as u64, total);
         match r {
             Ok(Some(t)) => {
                 raw.insert(lccn.clone(), t);
@@ -940,6 +958,7 @@ mod tests {
             interval: Duration::ZERO,
             block_pause: Duration::ZERO,
             deadline: None,
+            report: Reporter::off(),
         }
     }
 
@@ -1112,6 +1131,7 @@ mod tests {
             interval: Duration::ZERO,
             block_pause: Duration::from_millis(300),
             deadline: Some(now + Duration::from_secs(30)),
+            report: Reporter::off(),
         };
         let started = std::time::Instant::now();
         let r = sync(store.as_ref(), &set(&["sn6", "sn3"]), false, &base, &pacing)
@@ -1129,6 +1149,7 @@ mod tests {
             interval: Duration::ZERO,
             block_pause: Duration::from_secs(3600),
             deadline: Some(now + Duration::from_secs(30)),
+            report: Reporter::off(),
         };
         let r = sync(
             store.as_ref(),

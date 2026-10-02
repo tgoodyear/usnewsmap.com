@@ -102,6 +102,9 @@ pub struct Config {
     pub state_file: Option<PathBuf>,
     /// How often `/v1/status` is recomputed at most.
     pub status_refresh: Duration,
+    /// The ingest job's schedule (`USNM_INGEST_CRON`, UTC), for the status
+    /// page's next scheduled run; `None` when the job is started by hand.
+    pub ingest_cron: Option<crate::status::schedule::Cron>,
     /// Where the anonymous search log goes (`searches/` container), if
     /// anywhere (06 §6.8).
     pub search_log_url: Option<String>,
@@ -212,6 +215,10 @@ impl Config {
             cosmos_endpoint: var("USNM_COSMOS_ENDPOINT"),
             state_file: var("USNM_STATE_FILE").map(PathBuf::from),
             status_refresh: Duration::from_secs(num("USNM_STATUS_REFRESH_SECS", 60)?.max(1)),
+            ingest_cron: var("USNM_INGEST_CRON")
+                .filter(|c| !c.trim().is_empty())
+                .map(|c| crate::status::schedule::Cron::parse(&c))
+                .transpose()?,
             search_log_url: var("USNM_SEARCH_LOG_URL"),
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
             fixture_slow,
@@ -234,6 +241,7 @@ mod tests {
         assert_eq!(c.prewarm_startup_budget, Duration::from_secs(300));
         assert_eq!(c.ready_cap, Duration::from_secs(120));
         assert_eq!(c.site_host, "usnewsmap.com");
+        assert!(c.ingest_cron.is_none());
         assert!(c.search_log_url.is_none());
         assert_eq!(c.search_log_flush, Duration::from_secs(300));
         assert_eq!(c.compute_cap, Duration::from_secs(120));
@@ -253,6 +261,12 @@ mod tests {
         assert!(c.cosmos_endpoint.is_none());
         assert!(c.reference_url.starts_with("https://"));
         assert!(Config::from_lookup(|k| (k == "USNM_RATE_BURST").then(|| "0".into())).is_err());
+        let c = Config::from_lookup(|k| (k == "USNM_INGEST_CRON").then(|| "17 3 * * 1".into()))
+            .unwrap();
+        assert!(c.ingest_cron.is_some());
+        assert!(
+            Config::from_lookup(|k| (k == "USNM_INGEST_CRON").then(|| "17 3 *".into())).is_err()
+        );
         assert!(Config::from_lookup(|k| (k == "USNM_CACHE_MB").then(|| "x".into())).is_err());
         assert!(
             Config::from_lookup(|k| (k == "USNM_ABANDON_AFTER_SECS").then(|| "2".into())).is_err()

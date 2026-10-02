@@ -63,6 +63,13 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
         Ok(self.get(path).await?.is_some())
     }
 
+    /// When the object was last written; `None` if it doesn't exist or the
+    /// store doesn't say. Only the status page uses this.
+    async fn modified(&self, path: &str) -> Result<Option<std::time::SystemTime>, StoreError> {
+        let _ = path;
+        Ok(None)
+    }
+
     /// The paths of the objects under `prefix` (a directory-like path
     /// without a trailing `/`), sorted. Only the search log (`usnm-api`) uses this.
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError>;

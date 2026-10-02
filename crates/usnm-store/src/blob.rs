@@ -249,6 +249,28 @@ impl ObjectStore for BlobStore {
         }
     }
 
+    async fn modified(&self, path: &str) -> Result<Option<SystemTime>, StoreError> {
+        let resp = self
+            .request(Method::HEAD, path)
+            .await?
+            .send()
+            .await
+            .map_err(|e| transport("head", path, e))?;
+        match resp.status() {
+            s if s.is_success() => Ok(resp
+                .headers()
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| httpdate::parse_http_date(v).ok())),
+            StatusCode::NOT_FOUND => Ok(None),
+            s => Err(StoreError::Http {
+                op: "head",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+
     /// List Blobs, following continuation markers.
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
         validate_path(prefix)?;

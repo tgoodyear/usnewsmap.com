@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use crate::docs::{DocStore, Field};
 use crate::state::{
-    self, BatchStatus, Lease, ReleaseProgress, RunStatus, BATCHES, FETCH_PACER, INDEX_RUNS, OPS,
-    RELEASE_PROGRESS, WRITER_LOCK,
+    self, Activity, BatchStatus, Lease, ReleaseProgress, RunStatus, ACTIVITY, BATCHES, FETCH_PACER,
+    INDEX_RUNS, OPS, RELEASE_PROGRESS, WRITER_LOCK,
 };
 
 /// The fields of a batch item the status page uses.
@@ -134,6 +134,8 @@ pub struct OpsSummary {
     /// Downloads are held until then after LoC answered 429.
     pub pacer_blocked_until: Option<DateTime<Utc>>,
     pub release_progress: Option<ReleaseProgress>,
+    /// `ops/activity`: the ingest job execution's step.
+    pub activity: Option<Activity>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -195,6 +197,10 @@ pub async fn read(docs: &dyn DocStore) -> anyhow::Result<Summary> {
             }
             Some(RELEASE_PROGRESS) => match serde_json::from_value(doc.clone()) {
                 Ok(p) => summary.release_progress = Some(p),
+                Err(_) => unreadable += 1,
+            },
+            Some(ACTIVITY) => match serde_json::from_value(doc.clone()) {
+                Ok(a) => summary.activity = Some(a),
                 Err(_) => unreadable += 1,
             },
             _ => {}
@@ -284,6 +290,26 @@ mod tests {
         .await
         .unwrap();
 
+        let now = Utc::now();
+        s.set_activity(&Activity {
+            command: "run".into(),
+            owner: "host-1-0000abcd".into(),
+            started_at: now,
+            step: crate::state::Step::Titles,
+            step_started_at: now,
+            updated_at: now,
+            done: Some(342),
+            total: Some(3464),
+            paused_until: Some(now + chrono::Duration::minutes(65)),
+            index_version: None,
+            merge: None,
+            ended_at: None,
+            outcome: None,
+            error: None,
+        })
+        .await
+        .unwrap();
+
         let got = read(docs.as_ref()).await.unwrap();
         assert_eq!(got.batches.len(), 1);
         assert_eq!(got.unreadable, 1);
@@ -305,6 +331,12 @@ mod tests {
         assert_eq!(got.ops.writer.as_ref().unwrap().owner, "host-1-0000abcd");
         assert!(got.ops.pacer_blocked_until.is_some());
         assert_eq!(got.ops.release_progress.as_ref().unwrap().docs_sent, 5);
+        let a = got.ops.activity.as_ref().unwrap();
+        assert_eq!(
+            (a.step, a.done, a.total),
+            (crate::state::Step::Titles, Some(342), Some(3464))
+        );
+        assert!(a.paused_until.is_some());
         assert_eq!(got.request_charge, None);
     }
 }

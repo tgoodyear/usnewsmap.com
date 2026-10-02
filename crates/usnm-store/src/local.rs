@@ -104,6 +104,16 @@ impl ObjectStore for LocalStore {
         }
     }
 
+    async fn modified(&self, path: &str) -> Result<Option<std::time::SystemTime>, StoreError> {
+        validate_path(path)?;
+        let full = self.root.join(path);
+        match tokio::fs::metadata(&full).await {
+            Ok(m) => Ok(m.modified().ok()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io(&full, e)),
+        }
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
         validate_path(prefix)?;
         let root = self.root.clone();
@@ -159,6 +169,8 @@ mod tests {
         assert!(s.get("../etc/passwd").await.is_err());
         assert!(s.exists("v1/a.json").await.unwrap());
         assert!(!s.exists("v1/b.json").await.unwrap());
+        assert!(s.modified("v1/a.json").await.unwrap().is_some());
+        assert_eq!(s.modified("v1/b.json").await.unwrap(), None);
         assert!(s.put_new("log/d/2.jsonl", b"2".to_vec(), "").await.unwrap());
         assert!(s.put_new("log/d/1.jsonl", b"1".to_vec(), "").await.unwrap());
         assert!(s.put_new("logs/x.jsonl", b"x".to_vec(), "").await.unwrap());

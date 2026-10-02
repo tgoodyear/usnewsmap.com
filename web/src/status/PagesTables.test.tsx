@@ -58,7 +58,7 @@ describe("StatesSection", () => {
   it("lists states by pages with separators, shares and a total", () => {
     render(<StatesSection rows={STATES} pages={15003} />);
     expect(
-      screen.getByRole("heading", { level: 2, name: "Pages by state" }),
+      screen.getByRole("heading", { level: 3, name: "Pages by state" }),
     ).toBeTruthy();
     expect(
       screen.getByText(/4 states and territories have pages/),
@@ -138,7 +138,7 @@ describe("LanguagesSection", () => {
   it("counts a bilingual newspaper in each language and says so", () => {
     render(<LanguagesSection data={LANGUAGES} />);
     expect(
-      screen.getByRole("heading", { level: 2, name: "Pages by language" }),
+      screen.getByRole("heading", { level: 3, name: "Pages by language" }),
     ).toBeTruthy();
     expect(
       screen.getByText(/1 newspaper lists more than one language \(40 pages\)/)
