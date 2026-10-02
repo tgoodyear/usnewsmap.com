@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand};
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::docs::{DocStore, FileDocs};
 use usnm_ingest::merges::{self, MergeWait};
-use usnm_ingest::release::{Published, Release, TitlesLeft};
+use usnm_ingest::release::{Published, PublishedUnrecorded, Release, TitlesLeft};
 use usnm_ingest::sink::{IndexSink, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::source::{self, ListedBatch};
 use usnm_ingest::state::{BatchStatus, Outcome, State, Step};
@@ -486,7 +486,10 @@ fn outcome(result: &anyhow::Result<Option<Published>>) -> (Outcome, Option<Strin
         Ok(Some(_)) => (Outcome::Published, None),
         Ok(None) => (Outcome::NothingNew, None),
         Err(e) => {
-            let kind = if e.is::<TitlesLeft>() {
+            // The site changed even though the command failed afterwards.
+            let kind = if e.is::<PublishedUnrecorded>() {
+                Outcome::Published
+            } else if e.is::<TitlesLeft>() {
                 Outcome::TitlesLeft
             } else {
                 Outcome::Failed
@@ -686,6 +689,10 @@ mod tests {
         let (kind, error) = outcome(&Err(left.context("run")));
         assert_eq!(kind, Outcome::TitlesLeft);
         assert!(error.unwrap().contains("deadline"));
+        let live: anyhow::Error = PublishedUnrecorded("v2 is live, but…".into()).into();
+        let (kind, error) = outcome(&Err(live));
+        assert_eq!(kind, Outcome::Published);
+        assert!(error.is_some());
         let (kind, _) = outcome(&Err(anyhow::anyhow!("connection refused")));
         assert_eq!(kind, Outcome::Failed);
         assert_eq!(

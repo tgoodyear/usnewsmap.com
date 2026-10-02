@@ -82,6 +82,19 @@ impl std::fmt::Display for TitlesLeft {
 
 impl std::error::Error for TitlesLeft {}
 
+/// The version pointer was written, so the new version is live, but
+/// recording the publish in the pipeline state failed afterwards.
+#[derive(Debug)]
+pub struct PublishedUnrecorded(pub String);
+
+impl std::fmt::Display for PublishedUnrecorded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PublishedUnrecorded {}
+
 /// The batches whose titles are all in `catalog`. The others are logged and
 /// left for a later release.
 fn catalogued(batches: Vec<RunBatch>, catalog: &Catalog) -> Vec<RunBatch> {
@@ -442,10 +455,21 @@ impl Release {
                 "application/json",
             )
             .await?;
+        // The version is live from here on: a failure to record it says so
+        // (the next release repairs the record, `published_run`).
         run.status = RunStatus::Published;
         run.published_at = Some(Utc::now());
-        self.state.update_run(&run, &etag).await?;
-        self.state.set_current_version(&version).await?;
+        let recorded = async {
+            self.state.update_run(&run, &etag).await?;
+            self.state.set_current_version(&version).await
+        }
+        .await;
+        if let Err(e) = recorded {
+            return Err(PublishedUnrecorded(format!(
+                "`{version}` is live, but recording the publish failed: {e:#}"
+            ))
+            .into());
+        }
         tracing::info!(%version, docs, "published");
         Ok(Some(Published {
             index_version: version,
