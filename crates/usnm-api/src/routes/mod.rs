@@ -274,7 +274,10 @@ where
                 metrics.cache("memory", false);
             }
             // Keeps the computation from being abandoned while this waits.
-            let _watching = entry.interest.watch();
+            // One being abandoned right now is gone in a moment: ask again.
+            let Some(_watching) = entry.interest.watch() else {
+                return Ok((computing(serving), None));
+            };
             let result = match wait {
                 None => entry.flight.await,
                 Some(at) => match tokio::time::timeout_at(at, entry.flight).await {
@@ -391,7 +394,7 @@ where
             let tick = (after / 4).clamp(Duration::from_millis(10), Duration::from_secs(1));
             loop {
                 tokio::time::sleep(tick).await;
-                if watched.abandoned(after) {
+                if watched.abandon_if_idle(after) {
                     return;
                 }
             }

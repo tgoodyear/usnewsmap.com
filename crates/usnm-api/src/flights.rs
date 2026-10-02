@@ -17,7 +17,6 @@
 //! slot. The warm-up has a slot of its own.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -38,34 +37,48 @@ pub(crate) struct Entry {
 }
 
 /// How many requests wait on a computation, and since when none has.
-pub(crate) struct Interest {
-    waiters: AtomicUsize,
-    last_left: Mutex<Instant>,
+pub(crate) struct Interest(Mutex<Waiting>);
+
+struct Waiting {
+    waiters: usize,
+    last_left: Instant,
+    /// Abandoned: no request may wait on it any more.
+    closed: bool,
 }
 
 impl Interest {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
-            waiters: AtomicUsize::new(0),
-            last_left: Mutex::new(Instant::now()),
-        })
+        Arc::new(Self(Mutex::new(Waiting {
+            waiters: 0,
+            last_left: Instant::now(),
+            closed: false,
+        })))
     }
 
-    /// Count a request as waiting until the guard drops.
-    pub(crate) fn watch(self: &Arc<Self>) -> Watching {
-        self.waiters.fetch_add(1, Ordering::SeqCst);
-        Watching(self.clone())
+    fn lock(&self) -> MutexGuard<'_, Waiting> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Whether nobody has waited on the computation for `after`.
-    pub(crate) fn abandoned(&self, after: Duration) -> bool {
-        self.waiters.load(Ordering::SeqCst) == 0
-            && self
-                .last_left
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .elapsed()
-                >= after
+    /// Count a request as waiting until the guard drops; `None` if the
+    /// computation has been abandoned (the request should ask again).
+    pub(crate) fn watch(self: &Arc<Self>) -> Option<Watching> {
+        let mut w = self.lock();
+        if w.closed {
+            return None;
+        }
+        w.waiters += 1;
+        Some(Watching(self.clone()))
+    }
+
+    /// If nobody has waited on the computation for `after`, close it to new
+    /// waiters and say so. One lock covers the check and the close, so a
+    /// request can't start waiting on a computation that is being cancelled.
+    pub(crate) fn abandon_if_idle(&self, after: Duration) -> bool {
+        let mut w = self.lock();
+        if w.waiters == 0 && w.last_left.elapsed() >= after {
+            w.closed = true;
+        }
+        w.closed
     }
 }
 
@@ -74,8 +87,9 @@ pub(crate) struct Watching(Arc<Interest>);
 
 impl Drop for Watching {
     fn drop(&mut self) {
-        *self.0.last_left.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-        self.0.waiters.fetch_sub(1, Ordering::SeqCst);
+        let mut w = self.0.lock();
+        w.waiters -= 1;
+        w.last_left = Instant::now();
     }
 }
 
