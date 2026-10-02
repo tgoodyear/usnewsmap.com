@@ -8,9 +8,9 @@ For each search it asks /v1/aggregate as the web app does, waits out each
 result and the backend time the API reports (`timing_ms.backend`, which is
 the time of the computation that produced the body, even when the body now
 comes from a cache). Then it asks once more for the same search, which the
-API now answers from its in-process cache. That is one pass: run it once,
-not in a loop, against production. It's for deciding later whether the
-searcher needs more compute or a split cache, not for load testing.
+API now answers from its in-process cache. That is one pass. Run it once
+against production, not in a loop; the numbers are for deciding whether
+the searcher needs more compute or a split cache.
 
 "Cold" means not in the API's caches when the pass starts. A search that a
 visitor or an earlier pass already ran may be in the persistent cache
@@ -32,7 +32,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# Whole corpus, by month: the broad searches that raised 503s before 202s.
+# Whole corpus, by month.
 SEARCHES = [
     {"q": "radio", "mode": "phrase", "bucket": "month"},
     {"q": "television", "mode": "phrase", "bucket": "month"},

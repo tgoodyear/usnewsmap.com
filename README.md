@@ -110,7 +110,7 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 | `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |
 | `USNM_PREWARM_BUDGET_SECS` | `300` | Cache warm-up: limit on the whole run; the rest is skipped |
 | `USNM_PREWARM_TOP_SEARCHES` | `20` | Cache warm-up: after the examples, this many of the most frequent searches in the search log (`0` turns it off) |
-| `USNM_PREWARM_LOG_DAYS` | `28` | Cache warm-up: how many of the search log's most recent day files are counted |
+| `USNM_PREWARM_LOG_DAYS` | `28` | Cache warm-up: how many days of the search log are counted, back from yesterday |
 | `USNM_READY_CAP_SECS` | `120` | After a start, `/readyz` reports ready once the warm-up ends or this much time passes |
 | `USNM_CACHE_MB` | `256` | In-process response cache size |
 | `USNM_RATE_PER_MIN` | `120` | Per-client token bucket refill rate on `/v1` (`0` disables) |

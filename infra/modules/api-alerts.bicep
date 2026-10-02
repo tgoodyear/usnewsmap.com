@@ -3,9 +3,10 @@
 // set.
 //
 // - API 5xx, aggregate latency and slow searches: log search alerts on the workspace,
-//   reading the requests usnm-api exports to Application Insights
+//   reading what usnm-api exports to Application Insights: requests
 //   (AppRequests, one row per request except the health probes; the
-//   request name is "<method> <route template>"). Stateful: one
+//   request name is "<method> <route template>") and, for slow searches,
+//   the api.slow_searches metric (AppMetrics). Stateful: one
 //   notification when a condition starts, resolved when it clears.
 // - Availability: an Application Insights standard test of the site's home
 //   page from three US locations, with a metric alert when two of the three
@@ -37,12 +38,12 @@ param availabilityFrequency string = '900'
 
 // At least 5 server errors in 10 minutes that are also more than 2% of the
 // requests. The count floor keeps one or two failures on a quiet site from
-// paging; the ratio keeps a handful among many requests from paging. A slow
-// search is not a broken one: a search longer than a visitor waits gets a
-// 202 and carries on (06 §6.3.5), and the 503s for a search that ran past
-// its 2-minute limit (/errors/backend-timeout) or found every search slot
-// taken (/errors/busy) are left out here. The request span names the
-// problem type in usnm.problem. Slow searches have their own alert below.
+// paging; the ratio keeps a handful among many requests from paging. Slow
+// searches are left out: a search longer than a visitor waits gets a 202
+// and carries on (06 §6.3.5), and the 503s for a search that ran past its
+// 2-minute limit (/errors/backend-timeout) or found every computation slot
+// taken (/errors/busy) are not counted. The request span names the problem
+// type in usnm.problem. Slow searches have their own alert below.
 var serverErrors = '''
 AppRequests
 | where AppRoleName == "usnm-api"
@@ -55,10 +56,10 @@ AppRequests
 
 // At least 3 searches in an hour took longer than a visitor waits (outcome
 // ok, timeout or error, counted once per search however often its visitor
-// asked again), or were refused because every search slot was taken
-// (busy). Cold searches after a new index version is published can trip it;
-// it is there to show that searches are slow, not to page (severity 3,
-// checked every 15 minutes).
+// asked again), or were refused because every computation slot was taken
+// (busy). Cold searches after a new index version is published can trip it.
+// Severity 3, checked every 15 minutes; it emails the same action group as
+// the other alerts.
 var slowSearches = '''
 AppMetrics
 | where AppRoleName == "usnm-api" and Name == "api.slow_searches"
@@ -105,7 +106,7 @@ var rules = [
   {
     name: 'api-searches-slow'
     displayName: 'Searches longer than a visitor waits'
-    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Not an outage: see the slow-search tiles in the API workbook.'
+    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Errors other than timeouts and busy refusals count toward the API server errors alert. The slow-search tiles in the API workbook show these by endpoint and outcome.'
     severity: 3
     frequency: 'PT15M'
     window: 'PT1H'

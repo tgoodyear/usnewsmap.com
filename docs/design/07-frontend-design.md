@@ -59,7 +59,7 @@ The design keeps the legacy "map-first" identity: a full-bleed map with controls
 
 - **Empty:** example searches as cards ("Cross of Gold 1896", "Scalawag 1865–1880", "Influenza 1918") and a coverage map preview.
 - **Loading:** a skeleton shimmer on the timeline, the previous results dimmed, and a cancel button.
-- **Large search:** when the API answers `202` (06 §6.3.5), a status notice (`role="status"`), "Large search, still working…", stays up while the client asks again after each `Retry-After`. It stops asking when the visitor changes the search (the query's abort signal) or after 150 s, a little more than the API's 2-minute limit, and then shows the timeout problem. A timed-out or busy search is not retried at once (`isRetryable` in `src/api/client.ts`).
+- **Large search:** when the API answers `202` (06 §6.3.5), a status notice (`role="status"`), "Large search, still working…", stays up while the client asks again after each `Retry-After`. It stops asking when the visitor changes the search (the query's abort signal). After 150 s, a little more than the API's 2-minute limit, it stops and shows the timeout problem. A timed-out or busy search is not retried at once (`isRetryable` in `src/api/client.ts`).
 - **No results:** suggestions (switch to "all words", enable OCR-tolerant, widen dates), with a link to the coverage layer.
 - **Error:** the problem+json `hint` shown inline.
 
