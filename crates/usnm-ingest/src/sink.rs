@@ -770,10 +770,11 @@ impl QuickwitNode {
         }
         // An exited node: the supervisor records its last output first.
         let _ = tokio::time::timeout(Duration::from_secs(5), exit.wait_for(Option::is_some)).await;
-        bail!(
-            "Quickwit writer did not become ready; its last output:\n{}",
-            node.tail.lines().join("\n")
-        )
+        let lines = node.tail.lines().join("\n");
+        match node.exited() {
+            Some(why) => bail!("Quickwit writer did not become ready: {why}; its output:\n{lines}"),
+            None => bail!("Quickwit writer did not become ready; its last output:\n{lines}"),
+        }
     }
 
     /// What the node's output has reported so far.
@@ -927,6 +928,7 @@ mod tests {
             .expect("the writer exited")
             .to_string();
         assert!(err.contains("did not become ready"), "{err}");
+        assert!(err.contains("exited with status 1"), "{err}");
         assert!(
             err.contains("2026-09-29T00:20:17Z  WARN quickwit_config: peer seeds are empty"),
             "{err}"
