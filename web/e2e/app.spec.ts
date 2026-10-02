@@ -316,13 +316,11 @@ test("About opens from the footer and keeps the search", async ({ page }) => {
     await expect(link).toHaveAttribute("href", href);
     await expect(link).toHaveAttribute("rel", "noopener noreferrer");
   }
-  // Named twice: the collection (first paragraph) and who ran the data challenge.
+  // Named once, for the collection in the first paragraph.
   const ndnp = dialog.getByRole("link", { name: "NEH and Library of Congress", exact: true });
-  await expect(ndnp).toHaveCount(2);
-  for (const link of await ndnp.all()) {
-    await expect(link).toHaveAttribute("href", "https://www.loc.gov/ndnp/");
-    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
-  }
+  await expect(ndnp).toHaveCount(1);
+  await expect(ndnp).toHaveAttribute("href", "https://www.loc.gov/ndnp/");
+  await expect(ndnp).toHaveAttribute("rel", "noopener noreferrer");
   await expectAccessible(page);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
