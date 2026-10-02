@@ -190,19 +190,20 @@ export default function MapView(props: Props) {
   // Back/forward or a pasted permalink changes the URL viewport while the map
   // stays mounted: move the map to match. Differences below the precision the
   // URL stores are the map's own last move echoing back, so they're ignored.
-  const { zoom, center } = props;
+  // Keyed on the values, not the array: the URL is re-parsed on every render
+  // (each playback frame), and a jump mid-gesture would cancel a pinch zoom.
+  const zoom = props.zoom ?? 3.3;
+  const [lng, lat] = props.center ?? US_CENTER;
   useEffect(() => {
     const m = map.current;
     if (!m) return;
     const c = m.getCenter();
-    const target = center ?? US_CENTER;
-    const z = zoom ?? 3.3;
-    if (Math.abs(m.getZoom() - z) < 0.01 && Math.abs(c.lng - target[0]) < 0.001 && Math.abs(c.lat - target[1]) < 0.001) {
+    if (Math.abs(m.getZoom() - zoom) < 0.01 && Math.abs(c.lng - lng) < 0.001 && Math.abs(c.lat - lat) < 0.001) {
       return;
     }
     syncing.current = true;
-    m.jumpTo({ center: target, zoom: z });
-  }, [zoom, center]);
+    m.jumpTo({ center: [lng, lat], zoom });
+  }, [zoom, lng, lat]);
 
   const { points, layer, norm, maxValue, maxRel, selected } = props;
   useEffect(() => {
