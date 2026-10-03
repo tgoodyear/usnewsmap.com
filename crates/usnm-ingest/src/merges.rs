@@ -33,6 +33,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -543,14 +544,28 @@ pub async fn seal(
     wait: &MergeWait,
     work_dir: Option<&Path>,
 ) -> anyhow::Result<IndexLayout> {
-    let polls = poll_until_sealed(node, index_id, expected, events, wait, work_dir);
+    let closed = AtomicBool::new(false);
+    let polls = poll_until_sealed(node, index_id, expected, events, wait, work_dir, &closed);
     match tokio::time::timeout(wait.timeout + wait.poll, polls).await {
         Ok(result) => result,
-        Err(_) => bail!(
-            "merges into `{index_id}` did not finish within {} s (a request to the writer was \
-             still waiting); not publishing",
-            wait.timeout.as_secs()
-        ),
+        Err(_) => {
+            // A rerun of the final merges may have reopened the index: close
+            // it again before the caller stops the writer.
+            let reclosed = if closed.load(Ordering::SeqCst) {
+                match tokio::time::timeout(CLOSE_TIMEOUT, node.close(index_id)).await {
+                    Ok(Ok(())) => String::new(),
+                    Ok(Err(e)) => format!(", and closing it again failed: {e:#}"),
+                    Err(_) => ", and closing it again got no answer".to_owned(),
+                }
+            } else {
+                String::new()
+            };
+            bail!(
+                "merges into `{index_id}` did not finish within {} s (a request to the writer was \
+                 still waiting){reclosed}; not publishing",
+                wait.timeout.as_secs()
+            )
+        }
     }
 }
 
@@ -561,6 +576,7 @@ async fn poll_until_sealed(
     events: Option<&NodeEvents>,
     wait: &MergeWait,
     work_dir: Option<&Path>,
+    closed: &AtomicBool,
 ) -> anyhow::Result<IndexLayout> {
     let start = tokio::time::Instant::now();
     let deadline = start + wait.timeout;
@@ -605,6 +621,7 @@ async fn poll_until_sealed(
                     splits = splits.len(),
                     "merges settled; closing the index for its final merges"
                 );
+                closed.store(true, Ordering::SeqCst);
                 explained(events, node.close(index_id).await).await?;
                 closed_at = Some(tokio::time::Instant::now());
                 tries = 1;
@@ -1510,6 +1527,73 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(*toggles.lock().unwrap(), [true, false]);
+    }
+
+    /// `seal` gives up while a rerun's reopening request still waits: it
+    /// closes the index again before it returns, so the caller can stop the
+    /// writer right away.
+    #[tokio::test]
+    async fn a_seal_that_gives_up_mid_rerun_closes_the_index_before_returning() {
+        use axum::routing::{get, post, put};
+        let events = Arc::new(NodeEvents::default());
+        events.observe(SPAWNED);
+        let toggles = Arc::new(Mutex::new(Vec::new()));
+        let (ev, t) = (events.clone(), toggles.clone());
+        let app = axum::Router::new()
+            .route(
+                "/metrics",
+                get(|| async { "quickwit_indexing_ongoing_merge_operations 0\n" }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                get(|| async {
+                    axum::Json(
+                        serde_json::json!({"splits": [{"split_id": "s1", "num_docs": 1000}]}),
+                    )
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/sources/_ingest-source/toggle",
+                put(move |axum::Json(body): axum::Json<Value>| async move {
+                    let enable = body["enable"].as_bool().unwrap();
+                    t.lock().unwrap().push(enable);
+                    if !enable {
+                        ev.observe(STOPPING);
+                        ev.observe(FAILED);
+                    }
+                    "null"
+                }),
+            )
+            .route(
+                "/api/v1/{id}/ingest",
+                post(|| async {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    "{}"
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let wait = MergeWait {
+            timeout: Duration::from_millis(400),
+            finalize_stall: Duration::from_secs(60),
+            ..quick()
+        };
+        let err = seal(&node, "idx", 1000, Some(&events), &wait, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not publishing"), "{err}");
+        let t = toggles.lock().unwrap().clone();
+        assert_eq!(t.first(), Some(&false), "{t:?}");
+        assert!(t.contains(&true), "{t:?}");
+        assert_eq!(t.last(), Some(&false), "{t:?}");
     }
 
     #[tokio::test]
