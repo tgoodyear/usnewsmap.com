@@ -10,7 +10,7 @@ We need phrase and proximity search over about 23M OCR'd newspaper pages (roughl
 
 ## Decision
 
-Use **Quickwit** (Apache-2.0, Rust/Tantivy) running on **Azure Container Apps**, with its index splits and file-backed metastore on **Azure Blob Storage**. The Rust API accesses it through a `SearchBackend` trait. Keep a maintained **Azure AI Search** adapter and index definition as the **managed alternative**, to be switched on if S-2 fails or if funding for about $3–6k/month is secured.
+Use **Quickwit** (Apache-2.0, Rust/Tantivy) running on **Azure Container Apps**, with its index splits and file-backed metastore on **Azure Blob Storage**. The Rust API accesses it through a `SearchBackend` trait. Keep a maintained **Azure AI Search** adapter and index definition as the **managed alternative**, to be switched on if S-2 fails or if the budget can carry about $3–6k/month.
 
 ## Alternatives
 

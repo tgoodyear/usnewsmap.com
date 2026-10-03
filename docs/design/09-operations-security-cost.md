@@ -33,7 +33,6 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | **Public access left open** | Azure Policy denies public network access on the data accounts, so this needs a policy exemption (a Spot backfill window). Removing the exemption does not close an account that is already open: set `publicNetworkAccess: Disabled` on it, then delete the exemption, and check the Activity Log for who opened it |
 | **Cost spike** | Check the request mix in App Insights (bot?); tighten the API token bucket; confirm `maxReplicas: 2`; confirm the Log Analytics daily cap; check for a backfill job left running (`az containerapp job execution list`) |
 | **LoC source change** | If the discover job fails its schema check, pause ingestion (the site keeps serving), then update the parser |
-| **Maintainer handover** | Transfer the subscription, repo, domain and DNS; rotate the OIDC federation; update the budget contacts |
 
 ## 9.4 Security
 
@@ -68,7 +67,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 - Chronicling America content is freely usable. Attribute LoC/NEH and the contributing awardee on result lists and in exports.
 - OpenStreetMap data (basemap): the ODbL attribution is always visible.
 - GNIS and TIGER are US public domain.
-- Code license: **MIT** ([LICENSE](../../LICENSE)), a permissive license that encourages institutional adoption. The legacy repo's license needs confirming before any legacy code is copied, but the plan is a clean-room rewrite.
+- Code license: **MIT** ([LICENSE](../../LICENSE)), a permissive license that allows reuse. The legacy repo's license needs confirming before any legacy code is copied, but the plan is a clean-room rewrite.
 
 ## 9.5 Cost model (monthly, USD, list prices; confirm with the Azure Pricing Calculator)
 
@@ -116,13 +115,13 @@ The ACI Spot alternative (08 §8.4) comes to about the same, ~$25–50, but need
 
 If Spot capacity is unavailable, running the same workload on regular-priority ACI costs about $80–150, and on Azure Batch Spot about $25–50. A full re-index later (no download) costs about $5 on Spot.
 
-### Growth profile (when a sponsor funds it)
+### Growth profile
 
 This is the original design: Front Door Standard (edge cache and rate limiting), separate API and search apps with a 4 vCPU / 8 GiB searcher, ZRS storage, ACR and raw archive retention. It costs about **$180 (low), $345 (typical) and $695 (high)** per month. Each piece is a Bicep parameter switch, not a redesign.
 
 ### Managed-search alternative (Azure AI Search)
 
-L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas for an SLA). The preview **Serverless Developer** tier caps an index at 1 GB, so it can't hold the corpus. AI Search is outside the lean budget; it stays documented for a well-funded sponsor.
+L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas for an SLA). The preview **Serverless Developer** tier caps an index at 1 GB, so it can't hold the corpus. AI Search is outside the lean budget; it stays documented as the managed alternative.
 
 ### Cost controls
 
@@ -143,4 +142,4 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 | `curated/`, `reference/` | Flat-namespace account with **blob versioning + soft delete (14 d)**. Curated data is written to immutable attempt paths and reference data to immutable per-version snapshots, so nothing committed is ever overwritten; versioning and soft delete cover accidental deletes and overwrites. LRS (ZRS in the growth profile); rebuildable by re-downloading from LoC on ACI Spot (~$25–50) | RPO 0 / RTO ≤ 24 h from versions, ~1 week from LoC |
 | Search index | Disposable; rebuild from `curated/` | RTO ≤ 24 h full rebuild; the previous version is kept 7 days for instant rollback |
 | Code, IaC, runbooks | GitHub | RPO 0 |
-| Region outage | Not active/active (cost). Everything is PaaS, so there are no VM images or disks to replicate. Stand up a **new** environment in the paired region, `scripts/bootstrap.sh <new-env> --location <paired region>` (`--location` applies to new environments only; an existing one keeps its region), **restore from GRS** if the sponsor opts in (+~$20/mo for GRS on curated/reference), and point the domain at it. Remove the old one with `scripts/teardown.sh <env>` once its region is back | RTO 1–2 days (acceptable for this service class) |
+| Region outage | Not active/active (cost). Everything is PaaS, so there are no VM images or disks to replicate. Stand up a **new** environment in the paired region, `scripts/bootstrap.sh <new-env> --location <paired region>` (`--location` applies to new environments only; an existing one keeps its region), **restore from GRS** if GRS is enabled (+~$20/mo for GRS on curated/reference), and point the domain at it. Remove the old one with `scripts/teardown.sh <env>` once its region is back | RTO 1–2 days (acceptable for this service class) |
