@@ -68,7 +68,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 - Chronicling America content is freely usable. Attribute LoC/NEH and the contributing awardee on result lists and in exports.
 - OpenStreetMap data (basemap): the ODbL attribution is always visible.
 - GNIS and TIGER are US public domain.
-- Code license: **Apache-2.0** (or MIT) for the new repo, to encourage institutional adoption. The legacy repo's license needs confirming before any legacy code is copied, but the plan is a clean-room rewrite.
+- Code license: **MIT** ([LICENSE](../../LICENSE)), a permissive license that encourages institutional adoption. The legacy repo's license needs confirming before any legacy code is copied, but the plan is a clean-room rewrite.
 
 ## 9.5 Cost model (monthly, USD, list prices; confirm with the Azure Pricing Calculator)
 

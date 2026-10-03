@@ -127,7 +127,7 @@ flowchart LR
 
 These must not carry over. Anything that is still live should be revoked.
 
-- **A Google Places API key is committed** in `python/get_sn_locations.py`, and a **Mapbox public token** in `web/js/map.js` (commented out). Both should be **revoked or rotated in their consoles** now, whether or not they still work. The new repository must use secret scanning (GitHub push protection) and keep no keys in source.
+- **A Google Places API key is committed** in `python/get_sn_locations.py`, and a **Mapbox public token** in `web/js/map.js` (commented out). Both were **revoked in their consoles** in October 2026. The new repository must use secret scanning (GitHub push protection) and keep no keys in source.
 - **Logging of personal data**: `log_metadata` stored the client IP, cookies and all request headers for every search in MongoDB, with no retention limit. The new application never logs raw IPs, cookies or headers. The only raw IPs that can exist are in optional platform access logs, kept at most 30 days for abuse handling (see [09](09-operations-security-cost.md)).
 - **Solr query injection**: user input was concatenated into Solr URLs after stripping only double quotes. Local-params syntax (e.g. `{!…}`) and field syntax could be injected. The new API parses queries into an AST and never forwards raw syntax to the engine.
 - **Plain HTTP** for the API and for LoC links. There was no TLS enforcement.

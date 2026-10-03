@@ -68,7 +68,7 @@ gantt
 | R-8 | OCR quality misleads users (false negatives) | High | Med | OCR-tolerant mode; "pages containing" wording; improved NDNP-Open-OCR re-ingestion; methodology page | Product |
 | R-9 | Geographic misattribution (titles that moved; county-level fallbacks) | Med | Low | Precision flags; date-ranged places; overrides reviewed in PRs | Eng |
 | R-10 | Rust maintainer pool is thin | Low–Med | Med | Small, well-tested API; OpenAPI contract; documented rewrite path ([ADR-0004](adr/0004-rust-api.md)) | Maintainer |
-| R-11 | Legacy secrets in the public legacy repo are still valid | Unknown | Med | **Revoke the Google Places key and Mapbox token now**; history rewrite optional (the keys are already exposed, so revocation is what matters) | Maintainer |
+| R-11 | Legacy secrets in the public legacy repo are still valid | Low | Med | **Closed (October 2026):** the Google Places key and Mapbox token were revoked in their consoles. No history rewrite: the keys were already exposed, so revocation is what matters | Maintainer |
 
 ## 10.4 Open questions for the maintainer
 
@@ -87,5 +87,6 @@ gantt
 - [ ] Cost < $80 per month for 2 consecutive months (actual)
 - [ ] Runbooks rehearsed: full re-index, index rollback, app rollback, handover dry run
 - [ ] Accessibility audit (WCAG 2.2 AA) passed
-- [ ] Legacy keys revoked; secret scanning and push protection on
+- [x] Legacy keys revoked (October 2026)
+- [ ] Secret scanning and push protection on
 - [ ] About, methodology, privacy and API docs pages published
