@@ -28,7 +28,7 @@ arrow-array = "60"
 arrow-schema = "60"
 async-trait = "0.1"
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1"
 bzip2 = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde", "clock"] }
