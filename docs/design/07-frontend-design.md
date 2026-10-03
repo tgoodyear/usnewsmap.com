@@ -23,6 +23,7 @@
 - The basemap defaults to OpenFreeMap Positron until the PMTiles extract is published.
 - `/status` is a separate page (lazy-loaded; the app has no router, so `main.tsx` picks it by path with `src/route.ts`) that says how much of the collection is searchable and what the ingest pipeline is doing at this moment, from `GET /v1/status`, and refreshes every 30 s (§7.10). The footer links to it. Any other path shows a not-found page, and the API sends it with a 404.
 - `/privacy` is the privacy notice (lazy-loaded like `/status`, `src/privacy/PrivacyPage.tsx`). The search page, the status page and the not-found page link to it in their footers. It is the one page besides the home page that search engines index: it is in `sitemap.xml`, and the API gives its copy of `index.html` its own title, canonical link and `og:url` (`shell_for` in `crates/usnm-api/src/site.rs`).
+- `robots.txt` keeps crawlers (`User-agent: *`) off `/v1/` and `/api/v1/`, and gives the fetchers that AI assistants send when a person asks them something (`Claude-User`, `ChatGPT-User`, `Perplexity-User`, `MistralAI-User`, `Google-Agent`) their own group with `Allow: /`, so they can call the API; training and search-index crawlers stay under `*`. `llms.txt` (in `web/public/`, served as `text/plain` like any static file, no `X-Robots-Tag`) describes the site, the API routes and parameters, and the 429, 503 and 202 retry rules for those agents. Update it when a route or parameter changes.
 
 ## 7.2 Layout and wireframes
 

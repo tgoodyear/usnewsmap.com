@@ -1,6 +1,16 @@
+# Search engines and other crawlers: the site, not the API.
 User-agent: *
 Allow: /
 Disallow: /v1/
 Disallow: /api/v1/
+
+# Fetchers that act for a person who asked an AI assistant a question,
+# not crawlers: these may use the API. See https://usnewsmap.com/llms.txt
+User-agent: Claude-User
+User-agent: ChatGPT-User
+User-agent: Perplexity-User
+User-agent: MistralAI-User
+User-agent: Google-Agent
+Allow: /
 
 Sitemap: https://usnewsmap.com/sitemap.xml
