@@ -38,7 +38,7 @@ With `USNM_SEARCH_BACKEND=fixtures` (the default for a new environment) the API 
 
 Switch only after the ingest jobs have published indexes and a `current.json`. Until then the API has nothing to serve and keeps retrying its first load. On the first deployment with `quickwit`, the identity's role assignment is created after the app, so the sidecar and API may restart a few times until the assignment propagates (a few minutes). This deployment is also where Quickwit's managed-identity auth is first confirmed against a real account (spike S-2). If it fails, the fallback is a user-delegation SAS minted by the API (08 §8.2).
 
-Prod runs `USNM_SEARCH_BACKEND=quickwit`. The ingest job's `run` command calls `titles-sync` before each release to build the catalog it needs ("Ingest jobs" below), and `bootstrap.sh --domain` binds the custom domains (`usnewsmap.com`, `www`, `api.usnewsmap.com`) with managed certificates once the DNS records are in place (§8.8).
+Prod runs `USNM_SEARCH_BACKEND=quickwit`. The ingest job's `run` command calls `titles-sync` before each release to build the catalog it needs ("Ingest jobs" below), and `bootstrap.sh --domain` binds the custom domains (`usnewsmap.com`, `www.usnewsmap.com`, `api.usnewsmap.com`) with managed certificates once the DNS records are in place (§8.8).
 
 ## Deploy
 
