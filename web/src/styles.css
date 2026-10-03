@@ -107,6 +107,8 @@ input, select {
 .about::backdrop { background: rgb(0 0 0 / 0.45); }
 .about__body { padding: 16px 20px; line-height: 1.5; }
 .about h2 { margin: 0 0 8px; font-size: 1.25rem; }
+/* Focused by script when the dialog opens (not a control), so no focus ring. */
+.about h2:focus { outline: none; }
 .about form { display: flex; justify-content: flex-end; margin-top: 12px; }
 
 .search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1; }

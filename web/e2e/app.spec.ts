@@ -379,6 +379,10 @@ test("About opens from the footer and keeps the search", async ({ page }) => {
   const open = page.getByRole("contentinfo").getByRole("button", { name: "About" });
   await open.click();
   await expect(dialog).toBeVisible();
+  // Focus starts on the heading, so no link shows a focus ring before anyone tabs; Tab reaches the first link.
+  await expect(dialog.getByRole("heading", { name: "About US News Map" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("link", { name: "Chronicling America", exact: true })).toBeFocused();
   // The GTRI credit links to LinkedIn; the maintainer line links to his site.
   const trevor = dialog.getByRole("link", { name: "Trevor Goodyear" });
   await expect(trevor).toHaveCount(2);
