@@ -27,7 +27,7 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 
 ### What this slice runs
 
-By default (`USNM_SEARCH_BACKEND=fixtures`) the API runs on its **baked synthetic fixtures** (memory backend), and its persistent response cache is set to `cache/` on the data account. That exercises the production paths the real corpus will use: the managed identity, the Blob private endpoint and private DNS, ingress, probes and scaling.
+With `USNM_SEARCH_BACKEND=fixtures` (the default for a new environment) the API runs on its **baked synthetic fixtures** (memory backend), and its persistent response cache is set to `cache/` on the data account. That exercises the production paths the real corpus will use: the managed identity, the Blob private endpoint and private DNS, ingress, probes and scaling.
 
 `USNM_SEARCH_BACKEND=quickwit` switches to the production search path (08 §8.4.1):
 
@@ -38,10 +38,7 @@ By default (`USNM_SEARCH_BACKEND=fixtures`) the API runs on its **baked syntheti
 
 Switch only after the ingest jobs have published indexes and a `current.json`. Until then the API has nothing to serve and keeps retrying its first load. On the first deployment with `quickwit`, the identity's role assignment is created after the app, so the sidecar and API may restart a few times until the assignment propagates (a few minutes). This deployment is also where Quickwit's managed-identity auth is first confirmed against a real account (spike S-2). If it fails, the fallback is a user-delegation SAS minted by the API (08 §8.2).
 
-The following come in later slices:
-
-- **`titles-sync` and `geocode`**, which write the catalog the ingest job needs.
-- **Custom domains and DNS** (`usnewsmap.com`, `api.usnewsmap.com`): see §8.8. Managed certificates need the DNS records in place first.
+Prod runs `USNM_SEARCH_BACKEND=quickwit`. The ingest job's `run` command calls `titles-sync` before each release to build the catalog it needs ("Ingest jobs" below), and `bootstrap.sh --domain` binds the custom domains (`usnewsmap.com`, `www`, `api.usnewsmap.com`) with managed certificates once the DNS records are in place (§8.8).
 
 ## Deploy
 
