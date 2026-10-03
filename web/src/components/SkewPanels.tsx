@@ -100,7 +100,7 @@ export function StateTable({ rows }: StateTableProps) {
               <td className="num">{formatTimes(r.skew.estimate)}</td>
               <td className="num">
                 {formatRange(r.skew)}
-                {r.skew.dir === 0 ? " (can't tell)" : ""}
+                {r.skew.dir === 0 ? " (not enough pages to tell)" : ""}
               </td>
             </tr>
           ))}

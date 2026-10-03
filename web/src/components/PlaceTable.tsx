@@ -86,7 +86,7 @@ const SKEW: Column[] = [
     get: (r) => r.skew?.lower ?? nan,
     show: (r) =>
       r.skew
-        ? `${formatRange(r.skew)}${r.skew.dir === 0 ? " (can't tell)" : ""}`
+        ? `${formatRange(r.skew)}${r.skew.dir === 0 ? " (not enough pages to tell)" : ""}`
         : "",
   },
   {
