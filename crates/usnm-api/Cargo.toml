@@ -34,6 +34,7 @@ zstd.workspace = true
 usnm-telemetry = { workspace = true, features = ["testing"] }
 anyhow.workspace = true
 async-trait.workspace = true
+flate2.workspace = true
 http-body-util.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
