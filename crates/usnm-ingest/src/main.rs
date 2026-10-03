@@ -435,13 +435,22 @@ async fn main() -> std::process::ExitCode {
     let telemetry = telemetry::init();
     let result = run(&cli).await;
     // Every failure ends with one JSON line (the whole error chain), which
-    // the job-failure alert and the `errors-by-batch` query look for.
+    // the job-failure alert and the `errors-by-batch` query look for. Its
+    // `outcome` is `titles_left` for the expected stop of a full run that
+    // titles-sync didn't finish (the alert leaves those out; starting the
+    // job again continues), else `failed`. The exit code stays 1 either
+    // way, so the execution shows as failed and is started again.
     // Returning an exit code rather than the error keeps Rust from printing
     // it again as plain text after that line.
     let code = match &result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            tracing::error!(command = cli.command.name(), error = %format!("{e:#}"), "command failed");
+            tracing::error!(
+                command = cli.command.name(),
+                outcome = failure_outcome(e),
+                error = %format!("{e:#}"),
+                "command failed"
+            );
             std::process::ExitCode::FAILURE
         }
     };
@@ -477,6 +486,17 @@ fn first_step(command: &Command) -> Option<Step> {
         Command::TitlesSync { .. } => Some(Step::Titles),
         Command::Release { .. } => Some(Step::Indexing),
         Command::Enqueue { .. } | Command::Curate { .. } | Command::Geocode => None,
+    }
+}
+
+/// The `outcome` of the "command failed" line: `titles_left` for a run that
+/// stopped because titles-sync left titles (expected; start it again),
+/// `failed` for anything else.
+fn failure_outcome(e: &anyhow::Error) -> &'static str {
+    if e.is::<TitlesLeft>() {
+        "titles_left"
+    } else {
+        "failed"
     }
 }
 
@@ -695,6 +715,13 @@ mod tests {
         assert!(error.is_some());
         let (kind, _) = outcome(&Err(anyhow::anyhow!("connection refused")));
         assert_eq!(kind, Outcome::Failed);
+        // The failure line's outcome, which the job-failed alert reads.
+        let left: anyhow::Error = TitlesLeft("titles-sync reached its deadline".into()).into();
+        assert_eq!(failure_outcome(&left.context("run")), "titles_left");
+        assert_eq!(
+            failure_outcome(&anyhow::anyhow!("connection refused")),
+            "failed"
+        );
         assert_eq!(
             first_step(
                 &Cli::try_parse_from([

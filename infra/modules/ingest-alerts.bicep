@@ -1,8 +1,15 @@
 // Log search alerts on the ingest and backfill jobs (09 §9.2), evaluated on
 // the Log Analytics workspace against the resource-specific Container Apps
-// tables (ContainerAppConsoleLogs, ContainerAppSystemLogs). Severity 2,
-// email through the environment's action group. Stateful: one notification
-// when a condition starts, resolved when it clears.
+// tables (ContainerAppConsoleLogs, ContainerAppSystemLogs). Severity 2
+// (the progress check 3), email through the environment's action group.
+// Stateful: one notification when a condition starts, resolved when it
+// clears.
+//
+// Each rule splits by a few columns (dimensions), which the email lists, so
+// it says which execution and why. Every dimension combination is its own
+// alert, fired and resolved apart, so the columns are ones that stay the
+// same while a condition lasts (the execution, a reason, a time that has
+// passed), never a count that changes at each check.
 //
 // The queries read the JSON lines usnm-ingest writes ("command failed",
 // "building index", "release progress", "published", "curated", "claimed",
@@ -21,46 +28,136 @@ param actionGroupId string
 // (out of memory, the 24 h replica timeout, a failed image pull) shows only
 // in the platform's events: the job's backoff or deadline, or a container
 // that exited non-zero.
+//
+// Left out: a full run that stopped because titles-sync left titles
+// (`outcome: titles_left` on the line; images from before that field are
+// matched by the error's last words). That stop is expected while LoC rate
+// limits title records, and starting the job again continues it; the
+// ingest-not-progressing rule watches for it repeating without progress.
+// The platform's events for a replica that wrote its own line, and the
+// job's backoff event right after one, only repeat it and are left out too.
+//
+// Split by Execution (the job execution, from the replica's name; the job
+// for a job-level event that names none) and Reason: the error, cut to 180
+// characters, with URL query strings, key=value secrets and long opaque
+// tokens masked. The window is 20 minutes so that the line a platform event
+// repeats is still in it; only the last 15 minutes are reported.
 var jobFailed = '''
-let console = ContainerAppConsoleLogs
+let lines = ContainerAppConsoleLogs
     | where ContainerName in ("ingest", "curate")
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Log has "failed"
     | extend j = parse_json(Log)
     | where tostring(j.level) == "ERROR" and tostring(j.fields.message) == "command failed"
+    | extend Detail = tostring(j.fields.error), Outcome = tostring(j.fields.outcome)
+    | extend Expected = Outcome == "titles_left"
+        or (isempty(Outcome) and Detail has "nothing was released: start the job again")
     | project TimeGenerated, Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName,
-        Detail = substring(tostring(j.fields.error), 0, 500);
+        Detail, Expected;
 let platform = ContainerAppSystemLogs
     | where JobName startswith "caj-usnm-" or ContainerAppName startswith "caj-usnm-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Reason in ("BackoffLimitExceeded", "DeadlineExceeded")
         or (Log contains "terminated with exit code" and Log !contains "exit code '0'")
     | project TimeGenerated, Job = coalesce(JobName, ContainerAppName), Replica = ReplicaName,
-        Detail = substring(strcat(Reason, ": ", Log), 0, 500);
-union console, platform
+        Detail = strcat(Reason, ": ", Log), Backoff = Reason == "BackoffLimitExceeded";
+let replicaEvents = platform
+    | where isnotempty(Replica)
+    | join kind=leftanti lines on Replica;
+let ends = union (lines | project TimeGenerated, Job), (replicaEvents | project TimeGenerated, Job);
+let jobEvents = platform
+    | where isempty(Replica)
+    | extend k = 1
+    | join kind=leftouter (ends | project EndAt = TimeGenerated, EndJob = Job, k = 1) on k
+    | summarize Explained = countif(EndJob == Job and EndAt between ((TimeGenerated - 5m) .. TimeGenerated))
+        by TimeGenerated, Job, Replica, Detail, Backoff
+    | where not(Backoff and Explained > 0);
+union (lines | where not(Expected)), replicaEvents, jobEvents
+| where TimeGenerated > ago(15m)
+| extend Execution = iff(isempty(Replica), Job, extract(@"^(.+)-[a-z0-9]+$", 1, Replica))
+| extend Reason = replace_regex(Detail, @"\?[^\s'\x22]+", "?…")
+| extend Reason = replace_regex(Reason, @"(?i)(sig|signature|token|secret|password|key|code)=[^\s&,;]+", @"\1=***")
+| extend Reason = replace_regex(Reason, @"[A-Za-z0-9+/_=-]{40,}", "***")
+| extend Reason = iff(strlen(Reason) > 180, strcat(substring(Reason, 0, 179), "…"), Reason)
+| project TimeGenerated, Execution, Reason
+'''
+
+// The safety net for the stop left out above. Over the last 2 days (the
+// longest window a log alert reads), the ingest job's titles-sync stops
+// since its last other ending (a "published" line, or any other "command
+// failed"), and either:
+// - "not started again": the last stop was 3 hours ago or more and the
+//   ingest job has logged nothing since, so no execution picked it up; or
+// - "no titles progress": 3 or more stops in a row and the last left as
+//   many titles as the first (each stop says "N of M titles left").
+// Split by Condition, Execution (the last stop's) and Detail; the detail
+// changes only with a new stop.
+var ingestNotProgressing = '''
+let ingest = ContainerAppConsoleLogs
+    | where ContainerName == "ingest"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET";
+let ends = ingest
+    | where Log has_any ("failed", "published")
+    | extend j = parse_json(Log)
+    | extend Message = tostring(j.fields.message), Detail = tostring(j.fields.error)
+    | where Message in ("command failed", "published")
+    | extend TitlesStop = Message == "command failed"
+        and (tostring(j.fields.outcome) == "titles_left"
+            or (isempty(tostring(j.fields.outcome)) and Detail has "nothing was released: start the job again"))
+    | project TimeGenerated, TitlesStop, Execution = extract(@"^(.+)-[a-z0-9]+$", 1, ContainerGroupName),
+        Left = toint(extract(@"(\d+) of \d+ titles", 1, Detail));
+let reset = toscalar(ends | where not(TitlesStop) | summarize max(TimeGenerated));
+let lastLine = toscalar(ingest | summarize max(TimeGenerated));
+let stops = ends | where TitlesStop and (isnull(reset) or TimeGenerated > reset);
+let oldest = stops | top 1 by TimeGenerated asc;
+let newest = stops | top 1 by TimeGenerated desc;
+stops
+| summarize Stops = count(), Last = max(TimeGenerated)
+| extend FirstLeft = toscalar(oldest | project Left), LastLeft = toscalar(newest | project Left),
+    Execution = toscalar(newest | project Execution)
+| extend Condition = case(
+    Last < ago(3h) and lastLine < Last + 2m, "not started again",
+    Stops >= 3 and LastLeft >= FirstLeft, "no titles progress",
+    "")
+| where isnotempty(Condition)
+| extend Detail = strcat(Stops, " titles-sync stops in a row; ", LastLeft, " titles left at the last, ",
+    FirstLeft, " at the first; the last ended ", format_datetime(Last, "yyyy-MM-dd HH:mm"), " UTC")
+| project Condition, Execution, Detail
 '''
 
 // A release that started ("building index") and hasn't ended ("published"
 // or "command failed") but has logged no "release progress" line for 10
 // minutes: the job hung, or died without a word. Progress is logged every
 // 30 s while the index builds. The window is a day, the job's replica
-// timeout: a full release can take most of it (04 §4.1.1).
+// timeout: a full release can take most of it (04 §4.1.1). Split by
+// Execution and Detail: the version, when it started, and the last
+// progress line's time and pages sent (fixed while it is stalled).
 var releaseStalled = '''
 let lines = ContainerAppConsoleLogs
     | where ContainerName == "ingest"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Log has_any ("building", "progress", "published", "failed")
-    | extend Message = tostring(parse_json(Log).fields.message), Replica = ContainerGroupName;
-let started = lines | where Message == "building index" | summarize Started = max(TimeGenerated) by Replica;
+    | extend j = parse_json(Log)
+    | extend Message = tostring(j.fields.message), Replica = ContainerGroupName;
+let started = lines | where Message == "building index"
+    | summarize arg_max(TimeGenerated, j) by Replica
+    | project Replica, Started = TimeGenerated, Version = tostring(j.fields.version);
 let ended = lines | where Message in ("published", "command failed") | summarize Ended = max(TimeGenerated) by Replica;
-let progress = lines | where Message == "release progress" | summarize LastProgress = max(TimeGenerated) by Replica;
+let progress = lines | where Message == "release progress"
+    | summarize arg_max(TimeGenerated, j) by Replica
+    | project Replica, LastProgress = TimeGenerated, Sent = tolong(j.fields.docs_sent), Expected = tolong(j.fields.docs_expected);
 started
 | join kind=leftouter ended on Replica
 | join kind=leftouter progress on Replica
 | where isnull(Ended) or Ended < Started
 | where Started < ago(10m)
 | where isnull(LastProgress) or LastProgress < ago(10m)
-| project Replica, Started, LastProgress
+| extend Execution = extract(@"^(.+)-[a-z0-9]+$", 1, Replica)
+| extend Detail = iff(isnull(LastProgress),
+    strcat("building ", Version, " since ", format_datetime(Started, "yyyy-MM-dd HH:mm"), " UTC; no progress line yet"),
+    strcat("building ", Version, " since ", format_datetime(Started, "yyyy-MM-dd HH:mm"), " UTC; last progress ",
+        format_datetime(LastProgress, "yyyy-MM-dd HH:mm"), " UTC, ", Sent, " of ", Expected, " pages sent"))
+| project Execution, Detail
 '''
 
 // Backfill workers have been running for the last hour (they logged in its
@@ -68,7 +165,8 @@ started
 // Not while LoC's rate limit holds downloads (a "throttled" line: every
 // worker waits an hour). Workers that keep logging "curate progress" without
 // finishing a batch are caught here; one that stops logging is caught by
-// backfillReplicaSilent.
+// backfillReplicaSilent. Not split: its only columns are counts, which
+// change at every check.
 var backfillStalled = '''
 let logs = ContainerAppConsoleLogs
     | where ContainerName == "curate"
@@ -90,21 +188,26 @@ print Early = early, Late = late, Curated = curated, Throttled = throttled
 // name plus a suffix). A worker logs "curate progress" every minute while it
 // holds a batch (and a batch it can't finish in 45 minutes is abandoned with
 // a "curation timed out" line), so 15 minutes of silence means the process or
-// its runtime is stuck, or its logs stopped arriving. Only replicas that have logged "claimed" are checked: images
-// from before the heartbeat were silent for minutes by design. The window is
-// a day, the job's replica timeout.
+// its runtime is stuck, or its logs stopped arriving. Only replicas that
+// have logged "claimed" are checked: images from before the heartbeat were
+// silent for minutes by design. The window is a day, the job's replica
+// timeout. Split by Replica and Detail: its last line's time, message and
+// batch (fixed while it is silent).
 var backfillReplicaSilent = '''
 let lines = ContainerAppConsoleLogs
     | where ContainerName == "curate"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
-    | extend Message = tostring(parse_json(Log).fields.message), Replica = ContainerGroupName;
+    | extend j = parse_json(Log)
+    | extend Message = tostring(j.fields.message), Replica = ContainerGroupName,
+        Batch = coalesce(tostring(j.fields.batch), tostring(j.span.batch));
 let replicas = lines
     | summarize
         FirstLine = min(TimeGenerated),
-        LastLine = max(TimeGenerated),
         Watched = countif(Message in ("claimed", "curate progress")),
-        Ended = countif(Message in ("curation finished", "command failed"))
+        Ended = countif(Message in ("curation finished", "command failed")),
+        arg_max(TimeGenerated, LastMessage = Message, LastBatch = Batch)
         by Replica
+    | extend LastLine = TimeGenerated
     | extend Execution = extract(@"^(.+)-[a-z0-9]+$", 1, Replica);
 let platform = ContainerAppSystemLogs
     | where JobName startswith "caj-usnm-backfill-"
@@ -126,41 +229,61 @@ replicas
 | where LastLine < ago(15m)
 | join kind=leftanti replicaStops on Replica
 | join kind=leftanti executionStops on Execution
-| project Replica, LastLine, SilentMinutes = round((now() - LastLine) / 1m, 1)
+| extend Detail = substring(strcat("last line ", format_datetime(LastLine, "yyyy-MM-dd HH:mm"), " UTC: ", LastMessage,
+    iff(isempty(LastBatch), "", strcat(" (batch ", LastBatch, ")"))), 0, 180)
+| project Replica, LastLine, Detail
 '''
 
 var rules = [
   {
     name: 'ingest-job-failed'
     displayName: 'Ingest or backfill job failed'
-    description: 'An ingest or backfill replica exited with an error in the last 15 minutes. scripts/logs.sh <env> job-executions and errors-by-batch show which and why.'
+    description: 'An ingest or backfill replica exited with an error in the last 15 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Next: scripts/logs.sh <env> job-executions 1d for how each replica ended, and errors-by-batch 1d for the warnings before it. Fix the cause, then start the job again; the next run picks up where this one stopped.'
+    severity: 2
     frequency: 'PT5M'
-    window: 'PT15M'
+    window: 'PT20M'
     query: jobFailed
+    dimensions: ['Execution', 'Reason']
+  }
+  {
+    name: 'ingest-not-progressing'
+    displayName: 'Ingest not progressing'
+    description: 'The ingest job keeps stopping at the titles-sync deadline: Condition says how. "not started again": the last stop was 3 or more hours ago and no execution has run since; start the job (and check whatever restarts it). "no titles progress": 3 stops in a row left as many titles as the first; LoC may be refusing title records. Next: scripts/logs.sh <env> ingest-endings 2d for each stop and the titles left, and /v1/status (titles.pipeline.awaiting_sync).'
+    severity: 3
+    frequency: 'PT1H'
+    window: 'P2D'
+    query: ingestNotProgressing
+    dimensions: ['Condition', 'Execution', 'Detail']
   }
   {
     name: 'release-stalled'
     displayName: 'Release stalled'
-    description: 'A release is building an index but has logged no progress for 10 minutes. scripts/logs.sh <env> release-progress shows the last lines.'
+    description: 'A release is building an index but has logged no progress for 10 minutes; Execution and Detail say which version and where it stopped. Next: scripts/logs.sh <env> release-progress for the last lines (disk, memory, Quickwit retries) and job-executions to see if the replica is still running.'
+    severity: 2
     frequency: 'PT15M'
     window: 'P1D'
     query: releaseStalled
+    dimensions: ['Execution', 'Detail']
   }
   {
     name: 'backfill-stalled'
     displayName: 'Backfill stalled'
-    description: 'Backfill workers have run for the last hour but none has curated a batch in it (and LoC is not rate limiting). scripts/logs.sh <env> curation-throughput and errors-by-batch show the recent work.'
+    description: 'Backfill workers have run for the last hour but none has curated a batch in it (and LoC is not rate limiting). Next: scripts/logs.sh <env> curation-throughput for the recent work, curate-replicas for each worker\'s stage, and errors-by-batch 2h for repeated failures on the same batches.'
+    severity: 2
     frequency: 'PT15M'
     window: 'PT2H'
     query: backfillStalled
+    dimensions: []
   }
   {
     name: 'backfill-replica-silent'
     displayName: 'Backfill replica silent'
-    description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. scripts/logs.sh <env> curate-replicas shows each replica\'s last stage and heartbeat.'
+    description: 'A backfill replica that is still running has logged nothing for 15 minutes; a working one logs curate progress every minute. Replica and Detail say which and its last line. Next: scripts/logs.sh <env> curate-replicas for each replica\'s last stage and heartbeat; stop the execution if it is stuck (its batch lease expires and another worker retries it).'
+    severity: 2
     frequency: 'PT5M'
     window: 'P1D'
     query: backfillReplicaSilent
+    dimensions: ['Replica', 'Detail']
   }
 ]
 
@@ -173,7 +296,7 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
     properties: {
       displayName: r.displayName
       description: r.description
-      severity: 2
+      severity: r.severity
       enabled: true
       evaluationFrequency: r.frequency
       windowSize: r.window
@@ -189,6 +312,7 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
             timeAggregation: 'Count'
             operator: 'GreaterThan'
             threshold: 0
+            dimensions: [for d in r.dimensions: { name: d, operator: 'Include', values: ['*'] }]
             failingPeriods: {
               numberOfEvaluationPeriods: 1
               minFailingPeriodsToAlert: 1
