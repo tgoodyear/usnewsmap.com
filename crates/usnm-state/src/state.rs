@@ -280,6 +280,27 @@ pub struct Activity {
     /// The error an execution failed with (the API sanitizes it).
     #[serde(default)]
     pub error: Option<String>,
+    /// The item as the previous execution left it (ended, or stale: it
+    /// stopped without saying), without its own `previous`. Kept by
+    /// [`State::set_activity`] when a new execution takes the item over, so
+    /// the status page can say how the last execution ended while the next
+    /// one runs. Unreadable values are dropped rather than failing the item.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
+    pub previous: Option<Box<Activity>>,
+}
+
+/// `T` if the value parses as one, else `None`.
+fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let v = Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).ok())
 }
 
 /// Typed access to the pipeline's state.
@@ -515,6 +536,10 @@ impl State {
     /// started by hand while another runs), so this writes only over its
     /// own item, an ended one or a stale one, and only if the item hasn't
     /// changed since it was read. Returns whether it wrote.
+    ///
+    /// Taking over another execution's item keeps that item as `previous`
+    /// (how the last execution ended); rewriting its own keeps the
+    /// `previous` already there.
     pub async fn set_activity(&self, a: &Activity) -> anyhow::Result<bool> {
         let mut doc = to_value(a)?;
         doc["id"] = ACTIVITY.into();
@@ -530,6 +555,16 @@ impl State {
             updated.is_some_and(|u| Utc::now() - u <= Duration::seconds(ACTIVITY_STALE_SECS));
         if other && !ended && live {
             return Ok(false);
+        }
+        if a.previous.is_none() {
+            let previous = if other {
+                previous_of(&held.doc)
+            } else {
+                held.doc.get("previous").cloned().unwrap_or(Value::Null)
+            };
+            if !previous.is_null() {
+                doc["previous"] = previous;
+            }
         }
         Ok(self
             .docs
@@ -548,6 +583,23 @@ impl State {
             }
         }
         Ok(())
+    }
+}
+
+/// An `ops/activity` item as another execution's `previous`: its own
+/// fields, without the store's (`id`, `kind`, `_etag` and the like) and
+/// without its `previous`, so the chain stays one deep.
+fn previous_of(held: &Value) -> Value {
+    match held {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .filter(|(k, _)| {
+                    !matches!(k.as_str(), "id" | "kind" | "previous") && !k.starts_with('_')
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        ),
+        _ => Value::Null,
     }
 }
 
@@ -653,5 +705,105 @@ mod tests {
         s.lock("quickwit-writer", "c", Duration::hours(1))
             .await
             .unwrap();
+    }
+
+    fn activity(owner: &str, at: DateTime<Utc>) -> Activity {
+        Activity {
+            command: "run".into(),
+            owner: owner.into(),
+            started_at: at,
+            step: Step::Titles,
+            step_started_at: at,
+            updated_at: at,
+            done: None,
+            total: None,
+            paused_until: None,
+            index_version: None,
+            merge: None,
+            ended_at: None,
+            outcome: None,
+            error: None,
+            previous: None,
+        }
+    }
+
+    async fn held(s: &State) -> Activity {
+        let v = s.docs.get(OPS, ACTIVITY, ACTIVITY).await.unwrap().unwrap();
+        from::<Activity>(v).unwrap().0
+    }
+
+    #[tokio::test]
+    async fn a_new_execution_keeps_how_the_last_one_ended() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        let now = Utc::now();
+        let mut first = activity("first", now);
+        assert!(s.set_activity(&first).await.unwrap());
+        assert!(held(&s).await.previous.is_none());
+        first.ended_at = Some(now);
+        first.outcome = Some(Outcome::TitlesLeft);
+        first.error = Some("titles-sync reached its deadline".into());
+        assert!(s.set_activity(&first).await.unwrap());
+
+        // The next execution takes over; the first's end is kept.
+        let mut second = activity("second", now);
+        assert!(s.set_activity(&second).await.unwrap());
+        let got = held(&s).await;
+        assert_eq!(got.owner, "second");
+        let previous = got.previous.unwrap();
+        assert_eq!(
+            (previous.owner.as_str(), previous.outcome),
+            ("first", Some(Outcome::TitlesLeft))
+        );
+        assert!(previous.previous.is_none());
+
+        // Its own heartbeats and its end keep it.
+        second.step = Step::Indexing;
+        assert!(s.set_activity(&second).await.unwrap());
+        second.ended_at = Some(now);
+        second.outcome = Some(Outcome::Failed);
+        assert!(s.set_activity(&second).await.unwrap());
+        assert_eq!(held(&s).await.previous.unwrap().owner, "first");
+
+        // The one after keeps only the second: the chain stays one deep.
+        assert!(s.set_activity(&activity("third", now)).await.unwrap());
+        let previous = held(&s).await.previous.unwrap();
+        assert_eq!(
+            (previous.owner.as_str(), previous.outcome),
+            ("second", Some(Outcome::Failed))
+        );
+        assert!(previous.previous.is_none());
+        let raw = s
+            .docs
+            .get(OPS, ACTIVITY, ACTIVITY)
+            .await
+            .unwrap()
+            .unwrap()
+            .doc;
+        assert!(raw["previous"].get("id").is_none() && raw["previous"].get("kind").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stale_execution_is_kept_as_it_was_left() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        let old = Utc::now() - Duration::seconds(ACTIVITY_STALE_SECS + 60);
+        assert!(s.set_activity(&activity("killed", old)).await.unwrap());
+        assert!(s.set_activity(&activity("next", Utc::now())).await.unwrap());
+        let previous = held(&s).await.previous.unwrap();
+        assert_eq!(
+            (
+                previous.owner.as_str(),
+                previous.ended_at,
+                previous.updated_at
+            ),
+            ("killed", None, old)
+        );
+    }
+
+    #[test]
+    fn an_unreadable_previous_is_dropped() {
+        let mut v = serde_json::to_value(activity("a", Utc::now())).unwrap();
+        v["previous"] = serde_json::json!({"owner": 3});
+        let a: Activity = serde_json::from_value(v).unwrap();
+        assert!(a.previous.is_none());
     }
 }

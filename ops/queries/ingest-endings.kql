@@ -1,0 +1,26 @@
+// How each ingest job execution ended, newest first: titles_left (the
+// expected stop when titles-sync runs out of time; start the job again),
+// failed, or published, with the titles left and the error's first 300
+// characters. The data behind the ingest-not-progressing and
+// ingest-job-failed alerts. Lines that could carry the managed identity
+// endpoint's secret are dropped.
+ContainerAppConsoleLogs
+| where ContainerName == "ingest"
+| where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+| where Log has_any ("failed", "published")
+| extend j = parse_json(Log)
+| extend Message = tostring(j.fields.message), Error = tostring(j.fields.error)
+| where Message in ("command failed", "published")
+| extend Ending = case(
+    Message == "published", "published",
+    tostring(j.fields.outcome) == "titles_left"
+        or (isempty(tostring(j.fields.outcome)) and Error has "nothing was released: start the job again"), "titles_left",
+    "failed")
+| project
+    TimeGenerated,
+    Execution = extract(@"^(.+)-[a-z0-9]+$", 1, ContainerGroupName),
+    Ending,
+    TitlesLeft = toint(extract(@"(\d+) of \d+ titles", 1, Error)),
+    Version = tostring(j.fields.version),
+    Error = substring(Error, 0, 300)
+| order by TimeGenerated desc

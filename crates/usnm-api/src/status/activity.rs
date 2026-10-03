@@ -199,6 +199,27 @@ fn titles_counts(
     Some((cached as u64, missing.len() as u64))
 }
 
+/// How a reported execution that isn't running ended: its recorded
+/// outcome, or `stopped` at its last report if it stopped without one.
+fn ended(j: &usnm_state::state::Activity) -> LastRun {
+    match j.ended_at {
+        Some(end) => LastRun {
+            outcome: j.outcome.map_or(LastOutcome::Failed, LastOutcome::from),
+            ended_at: end,
+            step: Some(j.step.into()),
+            error: j.error.as_deref().map(sanitize),
+            index_version: j.index_version.clone(),
+        },
+        None => LastRun {
+            outcome: LastOutcome::Stopped,
+            ended_at: j.updated_at,
+            step: Some(j.step.into()),
+            error: None,
+            index_version: j.index_version.clone(),
+        },
+    }
+}
+
 pub struct Inputs<'a> {
     pub at: DateTime<Utc>,
     pub summary: &'a Summary,
@@ -242,27 +263,13 @@ pub fn activity(i: &Inputs) -> Activity {
 
     let job = s.ops.activity.as_ref();
     let live = job.filter(|j| j.ended_at.is_none() && at - j.updated_at <= STALE_AFTER);
-    match job {
-        Some(j) if j.ended_at.is_some() => {
-            a.last = Some(LastRun {
-                outcome: j.outcome.map_or(LastOutcome::Failed, LastOutcome::from),
-                ended_at: j.ended_at.unwrap_or(j.updated_at),
-                step: Some(j.step.into()),
-                error: j.error.as_deref().map(sanitize),
-                index_version: j.index_version.clone(),
-            });
-        }
-        Some(j) if live.is_none() => {
-            a.last = Some(LastRun {
-                outcome: LastOutcome::Stopped,
-                ended_at: j.updated_at,
-                step: Some(j.step.into()),
-                error: None,
-                index_version: j.index_version.clone(),
-            });
-        }
-        _ => {}
-    }
+    // How the reported execution ended; while it still runs, how the one
+    // before it ended (kept in the item as `previous`).
+    a.last = match (job, live) {
+        (Some(j), None) => Some(ended(j)),
+        (Some(j), Some(_)) => j.previous.as_deref().map(ended),
+        (None, _) => None,
+    };
 
     if let Some(j) = live {
         a.now = j.step.into();
@@ -439,6 +446,7 @@ mod tests {
             ended_at: None,
             outcome: None,
             error: None,
+            previous: None,
         }
     }
 
@@ -684,6 +692,58 @@ mod tests {
         assert_eq!(
             (last.outcome, last.ended_at),
             (LastOutcome::Stopped, at() - Duration::minutes(30))
+        );
+    }
+
+    #[test]
+    fn while_a_run_reports_the_last_is_the_one_before_it() {
+        // The 2026-10-03 case: an index build failed on 10-02, then two
+        // executions ran out of time on titles-sync, and a third runs now.
+        let mut s = base();
+        let mut failed = run("v2", "failed", at() - Duration::hours(26));
+        failed.failed_at = Some(at() - Duration::hours(25));
+        s.runs.push(failed);
+        let mut before = job(Step::Titles);
+        before.owner = "caj-usnm-ingest-prod-cs6qk3l-4fwwp-1-0a1b2c3d".into();
+        before.ended_at = Some(at() - Duration::hours(2));
+        before.outcome = Some(Outcome::TitlesLeft);
+        before.error = Some(
+            "titles-sync reached its deadline with 1457 of 2262 titles left; the cache kept \
+             what was fetched, and the next run continues"
+                .into(),
+        );
+        let mut j = job(Step::Titles);
+        j.started_at = at() - Duration::hours(1);
+        j.previous = Some(Box::new(before));
+        s.ops.activity = Some(j);
+        let a = get(&s, &[], None);
+        assert_eq!((a.now, a.source), (Now::Titles, "job"));
+        let last = a.last.unwrap();
+        assert_eq!(
+            (last.outcome, last.ended_at, last.step),
+            (
+                LastOutcome::TitlesLeft,
+                at() - Duration::hours(2),
+                Some(Now::Titles)
+            )
+        );
+        assert!(last.error.unwrap().contains("1457 of 2262"));
+
+        // The one before stopped without saying: stopped at its last report.
+        let mut killed = job(Step::Indexing);
+        killed.updated_at = at() - Duration::hours(3);
+        s.ops.activity.as_mut().unwrap().previous = Some(Box::new(killed));
+        let last = get(&s, &[], None).last.unwrap();
+        assert_eq!(
+            (last.outcome, last.ended_at),
+            (LastOutcome::Stopped, at() - Duration::hours(3))
+        );
+
+        // No previous (an item from before it was kept): the index runs.
+        s.ops.activity.as_mut().unwrap().previous = None;
+        assert_eq!(
+            get(&s, &[], None).last.unwrap().outcome,
+            LastOutcome::Failed
         );
     }
 }

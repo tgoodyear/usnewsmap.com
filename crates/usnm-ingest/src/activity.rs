@@ -72,6 +72,7 @@ impl Reporter {
                 ended_at: None,
                 outcome: None,
                 error: None,
+                previous: None,
             }),
             writing: tokio::sync::Mutex::new(()),
         })));
@@ -282,6 +283,14 @@ mod tests {
         assert_eq!(
             (v["owner"].as_str(), v["step"].as_str()),
             (Some("second"), Some("indexing"))
+        );
+        // How the first ended stays in the item while the second runs.
+        assert_eq!(
+            (
+                v["previous"]["owner"].as_str(),
+                v["previous"]["outcome"].as_str()
+            ),
+            (Some("first"), Some("titles_left"))
         );
     }
 

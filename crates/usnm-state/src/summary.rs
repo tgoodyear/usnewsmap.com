@@ -310,6 +310,7 @@ mod tests {
             ended_at: None,
             outcome: None,
             error: None,
+            previous: None,
         })
         .await
         .unwrap();

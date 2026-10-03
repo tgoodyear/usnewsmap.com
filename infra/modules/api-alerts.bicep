@@ -7,7 +7,12 @@
 //   (AppRequests, one row per request except the health probes; the
 //   request name is "<method> <route template>") and, for slow searches,
 //   the api.slow_searches metric (AppMetrics). Stateful: one
-//   notification when a condition starts, resolved when it clears.
+//   notification when a condition starts, resolved when it clears. Each
+//   splits by a column or two (dimensions) that the email lists: a kind and
+//   the route or endpoint with the most of it. Route names are templates
+//   ("GET /v1/aggregate"), never paths or query strings, so no search text.
+//   Every combination is its own alert, so a second route overtaking the
+//   first during an incident sends one more email.
 // - Availability: an Application Insights standard test of the site's home
 //   page from three US locations, with a metric alert when two of the three
 //   fail. The site and the API are one container app, so the home page
@@ -46,16 +51,31 @@ param availabilityFrequency string = '900'
 // problem type in usnm.problem. Ten or more of those in 10 minutes still
 // raise this alert: a searcher that accepts searches but never answers
 // shows up only as timeouts and busy refusals. Fewer are left to the slow
-// search alert below.
+// search alert below. One row for each of the two conditions met, split by
+// Kind (which one) and TopRoute (the route and status with the most of that
+// kind), so each fires and clears on its own.
 var serverErrors = '''
-AppRequests
-| where AppRoleName == "usnm-api"
-| extend Problem = tostring(Properties["usnm.problem"])
-| extend Slow = Problem in ("/errors/backend-timeout", "/errors/busy")
-| summarize Requests = sum(ItemCount),
-    Errors = sumif(ItemCount, toint(ResultCode) >= 500 and not(Slow)),
-    SlowErrors = sumif(ItemCount, toint(ResultCode) >= 500 and Slow)
-| where (Errors >= 5 and Errors * 50 > Requests) or SlowErrors >= 10
+let requests = AppRequests
+    | where AppRoleName == "usnm-api"
+    | extend Problem = tostring(Properties["usnm.problem"])
+    | extend Slow = Problem in ("/errors/backend-timeout", "/errors/busy"), Error = toint(ResultCode) >= 500;
+let top = (slow: bool) {
+    toscalar(requests
+        | where Error and Slow == slow
+        | summarize n = sum(ItemCount) by Name, ResultCode
+        | top 1 by n desc
+        | project strcat(Name, " ", ResultCode))
+};
+let totals = requests
+    | summarize Requests = sum(ItemCount),
+        Errors = sumif(ItemCount, Error and not(Slow)),
+        SlowErrors = sumif(ItemCount, Error and Slow);
+union
+    (totals | where Errors >= 5 and Errors * 50 > Requests
+        | extend Kind = "server errors", TopRoute = top(false)),
+    (totals | where SlowErrors >= 10
+        | extend Kind = "search timeouts and busy refusals", TopRoute = top(true))
+| project Kind, TopRoute
 '''
 
 // At least 3 searches in an hour took longer than a visitor waits (outcome
@@ -63,12 +83,18 @@ AppRequests
 // asked again), or were refused because every computation slot was taken
 // (busy). Cold searches after a new index version is published can trip it.
 // Severity 3, checked every 15 minutes; it emails the same action group as
-// the other alerts.
+// the other alerts. Split by the endpoint and outcome with the most.
 var slowSearches = '''
-AppMetrics
-| where AppRoleName == "usnm-api" and Name == "api.slow_searches"
+let slow = AppMetrics
+    | where AppRoleName == "usnm-api" and Name == "api.slow_searches";
+let top = slow
+    | summarize n = sum(Sum) by Endpoint = tostring(Properties["endpoint"]), Outcome = tostring(Properties["outcome"])
+    | top 1 by n desc;
+slow
 | summarize Searches = sum(Sum)
 | where Searches >= 3
+| extend Endpoint = toscalar(top | project Endpoint), Outcome = toscalar(top | project Outcome)
+| project Endpoint, Outcome
 '''
 
 // p95 of /v1/aggregate above 3 s over 15 minutes, counting only answered
@@ -77,7 +103,8 @@ AppMetrics
 // over 3 s. It takes at least 20 requests and at least 3 slower than 3 s
 // (so more than one or two cold searches) before this fires. Right after a
 // new index version is published every search is cold, so a busy hour then
-// can trip it; that is worth knowing but not urgent (severity 3).
+// can trip it; that is worth knowing but not urgent (severity 3). Not
+// split: the route is fixed and the numbers change at every check.
 var slowAggregate = '''
 AppRequests
 | where AppRoleName == "usnm-api"
@@ -92,29 +119,32 @@ var rules = [
   {
     name: 'api-server-errors'
     displayName: 'API server errors'
-    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 10 search timeouts and busy refusals. scripts/logs.sh <env> api-errors shows which routes and codes.'
+    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 10 search timeouts and busy refusals. Kind says which, TopRoute the route and status with the most. Next: scripts/logs.sh <env> api-errors 1h for the routes, codes and the API\'s error lines; for timeouts and busy refusals, check the Quickwit sidecar (container quickwit) and whether a new index version was just published.'
     severity: 2
     frequency: 'PT5M'
     window: 'PT10M'
     query: serverErrors
+    dimensions: ['Kind', 'TopRoute']
   }
   {
     name: 'api-aggregate-slow'
     displayName: 'Slow aggregate searches'
-    description: 'p95 of /v1/aggregate was over 3 s in the last 15 minutes (at least 20 requests, 3 of them over 3 s). scripts/logs.sh <env> api-requests shows latency by route.'
+    description: 'p95 of /v1/aggregate was over 3 s in the last 15 minutes (at least 20 requests, 3 of them over 3 s). Right after a new index version is published every search is cold, so this can fire and clear on its own. Next: scripts/logs.sh <env> api-requests 1h for latency by route, and the API workbook for cache hits and backend time.'
     severity: 3
     frequency: 'PT5M'
     window: 'PT15M'
     query: slowAggregate
+    dimensions: []
   }
   {
     name: 'api-searches-slow'
     displayName: 'Searches longer than a visitor waits'
-    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Errors other than timeouts and busy refusals count toward the API server errors alert. The slow-search tiles in the API workbook show these by endpoint and outcome.'
+    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Endpoint and Outcome are the ones with the most. Errors other than timeouts and busy refusals count toward the API server errors alert. Next: the slow-search tiles in the API workbook (by endpoint and outcome), and scripts/logs.sh <env> api-requests 1h.'
     severity: 3
     frequency: 'PT15M'
     window: 'PT1H'
     query: slowSearches
+    dimensions: ['Endpoint', 'Outcome']
   }
 ]
 
@@ -142,6 +172,7 @@ resource alert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [
             timeAggregation: 'Count'
             operator: 'GreaterThan'
             threshold: 0
+            dimensions: [for d in r.dimensions: { name: d, operator: 'Include', values: ['*'] }]
             failingPeriods: {
               numberOfEvaluationPeriods: 1
               minFailingPeriodsToAlert: 1
@@ -204,7 +235,7 @@ resource unavailable 'Microsoft.Insights/metricAlerts@2018-03-01' = [
     location: 'global'
     tags: union(tags, linkTag)
     properties: {
-      description: '${t.displayName} (${t.url}) failed from at least 2 of 3 locations. Check the Availability page of the Application Insights resource, then scripts/logs.sh <env> api-errors.'
+      description: '${t.displayName} (${t.url}) failed from at least 2 of 3 locations (each after 3 tries). Next: open the URL yourself; the Availability page of the Application Insights resource shows which check failed (status code, timeout or certificate) and from where; then scripts/logs.sh <env> api-errors 1h and the container app\'s revisions and replicas.'
       severity: 1
       enabled: true
       scopes: [webtest[i].id, appInsightsId]
