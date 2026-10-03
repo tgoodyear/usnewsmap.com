@@ -120,8 +120,8 @@ export function App() {
   if (wantSkew && !skewUsed) setSkewUsed(true);
   const prepared: Prepared | Unavailable | null = useMemo(() => {
     if (!skewUsed || !data || !places.data) return null;
-    // A language filter: the API sends no baselines, so there is no coverage
-    // to wait for (07 §7.9).
+    // No baselines (a language filter on a version published before pages were
+    // counted per language): there is no coverage to wait for (07 §7.9).
     if (data.cube.baseline_ref === null || data.series.baseline === null) return "filters";
     return coverage.data ? prepareSkew(data, coverage.data, features) : null;
   }, [skewUsed, data, coverage.data, places.data, features]);
@@ -626,7 +626,7 @@ function skewStatus(
     };
   if (prepared === "filters")
     return {
-      text: "The relative rate isn't available with a language filter yet: pages published are counted per place, not per language. Showing page counts.",
+      text: "The relative rate isn't available with a language filter on this version of the index. Showing page counts.",
       error: false,
     };
   if (prepared === "few-places")

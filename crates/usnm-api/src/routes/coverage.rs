@@ -1,5 +1,6 @@
 //! `GET /v1/coverage`: pages published per place and bucket (the "no data" layer
-//! and the denominator for per-place relative frequency).
+//! and the denominator for per-place relative frequency), optionally for the
+//! pages of titles in given languages.
 
 use std::sync::Arc;
 
@@ -49,7 +50,7 @@ pub(crate) async fn coverage_in(
     uri: &Uri,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_only(&["from", "to", "bucket", "state", "v"])?;
+    raw.reject_only(&["from", "to", "bucket", "state", "lang", "v"])?;
     let job = Job::reference("coverage", ctx.warm_up, ctx.timeout);
     let snap = ctx.snap;
     let serving = snap.refdata.version().to_owned();
@@ -86,11 +87,22 @@ pub(crate) async fn coverage_in(
         return Err(bad("state", "must be USPS codes"));
     }
 
+    let langs = raw.langs()?;
+    if !snap.refdata.has_baselines_for(&langs) {
+        return Err(ApiError::Unsupported(
+            "a language filter on a version published before pages were counted per language"
+                .into(),
+        ));
+    }
+
     let canonical = {
         let mut canon = form_urlencoded::Serializer::new(String::new());
         canon
             .append_pair("bucket", unit.as_str())
             .append_pair("from", &from.to_string());
+        if !langs.is_empty() {
+            canon.append_pair("lang", &langs.join(","));
+        }
         if !states.is_empty() {
             canon.append_pair("state", &states.join(","));
         }
@@ -112,7 +124,7 @@ pub(crate) async fn coverage_in(
             .iter()
             .filter(|p| states.is_empty() || states.contains(&p.state))
         {
-            let series = rd.place_baseline(&p.id, &spec);
+            let series = rd.place_baseline(&p.id, &spec, &langs);
             if series.iter().all(|&n| n == 0) {
                 continue;
             }

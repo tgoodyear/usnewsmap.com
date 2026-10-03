@@ -58,8 +58,9 @@ struct Totals {
 #[derive(Serialize)]
 struct Series {
     hits: Vec<u64>,
-    /// Pages published per bucket; `null` when `lccn`, `lang` or `front` filters are set,
-    /// because baselines are kept per place and day only.
+    /// Pages published per bucket; `null` when `lccn` or `front` filters are set,
+    /// because baselines are kept per place and day (and per title language), and
+    /// when `lang` is set on a version published before baselines were kept per language.
     baseline: Option<Vec<u64>>,
 }
 
@@ -256,12 +257,15 @@ async fn compute(
         .collect();
 
     let f = &req.filters;
-    let baseline_exact = f.lccns.is_empty() && f.langs.is_empty() && !f.front_only;
-    let baseline = baseline_exact.then(|| rd.national_baseline(&spec, &f.states));
+    let baseline_exact = f.lccns.is_empty() && !f.front_only && rd.has_baselines_for(&f.langs);
+    let baseline = baseline_exact.then(|| rd.national_baseline(&spec, &f.states, &f.langs));
     let baseline_ref = baseline_exact.then(|| {
         let mut s = form_urlencoded::Serializer::new(String::new());
         s.append_pair("bucket", spec.unit.as_str());
         s.append_pair("from", &spec.from.to_string());
+        if !f.langs.is_empty() {
+            s.append_pair("lang", &f.langs.join(","));
+        }
         if !f.states.is_empty() {
             s.append_pair("state", &f.states.join(","));
         }

@@ -74,7 +74,7 @@ Principles:
 | `from`, `to` | ISO date | `1896-06-01` | Clamped to the corpus bounds |
 | `state` | CSV of USPS codes | `GA,SC` | |
 | `lccn` | CSV | `sn84026749` | |
-| `lang` | CSV ISO 639-2 | `eng,ger` | Three-letter catalog codes, any of them. A page matches when its newspaper's catalog record lists any given language, so a title in English and German is found by either. Pages published are kept per place and day only, so with `lang` the response has no baselines (§6.3.3) |
+| `lang` | CSV ISO 639-2 | `eng,ger` | Three-letter catalog codes, any of them. A page matches when its newspaper's catalog record lists any given language, so a title in English and German is found by either. Pages published are also kept per place, day and title language, so the baselines follow the filter (§6.3.3) |
 | `front` | bool | `true` | Front pages only |
 | `bucket` | enum `auto\|year\|month\|week\|day` | `week` | See [05 §5.7](05-search-and-storage.md#57-aggregation-strategy) |
 
@@ -91,7 +91,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | `GET /v1/pages/{doc_id}` | Page metadata + LoC links | 30 days |
 | `GET /v1/titles`, `GET /v1/titles/{lccn}` | Title metadata + coverage summary | 1 day |
 | `GET /v1/places` | All places (GeoJSON) with precision, title counts and the languages of their titles (catalog codes such as `eng`; [11 §11.14](11-term-geographic-skew.md#1114-phase-1-as-built)) | 1 day |
-| `GET /v1/coverage?from&to&bucket` | Pages published per state/place per bucket (the "no data" layer) | 1 day |
+| `GET /v1/coverage?from&to&bucket&state&lang` | Pages published per place and bucket (the "no data" layer and the relative rate's baseline), optionally for the places in some states and the pages of titles that list any of the given languages. `lang` on a version published before baselines were kept per language answers 422 | 1 day |
 | `GET /v1/export/aggregate.csv` | Same as `/aggregate` as tidy CSV (`place_id,lat,lon,bucket_start,hits,baseline,rel`) | 1 day |
 | `GET /v1/export/hits.csv` | Hits (≤ 10,000 rows) with page keys and LoC URLs | 1 day |
 | `GET /v1/docs`, `GET /v1/openapi.json` | API documentation | 1 day |
@@ -127,6 +127,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 }
 ```
 
+- **Baselines and filters.** `series.baseline`, `total.baseline_pages` and `cube.baseline_ref` are the pages published in the search's scope: all pages, the pages in the `state` filter's states, and, under `lang`, only the pages of titles that list any of the languages (each page once, so `lang=eng,ger` doesn't count a title in both twice). `baseline_ref` names `/v1/coverage` with the same `state` and `lang`. They are `null` when `lccn` or `front` is set, because baselines are kept per place, day and title language only, and when `lang` is set on a version published before baselines were kept per language (a snapshot without `language_baselines.json`, [04 §4.3](04-data-sources-and-ingestion.md)). A client that gets `null` shows page counts only.
 - Place coordinates and names are **not** repeated here. The SPA loads `/v1/places` once (CDN-cached, ~150 KB compressed) and joins by id.
 - The cube is sparse, so size scales with non-zero cells. The worst realistic case (a common term, ~3,000 places × 211 yearly buckets) is about **633k triplets**: ~9–10 MB of JSON (~2–3 MB gzip) or ~5 MB as Arrow (~1.5–2.5 MB compressed). Above a hard cap of 700k cells, the API steps to a coarser bucket. Large cubes are computed as sharded sub-queries so they stay within the engine's bucket limit ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)). The SPA requests Arrow when the expected cube is large. `?format=arrow` returns `application/vnd.apache.arrow.stream`.
 

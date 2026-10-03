@@ -65,6 +65,14 @@ reference/                             (Hot; small; loaded by API; IMMUTABLE per
     title_pages.json                    pages published per title: {lccn: pages}, the same pages as the
                                         baselines summed by title (the status page's pages by
                                         language). Snapshots from before it was added don't have it
+    language_baselines.json             the same pages as baselines.json, split by the languages
+                                        their title lists: {sets: [{languages: ["eng", "ger"],
+                                        baselines: {place_id: [[day, pages], …]}}, …]}, one set per
+                                        distinct language list, sorted. A page is in exactly one set,
+                                        so any selection of languages sums the sets that share one
+                                        of them without counting a page twice. Titles that list no
+                                        language are left out (no language filter matches them).
+                                        Snapshots from before it was added don't have it
     batches.json                        the batches the version was built from, each with its full
                                         curation record (parts, counts path, pages, lccns, sha256).
                                         The release reads the published version's list to find new

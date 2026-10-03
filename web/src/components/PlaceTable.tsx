@@ -26,7 +26,7 @@ interface Props {
   skew?: boolean;
   /**
    * Show the share of pages published. Off when the search has no baselines
-   * (a language filter, 07 §7.9).
+   * (a language filter on a version without pages counted per language, 07 §7.9).
    */
   share?: boolean;
 }

@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
-use usnm_state::state::TITLE_PAGES_FILE;
+use usnm_state::state::{
+    LanguageBaselines, LanguageSet, LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
+};
 use usnm_store::{is_safe_segment, ObjectStore};
 
 /// The reference files the API loads from each snapshot.
@@ -67,6 +69,11 @@ pub struct RefData {
     pub titles: HashMap<String, Title>,
     /// Pages published per place, as sorted `(day, pages)`.
     pub baselines: HashMap<String, Vec<(u32, u32)>>,
+    /// Pages published per place and day for each set of title languages,
+    /// from the snapshot's `language_baselines.json`; `None` for snapshots
+    /// written before releases recorded it, which have no exact baselines
+    /// under a language filter.
+    pub language_baselines: Option<Vec<LanguageSet>>,
     /// Every page in the published version (the sum of the baselines).
     pub pages: u64,
     /// Pages published per place (each place's baselines summed).
@@ -143,6 +150,14 @@ impl RefData {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
         };
+        let language_baselines = match manifest
+            .files
+            .iter()
+            .find(|f| f.path == LANGUAGE_BASELINES_FILE)
+        {
+            Some(entry) => Some(fetch_checked(store, dir, entry).await?),
+            None => None,
+        };
         let published_batches = manifest.built_from.map(|b| {
             b.batches
                 .into_iter()
@@ -154,6 +169,13 @@ impl RefData {
             let mut rd = Self::build(current, &raw)?;
             if let Some((path, bytes)) = title_pages {
                 rd.title_pages = Some(parse(&path, &bytes)?);
+            }
+            if let Some((path, bytes)) = language_baselines {
+                let mut lb: LanguageBaselines = parse(&path, &bytes)?;
+                for series in lb.sets.iter_mut().flat_map(|s| s.baselines.values_mut()) {
+                    series.sort_unstable();
+                }
+                rd.language_baselines = Some(lb.sets);
             }
             Ok::<_, String>(rd)
         })
@@ -189,6 +211,7 @@ impl RefData {
             place_index,
             titles: titles.into_iter().map(|t| (t.lccn.clone(), t)).collect(),
             baselines,
+            language_baselines: None,
             pages,
             place_pages,
             title_pages: None,
@@ -212,32 +235,73 @@ impl RefData {
         self.place_index.get(id).map(|&i| &self.places[i])
     }
 
-    /// Pages published per bucket for one place (only places matching `states`, if any).
-    pub fn place_baseline(&self, place_id: &str, spec: &BucketSpec) -> Vec<u64> {
+    /// Whether the baselines are exact under a language filter: always with
+    /// none, otherwise only when the snapshot has them per language.
+    pub fn has_baselines_for(&self, langs: &[String]) -> bool {
+        langs.is_empty() || self.language_baselines.is_some()
+    }
+
+    /// Pages published per bucket for one place: all of them, or only those of
+    /// titles that list any of `langs`. Check [`Self::has_baselines_for`]
+    /// first: without per-language counts a language filter gets zeros.
+    pub fn place_baseline(&self, place_id: &str, spec: &BucketSpec, langs: &[String]) -> Vec<u64> {
         let mut out = vec![0u64; spec.len()];
-        let (from, to) = (day_number(spec.from), day_number(spec.to));
-        if let Some(series) = self.baselines.get(place_id) {
-            let start = series.partition_point(|(d, _)| *d < from);
-            for &(day, pages) in series[start..].iter().take_while(|(d, _)| *d <= to) {
-                out[spec.index_of_day(day)] += u64::from(pages);
+        if langs.is_empty() {
+            if let Some(series) = self.baselines.get(place_id) {
+                add_series(&mut out, series, spec);
+            }
+        } else {
+            for set in self.language_sets(langs) {
+                if let Some(series) = set.baselines.get(place_id) {
+                    add_series(&mut out, series, spec);
+                }
             }
         }
         out
     }
 
-    /// National pages published per bucket, restricted to `states` when non-empty.
-    pub fn national_baseline(&self, spec: &BucketSpec, states: &[String]) -> Vec<u64> {
+    /// National pages published per bucket, restricted to `states` when
+    /// non-empty and to titles that list any of `langs` when that is.
+    pub fn national_baseline(
+        &self,
+        spec: &BucketSpec,
+        states: &[String],
+        langs: &[String],
+    ) -> Vec<u64> {
         let mut out = vec![0u64; spec.len()];
-        for p in self
-            .places
-            .iter()
-            .filter(|p| states.is_empty() || states.contains(&p.state))
-        {
-            for (o, v) in out.iter_mut().zip(self.place_baseline(&p.id, spec)) {
-                *o += v;
+        let in_scope = |id: &str| {
+            states.is_empty() || self.place(id).is_some_and(|p| states.contains(&p.state))
+        };
+        if langs.is_empty() {
+            for (_, series) in self.baselines.iter().filter(|(id, _)| in_scope(id)) {
+                add_series(&mut out, series, spec);
+            }
+        } else {
+            for set in self.language_sets(langs) {
+                for (_, series) in set.baselines.iter().filter(|(id, _)| in_scope(id)) {
+                    add_series(&mut out, series, spec);
+                }
             }
         }
         out
+    }
+
+    /// The sets of title languages that share one of `langs`; each page is in
+    /// one set, so summing them counts every matching page once.
+    fn language_sets<'a>(&'a self, langs: &'a [String]) -> impl Iterator<Item = &'a LanguageSet> {
+        self.language_baselines
+            .iter()
+            .flatten()
+            .filter(move |set| set.languages.iter().any(|l| langs.contains(l)))
+    }
+}
+
+/// Add a place's sorted `(day, pages)` series that fall inside `spec` to `out`.
+fn add_series(out: &mut [u64], series: &[(u32, u32)], spec: &BucketSpec) {
+    let (from, to) = (day_number(spec.from), day_number(spec.to));
+    let start = series.partition_point(|(d, _)| *d < from);
+    for &(day, pages) in series[start..].iter().take_while(|(d, _)| *d <= to) {
+        out[spec.index_of_day(day)] += u64::from(pages);
     }
 }
 

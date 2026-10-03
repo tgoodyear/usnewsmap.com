@@ -65,7 +65,7 @@ describe("LanguageFilter", () => {
 describe("PlaceTable under a language filter", () => {
   afterEach(cleanup);
 
-  it("leaves out the share of pages published when the search has no baselines", () => {
+  it("leaves out the share of pages published when the search has no baselines (an older version under a language filter)", () => {
     const rows = [
       { id: "P1", name: "Place 1", state: "NE", precision: "city", position: [0, 0] as [number, number], value: 3, rel: Number.NaN, firstDay: -1 },
     ];

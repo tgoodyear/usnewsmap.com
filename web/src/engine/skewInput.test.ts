@@ -61,6 +61,14 @@ describe("prepareSkew", () => {
     expect(Array.from(p.input.inFit)).toEqual([]);
   });
 
+  it("scores places the same way under a language filter, without naming their languages", () => {
+    const filtered = { ...agg, query: { canonical: "lang=ger&q=x", ast: "x" } };
+    const p = prepareSkew(filtered, coverage, features);
+    if (typeof p === "string") throw new Error(p);
+    expect(Array.from(p.input.cells.pages)).toEqual([10, 20, 30, 40, 50, 60, 5]);
+    expect(p.languages).toEqual([null, null, null, null, null, null]);
+  });
+
   it("is unavailable when filters remove the baselines, buckets differ or places are few", () => {
     expect(prepareSkew({ ...agg, series: { ...agg.series, baseline: null } }, coverage, features)).toBe("filters");
     expect(prepareSkew(agg, { ...coverage, count: 3 }, features)).toBe("mismatch");
