@@ -45,7 +45,7 @@ moka = { version = "0.12", features = ["future"] }
 # 0.46 needs Rust 1.95; 0.45 (opentelemetry 0.32) keeps the workspace's rust-version.
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
-opentelemetry-application-insights = { version = "0.45", default-features = false, features = ["trace", "metrics"] }
+opentelemetry-application-insights = { version = "0.46", default-features = false, features = ["trace", "metrics"] }
 opentelemetry-http = { version = "0.32", default-features = false }
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
