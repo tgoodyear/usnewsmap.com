@@ -241,7 +241,9 @@ var rules = [
     description: 'An ingest or backfill replica exited with an error in the last 15 minutes; Execution and Reason in this email say which and why. Expected titles-sync stops are left out (ingest-not-progressing watches them). Next: scripts/logs.sh <env> job-executions 1d for how each replica ended, and errors-by-batch 1d for the warnings before it. Fix the cause, then start the job again; the next run picks up where this one stopped.'
     severity: 2
     frequency: 'PT5M'
-    window: 'PT20M'
+    // Azure accepts only 5, 10, 15, 30, 45, 60 min and up; the query itself reports the last 15 min,
+    // and the extra lookback lets it see the 5 minutes before an event.
+    window: 'PT30M'
     query: jobFailed
     dimensions: ['Execution', 'Reason']
   }
