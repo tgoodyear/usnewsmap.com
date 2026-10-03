@@ -4,7 +4,8 @@ const ext = { target: "_blank", rel: "noopener noreferrer" } as const;
 
 /**
  * The About statement, in a modal dialog so opening it keeps the map and the
- * search as they are. Callers open it with `ref.current.showModal()`; Escape,
+ * search as they are. Callers open it with `ref.current.showModal()` and then focus
+ * its heading (#about-title), so no link starts out focused; Escape,
  * the Close button and a click on the backdrop close it.
  */
 export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
@@ -24,7 +25,10 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
       }}
     >
       <div className="about__body">
-        <h2 id="about-title">About US News Map</h2>
+        {/* Focus starts here, not on the first link: see openAbout in App.tsx. */}
+        <h2 id="about-title" tabIndex={-1}>
+          About US News Map
+        </h2>
         <p>
           US News Map searches{" "}
           <a href="https://chroniclingamerica.loc.gov/" {...ext}>

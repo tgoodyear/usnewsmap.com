@@ -35,7 +35,13 @@ export function App() {
   // returns to the same cards.
   const [examplePage, setExamplePage] = useState(0);
   const about = useRef<HTMLDialogElement>(null);
-  const openAbout = () => about.current?.showModal();
+  // showModal() focuses the first link, which then shows a focus ring before anyone has tabbed.
+  // Start on the heading instead: screen readers announce the dialog by it, and Tab goes on to
+  // the first link.
+  const openAbout = () => {
+    about.current?.showModal();
+    about.current?.querySelector<HTMLElement>("#about-title")?.focus();
+  };
   const meta = useQuery({ queryKey: ["meta"], queryFn: ({ signal }) => api.meta(signal) });
   const version = meta.data?.index_version ?? "";
   const places = useQuery({
