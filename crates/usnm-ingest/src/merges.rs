@@ -683,31 +683,100 @@ pub async fn rerun_final_merges(
     let spawns = events.spawns(index_id);
     let started = tokio::time::Instant::now();
     let until = deadline.min(started + wait.finalize_stall);
-    let reopened = async {
+    let no_pipeline = || {
+        anyhow::anyhow!(
+            "reopened `{index_id}` to run its final merges again, but the writer started no \
+             merge pipeline for it within {} s; not publishing a half-merged index",
+            started.elapsed().as_secs()
+        )
+    };
+    // Closed again however this ends, so a later writer run starts nothing
+    // for it: below, or by the guard if `seal` gives up (and drops this)
+    // while a request is still waiting.
+    let mut guard = CloseOnDrop::new(node, index_id);
+    let reopened = tokio::time::timeout_at(until, async {
         explained(Some(events), node.reopen(index_id).await).await?;
         while events.spawns(index_id) == spawns {
             events.check()?;
             if tokio::time::Instant::now() + wait.poll > until {
-                bail!(
-                    "reopened `{index_id}` to run its final merges again, but the writer \
-                     started no merge pipeline for it within {} s; not publishing a half-merged \
-                     index",
-                    started.elapsed().as_secs()
-                );
+                return Err(no_pipeline());
             }
             tokio::time::sleep(wait.poll).await;
         }
         Ok(())
-    }
-    .await;
-    // Closed again either way, so a later writer run starts nothing for it.
-    let closed = node.close(index_id).await;
+    })
+    .await
+    .unwrap_or_else(|_| Err(no_pipeline()));
+    let closed = match tokio::time::timeout(CLOSE_TIMEOUT, node.close(index_id)).await {
+        Ok(r) => r,
+        Err(_) => Err(anyhow::anyhow!(
+            "the writer did not answer within {} s",
+            CLOSE_TIMEOUT.as_secs()
+        )),
+    };
+    guard.armed = closed.is_err();
     match (reopened, closed) {
         (Err(e), Err(c)) => Err(anyhow::anyhow!(
             "{e:#}; closing it again also failed: {c:#}"
         )),
         (Err(e), _) => Err(e),
         (Ok(()), closed) => explained(Some(events), closed).await,
+    }
+}
+
+/// How long disabling a reopened index's source may take.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Disables an index's ingest source when dropped while armed, from a task
+/// of its own: `rerun_final_merges` reopens the index, and the release must
+/// not leave it open if `seal` gives up on it halfway.
+struct CloseOnDrop {
+    http: reqwest::Client,
+    base: String,
+    index_id: String,
+    armed: bool,
+}
+
+impl CloseOnDrop {
+    fn new(node: &Node<'_>, index_id: &str) -> Self {
+        Self {
+            http: node.http.clone(),
+            base: node.base.to_owned(),
+            index_id: index_id.to_owned(),
+            armed: true,
+        }
+    }
+}
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if !self.armed {
+            return;
+        }
+        let (http, base, index_id) = (
+            self.http.clone(),
+            std::mem::take(&mut self.base),
+            std::mem::take(&mut self.index_id),
+        );
+        rt.spawn(async move {
+            let node = Node {
+                http: &http,
+                base: &base,
+            };
+            match tokio::time::timeout(CLOSE_TIMEOUT, node.close(&index_id)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(index = %index_id, "could not close the reopened index: {e:#}")
+                }
+                Err(_) => tracing::warn!(
+                    index = %index_id,
+                    "could not close the reopened index: the writer did not answer"
+                ),
+            }
+        });
     }
 }
 
@@ -1389,6 +1458,78 @@ mod tests {
     /// Quickwit also runs the final merges by itself once the index's shards
     /// have been idle for 15 minutes and are deleted: closing the index then
     /// starts nothing, and the merges are already done.
+    /// `seal` gives up while the reopening request still waits: the index is
+    /// closed again all the same.
+    #[tokio::test]
+    async fn a_seal_that_gives_up_while_reopening_closes_the_index() {
+        use axum::routing::{get, post, put};
+        let events = Arc::new(NodeEvents::default());
+        events.observe(SPAWNED);
+        let toggles = Arc::new(Mutex::new(Vec::new()));
+        let (ev, t) = (events.clone(), toggles.clone());
+        let app = axum::Router::new()
+            .route(
+                "/metrics",
+                get(|| async { "quickwit_indexing_ongoing_merge_operations 0\n" }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                get(|| async {
+                    axum::Json(
+                        serde_json::json!({"splits": [{"split_id": "s1", "num_docs": 1000}]}),
+                    )
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/sources/_ingest-source/toggle",
+                put(move |axum::Json(body): axum::Json<Value>| async move {
+                    let enable = body["enable"].as_bool().unwrap();
+                    t.lock().unwrap().push(enable);
+                    if !enable {
+                        ev.observe(STOPPING);
+                        ev.observe(FAILED);
+                    }
+                    "null"
+                }),
+            )
+            .route(
+                "/api/v1/{id}/ingest",
+                post(|| async {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    "{}"
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let wait = MergeWait {
+            timeout: Duration::from_millis(400),
+            finalize_stall: Duration::from_secs(60),
+            ..quick()
+        };
+        let err = seal(&node, "idx", 1000, Some(&events), &wait, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("did not finish within"), "{err}");
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while toggles.lock().unwrap().last() != Some(&false) || toggles.lock().unwrap().len() < 3 {
+            assert!(
+                std::time::Instant::now() < until,
+                "{:?}",
+                toggles.lock().unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(*toggles.lock().unwrap(), [false, true, false]);
+    }
+
     #[tokio::test]
     async fn final_merges_that_ran_before_the_close_count() {
         let (base, w) = scripted(&[OnClose::Nothing], true).await;
