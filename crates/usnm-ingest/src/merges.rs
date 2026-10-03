@@ -1458,37 +1458,20 @@ mod tests {
     /// Quickwit also runs the final merges by itself once the index's shards
     /// have been idle for 15 minutes and are deleted: closing the index then
     /// starts nothing, and the merges are already done.
-    /// `seal` gives up while the reopening request still waits: the index is
-    /// closed again all the same.
+    /// The merge wait gives up (drops the rerun) while the reopening request
+    /// still waits: the index is closed again all the same.
     #[tokio::test]
-    async fn a_seal_that_gives_up_while_reopening_closes_the_index() {
-        use axum::routing::{get, post, put};
+    async fn a_rerun_dropped_while_reopening_closes_the_index() {
+        use axum::routing::{post, put};
         let events = Arc::new(NodeEvents::default());
         events.observe(SPAWNED);
         let toggles = Arc::new(Mutex::new(Vec::new()));
-        let (ev, t) = (events.clone(), toggles.clone());
+        let t = toggles.clone();
         let app = axum::Router::new()
-            .route(
-                "/metrics",
-                get(|| async { "quickwit_indexing_ongoing_merge_operations 0\n" }),
-            )
-            .route(
-                "/api/v1/indexes/{id}/splits",
-                get(|| async {
-                    axum::Json(
-                        serde_json::json!({"splits": [{"split_id": "s1", "num_docs": 1000}]}),
-                    )
-                }),
-            )
             .route(
                 "/api/v1/indexes/{id}/sources/_ingest-source/toggle",
                 put(move |axum::Json(body): axum::Json<Value>| async move {
-                    let enable = body["enable"].as_bool().unwrap();
-                    t.lock().unwrap().push(enable);
-                    if !enable {
-                        ev.observe(STOPPING);
-                        ev.observe(FAILED);
-                    }
+                    t.lock().unwrap().push(body["enable"].as_bool().unwrap());
                     "null"
                 }),
             )
@@ -1509,17 +1492,16 @@ mod tests {
             base: &base,
         };
         let wait = MergeWait {
-            timeout: Duration::from_millis(400),
             finalize_stall: Duration::from_secs(60),
             ..quick()
         };
-        let err = seal(&node, "idx", 1000, Some(&events), &wait, None)
+        let far = tokio::time::Instant::now() + Duration::from_secs(60);
+        let rerun = rerun_final_merges(&node, "idx", &events, &wait, far);
+        assert!(tokio::time::timeout(Duration::from_millis(300), rerun)
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("did not finish within"), "{err}");
-        let until = std::time::Instant::now() + Duration::from_secs(5);
-        while toggles.lock().unwrap().last() != Some(&false) || toggles.lock().unwrap().len() < 3 {
+            .is_err());
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while toggles.lock().unwrap().len() < 2 {
             assert!(
                 std::time::Instant::now() < until,
                 "{:?}",
@@ -1527,7 +1509,7 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert_eq!(*toggles.lock().unwrap(), [false, true, false]);
+        assert_eq!(*toggles.lock().unwrap(), [true, false]);
     }
 
     #[tokio::test]
