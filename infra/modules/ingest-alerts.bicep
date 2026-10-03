@@ -40,7 +40,7 @@ param actionGroupId string
 // Split by Execution (the job execution, from the replica's name; the job
 // for a job-level event that names none) and Reason: the error, cut to 180
 // characters, with URL query strings, key=value secrets and long opaque
-// tokens masked. The window is 20 minutes so that the line a platform event
+// tokens masked. The window is 30 minutes so that the line a platform event
 // repeats is still in it; only the last 15 minutes are reported.
 var jobFailed = '''
 let lines = ContainerAppConsoleLogs
