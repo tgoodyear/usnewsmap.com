@@ -51,8 +51,9 @@ param availabilityFrequency string = '900'
 // problem type in usnm.problem. Ten or more of those in 10 minutes still
 // raise this alert: a searcher that accepts searches but never answers
 // shows up only as timeouts and busy refusals. Fewer are left to the slow
-// search alert below. Split by Kind (which of the two) and TopRoute (the
-// route and status with the most of that kind).
+// search alert below. One row for each of the two conditions met, split by
+// Kind (which one) and TopRoute (the route and status with the most of that
+// kind), so each fires and clears on its own.
 var serverErrors = '''
 let requests = AppRequests
     | where AppRoleName == "usnm-api"
@@ -65,14 +66,15 @@ let top = (slow: bool) {
         | top 1 by n desc
         | project strcat(Name, " ", ResultCode))
 };
-requests
-| summarize Requests = sum(ItemCount),
-    Errors = sumif(ItemCount, Error and not(Slow)),
-    SlowErrors = sumif(ItemCount, Error and Slow)
-| extend ServerErrors = Errors >= 5 and Errors * 50 > Requests
-| where ServerErrors or SlowErrors >= 10
-| extend Kind = iff(ServerErrors, "server errors", "search timeouts and busy refusals")
-| extend TopRoute = iff(ServerErrors, top(false), top(true))
+let totals = requests
+    | summarize Requests = sum(ItemCount),
+        Errors = sumif(ItemCount, Error and not(Slow)),
+        SlowErrors = sumif(ItemCount, Error and Slow);
+union
+    (totals | where Errors >= 5 and Errors * 50 > Requests
+        | extend Kind = "server errors", TopRoute = top(false)),
+    (totals | where SlowErrors >= 10
+        | extend Kind = "search timeouts and busy refusals", TopRoute = top(true))
 | project Kind, TopRoute
 '''
 
