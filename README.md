@@ -147,4 +147,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). To report a vulnerability, follow [SECUR
 
 ## License
 
-This repository has no license file yet. The newspaper content belongs to its sources: see the Library of Congress's [rights and access statement](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/) for Chronicling America.
+`Cargo.toml` and `web/package.json` declare Apache-2.0, but the repository has no LICENSE file yet, so the license isn't final. The newspaper content belongs to its sources: see the Library of Congress's [rights and access statement](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/) for Chronicling America.

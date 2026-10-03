@@ -6,7 +6,7 @@ The [design documents](docs/design/README.md) explain how the system works and w
 
 ## Run the checks
 
-CI runs these on every pull request. Run them before you push:
+CI runs the Rust checks when a pull request touches Rust code and the web checks when it touches the web app (`scripts/ci/changes.sh`). Run the ones that apply before you push:
 
 ```sh
 cargo fmt --all --check
@@ -15,13 +15,24 @@ cargo test --workspace --locked
 
 cd web
 npm ci
+npm audit --audit-level=high
 npm run lint
 npm run typecheck
 npm test
 npm run build
 ```
 
-For changes under `infra/`, also run `scripts/ci/lint-bicep.sh` and `bicep build infra/main.bicep` (`scripts/ci/install-bicep.sh` shows the Bicep version CI uses). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [README](README.md#against-quickwit).
+The infrastructure checks run on every pull request (from the repository root):
+
+```sh
+scripts/ci/lint-bicep.sh
+scripts/ci/no-shared-keys.sh
+bicep build infra/main.bicep --stdout > /dev/null
+bicep build infra/guardrails.bicep --stdout > /dev/null
+AZURE_ENV_NAME=ci bicep build-params infra/main.bicepparam --stdout > /dev/null
+```
+
+`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [README](README.md#against-quickwit).
 
 ## Rules
 
