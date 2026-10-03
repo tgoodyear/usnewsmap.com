@@ -106,6 +106,10 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           US News Map is maintained by{" "}
           <a href="https://goodyeartechnical.com/" {...ext}>
             Trevor Goodyear
+          </a>{" "}
+          and is open source{" "}
+          <a href="https://github.com/tgoodyear/usnewsmap.com" {...ext}>
+            on GitHub
           </a>
           .
         </p>

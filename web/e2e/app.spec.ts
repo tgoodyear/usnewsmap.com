@@ -385,6 +385,7 @@ test("About opens from the footer and keeps the search", async ({ page }) => {
   await expect(trevor.nth(0)).toHaveAttribute("href", "https://www.linkedin.com/in/goodyear/");
   await expect(trevor.nth(1)).toHaveAttribute("href", "https://goodyeartechnical.com/");
   const links: [string, string][] = [
+    ["on GitHub", "https://github.com/tgoodyear/usnewsmap.com"],
     ["Claudio Saunt", "https://claudiosaunt.com/"],
     ["Steve Berry", "https://history.uga.edu/directory/people/stephen-berry"],
     ["Slate", "https://web.archive.org/web/20190307100233/http://www.slate.com/blogs/the_vault/2016/03/07/us_news_map_interactive_lets_you_map_how_historical_newspapers_digitized.html"],
