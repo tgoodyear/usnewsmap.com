@@ -553,15 +553,19 @@ fn forward(
 }
 
 /// The writer's `RUST_LOG`: the job's filter (Quickwit's default `info` when
-/// there is none), with the merge pipeline always at `info`. The release
-/// waits for that pipeline's "completed" line (`merges::NodeEvents`), so a
-/// quieter filter, or one naming only the pipeline's crates, must not hide it.
+/// there is none), with the merge pipelines and the indexing service always
+/// at `info`. The release follows each merge pipeline through their lines
+/// (`merges::NodeEvents`), so a quieter filter, or one naming only other
+/// crates, must not hide them.
 fn writer_log_filter(inherited: Option<&str>) -> String {
     let base = inherited
         .map(str::trim)
         .filter(|f| !f.is_empty())
         .unwrap_or("info");
-    format!("{base},quickwit_indexing::actors::merge_pipeline=info")
+    format!(
+        "{base},quickwit_indexing::actors::merge_pipeline=info,\
+         quickwit_indexing::actors::indexing_service=info"
+    )
 }
 
 /// A Quickwit indexer node run as a child process for the length of a
@@ -825,8 +829,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_writer_always_logs_merge_pipeline_completion() {
-        let pipeline = "quickwit_indexing::actors::merge_pipeline=info";
+    fn the_writer_always_logs_its_merge_pipelines() {
+        let pipeline = "quickwit_indexing::actors::merge_pipeline=info,\
+                        quickwit_indexing::actors::indexing_service=info";
         assert_eq!(writer_log_filter(None), format!("info,{pipeline}"));
         assert_eq!(writer_log_filter(Some(" ")), format!("info,{pipeline}"));
         assert_eq!(writer_log_filter(Some("warn")), format!("warn,{pipeline}"));
