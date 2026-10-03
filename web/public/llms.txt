@@ -31,7 +31,7 @@ Search parameters, shared by `/v1/aggregate` and `/v1/hits`:
 - `lang`: comma-separated three-letter language codes from the `languages` list in `/v1/meta`, such as `eng`, `ger` or `spa`.
 - `front=true`: front pages only.
 - `bucket`: `auto`, `year`, `month`, `week` or `day`.
-- `fuzzy`: `1` or `2` matches words within that many letter edits, for OCR errors. It only works when `capabilities.fuzzy` in `/v1/meta` is `true`; otherwise the API answers `422` (`/errors/unsupported`).
+- `fuzzy`: `1` or `2` matches single words within that many letter edits, for OCR errors. It does not apply to phrases (so not to `mode=phrase` or `mode=near`) or to `word*`; those stay exact. It only works when `capabilities.fuzzy` in `/v1/meta` is `true`; otherwise the API answers `422` (`/errors/unsupported`).
 - `v`: an `index_version`. If it is not the one being served, the API redirects (307) to the current one.
 
 ## API usage guidelines
