@@ -28,7 +28,7 @@ In production, the API searches through a Quickwit sidecar, using indexes the in
 
 ## Local development
 
-Requires a stable Rust toolchain (see `rust-toolchain.toml`). The web app also needs Node.js 22.
+Requires a stable Rust toolchain (see `rust-toolchain.toml`). The web app also needs Node.js 24.
 
 ```sh
 cargo test --workspace                 # unit + API integration tests against the fixtures

@@ -13,9 +13,11 @@ cd web && npm ci && npm run dev  # http://localhost:5173
 
 | Script | What |
 |--------|------|
-| `npm run lint` / `typecheck` / `test` | ESLint, `tsc`, Vitest unit tests (engine, URL state, dates, snippets) |
+| `npm run lint` / `typecheck` / `test` | ESLint, `tsc` (TypeScript 7), Vitest unit tests (engine, URL state, dates, snippets) |
 | `npm run build` | Production build into `dist/`. The API image also runs `node scripts/precompress.mjs dist` for brotli and gzip copies |
 | `npm run e2e` | Playwright end-to-end tests with axe accessibility checks. By default against `vite preview` and a running API. With `PW_BASE_URL` (as CI does), against an API serving the build (`USNM_SITE_DIR=web/dist cargo run -p usnm-api`). Set `PW_CHROMIUM_PATH` to use an existing Chromium |
+
+TypeScript 7 ships no compiler API yet, so it is installed side by side with TypeScript 6, as [the TypeScript team recommends](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/): `@typescript/native` is TypeScript 7 and provides `tsc`, and `typescript` is an alias for `@typescript/typescript6`, which typescript-eslint imports. Drop the alias once typescript-eslint supports TypeScript 7's API (expected with 7.1).
 
 Build-time settings:
 

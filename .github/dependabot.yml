@@ -20,6 +20,10 @@ updates:
     directory: /web
     schedule:
       interval: weekly
+    ignore:
+      # Node types follow the Node version CI and the image use (24).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor:
         update-types: [minor, patch]
