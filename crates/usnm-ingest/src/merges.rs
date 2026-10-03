@@ -12,12 +12,26 @@
 //!    splits that are left (`max_finalize_merge_operations`). The release
 //!    waits for the pipeline to finish and the splits to settle again.
 //!
+//! Quickwit 0.9.1 doesn't restart a merge pipeline that fails once it has
+//! been told to stop, and its uploader can fail a merge: to move the merged
+//! split into its local cache, it measures the merge's scratch folder while
+//! the merge executor deletes the input splits it downloaded there, and a
+//! folder that disappears between the listing and its size fails the upload
+//! ("No such file or directory"). The pipeline then never finishes its final
+//! merges and the splits never change (issue #84). The release watches the writer's output for that, and for a
+//! node that stays idle without finishing, and runs the final merges again:
+//! it re-enables the source, sends one document the index's strict mapping
+//! rejects (so a source whose shards were closed and deleted gets a new,
+//! empty one and Quickwit starts its pipelines), waits for the new merge
+//! pipeline, and disables the source again. A new pipeline reads the index's
+//! unmerged splits from the metastore. After three tries the release fails.
+//!
 //! The wait is bounded, and the result is checked: the splits must hold
 //! exactly the documents sent, and no more of them than the merge policy
 //! leaves. The writer's output is watched for a full disk and for failed
 //! merges; either stops the release, so nothing is published half merged.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -70,8 +84,61 @@ struct Events {
     exited: Option<String>,
     disk_full: Option<String>,
     merge_failed: Option<String>,
-    /// Indexes whose `_ingest-source` merge pipeline has finished for good.
-    finished: BTreeSet<String>,
+    /// Each index's `_ingest-source` merge pipeline, by index id.
+    pipelines: BTreeMap<String, Pipeline>,
+}
+
+/// What the writer's output has said about one index's `_ingest-source`
+/// merge pipeline. The flags are about its current run: Quickwit logs
+/// "spawning merge pipeline" for a new pipeline and for each restart.
+#[derive(Debug, Default)]
+struct Pipeline {
+    spawns: u32,
+    /// The indexing service told it to run its final merges and stop.
+    stopping: bool,
+    /// It failed: the line. Quickwit restarts it unless it was `stopping`.
+    failed: Option<String>,
+    /// It ran its final merges and exited.
+    completed: bool,
+}
+
+/// Where an index's final merges stand, from the writer's output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinalMerges {
+    /// Not asked for yet: the pipeline runs, or Quickwit will restart it.
+    Pending,
+    /// The pipeline was told to stop and is merging what is left.
+    Running,
+    /// The pipeline ran its final merges and exited.
+    Done,
+    /// The pipeline failed after it was told to stop: Quickwit won't restart
+    /// it, so nothing more will merge. The writer's line.
+    Stopped(String),
+}
+
+/// What a writer line says about an `_ingest-source` merge pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelineEvent {
+    Spawned,
+    Stopping,
+    Failed,
+    Completed,
+}
+
+impl PipelineEvent {
+    fn of(line: &str) -> Option<Self> {
+        if !line.contains(&format!("source_id={INGEST_SOURCE}")) {
+            return None;
+        }
+        [
+            ("spawning merge pipeline", Self::Spawned),
+            ("shutting down orphan merge pipeline", Self::Stopping),
+            ("merge pipeline failed", Self::Failed),
+            ("merge pipeline completed successfully", Self::Completed),
+        ]
+        .into_iter()
+        .find_map(|(text, event)| line.contains(text).then_some(event))
+    }
 }
 
 /// The first 300 characters of a line, for an error message.
@@ -84,9 +151,8 @@ impl NodeEvents {
         let disk_full = line.contains("No space left on device") || line.contains("os error 28");
         let merge_failed = line.contains("failed to merge splits")
             || line.contains("merge scheduler service is dead");
-        let finished = line.contains("merge pipeline completed successfully")
-            && line.contains(&format!("source_id={INGEST_SOURCE}"));
-        if !(disk_full || merge_failed || finished) {
+        let event = PipelineEvent::of(line);
+        if !(disk_full || merge_failed || event.is_some()) {
             return;
         }
         let mut e = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -96,14 +162,24 @@ impl NodeEvents {
         if merge_failed && e.merge_failed.is_none() {
             e.merge_failed = Some(excerpt(line));
         }
-        if finished {
-            // `index_uid=pages-delta-20261008-1:01M3…`
-            if let Some(id) = line
-                .split_whitespace()
-                .find_map(|w| w.strip_prefix("index_uid="))
-                .and_then(|uid| uid.split(':').next())
-            {
-                e.finished.insert(id.to_owned());
+        // `index_uid=pages-delta-20261008-1:01M3…`: the field, not the span
+        // (`spawn_merge_pipeline{index_uid=…`).
+        let id = line
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix("index_uid="))
+            .and_then(|uid| uid.split(':').next());
+        if let (Some(event), Some(id)) = (event, id) {
+            let p = e.pipelines.entry(id.to_owned()).or_default();
+            match event {
+                PipelineEvent::Spawned => {
+                    *p = Pipeline {
+                        spawns: p.spawns + 1,
+                        ..Pipeline::default()
+                    }
+                }
+                PipelineEvent::Stopping => p.stopping = true,
+                PipelineEvent::Failed => p.failed = Some(excerpt(line)),
+                PipelineEvent::Completed => p.completed = true,
             }
         }
     }
@@ -154,10 +230,25 @@ impl NodeEvents {
         }
     }
 
-    /// Whether `index_id`'s merge pipeline has run its final merges and exited.
-    pub fn finished(&self, index_id: &str) -> bool {
+    /// Where `index_id`'s final merges stand.
+    pub fn final_merges(&self, index_id: &str) -> FinalMerges {
         let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        e.finished.contains(index_id)
+        match e.pipelines.get(index_id) {
+            Some(p) if p.completed => FinalMerges::Done,
+            Some(Pipeline {
+                stopping: true,
+                failed: Some(line),
+                ..
+            }) => FinalMerges::Stopped(line.clone()),
+            Some(p) if p.stopping => FinalMerges::Running,
+            _ => FinalMerges::Pending,
+        }
+    }
+
+    /// How many times Quickwit has started `index_id`'s merge pipeline.
+    pub fn spawns(&self, index_id: &str) -> u32 {
+        let e = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        e.pipelines.get(index_id).map_or(0, |p| p.spawns)
     }
 }
 
@@ -336,26 +427,65 @@ impl Node<'_> {
 
     /// Stop ingesting into `index_id`, which runs its final merges.
     async fn close(&self, index_id: &str) -> anyhow::Result<()> {
+        self.toggle(index_id, false).await
+    }
+
+    /// Enable `index_id`'s ingest source again and have Quickwit start its
+    /// pipelines, without adding a document: a new merge pipeline reads the
+    /// index's unmerged splits from the metastore.
+    ///
+    /// Quickwit starts an ingest source's pipelines only while it has shards,
+    /// and deletes them once they have been idle for 15 minutes and indexed.
+    /// A document the index's strict mapping rejects opens a shard (an empty
+    /// one) and is not written.
+    async fn reopen(&self, index_id: &str) -> anyhow::Result<()> {
+        self.toggle(index_id, true).await?;
+        let v: Value = self
+            .http
+            .post(format!("{}/api/v1/{index_id}/ingest", self.base))
+            .body(format!("{{\"{REOPEN_FIELD}\": true}}\n"))
+            .send()
+            .await?
+            .error_for_status()
+            .with_context(|| format!("reopening `{index_id}`"))?
+            .json()
+            .await?;
+        let ingested = v["num_ingested_docs"].as_u64();
+        if ingested != Some(0) || v["num_rejected_docs"].as_u64() != Some(1) {
+            bail!("reopening `{index_id}`: the writer did not reject the empty document: {v}");
+        }
+        Ok(())
+    }
+
+    async fn toggle(&self, index_id: &str, enable: bool) -> anyhow::Result<()> {
         let resp = self
             .http
             .put(format!(
                 "{}/api/v1/indexes/{index_id}/sources/{INGEST_SOURCE}/toggle",
                 self.base
             ))
-            .json(&serde_json::json!({"enable": false}))
+            .json(&serde_json::json!({ "enable": enable }))
             .send()
             .await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             bail!(
-                "disabling ingest into `{index_id}` returned {status}: {}",
+                "{} ingest into `{index_id}` returned {status}: {}",
+                if enable { "enabling" } else { "disabling" },
                 text.chars().take(300).collect::<String>()
             );
         }
         Ok(())
     }
 }
+
+/// A field no index mapping has: a document with only this field is
+/// rejected (`mode: strict`), which `Node::reopen` relies on.
+const REOPEN_FIELD: &str = "usnm_reopen";
+
+/// Tries at the final merges before the release gives up.
+pub const FINAL_MERGE_TRIES: u32 = 3;
 
 /// How the release waits for merges.
 #[derive(Debug, Clone)]
@@ -369,6 +499,12 @@ pub struct MergeWait {
     /// Without the node's output to say the final merges are done, how long
     /// to wait after disabling the source before trusting a quiet node.
     pub finalize_grace: Duration,
+    /// With it: how long the node may stay idle after the source is disabled
+    /// without the final merges finishing before they are run again, and how
+    /// long a reopened index may take to start its pipeline. Quickwit asks a
+    /// pipeline to stop within 30 s (its actor heartbeat), and its merges
+    /// show as running.
+    pub finalize_stall: Duration,
     /// Where the wait's step and counts are recorded for the status page
     /// (`ops/activity`).
     pub report: Reporter,
@@ -381,6 +517,7 @@ impl Default for MergeWait {
             stable_polls: 3,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             finalize_grace: Duration::from_secs(60),
+            finalize_stall: Duration::from_secs(600),
             report: Reporter::off(),
         }
     }
@@ -431,6 +568,7 @@ async fn poll_until_sealed(
     let mut step = "settle";
     let mut closed_at: Option<tokio::time::Instant> = None;
     let mut settle = Settle::new(wait.stable_polls);
+    let mut tries = 0;
     loop {
         if let Some(e) = events {
             e.check()?;
@@ -469,6 +607,7 @@ async fn poll_until_sealed(
                 );
                 explained(events, node.close(index_id).await).await?;
                 closed_at = Some(tokio::time::Instant::now());
+                tries = 1;
                 step = "finalize";
                 settle = Settle::new(wait.stable_polls);
             }
@@ -476,13 +615,45 @@ async fn poll_until_sealed(
                 // An index that was never written has no ingest-source
                 // pipeline, so no "completed" line will come; there is
                 // nothing for it to merge.
-                let done = expected == 0
-                    || match events {
-                        Some(e) => e.finished(index_id),
-                        None => at.elapsed() >= wait.finalize_grace,
-                    };
-                if done && tokio::time::Instant::now() <= deadline {
-                    return check(index_id, expected, &splits);
+                let state = match events {
+                    _ if expected == 0 => FinalMerges::Done,
+                    Some(e) => e.final_merges(index_id),
+                    None if at.elapsed() >= wait.finalize_grace => FinalMerges::Done,
+                    None => FinalMerges::Pending,
+                };
+                let why = match state {
+                    FinalMerges::Done if tokio::time::Instant::now() <= deadline => {
+                        return check(index_id, expected, &splits);
+                    }
+                    FinalMerges::Done => None,
+                    FinalMerges::Stopped(line) => {
+                        Some(format!("its merge pipeline failed: {line}"))
+                    }
+                    // Idle all this time with the source disabled: whatever
+                    // happened, nothing is merging and nothing will.
+                    _ if events.is_some() && at.elapsed() >= wait.finalize_stall => Some(format!(
+                        "the writer stayed idle for {} s without finishing them",
+                        at.elapsed().as_secs()
+                    )),
+                    _ => None,
+                };
+                if let (Some(why), Some(e)) = (why, events) {
+                    if tries >= FINAL_MERGE_TRIES {
+                        bail!(
+                            "the final merges of `{index_id}` did not finish in {tries} tries ({why}); \
+                             not publishing a half-merged index"
+                        );
+                    }
+                    tracing::warn!(
+                        index = index_id,
+                        splits = splits.len(),
+                        attempt = tries + 1,
+                        "the final merges stopped ({why}); reopening the index to run them again"
+                    );
+                    rerun_final_merges(node, index_id, e, wait, deadline).await?;
+                    closed_at = Some(tokio::time::Instant::now());
+                    tries += 1;
+                    settle = Settle::new(wait.stable_polls);
                 }
             }
             _ => {}
@@ -496,6 +667,47 @@ async fn poll_until_sealed(
             );
         }
         tokio::time::sleep(wait.poll).await;
+    }
+}
+
+/// Reopen `index_id`, wait for Quickwit to start a new merge pipeline for
+/// it, and close it again: the new pipeline runs the final merges. `seal`
+/// does this when they stop; public for the tests against a real writer.
+pub async fn rerun_final_merges(
+    node: &Node<'_>,
+    index_id: &str,
+    events: &NodeEvents,
+    wait: &MergeWait,
+    deadline: tokio::time::Instant,
+) -> anyhow::Result<()> {
+    let spawns = events.spawns(index_id);
+    let started = tokio::time::Instant::now();
+    let until = deadline.min(started + wait.finalize_stall);
+    let reopened = async {
+        explained(Some(events), node.reopen(index_id).await).await?;
+        while events.spawns(index_id) == spawns {
+            events.check()?;
+            if tokio::time::Instant::now() + wait.poll > until {
+                bail!(
+                    "reopened `{index_id}` to run its final merges again, but the writer \
+                     started no merge pipeline for it within {} s; not publishing a half-merged \
+                     index",
+                    started.elapsed().as_secs()
+                );
+            }
+            tokio::time::sleep(wait.poll).await;
+        }
+        Ok(())
+    }
+    .await;
+    // Closed again either way, so a later writer run starts nothing for it.
+    let closed = node.close(index_id).await;
+    match (reopened, closed) {
+        (Err(e), Err(c)) => Err(anyhow::anyhow!(
+            "{e:#}; closing it again also failed: {c:#}"
+        )),
+        (Err(e), _) => Err(e),
+        (Ok(()), closed) => explained(Some(events), closed).await,
     }
 }
 
@@ -588,7 +800,10 @@ mod tests {
         let e = NodeEvents::default();
         e.observe("2026-09-29T09:09:18Z  WARN quickwit_config: peer seeds are empty");
         assert!(e.check().is_ok());
-        assert!(!e.finished("pages-delta-20261008-1"));
+        assert_eq!(
+            e.final_merges("pages-delta-20261008-1"),
+            FinalMerges::Pending
+        );
 
         e.observe(
             "2026-10-02T06:59:13Z  INFO quickwit_indexing::actors::merge_pipeline: merge pipeline \
@@ -601,8 +816,11 @@ mod tests {
              completed successfully index_uid=pages-base-20261001-1:01M3XP9DEKWZK8TW8TXB27ZM7Y \
              source_id=_ingest-api-source generation=1",
         );
-        assert!(e.finished("pages-delta-20261008-1"));
-        assert!(!e.finished("pages-base-20261001-1"));
+        assert_eq!(e.final_merges("pages-delta-20261008-1"), FinalMerges::Done);
+        assert_eq!(
+            e.final_merges("pages-base-20261001-1"),
+            FinalMerges::Pending
+        );
         assert!(e.check().is_ok());
 
         e.observe(
@@ -612,6 +830,65 @@ mod tests {
         let err = e.check().unwrap_err().to_string();
         assert!(err.contains("ran out of disk"), "{err}");
         assert!(err.contains("os error 28"), "{err}");
+    }
+
+    /// The writer's lines from CI run 37088490670 (issue #84): the final
+    /// merge's upload failed, and Quickwit left the pipeline stopped.
+    #[test]
+    fn follows_a_merge_pipeline_through_failures_and_restarts() {
+        let id = "pages-delta-20261015-1";
+        let e = NodeEvents::default();
+        let spawned = "2026-10-03T02:06:57.809Z  INFO spawn_merge_pipeline{index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q generation=0}: \
+                       quickwit_indexing::actors::merge_pipeline: spawning merge pipeline \
+                       index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q source_id=_ingest-source root_dir=/tmp/x";
+        let stopping = "2026-10-03T02:07:21.807Z  INFO quickwit_indexing::actors::indexing_service: shutting down \
+                        orphan merge pipeline index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q source_id=_ingest-source";
+        let failed = "2026-10-03T02:07:22.836Z ERROR quickwit_indexing::actors::merge_pipeline: merge pipeline failed \
+                      index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q source_id=_ingest-source generation=1 \
+                      healthy_actors=[] failed_or_unhealthy_actors=[\"MergePublisher-young-tVo8\"]";
+        let completed = "2026-10-03T02:09:19.983Z  INFO quickwit_indexing::actors::merge_pipeline: merge pipeline \
+                         completed successfully index_uid=pages-delta-20261015-1:01M3ZR7CS2DXSCJPAT30QTW46Q \
+                         source_id=_ingest-source generation=1";
+        e.observe(spawned);
+        assert_eq!(
+            (e.final_merges(id), e.spawns(id)),
+            (FinalMerges::Pending, 1)
+        );
+        // A failure while it runs: Quickwit restarts it after a heartbeat.
+        e.observe(failed);
+        assert_eq!(e.final_merges(id), FinalMerges::Pending);
+        e.observe(spawned);
+        assert_eq!(
+            (e.final_merges(id), e.spawns(id)),
+            (FinalMerges::Pending, 2)
+        );
+        e.observe(stopping);
+        assert_eq!(e.final_merges(id), FinalMerges::Running);
+        // A failure once it was told to stop: nothing restarts it.
+        e.observe(failed);
+        match e.final_merges(id) {
+            FinalMerges::Stopped(line) => assert!(line.contains("MergePublisher"), "{line}"),
+            other => panic!("{other:?}"),
+        }
+        // Told to stop while it waited to be restarted: the same.
+        let e2 = NodeEvents::default();
+        e2.observe(spawned);
+        e2.observe(failed);
+        e2.observe(stopping);
+        assert!(matches!(e2.final_merges(id), FinalMerges::Stopped(_)));
+        // A new pipeline starts over; "failed" is not a failed merge.
+        e.observe(spawned);
+        assert_eq!(
+            (e.final_merges(id), e.spawns(id)),
+            (FinalMerges::Pending, 3)
+        );
+        e.observe(stopping);
+        e.observe(completed);
+        assert_eq!(e.final_merges(id), FinalMerges::Done);
+        assert!(e.check().is_ok());
+        // Another source's pipeline is not this one.
+        e.observe(&spawned.replace("_ingest-source", "_ingest-api-source"));
+        assert_eq!(e.spawns(id), 3);
     }
 
     #[test]
@@ -760,6 +1037,7 @@ mod tests {
             stable_polls: 2,
             timeout: Duration::from_secs(10),
             finalize_grace: Duration::from_millis(50),
+            finalize_stall: Duration::from_millis(300),
             report: Reporter::off(),
         }
     }
@@ -936,6 +1214,197 @@ mod tests {
         let err = format!("{err:#}");
         assert!(err.contains("signal 9"), "{err}");
         assert_eq!(polls.load(Ordering::SeqCst), 3);
+    }
+
+    /// What a scripted writer does when the release closes the index.
+    #[derive(Clone, Copy, PartialEq)]
+    enum OnClose {
+        /// Quickwit 0.9.1's uploader race (issue #84): the pipeline fails.
+        Fail,
+        /// Nothing at all.
+        Nothing,
+        /// The final merge: one split.
+        Merge,
+    }
+
+    /// A writer whose final merges go as `script` says, one entry per close;
+    /// reopening the index starts a new merge pipeline if `spawns`.
+    struct Scripted {
+        events: Arc<NodeEvents>,
+        script: Vec<OnClose>,
+        spawns: bool,
+        toggles: Mutex<Vec<bool>>,
+        probes: AtomicU32,
+        merged: std::sync::atomic::AtomicBool,
+    }
+
+    const SPAWNED: &str = "INFO spawn_merge_pipeline{index_uid=idx:01M3 generation=0}: merge_pipeline: \
+                           spawning merge pipeline index_uid=idx:01M3 source_id=_ingest-source root_dir=/x";
+    const STOPPING: &str =
+        "INFO indexing_service: shutting down orphan merge pipeline index_uid=idx:01M3 \
+                            source_id=_ingest-source";
+    const FAILED: &str = "ERROR merge_pipeline: merge pipeline failed index_uid=idx:01M3 \
+                          source_id=_ingest-source generation=1";
+    const COMPLETED: &str = "INFO merge_pipeline: merge pipeline completed successfully \
+                             index_uid=idx:01M3 source_id=_ingest-source generation=1";
+
+    async fn scripted(script: &[OnClose], spawns: bool) -> (String, Arc<Scripted>) {
+        use axum::routing::{get, post, put};
+        let w = Arc::new(Scripted {
+            events: Arc::new(NodeEvents::default()),
+            script: script.to_vec(),
+            spawns,
+            toggles: Mutex::default(),
+            probes: AtomicU32::new(0),
+            merged: Default::default(),
+        });
+        w.events.observe(SPAWNED);
+        let (w1, w2, w3) = (w.clone(), w.clone(), w.clone());
+        let app = axum::Router::new()
+            .route(
+                "/metrics",
+                get(|| async { "quickwit_indexing_ongoing_merge_operations 0\n" }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                get(move || async move {
+                    let splits: &[(&str, u64)] = if w1.merged.load(Ordering::SeqCst) {
+                        &[("m1", 1000)]
+                    } else {
+                        &[("s1", 400), ("s2", 600)]
+                    };
+                    axum::Json(
+                        serde_json::json!({"splits": splits.iter().map(|(id, docs)| {
+                        serde_json::json!({"split_id": id, "num_docs": docs})
+                    }).collect::<Vec<_>>()}),
+                    )
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/sources/_ingest-source/toggle",
+                put(move |axum::Json(body): axum::Json<Value>| async move {
+                    let enable = body["enable"].as_bool().unwrap();
+                    let closes = {
+                        let mut t = w2.toggles.lock().unwrap();
+                        t.push(enable);
+                        t.iter().filter(|e| !**e).count()
+                    };
+                    if !enable {
+                        let step = w2
+                            .script
+                            .get(closes - 1)
+                            .copied()
+                            .unwrap_or(OnClose::Nothing);
+                        if step != OnClose::Nothing {
+                            w2.events.observe(STOPPING);
+                        }
+                        match step {
+                            OnClose::Fail => w2.events.observe(FAILED),
+                            OnClose::Merge => {
+                                w2.merged.store(true, Ordering::SeqCst);
+                                w2.events.observe(COMPLETED);
+                            }
+                            OnClose::Nothing => {}
+                        }
+                    }
+                    "null"
+                }),
+            )
+            .route(
+                "/api/v1/{id}/ingest",
+                post(move |body: String| async move {
+                    // Only the reopening document, which the mapping rejects.
+                    assert_eq!(body, "{\"usnm_reopen\": true}\n");
+                    w3.probes.fetch_add(1, Ordering::SeqCst);
+                    if w3.spawns {
+                        w3.events.observe(SPAWNED);
+                    }
+                    axum::Json(serde_json::json!({
+                        "num_docs_for_processing": 1, "num_ingested_docs": 0, "num_rejected_docs": 1
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), w)
+    }
+
+    async fn seal_scripted(
+        script: &[OnClose],
+        spawns: bool,
+    ) -> (anyhow::Result<IndexLayout>, Arc<Scripted>) {
+        let (base, w) = scripted(script, spawns).await;
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let r = seal(&node, "idx", 1000, Some(&w.events), &quick(), None).await;
+        (r, w)
+    }
+
+    /// Issue #84: the final merge failed and Quickwit left its pipeline
+    /// stopped, so the release waited out its timeout with six splits.
+    #[tokio::test]
+    async fn final_merges_that_fail_are_run_again() {
+        let (r, w) = seal_scripted(&[OnClose::Fail, OnClose::Merge], true).await;
+        let layout = r.unwrap();
+        assert_eq!((layout.splits, layout.docs), (1, 1000));
+        // Closed, reopened with one rejected document, closed again.
+        assert_eq!(*w.toggles.lock().unwrap(), [false, true, false]);
+        assert_eq!(w.probes.load(Ordering::SeqCst), 1);
+        assert_eq!(w.events.spawns("idx"), 2);
+    }
+
+    #[tokio::test]
+    async fn final_merges_that_never_finish_are_run_again() {
+        let (r, w) = seal_scripted(&[OnClose::Nothing, OnClose::Merge], true).await;
+        assert_eq!(r.unwrap().splits, 1);
+        assert_eq!(*w.toggles.lock().unwrap(), [false, true, false]);
+    }
+
+    #[tokio::test]
+    async fn final_merges_give_up_after_three_tries() {
+        let (r, w) = seal_scripted(&[OnClose::Fail; 4], true).await;
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("did not finish in 3 tries"), "{err}");
+        assert!(err.contains("merge pipeline failed"), "{err}");
+        assert!(err.contains("half-merged"), "{err}");
+        assert_eq!(
+            *w.toggles.lock().unwrap(),
+            [false, true, false, true, false]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reopened_index_that_starts_no_pipeline_is_closed_and_not_published() {
+        let (r, w) = seal_scripted(&[OnClose::Fail, OnClose::Merge], false).await;
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("started no merge pipeline"), "{err}");
+        // Sealed again all the same.
+        assert_eq!(*w.toggles.lock().unwrap(), [false, true, false]);
+    }
+
+    /// Quickwit also runs the final merges by itself once the index's shards
+    /// have been idle for 15 minutes and are deleted: closing the index then
+    /// starts nothing, and the merges are already done.
+    #[tokio::test]
+    async fn final_merges_that_ran_before_the_close_count() {
+        let (base, w) = scripted(&[OnClose::Nothing], true).await;
+        w.events.observe(STOPPING);
+        w.events.observe(COMPLETED);
+        w.merged.store(true, Ordering::SeqCst);
+        let http = reqwest::Client::new();
+        let node = Node {
+            http: &http,
+            base: &base,
+        };
+        let layout = seal(&node, "idx", 1000, Some(&w.events), &quick(), None)
+            .await
+            .unwrap();
+        assert_eq!(layout.splits, 1);
+        assert_eq!(*w.toggles.lock().unwrap(), [false]);
     }
 
     #[tokio::test]

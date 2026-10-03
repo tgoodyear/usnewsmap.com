@@ -544,6 +544,9 @@ fn quick_merges() -> usnm_ingest::merges::MergeWait {
         stable_polls: 3,
         timeout: std::time::Duration::from_secs(120),
         finalize_grace: std::time::Duration::from_secs(5),
+        // Over Quickwit's 30 s actor heartbeat, so a pipeline still waiting
+        // to be stopped doesn't count as stalled.
+        finalize_stall: std::time::Duration::from_secs(60),
         report: Default::default(),
     }
 }
@@ -622,7 +625,49 @@ async fn a_writer_merges_small_splits_before_the_index_is_sealed() {
     .await
     .unwrap();
     assert_eq!((layout.splits, layout.docs), (1, docs.len() as u64));
+
+    // When the final merges stop (issue #84), the release reopens the index
+    // to run them again: the writer rejects the reopening document, starts a
+    // new merge pipeline, and runs its final merges once the index is closed
+    // again. Nothing changes in a merged index, and it ends closed.
+    let events = node.events();
+    let spawns = events.spawns(id);
+    merges::rerun_final_merges(&n, id, &events, &quick_merges(), deadline(120))
+        .await
+        .unwrap();
+    assert_eq!(events.spawns(id), spawns + 1);
+    let until = deadline(120);
+    while events.final_merges(id) != merges::FinalMerges::Done {
+        assert!(
+            tokio::time::Instant::now() < until,
+            "{:?}",
+            events.final_merges(id)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    let splits = n.splits(id).await.unwrap();
+    assert_eq!(splits.len(), 1);
+    assert_eq!(splits[0].docs, docs.len() as u64);
+    let index: Value = http
+        .get(format!("{}/api/v1/indexes/{id}", node.url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let source = index["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["source_id"] == "_ingest-source")
+        .unwrap();
+    assert_eq!(source["enabled"], false);
     node.stop().await.unwrap();
+}
+
+fn deadline(secs: u64) -> tokio::time::Instant {
+    tokio::time::Instant::now() + std::time::Duration::from_secs(secs)
 }
 
 /// A batch can hold pages but no text (every page's OCR empty or failed):
