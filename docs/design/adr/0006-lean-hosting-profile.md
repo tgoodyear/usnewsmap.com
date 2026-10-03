@@ -44,5 +44,5 @@ The maintainer set a target of **under $80/month**. The first design (Front Door
 ## Consequences
 
 - Typical cost is **about $72 per month** with [ADR-0008](0008-private-networking.md) private networking (~$17) and the private registry (~$5) (see [09 §9.5](../09-operations-security-cost.md#95-cost-model-monthly-usd-list-prices-confirm-with-the-azure-pricing-calculator)).
-- Azure AI Search, Elastic Cloud and Front Door are outside this budget. They move to the **growth profile**, enabled by configuration once someone funds them.
+- Azure AI Search, Elastic Cloud and Front Door are outside this budget. They move to the **growth profile**, enabled by configuration if the budget allows.
 - ACI Spot is a preview service with no SLA. Backfills are resumable and idempotent, so an eviction only delays the job.

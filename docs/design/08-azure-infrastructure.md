@@ -4,7 +4,7 @@
 
 > **No IaaS.** Every resource below is PaaS or SaaS. The inventory has no Virtual Machines, VM Scale Sets, AKS clusters or always-on Batch pools, and none may be added ([ADR-0005](adr/0005-sustainability-constraints.md)). Offline backfill and re-index work runs as **Container Apps Jobs inside the VNet** (§8.4), which exist only while a job runs. ACI Spot containers (preview) remain a documented alternative, with an Azure Batch Spot pool that scales to zero as its fallback ([ADR-0006](adr/0006-lean-hosting-profile.md)).
 
-One subscription (ideally owned by a sponsoring institution), one region: **East US 2**. ACI Spot containers are available there (preview regions: East US 2, West Europe, West US), as are the higher-capacity AI Search partitions for the growth profile. Resource group `rg-usnm-prod`:
+One subscription, one region: **East US 2**. ACI Spot containers are available there (preview regions: East US 2, West Europe, West US), as are the higher-capacity AI Search partitions for the growth profile. Resource group `rg-usnm-prod`:
 
 | Resource | SKU / config | Purpose |
 |----------|--------------|---------|

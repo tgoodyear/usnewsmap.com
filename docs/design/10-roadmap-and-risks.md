@@ -52,9 +52,9 @@ gantt
 
 | # | Risk | Likelihood | Impact | Mitigation | Owner |
 |---|------|-----------|--------|-----------|-------|
-| R-1 | **Sustainability again**: the maintainer leaves and the bills lapse | Med | High | < $80/mo (fits a personal card or a small departmental budget); IaC; runbooks; institutional sponsor owns the subscription and domain; ≥ 2 admins; handover runbook ([ADR-0005](adr/0005-sustainability-constraints.md)) | Maintainer |
+| R-1 | **Sustainability again**: the maintainer leaves and the bills lapse | Med | High | < $80/mo (fits a personal card); IaC; runbooks; ≥ 2 admins ([ADR-0005](adr/0005-sustainability-constraints.md)) | Maintainer |
 | R-2 | Quickwit fails S-2 (latency on high-frequency terms, pre-1970 dates, cache limits) | Med | Med | Integer bucket fields; Dedicated workload profile; fallback to Elastic on Azure or AI Search via the `SearchBackend` trait | Eng |
-| R-3 | AI Search chosen, but budget can't sustain ~$3–6k/mo | Med (if chosen) | High | Only choose A with committed multi-year funding; otherwise B | Maintainer |
+| R-3 | AI Search chosen, but budget can't sustain ~$3–6k/mo | Med (if chosen) | High | Choose A only if the budget covers it long term; otherwise B | Maintainer |
 | R-4 | LoC changes bulk formats or endpoints again (as in 2025) | Med | Med | The curated lake decouples the site from the source, so the site keeps serving; a parser schema check in `discover`; follow the NDNP news feed | Eng |
 | R-5 | Bulk download throttled; backfill slow. Archives not in LoC's CDN cache downloaded at 0.3–1.2 MB/s in the September 2026 trial (04 §4.1.2) | High | Med | Measure a cache-miss download from Azure before the backfill; start early; respect limits; validated mirror as accelerator; the backfill is one-time | Eng |
 | R-6 | Quickwit project cadence slows after the acquisition | Low–Med | Med | Apache-2.0; pin versions; Tantivy maintained independently; backend abstraction | Eng |
@@ -72,20 +72,19 @@ gantt
 
 ## 10.4 Open questions for the maintainer
 
-1. **Funding and sponsor.** Is there an institution (UGA Libraries / eHistory, GTRI, a state newspaper project, LoC Labs) willing to own the subscription? This decides Option A vs B and the handover story.
-2. **Speed vs budget.** At the $80 ceiling, Quickwit on a 1–2 vCPU sidecar is the only search option; managed AI Search (~$2–6k/mo) is out of reach. Are slower uncached searches for very common words (5–15 s) acceptable, or should the searcher start at 2 vCPU / 4 GiB? With private networking (~$17/mo, [ADR-0008](adr/0008-private-networking.md)) the 2 vCPU option puts a typical month at ~$87–102, over $80. The choices are: raise the ceiling to ~$100; keep private networking and the 1 vCPU searcher (~$72); or trade private endpoints for search speed.
-3. **Branding and credits.** Keep the "US News Map" name and credit the original GTRI and eHistory team and Prof. Saunt? Contact them for endorsement and redirect permissions?
-4. **Domain.** Confirm control of `usnewsmap.com` (the registrar account), and whether `usnewsmap.net` (used for legacy Solr hosts) is still held.
-5. **Legacy repo.** Archive `tgoodyear/usnewsmap` with a README pointing to the new project, after revoking the exposed keys.
-6. **Scope of the public API.** Anonymous-only with fair-use limits, or issue keys to researchers for higher limits?
-7. **Analytics.** Is App Insights custom-event analytics enough, or is a privacy-friendly product analytics tool wanted?
+1. **Speed vs budget.** At the $80 ceiling, Quickwit on a 1–2 vCPU sidecar is the only search option; managed AI Search (~$2–6k/mo) is out of reach. Are slower uncached searches for very common words (5–15 s) acceptable, or should the searcher start at 2 vCPU / 4 GiB? With private networking (~$17/mo, [ADR-0008](adr/0008-private-networking.md)) the 2 vCPU option puts a typical month at ~$87–102, over $80. The choices are: raise the ceiling to ~$100; keep private networking and the 1 vCPU searcher (~$72); or trade private endpoints for search speed.
+2. **Branding and credits.** Keep the "US News Map" name and credit the original GTRI and eHistory team and Prof. Saunt?
+3. **Domain.** Confirm control of `usnewsmap.com` (the registrar account), and whether `usnewsmap.net` (used for legacy Solr hosts) is still held.
+4. **Legacy repo.** Archive `tgoodyear/usnewsmap` with a README pointing to the new project, after revoking the exposed keys.
+5. **Scope of the public API.** Anonymous-only with fair-use limits, or issue keys to researchers for higher limits?
+6. **Analytics.** Is App Insights custom-event analytics enough, or is a privacy-friendly product analytics tool wanted?
 
 ## 10.5 Definition of done for relaunch
 
 - [ ] All P0 features live; counts verified against brute force on the golden set
 - [ ] SLOs met for 14 consecutive days in beta
 - [ ] Cost < $80 per month for 2 consecutive months (actual)
-- [ ] Runbooks rehearsed: full re-index, index rollback, app rollback, handover dry run
+- [ ] Runbooks rehearsed: full re-index, index rollback, app rollback
 - [ ] Accessibility audit (WCAG 2.2 AA) passed
 - [x] Legacy keys revoked (October 2026)
 - [ ] Secret scanning and push protection on
