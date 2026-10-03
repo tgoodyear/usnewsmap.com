@@ -167,7 +167,7 @@ Visitors can limit a search to newspapers printed in chosen languages, for examp
 1. **Right now.** One sentence for what is happening at this moment (`rightNow` in `now.ts`), from `activity` (06 §6.3.6), with a progress bar when the step counts something and short notes under it: when the step started, and how the last run ended if it failed or stopped. The sentences, by `activity.now`:
    - `titles`: "Looking up newspaper details from the Library of Congress: 342 of 3,464 done (9.9%)." plus "Paused until 20:15 UTC because loc.gov asked us to slow down." during a rate-limit pause, or "At this pace, about 4 h left." otherwise.
    - `indexing`: "Building the search index: 4.1M of 7.8M pages sent (53%), about 1 h 20 min left."
-   - `merging`: "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live."
+   - `merging`: "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live." When `activity.merge` is present it adds where the merge is: "First pass: 227 pieces, 1 merge running, 20 waiting." while the open index merges (`settle`), or "Final merges, with the index closed to new pages: …" once it is closed (`finalize`). Step 3's detail carries the same numbers. There is no time estimate: queued merges grow as smaller ones finish, so the count isn't a countdown.
    - `publishing`: "Publishing: the new index is going live (step 4 of 4)."
    - `downloading` and `listing`: batches processed of all listed, and a loc.gov download pause if there is one.
    - `idle`: "Idle: the last update went live on Sep 29 at 14:23 UTC." and the next scheduled run, or "No run is scheduled."
