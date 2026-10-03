@@ -57,7 +57,7 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["compression-gzip", "cors", "fs", "set-header", "timeout", "trace"] }
+tower-http = { version = "0.7", features = ["compression-gzip", "cors", "fs", "set-header", "timeout", "trace"] }
 tracing = "0.1"
 tracing-opentelemetry = { version = "0.33", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
