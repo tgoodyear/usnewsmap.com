@@ -145,7 +145,7 @@ test("llms.txt is plain text that describes the site and the API", async ({ requ
   expect(body).toMatch(/^# US News Map\n/);
   expect(body).toMatch(/^> /m);
   expect(body).toContain("https://api.usnewsmap.com/v1");
-  for (const route of ["meta", "aggregate", "hits", "places", "coverage"]) {
+  for (const route of ["meta", "aggregate", "hits", "places", "coverage", "status"]) {
     expect(body).toContain(`/v1/${route}`);
   }
 });

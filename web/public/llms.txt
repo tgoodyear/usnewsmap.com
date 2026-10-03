@@ -31,11 +31,12 @@ Search parameters, shared by `/v1/aggregate` and `/v1/hits`:
 - `lang`: comma-separated three-letter language codes from the `languages` list in `/v1/meta`, such as `eng`, `ger` or `spa`.
 - `front=true`: front pages only.
 - `bucket`: `auto`, `year`, `month`, `week` or `day`.
+- `fuzzy`: `1` or `2` matches words within that many letter edits, for OCR errors. It only works when `capabilities.fuzzy` in `/v1/meta` is `true`; otherwise the API answers `422` (`/errors/unsupported`).
 - `v`: an `index_version`. If it is not the one being served, the API redirects (307) to the current one.
 
 ## API usage guidelines
 
-- Requests are rate limited per client address. A `429` comes with a `Retry-After` header; wait that many seconds before trying again. A `503` with `Retry-After` means the service is busy; wait the same way.
+- Requests are rate limited per client address. A `429` comes with a `Retry-After` header; wait that many seconds before trying again. A `503` also has `Retry-After`; read its problem `type` and `hint`. `/errors/busy` means wait and send the same request again. `/errors/backend-timeout` means the search did not finish in time: narrow the dates or add filters before retrying, rather than repeating the same request.
 - A search nobody has run recently can take a while. The API then answers `202` with `{"status":"computing"}` and a `Retry-After` of a few seconds, and keeps working on it. Send the same request again after that wait to get the result. Results are cached, so a repeated request is cheap.
 - Prefer one `/v1/aggregate` request with a wide date range and a coarse `bucket` (such as `year`) over many narrow ones.
 - Link people to the loc.gov pages that `/v1/hits` returns, so they can read the original newspaper.
