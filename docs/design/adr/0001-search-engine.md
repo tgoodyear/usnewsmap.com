@@ -2,11 +2,11 @@
 
 - **Status:** Proposed. Becomes final after Spike S-2 (see [10](../10-roadmap-and-risks.md#102-validation-spikes)). The correctness half of S-2 has passed on Quickwit 0.9.1 ([05 §5.5.1](../05-search-and-storage.md#551-quickwit-index-config-validated-in-s-2)), except fuzzy terms, which Quickwit doesn't support (R-15). The 1M-page benchmark is still to run.
 - **Date:** 2026-09
-- **Deciders:** Project owner, lead engineer
+- **Deciders:** Maintainer, lead engineer
 
 ## Context
 
-We need phrase and proximity search over about 23M OCR'd newspaper pages (roughly 450–800 GB of text). The primary query is a **nested aggregation**, *place × time bucket*, over **all** matches, not a ranked top-k. The legacy system used self-managed Solr, which is now ruled out by the "no servers" constraint ([ADR-0005](0005-sustainability-constraints.md)). The owner asked us to lean on Azure PaaS for document storage and retrieval.
+We need phrase and proximity search over about 23M OCR'd newspaper pages (roughly 450–800 GB of text). The primary query is a **nested aggregation**, *place × time bucket*, over **all** matches, not a ranked top-k. The legacy system used self-managed Solr, which is now ruled out by the "no servers" constraint ([ADR-0005](0005-sustainability-constraints.md)). The maintainer asked us to lean on Azure PaaS for document storage and retrieval.
 
 ## Decision
 

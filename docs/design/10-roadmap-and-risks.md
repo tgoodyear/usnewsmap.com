@@ -52,9 +52,9 @@ gantt
 
 | # | Risk | Likelihood | Impact | Mitigation | Owner |
 |---|------|-----------|--------|-----------|-------|
-| R-1 | **Sustainability again**: the maintainer leaves and the bills lapse | Med | High | < $80/mo (fits a personal card or a small departmental budget); IaC; runbooks; institutional sponsor owns the subscription and domain; ≥ 2 admins; handover runbook ([ADR-0005](adr/0005-sustainability-constraints.md)) | Owner |
+| R-1 | **Sustainability again**: the maintainer leaves and the bills lapse | Med | High | < $80/mo (fits a personal card or a small departmental budget); IaC; runbooks; institutional sponsor owns the subscription and domain; ≥ 2 admins; handover runbook ([ADR-0005](adr/0005-sustainability-constraints.md)) | Maintainer |
 | R-2 | Quickwit fails S-2 (latency on high-frequency terms, pre-1970 dates, cache limits) | Med | Med | Integer bucket fields; Dedicated workload profile; fallback to Elastic on Azure or AI Search via the `SearchBackend` trait | Eng |
-| R-3 | AI Search chosen, but budget can't sustain ~$3–6k/mo | Med (if chosen) | High | Only choose A with committed multi-year funding; otherwise B | Owner |
+| R-3 | AI Search chosen, but budget can't sustain ~$3–6k/mo | Med (if chosen) | High | Only choose A with committed multi-year funding; otherwise B | Maintainer |
 | R-4 | LoC changes bulk formats or endpoints again (as in 2025) | Med | Med | The curated lake decouples the site from the source, so the site keeps serving; a parser schema check in `discover`; follow the NDNP news feed | Eng |
 | R-5 | Bulk download throttled; backfill slow. Archives not in LoC's CDN cache downloaded at 0.3–1.2 MB/s in the September 2026 trial (04 §4.1.2) | High | Med | Measure a cache-miss download from Azure before the backfill; start early; respect limits; validated mirror as accelerator; the backfill is one-time | Eng |
 | R-6 | Quickwit project cadence slows after the acquisition | Low–Med | Med | Apache-2.0; pin versions; Tantivy maintained independently; backend abstraction | Eng |
@@ -67,10 +67,10 @@ gantt
 | R-17 | **Unmerged splits make cold searches slow, and the writer's disk fills.** The September 2026 releases committed every 10 s and exited about 30 s after ingest, so indexes were left in many small splits (cold searches cost 4.5–5 s whatever the match count); two deltas filled the writer's disk, killing indexers and failing merges | High (confirmed) | Med | Batch ingest settings and a `limit_merge` policy with a 100,000-page target (a million pages ran the writer out of memory while uploading, October 2026; 08 §8.4), so the corpus is about 220 splits; the release waits for merges, closes the index after its final merges, and fails rather than publish half merged, on a full disk or when the writer dies (naming an out-of-memory kill); split counts per index in the log and the manifest (05 §5.5.1). A 128 GiB NFS scratch share for the writer (08 §8.4, about $21/month). The merge wait adds up to 4 hours to a release (about 1.7 h for a full rebuild, R-16). Indexes built before the fix keep their splits until a full release rebuilds them | Eng |
 | R-8 | OCR quality misleads users (false negatives) | High | Med | OCR-tolerant mode; "pages containing" wording; improved NDNP-Open-OCR re-ingestion; methodology page | Product |
 | R-9 | Geographic misattribution (titles that moved; county-level fallbacks) | Med | Low | Precision flags; date-ranged places; overrides reviewed in PRs | Eng |
-| R-10 | Rust maintainer pool is thin | Low–Med | Med | Small, well-tested API; OpenAPI contract; documented rewrite path ([ADR-0004](adr/0004-rust-api.md)) | Owner |
-| R-11 | Legacy secrets in the public legacy repo are still valid | Unknown | Med | **Revoke the Google Places key and Mapbox token now**; history rewrite optional (the keys are already exposed, so revocation is what matters) | Owner |
+| R-10 | Rust maintainer pool is thin | Low–Med | Med | Small, well-tested API; OpenAPI contract; documented rewrite path ([ADR-0004](adr/0004-rust-api.md)) | Maintainer |
+| R-11 | Legacy secrets in the public legacy repo are still valid | Unknown | Med | **Revoke the Google Places key and Mapbox token now**; history rewrite optional (the keys are already exposed, so revocation is what matters) | Maintainer |
 
-## 10.4 Open questions for the owner
+## 10.4 Open questions for the maintainer
 
 1. **Funding and sponsor.** Is there an institution (UGA Libraries / eHistory, GTRI, a state newspaper project, LoC Labs) willing to own the subscription? This decides Option A vs B and the handover story.
 2. **Speed vs budget.** At the $80 ceiling, Quickwit on a 1–2 vCPU sidecar is the only search option; managed AI Search (~$2–6k/mo) is out of reach. Are slower uncached searches for very common words (5–15 s) acceptable, or should the searcher start at 2 vCPU / 4 GiB? With private networking (~$17/mo, [ADR-0008](adr/0008-private-networking.md)) the 2 vCPU option puts a typical month at ~$87–102, over $80. The choices are: raise the ceiling to ~$100; keep private networking and the 1 vCPU searcher (~$72); or trade private endpoints for search speed.

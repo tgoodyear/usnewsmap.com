@@ -54,7 +54,7 @@ This is the most consequential decision in the design. The legacy system's singl
   | S3 × 2 × 1 | 2 TB | ~$3,900 |
 
   Storage-optimized (L) tiers also have **higher query latency** by design, which matters for large aggregations.
-- **Preview features are acceptable** to the owner, so the preview hierarchical facets would satisfy R2. Cost is the blocker: the cheapest tier that fits the index (S3 or L1) is about $2–2.8k/month, **25–35× the lean budget**. The preview **Serverless Developer** tier caps an index at 1 GB, so it can't hold the corpus.
+- **Preview features are acceptable** to the maintainer, so the preview hierarchical facets would satisfy R2. Cost is the blocker: the cheapest tier that fits the index (S3 or L1) is about $2–2.8k/month, **25–35× the lean budget**. The preview **Serverless Developer** tier caps an index at 1 GB, so it can't hold the corpus.
 - **Verdict:** Functionally strong and the least operations work, but far outside the budget. **This is the recommended alternative if funding allows** (e.g. a grant or institutional sponsor covering about $35–70k per year), or if semantic search (R10) becomes a priority.
 
 ### Option B: Quickwit on Azure Container Apps, index on Azure Blob ✅ *recommended*

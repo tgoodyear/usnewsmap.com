@@ -1,0 +1,34 @@
+# Contributing
+
+Issues and pull requests are welcome. For anything bigger than a small fix, open an issue first so the approach can be agreed before you write the code.
+
+The [design documents](docs/design/README.md) explain how the system works and why. If a change alters a decision recorded there, update the document or the [ADR](docs/design/adr/README.md) in the same pull request.
+
+## Run the checks
+
+CI runs these on every pull request. Run them before you push:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+
+cd web
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```
+
+For changes under `infra/`, also run `scripts/ci/lint-bicep.sh` and `bicep build infra/main.bicep` (`scripts/ci/install-bicep.sh` shows the Bicep version CI uses). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [README](README.md#against-quickwit).
+
+## Rules
+
+- **Entra ID only.** Every service signs in with a managed identity. Don't add account keys, SAS tokens, connection strings with keys or instrumentation keys ([ADR-0009](docs/design/adr/0009-entra-identity-only.md)). `scripts/ci/no-shared-keys.sh` fails the build if one appears.
+- **No real data from production.** Never commit search log content or real search queries ([ADR-0012](docs/design/adr/0012-anonymous-search-log.md)), production logs, traces or data dumps. Tests use the synthetic corpus in `fixtures/`. `python3 fixtures/generate.py` rebuilds it, and CI checks that the result matches what is committed.
+- **No secrets.** The repository holds none, and pull requests never get Azure access. Only `main` deploys, through its GitHub Environment.
+
+## Pull requests
+
+Keep each pull request to one change, and say what it changes and how you tested it. CI skips the jobs a change can't affect, so an infrastructure-only fix doesn't wait on the Rust and web builds.

@@ -12,7 +12,7 @@ The data services already refused keys: Blob (`allowSharedKeyAccess: false`) and
 - Log Analytics and Application Insights still accepted key-based ingestion;
 - the Static Web App deployed with its deployment token (resolved by ADR-0010, below).
 
-The owner made the rule foundational: **every authentication is by an Entra identity authorized with Azure RBAC.**
+The maintainer made the rule foundational: **every authentication is by an Entra identity authorized with Azure RBAC.**
 
 ## Decision
 

@@ -8,7 +8,7 @@
 
 `azd provision` ran an incremental ARM deployment. Resources removed from the Bicep stayed in Azure and kept billing, until someone deleted them by hand. Replacing the Static Web App (ADR-0010) is an example: bootstrap had to delete it explicitly. Nothing stopped a person deleting a managed resource in the portal, either.
 
-Azure **deployment stacks** track the resources a template deploys. They can delete resources that leave the template (`actionOnUnmanage`) and block deletes made outside the stack (`denySettings`). Deployment stacks are GA in ARM. azd supports them only as an alpha feature, switched on per machine (`azd config set alpha.deployment.stacks on`), and its documentation ties `actionOnUnmanage` to `azd down` rather than to ordinary updates. Beyond deploying, azd only stored settings and substituted them into `main.parameters.json`. The owner agreed to drop azd if that helped.
+Azure **deployment stacks** track the resources a template deploys. They can delete resources that leave the template (`actionOnUnmanage`) and block deletes made outside the stack (`denySettings`). Deployment stacks are GA in ARM. azd supports them only as an alpha feature, switched on per machine (`azd config set alpha.deployment.stacks on`), and its documentation ties `actionOnUnmanage` to `azd down` rather than to ordinary updates. Beyond deploying, azd only stored settings and substituted them into `main.parameters.json`. The maintainer agreed to drop azd if that helped.
 
 ## Decision
 

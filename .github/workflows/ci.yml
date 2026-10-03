@@ -31,9 +31,10 @@ jobs:
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: f
         run: scripts/ci/changes.sh
         env:
@@ -45,11 +46,14 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -63,9 +67,13 @@ jobs:
       QUICKWIT_VERSION: v0.9.1
       QUICKWIT_SHA256: ad67c2e2aab79e810906dfebec694aa50b07a001aaa75ce3ba7bc32d079f8185
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install Quickwit
         run: scripts/ci/install-quickwit.sh
       - name: Load fixtures, serve them from a read-only searcher
@@ -86,7 +94,9 @@ jobs:
     name: fixtures are reproducible
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - run: python3 fixtures/generate.py
       - run: git diff --exit-code fixtures/data
 
@@ -100,9 +110,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           tags: usnewsmap-api:check
@@ -111,7 +123,7 @@ jobs:
           cache-to: type=gha,scope=api,mode=max
       - name: The API image serves the API and the site
         run: scripts/ci/check-api-image.sh usnewsmap-api:check
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.ingest
@@ -128,7 +140,9 @@ jobs:
     env:
       BICEP_VERSION: v0.47.16
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Install Bicep
         run: scripts/ci/install-bicep.sh
       - name: Lint (any warning fails)
@@ -152,8 +166,10 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
@@ -171,10 +187,14 @@ jobs:
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
@@ -186,9 +206,10 @@ jobs:
         env:
           CI: "1"
       - if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: playwright-report
+          retention-days: 7
           path: |
             web/playwright-report
             web/test-results
@@ -215,6 +236,7 @@ jobs:
         environment: ${{ fromJSON(vars.USNM_DEPLOY_ENVIRONMENTS || '[]') }}
     environment: ${{ matrix.environment }}
     runs-on: ubuntu-latest
+    # id-token: the Azure sign-in below uses OIDC, so no secret is stored.
     permissions:
       contents: read
       id-token: write
@@ -227,7 +249,9 @@ jobs:
       RG: ${{ vars.USNM_RESOURCE_GROUP }}
       QUICKWIT: quickwit/quickwit@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       # Only the commit main points at publishes: a slower run for an older
       # commit must not replace newer images.
       - name: Is this still the head of main?
@@ -236,7 +260,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: scripts/ci/head-of-main.sh
       - if: steps.head.outputs.current == 'true'
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.USNM_CI_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -244,9 +268,9 @@ jobs:
       - if: steps.head.outputs.current == 'true'
         run: az acr login --name "${ACR%%.*}"
       - if: steps.head.outputs.current == 'true'
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - if: steps.head.outputs.current == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: true
@@ -255,7 +279,7 @@ jobs:
             ${{ env.ACR }}/usnewsmap-api:main
             ${{ env.ACR }}/usnewsmap-api:${{ github.sha }}
       - if: steps.head.outputs.current == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.ingest
