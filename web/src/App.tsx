@@ -288,7 +288,6 @@ export function App() {
       places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
       states={frame ? frame.statePages.filter((p) => p > 0).length : 0}
       unit={data.bucket.unit}
-      version={version}
     />
   ) : (
     <Legend />

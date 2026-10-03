@@ -58,20 +58,20 @@ describe("MeasureToggle", () => {
 describe("SkewLegend", () => {
   afterEach(cleanup);
 
-  it("says what was compared, over what, and the index version", () => {
-    const { container } = render(<SkewLegend places={398} states={42} unit="month" version="pages-v1" />);
+  it("says what was compared and over what, without the index version", () => {
+    const { container } = render(<SkewLegend places={398} states={42} unit="month" />);
     const text = container.textContent ?? "";
     expect(text).toContain("compared with the other 397 places with pages in this window, in 42 states, over the same months");
     expect(text).toContain("1× is the same rate");
-    expect(text).toContain("Index pages-v1");
+    expect(text).not.toContain("Index");
     expect(text).not.toMatch(/[—]/);
   });
 
   it("says when there is nothing to compare with", () => {
-    const { container } = render(<SkewLegend places={1} states={1} unit="year" version="v" />);
+    const { container } = render(<SkewLegend places={1} states={1} unit="year" />);
     expect(container.textContent).toContain("No other place has pages in this window");
     cleanup();
-    const two = render(<SkewLegend places={2} states={1} unit="year" version="v" />);
+    const two = render(<SkewLegend places={2} states={1} unit="year" />);
     expect(two.container.textContent).toContain("the other 1 place with pages in this window, in 1 state, over the same years");
   });
 });
