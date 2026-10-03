@@ -843,6 +843,28 @@ async fn serves_the_site_alongside_the_api() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!body.contains("id=root"));
     assert!(!header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
+    for uri in ["/favicon.svg/", "/assets/missing.js"] {
+        let resp = app(s.clone())
+            .oneshot(
+                Request::builder()
+                    .method("HEAD")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri}");
+        assert!(
+            resp.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .is_empty(),
+            "{uri}"
+        );
+    }
 
     let resp = app(s.clone())
         .oneshot(

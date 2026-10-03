@@ -112,6 +112,10 @@ async fn app_route(req: Request, index: PathBuf) -> Response {
         .next()
         .unwrap_or_default();
     if path.starts_with("/assets/") || (last.contains('.') && !is_app_page(path)) {
+        // HEAD gets the status without a body.
+        if req.method() == Method::HEAD {
+            return StatusCode::NOT_FOUND.into_response();
+        }
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
