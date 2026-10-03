@@ -62,7 +62,7 @@ tracing = "0.1"
 tracing-opentelemetry = { version = "0.33", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 unicode-normalization = "0.1"
-zstd = "0.13"
+zstd = "0.14"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
