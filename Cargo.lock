@@ -1408,6 +1408,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cdb0b1b267eb9db3331b434ed9ddab10d50e280a9adf9d13e5233e2002b61b5"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror",
+]
+
+[[package]]
 name = "opentelemetry-application-insights"
 version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1420,8 +1433,8 @@ dependencies = [
  "flate2",
  "http",
  "once_cell",
- "opentelemetry",
- "opentelemetry-http",
+ "opentelemetry 0.32.0",
+ "opentelemetry-http 0.32.0",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "serde",
@@ -1439,7 +1452,19 @@ dependencies = [
  "async-trait",
  "bytes",
  "http",
- "opentelemetry",
+ "opentelemetry 0.32.0",
+]
+
+[[package]]
+name = "opentelemetry-http"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee2c3625b8aa04209f7e01e513bc8044da9687fa38a9eacf59628ca5f3b87300"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "opentelemetry 0.33.0",
 ]
 
 [[package]]
@@ -1457,7 +1482,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "percent-encoding",
  "portable-atomic",
  "rand 0.9.5",
@@ -2352,7 +2377,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
 dependencies = [
  "js-sys",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
@@ -2462,7 +2487,7 @@ dependencies = [
  "governor",
  "http-body-util",
  "moka",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "serde",
  "serde_json",
  "sha2",
@@ -2508,7 +2533,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "parquet",
  "reqwest",
  "rustix",
@@ -2585,9 +2610,9 @@ dependencies = [
  "axum",
  "chrono",
  "flate2",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "opentelemetry-application-insights",
- "opentelemetry-http",
+ "opentelemetry-http 0.33.0",
  "opentelemetry_sdk",
  "reqwest",
  "serde_json",

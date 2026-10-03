@@ -46,7 +46,7 @@ moka = { version = "0.12", features = ["future"] }
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
 opentelemetry-application-insights = { version = "0.45", default-features = false, features = ["trace", "metrics"] }
-opentelemetry-http = { version = "0.32", default-features = false }
+opentelemetry-http = { version = "0.33", default-features = false }
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
