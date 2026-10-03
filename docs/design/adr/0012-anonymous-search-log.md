@@ -6,7 +6,7 @@
 
 ## Context
 
-The owner wants to know what people search for, over years: "We should be storing the search terms forever. Don't need to store them alongside any identifying information though." Until now search text reached storage only by accident (the Quickwit sidecar's info log, 30 days, fixed in PR #58), and the design promised daily aggregates with k ≥ 5 that were never built.
+The maintainer wants to know what people search for, over years: "We should be storing the search terms forever. Don't need to store them alongside any identifying information though." Until now search text reached storage only by accident (the Quickwit sidecar's info log, 30 days, fixed in PR #58), and the design promised daily aggregates with k ≥ 5 that were never built.
 
 Two things make a naive log identifying on a small site:
 

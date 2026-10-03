@@ -1,6 +1,8 @@
-# usnewsmap.com
+# US News Map
 
-Revival of **US News Map**: search two centuries of American newspapers from the Library of Congress's [Chronicling America](https://www.loc.gov/collections/chronicling-america/) collection and watch where and when words and stories spread across the country.
+[US News Map](https://usnewsmap.com) searches [Chronicling America](https://www.loc.gov/collections/chronicling-america/), the National Endowment for the Humanities and Library of Congress collection of digitized American newspapers, and maps every matching page by where and when it was printed. Play the timeline to watch a word or a story move across the country.
+
+This repository holds the whole system: the search API and ingest pipeline in Rust, the web app in React, the Azure infrastructure in Bicep, and the design documents.
 
 The original site (2015–2016, Georgia Tech Research Institute and eHistory.org at the University of Georgia) is preserved at [`tgoodyear/usnewsmap`](https://github.com/tgoodyear/usnewsmap).
 
@@ -22,11 +24,11 @@ Start with the **[design document](docs/design/README.md)**: background, require
 | `fixtures/` | A small **synthetic** corpus for local development and tests (not real newspaper data) |
 | `docs/design/` | The design document set |
 
-Not yet built: `titles-sync` and `geocode`, and the ingest jobs in Azure (see [04 §4.4](docs/design/04-data-sources-and-ingestion.md#44-pipeline)). Until the first index is published, the infrastructure runs the API on synthetic fixtures (`USNM_SEARCH_BACKEND=fixtures`); the Quickwit sidecar is ready behind `USNM_SEARCH_BACKEND=quickwit`.
+In production, the API searches through a Quickwit sidecar, using indexes the ingest pipeline builds from Chronicling America's batches. Locally and in CI, the API serves the small synthetic corpus in `fixtures/`, so you don't need an Azure account or the real data to run it.
 
 ## Local development
 
-Requires a stable Rust toolchain (see `rust-toolchain.toml`).
+Requires a stable Rust toolchain (see `rust-toolchain.toml`). The web app also needs Node.js 22.
 
 ```sh
 cargo test --workspace                 # unit + API integration tests against the fixtures
@@ -34,6 +36,8 @@ cargo run -p usnm-api                  # serves the synthetic fixture corpus on 
 curl 'localhost:8080/v1/aggregate?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31'
 curl 'localhost:8080/v1/hits?q=%22cross+of+gold%22&place=P00001&limit=5'
 ```
+
+With the API running, `cd web && npm ci && npm run dev` serves the site on `http://localhost:5173` (see [`web/README.md`](web/README.md)).
 
 ### Against Quickwit
 
@@ -53,16 +57,17 @@ Without `QUICKWIT_URL`, the parity tests skip; CI runs them in the `quickwit` jo
 `usnm-ingest` turns LoC batch archives into a published version: `enqueue` records a batch list, `curate` claims queued batches and writes curated Parquet, and `release` builds a new index (a delta, or a base with `--full`) and its reference snapshot, then writes `current.json` last. `run` does all three. To try it on the synthetic corpus, rebuilt as two batch archives:
 
 ```sh
+repo=$PWD                                                    # run from the repository root
 python3 scripts/fixture-batches.py /tmp/usnm-ingest          # archives, batches.json, reference/catalog/
 cd /tmp/usnm-ingest
-cargo run --manifest-path ~/src/usnewsmap.com/Cargo.toml -p usnm-ingest -- \
+cargo run --manifest-path "$repo/Cargo.toml" -p usnm-ingest -- \
   --state-file state.json --curated curated --reference reference \
   run --list batches.json --synthetic --index-dir reference/indexes
 USNM_DATA_DIR=/tmp/usnm-ingest/reference USNM_STATE_FILE=/tmp/usnm-ingest/state.json \
-  cargo run --manifest-path ~/src/usnewsmap.com/Cargo.toml -p usnm-api
+  cargo run --manifest-path "$repo/Cargo.toml" -p usnm-api
 ```
 
-With `USNM_STATE_FILE`, the API's `/v1/status` (and the site's `/status` page) reads the local pipeline state; in Azure it reads Cosmos (`USNM_COSMOS_ENDPOINT`). (Adjust `~/src/usnewsmap.com` to your checkout.) To index into Quickwit instead, replace `--index-dir …` with `--quickwit-bin /path/to/quickwit --quickwit-metastore file:///tmp/usnm-ingest/qw --quickwit-index-root file:///tmp/usnm-ingest/qw`; the pipeline runs its own writer node for the release.
+With `USNM_STATE_FILE`, the API's `/v1/status` (and the site's `/status` page) reads the local pipeline state; in Azure it reads Cosmos (`USNM_COSMOS_ENDPOINT`). To index into Quickwit instead, replace `--index-dir …` with `--quickwit-bin /path/to/quickwit --quickwit-metastore file:///tmp/usnm-ingest/qw --quickwit-index-root file:///tmp/usnm-ingest/qw`; the pipeline runs its own writer node for the release.
 
 In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos https://{account}.documents.azure.com/`, Blob URLs for `--curated` and `--reference`, and `--quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index`. The store, state and index-target options also read environment variables (`USNM_CURATED_URL`, `USNM_REFERENCE_URL`, `USNM_COSMOS_ENDPOINT`, `USNM_QUICKWIT_*`, …; see `usnm-ingest --help`). `enqueue` with no `--list` reads LoC's own batch listing; add `--batches name_ver01,…` to take only some.
 
@@ -123,6 +128,23 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 | `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`, `AZURE_CLIENT_ID` | set by Container Apps | Managed identity for Blob; `AZURE_CLIENT_ID` selects the user-assigned identity. Without them, the Azure CLI login is used (`az login`) |
 | `RUST_LOG` | `info` | Log filter (logs are JSON and never include query strings) |
 
+## Deployment
+
+Production runs in Azure on the lean hosting profile ([design doc 08](docs/design/08-azure-infrastructure.md)): one Container App serves the API and the site, with Quickwit as a sidecar; Container Apps jobs run the ingest pipeline; Blob Storage and Cosmos DB hold the data and the pipeline's state. Every service signs in with an Entra ID managed identity. There are no account keys, SAS tokens or connection strings with keys ([ADR-0009](docs/design/adr/0009-entra-identity-only.md)), and CI fails if one appears (`scripts/ci/no-shared-keys.sh`).
+
+`scripts/bootstrap.sh` creates or updates an environment as one deployment stack ([`infra/README.md`](infra/README.md)). When a commit on `main` changes the images and the checks pass, the `publish` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) signs in to Azure through OIDC from each GitHub Environment listed in `USNM_DEPLOY_ENVIRONMENTS` (`prod` for the live site), pushes the images and rolls the API onto the new commit. Pull requests only run the checks.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). To report a vulnerability, follow [SECURITY.md](SECURITY.md) and don't open a public issue.
+
+## Credits
+
+- Newspaper pages, OCR text and title records, the source of most place coordinates: [Chronicling America](https://www.loc.gov/collections/chronicling-america/), from the [National Digital Newspaper Program](https://www.loc.gov/ndnp/) of the National Endowment for the Humanities and the Library of Congress.
+- The original US News Map (2016): [eHistory.org](https://ehistory.org/) at the University of Georgia (Claudio Saunt and Steve Berry) and the [Georgia Tech Research Institute](https://gtri.gatech.edu/) (Trevor Goodyear, David Ediger and Zach Suffern).
+- Basemap: [OpenFreeMap](https://openfreemap.org/), with map data from [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors.
+- Built on [Quickwit](https://quickwit.io/), [MapLibre GL JS](https://maplibre.org/) and [deck.gl](https://deck.gl/).
+
 ## License
 
-Apache-2.0 (to be confirmed by the project owner).
+`Cargo.toml` and `web/package.json` declare Apache-2.0, but the repository has no LICENSE file yet, so the license isn't final. The newspaper content belongs to its sources: see the Library of Congress's [rights and access statement](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/) for Chronicling America.

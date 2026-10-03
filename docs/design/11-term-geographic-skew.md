@@ -4,7 +4,7 @@
 
 ## 11.1 The question
 
-The owner asked: can the map show where a term is covered disproportionately in one place compared with others? A city with several newspapers will have more hits for any term than a town with one, so raw counts mostly show where the newspapers are.
+The maintainer asked: can the map show where a term is covered disproportionately in one place compared with others? A city with several newspapers will have more hits for any term than a town with one, so raw counts mostly show where the newspapers are.
 
 When this was written, the site showed two things (07 §7.4):
 
@@ -304,7 +304,7 @@ The special functions are checked against known values: `ln_gamma`; the regulari
 
 ### 11.5.9 Other findings
 
-- **Language.** San Diego, CA has 0 hits for "yellow fever" where 130.6 were expected, and it is among the five most under-represented places for five of the seven searches. Its one title is the *Süd California Deutsche Zeitung*; Pittsburg, PA, among the five most under-represented for three searches, is the *Amerikanski Srbobran* (`/v1/hits`). By their names these are German- and Serbian-language papers (the snapshot's title records list languages; we did not check them). English search terms rarely match such pages, so these places read as under-represented for any English term. Phase 1 names the languages of a place's papers wherever any of them is not English (tooltip, lists, table and CSV) and scores every place the same way; phase 2 adds per-language baselines. Many titles list English as well as another language (the owner reports that LoC lists the *Amerikanski Srbobran* as Serbian and English), so a rule that only marked places whose titles are all non-English would miss the cases it was meant for.
+- **Language.** San Diego, CA has 0 hits for "yellow fever" where 130.6 were expected, and it is among the five most under-represented places for five of the seven searches. Its one title is the *Süd California Deutsche Zeitung*; Pittsburg, PA, among the five most under-represented for three searches, is the *Amerikanski Srbobran* (`/v1/hits`). By their names these are German- and Serbian-language papers (the snapshot's title records list languages; we did not check them). English search terms rarely match such pages, so these places read as under-represented for any English term. Phase 1 names the languages of a place's papers wherever any of them is not English (tooltip, lists, table and CSV) and scores every place the same way; phase 2 adds per-language baselines. Many titles list English as well as another language (the maintainer reports that LoC lists the *Amerikanski Srbobran* as Serbian and English), so a rule that only marked places whose titles are all non-English would miss the cases it was meant for.
 - **Duplicate places.** "Washington, DC" and "Washington City, DC", "Skagway, AK" and "Skaguay Alaska, AK", "Little Rock, AR" and "Little Rock Ark., AR" are separate places in the catalog. Each is scored on its own pages, so the scores are correct but split; the fix belongs in the place overrides (spike S-3, 10 §10.2).
 - **Thin early years.** 60 of the 198 years with pages have pages from fewer than 5 states. For searches in those years "the others" are a handful of places.
 
@@ -409,7 +409,7 @@ Building phase 1, and its internal review, raised these:
 | States were scored with the places' `phi`, though their own was 2 to 4 times larger | States use the larger of the two, in the Rust and the port, with a test and shared vectors (§11.4.1, "States") |
 | A place with no pages in a frame, or nothing expected, was scored at the prior alone and could be listed as "clearly" different when the prior's range excluded 1 | Such a place is shown as "can't tell", and places with no pages in the frame are left out of the lists, table, export and announcement (it is still drawn at size 0) |
 | Prefix sums for every place and bucket would take about 184 MB at 3,000 places by month | Running totals are kept per cell (§11.7) |
-| The owner asked for papers in other languages to be named, not handled differently | Every place is fitted, scored and drawn the same way; the tooltip, lists, table and CSV name the languages where any title isn't in English (§11.5.9) |
+| The maintainer asked for papers in other languages to be named, not handled differently | Every place is fitted, scored and drawn the same way; the tooltip, lists, table and CSV name the languages where any title isn't in English (§11.5.9) |
 | With few hits and no real difference between places, `alpha` reaches its bound and every place is scored at the fitted mean: in a simulated daily search (12 places, 17 hits, `mu` 0.87 by chance) every place's interval was 0.872 to 0.875, so all 12 were "clearly below" | The scoring shape adds the uncertainty in the fitted mean (§11.4.1 step 4), with a test. Estimates and bounds for the seven searches move by less than 0.1; for cross of gold Washington, DC is now flagged below (0.49 to 0.99, before 0.50 to 1.00) |
 
 ## 11.13 Appendix: full output

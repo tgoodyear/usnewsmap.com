@@ -6,7 +6,7 @@
 
 ## Context
 
-The owner set a target of **under $80/month**. The first design (Front Door, a separate API app, a 4 vCPU / 8 GiB always-on searcher, zone-redundant storage, ACR) came to about $345 in a typical month. The owner also asked whether Front Door is needed, and allowed Spot/batch compute and preview features.
+The maintainer set a target of **under $80/month**. The first design (Front Door, a separate API app, a 4 vCPU / 8 GiB always-on searcher, zone-redundant storage, ACR) came to about $345 in a typical month. The maintainer also asked whether Front Door is needed, and allowed Spot/batch compute and preview features.
 
 ## Decision
 

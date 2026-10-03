@@ -6,7 +6,7 @@
 
 ## Context
 
-The pipeline has to track per-title (LCCN), per-batch, per-issue and per-index-run state: discovery, curation, indexing, errors, retries, versions and geocode review. The owner suggested Cosmos DB for this *state*, explicitly not for full text. The first draft used JSON manifests on Blob with ETag concurrency.
+The pipeline has to track per-title (LCCN), per-batch, per-issue and per-index-run state: discovery, curation, indexing, errors, retries, versions and geocode review. The maintainer suggested Cosmos DB for this *state*, explicitly not for full text. The first draft used JSON manifests on Blob with ETag concurrency.
 
 ## Decision
 
