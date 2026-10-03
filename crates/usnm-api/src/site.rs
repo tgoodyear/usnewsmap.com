@@ -63,9 +63,14 @@ pub fn router(dir: PathBuf) -> Router {
 }
 
 /// The paths the app renders a page for (`web/src/route.ts`), with or
-/// without a trailing slash.
+/// without a trailing slash. `/index.html` is the home page's file, which
+/// `ServeDir` serves directly; since tower-http 0.7 it no longer serves a
+/// file at a path with a trailing slash, so `/index.html/` comes here.
 fn is_app_page(path: &str) -> bool {
-    matches!(path.trim_end_matches('/'), "" | "/status" | "/privacy")
+    matches!(
+        path.trim_end_matches('/'),
+        "" | "/status" | "/privacy" | "/index.html"
+    )
 }
 
 /// The shell for `path`: the privacy page's head names that page, not the
@@ -99,8 +104,14 @@ fn shell_for(path: &str, index: Vec<u8>) -> Vec<u8> {
 /// the app has a page there), else a plain 404.
 async fn app_route(req: Request, index: PathBuf) -> Response {
     let path = req.uri().path();
-    let last = path.rsplit('/').next().unwrap_or_default();
-    if path.starts_with("/assets/") || last.contains('.') {
+    // The last segment ignoring a trailing slash, so `/favicon.svg/` is a
+    // missing file (a plain 404), not an app route.
+    let last = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+    if path.starts_with("/assets/") || (last.contains('.') && !is_app_page(path)) {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
@@ -226,7 +237,16 @@ mod tests {
 
     #[test]
     fn app_pages() {
-        for path in ["/", "//", "/status", "/status/", "/privacy", "/privacy/"] {
+        for path in [
+            "/",
+            "//",
+            "/status",
+            "/status/",
+            "/privacy",
+            "/privacy/",
+            "/index.html",
+            "/index.html/",
+        ] {
             assert!(is_app_page(path), "{path}");
         }
         for path in [
@@ -235,6 +255,8 @@ mod tests {
             "/does-not-exist",
             "/status/x",
             "/privacy/x",
+            "/index.html/x",
+            "/favicon.svg/",
         ] {
             assert!(!is_app_page(path), "{path}");
         }

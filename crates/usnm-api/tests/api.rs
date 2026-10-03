@@ -838,6 +838,12 @@ async fn serves_the_site_alongside_the_api() {
         "public, max-age=3600"
     );
 
+    // A file path with a trailing slash is a missing file, not an app route.
+    let (status, h, body) = get_site(&s, "/favicon.svg/", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!body.contains("id=root"));
+    assert!(!header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
+
     let resp = app(s.clone())
         .oneshot(
             Request::builder()
@@ -1073,4 +1079,74 @@ async fn a_snapshot_without_pages_per_title_still_loads() {
     let err = RefData::load(&store).await.unwrap_err();
     assert!(err.contains("title_pages.json does not match"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn api_responses_are_compressed_and_cors_is_limited_to_allowed_origins() {
+    let mut cfg = config();
+    cfg.allowed_origins = vec!["https://usnewsmap.com".to_owned()];
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let send = |origin: &'static str, encoding: Option<&'static str>| {
+        let s = s.clone();
+        async move {
+            let mut req = Request::builder()
+                .uri("/v1/meta")
+                .header(header::ORIGIN, origin);
+            if let Some(e) = encoding {
+                req = req.header(header::ACCEPT_ENCODING, e);
+            }
+            app(s)
+                .oneshot(req.body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        }
+    };
+    let vary = |h: &axum::http::HeaderMap| {
+        h.get_all(header::VARY)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_ascii_lowercase())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    // Gzip when accepted, with the CORS header for an allowed origin.
+    let resp = send("https://usnewsmap.com", Some("gzip")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let h = resp.headers().clone();
+    assert_eq!(header_str(&h, header::CONTENT_ENCODING), "gzip");
+    assert_eq!(
+        header_str(&h, header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        "https://usnewsmap.com"
+    );
+    assert!(vary(&h).contains("accept-encoding"), "{}", vary(&h));
+    assert!(vary(&h).contains("origin"), "{}", vary(&h));
+    let gzipped = resp.into_body().collect().await.unwrap().to_bytes();
+    let mut gz = flate2::read::GzDecoder::new(&gzipped[..]);
+    let mut json = String::new();
+    std::io::Read::read_to_string(&mut gz, &mut json).unwrap();
+    let meta: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(meta["index_version"], "fixture-v1");
+
+    // Identity when compression isn't asked for, or is refused in favour of identity.
+    for encoding in [None, Some("identity"), Some("gzip;q=0")] {
+        let resp = send("https://usnewsmap.com", encoding).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{encoding:?}");
+        assert_eq!(
+            header_str(resp.headers(), header::CONTENT_ENCODING),
+            "",
+            "{encoding:?}"
+        );
+    }
+
+    // Another origin gets the response but no CORS grant.
+    let resp = send("https://elsewhere.example", None).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        header_str(resp.headers(), header::ACCESS_CONTROL_ALLOW_ORIGIN),
+        ""
+    );
 }
