@@ -175,14 +175,14 @@ describe("rightNow", () => {
   it("merging: where the merge is", () => {
     const merge = { step: "settle", splits: 227, merges_running: 1, merges_queued: 20 };
     expect(rightNow(status({ now: "merging", merge }), NOW).text).toBe(
-      "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live. First pass: 227 pieces, 1 merge running, 20 waiting.",
+      "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live. Index still open: 227 pieces, 1 merge running, 20 waiting.",
     );
-    const final = { step: "finalize", splits: 1, merges_running: 2, merges_queued: 0 };
+    const final = { step: "finalize", splits: 9, merges_running: 2, merges_queued: 0 };
     expect(rightNow(status({ now: "merging", merge: final }), NOW).text).toMatch(
-      / Final merges, with the index closed to new pages: 1 piece, 2 merges running, 0 waiting\.$/,
+      / Index closed for its final merges: 9 pieces, 2 merges running, 0 waiting\.$/,
     );
     expect(steps(status({ now: "merging", merge }), NOW)[2]!.detail).toBe(
-      "Every page sent; first pass: 227 pieces, 1 merge running, 20 waiting",
+      "Every page sent. Index still open: 227 pieces, 1 merge running, 20 waiting",
     );
   });
 

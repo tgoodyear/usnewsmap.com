@@ -176,8 +176,8 @@ function mergeDetail(a: Activity | null | undefined): string | null {
   const pieces = `${count(m.splits)} ${m.splits === 1 ? "piece" : "pieces"}`;
   const work = `${count(m.merges_running)} ${m.merges_running === 1 ? "merge" : "merges"} running, ${count(m.merges_queued)} waiting`;
   return m.step === "finalize"
-    ? `Final merges, with the index closed to new pages: ${pieces}, ${work}`
-    : `First pass: ${pieces}, ${work}`;
+    ? `Index closed for its final merges: ${pieces}, ${work}`
+    : `Index still open: ${pieces}, ${work}`;
 }
 
 /** How the last (or, while one runs, the previous) run ended, when that matters. */
@@ -278,7 +278,7 @@ export function steps(s: Status, now: number): Step[] {
     indexDetail = `${count(a.done)} of ${count(a.total)} pages sent`;
   } else if (doing === "merging") {
     const m = mergeDetail(a);
-    indexDetail = `Every page sent; ${m ? m.charAt(0).toLowerCase() + m.slice(1) : "merging the index"}`;
+    indexDetail = m ? `Every page sent. ${m}` : "Every page sent; merging the index";
   } else if (t && t.unpublished_batches !== null) {
     indexDetail =
       t.unpublished_batches === 0
