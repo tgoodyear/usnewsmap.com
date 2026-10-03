@@ -88,12 +88,6 @@ pub(crate) async fn coverage_in(
     }
 
     let langs = raw.langs()?;
-    if !snap.refdata.has_baselines_for(&langs) {
-        return Err(ApiError::Unsupported(
-            "a language filter on a version published before pages were counted per language"
-                .into(),
-        ));
-    }
 
     let canonical = {
         let mut canon = form_urlencoded::Serializer::new(String::new());
@@ -113,6 +107,13 @@ pub(crate) async fn coverage_in(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
+    // After the version check, so a request for another version is redirected.
+    if !snap.refdata.has_baselines_for(&langs) {
+        return Err(ApiError::Unsupported(
+            "a language filter on a version published before pages were counted per language"
+                .into(),
+        ));
+    }
     let key = format!("{serving}|coverage|{canonical}");
     let compute = async move {
         let rd = &snap.refdata;

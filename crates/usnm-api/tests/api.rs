@@ -257,6 +257,10 @@ async fn lang_filter_on_an_older_snapshot_has_no_baseline() {
     assert!(body["total"]["baseline_pages"].is_null());
     let (status, _, _) = get(&s, "/v1/coverage?lang=ger").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // A request for another version is redirected, not rejected.
+    let (status, headers, _) = get(&s, "/v1/coverage?lang=ger&v=pages-v-other").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
     // Searches without a language filter are unaffected.
     let (_, _, body) = get(&s, "/v1/aggregate?q=gold").await;
     assert!(body["cube"]["baseline_ref"].is_string());
