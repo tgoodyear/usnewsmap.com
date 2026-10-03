@@ -85,14 +85,69 @@ test("an unknown path shows the not-found page", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1 })).toContainText("newspapers");
 });
 
+/** robots.txt groups (RFC 9309): consecutive `User-agent` lines share the rules after them. */
+function robotsGroups(body: string): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+  let agents: string[] = [];
+  let inRules = false;
+  for (const raw of body.split("\n")) {
+    const line = raw.replace(/#.*/, "").trim();
+    const m = /^([A-Za-z-]+):\s*(.*)$/.exec(line);
+    if (!m) continue;
+    const key = m[1] ?? "";
+    const value = m[2] ?? "";
+    if (key.toLowerCase() === "user-agent") {
+      if (inRules) agents = [];
+      inRules = false;
+      agents.push(value.toLowerCase());
+      groups.set(value.toLowerCase(), []);
+    } else if (/^(allow|disallow)$/i.test(key) && agents.length) {
+      inRules = true;
+      for (const a of agents) groups.get(a)?.push(`${key}: ${value}`);
+    }
+  }
+  return groups;
+}
+
+// The user-initiated fetchers of AI assistants, acting for a person (not crawlers).
+const AI_USER_AGENTS = [
+  "Claude-User",
+  "ChatGPT-User",
+  "Perplexity-User",
+  "MistralAI-User",
+  "Google-Agent",
+];
+
 test("robots.txt keeps crawlers off the API and names the sitemap", async ({ request }) => {
   const res = await request.get("/robots.txt");
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toMatch(/^text\/plain/);
   const body = await res.text();
-  expect(body).toMatch(/^User-agent: \*$/m);
-  expect(body).toMatch(/^Disallow: \/v1\/$/m);
+  const groups = robotsGroups(body);
+  expect(groups.get("*")).toEqual(["Allow: /", "Disallow: /v1/", "Disallow: /api/v1/"]);
   expect(body).toMatch(new RegExp(`^Sitemap: ${SITE}/sitemap\\.xml$`, "m"));
+});
+
+test("robots.txt lets AI assistants' user-initiated fetchers use the API", async ({ request }) => {
+  const groups = robotsGroups(await (await request.get("/robots.txt")).text());
+  for (const agent of AI_USER_AGENTS) {
+    // Groups don't inherit from `*`, so each needs its own rules.
+    expect(groups.get(agent.toLowerCase()), agent).toEqual(["Allow: /"]);
+  }
+});
+
+test("llms.txt is plain text that describes the site and the API", async ({ request }) => {
+  const res = await request.get("/llms.txt");
+  expect(res.status()).toBe(200);
+  expect(res.headers()["content-type"]).toMatch(/^text\/plain/);
+  expect(res.headers()["x-robots-tag"]).toBeUndefined();
+  const body = await res.text();
+  expect(body).toMatch(/^# US News Map\n/);
+  expect(body).toMatch(/^> /m);
+  expect(body).toContain("https://api.usnewsmap.com/v1");
+  for (const route of ["meta", "aggregate", "hits", "places", "coverage"]) {
+    expect(body).toContain(`/v1/${route}`);
+  }
 });
 
 test("sitemap.xml lists the home page and the privacy page", async ({ request }) => {
