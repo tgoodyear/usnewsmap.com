@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
-rust-version = "1.85"
+rust-version = "1.95"
 repository = "https://github.com/tgoodyear/usnewsmap.com"
 
 [workspace.dependencies]
@@ -41,12 +41,12 @@ governor = "0.10"
 httpdate = "1"
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 moka = { version = "0.12", features = ["future"] }
-# Telemetry to Application Insights (usnm-telemetry). opentelemetry-application-insights
-# 0.46 needs Rust 1.95; 0.45 (opentelemetry 0.32) keeps the workspace's rust-version.
-opentelemetry = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "metrics", "internal-logs"] }
-opentelemetry-application-insights = { version = "0.45", default-features = false, features = ["trace", "metrics"] }
-opentelemetry-http = { version = "0.32", default-features = false }
+# Telemetry to Application Insights (usnm-telemetry). The opentelemetry crates move together;
+# opentelemetry-application-insights 0.46 (opentelemetry 0.33) needs Rust 1.95.
+opentelemetry = { version = "0.33", default-features = false, features = ["trace", "metrics", "internal-logs"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "metrics", "internal-logs"] }
+opentelemetry-application-insights = { version = "0.46", default-features = false, features = ["trace", "metrics"] }
+opentelemetry-http = { version = "0.33", default-features = false }
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -59,7 +59,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["compression-gzip", "cors", "fs", "set-header", "timeout", "trace"] }
 tracing = "0.1"
-tracing-opentelemetry = { version = "0.33", default-features = false }
+tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 unicode-normalization = "0.1"
 zstd = "0.14"
