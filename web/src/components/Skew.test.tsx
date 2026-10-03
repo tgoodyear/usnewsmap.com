@@ -105,7 +105,7 @@ describe("lists, tables and export", () => {
     expect(headers).toEqual(["Place", "State", "Pages published", "Matched", "Expected", "Relative rate", "90% range", "Languages"]);
     // Sorted by relative rate, highest first.
     expect(screen.getAllByRole("rowheader").map((h) => h.textContent)).toEqual(["Place b", "Place a", "Place e", "Place c", "Place d"]);
-    expect(screen.getByText("0.60 to 1.8× (can't tell)")).toBeTruthy();
+    expect(screen.getByText("0.60 to 1.8× (not enough pages to tell)")).toBeTruthy();
     cleanup();
     render(<StateTable rows={[{ state: "AL", skew: info(2, 1.5, 2.5) }]} />);
     expect(screen.getByRole("table", { name: "By state, each compared with the other states" })).toBeTruthy();

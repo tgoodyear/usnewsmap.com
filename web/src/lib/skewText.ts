@@ -43,7 +43,7 @@ export function skewSentence(name: string, s: SkewInfo): string {
   )}.`;
   const rate =
     s.dir === 0
-      ? `Can't tell whether it differs from the other places (${formatRange(s)}).`
+      ? `Not enough pages to say whether it differs from the other places (${formatRange(s)}).`
       : `About ${formatTimes(s.estimate)} the rate of the other places (${formatRange(s)}).`;
   const lang = s.languages ? ` ${s.languages}.` : "";
   return `${counts} ${rate}${lang}`;

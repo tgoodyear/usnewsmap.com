@@ -38,7 +38,7 @@ export function SkewLegend({ places, states, unit }: Props) {
       </p>
       <p className="legend__note">
         <span className="legend__swatch" style={{ background: cssSkewColor(1, ALPHA_UNCLEAR) }} aria-hidden="true" />{" "}
-        Faded: can't tell. Circle area: matches expected.
+        Faded: not enough pages to say whether this place differs from 1×. Circle area: matches expected.
       </p>
     </div>
   );

@@ -54,7 +54,7 @@ describe("relative-rate sentences", () => {
   it("says when it can't tell, and names papers in other languages", () => {
     const village = { ...mobile, observed: 1, expected: 0.04, pages: 1, estimate: 0.84, lower: 0.23, upper: 2.09, dir: 0 as const };
     expect(skewSentence("Little Rock Ark., AR", village)).toBe(
-      "Little Rock Ark., AR: 1 page matched where less than 0.1 were expected from its 1 page. Can't tell whether it differs from the other places (0.23 to 2.1×).",
+      "Little Rock Ark., AR: 1 page matched where less than 0.1 were expected from its 1 page. Not enough pages to say whether it differs from the other places (0.23 to 2.1×).",
     );
     expect(skewSentence("Pittsburg, PA", { ...mobile, languages: "Papers in Serbian and English" })).toMatch(
       /\(5\.2 to 7\.2×\)\. Papers in Serbian and English\.$/,
