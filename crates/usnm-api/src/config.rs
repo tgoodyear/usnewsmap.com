@@ -199,7 +199,7 @@ impl Config {
                 .map_err(|e| e.to_string())?,
             prewarm_log_days: num("USNM_PREWARM_LOG_DAYS", 28)?,
             prewarm_retry_first: Duration::from_secs(1),
-            ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 120)?),
+            ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 60)?),
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
             cache_bytes: num("USNM_CACHE_MB", 256)? * 1024 * 1024,
             max_cells: usnm_core::cube::MAX_CELLS,
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
         assert_eq!(c.prewarm_budget, Duration::from_secs(900));
         assert_eq!(c.prewarm_startup_budget, Duration::from_secs(300));
-        assert_eq!(c.ready_cap, Duration::from_secs(120));
+        assert_eq!(c.ready_cap, Duration::from_secs(60));
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.ingest_cron.is_none());
         assert!(c.search_log_url.is_none());

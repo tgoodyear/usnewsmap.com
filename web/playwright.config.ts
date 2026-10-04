@@ -10,6 +10,9 @@ export default defineConfig({
   testDir: "e2e",
   timeout: 30_000,
   retries: 0,
+  // CI: one worker per core (4 on GitHub's runners). Locally, 4 workers ran
+  // the suite in 50 s against 70 s for Playwright's default of half the cores.
+  workers: process.env.CI ? "100%" : undefined,
   reporter: process.env.CI ? [["line"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL,
