@@ -20,6 +20,8 @@ use usnm_search::{
 };
 
 const INDEXES: [&str; 2] = ["pages-base-fixture", "pages-delta-fixture-1"];
+/// The Japanese pages (#139), searched on their own.
+const JA_INDEX: &str = "pages-ja-fixture";
 
 fn quickwit() -> Option<QuickwitBackend> {
     let url = std::env::var("QUICKWIT_URL")
@@ -31,7 +33,7 @@ fn quickwit() -> Option<QuickwitBackend> {
 fn memory() -> MemoryBackend {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/indexes");
     let mut m = MemoryBackend::new();
-    for id in INDEXES {
+    for id in INDEXES.iter().chain([&JA_INDEX]) {
         let file = std::fs::File::open(dir.join(format!("{id}.jsonl"))).expect("fixture");
         let docs: Vec<PageDoc> = std::io::BufReader::new(file)
             .lines()
@@ -288,4 +290,68 @@ async fn prepare_accepts_published_indexes_and_refuses_missing_ones() {
         qw.prepare(&missing).await,
         Err(SearchError::Backend(_))
     ));
+}
+
+/// Japanese words, phrases, folding, mixed Latin, NEAR and filters on the
+/// Japanese index (#139): counts, series, hits and snippets as the memory
+/// backend has them. Also checks that Quickwit's query grammar takes bare
+/// CJK terms and phrases, and the `whitespace` tokenizer keeps positions.
+#[tokio::test]
+async fn japanese_searches_match_the_reference_backend() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let set = IndexSet::new(vec![JA_INDEX.to_owned()]);
+    let all = filters("1895-01-01", "1897-12-31");
+    let mut jpn = filters("1896-01-01", "1896-12-31");
+    jpn.langs = vec!["jpn".into()];
+    let mut ca = filters("1895-01-01", "1897-12-31");
+    ca.states = vec!["CA".into()];
+    let queries: Vec<(&str, Node)> = vec![
+        ("char", parse("年").unwrap()),
+        ("word", parse("戦争").unwrap()),
+        ("old form", parse("戰爭").unwrap()),
+        ("small kana", parse("がつこう").unwrap()),
+        ("katakana", parse("ニュース").unwrap()),
+        ("phrase", parse("\"米国と日本\"").unwrap()),
+        ("and", parse("東京 選挙").unwrap()),
+        ("or", parse("戦争 OR 選挙").unwrap()),
+        ("not", parse("日本 -戦争").unwrap()),
+        ("mixed latin", parse("denver 日本").unwrap()),
+        ("punctuation", parse("東京、平和").unwrap()),
+        ("near", build("米国 日本", Some(Mode::Near), 3, 0).unwrap()),
+        ("any", build("戦争 選挙", Some(Mode::Any), 0, 0).unwrap()),
+    ];
+    let mut nonzero = 0;
+    for (qname, q) in &queries {
+        for (fname, f) in [("all", &all), ("jpn 1896", &jpn), ("CA", &ca)] {
+            for spec in specs(f) {
+                let ctx = format!("{qname} / {fname} / {spec:?}");
+                let want = sorted(mem.summary(&set, q, f, &spec).await.unwrap());
+                let got = sorted(qw.summary(&set, q, f, &spec).await.expect(&ctx));
+                assert_eq!(got, want, "summary: {ctx}");
+                nonzero += usize::from(want.total_hits > 0);
+            }
+            let page = HitsQuery {
+                limit: 10,
+                ..Default::default()
+            };
+            let want = mem.hits(&set, q, f, &page).await.unwrap();
+            let got = qw.hits(&set, q, f, &page).await.expect(qname);
+            assert_eq!(got.total, want.total, "hits total: {qname} / {fname}");
+            let key =
+                |h: &usnm_search::Hit| (h.doc_id.clone(), h.snippets.clone(), h.ocr_source.clone());
+            assert_eq!(
+                got.hits.iter().map(key).collect::<Vec<_>>(),
+                want.hits.iter().map(key).collect::<Vec<_>>(),
+                "hits: {qname} / {fname}"
+            );
+        }
+    }
+    assert!(
+        nonzero > 20,
+        "only {nonzero} Japanese cases matched anything"
+    );
 }

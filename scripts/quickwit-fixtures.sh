@@ -65,9 +65,12 @@ stop() {
 }
 
 start writer
-for index in pages-base-fixture pages-delta-fixture-1; do
+for index in pages-base-fixture pages-delta-fixture-1 pages-ja-fixture; do
+  # The Japanese pages (#139) have their own mapping.
+  template=pages-index.yaml
+  [ "$index" = pages-ja-fixture ] && template=pages-ja-index.yaml
   sed -e "s|\${INDEX_ID}|${index}|" -e "s|\${INDEX_URI}|file://${work}/indexes/${index}|" \
-    "$root/infra/quickwit/pages-index.yaml" |
+    "$root/infra/quickwit/$template" |
     curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
       "$url/api/v1/indexes" > /dev/null
   curl -sf -XPOST "$url/api/v1/${index}/ingest?commit=force" \

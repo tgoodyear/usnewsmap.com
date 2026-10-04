@@ -48,6 +48,74 @@ SPREAD = {"P00001": 1, "P00002": 4, "P00004": 9, "P00005": 12, "P00003": 20, "P0
 LANGUAGES = {"P00002": ["eng", "ger"], "P00003": ["spa"], "P00006": ["ger"]}
 
 
+# A synthetic Japanese title (#139): its pages are the Japanese pages we OCR
+# ourselves, in their own index (pages-ja-fixture), with the printed text in
+# `printed` and its search tokens in `text`. The printed text uses old forms
+# (戰爭, 米國, 選擧), small kana and voiced kana, so folding is exercised.
+JA_TITLE = ("sn99000901", "Fixture Shimpo (Japanese)", "P00003", "CA", 7)
+JA_WORDS = ["日本", "東京", "米國", "戰爭", "平和", "選擧", "ニュース", "ロッキー", "新報",
+            "學校", "ガス", "收容所", "デンバー", "がっこう"]
+JA_TOPICS = {"war": "米國と日本の戰爭", "election": "選擧のニュース"}
+JA_PARTICLES = ["の", "は", "に", "を", "と", "で", "から"]
+# usnm_core::ja's folding, for the characters above only; a Rust test
+# (crates/usnm-search/tests/ja_fixture.rs) checks every document against it.
+JA_FOLD = {"國": "国", "戰": "戦", "爭": "争", "擧": "挙", "學": "学", "收": "収",
+           "ュ": "ユ", "ッ": "ツ", "っ": "つ"}
+
+
+def is_ja(c):
+    o = ord(c)
+    return 0x3041 <= o <= 0x30FF or 0x4E00 <= o <= 0x9FFF
+
+
+def ja_index_text(printed):
+    tokens, latin = [], ""
+    for c in printed + " ":
+        if c.isascii() and c.isalnum():
+            latin += c
+            continue
+        if latin:
+            tokens.append(latin.lower())
+            latin = ""
+        if is_ja(c):
+            tokens.append(JA_FOLD.get(c, c))
+    return " ".join(tokens)
+
+
+def ja_page_text(rng, topic):
+    lines = []
+    for i in range(4):
+        words = rng.sample(JA_WORDS, 5)
+        line = "".join(w + rng.choice(JA_PARTICLES) for w in words)
+        if topic and i == 1:
+            line += JA_TOPICS[topic]
+        lines.append(line + "。")
+    if rng.random() < 0.3:
+        lines.append("Denver")
+    return "\n".join(lines)
+
+
+def ja_docs():
+    """The Japanese fixture pages, from their own random stream."""
+    rng = random.Random(901)
+    lccn, _, pid, state, ordinal = JA_TITLE
+    docs, d = [], date(1896, 1, 4)
+    while d <= date(1897, 12, 25):
+        topic = "war" if date(1896, 7, 1) <= d <= date(1896, 9, 30) else (
+            "election" if date(1896, 10, 1) <= d <= date(1896, 11, 30) else None)
+        printed = ja_page_text(rng, topic)
+        docs.append({
+            "doc_id": f"{lccn}_{d.isoformat()}_ed-1_seq-1",
+            "day": day_number(d), "ym": d.year * 12 + d.month - 1, "year": d.year,
+            "place_id": pid, "place_shard": ordinal % 8, "lccn": lccn, "state": state,
+            "language": ["eng", "jpn"], "front_page": True, "edition": 1, "seq": 1,
+            "sort_key": sort_key(ordinal, 1, 1), "date": d.isoformat(),
+            "text": ja_index_text(printed), "printed": printed, "ocr_source": "usnm-ndlocr-lite",
+        })
+        d += timedelta(days=14)
+    return docs
+
+
 def day_number(d):
     return (d - EPOCH).days
 
@@ -117,7 +185,8 @@ def main():
     snap = OUT / VERSION
     snap.mkdir(exist_ok=True)
     (OUT / "indexes").mkdir(exist_ok=True)
-    for index_id, docs in (("pages-base-fixture", docs_base), ("pages-delta-fixture-1", docs_delta)):
+    for index_id, docs in (("pages-base-fixture", docs_base), ("pages-delta-fixture-1", docs_delta),
+                           ("pages-ja-fixture", ja_docs())):
         with open(OUT / "indexes" / f"{index_id}.jsonl", "w") as f:
             for doc in docs:
                 f.write(json.dumps(doc) + "\n")

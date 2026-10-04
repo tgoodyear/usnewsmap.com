@@ -41,7 +41,16 @@ pub struct PageDoc {
     /// The batch this copy of the page came from. The fixtures don't have it.
     #[serde(default)]
     pub batch: String,
+    /// The indexed text. For a Japanese page (#139), the tokens of `printed`
+    /// joined by spaces ([`usnm_core::ja::index_text`]).
     pub text: String,
+    /// A Japanese page's text as printed, for snippets (the index holds
+    /// folded tokens). `None` on other pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub printed: Option<String>,
+    /// Who made the text when it isn't LoC's OCR (`usnm-ndlocr-lite`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_source: Option<String>,
 }
 
 /// The sealed indexes a published `index_version` names (08 §8.4.1), and
@@ -163,6 +172,9 @@ pub struct Hit {
     pub front_page: bool,
     /// HTML-escaped text with matches wrapped in `<mark>`.
     pub snippets: Vec<String>,
+    /// Who made the page's text when it isn't LoC's OCR (`usnm-ndlocr-lite`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -255,4 +267,29 @@ pub fn mark_html(segments: &[(bool, &str)]) -> String {
         }
     }
     out
+}
+
+/// Snippets of a Japanese page (#139) from its printed text, around the
+/// query's positive words and phrases, HTML-escaped with `<mark>`. Folding is
+/// one character for one, so the marks land on the text as printed.
+pub fn ja_snippets(printed: &str, query: &Node) -> Vec<String> {
+    const CONTEXT: usize = 40;
+    fn walk(node: &Node, out: &mut Vec<Vec<String>>) {
+        match node {
+            Node::Term(t) if !t.prefix && t.fuzzy == 0 => out.push(vec![t.text.clone()]),
+            Node::Term(_) | Node::Not(_) => {}
+            Node::Phrase { terms, .. } => out.push(terms.clone()),
+            Node::And(c) | Node::Or(c) => c.iter().for_each(|n| walk(n, out)),
+        }
+    }
+    let mut phrases = Vec::new();
+    walk(query, &mut phrases);
+    usnm_core::ja::snippets(printed, &phrases, CONTEXT, 1)
+        .into_iter()
+        .map(|pieces| {
+            let borrowed: Vec<(bool, &str)> =
+                pieces.iter().map(|(m, s)| (*m, s.as_str())).collect();
+            mark_html(&borrowed)
+        })
+        .collect()
 }

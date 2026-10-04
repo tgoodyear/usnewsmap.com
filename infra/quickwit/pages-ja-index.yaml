@@ -1,0 +1,71 @@
+# Quickwit index config for the Japanese pages we OCR ourselves (#139, 04 §4.8),
+# pinned to Quickwit 0.9. The same fields as pages-index.yaml, except:
+# - `text` holds the tokens usnm_core::ja::index_text makes (one per Japanese
+#   character, old forms folded to modern ones, Latin folded as the main index
+#   does), joined by spaces, and is split by the built-in `whitespace`
+#   tokenizer, which keeps positions so phrases work. Quickwit's own
+#   `chinese_compatible` splits only Han, not kana, and can't fold old forms.
+# - `printed` is the text as printed, stored for snippets, not indexed.
+# - `ocr_source` says who made the text (`usnm-ndlocr-lite`).
+# The indexing settings are pages-index.yaml's (a test keeps them equal).
+version: 0.9
+index_id: ${INDEX_ID}
+index_uri: ${INDEX_URI}
+doc_mapping:
+  mode: strict
+  timestamp_field: date
+  field_mappings:
+    - { name: doc_id, type: text, tokenizer: raw, fast: true, stored: true }
+    - { name: text, type: text, tokenizer: whitespace, record: position, stored: true, fieldnorms: false }
+    - { name: printed, type: text, indexed: false, stored: true }
+    - { name: ocr_source, type: text, tokenizer: raw, stored: true }
+    - { name: date, type: datetime, input_formats: ["%Y-%m-%d"], output_format: "%Y-%m-%d", fast: true, stored: true }
+    - { name: day, type: u64, fast: true, indexed: true, stored: true }
+    - { name: ym, type: u64, fast: true, indexed: true }
+    - { name: year, type: u64, fast: true, indexed: true }
+    - { name: place_id, type: text, tokenizer: raw, fast: true, stored: true }
+    - { name: place_shard, type: u64, fast: true, indexed: true }
+    - { name: lccn, type: text, tokenizer: raw, fast: true, stored: true }
+    - { name: state, type: text, tokenizer: raw, fast: true }
+    - { name: language, type: array<text>, tokenizer: raw, fast: true }
+    - { name: front_page, type: bool, fast: true, indexed: true }
+    - { name: edition, type: u64, stored: true, indexed: false }
+    - { name: seq, type: u64, stored: true, indexed: false }
+    # Same-day order for hits (title << 24 | edition << 16 | seq): Quickwit 0.9
+    # can't sort on text fields such as doc_id.
+    - { name: sort_key, type: u64, fast: true, indexed: false }
+    - { name: batch, type: text, tokenizer: raw }
+indexing_settings:
+  # Batch ingestion: a split is cut when the 1 GiB indexing heap fills or
+  # after 30 s (about 20,000 pages at the writer's 20 MB/s), not every 10 s.
+  # The release forces the last commit. Longer would also hold up the
+  # writer's shutdown, which waits for a commit to drain its shards.
+  commit_timeout_secs: 30
+  # A cold search opens every split, so an index should be a few large ones
+  # (05 §5.5.1), but the writer's memory caps their size. Quickwit 0.9.1
+  # uploads a split to Blob in 100 MB blocks, up to 100 at once, each read
+  # into memory first: a split holds min(its size, 10 GB) of the writer's
+  # memory while it uploads, and the ingest container has 7.5 GiB. A
+  # million-page split (about 23 GB) killed the writer in October 2026.
+  # A merge stops taking splits once it holds this many pages, so merged
+  # splits hold a little over 100,000 pages (about 110,000, 2.6 GB, in
+  # that release) and never 200,000 (08 §8.4).
+  split_num_docs_target: 100000
+  merge_policy:
+    type: limit_merge
+    merge_factor: 10
+    max_merge_factor: 12
+    max_merge_ops: 4
+    # Longer than any release: a split must not stop merging while the
+    # release still waits for it.
+    maturation_period: 7d
+    # When the release closes the index, up to 5 final merges of the small
+    # splits that are left. The release checks the result against these
+    # settings (crates/usnm-ingest/src/merges.rs).
+    max_finalize_merge_operations: 5
+  # The writer shares the ingest job's memory with the release and the
+  # split uploads; Quickwit's default indexing heap is 2 GiB.
+  resources:
+    heap_size: 1GiB
+search_settings:
+  default_search_fields: [text]

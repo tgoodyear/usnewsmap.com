@@ -11,8 +11,8 @@ use usnm_core::text::tokenize;
 use usnm_core::time::BucketSpec;
 
 use crate::{
-    mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet, PageDoc,
-    PlaceSummary, SearchBackend, SearchError, Summary,
+    ja_snippets, mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
+    PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 struct Indexed {
@@ -34,7 +34,14 @@ impl MemoryBackend {
     pub fn add_index(&mut self, index_id: &str, docs: impl IntoIterator<Item = PageDoc>) {
         let entry = self.indexes.entry(index_id.to_owned()).or_default();
         entry.extend(docs.into_iter().map(|doc| Indexed {
-            tokens: tokenize(&doc.text),
+            // A Japanese page's text is already its tokens (Quickwit's
+            // `whitespace` tokenizer, pages-ja-index.yaml); folding them again
+            // would strip dakuten (が → か).
+            tokens: if doc.printed.is_some() {
+                doc.text.split_whitespace().map(str::to_owned).collect()
+            } else {
+                tokenize(&doc.text)
+            },
             doc,
         }));
     }
@@ -179,7 +186,11 @@ impl SearchBackend for MemoryBackend {
                     edition: d.edition,
                     seq: d.seq,
                     front_page: d.front_page,
-                    snippets: snippet(&d.text, &highlight).into_iter().collect(),
+                    snippets: match &d.printed {
+                        Some(printed) => ja_snippets(printed, query),
+                        None => snippet(&d.text, &highlight).into_iter().collect(),
+                    },
+                    ocr_source: d.ocr_source.clone(),
                 })
                 .collect(),
         })
@@ -343,6 +354,8 @@ mod shard_tests {
 
     fn doc(i: u32, place: u8) -> PageDoc {
         PageDoc {
+            printed: None,
+            ocr_source: None,
             doc_id: format!("sn99{i:06}_1896-07-10_ed-1_seq-1"),
             day: 71_000 + i,
             ym: 1896 * 12 + 6,
