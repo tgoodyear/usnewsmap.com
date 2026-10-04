@@ -359,6 +359,11 @@ pub fn fold_char(c: char) -> char {
         .map_or(c, |&(_, large)| large)
 }
 
+/// Voiced and semi-voiced sound marks, combining and halfwidth.
+fn is_voicing_mark(c: char) -> bool {
+    matches!(c, '\u{3099}' | '\u{309A}' | '\u{FF9E}' | '\u{FF9F}')
+}
+
 fn single(s: String) -> Option<char> {
     let mut it = s.chars();
     match (it.next(), it.next()) {
@@ -387,14 +392,28 @@ pub fn tokens(text: &str) -> Vec<Token> {
         let c = chars[i];
         if !c.is_alphanumeric() {
             i += 1;
+        } else if is_voicing_mark(c) {
+            // A voicing mark with nothing to combine with isn't searchable.
+            i += 1;
         } else if is_ja(c) {
+            // A kana followed by a separate voicing mark (halfwidth ｶﾞ, or
+            // decomposed か+゙) is one character: compose them first.
+            let (c, width) = match chars.get(i + 1) {
+                Some(&m) if is_voicing_mark(m) => {
+                    match single([c, m].iter().collect::<String>().nfkc().collect()) {
+                        Some(composed) => (composed, 2),
+                        None => (c, 1),
+                    }
+                }
+                _ => (c, 1),
+            };
             out.push(Token {
                 text: fold_char(c).to_string(),
                 start: i,
-                end: i + 1,
+                end: i + width,
                 ja: true,
             });
-            i += 1;
+            i += width;
         } else {
             let start = i;
             while i < chars.len() && chars[i].is_alphanumeric() && !is_ja(chars[i]) {
@@ -529,6 +548,19 @@ mod tests {
         assert_eq!(fold_char('ｶ'), 'カ');
         assert_eq!(fold_char('\u{F91D}'), '欄'); // compatibility ideograph
         assert_eq!(fold_char('が'), 'が'); // dakuten kept (text::fold would strip it)
+    }
+
+    #[test]
+    fn halfwidth_and_decomposed_voiced_kana_compose() {
+        assert_eq!(tokenize("ｶﾞｽ"), vec!["ガ", "ス"]);
+        assert_eq!(tokenize("ガス"), vec!["ガ", "ス"]);
+        assert_eq!(tokenize("か\u{3099}"), vec!["が"]);
+        assert_eq!(tokenize("ﾊﾟﾝ"), vec!["パ", "ン"]);
+        // The composed token covers both printed characters.
+        let t = tokens("ｶﾞｽ");
+        assert_eq!((t[0].start, t[0].end, t[1].start), (0, 2, 2));
+        // A stray mark is dropped.
+        assert_eq!(tokenize("\u{FF9E}ス"), vec!["ス"]);
     }
 
     #[test]

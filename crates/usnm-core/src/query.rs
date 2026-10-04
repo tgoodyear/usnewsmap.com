@@ -501,6 +501,24 @@ fn is_ja_term(t: &str) -> bool {
     t.chars().count() == 1 && t.chars().all(ja::is_ja)
 }
 
+/// The lengths of the contiguous Japanese runs in a phrase's terms.
+fn ja_runs(terms: &[String]) -> Vec<usize> {
+    let mut runs = Vec::new();
+    let mut len = 0;
+    for t in terms {
+        if is_ja_term(t) {
+            len += 1;
+        } else if len > 0 {
+            runs.push(len);
+            len = 0;
+        }
+    }
+    if len > 0 {
+        runs.push(len);
+    }
+    runs
+}
+
 /// Whether the query has a Japanese word that isn't excluded: it then searches
 /// the Japanese pages (#139).
 pub fn is_japanese(node: &Node) -> bool {
@@ -606,10 +624,10 @@ fn check(node: &Node) -> Result<(), QueryError> {
         Node::And(c) => c.iter().try_for_each(check),
         Node::Not(n) => check(n),
         Node::Phrase { terms, .. } => {
-            let ja = terms.iter().filter(|t| is_ja_term(t)).count();
-            if ja > MAX_JA_RUN_CHARS {
+            let longest = ja_runs(terms).into_iter().max().unwrap_or(0);
+            if longest > MAX_JA_RUN_CHARS {
                 return Err(QueryError::new(format!(
-                    "a Japanese phrase has {ja} characters; the limit is {MAX_JA_RUN_CHARS}"
+                    "a Japanese phrase has {longest} characters; the limit is {MAX_JA_RUN_CHARS}"
                 )));
             }
             Ok(())
@@ -624,7 +642,7 @@ fn count_terms(node: &Node) -> usize {
         // The characters of a Japanese run are one word between them.
         Node::Phrase { terms, .. } => {
             let latin = terms.iter().filter(|t| !is_ja_term(t)).count();
-            latin + usize::from(terms.iter().any(|t| is_ja_term(t)))
+            latin + ja_runs(terms).len()
         }
         Node::And(c) | Node::Or(c) => c.iter().map(count_terms).sum(),
         Node::Not(n) => count_terms(n),
@@ -804,6 +822,11 @@ mod tests {
             .unwrap_err()
             .message
             .contains("Japanese phrase"));
+        // The limit is per run: two 20-character runs either side of a Latin word are fine...
+        let two_runs = format!("\"{} gold {}\"", "日".repeat(20), "月".repeat(20));
+        assert!(parse(&two_runs).is_ok());
+        // ...and each run is a term: 日 gold 月 is three.
+        assert_eq!(count_terms(&parse("\"日 gold 月\"").unwrap()), 3);
         assert!(parse("東京*")
             .unwrap_err()
             .message
