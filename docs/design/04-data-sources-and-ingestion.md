@@ -57,9 +57,13 @@ curated/                               (Cool; the system of record; versioned + 
                                         built from these without re-reading the parts
   ocr-ja/targets.jsonl                  the Japanese pages to OCR (§4.8), one JSON object per page
   ocr-ja/pages/{lccn}_{date}_ed-{n}.parquet
-                                        our OCR of an issue's Japanese pages: the curated page
-                                        columns plus ocr_source = usnm-ndlocr-lite, ocr_engine,
-                                        loc_text (why: empty, short, garbled) and image_url
+                                        our OCR of an issue's Japanese pages, an overlay keyed by
+                                        doc_id: page identity (doc_id, page_key, lccn, date,
+                                        edition, seq, batch), ocr_source = usnm-ndlocr-lite,
+                                        ocr_engine, loc_text (empty, short, garbled), image_url,
+                                        ocred_at, text_status, text, text_chars, text_sha256. The
+                                        release joins it to the curated row for everything else.
+                                        Written only when every target page of the issue has text
   ocr-ja/claims/{issue}.json            which replica took the issue (create-only)
 reference/                             (Hot; small; loaded by API; IMMUTABLE per index version)
   catalog/titles.json, places.json      the working catalog (titles-sync + geocode; hand-written

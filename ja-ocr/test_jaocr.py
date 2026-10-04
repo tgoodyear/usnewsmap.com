@@ -122,6 +122,13 @@ class Parquet(unittest.TestCase):
         cur.write("pages/b1/part-0.parquet", buf.getvalue())
         return ref, cur
 
+    def test_unsafe_version_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            ref.write("current.json", json.dumps({"reference": "../cur"}).encode())
+            with self.assertRaises(ValueError):
+                jaocr.targets(ref, cur)
+
     def test_targets(self):
         with tempfile.TemporaryDirectory() as d:
             ref, cur = self.fixture(d)

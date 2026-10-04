@@ -21,9 +21,11 @@ create-only write, so replicas never take the same issue; a claim older than
 JAOCR_CLAIM_HOURS is taken over). For each issue it asks loc.gov for the
 page images (one API request per issue), downloads each target page's
 full-resolution JPEG from LoC's IIIF service, runs NDLOCR-Lite on the issue's
-pages together and writes ocr-ja/pages/<issue>.parquet: the curated page
-columns with the new text, `ocr_source = usnm-ndlocr-lite` and the image URL.
-An issue with a part is done. loc.gov's API is paced JAOCR_API_GAP seconds
+pages together and writes ocr-ja/pages/<issue>.parquet, an overlay keyed by
+doc_id (see OVERLAY_COLUMNS in write_part; not the full curated schema: the
+release joins it to the curated rows for everything else). A part is written
+only when every target page of the issue has text, and an issue with a part
+is done. loc.gov's API is paced JAOCR_API_GAP seconds
 per request and the image server JAOCR_TILE_GAP seconds, each multiplied by
 JAOCR_REPLICAS so replicas together stay under LoC's limits.
 """
@@ -54,6 +56,7 @@ PREFIX = "ocr-ja"
 MIN_PAGE_CHARS = 20  # crates/usnm-core/src/text.rs
 # A word: Capitalized or lower case, or ALL CAPS (headlines); mixed case is OCR noise.
 WORDLIKE = re.compile(r"^(?:[A-Z]?[a-z]{2,}|[A-Z]{3,15})$")
+SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 PAGE_COLUMNS = ["doc_id", "page_key", "lccn", "date", "edition", "seq", "batch", "text_status", "text"]
 
 
@@ -100,6 +103,13 @@ class LocalStore:
     def exists(self, path: str) -> bool:
         return (self.root / path).is_file()
 
+    def take_over(self, path: str, data: bytes, stale: timedelta) -> bool:
+        """Replace a blob older than `stale`. Not atomic: the local store is for one process."""
+        if datetime.now(timezone.utc) - self.modified(path) <= stale:
+            return False
+        self.write(path, data)
+        return True
+
 
 class BlobStore:
     def __init__(self, url: str):
@@ -131,6 +141,21 @@ class BlobStore:
 
     def exists(self, path: str) -> bool:
         return self.client.get_blob_client(path).exists()
+
+    def take_over(self, path: str, data: bytes, stale: timedelta) -> bool:
+        """Replace a blob older than `stale`, only if nobody replaced it since we looked (ETag)."""
+        from azure.core import MatchConditions
+        from azure.core.exceptions import ResourceModifiedError
+
+        blob = self.client.get_blob_client(path)
+        props = blob.get_blob_properties()
+        if datetime.now(timezone.utc) - props.last_modified <= stale:
+            return False
+        try:
+            blob.upload_blob(data, overwrite=True, etag=props.etag, match_condition=MatchConditions.IfNotModified)
+            return True
+        except ResourceModifiedError:
+            return False
 
 
 def store(url: str):
@@ -167,6 +192,9 @@ def issue_key(lccn: str, date: str, edition: int) -> str:
 def targets(reference, curated) -> list[dict]:
     current = json.loads(reference.read("current.json"))
     version = current["reference"]
+    # The same rule as the API and the store: one path segment, no traversal.
+    if not SAFE_SEGMENT.match(version) or version in (".", ".."):
+        raise ValueError(f"current.json names an unsafe reference version: {version!r}")
     titles = json.loads(reference.read(f"{version}/titles.json"))
     jpn = japanese_lccns(titles)
     batches = json.loads(reference.read(f"{version}/batches.json"))
@@ -279,6 +307,9 @@ def ndlocr_version(root: Path) -> str:
 
 
 def write_part(curated, issue: str, rows: list[dict]) -> None:
+    """The overlay schema: identity (doc_id, page_key, lccn, date, edition, seq, batch),
+    provenance (ocr_source, ocr_engine, loc_text, image_url, ocred_at) and the text
+    (text_status, text, text_chars, text_sha256)."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -302,8 +333,7 @@ def claim(curated, issue: str, owner: str, stale: timedelta) -> bool:
     body = json.dumps({"owner": owner, "at": datetime.now(timezone.utc).isoformat()}).encode()
     if curated.create(path, body):
         return True
-    if datetime.now(timezone.utc) - curated.modified(path) > stale:
-        curated.write(path, body)
+    if curated.take_over(path, body, stale):
         log("took over a stale claim", issue=issue)
         return True
     return False
@@ -377,8 +407,12 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
                     "text_sha256": hashlib.sha256(text.encode()).digest(),
                     "image_url": urls[p["doc_id"]], "ocred_at": now,
                 })
-        if not rows_out:
-            log("ocr gave no pages", issue=issue)
+        missing = [p["page_key"] for p in pages if p["doc_id"] not in {r["doc_id"] for r in rows_out}]
+        if missing:
+            # A part marks the issue done, so write one only when every target page has text;
+            # the issue is retried once its claim goes stale.
+            log("ocr incomplete; issue left for a later run", issue=issue, missing=missing[:10],
+                missing_count=len(missing))
             continue
         write_part(curated, issue, rows_out)
         pages_done += len(rows_out)
