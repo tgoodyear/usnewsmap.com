@@ -55,6 +55,16 @@ curated/                               (Cool; the system of record; versioned + 
   pages/{batch}/v{NN}/{attempt}/counts.json
                                         pages per (lccn, day), all text statuses: baselines are
                                         built from these without re-reading the parts
+  ocr-ja/targets.jsonl                  the Japanese pages to OCR (§4.8), one JSON object per page
+  ocr-ja/pages/{lccn}_{date}_ed-{n}.parquet
+                                        our OCR of an issue's Japanese pages, an overlay keyed by
+                                        doc_id: page identity (doc_id, page_key, lccn, date,
+                                        edition, seq, batch), ocr_source = usnm-ndlocr-lite,
+                                        ocr_engine, loc_text (empty, short, garbled), image_url,
+                                        ocred_at, text_status, text, text_chars, text_sha256. The
+                                        release joins it to the curated row for everything else.
+                                        Written only when every target page of the issue has text
+  ocr-ja/claims/{issue}.json            which replica took the issue (create-only)
 reference/                             (Hot; small; loaded by API; IMMUTABLE per index version)
   catalog/titles.json, places.json      the working catalog (titles-sync + geocode; hand-written
                                         until those land). Titles and places carry stable ordinals
@@ -169,3 +179,17 @@ flowchart LR
 | **Analyzer or schema change** | Code change | **Full rebuild** (compaction) into a new base index from curated Parquet, then flip `current.json` atomically. Indexes listed by the previous version are kept for 7 days for rollback. |
 
 The API re-reads `reference/current.json` every 10 minutes and loads the reference snapshot it names, verifying checksums. Snapshots are immutable and kept for at least the current and previous versions (7 days minimum), so **rolling back `current.json` restores the exact index + reference pair** that was published together. Because `index_version` is part of every cache key, caches never mix versions.
+
+## 4.8 Japanese pages: our own OCR
+
+LoC's OCR has no Japanese script. The Japanese pages of the Japanese-language titles (the internment-camp papers and the Japanese-American papers, catalogued "In English and Japanese") come from LoC with no text (`[NO TEXT AVAILABLE FOR THIS PAGE]` on loc.gov, empty in the bulk archives) or as garbled Latin characters, so they can't be found by any search. LoC serves every page image through its IIIF service at full scan resolution, so we OCR those pages ourselves (#128).
+
+**Engine.** NDLOCR-Lite, the National Diet Library's open-source OCR (CC BY 4.0, CPU only). On 23 reference crops from 1942–45 papers (typeset and hand-lettered mimeograph), it found 77% of character pairs against 61% for Azure AI Document Intelligence Read and 26% for Tesseract `jpn_vert`, and scored higher than Azure on 19 of 23 crops (details in #128; tooling in `scripts/ja-ocr/`).
+
+**Job.** `ja-ocr/jaocr.py`, image `Dockerfile.ja-ocr`, Container Apps Job `caj-usnm-jaocr-{env}` (manual, `USNM_JA_OCR_JOB`), running as `id-usnm-ingest`:
+
+1. **Targets** (`jaocr.py targets`, or the first `run`): pages of titles whose catalog languages include `jpn`, in the published version's batches (`reference/{version}/batches.json`), whose curated `text_status` is `empty` or `short`, or `ok` but under 35% word-like tokens. Written to `curated/ocr-ja/targets.jsonl`.
+2. **Per issue**: claim it (a create-only blob), ask loc.gov for the issue's page images (one API request; the `files` list is in page order, which is not the frame order of the file names), download each target page's full-resolution JPEG, run NDLOCR-Lite on them together, and write `curated/ocr-ja/pages/{issue}.parquet`. An issue with a part is done; the job is started again until every issue has one.
+3. **Pacing.** loc.gov's API at one request per 3.5 s and the image server at one per second, both multiplied by the replica count so the replicas together stay within LoC's limits.
+
+The text keeps NDLOCR-Lite's line breaks (one per column or line). Old character forms stay as printed (戰, 國); search folds them (step 3 of #128). Indexing these pages (a CJK-tokenized field or index, and the release reading `ocr-ja/` alongside the curated parts) is the next step of #128.
