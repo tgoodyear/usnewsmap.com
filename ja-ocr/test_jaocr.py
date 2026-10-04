@@ -108,6 +108,7 @@ class Resilience(unittest.TestCase):
             jaocr.urllib.request.urlopen, jaocr.time.sleep = orig_open, orig_sleep
         self.assertEqual(len(calls), 2)
 
+    @unittest.skipIf(pa is None, "pyarrow not installed")
     def test_one_failing_issue_does_not_end_the_run(self):
         with tempfile.TemporaryDirectory() as d:
             cur = jaocr.LocalStore(d)
