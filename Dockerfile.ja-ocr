@@ -16,7 +16,7 @@ RUN grep -v '^flet' /opt/ndlocr-lite/requirements.txt > /tmp/ndlocr-requirements
     && pip install --no-cache-dir -r /tmp/ndlocr-requirements.txt -r /opt/jaocr/requirements.txt \
     && rm /tmp/ndlocr-requirements.txt
 
-COPY ja-ocr/jaocr.py /opt/jaocr/jaocr.py
+COPY ja-ocr/jaocr.py ja-ocr/audit.py /opt/jaocr/
 RUN useradd --system --uid 10001 --home-dir /work --create-home usnm
 USER usnm
 WORKDIR /work
