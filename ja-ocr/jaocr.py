@@ -200,29 +200,44 @@ def issue_key(lccn: str, date: str, edition: int) -> str:
     return f"{lccn}_{date}_ed-{edition}"
 
 
-def archive_pages(names) -> dict[str, set[str]]:
-    """page directory (lccn/yyyy/mm/dd/ed-n/seq-n) -> file names, from an archive listing."""
-    pages: dict[str, set[str]] = {}
-    for name in names:
-        parts = name.strip("/").split("/")
-        # [batch/[data/]] lccn/yyyy/mm/dd/ed-n/seq-n/file: take the last seven parts.
-        if len(parts) < 7 or not parts[-2].startswith("seq-") or not parts[-3].startswith("ed-"):
-            continue
-        pages.setdefault("/".join(parts[-7:-1]), set()).add(parts[-1])
-    return pages
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+YMD = re.compile(r"^\d{4}$|^\d{2}$")
+
+
+def page_from_path(path: str) -> tuple[str, str] | None:
+    """(page_key, file name) for a page file, in either archive layout
+    (crates/usnm-ingest/src/archive.rs page_key_from_path): lccn/yyyy/mm/dd/ed-n/seq-n/file
+    or lccn/yyyy-mm-dd/ed-n/seq-n/file, under any prefix."""
+    parts = path.strip().removeprefix("./").strip("/").split("/")
+    n = len(parts)
+    if n < 5 or not parts[n - 2].startswith("seq-") or not parts[n - 3].startswith("ed-"):
+        return None
+    seq, ed = parts[n - 2], parts[n - 3]
+    if not (seq[4:].isdigit() and ed[3:].isdigit()):
+        return None
+    if DATE.match(parts[n - 4]):
+        date, lccn = parts[n - 4], parts[n - 5]
+    elif n >= 7 and all(YMD.match(x) for x in parts[n - 6:n - 3]):
+        date, lccn = "-".join(parts[n - 6:n - 3]), parts[n - 7]
+    else:
+        return None
+    return f"{lccn}/{date}/ed-{int(ed[3:])}/seq-{int(seq[4:])}", parts[-1]
 
 
 def missing_pages(names, jpn: set[str], batch: str) -> list[dict]:
     """Pages of Japanese titles with an ALTO file but no ocr.txt."""
+    files: dict[str, set[str]] = {}
+    for name in names:
+        hit = page_from_path(name)
+        if hit:
+            files.setdefault(hit[0], set()).add(hit[1])
     out = []
-    for d, files in archive_pages(names).items():
-        lccn, y, m, dd, ed, seq = d.split("/")
-        if lccn not in jpn or "ocr.txt" in files or "ocr.xml" not in files:
+    for key, fs in files.items():
+        lccn, date, ed, seq = key.split("/")
+        if lccn not in jpn or "ocr.txt" in fs or "ocr.xml" not in fs:
             continue
-        key = f"{lccn}/{y}-{m}-{dd}/{ed}/{seq}"
-        out.append({"doc_id": key.replace("/", "_"), "page_key": key, "lccn": lccn,
-                    "date": f"{y}-{m}-{dd}", "edition": int(ed[3:]), "seq": int(seq[4:]),
-                    "batch": batch, "loc_text": "missing"})
+        out.append({"doc_id": key.replace("/", "_"), "page_key": key, "lccn": lccn, "date": date,
+                    "edition": int(ed[3:]), "seq": int(seq[4:]), "batch": batch, "loc_text": "missing"})
     return out
 
 

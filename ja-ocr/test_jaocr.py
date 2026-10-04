@@ -46,10 +46,16 @@ class Archives(unittest.TestCase):
     def test_missing_pages(self):
         names = ["batch_x/data/sn1/1945/01/01/ed-1/seq-1/ocr.txt", "batch_x/data/sn1/1945/01/01/ed-1/seq-1/ocr.xml",
                  "batch_x/data/sn1/1945/01/01/ed-1/seq-2/ocr.xml", "sn1/1945/01/08/ed-2/seq-10/ocr.xml",
-                 "sn1/1945/01/08/ed-2/seq-11/ocr.txt", "batch_x/data/batch.xml"]
+                 "sn1/1945/01/08/ed-2/seq-11/ocr.txt", "batch_x/data/batch.xml",
+                 # The compact date layout.
+                 "./batch_y_ver01/sn1/1945-02-03/ed-1/seq-3/ocr.xml",
+                 "./batch_y_ver01/sn1/1945-02-03/ed-1/seq-4/ocr.xml", "./batch_y_ver01/sn1/1945-02-03/ed-1/seq-4/ocr.txt"]
         got = jaocr.missing_pages(names, {"sn1"}, "x")
         self.assertEqual(sorted((r["date"], r["edition"], r["seq"]) for r in got),
-                         [("1945-01-01", 1, 2), ("1945-01-08", 2, 10)])
+                         [("1945-01-01", 1, 2), ("1945-01-08", 2, 10), ("1945-02-03", 1, 3)])
+        self.assertEqual(jaocr.page_from_path("sn1/1896-07-10/ed-2/seq-1/ocr.txt"),
+                         ("sn1/1896-07-10/ed-2/seq-1", "ocr.txt"))
+        self.assertIsNone(jaocr.page_from_path("sn1/18x6/07/10/ed-1/seq-1/ocr.xml"))
 
 
 class LocGov(unittest.TestCase):
