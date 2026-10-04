@@ -217,6 +217,16 @@ jobs:
       # build again, which waits for this one and fails the same way if it did.
       - name: Build the API in the background
         run: cargo build --release --locked -p usnm-api > cargo-build.log 2>&1 &
+      # Chromium (~300 MB) is the same for a given Playwright version, so it is
+      # downloaded only when that changes. Its system packages still install
+      # each run (web-e2e.sh), alongside the site's build.
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('./web/package-lock.json').packages['node_modules/playwright-core'].version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Build the site
         run: scripts/ci/web-e2e.sh build
       - name: Start the API on the synthetic fixtures
@@ -235,6 +245,7 @@ jobs:
             web/test-results
             api.log
             cargo-build.log
+            playwright-install.log
 
   publish:
     name: publish and roll out (${{ matrix.environment }})

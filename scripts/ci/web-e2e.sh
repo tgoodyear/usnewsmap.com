@@ -9,6 +9,8 @@
 #
 # CI runs them as separate steps so the API's build (started in the
 # background beforehand) overlaps the site's; with no argument, both run.
+# Chromium and its system packages install in the background while the site
+# builds (playwright-install.log).
 set -euo pipefail
 cd web
 step=${1:-all}
@@ -18,9 +20,15 @@ case "$step" in
 esac
 if [ "$step" = build ] || [ "$step" = all ]; then
   npm ci
-  npx playwright install --with-deps chromium
+  npx playwright install --with-deps chromium > ../playwright-install.log 2>&1 &
+  install=$!
   npm run build
   node scripts/precompress.mjs dist
+  if ! wait "$install"; then
+    cat ../playwright-install.log
+    echo "::error::installing Playwright's browser failed"
+    exit 1
+  fi
 fi
 if [ "$step" = test ] || [ "$step" = all ]; then
   PW_BASE_URL=http://127.0.0.1:8080 npm run e2e
