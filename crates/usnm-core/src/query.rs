@@ -482,8 +482,9 @@ fn ja_word(text: &str, fuzzy: u8, prefix: bool, pos: usize) -> Result<Node, Quer
             pos,
         ));
     }
+    // Voicing marks stay in the run, so a decomposed か+゙ composes to が.
     let runs: Vec<Node> = text
-        .split(|c: char| !c.is_alphanumeric())
+        .split(|c: char| !c.is_alphanumeric() && !ja::is_voicing_mark(c))
         .map(tokenize)
         .filter(|t| !t.is_empty())
         .map(|t| phrase(t, 0))
@@ -755,6 +756,9 @@ mod tests {
         assert!(is_japanese(&n));
         // Old forms fold, so both spellings are one query (and one cache key).
         assert_eq!(parse("戰爭").unwrap(), parse("戦争").unwrap());
+        // Decomposed (IME) and halfwidth input parse like the composed forms.
+        assert_eq!(parse("か\u{3099}す").unwrap(), parse("がす").unwrap());
+        assert_eq!(parse("ｶﾞｽ").unwrap(), parse("ガス").unwrap());
         // A single character is a term.
         assert_eq!(parse("年").unwrap(), term("年"));
     }

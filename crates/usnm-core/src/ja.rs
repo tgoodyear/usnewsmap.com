@@ -360,7 +360,7 @@ pub fn fold_char(c: char) -> char {
 }
 
 /// Voiced and semi-voiced sound marks, combining and halfwidth.
-fn is_voicing_mark(c: char) -> bool {
+pub fn is_voicing_mark(c: char) -> bool {
     matches!(c, '\u{3099}' | '\u{309A}' | '\u{FF9E}' | '\u{FF9F}')
 }
 
