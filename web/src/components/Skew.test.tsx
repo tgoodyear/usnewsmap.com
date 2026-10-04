@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MeasureToggle } from "./MeasureToggle";
 import { SkewLegend } from "./SkewLegend";
-import { clearest, skewCsv, SkewLists, StateTable, type SkewRow } from "./SkewPanels";
+import { clearest, LANGUAGE_EXPLAINER, skewCsv, SkewLists, StateTable, type SkewRow } from "./SkewPanels";
 import { PlaceTable } from "./PlaceTable";
 import type { SkewInfo } from "../lib/skewText";
 
@@ -96,6 +96,20 @@ describe("lists, tables and export", () => {
     expect(onSelect).toHaveBeenCalledWith("a");
     expect(screen.getByRole("complementary", { name: "Places that differ most clearly" })).toBeTruthy();
     expect(screen.getByText("Papers in German")).toBeTruthy();
+  });
+
+  it("explains a language label behind an info button", () => {
+    render(<SkewLists rows={rows} onSelect={() => undefined} />);
+    const info = screen.getByRole("button", { name: "What this means" });
+    const tip = screen.getByRole("note", { hidden: true });
+    expect(info.getAttribute("aria-expanded")).toBe("false");
+    expect(tip.hidden).toBe(true);
+    fireEvent.click(info);
+    expect(info.getAttribute("aria-expanded")).toBe("true");
+    expect(tip.hidden).toBe(false);
+    expect(tip.textContent).toBe(LANGUAGE_EXPLAINER);
+    fireEvent.keyDown(info, { key: "Escape" });
+    expect(tip.hidden).toBe(true);
   });
 
   it("tables places and states with expected counts and ranges", () => {

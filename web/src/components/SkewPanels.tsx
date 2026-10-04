@@ -1,3 +1,4 @@
+import { useId, useState } from "react";
 import { formatTimes } from "../lib/skewScale";
 import { formatExpected, formatRange, type SkewInfo } from "../lib/skewText";
 
@@ -52,7 +53,7 @@ export function SkewLists({ rows, onSelect }: ListsProps) {
               <span className="skew-list__value">
                 {formatTimes(r.skew.estimate)} ({formatRange(r.skew)})
               </span>
-              {r.skew.languages && <span className="skew-list__lang">{r.skew.languages}</span>}
+              {r.skew.languages && <LanguageNote label={r.skew.languages} />}
             </li>
           ))}
         </ol>
@@ -66,6 +67,42 @@ export function SkewLists({ rows, onSelect }: ListsProps) {
       {list(below, "Most clearly below 1×", "No place is clearly below 1× in this window.")}
       <p className="skew-list__note">Ranked by the end of each place's 90% range nearest 1×.</p>
     </aside>
+  );
+}
+
+/** What a "Papers in …" label means, for the info button beside it. */
+export const LANGUAGE_EXPLAINER =
+  "These are the languages this place's papers are catalogued in, across the whole collection. " +
+  "They don't say which language the matched pages are in. " +
+  "An English search term rarely matches pages printed in another language, so a place with such papers can read low.";
+
+/**
+ * A place's language label with a small info button that shows what it
+ * means. A tap (not hover), so it works on phones.
+ */
+export function LanguageNote({ label }: { label: string }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <span className="skew-list__lang">
+      <span>{label}</span>
+      <button
+        type="button"
+        className="info-button"
+        aria-label="What this means"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+        }}
+      >
+        i
+      </button>
+      <span id={id} role="note" className="info-tip" hidden={!open}>
+        {LANGUAGE_EXPLAINER}
+      </span>
+    </span>
   );
 }
 
