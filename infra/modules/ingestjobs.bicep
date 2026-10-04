@@ -16,6 +16,11 @@
 //   days for the full corpus (04 §4.4), so the job is started again after
 //   each execution until the queue is empty (or on `backfillCron`, while a
 //   backfill lasts). Archives are streamed, so no scratch disk is needed.
+// - `caj-usnm-jaocr-{env}` (when `jaOcrImage` is set): manual; `jaOcrReplicas`
+//   replicas of ja-ocr/jaocr.py, which OCRs the Japanese pages LoC has no text
+//   for with NDLOCR-Lite (04 §4.8, #128). Replicas claim issues through
+//   create-only blobs, and pace loc.gov together. Started again until every
+//   target issue has a part.
 //
 // The ingest job's Quickwit writer keeps its data on an NFS share
 // (ingest-scratch.bicep) when `scratchStorageName` is set: indexing and
@@ -55,6 +60,11 @@ param rootImage string = ''
 // Past 4 h, a full rebuild no longer fits the 24 h replica timeout (below).
 @maxValue(14400)
 param mergeTimeoutSecs int = 14400
+@description('The Japanese OCR image (usnewsmap-ja-ocr). Empty: no Japanese OCR job.')
+param jaOcrImage string = ''
+@minValue(1)
+@maxValue(8)
+param jaOcrReplicas int = 2
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the
 // ingest-job-failed alert reports as a failure. Curation stops claiming at a
@@ -210,6 +220,46 @@ resource backfill 'Microsoft.App/jobs@2025-01-01' = {
   }
 }
 
+resource jaOcr 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
+  name: 'caj-usnm-jaocr-${jobNameSuffix}'
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${ingestIdentityId}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      registries: [{ server: registryServer, identity: ingestIdentityId }]
+      triggerType: 'Manual'
+      manualTriggerConfig: { parallelism: jaOcrReplicas, replicaCompletionCount: jaOcrReplicas }
+      replicaTimeout: replicaTimeoutSecs
+      // A replica that dies leaves its issue claimed; the claim goes stale
+      // after JAOCR_CLAIM_HOURS and the next run takes it over.
+      replicaRetryLimit: 1
+    }
+    template: {
+      containers: [
+        {
+          name: 'jaocr'
+          image: jaOcrImage
+          args: ['run']
+          // NDLOCR-Lite runs one page at a time on every core; about 1 GB.
+          resources: { cpu: json('4.0'), memory: '8Gi' }
+          env: [
+            { name: 'USNM_CURATED_URL', value: '${storageBlobEndpoint}curated' }
+            { name: 'USNM_REFERENCE_URL', value: '${storageBlobEndpoint}reference' }
+            { name: 'AZURE_CLIENT_ID', value: ingestClientId }
+            { name: 'JAOCR_REPLICAS', value: string(jaOcrReplicas) }
+          ]
+        }
+      ]
+    }
+  }
+}
+
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 
@@ -237,3 +287,4 @@ resource writerIndexContributor 'Microsoft.Authorization/roleAssignments@2022-04
 
 output ingestJobName string = ingest.name
 output backfillJobName string = backfill.name
+output jaOcrJobName string = empty(jaOcrImage) ? '' : jaOcr.name

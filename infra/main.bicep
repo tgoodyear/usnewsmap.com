@@ -87,6 +87,14 @@ param ocrSku string = 'F0'
 @description('Entra object ids (people or groups) that may call Document Intelligence, comma separated.')
 param ocrUsers string = ''
 
+@description('Deploy the Japanese OCR job (caj-usnm-jaocr, #128). Needs the usnewsmap-ja-ocr image in the registry (CI publishes it from main).')
+param jaOcrJob bool = false
+
+@description('Parallel replicas of the Japanese OCR job.')
+@minValue(1)
+@maxValue(8)
+param jaOcrReplicas int = 2
+
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
@@ -383,6 +391,8 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''
     scratchGiB: ingestScratch ? ingestScratchGiB : 0
     mergeTimeoutSecs: ingestMergeTimeoutSecs
+    jaOcrImage: jaOcrJob ? '${registry.outputs.loginServer}/usnewsmap-ja-ocr:${imageTag}' : ''
+    jaOcrReplicas: jaOcrReplicas
     rootImage: '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
   }
 }
@@ -507,6 +517,7 @@ output STORAGE_ACCOUNT string = storage.outputs.name
 output COSMOS_ENDPOINT string = cosmos.outputs.endpoint
 output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName : ''
 output BACKFILL_JOB string = ingestJobs && useAcr ? ingest!.outputs.backfillJobName : ''
+output JA_OCR_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaOcrJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
 // For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).

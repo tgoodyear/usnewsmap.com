@@ -1,0 +1,25 @@
+# Japanese OCR job (#128, 04 §4.8): jaocr.py with NDLOCR-Lite (National Diet
+# Library, CC BY 4.0, CPU only). NDLOCR-Lite's source and models come from a
+# pinned commit's tarball, checked against its SHA-256.
+FROM python:3.12-slim-bookworm
+
+ARG NDLOCR_COMMIT=636d1cfeb1331f89f4048f416e49e23a09a714b5
+ADD --checksum=sha256:2081a0f25394729c1073ef0a91594d57710e21005d40d0f5ec528d4d9564afbe \
+    https://github.com/ndl-lab/ndlocr-lite/archive/${NDLOCR_COMMIT}.tar.gz /tmp/ndlocr-lite.tar.gz
+RUN mkdir /opt/ndlocr-lite \
+    && tar -xzf /tmp/ndlocr-lite.tar.gz -C /opt/ndlocr-lite --strip-components=1 \
+    && rm /tmp/ndlocr-lite.tar.gz \
+    && rm -rf /opt/ndlocr-lite/train /opt/ndlocr-lite/ndlocr-lite-gui /opt/ndlocr-lite/resource
+
+COPY ja-ocr/requirements.txt /opt/jaocr/requirements.txt
+RUN grep -v '^flet' /opt/ndlocr-lite/requirements.txt > /tmp/ndlocr-requirements.txt \
+    && pip install --no-cache-dir -r /tmp/ndlocr-requirements.txt -r /opt/jaocr/requirements.txt \
+    && rm /tmp/ndlocr-requirements.txt
+
+COPY ja-ocr/jaocr.py /opt/jaocr/jaocr.py
+RUN useradd --system --uid 10001 --home-dir /work --create-home usnm
+USER usnm
+WORKDIR /work
+ENV NDLOCR_ROOT=/opt/ndlocr-lite NDLOCR_COMMIT=${NDLOCR_COMMIT} PYTHONUNBUFFERED=1
+ENTRYPOINT ["python3", "/opt/jaocr/jaocr.py"]
+CMD ["run"]
