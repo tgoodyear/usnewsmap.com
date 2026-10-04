@@ -42,6 +42,27 @@ class Classify(unittest.TestCase):
         self.assertEqual(jaocr.japanese_lccns(titles), {"a"})
 
 
+class Archives(unittest.TestCase):
+    def test_missing_pages(self):
+        names = ["batch_x/data/sn1/1945/01/01/ed-1/seq-1/ocr.txt", "batch_x/data/sn1/1945/01/01/ed-1/seq-1/ocr.xml",
+                 "batch_x/data/sn1/1945/01/01/ed-1/seq-2/ocr.xml", "sn1/1945/01/08/ed-2/seq-10/ocr.xml",
+                 "sn1/1945/01/08/ed-2/seq-11/ocr.txt", "batch_x/data/batch.xml",
+                 # The compact date layout.
+                 "./batch_y_ver01/sn1/1945-02-03/ed-1/seq-3/ocr.xml",
+                 "./batch_y_ver01/sn1/1945-02-03/ed-1/seq-4/ocr.xml", "./batch_y_ver01/sn1/1945-02-03/ed-1/seq-4/ocr.txt"]
+        got = jaocr.missing_pages(names, {"sn1"}, "x")
+        self.assertEqual(sorted((r["date"], r["edition"], r["seq"]) for r in got),
+                         [("1945-01-01", 1, 2), ("1945-01-08", 2, 10), ("1945-02-03", 1, 3)])
+        self.assertIsNotNone(jaocr.page_from_path("sn1/1945/01/01/ed-1/seq-32767/ocr.xml"))
+        self.assertEqual(jaocr.page_from_path("sn1/1896-07-10/ed-2/seq-1/ocr.txt"),
+                         ("sn1/1896-07-10/ed-2/seq-1", "ocr.txt"))
+        for bad in ("sn1/18x6/07/10/ed-1/seq-1/ocr.xml", "sn1/1945/13/40/ed-1/seq-1/ocr.xml",
+                    "SN1/1945/01/01/ed-1/seq-1/ocr.xml", "sn1/1945/01/01/ed-1/seq-0/ocr.xml",
+                    "sn1/1945-02-30/ed-1/seq-1/ocr.xml", "sn1/1945/01/01/ed-0/seq-1/ocr.xml",
+                    "sn1/1945/01/01/ed-1/seq-70000/ocr.xml", "sn1/1945/01/01/ed-1/seq-32768/ocr.xml"):
+            self.assertIsNone(jaocr.page_from_path(bad), bad)
+
+
 class LocGov(unittest.TestCase):
     def test_iiif_base(self):
         self.assertEqual(
@@ -128,14 +149,50 @@ class Parquet(unittest.TestCase):
             for bad in ("../cur", ".hidden", "-v1", "a/b", ""):
                 ref.write("current.json", json.dumps({"reference": bad}).encode())
                 with self.assertRaises(ValueError, msg=bad):
-                    jaocr.targets(ref, cur)
+                    jaocr.targets(ref, cur, datasets=[])
 
     def test_targets(self):
         with tempfile.TemporaryDirectory() as d:
             ref, cur = self.fixture(d)
-            got = jaocr.targets(ref, cur)
+            got = jaocr.targets(ref, cur, datasets=[])
             self.assertEqual([(r["seq"], r["loc_text"]) for r in got], [(2, "empty"), (3, "garbled")])
             self.assertEqual(got[0]["date"], "1945-01-01")
+
+    def test_targets_add_pages_missing_from_the_archives(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            listing = ["sn1/1945/01/01/ed-1/seq-1/ocr.txt", "sn1/1945/01/01/ed-1/seq-1/ocr.xml",
+                       "sn1/1945/01/01/ed-1/seq-4/ocr.xml",       # Japanese page: ALTO only
+                       "sn2/1945/01/01/ed-1/seq-2/ocr.xml"]       # not a Japanese title
+            orig = jaocr.list_archive
+            jaocr.list_archive = lambda url, pacer: listing
+            try:
+                got = jaocr.targets(ref, cur, datasets=[
+                    {"batch": "b1_ver01", "url": "u", "lccns": ["sn1"]},
+                    {"batch": "b9_ver01", "url": "u", "lccns": ["sn9"]}])
+            finally:
+                jaocr.list_archive = orig
+            self.assertEqual([(r["seq"], r["loc_text"], r["batch"]) for r in got],
+                             [(2, "empty", "b1"), (3, "garbled", "b1"), (4, "missing", "b1")])
+            self.assertEqual(got[2]["doc_id"], "sn1_1945-01-01_ed-1_seq-4")
+
+    def test_done_is_per_page(self):
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            self.assertEqual(jaocr.part_name(cur, "i1"), "i1")
+            self.write(cur, "i1", "a")
+            self.assertEqual(jaocr.part_name(cur, "i1"), "i1.2")
+            self.write(cur, "i1.2", "b")
+            self.assertEqual(jaocr.part_name(cur, "i1"), "i1.3")
+            self.assertEqual(jaocr.done_pages(cur, cur.list("ocr-ja/pages/")), {"a", "b"})
+
+    def write(self, cur, name, doc_id):
+        from datetime import datetime, timezone
+        jaocr.write_part(cur, name, [{
+            "doc_id": doc_id, "page_key": doc_id, "lccn": "sn1", "date": "1945-01-01", "edition": 1, "seq": 1,
+            "batch": "b1", "loc_text": "missing", "ocr_source": jaocr.OCR_SOURCE, "ocr_engine": "t",
+            "text_status": "ok", "text": "去年の大記事", "text_chars": 6, "text_sha256": b"\0" * 32,
+            "image_url": "u", "ocred_at": datetime.now(timezone.utc)}])
 
     def test_write_part(self):
         with tempfile.TemporaryDirectory() as d:
