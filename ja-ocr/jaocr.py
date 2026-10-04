@@ -56,7 +56,8 @@ PREFIX = "ocr-ja"
 MIN_PAGE_CHARS = 20  # crates/usnm-core/src/text.rs
 # A word: Capitalized or lower case, or ALL CAPS (headlines); mixed case is OCR noise.
 WORDLIKE = re.compile(r"^(?:[A-Z]?[a-z]{2,}|[A-Z]{3,15})$")
-SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+# usnm_store::is_safe_segment: alphanumeric first, then [A-Za-z0-9._-], at most 128.
+SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PAGE_COLUMNS = ["doc_id", "page_key", "lccn", "date", "edition", "seq", "batch", "text_status", "text"]
 
 
@@ -193,7 +194,7 @@ def targets(reference, curated) -> list[dict]:
     current = json.loads(reference.read("current.json"))
     version = current["reference"]
     # The same rule as the API and the store: one path segment, no traversal.
-    if not SAFE_SEGMENT.match(version) or version in (".", ".."):
+    if not SAFE_SEGMENT.match(version):
         raise ValueError(f"current.json names an unsafe reference version: {version!r}")
     titles = json.loads(reference.read(f"{version}/titles.json"))
     jpn = japanese_lccns(titles)

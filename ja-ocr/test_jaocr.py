@@ -125,9 +125,10 @@ class Parquet(unittest.TestCase):
     def test_unsafe_version_is_refused(self):
         with tempfile.TemporaryDirectory() as d:
             ref, cur = self.fixture(d)
-            ref.write("current.json", json.dumps({"reference": "../cur"}).encode())
-            with self.assertRaises(ValueError):
-                jaocr.targets(ref, cur)
+            for bad in ("../cur", ".hidden", "-v1", "a/b", ""):
+                ref.write("current.json", json.dumps({"reference": bad}).encode())
+                with self.assertRaises(ValueError, msg=bad):
+                    jaocr.targets(ref, cur)
 
     def test_targets(self):
         with tempfile.TemporaryDirectory() as d:
