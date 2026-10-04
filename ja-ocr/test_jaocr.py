@@ -85,6 +85,54 @@ class LocGov(unittest.TestCase):
         self.assertEqual(jaocr.issue_key("sn1", "1945-01-01", 2), "sn1_1945-01-01_ed-2")
 
 
+class Resilience(unittest.TestCase):
+    def test_fetch_retries_a_dropped_body(self):
+        import http.client
+        calls = []
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self):
+                calls.append(1)
+                if len(calls) == 1:
+                    raise http.client.IncompleteRead(b"x", 10)
+                return b"ok"
+
+        orig_open, orig_sleep = jaocr.urllib.request.urlopen, jaocr.time.sleep
+        jaocr.urllib.request.urlopen = lambda req, timeout: Resp()
+        jaocr.time.sleep = lambda s: None
+        try:
+            self.assertEqual(jaocr.fetch("https://example.org/x", jaocr.Pacer(0)), b"ok")
+        finally:
+            jaocr.urllib.request.urlopen, jaocr.time.sleep = orig_open, orig_sleep
+        self.assertEqual(len(calls), 2)
+
+    @unittest.skipIf(pa is None, "pyarrow not installed")
+    def test_one_failing_issue_does_not_end_the_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            rows = [{"doc_id": f"sn1_1945-01-0{i}_ed-1_seq-1", "page_key": "k", "lccn": "sn1",
+                     "date": f"1945-01-0{i}", "edition": 1, "seq": 1, "batch": "b", "loc_text": "missing"}
+                    for i in (1, 2)]
+            cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
+            seen = []
+
+            def fake(curated, root, issue, pages, api, tile, engine):
+                seen.append(issue)
+                if len(seen) == 1:
+                    raise ConnectionError("boom")
+                return len(pages)
+
+            orig = jaocr.ocr_issue
+            jaocr.ocr_issue = fake
+            try:
+                jaocr.run(None, cur, jaocr.Path("/nonexistent"), None, "t")
+            finally:
+                jaocr.ocr_issue = orig
+            self.assertEqual(seen, ["sn1_1945-01-01_ed-1", "sn1_1945-01-02_ed-1"])
+
+
 class Text(unittest.TestCase):
     def test_normalize_keeps_columns(self):
         self.assertEqual(jaocr.normalize("去年の　大記事 \r\n\n  やはり\x07西歐  "), "去年の 大記事\nやはり西歐")
