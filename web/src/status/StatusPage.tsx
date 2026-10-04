@@ -137,8 +137,9 @@ function Headline({ s }: { s: Status }) {
       </h2>
       {h.share !== null && (
         <Bar
-          value={s.published.pages}
-          max={s.backfill.available ? s.backfill.pages - (s.published.duplicate_pages ?? 0) : s.published.pages}
+          // Copies against copies: the published pages plus the duplicate copies they left out.
+          value={s.published.pages + (s.published.duplicate_pages ?? 0)}
+          max={s.backfill.available ? s.backfill.pages : s.published.pages}
           label={h.text}
         />
       )}
