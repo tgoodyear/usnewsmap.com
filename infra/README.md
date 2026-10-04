@@ -85,6 +85,9 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `cosmosFreeTier` | `USNM_COSMOS_FREE_TIER` | `true` (one free-tier account per subscription) |
 | `alertEmails` | `USNM_ALERT_EMAILS` | empty (comma-separated) |
 | `searchLogReaders` | `USNM_SEARCH_LOG_READERS` | empty. Comma-separated Entra object ids (people or groups) given Storage Blob Data Reader on `searches`, for `scripts/searches.sh` |
+| `ocr` | `USNM_OCR` | `false`. Deploys Azure AI Document Intelligence (`di-usnm-<env>-<suffix>`, Entra only) for OCR of Japanese pages (#128); its endpoint is saved as `OCR_ENDPOINT` |
+| `ocrSku` | `USNM_OCR_SKU` | `F0` (500 pages a month free, 4 MB per image; one F0 account per subscription) or `S0` |
+| `ocrUsers` | `USNM_OCR_USERS` | empty. Comma-separated Entra object ids given Cognitive Services User on it; the ingest identity always has it |
 | `budgetStartDate` | `USNM_BUDGET_START` | empty. The first day of a month; the budget is created only with alert emails and this set. Azure can't change a budget's start date, so keep it fixed |
 | `dnsZoneName` | `USNM_DNS_ZONE` | empty (no zone). The site's domain, e.g. `usnewsmap.com` |
 | `availabilityFrequency` | `USNM_AVAILABILITY_FREQUENCY` | `900`. Seconds between availability test runs (300, 600 or 900); the one test (the site home page) from 3 locations costs about $4 a month at 900 and $13 at 300 |

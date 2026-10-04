@@ -77,6 +77,16 @@ param budgetStartDate string = ''
 @description('Comma-separated Entra object ids (people or groups) that may read the search log in the searches container (scripts/searches.sh).')
 param searchLogReaders string = ''
 
+@description('Deploy Azure AI Document Intelligence for OCR of Japanese pages (#128).')
+param ocr bool = false
+
+@description('Document Intelligence tier: F0 (500 pages a month free) or S0.')
+@allowed(['F0', 'S0'])
+param ocrSku string = 'F0'
+
+@description('Entra object ids (people or groups) that may call Document Intelligence, comma separated.')
+param ocrUsers string = ''
+
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
@@ -247,6 +257,19 @@ module rbac 'modules/rbac.bicep' = {
     appPrincipalId: identities.outputs.appPrincipalId
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     searchLogReaders: filter(map(split(searchLogReaders, ','), r => trim(r)), r => !empty(r))
+  }
+}
+
+module ocrService 'modules/ocr.bicep' = if (ocr) {
+  scope: rg
+  name: 'ocr'
+  params: {
+    location: location
+    tags: tags
+    name: 'di-usnm-${env}-${suffix}'
+    sku: ocrSku
+    workspaceId: monitoring.outputs.workspaceId
+    users: union(filter(map(split(ocrUsers, ','), u => trim(u)), u => !empty(u)), [identities.outputs.ingestPrincipalId])
   }
 }
 
@@ -493,3 +516,4 @@ output AZURE_SUBSCRIPTION_ID string = subscription().subscriptionId
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 // The workspace's customer id, for the Log Analytics query API (scripts/logs.sh).
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceCustomerId
+output OCR_ENDPOINT string = ocr ? ocrService!.outputs.endpoint : ''

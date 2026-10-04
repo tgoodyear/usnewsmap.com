@@ -19,6 +19,9 @@ param ingestMergeTimeoutSecs = int(readEnvironmentVariable('USNM_MERGE_TIMEOUT_S
 param cosmosFreeTier = bool(readEnvironmentVariable('USNM_COSMOS_FREE_TIER', 'true'))
 param alertEmails = readEnvironmentVariable('USNM_ALERT_EMAILS', '')
 param searchLogReaders = readEnvironmentVariable('USNM_SEARCH_LOG_READERS', '')
+param ocr = bool(readEnvironmentVariable('USNM_OCR', 'false'))
+param ocrSku = readEnvironmentVariable('USNM_OCR_SKU', 'F0')
+param ocrUsers = readEnvironmentVariable('USNM_OCR_USERS', '')
 param budgetStartDate = readEnvironmentVariable('USNM_BUDGET_START', '')
 param dnsZoneName = readEnvironmentVariable('USNM_DNS_ZONE', '')
 // Google Search Console domain verification, published at the apex next to SPF.
