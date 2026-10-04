@@ -3,6 +3,7 @@
 
     python3 jaocr.py targets          list the pages to OCR (writes ocr-ja/targets-v2.jsonl)
     python3 jaocr.py run [--limit N]  OCR the targets not done yet
+    python3 jaocr.py audit            titles LoC ships pages without text for (audit.py)
 
 Stores are blob container URLs (Entra auth via the managed identity) or local
 directories, so the job runs the same way against a copy on disk:
@@ -115,6 +116,16 @@ class LocalStore:
     def exists(self, path: str) -> bool:
         return (self.root / path).is_file()
 
+    def renew(self, path: str, data: bytes, owner: str) -> bool:
+        """Rewrite a lock only if `owner` still holds it. Not atomic: the local store is for one process."""
+        try:
+            if json.loads(self.read(path)).get("owner") != owner:
+                return False
+        except (OSError, ValueError):
+            return False
+        self.write(path, data)
+        return True
+
     def take_over(self, path: str, data: bytes, stale: timedelta) -> bool:
         """Replace a blob older than `stale`. Not atomic: the local store is for one process."""
         if datetime.now(timezone.utc) - self.modified(path) <= stale:
@@ -153,6 +164,22 @@ class BlobStore:
 
     def exists(self, path: str) -> bool:
         return self.client.get_blob_client(path).exists()
+
+    def renew(self, path: str, data: bytes, owner: str) -> bool:
+        """Rewrite a lock only if `owner` still holds it, and nobody wrote it since we read it (ETag)."""
+        from azure.core import MatchConditions
+        from azure.core.exceptions import ResourceModifiedError, ResourceNotFoundError
+
+        blob = self.client.get_blob_client(path)
+        try:
+            got = blob.download_blob()
+            if json.loads(got.readall()).get("owner") != owner:
+                return False
+            blob.upload_blob(data, overwrite=True, etag=got.properties.etag,
+                             match_condition=MatchConditions.IfNotModified)
+            return True
+        except (ResourceModifiedError, ResourceNotFoundError, ValueError):
+            return False
 
     def take_over(self, path: str, data: bytes, stale: timedelta) -> bool:
         """Replace a blob older than `stale`, only if nobody replaced it since we looked (ETag)."""
@@ -554,12 +581,17 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=["targets", "run"])
+    ap.add_argument("command", choices=["targets", "run", "audit"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
+    ap.add_argument("--all-languages", action="store_true", help="audit: every title, not just non-English ones")
     a = ap.parse_args()
     reference = store(os.environ["USNM_REFERENCE_URL"])
     curated = store(os.environ["USNM_CURATED_URL"])
-    if a.command == "targets":
+    if a.command == "audit":
+        import audit
+
+        audit.audit(reference, curated, a.all_languages)
+    elif a.command == "targets":
         rows = targets(reference, curated)
         curated.write(f"{PREFIX}/{TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
         issues = {issue_key(r["lccn"], r["date"], r["edition"]) for r in rows}

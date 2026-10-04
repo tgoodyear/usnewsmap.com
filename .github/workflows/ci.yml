@@ -144,7 +144,7 @@ jobs:
       - name: The Japanese OCR job's tests pass
         run: |
           docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD/ja-ocr:/t:ro" -w /t --entrypoint python3 usnm-ja-ocr-check \
-            -m unittest -v test_jaocr
+            -m unittest discover -v -p 'test_*.py'
       - name: The Japanese OCR image reads Japanese
         run: scripts/ci/check-ja-ocr-image.sh usnm-ja-ocr-check
 
