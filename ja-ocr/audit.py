@@ -16,8 +16,10 @@ missing, and logs a summary and the titles with the largest gaps.
 
 Titles whose batches aren't all in the published version (still waiting for
 title details, say) are flagged `unpublished_batches`: their gap isn't (only)
-missing text. One replica runs it: the first to create
-audit/loc-pages-<version>.lock.
+missing text. The CSV marks the version done; while one replica works it
+holds audit/loc-pages-<version>.lock, which another run takes over once it
+is older than JAOCR_AUDIT_LOCK_HOURS (6), so a crashed run doesn't block
+the report.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import io
 import json
 import os
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import jaocr
 
@@ -74,9 +76,17 @@ def audit(reference, curated, all_languages: bool) -> None:
     version = current["reference"]
     if not jaocr.SAFE_SEGMENT.match(version):
         raise ValueError(f"current.json names an unsafe reference version: {version!r}")
+    path = f"audit/loc-pages-{version}.csv"
+    if curated.exists(path):
+        jaocr.log("audit already done for this version", version=version, csv=path)
+        return
+    # The CSV is the completion marker; the lock only keeps a second replica
+    # out while one works, and is taken over once stale (a crashed run).
     lock = f"audit/loc-pages-{version}.lock"
-    if not curated.create(lock, json.dumps({"at": datetime.now(timezone.utc).isoformat()}).encode()):
-        jaocr.log("audit already running or done for this version; nothing to do", version=version)
+    body = json.dumps({"at": datetime.now(timezone.utc).isoformat()}).encode()
+    stale = timedelta(hours=float(os.environ.get("JAOCR_AUDIT_LOCK_HOURS", "6")))
+    if not (curated.create(lock, body) or curated.take_over(lock, body, stale)):
+        jaocr.log("audit running in another replica", version=version)
         return
     ours = json.loads(reference.read(f"{version}/title_pages.json"))
     titles = json.loads(reference.read("catalog/titles.json"))
@@ -102,7 +112,6 @@ def audit(reference, curated, all_languages: bool) -> None:
     w = csv.DictWriter(buf, fieldnames=list(table[0]) if table else ["lccn"])
     w.writeheader()
     w.writerows(table)
-    path = f"audit/loc-pages-{version}.csv"
     curated.write(path, buf.getvalue().encode())
     gaps = [r for r in table if isinstance(r["missing"], int) and r["missing"] > 0]
     jaocr.log("audit finished", version=version, titles=len(table), with_gap=len(gaps),

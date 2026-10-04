@@ -50,8 +50,18 @@ class Audit(unittest.TestCase):
             orig = jaocr.fetch
             jaocr.fetch = fake_fetch
             try:
+                # A crashed run left a fresh lock and no CSV: a new run waits it out.
+                cur.write("audit/loc-pages-v1.lock", b"{}")
                 audit.audit(ref, cur, all_languages=False)
-                audit.audit(ref, cur, all_languages=False)  # locked: does nothing
+                self.assertEqual(calls, [])
+                # Once the lock is stale, the next run takes it over and finishes.
+                import os
+                os.environ["JAOCR_AUDIT_LOCK_HOURS"] = "-1"
+                try:
+                    audit.audit(ref, cur, all_languages=False)
+                finally:
+                    del os.environ["JAOCR_AUDIT_LOCK_HOURS"]
+                audit.audit(ref, cur, all_languages=False)  # done: the CSV exists
             finally:
                 jaocr.fetch = orig
             # English-only titles are skipped by default; the second run made no requests.
