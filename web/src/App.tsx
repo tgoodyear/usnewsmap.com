@@ -169,12 +169,12 @@ export function App() {
   );
   const skewRows: (SkewRow & MapPoint & { firstDay: number; lastDay: number })[] = useMemo(() => {
     if (!skewModel || !frame) return [];
-    const { placeIds, languages } = skewModel.prepared;
+    const { placeIds, languages, languageCounts } = skewModel.prepared;
     return drawOrder.flatMap((i) => {
       const id = placeIds[i]!;
       const f = features.get(id);
       if (!f) return [];
-      const info = skewInfo(frame.places[i]!, frame.placePages[i]!, languages[i] ?? null);
+      const info = skewInfo(frame.places[i]!, frame.placePages[i]!, languages[i] ?? null, languageCounts[i] ?? null);
 
       return [
         {

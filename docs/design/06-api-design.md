@@ -90,7 +90,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | `GET /v1/compare` | Up to 4 queries (`q1…q4`); national series for each + per-place totals (no cube) | 1 day |
 | `GET /v1/pages/{doc_id}` | Page metadata + LoC links | 30 days |
 | `GET /v1/titles`, `GET /v1/titles/{lccn}` | Title metadata + coverage summary | 1 day |
-| `GET /v1/places` | All places (GeoJSON) with precision, title counts and the languages of their titles (catalog codes such as `eng`; [11 §11.14](11-term-geographic-skew.md#1114-phase-1-as-built)) | 1 day |
+| `GET /v1/places` | All places (GeoJSON) with precision, title counts, the languages of their titles (catalog codes such as `eng`) and `language_titles`, the titles listing each language (a title in several counts in each; [11 §11.14](11-term-geographic-skew.md#1114-phase-1-as-built)) | 1 day |
 | `GET /v1/coverage?from&to&bucket&state&lang` | Pages published per place and bucket (the "no data" layer and the relative rate's baseline), optionally for the places in some states and the pages of titles that list any of the given languages. `lang` on a version published before baselines were kept per language answers 422 | 1 day |
 | `GET /v1/export/aggregate.csv` | Same as `/aggregate` as tidy CSV (`place_id,lat,lon,bucket_start,hits,baseline,rel`) | 1 day |
 | `GET /v1/export/hits.csv` | Hits (≤ 10,000 rows) with page keys and LoC URLs | 1 day |

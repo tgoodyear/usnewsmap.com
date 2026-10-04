@@ -57,7 +57,7 @@ export function SkewLists({ rows, onSelect }: ListsProps) {
               <span className="skew-list__value">
                 {formatTimes(r.skew.estimate)} ({formatRange(r.skew)})
               </span>
-              {r.skew.languages && <LanguageNote label={r.skew.languages} />}
+              {r.skew.languages && <LanguageNote label={r.skew.languages} counts={r.skew.languageCounts} />}
             </li>
           ))}
         </ol>
@@ -82,10 +82,11 @@ export const LANGUAGE_EXPLAINER =
   "To compare only pages from English-language papers, choose English under newspaper languages.";
 
 /**
- * A place's language label with a small info button that shows what it
- * means. A tap (not hover), so it works on phones.
+ * A place's language label with a small info button that shows how many of
+ * its papers are in each language and what the label means. A tap (not
+ * hover), so it works on phones.
  */
-export function LanguageNote({ label }: { label: string }) {
+export function LanguageNote({ label, counts }: { label: string; counts?: string | null }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   return (
@@ -105,6 +106,7 @@ export function LanguageNote({ label }: { label: string }) {
         i
       </button>
       <span id={id} role="note" className="info-tip" hidden={!open}>
+        {counts && <span className="info-tip__counts">{counts}</span>}
         {LANGUAGE_EXPLAINER}
       </span>
     </span>

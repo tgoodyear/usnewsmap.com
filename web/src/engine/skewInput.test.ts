@@ -2,11 +2,18 @@ import { describe, expect, it } from "vitest";
 import type { AggregateResponse, CoverageResponse, PlaceFeature } from "../api/types";
 import { prepareSkew } from "./skewInput";
 
-const feature = (id: string, state: string, languages?: string[]): PlaceFeature => ({
+const feature = (id: string, state: string, languages?: string[], titles: Record<string, number> = {}): PlaceFeature => ({
   type: "Feature",
   id,
   geometry: { type: "Point", coordinates: [0, 0] },
-  properties: { name: id, state, precision: "city", titles: 1, ...(languages ? { languages } : {}) },
+  properties: {
+    name: id,
+    state,
+    precision: "city",
+    titles: Math.max(1, ...Object.values(titles)),
+    ...(languages ? { languages } : {}),
+    ...(Object.keys(titles).length ? { language_titles: titles } : {}),
+  },
 });
 
 // Six places with pages in two months; hits in three of them.
@@ -37,7 +44,7 @@ const features = new Map(
     feature("A", "IL"),
     feature("B", "IL"),
     feature("C", "NY", ["ger"]),
-    feature("D", "NY", ["ger", "eng"]),
+    feature("D", "NY", ["ger", "eng"], { eng: 2, ger: 1 }),
     feature("E", "CA", []),
     feature("F", "CA"),
   ].map((f) => [f.id, f]),
@@ -58,6 +65,15 @@ describe("prepareSkew", () => {
     expect(Array.from(p.input.stateOf)).toEqual([0, 0, 1, 1, 2, 2]);
     // Languages are named, never used to leave a place out of the fit.
     expect(p.languages).toEqual([null, null, "Papers in German", "Papers in German and English", null, null]);
+    // With how many papers are in each, where the API sends it.
+    expect(p.languageCounts).toEqual([
+      null,
+      null,
+      null,
+      "Of its 2 papers, 2 are in English (100%) and 1 in German (50%). A paper in more than one language counts in each.",
+      null,
+      null,
+    ]);
     expect(Array.from(p.input.inFit)).toEqual([]);
   });
 
@@ -67,6 +83,7 @@ describe("prepareSkew", () => {
     if (typeof p === "string") throw new Error(p);
     expect(Array.from(p.input.cells.pages)).toEqual([10, 20, 30, 40, 50, 60, 5]);
     expect(p.languages).toEqual([null, null, null, null, null, null]);
+    expect(p.languageCounts).toEqual([null, null, null, null, null, null]);
   });
 
   it("is unavailable when filters remove the baselines, buckets differ or places are few", () => {

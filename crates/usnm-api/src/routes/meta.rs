@@ -111,16 +111,20 @@ pub(crate) async fn places_in(
         let rd = &snap.refdata;
         let mut title_counts = std::collections::HashMap::<&str, usize>::new();
         // The languages the place's titles are printed in (catalog codes,
-        // e.g. "eng", "ger"). The map's relative-rate view names them for a
-        // place where any title isn't in English (doc 11, 11.14).
+        // e.g. "eng", "ger"), with the titles that list each; a title in
+        // several languages counts in each. The map's relative-rate view
+        // names them for a place where any title isn't in English (doc 11,
+        // 11.14).
         let mut languages =
-            std::collections::HashMap::<&str, std::collections::BTreeSet<&str>>::new();
+            std::collections::HashMap::<&str, std::collections::BTreeMap<&str, usize>>::new();
         for t in rd.titles.values() {
             *title_counts.entry(t.place_id.as_str()).or_default() += 1;
-            languages
-                .entry(t.place_id.as_str())
-                .or_default()
-                .extend(t.languages.iter().map(String::as_str));
+            let place = languages.entry(t.place_id.as_str()).or_default();
+            let own: std::collections::BTreeSet<&str> =
+                t.languages.iter().map(String::as_str).collect();
+            for l in own {
+                *place.entry(l).or_default() += 1;
+            }
         }
         let features: Vec<_> = rd
             .places
@@ -135,7 +139,8 @@ pub(crate) async fn places_in(
                         "state": p.state,
                         "precision": p.precision,
                         "titles": title_counts.get(p.id.as_str()).copied().unwrap_or(0),
-                        "languages": languages.get(p.id.as_str()).map(|l| l.iter().collect::<Vec<_>>()).unwrap_or_default()
+                        "languages": languages.get(p.id.as_str()).map(|l| l.keys().collect::<Vec<_>>()).unwrap_or_default(),
+                        "language_titles": languages.get(p.id.as_str()).cloned().unwrap_or_default()
                     }
                 })
             })

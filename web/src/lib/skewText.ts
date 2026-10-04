@@ -18,6 +18,8 @@ export interface SkewInfo {
   dir: -1 | 0 | 1;
   /** "Papers in German and English" when any of its titles isn't in English, else null. */
   languages: string | null;
+  /** How many of its papers are in each language, with the label; else null. */
+  languageCounts: string | null;
 }
 
 export function formatExpected(x: number): string {
@@ -54,7 +56,12 @@ export function skewSentence(name: string, s: SkewInfo): string {
  * the frame has no evidence of its own, so it is never "clearly" above or
  * below, even when the prior alone excludes 1.
  */
-export function skewInfo(s: Score, pages: number, languages: string | null): SkewInfo {
+export function skewInfo(
+  s: Score,
+  pages: number,
+  languages: string | null,
+  languageCounts: string | null = null,
+): SkewInfo {
   return {
     estimate: s.estimate,
     lower: s.lower,
@@ -64,5 +71,6 @@ export function skewInfo(s: Score, pages: number, languages: string | null): Ske
     pages,
     dir: pages > 0 && s.expected > 0 ? direction(s) : 0,
     languages,
+    languageCounts,
   };
 }
