@@ -300,9 +300,15 @@ export function steps(s: Status, now: number): Step[] {
 /** "Searchable now": published pages against every processed page. */
 export function headline(s: Status): { text: string; sub: string; share: number | null } {
   const p = s.published;
-  const total = s.backfill.available ? s.backfill.pages : 0;
+  // A page downloaded in two batches is searchable once, so it counts once.
+  const duplicates = p.duplicate_pages ?? 0;
+  const total = s.backfill.available ? s.backfill.pages - duplicates : 0;
   const years = `${p.bounds.from.slice(0, 4)} to ${p.bounds.to.slice(0, 4)}`;
-  const sub = `From ${count(p.titles)} ${p.titles === 1 ? "newspaper" : "newspapers"}, dated ${years}.`;
+  const sub =
+    `From ${count(p.titles)} ${p.titles === 1 ? "newspaper" : "newspapers"}, dated ${years}.` +
+    (duplicates > 0
+      ? ` ${count(duplicates)} ${duplicates === 1 ? "page ships" : "pages ship"} in two batches and ${duplicates === 1 ? "counts" : "count"} once.`
+      : "");
   if (total > 0 && total >= p.pages) {
     return {
       text: `Searchable now: ${count(p.pages)} of ${count(total)} downloaded pages (${pct(p.pages, total)})`,

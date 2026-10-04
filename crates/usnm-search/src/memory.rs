@@ -41,7 +41,7 @@ impl MemoryBackend {
 
     fn matching<'a>(
         &'a self,
-        indexes: &IndexSet,
+        indexes: &'a IndexSet,
         query: &'a Node,
         filters: &'a Filters,
     ) -> Result<impl Iterator<Item = &'a Indexed> + 'a, SearchError> {
@@ -63,6 +63,7 @@ impl MemoryBackend {
                 && (filters.langs.is_empty()
                     || doc.language.iter().any(|l| filters.langs.contains(l)))
                 && (!filters.front_only || doc.front_page)
+                && !indexes.hides(&doc.doc_id, &doc.batch)
                 && eval(query, &d.tokens)
         }))
     }
@@ -355,6 +356,7 @@ mod shard_tests {
             edition: 1,
             seq: 1,
             sort_key: u64::from(place) << 32 | 1 << 16 | 1,
+            batch: "b".into(),
             text: "a cross of gold".into(),
         }
     }
@@ -363,7 +365,7 @@ mod shard_tests {
     async fn sharded_cube_equals_unsharded_cube() {
         let mut b = MemoryBackend::new();
         b.add_index("i", (0..200).map(|i| doc(i, (i % 13) as u8)));
-        let idx = IndexSet(vec!["i".into()]);
+        let idx = IndexSet::new(vec!["i".into()]);
         let q = usnm_core::query::parse("gold").unwrap();
         let from = usnm_core::time::date_from_day(71_000);
         let to = usnm_core::time::date_from_day(71_300);
@@ -393,5 +395,49 @@ mod shard_tests {
             assert_eq!(merged, all, "n = {n}");
         }
         let _ = NaiveDate::MIN;
+    }
+
+    #[tokio::test]
+    async fn hidden_copies_are_not_counted_or_listed() {
+        let mut copy = doc(1, 1);
+        copy.batch = "other".into();
+        let mut b = MemoryBackend::new();
+        b.add_index("base", [doc(1, 1), doc(2, 1)]);
+        b.add_index("delta", [copy]);
+        let both = IndexSet::new(vec!["base".into(), "delta".into()]);
+        let hidden = both.clone().hiding([(doc(1, 1).doc_id, "b".to_owned())]);
+        let q = usnm_core::query::parse("gold").unwrap();
+        let (from, to) = (
+            usnm_core::time::date_from_day(71_000),
+            usnm_core::time::date_from_day(71_300),
+        );
+        let f = Filters {
+            from,
+            to,
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+        };
+        let spec = BucketSpec::new(BucketUnit::Year, from, to);
+        let total = |set: IndexSet| {
+            let (b, q, f, spec) = (&b, &q, &f, &spec);
+            async move { b.summary(&set, q, f, spec).await.unwrap().total_hits }
+        };
+        assert_eq!(total(both.clone()).await, 3);
+        assert_eq!(total(hidden.clone()).await, 2);
+        let page = HitsQuery {
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        let hits = b.hits(&hidden, &q, &f, &page).await.unwrap();
+        assert_eq!(hits.total, 2);
+        assert_eq!(
+            hits.hits
+                .iter()
+                .filter(|h| h.doc_id == doc(1, 1).doc_id)
+                .count(),
+            1
+        );
     }
 }

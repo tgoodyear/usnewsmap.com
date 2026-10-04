@@ -39,14 +39,15 @@ use usnm_store::ObjectStore;
 use crate::activity::Reporter;
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
+use crate::dedup::{self, Plan};
 use crate::merges::IndexLayout;
 use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
 use crate::state::{
-    Curated, IndexRun, RunBatch, RunStatus, State, Step, RUN_BATCHES_FILE, TITLE_PAGES_FILE,
+    Curated, IndexRun, RunBatch, RunStatus, State, Step, DUPLICATES_FILE, RUN_BATCHES_FILE,
+    TITLE_PAGES_FILE,
 };
-use crate::worker::Counts;
 
 pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
 
@@ -373,6 +374,34 @@ impl Release {
             tracing::info!("no curated batches; nothing to release");
             return Ok(None);
         }
+        // Pages that ship in more than one batch: which copy the version
+        // keeps. The batches outside the scope are in indexes it keeps.
+        let new: BTreeSet<&str> = scope.iter().map(|b| b.batch.as_str()).collect();
+        let indexed: BTreeSet<&str> = version_batches
+            .iter()
+            .map(|b| b.batch.as_str())
+            .filter(|b| !new.contains(b))
+            .collect();
+        let previously_hidden = match &previous {
+            Some(prev) if !full => self.previously_hidden(&prev.index_version).await?,
+            _ => Some(BTreeSet::new()),
+        };
+        let dedup = dedup::plan(
+            self.curated.as_ref(),
+            &version_batches,
+            &indexed,
+            &previously_hidden,
+        )
+        .await?;
+        if dedup.duplicate_pages > 0 {
+            tracing::warn!(
+                pages = dedup.duplicate_pages,
+                title_days = dedup.shared_days,
+                hidden = dedup.hidden.len(),
+                pairs = ?dedup.pairs.iter().take(10).collect::<Vec<_>>(),
+                "pages ship in more than one batch; keeping one copy of each"
+            );
+        }
 
         let (version, index_id) = self.next_names(full).await?;
         indexes.push(index_id.clone());
@@ -387,7 +416,9 @@ impl Release {
             batches: None,
             status: RunStatus::Building,
             docs: 0,
-            pages: version_batches.iter().map(|b| b.curated.pages).sum(),
+            pages: version_batches.iter().map(|b| b.curated.pages).sum::<u64>()
+                - dedup.duplicate_pages,
+            duplicate_pages: dedup.duplicate_pages,
             started_at: Utc::now(),
             published_at: None,
             previous_version: previous.as_ref().map(|p| p.index_version.clone()),
@@ -407,7 +438,9 @@ impl Release {
         report.step(Step::Indexing).await;
         let outcome = async {
             let docs = self
-                .build_index(lease, sink, &version, &index_id, &scope, &catalog, report)
+                .build_index(
+                    lease, sink, &version, &index_id, &scope, &catalog, &dedup, report,
+                )
                 .await?;
             report.step(Step::Publishing).await;
             // What every index of the version is made of, for the log and
@@ -417,7 +450,7 @@ impl Release {
                 l.log();
             }
             let bounds = self
-                .write_snapshot(&version, &version_batches, &catalog, &layout)
+                .write_snapshot(&version, &version_batches, &catalog, &dedup, &layout)
                 .await?;
             Ok::<_, anyhow::Error>((docs, bounds))
         }
@@ -576,6 +609,16 @@ impl Release {
         Ok(batches)
     }
 
+    /// The copies `version` hid (its `duplicates.json`), or `None` when its
+    /// snapshot predates the file: its indexes then hold every copy.
+    async fn previously_hidden(&self, version: &str) -> anyhow::Result<dedup::PreviouslyHidden> {
+        let path = format!("{version}/{DUPLICATES_FILE}");
+        let Some(bytes) = self.reference.get(&path).await? else {
+            return Ok(None);
+        };
+        Ok(Some(serde_json::from_slice(&bytes).context(path)?))
+    }
+
     async fn load_snapshot_catalog(&self, version: &str) -> anyhow::Result<Catalog> {
         let get = |name: &'static str| async move {
             let path = format!("{version}/{name}");
@@ -604,6 +647,7 @@ impl Release {
         index_id: &str,
         scope: &[RunBatch],
         catalog: &Catalog,
+        dedup: &Plan,
         report: &Reporter,
     ) -> anyhow::Result<u64> {
         // Every title must resolve before anything is written.
@@ -621,7 +665,14 @@ impl Release {
         sink.create(index_id).await?;
         // A line every 30 s and after each batch (the saved query
         // `release-progress` and the stall alert read them).
-        let expected = scope.iter().map(|b| b.curated.ok_pages).sum();
+        let expected = scope
+            .iter()
+            .map(|b| {
+                b.curated
+                    .ok_pages
+                    .saturating_sub(dedup.skipped_docs(&b.batch))
+            })
+            .sum();
         let progress = Progress::new(sink.stats(), expected);
         progress.snapshot().log(None);
         progress::report(&self.state, version, &progress.snapshot()).await;
@@ -641,7 +692,7 @@ impl Release {
                     .with_context(|| format!("curated part `{path}` is missing"))?;
                 let mut part_docs = Vec::new();
                 read_part(bytes.into(), true, |row| {
-                    if row.status == TextStatus::Ok {
+                    if row.status == TextStatus::Ok && dedup.keeps(&row.key, &b.batch) {
                         let title = catalog.title(&row.key.lccn).context("title")?;
                         let place = catalog.place(&title.place_id).context("place")?;
                         part_docs.push(page_doc(&row, title, place));
@@ -668,7 +719,8 @@ impl Release {
     }
 
     /// Write `{version}/` (titles, places, baselines, pages per title, the
-    /// batch list, manifest last) and return the version's date bounds.
+    /// batch list, the hidden duplicate copies, manifest last) and return the
+    /// version's date bounds. A page in more than one batch counts once.
     /// The manifest also records `layout`, the splits of each index, when
     /// the engine has splits.
     async fn write_snapshot(
@@ -676,6 +728,7 @@ impl Release {
         version: &str,
         batches: &[RunBatch],
         catalog: &Catalog,
+        dedup: &Plan,
         layout: &[IndexLayout],
     ) -> anyhow::Result<(NaiveDate, NaiveDate)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
@@ -684,14 +737,7 @@ impl Release {
         let mut title_pages: BTreeMap<String, u64> = BTreeMap::new();
         let (mut first, mut last) = (u32::MAX, u32::MIN);
         for b in batches {
-            let path = &b.curated.counts;
-            let bytes = self
-                .curated
-                .get(path)
-                .await?
-                .with_context(|| format!("`{path}` is missing"))?;
-            let counts: Counts = serde_json::from_slice(&bytes).context(path.clone())?;
-            for (lccn, days) in counts {
+            for (lccn, days) in dedup::load_counts(self.curated.as_ref(), b).await? {
                 let title = catalog
                     .title(&lccn)
                     .with_context(|| format!("title `{lccn}` is missing from the catalog"))?;
@@ -707,6 +753,15 @@ impl Release {
         }
         if first > last {
             bail!("the version has no pages");
+        }
+        for (lccn, day, extra) in dedup.excess() {
+            let title = catalog.title(lccn).context("title")?;
+            let pages = baselines
+                .get_mut(&title.place_id)
+                .and_then(|s| s.get_mut(&day))
+                .context("a duplicated page outside the baselines")?;
+            *pages -= extra;
+            *title_pages.get_mut(lccn).context("title pages")? -= u64::from(extra);
         }
         // Only titles and places with pages in this version.
         let titles: Vec<&Title> = catalog
@@ -732,6 +787,7 @@ impl Release {
             ("baselines.json", serde_json::to_vec(&baselines)?),
             (TITLE_PAGES_FILE, serde_json::to_vec(&title_pages)?),
             (RUN_BATCHES_FILE, serde_json::to_vec(batches)?),
+            (DUPLICATES_FILE, serde_json::to_vec(&dedup.hidden)?),
         ] {
             files.push(json!({
                 "path": name,
@@ -743,6 +799,7 @@ impl Release {
         let mut manifest = json!({
             "index_version": version,
             "files": files,
+            "duplicate_pages": dedup.duplicate_pages,
             "built_from": {
                 "batches": batches.iter().map(|b| json!({
                     "batch": b.batch, "version": b.curated.version, "counts": b.curated.counts,

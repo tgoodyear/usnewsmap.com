@@ -32,7 +32,7 @@ pub const BATCH_FIELDS: [Field; 12] = [
 
 /// The fields of an index run the status page uses. The batch count is
 /// `batch_count`, or for runs written before that, the inline list's length.
-pub const RUN_FIELDS: [Field; 14] = [
+pub const RUN_FIELDS: [Field; 15] = [
     Field::Path("index_version"),
     Field::Path("full"),
     Field::Path("indexes"),
@@ -40,6 +40,7 @@ pub const RUN_FIELDS: [Field; 14] = [
     Field::Path("status"),
     Field::Path("docs"),
     Field::Path("pages"),
+    Field::Path("duplicate_pages"),
     Field::Path("started_at"),
     Field::Path("published_at"),
     Field::Path("previous_version"),
@@ -97,6 +98,9 @@ pub struct RunSummary {
     pub docs: u64,
     #[serde(default)]
     pub pages: u64,
+    /// Pages also in another batch, left out of `pages`; 0 on older runs.
+    #[serde(default)]
+    pub duplicate_pages: u64,
     pub started_at: DateTime<Utc>,
     #[serde(default)]
     pub published_at: Option<DateTime<Utc>>,

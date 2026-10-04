@@ -134,7 +134,7 @@ async fn summaries_and_cubes_match_the_reference_backend() {
         return;
     };
     let mem = memory();
-    let set = IndexSet(INDEXES.iter().map(|s| (*s).to_owned()).collect());
+    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     let mut checked = 0;
     for (qname, q) in queries() {
         for (fname, f) in filter_cases() {
@@ -173,7 +173,7 @@ async fn hits_pages_match_the_reference_backend() {
         return;
     };
     let mem = memory();
-    let set = IndexSet(INDEXES.iter().map(|s| (*s).to_owned()).collect());
+    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     let f = filters("1895-01-01", "1897-12-31");
     for (qname, q) in queries() {
         for selector in [
@@ -251,7 +251,7 @@ async fn fuzzy_terms_match_the_reference_backend_or_are_refused() {
         return;
     };
     let mem = memory();
-    let set = IndexSet(INDEXES.iter().map(|s| (*s).to_owned()).collect());
+    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     let f = filters("1895-01-01", "1897-12-31");
     let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
     // OCR-style misspellings of words in the corpus.
@@ -278,9 +278,9 @@ async fn prepare_accepts_published_indexes_and_refuses_missing_ones() {
         eprintln!("QUICKWIT_URL not set; skipping");
         return;
     };
-    let set = IndexSet(INDEXES.iter().map(|s| (*s).to_owned()).collect());
+    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     qw.prepare(&set).await.expect("fixture indexes");
-    let missing = IndexSet(vec![
+    let missing = IndexSet::new(vec![
         "pages-base-fixture".into(),
         "pages-delta-missing".into(),
     ]);

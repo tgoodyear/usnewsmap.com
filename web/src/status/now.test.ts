@@ -304,6 +304,14 @@ describe("headline", () => {
     expect(h.sub).toBe("From 1,217 newspapers, dated 1751 to 1963.");
   });
 
+  it("counts a page downloaded in two batches once", () => {
+    const s = status({});
+    s.published.duplicate_pages = 20;
+    const h = headline(s);
+    expect(h.text).toBe("Searchable now: 6,557,925 of 23,794,132 downloaded pages (28%)");
+    expect(h.sub).toBe("From 1,217 newspapers, dated 1751 to 1963. 20 pages ship in two batches and count once.");
+  });
+
   it("without the pipeline state, only the searchable pages", () => {
     const s = status({});
     s.backfill = { available: false, reason: "none" };

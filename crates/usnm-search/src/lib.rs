@@ -5,6 +5,9 @@
 //! - [`memory::MemoryBackend`]: a brute-force in-memory engine used for local
 //!   development, tests, and as the correctness oracle for count checks.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -35,16 +38,53 @@ pub struct PageDoc {
     /// Same-day order for hits: `title ordinal << 32 | edition << 16 | seq`.
     /// Numeric because Quickwit 0.9 can't sort on text fields (05 §5.5).
     pub sort_key: u64,
+    /// The batch this copy of the page came from. The fixtures don't have it.
+    #[serde(default)]
+    pub batch: String,
     pub text: String,
 }
 
-/// The sealed indexes a published `index_version` names (08 §8.4.1).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct IndexSet(pub Vec<String>);
+/// The sealed indexes a published `index_version` names (08 §8.4.1), and
+/// the copies of duplicated pages in them that searches must not see: pages
+/// that ship in two batches, whose extra copy an earlier index already held
+/// (04 §4.7).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IndexSet {
+    ids: Vec<String>,
+    /// Batch → ids of its documents to hide.
+    hidden: Arc<BTreeMap<String, BTreeSet<String>>>,
+}
 
 impl IndexSet {
+    pub fn new(ids: Vec<String>) -> Self {
+        Self {
+            ids,
+            hidden: Arc::default(),
+        }
+    }
+
+    /// Hide each `(doc_id, batch)`: that batch's copy of the page.
+    pub fn hiding(mut self, copies: impl IntoIterator<Item = (String, String)>) -> Self {
+        let mut hidden: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (doc_id, batch) in copies {
+            hidden.entry(batch).or_default().insert(doc_id);
+        }
+        self.hidden = Arc::new(hidden);
+        self
+    }
+
     pub fn ids(&self) -> &[String] {
-        &self.0
+        &self.ids
+    }
+
+    /// The documents to hide, by batch.
+    pub fn hidden(&self) -> &BTreeMap<String, BTreeSet<String>> {
+        &self.hidden
+    }
+
+    /// Whether `batch`'s copy of `doc_id` is hidden.
+    pub fn hides(&self, doc_id: &str, batch: &str) -> bool {
+        self.hidden.get(batch).is_some_and(|d| d.contains(doc_id))
     }
 }
 

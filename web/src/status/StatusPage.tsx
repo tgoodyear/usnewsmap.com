@@ -138,7 +138,7 @@ function Headline({ s }: { s: Status }) {
       {h.share !== null && (
         <Bar
           value={s.published.pages}
-          max={s.backfill.available ? s.backfill.pages : s.published.pages}
+          max={s.backfill.available ? s.backfill.pages - (s.published.duplicate_pages ?? 0) : s.published.pages}
           label={h.text}
         />
       )}
@@ -731,7 +731,9 @@ function IndexingBody({ i, now }: { i: Indexing; now: number }) {
           run.full ? "full" : "delta",
           <RunBadge key="s" status={run.status} />,
           run.batches === null ? "–" : count(run.batches),
-          run.docs ? count(run.docs) : "–",
+          run.docs
+            ? `${count(run.docs)}${run.duplicate_pages ? ` (${count(run.duplicate_pages)} duplicates left out)` : ""}`
+            : "–",
           <Time key="t" iso={run.started_at} now={now} />,
           run.duration_secs === null ? "–" : span(run.duration_secs * 1000),
           <ErrorText key="e" text={run.error} />,

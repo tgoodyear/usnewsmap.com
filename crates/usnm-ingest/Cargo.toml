@@ -36,6 +36,7 @@ zstd.workspace = true
 
 [dev-dependencies]
 usnm-api = { path = "../usnm-api" }
+usnm-search.workspace = true
 usnm-telemetry = { workspace = true, features = ["testing"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }

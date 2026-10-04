@@ -93,7 +93,7 @@ USNM_DATA_DIR=/tmp/usnm-azure target/release/usnm-api   # reads the snapshot fro
 scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on the same directory resumes
 ```
 
-`titles-sync` with no `--lccns` or `--list` fetches every title in LoC's listing (hours); `run --batches …` syncs only the titles for those batches. Set these on `up.sh` to change the Cosmos stand-in: `COSMOS_PAGE=2` exercises query continuation, `COSMOS_429=0.1` throttles a tenth of requests, and `COSMOS_SEED=state.json` starts from a `--state-file` run.
+`$ingest duplicates` reports the pages that ship in more than one curated batch (JSON on stdout; changes nothing). `titles-sync` with no `--lccns` or `--list` fetches every title in LoC's listing (hours); `run --batches …` syncs only the titles for those batches. Set these on `up.sh` to change the Cosmos stand-in: `COSMOS_PAGE=2` exercises query continuation, `COSMOS_429=0.1` throttles a tenth of requests, and `COSMOS_SEED=state.json` starts from a `--state-file` run.
 
 ### Configuration (environment variables)
 
