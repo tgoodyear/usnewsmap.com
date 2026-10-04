@@ -4,6 +4,7 @@
 //! - [`ids`]: page keys and collision-free document ids (04 §4.2)
 //! - [`time`]: day numbers and time buckets (05 §5.5, §5.7)
 //! - [`text`]: text normalization shared by ingest and query parsing (04 §4.5)
+//! - [`ja`]: Japanese tokens and folding for our own OCR (04 §4.8, #139)
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
 //! - [`cube`]: the sparse place × bucket cube (06 §6.3.3)
@@ -12,6 +13,7 @@
 
 pub mod cube;
 pub mod ids;
+pub mod ja;
 pub mod names;
 pub mod params;
 pub mod query;
