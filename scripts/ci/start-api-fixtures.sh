@@ -2,7 +2,8 @@
 # Build the API and start it in the background on its baked synthetic
 # fixtures (127.0.0.1:8080, logging to api.log), then wait until it's ready.
 # It also serves the site from web/dist, as the image does, once
-# web-e2e.sh has built it (files are read per request).
+# web-e2e.sh has built it (files are read per request). In CI the build
+# was started in the background earlier; cargo waits for it here.
 #
 # A search containing "slowsearch" takes 4 s and a visitor waits 1 s, so
 # the API answers 202 and the app waits for the result, as for a cold search

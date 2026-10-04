@@ -213,10 +213,16 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # The API's build overlaps the site's; start-api-fixtures.sh runs cargo
+      # build again, which waits for this one and fails the same way if it did.
+      - name: Build the API in the background
+        run: cargo build --release --locked -p usnm-api > cargo-build.log 2>&1 &
+      - name: Build the site
+        run: scripts/ci/web-e2e.sh build
       - name: Start the API on the synthetic fixtures
         run: scripts/ci/start-api-fixtures.sh
-      - name: Build the site and run the end-to-end suite
-        run: scripts/ci/web-e2e.sh
+      - name: Run the end-to-end suite
+        run: scripts/ci/web-e2e.sh test
         env:
           CI: "1"
       - if: failure()
@@ -228,6 +234,7 @@ jobs:
             web/playwright-report
             web/test-results
             api.log
+            cargo-build.log
 
   publish:
     name: publish and roll out (${{ matrix.environment }})

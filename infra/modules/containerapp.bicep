@@ -107,7 +107,7 @@ var apiContainer = {
     {
       // A start loads the published version (retrying while the sidecar
       // starts, which its own probe allows 300 s), then warms the caches:
-      // /readyz fails until the warm-up ends or USNM_READY_CAP_SECS (120 s)
+      // /readyz fails until the warm-up ends or USNM_READY_CAP_SECS (60 s)
       // passes (06 §6.6). 48 × 10 s = 480 s covers both. Liveness and
       // readiness probing begin once this passes, and in single-revision
       // mode the previous revision keeps the traffic until then.
