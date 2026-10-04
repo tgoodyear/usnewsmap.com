@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """OCR the Japanese pages LoC has no text for, with NDLOCR-Lite (#128).
 
-    python3 jaocr.py targets          list the pages to OCR (writes ocr-ja/targets.jsonl)
+    python3 jaocr.py targets          list the pages to OCR (writes ocr-ja/targets-v2.jsonl)
     python3 jaocr.py run [--limit N]  OCR the targets not done yet
 
 Stores are blob container URLs (Entra auth via the managed identity) or local
@@ -12,20 +12,27 @@ directories, so the job runs the same way against a copy on disk:
     USNM_CURATED_URL    curated store: the batches' Parquet parts (read) and
                         ocr-ja/ (written)
 
-Targets are pages of titles whose catalog languages include Japanese, in the
-published version's batches, whose LoC text is empty, short or mostly not
-words: LoC's OCR has no Japanese script, so those are the Japanese pages.
+Targets are pages of titles whose catalog languages include Japanese whose
+LoC text is missing, empty, short or mostly not words: LoC's OCR has no
+Japanese script, so those are the Japanese pages. Two sources:
 
-`run` claims one issue at a time by creating ocr-ja/claims/<issue>.json (a
-create-only write, so replicas never take the same issue; a claim older than
-JAOCR_CLAIM_HOURS is taken over). For each issue it asks loc.gov for the
+- missing: LoC's bulk archives ship a Japanese page as an empty ALTO
+  ocr.xml with no ocr.txt, so curation (which reads ocr.txt) never saw it.
+  The job lists the archives of every batch LoC's datasets listing gives
+  for a Japanese title, and takes each page with ocr.xml and no ocr.txt.
+- empty, short, garbled: pages curation did see, in the published version's
+  Parquet parts, whose text is empty, short or garbled Latin.
+
+`run` claims one issue at a time by creating ocr-ja/claims/<targets>/<issue>.json
+(a create-only write, so replicas never take the same issue; a claim older
+than JAOCR_CLAIM_HOURS is taken over with an ETag compare-and-swap). For each issue it asks loc.gov for the
 page images (one API request per issue), downloads each target page's
 full-resolution JPEG from LoC's IIIF service, runs NDLOCR-Lite on the issue's
-pages together and writes ocr-ja/pages/<issue>.parquet, an overlay keyed by
-doc_id (see OVERLAY_COLUMNS in write_part; not the full curated schema: the
-release joins it to the curated rows for everything else). A part is written
-only when every target page of the issue has text, and an issue with a part
-is done. loc.gov's API is paced JAOCR_API_GAP seconds
+pages together and writes ocr-ja/pages/<issue>[.<n>].parquet, an overlay keyed
+by doc_id (see write_part; not the full curated schema). A part is written
+only when every page it was asked for has text. A page is done when its
+doc_id is in a part, so an issue done before new targets appeared gets a
+second part for the new pages. loc.gov's API is paced JAOCR_API_GAP seconds
 per request and the image server JAOCR_TILE_GAP seconds, each multiplied by
 JAOCR_REPLICAS so replicas together stay under LoC's limits.
 """
@@ -53,6 +60,9 @@ from pathlib import Path
 UA = "usnewsmap-ja-ocr/1.0 (+https://usnewsmap.com)"
 OCR_SOURCE = "usnm-ndlocr-lite"
 PREFIX = "ocr-ja"
+# Bumped when the way targets are chosen changes, so a run lists them again.
+TARGETS = "targets-v2"
+COLLECTION = "https://www.loc.gov/collections/chronicling-america/?fo=json&c=1&at=datasets"
 MIN_PAGE_CHARS = 20  # crates/usnm-core/src/text.rs
 # A word: Capitalized or lower case, or ALL CAPS (headlines); mixed case is OCR noise.
 WORDLIKE = re.compile(r"^(?:[A-Z]?[a-z]{2,}|[A-Z]{3,15})$")
@@ -190,20 +200,67 @@ def issue_key(lccn: str, date: str, edition: int) -> str:
     return f"{lccn}_{date}_ed-{edition}"
 
 
-def targets(reference, curated) -> list[dict]:
+def archive_pages(names) -> dict[str, set[str]]:
+    """page directory (lccn/yyyy/mm/dd/ed-n/seq-n) -> file names, from an archive listing."""
+    pages: dict[str, set[str]] = {}
+    for name in names:
+        parts = name.strip("/").split("/")
+        # [batch/[data/]] lccn/yyyy/mm/dd/ed-n/seq-n/file: take the last seven parts.
+        if len(parts) < 7 or not parts[-2].startswith("seq-") or not parts[-3].startswith("ed-"):
+            continue
+        pages.setdefault("/".join(parts[-7:-1]), set()).add(parts[-1])
+    return pages
+
+
+def missing_pages(names, jpn: set[str], batch: str) -> list[dict]:
+    """Pages of Japanese titles with an ALTO file but no ocr.txt."""
+    out = []
+    for d, files in archive_pages(names).items():
+        lccn, y, m, dd, ed, seq = d.split("/")
+        if lccn not in jpn or "ocr.txt" in files or "ocr.xml" not in files:
+            continue
+        key = f"{lccn}/{y}-{m}-{dd}/{ed}/{seq}"
+        out.append({"doc_id": key.replace("/", "_"), "page_key": key, "lccn": lccn,
+                    "date": f"{y}-{m}-{dd}", "edition": int(ed[3:]), "seq": int(seq[4:]),
+                    "batch": batch, "loc_text": "missing"})
+    return out
+
+
+def list_archive(url: str, pacer: "Pacer") -> list[str]:
+    """Member names of a .tar.bz2 on LoC's server, streamed (nothing is kept)."""
+    import tarfile
+
+    for attempt in range(4):
+        pacer.wait()
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=600) as r, tarfile.open(fileobj=r, mode="r|bz2") as tar:
+                return [m.name for m in tar]
+        except (urllib.error.URLError, TimeoutError, ConnectionError, EOFError, tarfile.TarError) as e:
+            log("retrying archive", url=url, error=str(e)[:200])
+            time.sleep(120 * (attempt + 1))
+    raise RuntimeError(f"giving up on {url}")
+
+
+def targets(reference, curated, datasets: list[dict] | None = None) -> list[dict]:
     current = json.loads(reference.read("current.json"))
     version = current["reference"]
     # The same rule as the API and the store: one path segment, no traversal.
     if not SAFE_SEGMENT.match(version):
         raise ValueError(f"current.json names an unsafe reference version: {version!r}")
     titles = json.loads(reference.read(f"{version}/titles.json"))
+    if reference.exists("catalog/titles.json"):
+        # The working catalog has titles with no published pages too (all-Japanese titles).
+        titles = titles + json.loads(reference.read("catalog/titles.json"))
     jpn = japanese_lccns(titles)
+    by_id: dict[str, dict] = {}
+
+    # Pages curation saw, with empty, short or garbled text.
     batches = json.loads(reference.read(f"{version}/batches.json"))
     picked = [b for b in batches if jpn & set(b["curated"]["lccns"])]
-    log("listing targets", version=version, japanese_titles=len(jpn), batches=len(picked))
+    log("listing curated targets", version=version, japanese_titles=len(jpn), batches=len(picked))
     import pyarrow.parquet as pq
 
-    out = []
     for b in picked:
         for part in b["curated"]["parts"]:
             t = pq.read_table(io.BytesIO(curated.read(part)), columns=PAGE_COLUMNS)
@@ -212,12 +269,26 @@ def targets(reference, curated) -> list[dict]:
                     continue
                 why = needs_ocr(r["text_status"], r["text"])
                 if why:
-                    out.append({
+                    by_id[r["doc_id"]] = {
                         "doc_id": r["doc_id"], "page_key": r["page_key"], "lccn": r["lccn"],
                         "date": str(r["date"]), "edition": int(r["edition"]), "seq": int(r["seq"]),
                         "batch": r["batch"], "loc_text": why,
-                    })
-    out.sort(key=lambda r: (r["lccn"], r["date"], r["edition"], r["seq"]))
+                    }
+
+    # Pages curation never saw: in the archives, with ALTO and no ocr.txt.
+    if datasets is None:
+        datasets = json.loads(fetch(COLLECTION, Pacer(float(os.environ.get("JAOCR_API_GAP", "3.5")))))["datasets"]
+    archives = [d for d in datasets if jpn & set(d.get("lccns") or [])]
+    log("listing archives", archives=len(archives))
+    bulk = Pacer(float(os.environ.get("JAOCR_ARCHIVE_GAP", "60")))
+    for d in archives:
+        batch = re.sub(r"_ver\d+$", "", d["batch"])
+        found = missing_pages(list_archive(d["url"], bulk), jpn, batch)
+        for r in found:
+            by_id.setdefault(r["doc_id"], r)
+        log("archive listed", batch=d["batch"], missing=len(found))
+
+    out = sorted(by_id.values(), key=lambda r: (r["lccn"], r["date"], r["edition"], r["seq"]))
     return out
 
 
@@ -329,6 +400,26 @@ def write_part(curated, issue: str, rows: list[dict]) -> None:
     curated.write(f"{PREFIX}/pages/{issue}.parquet", buf.getvalue())
 
 
+def done_pages(curated, parts: list[str]) -> set[str]:
+    import pyarrow.parquet as pq
+
+    done: set[str] = set()
+    for p in parts:
+        if p.endswith(".parquet"):
+            done.update(pq.read_table(io.BytesIO(curated.read(p)), columns=["doc_id"]).column("doc_id").to_pylist())
+    return done
+
+
+def part_name(curated, issue: str) -> str:
+    """<issue>, or <issue>.<n> when the issue already has parts (pages added to the targets later)."""
+    if not curated.exists(f"{PREFIX}/pages/{issue}.parquet"):
+        return issue
+    n = 2
+    while curated.exists(f"{PREFIX}/pages/{issue}.{n}.parquet"):
+        n += 1
+    return f"{issue}.{n}"
+
+
 def claim(curated, issue: str, owner: str, stale: timedelta) -> bool:
     path = f"{PREFIX}/claims/{issue}.json"
     body = json.dumps({"owner": owner, "at": datetime.now(timezone.utc).isoformat()}).encode()
@@ -345,26 +436,27 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
     api = Pacer(float(os.environ.get("JAOCR_API_GAP", "3.5")) * replicas)
     tile = Pacer(float(os.environ.get("JAOCR_TILE_GAP", "1.0")) * replicas)
     stale = timedelta(hours=float(os.environ.get("JAOCR_CLAIM_HOURS", "6")))
-    if curated.exists(f"{PREFIX}/targets.jsonl"):
-        rows = [json.loads(x) for x in curated.read(f"{PREFIX}/targets.jsonl").decode().splitlines() if x]
+    tfile = f"{PREFIX}/{TARGETS}.jsonl"
+    if curated.exists(tfile):
+        rows = [json.loads(x) for x in curated.read(tfile).decode().splitlines() if x]
     else:
         rows = targets(reference, curated)
-        curated.write(f"{PREFIX}/targets.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
+        curated.write(tfile, "\n".join(json.dumps(r) for r in rows).encode())
+    parts = curated.list(f"{PREFIX}/pages/")
+    done = done_pages(curated, parts)
     by_issue: dict[str, list[dict]] = {}
     for r in rows:
-        by_issue.setdefault(issue_key(r["lccn"], r["date"], r["edition"]), []).append(r)
-    done = {Path(p).stem for p in curated.list(f"{PREFIX}/pages/")}
-    todo = [i for i in sorted(by_issue) if i not in done]
-    log("ocr starting", issues=len(by_issue), done=len(done), todo=len(todo),
-        pages=sum(len(by_issue[i]) for i in todo), replicas=replicas)
+        if r["doc_id"] not in done:
+            by_issue.setdefault(issue_key(r["lccn"], r["date"], r["edition"]), []).append(r)
+    todo = sorted(by_issue)
+    log("ocr starting", targets=len(rows), done_pages=len(done), todo_issues=len(todo),
+        todo_pages=sum(len(v) for v in by_issue.values()), replicas=replicas)
     engine = f"ndlocr-lite {ndlocr_version(ndl_root)}"
     pages_done = 0
     for issue in todo:
         if limit is not None and pages_done >= limit:
             break
-        if not claim(curated, issue, owner, stale):
-            continue
-        if curated.exists(f"{PREFIX}/pages/{issue}.parquet"):
+        if not claim(curated, f"{TARGETS}/{issue}", owner, stale):
             continue
         pages = by_issue[issue]
         p0 = pages[0]
@@ -415,7 +507,7 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
             log("ocr incomplete; issue left for a later run", issue=issue, missing=missing[:10],
                 missing_count=len(missing))
             continue
-        write_part(curated, issue, rows_out)
+        write_part(curated, part_name(curated, issue), rows_out)
         pages_done += len(rows_out)
         log("ocr issue done", issue=issue, pages=len(rows_out), secs=round(time.time() - t0, 1),
             chars=sum(r["text_chars"] for r in rows_out))
@@ -431,7 +523,7 @@ def main() -> None:
     curated = store(os.environ["USNM_CURATED_URL"])
     if a.command == "targets":
         rows = targets(reference, curated)
-        curated.write(f"{PREFIX}/targets.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
+        curated.write(f"{PREFIX}/{TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
         issues = {issue_key(r["lccn"], r["date"], r["edition"]) for r in rows}
         why: dict[str, int] = {}
         for r in rows:
