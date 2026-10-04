@@ -172,6 +172,20 @@ describe("rightNow", () => {
     expect(line.progress).toBeUndefined();
   });
 
+  it("merging: where the merge is", () => {
+    const merge = { step: "settle", splits: 227, merges_running: 1, merges_queued: 20 };
+    expect(rightNow(status({ now: "merging", merge }), NOW).text).toBe(
+      "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live. Index still open: 227 pieces, 1 merge running, 20 waiting.",
+    );
+    const final = { step: "finalize", splits: 9, merges_running: 2, merges_queued: 0 };
+    expect(rightNow(status({ now: "merging", merge: final }), NOW).text).toMatch(
+      / Index closed for its final merges: 9 pieces, 2 merges running, 0 waiting\.$/,
+    );
+    expect(steps(status({ now: "merging", merge }), NOW)[2]!.detail).toBe(
+      "Every page sent. Index still open: 227 pieces, 1 merge running, 20 waiting",
+    );
+  });
+
   it("publishing", () => {
     expect(rightNow(status({ now: "publishing", source: "job" }), NOW).text).toBe(
       "Publishing: the new index is going live (step 4 of 4).",

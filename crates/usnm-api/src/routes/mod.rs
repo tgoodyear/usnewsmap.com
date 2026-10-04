@@ -62,7 +62,7 @@ impl Ctx {
 
 /// Bump when a response body's shape changes, so a new release never serves
 /// persisted bodies written by an older one for the same index version.
-pub(crate) const RESPONSE_FORMAT: u32 = 1;
+pub(crate) const RESPONSE_FORMAT: u32 = 2;
 
 /// A persistent-cache read slower than this is abandoned and the response computed.
 const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);

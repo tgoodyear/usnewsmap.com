@@ -16,7 +16,7 @@ use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
 use crate::{
-    mark_html, Capabilities, CubeCell, Hit, HitsPage, HitsQuery, IndexSet, PlaceSummary,
+    mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet, PlaceSummary,
     SearchBackend, SearchError, Summary,
 };
 
@@ -179,9 +179,14 @@ pub fn summary_request(
         "max_hits": 0,
         "aggs": {
             "series": histogram(spec, 1),
+            "first": { "min": { "field": "day" } },
+            "last": { "max": { "field": "day" } },
             "places": {
                 "terms": { "field": "place_id", "size": MAX_PLACES },
-                "aggs": { "first": { "min": { "field": "day" } } }
+                "aggs": {
+                    "first": { "min": { "field": "day" } },
+                    "last": { "max": { "field": "day" } }
+                }
             }
         }
     }))
@@ -226,12 +231,19 @@ pub fn hits_request(
         "query": full_query(node, filters, extra)?,
         "max_hits": page.limit,
         "start_offset": page.offset,
-        // Oldest first, then title, edition and page (`sort_key`). Quickwit 0.9
-        // can't sort on text fields, and a leading `-` means ascending (S-2).
-        "sort_by": "-day,-sort_key",
+        "sort_by": sort_by(page.sort),
         // A comma-separated string, not an array, in Quickwit 0.9 (S-2).
         "snippet_fields": "text"
     }))
+}
+
+/// By day, then title, edition and page (`sort_key`). Quickwit 0.9 can't sort
+/// on text fields, and a leading `-` means ascending (S-2).
+fn sort_by(sort: HitSort) -> &'static str {
+    match sort {
+        HitSort::Oldest => "-day,-sort_key",
+        HitSort::Newest => "day,sort_key",
+    }
 }
 
 // ------------------------------------------------------------ responses
@@ -295,16 +307,24 @@ struct NumBucket {
     doc_count: u64,
 }
 
+/// A `min` or `max` metric; `value` is null when no document matched.
 #[derive(Debug, Deserialize)]
-struct MinValue {
+struct MetricValue {
     value: Option<f64>,
+}
+
+impl MetricValue {
+    fn day(m: Option<Self>) -> Option<u32> {
+        m.and_then(|m| m.value).map(|v| v as u32)
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct PlaceBucket {
     key: String,
     doc_count: u64,
-    first: Option<MinValue>,
+    first: Option<MetricValue>,
+    last: Option<MetricValue>,
     t: Option<Buckets<NumBucket>>,
 }
 
@@ -325,17 +345,34 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
             series[i] += b.doc_count;
         }
     }
+    // Every place bucket has at least one page, so both days must be there.
     let places = agg::<Buckets<PlaceBucket>>(resp, "places")?
         .buckets
         .into_iter()
-        .map(|b| PlaceSummary {
-            first_day: b.first.and_then(|f| f.value).map_or(0, |v| v as u32),
-            place_id: b.key,
-            hits: b.doc_count,
+        .map(|b| {
+            let missing =
+                || SearchError::Backend("place bucket without its first or last day".into());
+            Ok(PlaceSummary {
+                first_day: MetricValue::day(b.first).ok_or_else(missing)?,
+                last_day: MetricValue::day(b.last).ok_or_else(missing)?,
+                place_id: b.key,
+                hits: b.doc_count,
+            })
         })
-        .collect();
+        .collect::<Result<_, SearchError>>()?;
+    // Null when nothing matched; otherwise both days must be there.
+    let day = |name| -> Result<Option<u32>, SearchError> {
+        if resp.num_hits == 0 {
+            return Ok(None);
+        }
+        MetricValue::day(Some(agg::<MetricValue>(resp, name)?))
+            .map(Some)
+            .ok_or_else(|| SearchError::Backend(format!("aggregation `{name}` has no day")))
+    };
     Ok(Summary {
         total_hits: resp.num_hits,
+        first_day: day("first")?,
+        last_day: day("last")?,
         series,
         places,
     })
@@ -586,6 +623,10 @@ mod tests {
         );
         assert_eq!(s["aggs"]["series"]["histogram"]["interval"], 7);
         assert_eq!(s["aggs"]["series"]["histogram"]["offset"], origin % 7);
+        assert_eq!(s["aggs"]["first"]["min"]["field"], "day");
+        assert_eq!(s["aggs"]["last"]["max"]["field"], "day");
+        assert_eq!(s["aggs"]["places"]["aggs"]["first"]["min"]["field"], "day");
+        assert_eq!(s["aggs"]["places"]["aggs"]["last"]["max"]["field"], "day");
         let c = cube_request(&q, &filters(), &spec, &[0, 5]).unwrap();
         assert!(c["query"]
             .as_str()
@@ -600,11 +641,19 @@ mod tests {
         let page = HitsQuery {
             place_id: Some("P00001".into()),
             lccn: None,
+            sort: HitSort::Oldest,
             offset: 50,
             limit: 25,
         };
         let r = hits_request(&parse("gold").unwrap(), &filters(), &page).unwrap();
+        // A leading `-` is ascending in Quickwit 0.9 (S-2): oldest first.
         assert_eq!(r["sort_by"], "-day,-sort_key");
+        let newest = HitsQuery {
+            sort: HitSort::Newest,
+            ..page.clone()
+        };
+        let r2 = hits_request(&parse("gold").unwrap(), &filters(), &newest).unwrap();
+        assert_eq!(r2["sort_by"], "day,sort_key");
         assert_eq!(r["snippet_fields"], "text");
         assert_eq!(r["start_offset"], 50);
         assert!(r["query"]
@@ -655,10 +704,12 @@ mod tests {
             "num_hits": 7,
             "aggregations": {
                 "series": { "buckets": [ {"key": 1895.0, "doc_count": 2}, {"key": 1896.0, "doc_count": 5} ] },
+                "first": {"value": 71000.0},
+                "last": {"value": 71250.0},
                 "places": { "buckets": [
-                    {"key": "P00001", "doc_count": 4, "first": {"value": 71000.0},
+                    {"key": "P00001", "doc_count": 4, "first": {"value": 71000.0}, "last": {"value": 71200.0},
                      "t": {"buckets": [{"key": 1895.0, "doc_count": 1}, {"key": 1896.0, "doc_count": 3}]}},
-                    {"key": "P00002", "doc_count": 3, "first": {"value": 71100.0},
+                    {"key": "P00002", "doc_count": 3, "first": {"value": 71100.0}, "last": {"value": 71250.0},
                      "t": {"buckets": [{"key": 1896.0, "doc_count": 3}]}}
                 ]}
             }
@@ -667,6 +718,8 @@ mod tests {
         let s = parse_summary(&resp, &spec).unwrap();
         assert_eq!(s.series, vec![2, 5, 0]);
         assert_eq!(s.places[0].first_day, 71000);
+        assert_eq!(s.places[0].last_day, 71200);
+        assert_eq!((s.first_day, s.last_day), (Some(71000), Some(71250)));
         let cells = parse_cube(&resp, &spec).unwrap();
         assert_eq!(cells.len(), 3);
         assert_eq!(
@@ -677,6 +730,77 @@ mod tests {
                 hits: 3
             }
         );
+    }
+
+    #[test]
+    fn a_summary_with_no_matches_has_no_first_or_last_day() {
+        let spec = BucketSpec::new(BucketUnit::Year, d("1895-01-01"), d("1897-12-31"));
+        let resp: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 0,
+            "aggregations": {
+                "series": { "buckets": [] },
+                "first": {"value": null},
+                "last": {"value": null},
+                "places": { "buckets": [] }
+            }
+        }))
+        .unwrap();
+        let s = parse_summary(&resp, &spec).unwrap();
+        assert_eq!((s.first_day, s.last_day), (None, None));
+    }
+
+    #[test]
+    fn a_summary_with_matches_needs_its_first_and_last_day() {
+        let spec = BucketSpec::new(BucketUnit::Year, d("1895-01-01"), d("1897-12-31"));
+        for (first, last) in [
+            (
+                Some(json!({"value": null})),
+                Some(json!({"value": 71200.0})),
+            ),
+            (None, Some(json!({"value": 71200.0}))),
+            (
+                Some(json!({"value": 71000.0})),
+                Some(json!({"value": "late"})),
+            ),
+        ] {
+            let mut aggs = json!({ "series": { "buckets": [] }, "places": { "buckets": [] } });
+            if let Some(f) = first {
+                aggs["first"] = f;
+            }
+            if let Some(l) = last {
+                aggs["last"] = l;
+            }
+            let resp: SearchResponse =
+                serde_json::from_value(json!({ "num_hits": 4, "aggregations": aggs })).unwrap();
+            assert!(matches!(
+                parse_summary(&resp, &spec),
+                Err(SearchError::Backend(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn a_place_without_its_days_is_an_error_not_day_zero() {
+        let spec = BucketSpec::new(BucketUnit::Year, d("1895-01-01"), d("1897-12-31"));
+        for place in [
+            json!({"key": "P00001", "doc_count": 4, "first": {"value": 71000.0}}),
+            json!({"key": "P00001", "doc_count": 4, "first": {"value": null}, "last": {"value": 71200.0}}),
+        ] {
+            let resp: SearchResponse = serde_json::from_value(json!({
+                "num_hits": 4,
+                "aggregations": {
+                    "series": { "buckets": [] },
+                    "first": {"value": 71000.0},
+                    "last": {"value": 71200.0},
+                    "places": { "buckets": [place] }
+                }
+            }))
+            .unwrap();
+            assert!(matches!(
+                parse_summary(&resp, &spec),
+                Err(SearchError::Backend(_))
+            ));
+        }
     }
 
     #[test]

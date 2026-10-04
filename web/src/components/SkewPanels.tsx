@@ -1,12 +1,16 @@
 import { useId, useState } from "react";
 import { formatTimes } from "../lib/skewScale";
 import { formatExpected, formatRange, type SkewInfo } from "../lib/skewText";
+import { dateFromDay } from "../lib/time";
 
 export interface SkewRow {
   id: string;
   name: string;
   state: string;
   skew: SkewInfo;
+  /** The place's first and last matching day in the whole search; negative when unknown. */
+  firstDay?: number;
+  lastDay?: number;
 }
 
 const LIST_LENGTH = 5;
@@ -74,7 +78,8 @@ export function SkewLists({ rows, onSelect }: ListsProps) {
 export const LANGUAGE_EXPLAINER =
   "These are the languages this place's papers are catalogued in, across the whole collection. " +
   "They don't say which language the matched pages are in. " +
-  "An English search term rarely matches pages printed in another language, so a place with such papers can read low.";
+  "An English search term rarely matches pages printed in another language, so a place with such papers can read low. " +
+  "To compare only pages from English-language papers, choose English under newspaper languages.";
 
 /**
  * A place's language label with a small info button that shows what it
@@ -151,11 +156,25 @@ export function StateTable({ rows }: StateTableProps) {
 export function skewCsv(rows: SkewRow[]): string {
   const q = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
   const n = (x: number) => (Number.isFinite(x) ? String(Number(x.toPrecision(6))) : "");
-  const lines = ["place_id,name,state,pages,hits,expected,estimate,lower,upper,languages"];
+  const day = (d: number | undefined) => (d !== undefined && d >= 0 ? dateFromDay(d) : "");
+  const lines = ["place_id,name,state,pages,hits,expected,estimate,lower,upper,languages,first_seen,last_seen"];
   for (const r of rows) {
     const s = r.skew;
     lines.push(
-      [q(r.id), q(r.name), q(r.state), s.pages, s.observed, n(s.expected), n(s.estimate), n(s.lower), n(s.upper), q(s.languages ?? "")].join(","),
+      [
+        q(r.id),
+        q(r.name),
+        q(r.state),
+        s.pages,
+        s.observed,
+        n(s.expected),
+        n(s.estimate),
+        n(s.lower),
+        n(s.upper),
+        q(s.languages ?? ""),
+        day(r.firstDay),
+        day(r.lastDay),
+      ].join(","),
     );
   }
   return `${lines.join("\n")}\n`;

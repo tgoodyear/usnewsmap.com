@@ -5,6 +5,7 @@ import { SkewLegend } from "./SkewLegend";
 import { clearest, LANGUAGE_EXPLAINER, skewCsv, SkewLists, StateTable, type SkewRow } from "./SkewPanels";
 import { PlaceTable } from "./PlaceTable";
 import type { SkewInfo } from "../lib/skewText";
+import { dayNumber } from "../lib/time";
 
 const info = (estimate: number, lower: number, upper: number, extra: Partial<SkewInfo> = {}): SkewInfo => ({
   estimate,
@@ -113,7 +114,7 @@ describe("lists, tables and export", () => {
   });
 
   it("tables places and states with expected counts and ranges", () => {
-    const tableRows = rows.map((r) => ({ ...r, precision: "city", position: [0, 0] as [number, number], value: 10, rel: 0.1, firstDay: 0 }));
+    const tableRows = rows.map((r) => ({ ...r, precision: "city", position: [0, 0] as [number, number], value: 10, rel: 0.1, firstDay: 0, lastDay: 0 }));
     render(<PlaceTable skew rows={tableRows} onSelect={() => undefined} selected="" />);
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers).toEqual(["Place", "State", "Pages published", "Matched", "Expected", "Relative rate", "90% range", "Languages"]);
@@ -126,11 +127,14 @@ describe("lists, tables and export", () => {
   });
 
   it("exports one CSV row per place", () => {
-    const csv = skewCsv([row("P1", info(6.14, 5.23, 7.15)), { ...row("P2", info(1, 0.5, 2, { languages: "Papers in German, Serbian and English" })), name: 'A, "B"' }]);
+    const csv = skewCsv([
+      { ...row("P1", info(6.14, 5.23, 7.15)), firstDay: dayNumber("1896-07-10"), lastDay: dayNumber("1896-12-28") },
+      { ...row("P2", info(1, 0.5, 2, { languages: "Papers in German, Serbian and English" })), name: 'A, "B"' },
+    ]);
     expect(csv.split("\n")).toEqual([
-      "place_id,name,state,pages,hits,expected,estimate,lower,upper,languages",
-      "P1,Place P1,AL,100,10,5,6.14,5.23,7.15,",
-      'P2,"A, ""B""",AL,100,10,5,1,0.5,2,"Papers in German, Serbian and English"',
+      "place_id,name,state,pages,hits,expected,estimate,lower,upper,languages,first_seen,last_seen",
+      "P1,Place P1,AL,100,10,5,6.14,5.23,7.15,,1896-07-10,1896-12-28",
+      'P2,"A, ""B""",AL,100,10,5,1,0.5,2,"Papers in German, Serbian and English",,',
       "",
     ]);
   });

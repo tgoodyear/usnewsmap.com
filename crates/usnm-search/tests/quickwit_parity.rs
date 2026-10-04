@@ -15,7 +15,9 @@ use usnm_core::query::{build, parse, Mode, Node};
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::memory::MemoryBackend;
 use usnm_search::quickwit::QuickwitBackend;
-use usnm_search::{CubeCell, HitsQuery, IndexSet, PageDoc, SearchBackend, SearchError, Summary};
+use usnm_search::{
+    CubeCell, HitSort, HitsQuery, IndexSet, PageDoc, SearchBackend, SearchError, Summary,
+};
 
 const INDEXES: [&str; 2] = ["pages-base-fixture", "pages-delta-fixture-1"];
 
@@ -181,6 +183,17 @@ async fn hits_pages_match_the_reference_backend() {
             },
             HitsQuery {
                 lccn: Some("sn99000004".into()),
+                ..Default::default()
+            },
+            HitsQuery {
+                place_id: Some("P00001".into()),
+                sort: HitSort::Newest,
+                ..Default::default()
+            },
+            // Every match: how the aggregate finds the first and last page.
+            HitsQuery::default(),
+            HitsQuery {
+                sort: HitSort::Newest,
                 ..Default::default()
             },
         ] {

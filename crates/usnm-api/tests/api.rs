@@ -16,7 +16,7 @@ use usnm_api::refdata::RefData;
 use usnm_api::{app, reload_if_changed, AppState, Engine, Loader};
 use usnm_core::query::parse;
 use usnm_core::text::tokenize;
-use usnm_core::time::day_number;
+use usnm_core::time::{date_from_day, day_number};
 use usnm_search::memory::{eval, MemoryBackend};
 use usnm_search::PageDoc;
 use usnm_store::LocalStore;
@@ -139,8 +139,7 @@ async fn health_and_meta() {
 }
 
 /// `lang` keeps the pages of titles that list any of the given languages; a
-/// title in two languages is found by either. Baselines are per place and day
-/// only, so the response has none (the relative rate is off, 07 §7.9).
+/// title in two languages is found by either.
 #[tokio::test]
 async fn lang_filters_by_any_title_language() {
     let s = state_with(None).await;
@@ -162,9 +161,6 @@ async fn lang_filters_by_any_title_language() {
     };
     let (ger, body) = places("ger").await;
     assert_eq!(ger, ["P00002", "P00006"]);
-    assert!(body["series"]["baseline"].is_null());
-    assert!(body["cube"]["baseline_ref"].is_null());
-    assert!(body["total"]["baseline_pages"].is_null());
     assert!(body["query"]["canonical"]
         .as_str()
         .unwrap()
@@ -181,6 +177,93 @@ async fn lang_filters_by_any_title_language() {
     let (none, body) = places("fre").await;
     assert!(none.is_empty());
     assert_eq!(body["total"]["hits"], 0);
+}
+
+/// Under a language filter the baseline is the pages of the titles that list
+/// any of the languages, each page once: the title in English and German is in
+/// both counts but not twice in their union. Every fixture title has 312 pages.
+#[tokio::test]
+async fn lang_filter_keeps_exact_baselines() {
+    let s = state_with(None).await;
+    let baseline = |lang: &'static str, extra: &'static str| {
+        let s = &s;
+        async move {
+            let uri = format!("/v1/aggregate?q=gold&lang={lang}{extra}");
+            let (status, _, body) = get(s, &uri).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let series: u64 = body["series"]["baseline"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap())
+                .sum();
+            assert_eq!(body["total"]["baseline_pages"], series);
+            (series, body)
+        }
+    };
+    assert_eq!(baseline("eng", "").await.0, 4 * 312);
+    // P00002 (English and German) and P00006 (German).
+    assert_eq!(baseline("ger", "").await.0, 2 * 312);
+    assert_eq!(baseline("spa", "").await.0, 312);
+    // Together: P00006 added to the four English titles, P00002 once.
+    assert_eq!(baseline("eng,ger", "").await.0, 5 * 312);
+    // Lowercased, de-duplicated and ordered like the search itself.
+    assert_eq!(baseline("GER,eng,ger", "").await.0, 5 * 312);
+    assert_eq!(baseline("fre", "").await.0, 0);
+    // With a state filter: only that state's places (P00002 is in New York).
+    assert_eq!(baseline("ger", "&state=NY").await.0, 312);
+
+    // The link names the same scope, and the coverage cube sums to the baseline.
+    let (pages, body) = baseline("ger", "").await;
+    let link = body["cube"]["baseline_ref"].as_str().unwrap().to_owned();
+    assert!(link.contains("lang=ger"), "{link}");
+    let (status, _, cov) = get(&s, &link).await;
+    assert_eq!(status, StatusCode::OK, "{cov}");
+    let covered: u64 = cov["pages"]["h"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(covered, pages);
+    assert_eq!(cov["places"], json!(["P00002", "P00006"]));
+    // Without the filter it is every page.
+    let (status, _, all) = get(&s, "/v1/coverage?bucket=year").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["places"].as_array().unwrap().len(), 6);
+    // Other filters still have no exact baseline, with or without a language.
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold&lang=ger&front=true").await;
+    assert!(body["series"]["baseline"].is_null());
+    assert!(body["cube"]["baseline_ref"].is_null());
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold&lang=ger&lccn=sn99000002").await;
+    assert!(body["series"]["baseline"].is_null());
+}
+
+/// A version published before baselines were kept per language serves the
+/// language filter without them, as it always did.
+#[tokio::test]
+async fn lang_filter_on_an_older_snapshot_has_no_baseline() {
+    let mut refdata = refdata().await;
+    refdata.language_baselines = None;
+    let s = Arc::new(AppState::new(
+        config(),
+        Arc::new(fixture_backend()),
+        refdata,
+    ));
+    let (status, _, body) = get(&s, "/v1/aggregate?q=gold&lang=ger").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["series"]["baseline"].is_null());
+    assert!(body["cube"]["baseline_ref"].is_null());
+    assert!(body["total"]["baseline_pages"].is_null());
+    let (status, _, _) = get(&s, "/v1/coverage?lang=ger").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // A request for another version is redirected, not rejected.
+    let (status, headers, _) = get(&s, "/v1/coverage?lang=ger&v=pages-v-other").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    // Searches without a language filter are unaffected.
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold").await;
+    assert!(body["cube"]["baseline_ref"].is_string());
 }
 
 #[tokio::test]
@@ -344,6 +427,127 @@ async fn hits_are_sorted_marked_linked_and_paginated() {
     let (_, _, page2) = get(&s, &format!("{base}&cursor={cursor}")).await;
     let second_first = page2["items"][0]["doc_id"].as_str().unwrap();
     assert!(items.iter().all(|i| i["doc_id"] != second_first));
+}
+
+/// The newest-first list is the oldest-first list reversed, including the
+/// order of pages on the same day. `sort=oldest` is the default and shares its
+/// canonical URL; anything else is refused.
+#[tokio::test]
+async fn hits_sort_oldest_or_newest() {
+    let s = state_with(None).await;
+    let base = "/v1/hits?q=gold&from=1895-01-01&to=1897-12-31&place=P00001";
+    // Every page of the list, following the cursor.
+    let all = |sort: &'static str| {
+        let s = &s;
+        async move {
+            let mut ids = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let mut uri = format!("{base}{sort}");
+                if let Some(c) = &cursor {
+                    uri.push_str(&format!("&cursor={c}"));
+                }
+                let (status, _, body) = get(s, &uri).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                for i in body["items"].as_array().unwrap() {
+                    ids.push(i["doc_id"].as_str().unwrap().to_owned());
+                }
+                match body["next_cursor"].as_str() {
+                    Some(c) => cursor = Some(c.to_owned()),
+                    None => break ids,
+                }
+            }
+        }
+    };
+    let oldest = all("").await;
+    assert!(oldest.len() > 1);
+    assert_eq!(all("&sort=oldest").await, oldest);
+    let mut reversed = oldest.clone();
+    reversed.reverse();
+    assert_eq!(all("&sort=newest").await, reversed);
+
+    let (_, plain, _) = get(&s, base).await;
+    let (_, explicit, _) = get(&s, &format!("{base}&sort=oldest")).await;
+    let (_, newest, _) = get(&s, &format!("{base}&sort=newest")).await;
+    assert_eq!(
+        header_str(&explicit, header::CONTENT_LOCATION),
+        header_str(&plain, header::CONTENT_LOCATION)
+    );
+    assert!(header_str(&newest, header::CONTENT_LOCATION).contains("&sort=newest"));
+
+    let (status, _, body) = get(&s, &format!("{base}&sort=sideways")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["type"], "/errors/bad-parameter");
+}
+
+/// National and per-place first and last days, and the first and last pages,
+/// against a brute-force pass over the fixture files.
+#[tokio::test]
+async fn first_and_last_mentions_match_brute_force() {
+    let s = state_with(None).await;
+    let docs: Vec<PageDoc> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|i| load_docs(i))
+        .collect();
+    let day = |iso: &str| day_number(chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d").unwrap());
+    for (q, qs, from, to) in [
+        ("gold", "gold", "1895-01-01", "1897-12-31"),
+        (
+            r#""cross of gold""#,
+            "%22cross+of+gold%22",
+            "1896-06-01",
+            "1896-12-31",
+        ),
+        ("fever", "fever", "1896-07-01", "1896-09-30"),
+        ("zyzzyva", "zyzzyva", "1895-01-01", "1897-12-31"),
+    ] {
+        let node = parse(q).unwrap();
+        let (f, t) = (day(from), day(to));
+        let matching: Vec<&PageDoc> = docs
+            .iter()
+            .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+            .collect();
+        let first = matching.iter().copied().min_by_key(|d| (d.day, d.sort_key));
+        let last = matching.iter().copied().max_by_key(|d| (d.day, d.sort_key));
+        let mut places: HashMap<&str, (u32, u32)> = HashMap::new();
+        for d in &matching {
+            let e = places.entry(&d.place_id).or_insert((d.day, d.day));
+            e.0 = e.0.min(d.day);
+            e.1 = e.1.max(d.day);
+        }
+
+        let uri = format!("/v1/aggregate?q={qs}&from={from}&to={to}");
+        let (status, _, body) = get(&s, &uri).await;
+        assert_eq!(status, StatusCode::OK, "{q}: {body}");
+        let total = &body["total"];
+        assert_eq!(total["first_day"], json!(first.map(|d| d.day)), "{q}");
+        assert_eq!(total["last_day"], json!(last.map(|d| d.day)), "{q}");
+        assert_eq!(
+            total["first"]["doc_id"],
+            json!(first.map(|d| &d.doc_id)),
+            "{q}"
+        );
+        assert_eq!(
+            total["last"]["doc_id"],
+            json!(last.map(|d| &d.doc_id)),
+            "{q}"
+        );
+        if let Some(d) = first {
+            assert_eq!(total["first"]["place_id"], d.place_id.as_str());
+            assert_eq!(total["first"]["date"], date_from_day(d.day).to_string());
+            assert!(total["first"]["links"]["viewer"].is_string());
+        }
+
+        let column =
+            |name: &str| -> Vec<Value> { body["places"][name].as_array().unwrap().clone() };
+        let ids = column("id");
+        assert_eq!(ids.len(), places.len(), "{q}");
+        for (i, id) in ids.iter().enumerate() {
+            let (lo, hi) = places[id.as_str().unwrap()];
+            assert_eq!(column("first_day")[i], lo, "{q} {id}");
+            assert_eq!(column("last_day")[i], hi, "{q} {id}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -551,7 +755,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f1")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f2")) else {
         return Vec::new();
     };
     entries
@@ -582,7 +786,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f1/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f2/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),

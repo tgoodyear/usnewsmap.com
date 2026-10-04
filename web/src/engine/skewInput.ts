@@ -13,7 +13,7 @@ export const MIN_PLACES = 5;
 export const LEVEL = 0.9;
 
 export type Unavailable =
-  /** lccn, lang or front filters: the API sends no baselines. */
+  /** No baselines: lccn or front filters, or lang on a version without per-language counts. */
   | "filters"
   /** The coverage cube doesn't match the aggregate's buckets. */
   | "mismatch"
@@ -82,9 +82,12 @@ export function prepareSkew(
     }
     return g;
   });
-  // Every place is scored and fitted the same way; languages are only shown
-  // (doc 11, 11.14): per-language baselines are phase 2.
-  const languages = placeIds.map((id) => languageLabel(features.get(id)?.properties.languages));
+  // Every place is scored and fitted the same way. Without a language filter a
+  // place's languages are named, since they may explain a low rate (doc 11,
+  // 11.14); with one the baselines count only those languages' pages, so
+  // there is nothing to explain.
+  const filtered = new URLSearchParams(agg.query.canonical).has("lang");
+  const languages = placeIds.map((id) => (filtered ? null : languageLabel(features.get(id)?.properties.languages)));
   return {
     version: agg.index_version,
     search: [agg.index_version, agg.query.canonical, agg.bucket.unit, agg.bucket.from, agg.bucket.to, buckets].join("|"),

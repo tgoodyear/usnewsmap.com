@@ -163,6 +163,8 @@ input, select {
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; }
 .summary { margin: 0 auto 0 0; }
+.mentions { margin: 0; padding: 0 16px 8px; color: var(--muted); }
+.mentions a { text-decoration: underline; }
 .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .segmented button { border: 0; background: var(--panel); padding: 6px 14px; min-height: 36px; cursor: pointer; }
 .segmented button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
@@ -246,6 +248,7 @@ input, select {
 .panel__head { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
 .panel__head h2 { font-size: 1.1rem; margin: 0; }
 .panel__summary { color: var(--muted); margin: 4px 0 12px; }
+.panel .segmented { margin-bottom: 8px; }
 .hits { list-style: none; padding: 0; margin: 0; }
 .hit { padding: 10px 0; border-top: 1px solid var(--line); }
 .hit__meta { font-size: 0.85rem; color: var(--muted); }

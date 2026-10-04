@@ -74,7 +74,7 @@ Principles:
 | `from`, `to` | ISO date | `1896-06-01` | Clamped to the corpus bounds |
 | `state` | CSV of USPS codes | `GA,SC` | |
 | `lccn` | CSV | `sn84026749` | |
-| `lang` | CSV ISO 639-2 | `eng,ger` | Three-letter catalog codes, any of them. A page matches when its newspaper's catalog record lists any given language, so a title in English and German is found by either. Pages published are kept per place and day only, so with `lang` the response has no baselines (§6.3.3) |
+| `lang` | CSV ISO 639-2 | `eng,ger` | Three-letter catalog codes, any of them. A page matches when its newspaper's catalog record lists any given language, so a title in English and German is found by either. Pages published are also kept per place, day and title language, so the baselines follow the filter (§6.3.3) |
 | `front` | bool | `true` | Front pages only |
 | `bucket` | enum `auto\|year\|month\|week\|day` | `week` | See [05 §5.7](05-search-and-storage.md#57-aggregation-strategy) |
 
@@ -85,13 +85,13 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | Method & path | Purpose | Cache |
 |---------------|---------|-------|
 | `GET /v1/meta` | `index_version`, corpus bounds, doc count, backend capabilities, build time, and `languages`: the choices for the site's language filter ([07 §7.9](07-frontend-design.md#79-language-filter)), `[{code, name, titles, pages}]` for each catalog language `lang` accepts, most pages first (`pages` is `null` when the snapshot doesn't record pages per title). A title in several languages counts in each | 5 min |
-| `GET /v1/aggregate` | Q1: totals, national series, per-place cube, first appearance | 1 day (+ `index_version`) |
-| `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date, with snippets; cursor pagination | 1 day |
+| `GET /v1/aggregate` | Q1: totals, the first and last matching page, national series, per-place cube, first and last appearance | 1 day (+ `index_version`) |
+| `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date (`sort=oldest`, the default, or `newest`), with snippets; cursor pagination | 1 day |
 | `GET /v1/compare` | Up to 4 queries (`q1…q4`); national series for each + per-place totals (no cube) | 1 day |
 | `GET /v1/pages/{doc_id}` | Page metadata + LoC links | 30 days |
 | `GET /v1/titles`, `GET /v1/titles/{lccn}` | Title metadata + coverage summary | 1 day |
 | `GET /v1/places` | All places (GeoJSON) with precision, title counts and the languages of their titles (catalog codes such as `eng`; [11 §11.14](11-term-geographic-skew.md#1114-phase-1-as-built)) | 1 day |
-| `GET /v1/coverage?from&to&bucket` | Pages published per state/place per bucket (the "no data" layer) | 1 day |
+| `GET /v1/coverage?from&to&bucket&state&lang` | Pages published per place and bucket (the "no data" layer and the relative rate's baseline), optionally for the places in some states and the pages of titles that list any of the given languages. `lang` on a version published before baselines were kept per language answers 422 | 1 day |
 | `GET /v1/export/aggregate.csv` | Same as `/aggregate` as tidy CSV (`place_id,lat,lon,bucket_start,hits,baseline,rel`) | 1 day |
 | `GET /v1/export/hits.csv` | Hits (≤ 10,000 rows) with page keys and LoC URLs | 1 day |
 | `GET /v1/docs`, `GET /v1/openapi.json` | API documentation | 1 day |
@@ -106,7 +106,12 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "index_version": "pages-v20261001-1",
   "query": { "canonical": "q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896-12-31&bucket=week", "ast": "…" },
   "bucket": { "unit": "week", "origin": "1896-06-01", "count": 31 },
-  "total": { "hits": 18234, "places": 1187, "titles": 1402, "baseline_pages": 912345 },
+  "total": {
+    "hits": 18234, "places": 1187, "titles": 1402, "baseline_pages": 912345,
+    "first_day": 71778, "last_day": 71949,     // null when nothing matches
+    "first": { "doc_id": "sn84031492_1896-07-10_ed-1_seq-1", "date": "1896-07-10", … },  // a /v1/hits item
+    "last":  { … }
+  },
   "series": {                      // national, one entry per bucket (dense)
     "hits":     [12, 40, 3871, 2210, …],
     "baseline": [28011, 28190, 28877, …]
@@ -114,7 +119,8 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "places": {                      // columnar arrays, one entry per place with ≥1 hit
     "id":    ["P00412", "P00087", …],
     "hits":  [612, 598, …],
-    "first_day": [71990, 71991, …]   // days since 1700-01-01
+    "first_day": [71778, 71779, …],  // days since 1700-01-01
+    "last_day":  [71945, 71949, …]
   },
   "cube": {                        // sparse COO triplets: (place index, bucket index, hits)
     "p": [0, 0, 1, …],
@@ -127,6 +133,8 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 }
 ```
 
+- `total.first` and `total.last` are the pages `/v1/hits` lists first oldest-first and newest-first, in the same shape as its items, so the site can link the first and last mention to their pages ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)).
+- **Baselines and filters.** `series.baseline`, `total.baseline_pages` and `cube.baseline_ref` are the pages published in the search's scope: all pages, the pages in the `state` filter's states, and, under `lang`, only the pages of titles that list any of the languages (each page once, so `lang=eng,ger` doesn't count a title in both twice). `baseline_ref` names `/v1/coverage` with the same `state` and `lang`. They are `null` when `lccn` or `front` is set, because baselines are kept per place, day and title language only, and when `lang` is set on a version published before baselines were kept per language (a snapshot without `language_baselines.json`, [04 §4.3](04-data-sources-and-ingestion.md)). A client that gets `null` shows page counts only.
 - Place coordinates and names are **not** repeated here. The SPA loads `/v1/places` once (CDN-cached, ~150 KB compressed) and joins by id.
 - The cube is sparse, so size scales with non-zero cells. The worst realistic case (a common term, ~3,000 places × 211 yearly buckets) is about **633k triplets**: ~9–10 MB of JSON (~2–3 MB gzip) or ~5 MB as Arrow (~1.5–2.5 MB compressed). Above a hard cap of 700k cells, the API steps to a coarser bucket. Large cubes are computed as sharded sub-queries so they stay within the engine's bucket limit ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)). The SPA requests Arrow when the expected cube is large. `?format=arrow` returns `application/vnd.apache.arrow.stream`.
 
@@ -155,6 +163,8 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "next_cursor": "eyJkIjo3MTk5NSwiaWQiOiJzbjg0MDMxNDkyXzE4OTYtMDctMTBfZWQtMV9zZXEtMSJ9"   // opaque (date, doc_id) search_after
 }
 ```
+
+Items are oldest first, and pages on the same day by title, edition and page. `sort=newest` reverses the whole order; `sort=oldest` is the default and is left out of the canonical URL.
 
 Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer URLs follow the loc.gov resource pattern. The legacy `chroniclingamerica.loc.gov/lccn/…` form is kept only as a fallback, because LoC redirects it.
 

@@ -30,7 +30,7 @@ matches '^\.github/' && all "workflow changed"
 # fixtures the tests read.
 rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|scripts/(ci/|quickwit-fixtures\.sh))'
 web='^(web/|fixtures/|scripts/ci/)'
-image="$rust|^(web/|Dockerfile|\.dockerignore$)"
+image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$)"
 for part in rust web image; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done

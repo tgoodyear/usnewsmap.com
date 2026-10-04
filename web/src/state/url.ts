@@ -3,7 +3,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import type { SearchParams } from "../api/client";
-import type { BucketUnit, Mode } from "../api/types";
+import type { BucketUnit, HitSort, Mode } from "../api/types";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
 export type Layer = "points" | "heat";
@@ -32,6 +32,8 @@ export interface ViewState {
   layer: Layer;
   norm: Norm;
   place: string;
+  /** Order of the selected place's pages. */
+  sort: HitSort;
   tab: Tab;
   /** Map viewport: zoom and center (lon, lat). */
   z: number | null;
@@ -52,6 +54,7 @@ export const DEFAULTS: ViewState = {
   layer: "points",
   norm: "raw",
   place: "",
+  sort: "oldest",
   tab: "map",
   z: null,
   c: null,
@@ -118,6 +121,7 @@ export function parseView(search: string): ViewState {
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
     norm: oneOf(s.get("norm"), ["raw", "skew"] as const, DEFAULTS.norm),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
+    sort: oneOf(s.get("sort"), ["oldest", "newest"] as const, DEFAULTS.sort),
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),
     z: Number.isFinite(z) && z >= MIN_ZOOM && z <= MAX_ZOOM ? z : null,
     c:
@@ -145,6 +149,7 @@ export function serializeView(v: ViewState): string {
   put("layer", v.layer, DEFAULTS.layer);
   put("norm", v.norm, DEFAULTS.norm);
   put("place", v.place, "");
+  put("sort", v.sort, DEFAULTS.sort);
   put("tab", v.tab, DEFAULTS.tab);
   if (v.z !== null) s.set("z", v.z.toFixed(2));
   if (v.c) s.set("c", `${v.c[0].toFixed(3)},${v.c[1].toFixed(3)}`);

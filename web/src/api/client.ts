@@ -1,6 +1,7 @@
 import type {
   AggregateResponse,
   CoverageResponse,
+  HitSort,
   HitsResponse,
   Meta,
   PlacesResponse,
@@ -275,6 +276,7 @@ export const api = {
     p: SearchParams,
     version: string,
     place: string,
+    sort: HitSort,
     cursor: string | null,
     signal?: AbortSignal,
   ) => {
@@ -282,6 +284,8 @@ export const api = {
     s.delete("bucket");
     s.set("place", place);
     s.set("limit", "20");
+    // Oldest first is the API's default, and leaving it out keeps one URL per list.
+    if (sort !== "oldest") s.set("sort", sort);
     if (cursor) s.set("cursor", cursor);
     return getPinned<HitsResponse>(`/v1/hits?${s}`, version, signal);
   },

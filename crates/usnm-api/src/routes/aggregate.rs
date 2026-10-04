@@ -1,5 +1,6 @@
-//! `GET /v1/aggregate` (06 §6.3.3): totals, national series, per-place totals
-//! and first appearance, and the sparse place × bucket cube.
+//! `GET /v1/aggregate` (06 §6.3.3): totals, the first and last matching page,
+//! national series, per-place totals with first and last appearance, and the
+//! sparse place × bucket cube.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -10,9 +11,11 @@ use axum::response::Response;
 use serde::Serialize;
 use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{RawParams, SearchRequest};
+use usnm_core::query::highlight_terms;
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::plan::{self, Planned};
 
+use super::hits::Item;
 use super::{cached_body, mount_prefix, uses_fuzzy, with_timeout, Ctx, Job};
 use crate::error::ApiError;
 use crate::searchlog::{self, Admission, SearchLog};
@@ -53,13 +56,20 @@ struct Totals {
     places: usize,
     /// Pages published in scope; `null` when filters make the baseline inexact.
     baseline_pages: Option<u64>,
+    /// Earliest and latest matching day; `null` when nothing matches.
+    first_day: Option<u32>,
+    last_day: Option<u32>,
+    /// The pages on those days that sort first and last in `/v1/hits`.
+    first: Option<Item>,
+    last: Option<Item>,
 }
 
 #[derive(Serialize)]
 struct Series {
     hits: Vec<u64>,
-    /// Pages published per bucket; `null` when `lccn`, `lang` or `front` filters are set,
-    /// because baselines are kept per place and day only.
+    /// Pages published per bucket; `null` when `lccn` or `front` filters are set,
+    /// because baselines are kept per place and day (and per title language), and
+    /// when `lang` is set on a version published before baselines were kept per language.
     baseline: Option<Vec<u64>>,
 }
 
@@ -68,6 +78,7 @@ struct Places {
     id: Vec<String>,
     hits: Vec<u64>,
     first_day: Vec<u32>,
+    last_day: Vec<u32>,
 }
 
 #[derive(Serialize)]
@@ -207,7 +218,7 @@ async fn compute(
             )
             .await?;
             match planned {
-                Planned::Complete(agg) => break Ok(agg),
+                Planned::Complete(agg) => break Ok(*agg),
                 Planned::TooManyCells { upper_bound } => match coarser(spec.unit) {
                     Some(unit) => {
                         spec = BucketSpec::new(unit, spec.from, spec.to);
@@ -255,13 +266,17 @@ async fn compute(
         })
         .collect();
 
+    let highlight = highlight_terms(&req.query).join(" ");
     let f = &req.filters;
-    let baseline_exact = f.lccns.is_empty() && f.langs.is_empty() && !f.front_only;
-    let baseline = baseline_exact.then(|| rd.national_baseline(&spec, &f.states));
+    let baseline_exact = f.lccns.is_empty() && !f.front_only && rd.has_baselines_for(&f.langs);
+    let baseline = baseline_exact.then(|| rd.national_baseline(&spec, &f.states, &f.langs));
     let baseline_ref = baseline_exact.then(|| {
         let mut s = form_urlencoded::Serializer::new(String::new());
         s.append_pair("bucket", spec.unit.as_str());
         s.append_pair("from", &spec.from.to_string());
+        if !f.langs.is_empty() {
+            s.append_pair("lang", &f.langs.join(","));
+        }
         if !f.states.is_empty() {
             s.append_pair("state", &f.states.join(","));
         }
@@ -288,6 +303,10 @@ async fn compute(
             hits: agg.summary.total_hits,
             places: place_ids.len(),
             baseline_pages: baseline.as_ref().map(|b| b.iter().sum()),
+            first_day: agg.summary.first_day,
+            last_day: agg.summary.last_day,
+            first: agg.first.map(|h| Item::new(h, rd, &highlight)),
+            last: agg.last.map(|h| Item::new(h, rd, &highlight)),
         },
         series: Series {
             hits: agg.summary.series.clone(),
@@ -296,6 +315,7 @@ async fn compute(
         places: Places {
             hits: place_ids.iter().map(|id| by_id[id].hits).collect(),
             first_day: place_ids.iter().map(|id| by_id[id].first_day).collect(),
+            last_day: place_ids.iter().map(|id| by_id[id].last_day).collect(),
             id: place_ids.iter().map(|s| (*s).to_owned()).collect(),
         },
         cube: CubeOut {

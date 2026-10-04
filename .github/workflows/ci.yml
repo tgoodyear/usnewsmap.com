@@ -105,7 +105,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
-    # Build and smoke-test both images. Publishing happens per environment in
+    # Build and smoke-test the images. Publishing happens per environment in
     # `publish`, from the same build cache.
     permissions:
       contents: read
@@ -133,6 +133,20 @@ jobs:
           cache-to: type=gha,scope=ingest,mode=max
       - name: The ingest image runs
         run: scripts/ci/check-ingest-image.sh usnm-ingest-check
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.ja-ocr
+          tags: usnm-ja-ocr-check
+          load: true
+          cache-from: type=gha,scope=ja-ocr
+          cache-to: type=gha,scope=ja-ocr,mode=max
+      - name: The Japanese OCR job's tests pass
+        run: |
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD/ja-ocr:/t:ro" -w /t --entrypoint python3 usnm-ja-ocr-check \
+            -m unittest discover -v -p 'test_*.py'
+      - name: The Japanese OCR image reads Japanese
+        run: scripts/ci/check-ja-ocr-image.sh usnm-ja-ocr-check
 
   infra:
     name: infra (bicep lint, build)
@@ -288,6 +302,16 @@ jobs:
           tags: |
             ${{ env.ACR }}/usnewsmap-ingest:main
             ${{ env.ACR }}/usnewsmap-ingest:${{ github.sha }}
+      - if: steps.head.outputs.current == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.ja-ocr
+          push: true
+          cache-from: type=gha,scope=ja-ocr
+          tags: |
+            ${{ env.ACR }}/usnewsmap-ja-ocr:main
+            ${{ env.ACR }}/usnewsmap-ja-ocr:${{ github.sha }}
       - name: Copy the pinned Quickwit image into the registry, digest unchanged
         if: steps.head.outputs.current == 'true'
         run: scripts/ci/copy-quickwit.sh
