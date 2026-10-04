@@ -183,7 +183,7 @@ indexing_settings:
 | Pre-1970 dates | `datetime` with `%Y-%m-%d` input stores and returns 1890s dates correctly, and `date` works as the timestamp field | Buckets still use the integer fields |
 | Multi-index search | One request over base + delta returns exact counts and aggregations | Versions are explicit index lists (08 §8.4.1) |
 | Nested aggregations | `terms(place_id) > histogram(day / ym / year)` and the `place_shard` split match the reference exactly | §5.7 as designed |
-| Sorting | Quickwit **can't sort on text fields**, so `doc_id` can't be the tiebreak. A leading `-` in `sort_by` means **ascending** | Hits sort by `-day,-sort_key`. `sort_key` = `title ordinal << 32 \| edition << 16 \| seq`, a numeric stand-in for (title, edition, page) |
+| Sorting | Quickwit **can't sort on text fields**, so `doc_id` can't be the tiebreak. A leading `-` in `sort_by` means **ascending** | Hits sort by `-day,-sort_key` (oldest first) or `day,sort_key` (newest first). `sort_key` = `title ordinal << 32 \| edition << 16 \| seq`, a numeric stand-in for (title, edition, page) |
 | Snippets | `snippet_fields` is a comma-separated string, not an array. Fragments come back HTML-escaped with `<b>` highlights | The API unescapes the text, then re-escapes it and emits only `<mark>` |
 | Phrases, slop, prefix | Exact phrases (stop words included), `"a b"~n` and `word*` match the reference | As §5.6 |
 | **Fuzzy terms** | **Not supported.** `term~1` parses but silently matches nothing, and the Elasticsearch-compatible API has no fuzzy query either | The Quickwit backend reports `fuzzy: false` and returns 422 for fuzzy queries rather than wrong counts. F-21 needs another approach; see [10 R-15](10-roadmap-and-risks.md#103-risk-register) |
@@ -265,13 +265,14 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 
 **Queries issued for Q1** (Quickwit; AI Search in the growth profile issues the equivalent facet requests):
 
-1. **Summary query** (always one call): `histogram(bucket_field)` for the national series, plus `terms(place_id, size = 5,000) → min(day)` for the first appearance per place. This also yields **P**, the number of places with at least one hit. It needs at most ~3,000 + 360 buckets.
+1. **Summary query** (always one call): `histogram(bucket_field)` for the national series, `min(day)` and `max(day)` for the first and last matching day, plus `terms(place_id, size = 5,000) → min(day), max(day)` for the first and last appearance per place. This also yields **P**, the number of places with at least one hit. It needs at most ~3,000 + 360 buckets.
 2. **Cube query:** `terms(place_id) → histogram(bucket_field, interval)` gives the sparse cube `[place][bucket] = pages`. Its upper bound is **P × B** buckets (B = number of time buckets).
    - If P × B ≤ **150,000**, it's a single call.
    - Otherwise the API **shards** it by `place_shard`, a fast field holding `place ordinal mod 8` that is written at index time. It issues ⌈P × B / 150,000⌉ sub-queries (at most 8), two at a time, each filtered to its shard, and merges the results. The worst case (~633k cells) takes 5 sub-queries.
-3. `max_hits = 0` on every call, so no documents are returned.
+3. **First and last page** (when anything matches): two hits queries with `max_hits = 1`, sorted oldest and newest first, run alongside the cube. They name the page behind the first and last day, so a misleading first mention (an OCR misread) can be checked.
+4. `max_hits = 0` on every other call, so no documents are returned.
 
-**Engine limits, set explicitly.** Quickwit caps nested aggregations with `searcher.aggregation_bucket_limit` (**default 65,000**) and `searcher.aggregation_memory_limit` (default 500 MB). The sidecar config sets **`aggregation_bucket_limit: 200000`** and **`aggregation_memory_limit: 768MB`**, which fits the 4 GiB sidecar, so a 150k-bucket shard has headroom. S-2 benchmarks memory and latency at exactly these settings. If memory is tight, the shard target drops (e.g. to 60k buckets, ≤ 11 sub-queries) rather than raising the limits. Typical queries therefore take two calls (summary + one cube), and the largest take up to 1 + 8.
+**Engine limits, set explicitly.** Quickwit caps nested aggregations with `searcher.aggregation_bucket_limit` (**default 65,000**) and `searcher.aggregation_memory_limit` (default 500 MB). The sidecar config sets **`aggregation_bucket_limit: 200000`** and **`aggregation_memory_limit: 768MB`**, which fits the 4 GiB sidecar, so a 150k-bucket shard has headroom. S-2 benchmarks memory and latency at exactly these settings. If memory is tight, the shard target drops (e.g. to 60k buckets, ≤ 11 sub-queries) rather than raising the limits. Typical queries therefore take four calls (summary, one cube and the two first/last page queries), and the largest take up to 1 + 8 + 2.
 
 **Normalization** happens in the API from `reference/{index_version}/baselines_place_day` (pages *published* per place and day, rolled up to any bucket in memory):
 `rel[place][bucket] = hits / baseline`, and nationally `rel[bucket] = Σhits / Σbaseline`. This replaces the legacy `globalFreq` table, stays correct as the corpus grows, and gives honest per-place rates.

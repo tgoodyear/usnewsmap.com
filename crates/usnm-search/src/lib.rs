@@ -53,12 +53,17 @@ pub struct PlaceSummary {
     pub place_id: String,
     pub hits: u64,
     pub first_day: u32,
+    pub last_day: u32,
 }
 
-/// Result of the summary call: national series, per-place totals and first appearance.
+/// Result of the summary call: national series, per-place totals, and first
+/// and last appearance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Summary {
     pub total_hits: u64,
+    /// Earliest and latest matching day; `None` when nothing matches.
+    pub first_day: Option<u32>,
+    pub last_day: Option<u32>,
     /// One entry per bucket of the request's [`BucketSpec`].
     pub series: Vec<u64>,
     pub places: Vec<PlaceSummary>,
@@ -71,10 +76,38 @@ pub struct CubeCell {
     pub hits: u32,
 }
 
+/// Order of a hit list. Either way, pages on the same day keep the order of
+/// `sort_key` (title, edition, page), reversed for newest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HitSort {
+    #[default]
+    Oldest,
+    Newest,
+}
+
+impl HitSort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HitSort::Oldest => "oldest",
+            HitSort::Newest => "newest",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "oldest" => Some(HitSort::Oldest),
+            "newest" => Some(HitSort::Newest),
+            _ => None,
+        }
+    }
+}
+
+/// Which hits to return. With neither `place_id` nor `lccn`, every match.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HitsQuery {
     pub place_id: Option<String>,
     pub lccn: Option<String>,
+    pub sort: HitSort,
     pub offset: usize,
     pub limit: usize,
 }
@@ -141,7 +174,8 @@ pub trait SearchBackend: Send + Sync {
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError>;
 
-    /// Hits oldest first, then by `sort_key` (title, edition, page), with snippets.
+    /// Hits by date in `page.sort` order, then by `sort_key` (title, edition,
+    /// page), with snippets.
     async fn hits(
         &self,
         indexes: &IndexSet,

@@ -1,5 +1,5 @@
 //! `GET /v1/hits` (06 §6.3.4): pages for one place or one title (`lccn`),
-//! sorted by date, with snippets.
+//! sorted by date (`sort=oldest`, the default, or `newest`), with snippets.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,10 +13,11 @@ use usnm_core::ids::PageKey;
 use usnm_core::params::{RawParams, SearchRequest};
 use usnm_core::query::highlight_terms;
 use usnm_core::time::date_from_day;
-use usnm_search::HitsQuery;
+use usnm_search::{Hit, HitSort, HitsQuery};
 
 use super::{cached, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
+use crate::refdata::RefData;
 use crate::{version, AppState};
 
 pub const MAX_LIMIT: usize = 50;
@@ -52,8 +53,9 @@ struct TitleOut {
     name: String,
 }
 
+/// One page, as `/v1/hits` lists it and `/v1/aggregate` names the first and last.
 #[derive(Serialize)]
-struct Item {
+pub(crate) struct Item {
     doc_id: String,
     date: String,
     lccn: String,
@@ -71,6 +73,28 @@ struct Links {
     viewer: Option<String>,
 }
 
+impl Item {
+    /// `highlight` is the query's highlight terms, for the LoC viewer link.
+    pub(crate) fn new(h: Hit, rd: &RefData, highlight: &str) -> Self {
+        Item {
+            date: date_from_day(h.day).to_string(),
+            title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),
+            links: Links {
+                viewer: PageKey::from_doc_id(&h.doc_id)
+                    .ok()
+                    .map(|k| k.viewer_url(Some(highlight))),
+            },
+            doc_id: h.doc_id,
+            lccn: h.lccn,
+            place_id: h.place_id,
+            edition: h.edition,
+            seq: h.seq,
+            front_page: h.front_page,
+            snippets: h.snippets,
+        }
+    }
+}
+
 /// Select hits by `place=`, or by title with a single `lccn=` (the same
 /// parameter that filters the other endpoints). With `place`, `lccn` stays a filter.
 pub async fn hits(
@@ -78,7 +102,7 @@ pub async fn hits(
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
-    raw.reject_unknown(&["place", "cursor", "limit"])?;
+    raw.reject_unknown(&["place", "cursor", "limit", "sort"])?;
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
     let req = SearchRequest::from_raw(&raw, rd.bounds())?;
@@ -115,6 +139,11 @@ pub async fn hits(
             .filter(|n| (1..=MAX_LIMIT).contains(n))
             .ok_or_else(|| ApiError::BadRequest(format!("`limit` must be 1–{MAX_LIMIT}")))?,
     };
+    let sort = match raw.get("sort") {
+        None => HitSort::default(),
+        Some(s) => HitSort::parse(s)
+            .ok_or_else(|| ApiError::BadRequest("`sort` must be `oldest` or `newest`".into()))?,
+    };
     let offset = match raw.get("cursor") {
         None => 0,
         Some(c) => URL_SAFE_NO_PAD
@@ -135,6 +164,10 @@ pub async fn hits(
         if let Some(p) = &place {
             canon.append_pair("place", p);
         }
+        // Only when not the default, so `sort=oldest` and no `sort` share a key.
+        if sort != HitSort::default() {
+            canon.append_pair("sort", sort.as_str());
+        }
         canon.finish()
     };
     let serving = rd.version().to_owned();
@@ -150,6 +183,7 @@ pub async fn hits(
         let page = HitsQuery {
             place_id: place.clone(),
             lccn: title.clone(),
+            sort,
             offset,
             limit,
         };
@@ -191,22 +225,7 @@ pub async fn hits(
             items: result
                 .hits
                 .into_iter()
-                .map(|h| Item {
-                    date: date_from_day(h.day).to_string(),
-                    title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),
-                    links: Links {
-                        viewer: PageKey::from_doc_id(&h.doc_id)
-                            .ok()
-                            .map(|k| k.viewer_url(Some(&highlight))),
-                    },
-                    doc_id: h.doc_id,
-                    lccn: h.lccn,
-                    place_id: h.place_id,
-                    edition: h.edition,
-                    seq: h.seq,
-                    front_page: h.front_page,
-                    snippets: h.snippets,
-                })
+                .map(|h| Item::new(h, rd, &highlight))
                 .collect(),
             next_cursor,
         })

@@ -6,7 +6,9 @@ import { dateFromDay, formatDate } from "../lib/time";
 import type { MapPoint } from "./mapTypes";
 
 interface Row extends MapPoint {
+  /** First and last matching day in the whole search; negative when unknown. */
   firstDay: number;
+  lastDay: number;
 }
 
 interface Column {
@@ -44,6 +46,12 @@ const RAW: Column[] = [
     label: "First appearance",
     get: (r) => r.firstDay,
     show: (r) => (r.firstDay >= 0 ? formatDate(dateFromDay(r.firstDay)) : ""),
+  },
+  {
+    key: "lastDay",
+    label: "Last seen",
+    get: (r) => (r.lastDay >= 0 ? r.lastDay : Number.NaN),
+    show: (r) => (r.lastDay >= 0 ? formatDate(dateFromDay(r.lastDay)) : ""),
   },
 ];
 

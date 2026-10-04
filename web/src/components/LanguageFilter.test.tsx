@@ -67,10 +67,10 @@ describe("PlaceTable under a language filter", () => {
 
   it("leaves out the share of pages published when the search has no baselines (an older version under a language filter)", () => {
     const rows = [
-      { id: "P1", name: "Place 1", state: "NE", precision: "city", position: [0, 0] as [number, number], value: 3, rel: Number.NaN, firstDay: -1 },
+      { id: "P1", name: "Place 1", state: "NE", precision: "city", position: [0, 0] as [number, number], value: 3, rel: Number.NaN, firstDay: -1, lastDay: -1 },
     ];
     render(<PlaceTable rows={rows} onSelect={() => undefined} selected="" share={false} />);
-    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Place", "State", "Pages", "First appearance"]);
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Place", "State", "Pages", "First appearance", "Last seen"]);
     cleanup();
     render(<PlaceTable rows={rows} onSelect={() => undefined} selected="" />);
     expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toContain("Share of pages published");

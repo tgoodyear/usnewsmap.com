@@ -114,7 +114,7 @@ test("relative rate under a language filter compares only those languages' pages
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download CSV" }).click();
   const lines = readFileSync(await (await download).path(), "utf8").trim().split("\n");
-  expect(lines[0]).toBe("place_id,name,state,pages,hits,expected,estimate,lower,upper,languages");
+  expect(lines[0]).toBe("place_id,name,state,pages,hits,expected,estimate,lower,upper,languages,first_seen,last_seen");
   expect(lines).toHaveLength(6);
   expect(errors).toEqual([]);
 });
