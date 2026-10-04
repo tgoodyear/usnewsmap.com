@@ -7,12 +7,13 @@ import { alignCube, prefixSums, relative, windowValues } from "./engine/cube";
 import { EXAMPLE_ORDER, EXAMPLES_SHOWN, examplesAt } from "./examples";
 import { bucketIndex, bucketLabel, bucketStart } from "./lib/time";
 import { cssColor } from "./lib/scale";
-import { searchParams, useView, type ViewState } from "./state/url";
+import { searchParams, serializeView, useView, type ViewState } from "./state/url";
 import { SearchBar, searchKey } from "./components/SearchBar";
 import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
 import { PlaceTable } from "./components/PlaceTable";
+import { Mentions } from "./components/Mentions";
 import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
 import { MeasureToggle } from "./components/MeasureToggle";
@@ -156,11 +157,17 @@ export function App() {
       (a, b) => (frame.places[b]?.expected ?? 0) - (frame.places[a]?.expected ?? 0),
     );
   }, [skewModel, frame]);
-  const firstDayById = useMemo(
-    () => new Map((data?.places.id ?? []).map((id, i) => [id, data!.places.first_day[i]!])),
+  const daysById = useMemo(
+    () =>
+      new Map(
+        (data?.places.id ?? []).map((id, i) => [
+          id,
+          { firstDay: data!.places.first_day[i]!, lastDay: data!.places.last_day?.[i] ?? -1 },
+        ]),
+      ),
     [data],
   );
-  const skewRows: (SkewRow & MapPoint & { firstDay: number })[] = useMemo(() => {
+  const skewRows: (SkewRow & MapPoint & { firstDay: number; lastDay: number })[] = useMemo(() => {
     if (!skewModel || !frame) return [];
     const { placeIds, languages } = skewModel.prepared;
     return drawOrder.flatMap((i) => {
@@ -179,11 +186,12 @@ export function App() {
           value: info.observed,
           rel: info.pages > 0 ? info.observed / info.pages : Number.NaN,
           skew: info,
-          firstDay: firstDayById.get(id) ?? -1,
+          firstDay: daysById.get(id)?.firstDay ?? -1,
+          lastDay: daysById.get(id)?.lastDay ?? -1,
         },
       ];
     });
-  }, [skewModel, frame, features, drawOrder, firstDayById]);
+  }, [skewModel, frame, features, drawOrder, daysById]);
   // Lists, table, export and the announcement: places with pages in the frame.
   const skewListed = useMemo(() => skewRows.filter((r) => r.skew.pages > 0), [skewRows]);
   const stateRows = useMemo(
@@ -199,7 +207,7 @@ export function App() {
 
   // Relative frequency needs the coverage cube; until it arrives (or if it
   // fails) it is unknown (NaN), never 0.
-  const points: (MapPoint & { firstDay: number })[] = useMemo(() => {
+  const points: (MapPoint & { firstDay: number; lastDay: number })[] = useMemo(() => {
     if (!data || !hitSums) return [];
     const hits = windowValues(hitSums, t, view.win);
     const rel = pageSums
@@ -218,6 +226,7 @@ export function App() {
           value: hits[i]!,
           rel: rel[i]!,
           firstDay: data.places.first_day[i]!,
+          lastDay: data.places.last_day?.[i] ?? -1,
         },
       ];
     });
@@ -256,7 +265,11 @@ export function App() {
     (z: number, c: [number, number]) => setView({ z, c }),
     [setView],
   );
-  const search = (patch: Partial<ViewState>) => setView({ ...patch, t: "", place: "" }, true);
+  const search = (patch: Partial<ViewState>) => setView({ ...patch, t: "", place: "", sort: "oldest" }, true);
+  const placeName = (id: string) => {
+    const f = features.get(id);
+    return f ? `${f.properties.name}, ${f.properties.state}` : id;
+  };
 
   const visible = points.filter((p) => p.value > 0);
   const selected = points.find((p) => p.id === view.place);
@@ -301,10 +314,12 @@ export function App() {
           version={version}
           placeId={view.place}
           placeName={selected?.name ?? features.get(view.place)?.properties.name ?? view.place}
+          sort={view.sort}
+          onSort={(sort) => setView({ sort })}
           windowHits={selected?.value ?? 0}
           note={norm === "skew" ? skewRows.find((r) => r.id === view.place)?.skew : undefined}
           synthetic={data.synthetic}
-          onClose={() => setView({ place: "" })}
+          onClose={() => setView({ place: "", sort: "oldest" })}
         />
       )}
     </>
@@ -427,6 +442,15 @@ export function App() {
                 <ShareButton />
               </div>
 
+              {data.total.hits > 0 && data.total.first && (
+                <Mentions
+                  first={data.total.first}
+                  last={data.total.last ?? null}
+                  placeName={placeName}
+                  hrefFor={(hit, sort) => `${window.location.pathname}${serializeView({ ...view, place: hit.place_id, sort })}`}
+                  onOpen={(hit, sort) => setView({ place: hit.place_id, sort })}
+                />
+              )}
               {skewNotice && (
                 <p className={skewNotice.error ? "notice notice--error" : "notice"} role={skewNotice.error ? "alert" : "status"}>
                   {skewNotice.text}

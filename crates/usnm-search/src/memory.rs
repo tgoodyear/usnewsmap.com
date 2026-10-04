@@ -11,8 +11,8 @@ use usnm_core::text::tokenize;
 use usnm_core::time::BucketSpec;
 
 use crate::{
-    mark_html, Capabilities, CubeCell, Hit, HitsPage, HitsQuery, IndexSet, PageDoc, PlaceSummary,
-    SearchBackend, SearchError, Summary,
+    mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet, PageDoc,
+    PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 struct Indexed {
@@ -86,24 +86,31 @@ impl SearchBackend for MemoryBackend {
         spec: &BucketSpec,
     ) -> Result<Summary, SearchError> {
         let mut series = vec![0u64; spec.len()];
-        let mut places: BTreeMap<&str, (u64, u32)> = BTreeMap::new();
+        let mut places: BTreeMap<&str, (u64, u32, u32)> = BTreeMap::new();
         let mut total = 0;
+        let mut span: Option<(u32, u32)> = None;
         for d in self.matching(indexes, query, filters)? {
+            let day = d.doc.day;
             total += 1;
-            series[spec.index_of_day(d.doc.day)] += 1;
-            let e = places.entry(&d.doc.place_id).or_insert((0, u32::MAX));
+            series[spec.index_of_day(day)] += 1;
+            let e = places.entry(&d.doc.place_id).or_insert((0, u32::MAX, 0));
             e.0 += 1;
-            e.1 = e.1.min(d.doc.day);
+            e.1 = e.1.min(day);
+            e.2 = e.2.max(day);
+            span = Some(span.map_or((day, day), |(lo, hi)| (lo.min(day), hi.max(day))));
         }
         Ok(Summary {
             total_hits: total,
+            first_day: span.map(|s| s.0),
+            last_day: span.map(|s| s.1),
             series,
             places: places
                 .into_iter()
-                .map(|(id, (hits, first_day))| PlaceSummary {
+                .map(|(id, (hits, first_day, last_day))| PlaceSummary {
                     place_id: id.to_owned(),
                     hits,
                     first_day,
+                    last_day,
                 })
                 .collect(),
         })
@@ -149,7 +156,13 @@ impl SearchBackend for MemoryBackend {
             .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.place_id == p))
             .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.lccn == l))
             .collect();
-        docs.sort_by(|a, b| (a.day, a.sort_key, &a.doc_id).cmp(&(b.day, b.sort_key, &b.doc_id)));
+        docs.sort_by(|a, b| {
+            let order = (a.day, a.sort_key, &a.doc_id).cmp(&(b.day, b.sort_key, &b.doc_id));
+            match page.sort {
+                HitSort::Oldest => order,
+                HitSort::Newest => order.reverse(),
+            }
+        });
         let highlight = positive_terms(query);
         Ok(HitsPage {
             total: docs.len() as u64,

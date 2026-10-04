@@ -172,9 +172,14 @@ describe("api client", () => {
     await api.aggregate({ q: "gold", mode: "all", lang: ["ger", "spa"] }, "v1");
     expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe("/v1/aggregate?q=gold&lang=ger%2Cspa&v=v1");
     respond({ index_version: "v1" });
-    await api.hits({ q: "gold", mode: "all", lang: ["ger"] }, "v1", "P00006", null);
+    await api.hits({ q: "gold", mode: "all", lang: ["ger"] }, "v1", "P00006", "oldest", null);
     expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
       "/v1/hits?q=gold&lang=ger&v=v1&place=P00006&limit=20",
+    );
+    respond({ index_version: "v1" });
+    await api.hits({ q: "gold", mode: "all" }, "v1", "P00006", "newest", "abc");
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
+      "/v1/hits?q=gold&v=v1&place=P00006&limit=20&sort=newest&cursor=abc",
     );
     expect(searchQuery({ q: "gold", mode: "all", lang: [] }, "v").toString()).toBe("q=gold&v=v");
   });

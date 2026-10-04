@@ -77,7 +77,7 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
   await page.getByRole("button", { name: "Download CSV" }).click();
   const file = await (await download).path();
   const lines = readFileSync(file, "utf8").trim().split("\n");
-  expect(lines[0]).toBe("place_id,name,state,pages,hits,expected,estimate,lower,upper,languages");
+  expect(lines[0]).toBe("place_id,name,state,pages,hits,expected,estimate,lower,upper,languages,first_seen,last_seen");
   expect(lines).toHaveLength(7);
 
   // The permalink restores the view.

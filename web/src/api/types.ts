@@ -3,6 +3,8 @@
 
 export type BucketUnit = "year" | "month" | "week" | "day";
 export type Mode = "phrase" | "all" | "any" | "near";
+/** Order of a `/v1/hits` list: by date, then title, edition and page (reversed for newest). */
+export type HitSort = "oldest" | "newest";
 
 export interface Meta {
   index_version: string;
@@ -75,9 +77,25 @@ export interface AggregateResponse {
   query: { canonical: string; ast: string };
   bucket: { unit: BucketUnit; from: string; to: string; count: number };
   coarsened: boolean;
-  total: { hits: number; places: number; baseline_pages: number };
+  total: {
+    hits: number;
+    places: number;
+    baseline_pages: number;
+    /** Earliest and latest matching day (days since 1700-01-01); null when nothing matches. Absent from older APIs. */
+    first_day?: number | null;
+    last_day?: number | null;
+    /** The earliest and latest matching page; null when nothing matches. Absent from older APIs. */
+    first?: HitItem | null;
+    last?: HitItem | null;
+  };
   series: { hits: number[]; baseline: number[] | null };
-  places: { id: string[]; hits: number[]; first_day: number[] };
+  places: {
+    id: string[];
+    hits: number[];
+    first_day: number[];
+    /** Absent from older APIs. */
+    last_day?: number[];
+  };
   cube: SparseCube & { calls: number; baseline_ref: string | null };
 }
 

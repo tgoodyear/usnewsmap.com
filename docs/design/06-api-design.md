@@ -85,8 +85,8 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | Method & path | Purpose | Cache |
 |---------------|---------|-------|
 | `GET /v1/meta` | `index_version`, corpus bounds, doc count, backend capabilities, build time, and `languages`: the choices for the site's language filter ([07 §7.9](07-frontend-design.md#79-language-filter)), `[{code, name, titles, pages}]` for each catalog language `lang` accepts, most pages first (`pages` is `null` when the snapshot doesn't record pages per title). A title in several languages counts in each | 5 min |
-| `GET /v1/aggregate` | Q1: totals, national series, per-place cube, first appearance | 1 day (+ `index_version`) |
-| `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date, with snippets; cursor pagination | 1 day |
+| `GET /v1/aggregate` | Q1: totals, the first and last matching page, national series, per-place cube, first and last appearance | 1 day (+ `index_version`) |
+| `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date (`sort=oldest`, the default, or `newest`), with snippets; cursor pagination | 1 day |
 | `GET /v1/compare` | Up to 4 queries (`q1…q4`); national series for each + per-place totals (no cube) | 1 day |
 | `GET /v1/pages/{doc_id}` | Page metadata + LoC links | 30 days |
 | `GET /v1/titles`, `GET /v1/titles/{lccn}` | Title metadata + coverage summary | 1 day |
@@ -106,7 +106,12 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "index_version": "pages-v20261001-1",
   "query": { "canonical": "q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896-12-31&bucket=week", "ast": "…" },
   "bucket": { "unit": "week", "origin": "1896-06-01", "count": 31 },
-  "total": { "hits": 18234, "places": 1187, "titles": 1402, "baseline_pages": 912345 },
+  "total": {
+    "hits": 18234, "places": 1187, "titles": 1402, "baseline_pages": 912345,
+    "first_day": 71978, "last_day": 72214,     // null when nothing matches
+    "first": { "doc_id": "sn84031492_1896-07-10_ed-1_seq-1", "date": "1896-07-10", … },  // a /v1/hits item
+    "last":  { … }
+  },
   "series": {                      // national, one entry per bucket (dense)
     "hits":     [12, 40, 3871, 2210, …],
     "baseline": [28011, 28190, 28877, …]
@@ -114,7 +119,8 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "places": {                      // columnar arrays, one entry per place with ≥1 hit
     "id":    ["P00412", "P00087", …],
     "hits":  [612, 598, …],
-    "first_day": [71990, 71991, …]   // days since 1700-01-01
+    "first_day": [71990, 71991, …],  // days since 1700-01-01
+    "last_day":  [72210, 72214, …]
   },
   "cube": {                        // sparse COO triplets: (place index, bucket index, hits)
     "p": [0, 0, 1, …],
@@ -127,6 +133,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 }
 ```
 
+- `total.first` and `total.last` are the pages `/v1/hits` lists first oldest-first and newest-first, in the same shape as its items, so the site can link the first and last mention to their pages ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)).
 - Place coordinates and names are **not** repeated here. The SPA loads `/v1/places` once (CDN-cached, ~150 KB compressed) and joins by id.
 - The cube is sparse, so size scales with non-zero cells. The worst realistic case (a common term, ~3,000 places × 211 yearly buckets) is about **633k triplets**: ~9–10 MB of JSON (~2–3 MB gzip) or ~5 MB as Arrow (~1.5–2.5 MB compressed). Above a hard cap of 700k cells, the API steps to a coarser bucket. Large cubes are computed as sharded sub-queries so they stay within the engine's bucket limit ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)). The SPA requests Arrow when the expected cube is large. `?format=arrow` returns `application/vnd.apache.arrow.stream`.
 
@@ -155,6 +162,8 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "next_cursor": "eyJkIjo3MTk5NSwiaWQiOiJzbjg0MDMxNDkyXzE4OTYtMDctMTBfZWQtMV9zZXEtMSJ9"   // opaque (date, doc_id) search_after
 }
 ```
+
+Items are oldest first, and pages on the same day by title, edition and page. `sort=newest` reverses the whole order; `sort=oldest` is the default and is left out of the canonical URL.
 
 Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer URLs follow the loc.gov resource pattern. The legacy `chroniclingamerica.loc.gov/lccn/…` form is kept only as a fallback, because LoC redirects it.
 
