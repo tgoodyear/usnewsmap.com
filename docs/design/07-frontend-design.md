@@ -107,7 +107,7 @@ https://usnewsmap.com/?q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896
 
 ## 7.6 Accessibility (WCAG 2.2 AA)
 
-- Every map view has an equivalent **List/Table** tab (place, state, hits, relative, first appearance), sortable and exportable.
+- Every map view has an equivalent **List/Table** tab (place, state, hits, relative, first appearance, last seen), sortable and exportable.
 - Playback is keyboard operable: `Space` plays or pauses, `←`/`→` step, `Shift+←/→` jumps 10 buckets, `Home`/`End` go to the ends. Focus is visible.
 - When `prefers-reduced-motion` is set, autoplay is off and transitions are instant.
 - A live region announces "Showing N places, M pages, up to July 12 1896" as the scrubber moves (throttled).

@@ -440,3 +440,41 @@ test("the footer credits link to the NEH and Library of Congress newspaper progr
   const footer = page.getByRole("contentinfo");
   await expect(footer.getByRole("link", { name: "NEH and Library of Congress" })).toHaveAttribute("href", "https://www.loc.gov/ndnp/");
 });
+
+test("the first and last mention open their pages, and a place's pages sort either way", async ({ page, request }) => {
+  const search = "q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31";
+  const agg = await (await request.get(`/v1/aggregate?${search}`)).json();
+  const { first, last } = agg.total as { first: { date: string; place_id: string; doc_id: string; seq: number; title: string }; last: { date: string; place_id: string; seq: number } };
+
+  await page.goto(`/?${search}&tab=table`);
+  const mentions = page.locator(".mentions");
+  await expect(mentions).toContainText(new RegExp(`^First mention: \\w{3} \\d+, 1896, ${first.title}, Fixture City A \\(Chicago area\\), IL · Last: \\w{3} \\d+, 1896$`));
+  await expect(mentions.locator("time")).toHaveCount(2);
+  await expectAccessible(page);
+
+  // The first date opens Chicago's pages, oldest first: that page is at the top.
+  await mentions.locator(`time[datetime="${first.date}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`place=${first.place_id}`));
+  const panel = page.getByRole("complementary");
+  const top = panel.locator(".hit").first();
+  await expect(panel.getByRole("button", { name: "Oldest first" })).toHaveAttribute("aria-pressed", "true");
+  await expect(top.locator("time")).toHaveAttribute("datetime", first.date);
+  await expect(top.locator(".hit__meta")).toContainText(`${first.title} · page ${first.seq}`);
+
+  // The last date opens its place's pages newest first, again with that page at the top.
+  await mentions.locator(`time[datetime="${last.date}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`place=${last.place_id}.*sort=newest`));
+  await expect(panel.getByRole("button", { name: "Newest first" })).toHaveAttribute("aria-pressed", "true");
+  await expect(top.locator("time")).toHaveAttribute("datetime", last.date);
+  await expect(top.locator(".hit__meta")).toContainText(`page ${last.seq}`);
+  const newest = await panel.locator(".hit time").evaluateAll((ts) => ts.map((t) => t.getAttribute("datetime")));
+  expect(newest).toEqual([...newest].sort().reverse());
+
+  // The toggle turns the list around.
+  await panel.getByRole("button", { name: "Oldest first" }).click();
+  await expect(page).not.toHaveURL(/sort=/);
+  await expect(top.locator("time")).not.toHaveAttribute("datetime", last.date);
+  const oldest = await panel.locator(".hit time").evaluateAll((ts) => ts.map((t) => t.getAttribute("datetime")));
+  expect(oldest).toEqual([...oldest].sort());
+  await expectAccessible(page);
+});

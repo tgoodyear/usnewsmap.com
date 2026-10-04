@@ -1,5 +1,6 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api, ApiError, type SearchParams } from "../api/client";
+import type { HitSort } from "../api/types";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
 import { skewSentence, type SkewInfo } from "../lib/skewText";
@@ -9,6 +10,8 @@ interface Props {
   version: string;
   placeId: string;
   placeName: string;
+  sort: HitSort;
+  onSort: (sort: HitSort) => void;
   windowHits: number;
   /** The place's relative rate in the current window (relative-rate view). */
   note?: SkewInfo;
@@ -18,10 +21,10 @@ interface Props {
 }
 
 /** Place drill-down (F-03): date-sorted pages with snippets and LoC links. */
-export function PlacePanel({ params, version, placeId, placeName, windowHits, note, synthetic, onClose }: Props) {
+export function PlacePanel({ params, version, placeId, placeName, sort, onSort, windowHits, note, synthetic, onClose }: Props) {
   const query = useInfiniteQuery({
-    queryKey: ["hits", version, params, placeId],
-    queryFn: ({ pageParam, signal }) => api.hits(params, version, placeId, pageParam, signal),
+    queryKey: ["hits", version, params, placeId, sort],
+    queryFn: ({ pageParam, signal }) => api.hits(params, version, placeId, sort, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next_cursor,
   });
@@ -40,6 +43,13 @@ export function PlacePanel({ params, version, placeId, placeName, windowHits, no
         {first ? `${first.total.toLocaleString()} pages in this search` : "Loading…"}
         {first && windowHits !== first.total ? ` · ${windowHits.toLocaleString()} up to the current date` : ""}
       </p>
+      <div className="segmented" role="group" aria-label="Order of pages">
+        {(["oldest", "newest"] as const).map((s) => (
+          <button key={s} type="button" aria-pressed={sort === s} onClick={() => onSort(s)}>
+            {s === "oldest" ? "Oldest first" : "Newest first"}
+          </button>
+        ))}
+      </div>
       {query.error && (
         <p role="alert" className="notice notice--error">
           {query.error instanceof ApiError ? (query.error.problem.hint ?? query.error.message) : "Could not load pages."}

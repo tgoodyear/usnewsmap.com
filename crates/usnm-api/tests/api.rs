@@ -16,7 +16,7 @@ use usnm_api::refdata::RefData;
 use usnm_api::{app, reload_if_changed, AppState, Engine, Loader};
 use usnm_core::query::parse;
 use usnm_core::text::tokenize;
-use usnm_core::time::day_number;
+use usnm_core::time::{date_from_day, day_number};
 use usnm_search::memory::{eval, MemoryBackend};
 use usnm_search::PageDoc;
 use usnm_store::LocalStore;
@@ -346,6 +346,127 @@ async fn hits_are_sorted_marked_linked_and_paginated() {
     assert!(items.iter().all(|i| i["doc_id"] != second_first));
 }
 
+/// The newest-first list is the oldest-first list reversed, including the
+/// order of pages on the same day. `sort=oldest` is the default and shares its
+/// canonical URL; anything else is refused.
+#[tokio::test]
+async fn hits_sort_oldest_or_newest() {
+    let s = state_with(None).await;
+    let base = "/v1/hits?q=gold&from=1895-01-01&to=1897-12-31&place=P00001";
+    // Every page of the list, following the cursor.
+    let all = |sort: &'static str| {
+        let s = &s;
+        async move {
+            let mut ids = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let mut uri = format!("{base}{sort}");
+                if let Some(c) = &cursor {
+                    uri.push_str(&format!("&cursor={c}"));
+                }
+                let (status, _, body) = get(s, &uri).await;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                for i in body["items"].as_array().unwrap() {
+                    ids.push(i["doc_id"].as_str().unwrap().to_owned());
+                }
+                match body["next_cursor"].as_str() {
+                    Some(c) => cursor = Some(c.to_owned()),
+                    None => break ids,
+                }
+            }
+        }
+    };
+    let oldest = all("").await;
+    assert!(oldest.len() > 1);
+    assert_eq!(all("&sort=oldest").await, oldest);
+    let mut reversed = oldest.clone();
+    reversed.reverse();
+    assert_eq!(all("&sort=newest").await, reversed);
+
+    let (_, plain, _) = get(&s, base).await;
+    let (_, explicit, _) = get(&s, &format!("{base}&sort=oldest")).await;
+    let (_, newest, _) = get(&s, &format!("{base}&sort=newest")).await;
+    assert_eq!(
+        header_str(&explicit, header::CONTENT_LOCATION),
+        header_str(&plain, header::CONTENT_LOCATION)
+    );
+    assert!(header_str(&newest, header::CONTENT_LOCATION).contains("&sort=newest"));
+
+    let (status, _, body) = get(&s, &format!("{base}&sort=sideways")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["type"], "/errors/bad-parameter");
+}
+
+/// National and per-place first and last days, and the first and last pages,
+/// against a brute-force pass over the fixture files.
+#[tokio::test]
+async fn first_and_last_mentions_match_brute_force() {
+    let s = state_with(None).await;
+    let docs: Vec<PageDoc> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|i| load_docs(i))
+        .collect();
+    let day = |iso: &str| day_number(chrono::NaiveDate::parse_from_str(iso, "%Y-%m-%d").unwrap());
+    for (q, qs, from, to) in [
+        ("gold", "gold", "1895-01-01", "1897-12-31"),
+        (
+            r#""cross of gold""#,
+            "%22cross+of+gold%22",
+            "1896-06-01",
+            "1896-12-31",
+        ),
+        ("fever", "fever", "1896-07-01", "1896-09-30"),
+        ("zyzzyva", "zyzzyva", "1895-01-01", "1897-12-31"),
+    ] {
+        let node = parse(q).unwrap();
+        let (f, t) = (day(from), day(to));
+        let matching: Vec<&PageDoc> = docs
+            .iter()
+            .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+            .collect();
+        let first = matching.iter().copied().min_by_key(|d| (d.day, d.sort_key));
+        let last = matching.iter().copied().max_by_key(|d| (d.day, d.sort_key));
+        let mut places: HashMap<&str, (u32, u32)> = HashMap::new();
+        for d in &matching {
+            let e = places.entry(&d.place_id).or_insert((d.day, d.day));
+            e.0 = e.0.min(d.day);
+            e.1 = e.1.max(d.day);
+        }
+
+        let uri = format!("/v1/aggregate?q={qs}&from={from}&to={to}");
+        let (status, _, body) = get(&s, &uri).await;
+        assert_eq!(status, StatusCode::OK, "{q}: {body}");
+        let total = &body["total"];
+        assert_eq!(total["first_day"], json!(first.map(|d| d.day)), "{q}");
+        assert_eq!(total["last_day"], json!(last.map(|d| d.day)), "{q}");
+        assert_eq!(
+            total["first"]["doc_id"],
+            json!(first.map(|d| &d.doc_id)),
+            "{q}"
+        );
+        assert_eq!(
+            total["last"]["doc_id"],
+            json!(last.map(|d| &d.doc_id)),
+            "{q}"
+        );
+        if let Some(d) = first {
+            assert_eq!(total["first"]["place_id"], d.place_id.as_str());
+            assert_eq!(total["first"]["date"], date_from_day(d.day).to_string());
+            assert!(total["first"]["links"]["viewer"].is_string());
+        }
+
+        let column =
+            |name: &str| -> Vec<Value> { body["places"][name].as_array().unwrap().clone() };
+        let ids = column("id");
+        assert_eq!(ids.len(), places.len(), "{q}");
+        for (i, id) in ids.iter().enumerate() {
+            let (lo, hi) = places[id.as_str().unwrap()];
+            assert_eq!(column("first_day")[i], lo, "{q} {id}");
+            assert_eq!(column("last_day")[i], hi, "{q} {id}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn hits_by_title_uses_lccn() {
     let s = state_with(None).await;
@@ -551,7 +672,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f1")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f2")) else {
         return Vec::new();
     };
     entries
@@ -582,7 +703,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f1/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f2/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),

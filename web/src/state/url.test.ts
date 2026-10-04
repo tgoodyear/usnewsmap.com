@@ -4,7 +4,7 @@ import { DEFAULTS, isIsoDate, parseView, searchParams, serializeView } from "./u
 describe("view URL", () => {
   it("round-trips and writes only non-defaults", () => {
     const v = parseView(
-      "?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week&t=1896-07-12&win=4&layer=heat&norm=skew&state=il,ny&lang=ger&place=P00412&z=4.2&c=-92.1,39.4",
+      "?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week&t=1896-07-12&win=4&layer=heat&norm=skew&state=il,ny&lang=ger&place=P00412&sort=newest&z=4.2&c=-92.1,39.4",
     );
     expect(v.q).toBe('"cross of gold"');
     expect(v.state).toEqual(["IL", "NY"]);
@@ -12,6 +12,7 @@ describe("view URL", () => {
     expect(v.win).toBe(4);
     expect(v.c).toEqual([-92.1, 39.4]);
     expect(v.norm).toBe("skew");
+    expect(v.sort).toBe("newest");
     expect(parseView(serializeView(v))).toEqual(v);
     expect(serializeView(DEFAULTS)).toBe("");
     expect(serializeView({ ...DEFAULTS, q: "fever" })).toBe("?q=fever");
@@ -19,7 +20,7 @@ describe("view URL", () => {
 
   it("drops invalid values instead of trusting them", () => {
     const v = parseView(
-      "?mode=evil&bucket=hour&from=1896-6-1&win=-3&layer=3d&z=99&c=500,1&place=%3Cscript%3E&state=Illinois&lang=%3Cb%3E",
+      "?mode=evil&bucket=hour&from=1896-6-1&win=-3&layer=3d&z=99&c=500,1&place=%3Cscript%3E&state=Illinois&lang=%3Cb%3E&sort=random",
     );
     expect(v).toEqual(DEFAULTS);
   });
