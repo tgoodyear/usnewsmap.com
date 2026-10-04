@@ -119,6 +119,13 @@ async fn japanese_words_match_through_folding_and_snippets_show_the_printed_text
         .hits
         .iter()
         .any(|h| h.snippets.iter().any(|s| s.contains("<mark>Denver</mark>"))));
+    let fz =
+        usnm_core::query::build("denvr 東京", Some(usnm_core::query::Mode::Any), 0, 1).unwrap();
+    let fz = mem.hits(&set, &fz, &f, &page).await.unwrap();
+    assert!(fz
+        .hits
+        .iter()
+        .any(|h| h.snippets.iter().any(|s| s.contains("<mark>Denver</mark>"))));
     let near =
         usnm_core::query::build("米国 日本", Some(usnm_core::query::Mode::Near), 3, 0).unwrap();
     let near = mem.hits(&set, &near, &f, &page).await.unwrap();

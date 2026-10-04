@@ -241,7 +241,7 @@ fn phrase_matches(terms: &[String], slop: u8, tokens: &[String]) -> bool {
         .any(|(i, t)| t == first && from(rest, tokens, i + 1, usize::from(slop)))
 }
 
-fn levenshtein_within(a: &str, b: &str, max: usize) -> bool {
+pub(crate) fn levenshtein_within(a: &str, b: &str, max: usize) -> bool {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     if a.len().abs_diff(b.len()) > max {
