@@ -283,6 +283,7 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     let v = &p2.index_version;
     for f in [
         "baselines.json",
+        "language_baselines.json",
         "titles.json",
         "places.json",
         "title_pages.json",

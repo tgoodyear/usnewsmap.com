@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
@@ -75,8 +76,8 @@ test("choose a language: URL, results, reload and accessibility", async ({ page 
     "New York area",
   ]);
   await expect(page.locator(".summary")).not.toHaveText(before ?? "");
-  // No baselines under a language filter, so no share of pages published.
-  await expect(page.getByRole("columnheader", { name: "Share of pages published" })).toHaveCount(0);
+  // Baselines count only German-language pages, so the share of pages published stays.
+  await expect(page.getByRole("columnheader", { name: "Share of pages published" })).toBeVisible();
   await expectAccessible(page);
 
   // The permalink restores the filter.
@@ -88,11 +89,33 @@ test("choose a language: URL, results, reload and accessibility", async ({ page 
   await expect(page.getByRole("checkbox", { name: "English (4 newspapers)" })).not.toBeChecked();
   await page.keyboard.press("Escape");
 
-  // The relative rate says why it's off instead of comparing against every language.
+  // The relative rate needs 5 places with pages, and German has 2: it says so
+  // instead of comparing against every language.
   await page.getByRole("group", { name: "Measure" }).getByRole("button", { name: "Relative rate" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "isn't available with a language filter" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "needs at least 5 places" })).toBeVisible();
   await expect(placeRows(page)).toHaveCount(2);
   await expectAccessible(page);
+  expect(errors).toEqual([]);
+});
+
+test("relative rate under a language filter compares only those languages' pages", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  // English and German together reach five places (everything but California).
+  await page.goto("/?q=%22cross+of+gold%22&bucket=month&lang=eng,ger&norm=skew&tab=table");
+  const places = page.getByRole("table", { name: /Relative rate of each place/ });
+  await expect(places.locator("tbody tr")).toHaveCount(5);
+  await expect(page.getByText("isn't available")).toHaveCount(0);
+  // No "Papers in … and English" line: the baselines already compare like with like.
+  await expect(places.getByRole("columnheader", { name: "Languages" })).toBeVisible();
+  await expect(places.getByText(/^Papers in /)).toHaveCount(0);
+  await expectAccessible(page);
+
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download CSV" }).click();
+  const lines = readFileSync(await (await download).path(), "utf8").trim().split("\n");
+  expect(lines[0]).toBe("place_id,name,state,pages,hits,expected,estimate,lower,upper,languages,first_seen,last_seen");
+  expect(lines).toHaveLength(6);
   expect(errors).toEqual([]);
 });
 
