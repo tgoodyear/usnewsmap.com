@@ -675,6 +675,12 @@ async fn places_geojson_is_version_pinned() {
             ("P00006", &json!(["ger"])),
         ]
     );
+    // And how many of its titles list each.
+    assert_eq!(
+        body["features"][1]["properties"]["language_titles"],
+        json!({"eng": 1, "ger": 1})
+    );
+    assert_eq!(body["features"][1]["properties"]["titles"], 1);
     assert_eq!(body["features"][0]["geometry"]["type"], "Point");
 }
 

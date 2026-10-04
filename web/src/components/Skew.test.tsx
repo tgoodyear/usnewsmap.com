@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MeasureToggle } from "./MeasureToggle";
 import { SkewLegend } from "./SkewLegend";
-import { clearest, skewCsv, SkewLists, StateTable, type SkewRow } from "./SkewPanels";
+import { clearest, LANGUAGE_EXPLAINER, skewCsv, SkewLists, StateTable, type SkewRow } from "./SkewPanels";
 import { PlaceTable } from "./PlaceTable";
 import type { SkewInfo } from "../lib/skewText";
 import { dayNumber } from "../lib/time";
@@ -16,6 +16,7 @@ const info = (estimate: number, lower: number, upper: number, extra: Partial<Ske
   pages: 100,
   dir: lower > 1 ? 1 : upper < 1 ? -1 : 0,
   languages: null,
+  languageCounts: null,
   ...extra,
 });
 const row = (id: string, s: SkewInfo): SkewRow => ({ id, name: `Place ${id}`, state: "AL", skew: s });
@@ -97,6 +98,28 @@ describe("lists, tables and export", () => {
     expect(onSelect).toHaveBeenCalledWith("a");
     expect(screen.getByRole("complementary", { name: "Places that differ most clearly" })).toBeTruthy();
     expect(screen.getByText("Papers in German")).toBeTruthy();
+  });
+
+  it("explains a language label behind an info button", () => {
+    render(<SkewLists rows={rows} onSelect={() => undefined} />);
+    const info = screen.getByRole("button", { name: "What this means" });
+    const tip = screen.getByRole("note", { hidden: true });
+    expect(info.getAttribute("aria-expanded")).toBe("false");
+    expect(tip.hidden).toBe(true);
+    fireEvent.click(info);
+    expect(info.getAttribute("aria-expanded")).toBe("true");
+    expect(tip.hidden).toBe(false);
+    expect(tip.textContent).toBe(LANGUAGE_EXPLAINER);
+    fireEvent.keyDown(info, { key: "Escape" });
+    expect(tip.hidden).toBe(true);
+  });
+
+  it("says how many of a place's papers are in each language", () => {
+    const counts = "Of its 4 papers, 3 are in German (75%) and 1 in English (25%).";
+    const skew = info(0.1, 0.05, 0.2, { languages: "Papers in German and English", languageCounts: counts });
+    render(<SkewLists rows={[row("d", skew)]} onSelect={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "What this means" }));
+    expect(screen.getByRole("note").textContent).toBe(counts + LANGUAGE_EXPLAINER);
   });
 
   it("tables places and states with expected counts and ranges", () => {

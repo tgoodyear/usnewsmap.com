@@ -55,6 +55,8 @@ export interface PlaceFeature {
     titles: number;
     /** Languages of the place's titles (catalog codes such as "eng"). Absent from older APIs. */
     languages?: string[];
+    /** Titles that list each language; a title in several counts in each. Absent from older APIs. */
+    language_titles?: Record<string, number>;
   };
 }
 

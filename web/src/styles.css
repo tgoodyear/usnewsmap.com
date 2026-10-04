@@ -222,6 +222,20 @@ input, select {
 .skew-list li { padding: 3px 0; }
 .skew-list__value { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .skew-list__lang { display: block; color: var(--muted); font-size: 0.85rem; }
+.info-button {
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-left: 6px;
+  padding: 0; vertical-align: 1px; border: 1px solid var(--muted); border-radius: 50%; background: none;
+  color: var(--muted); font: italic 600 0.7rem/1 Georgia, serif; cursor: pointer; position: relative;
+}
+/* A larger tap target than the visible circle. */
+.info-button::after { content: ""; position: absolute; inset: -12px; }
+.info-button[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+.info-tip {
+  display: block; margin: 6px 0 2px; padding: 8px 10px; max-width: 34em; line-height: 1.4;
+  color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.info-tip[hidden] { display: none; }
+.info-tip__counts { display: block; margin-bottom: 6px; }
 .skew-list__empty, .skew-list__note { color: var(--muted); font-size: 0.9rem; margin: 4px 0; }
 .skew-list__note { margin-top: 14px; }
 .tables { flex: 1; display: flex; flex-direction: column; gap: 16px; overflow: auto; min-width: 0; }

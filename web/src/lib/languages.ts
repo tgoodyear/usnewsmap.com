@@ -45,3 +45,30 @@ export function languageLabel(codes: readonly string[] | undefined): string | nu
   const joined = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
   return `Papers in ${joined}`;
 }
+
+const percent = (n: number, of: number) => {
+  const p = (100 * n) / of;
+  return p > 0 && p < 1 ? "under 1%" : `${Math.round(p)}%`;
+};
+
+/**
+ * "Of its 5 papers, 3 are in French (60%), 1 in English (20%) and 1 in German
+ * (20%)." for the info button beside a language label, or null when the API
+ * doesn't send the counts. Most papers first. A paper in several languages
+ * counts in each, so the shares can add up to more than 100%.
+ */
+export function languageCounts(counts: Record<string, number> | undefined, titles: number): string | null {
+  const entries = Object.entries(counts ?? {})
+    .filter(([, n]) => n > 0)
+    .map(([code, n]) => ({ name: languageName(code), n }))
+    .sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  if (entries.length === 0 || titles <= 0) return null;
+  const join = (xs: string[]) => (xs.length === 1 ? xs[0]! : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+  if (titles === 1) return `Its one paper is in ${join(entries.map((e) => e.name))}.`;
+  const parts = entries.map(
+    ({ name, n }, i) => `${n.toLocaleString("en-US")}${i === 0 ? (n === 1 ? " is" : " are") : ""} in ${name} (${percent(n, titles)})`,
+  );
+  const sentence = `Of its ${titles.toLocaleString("en-US")} papers, ${join(parts)}.`;
+  const listed = entries.reduce((a, e) => a + e.n, 0);
+  return listed > titles ? `${sentence} A paper in more than one language counts in each.` : sentence;
+}

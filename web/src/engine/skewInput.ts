@@ -5,7 +5,7 @@
 
 import type { AggregateResponse, CoverageResponse, PlaceFeature } from "../api/types";
 import type { SkewInput } from "./skewModel";
-import { languageLabel } from "../lib/languages";
+import { languageCounts, languageLabel } from "../lib/languages";
 
 /** The view is off below this many places with pages in the window (doc 11, 11.4.2). */
 export const MIN_PLACES = 5;
@@ -32,6 +32,8 @@ export interface Prepared {
   stateCodes: string[];
   /** "Papers in German and English" where any title isn't in English, else null. */
   languages: (string | null)[];
+  /** "Of its 5 papers, 3 are in French (60%), …" alongside each label, else null. */
+  languageCounts: (string | null)[];
   /** Places with pages in the window. */
   placesWithPages: number;
 }
@@ -88,6 +90,10 @@ export function prepareSkew(
   // there is nothing to explain.
   const filtered = new URLSearchParams(agg.query.canonical).has("lang");
   const languages = placeIds.map((id) => (filtered ? null : languageLabel(features.get(id)?.properties.languages)));
+  const counts = placeIds.map((id, i) => {
+    const p = features.get(id)?.properties;
+    return languages[i] && p ? languageCounts(p.language_titles, p.titles) : null;
+  });
   return {
     version: agg.index_version,
     search: [agg.index_version, agg.query.canonical, agg.bucket.unit, agg.bucket.from, agg.bucket.to, buckets].join("|"),
@@ -105,6 +111,7 @@ export function prepareSkew(
     placeIds,
     stateCodes,
     languages,
+    languageCounts: counts,
     placesWithPages,
   };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatTimes, skewColor, skewPosition, tickLabel } from "./skewScale";
 import { formatRange, skewInfo, skewSentence, type SkewInfo } from "./skewText";
-import { languageLabel, languageName } from "./languages";
+import { languageCounts, languageLabel, languageName } from "./languages";
 
 describe("relative-rate scale", () => {
   it("is centred on 1× on a log scale and stops at 1/8× and 8×", () => {
@@ -42,6 +42,7 @@ describe("relative-rate sentences", () => {
     pages: 1351,
     dir: 1,
     languages: null,
+    languageCounts: null,
   };
 
   it("says what matched, what was expected and the range", () => {
@@ -74,6 +75,23 @@ describe("title languages", () => {
     expect(languageLabel(["yoruba"])).toBe("Papers in Yoruba");
     expect(languageLabel(["pennsylvania german", "eng"])).toBe("Papers in Pennsylvania German and English");
     expect(languageName("old church slavonic")).toBe("Old Church Slavonic");
+  });
+
+  it("counts a place's papers in each language, most first, with each one's share", () => {
+    expect(languageCounts({ eng: 1, fre: 3, ger: 1 }, 5)).toBe(
+      "Of its 5 papers, 3 are in French (60%), 1 in English (20%) and 1 in German (20%).",
+    );
+    expect(languageCounts({ ger: 1 }, 3)).toBe("Of its 3 papers, 1 is in German (33%).");
+    // A paper in two languages counts in both.
+    expect(languageCounts({ eng: 2, ger: 1 }, 2)).toBe(
+      "Of its 2 papers, 2 are in English (100%) and 1 in German (50%). A paper in more than one language counts in each.",
+    );
+    expect(languageCounts({ eng: 1, ger: 1 }, 1)).toBe("Its one paper is in English and German.");
+    expect(languageCounts({ srp: 1, eng: 400 }, 401)).toBe(
+      "Of its 401 papers, 400 are in English (100%) and 1 in Serbian (under 1%).",
+    );
+    expect(languageCounts(undefined, 5)).toBeNull();
+    expect(languageCounts({}, 5)).toBeNull();
   });
 });
 
