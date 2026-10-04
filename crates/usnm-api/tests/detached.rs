@@ -338,32 +338,57 @@ async fn errors_reach_every_waiter_and_are_not_cached() {
     assert_eq!(status, StatusCode::OK);
 }
 
+const SILVER: &str = "/v1/aggregate?q=silver&from=1896-01-01&to=1896-12-31";
+const COPPER: &str = "/v1/aggregate?q=copper&from=1896-01-01&to=1896-12-31";
+
 #[tokio::test]
-async fn searches_beyond_the_slots_get_503_busy() {
-    let backend = Slow::new(Duration::from_millis(600));
+async fn searches_beyond_the_slots_queue_first_come_first_served() {
+    let backend = Slow::new(Duration::from_millis(1000));
     let mut cfg = config();
     cfg.compute_concurrency = 1;
     let state = state_with(cfg, backend.clone()).await;
 
     assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
     assert_eq!(state.flights.free_slots(), 0);
-    // Another search waits for the slot as long as a visitor waits, then
-    // hears the API is busy.
-    let started = Instant::now();
-    let other = "/v1/aggregate?q=silver&from=1896-01-01&to=1896-12-31";
-    let (status, headers, body) = get(&state, other).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert_eq!(body["type"], "/errors/busy");
-    assert_eq!(headers[header::RETRY_AFTER], "5");
-    assert!(started.elapsed() >= Duration::from_millis(50));
-    assert!(!body.to_string().contains("silver"));
+    // The next searches wait in line, and their 202 says how many are ahead.
+    let (status, headers, body) = get(&state, SILVER).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(headers[header::RETRY_AFTER], "2");
+    assert_eq!(
+        body,
+        serde_json::json!({ "status": "queued", "ahead": 0, "retry_after": 2 })
+    );
+    let (_, _, body) = get(&state, COPPER).await;
+    assert_eq!(body["status"], "queued");
+    assert_eq!(body["ahead"], 1);
+    assert_eq!(state.flights.queued(), 2);
     // The running search needs no slot to be asked about again.
-    assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
-    // Cached results need none either.
-    assert_eq!(poll(&state, GOLD).await.0, StatusCode::OK);
+    assert_eq!(get(&state, GOLD).await.2["status"], "computing");
+
+    // Each runs in turn, in the order it arrived.
+    let finished = |uri: &'static str| {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let (status, body, _) = poll(&state, uri).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            Instant::now()
+        })
+    };
+    let (gold, silver, copper) = (finished(GOLD), finished(SILVER), finished(COPPER));
+    let (gold, silver, copper) = (
+        gold.await.unwrap(),
+        silver.await.unwrap(),
+        copper.await.unwrap(),
+    );
+    assert!(gold < silver && silver < copper);
     settled(&state).await;
     assert_eq!(state.flights.free_slots(), 1);
-    // A queued search gets the slot when it frees up within its wait.
+    assert_eq!(state.flights.queued(), 0);
+    // Cached results need no slot.
+    assert_eq!(get(&state, SILVER).await.0, StatusCode::OK);
+
+    // A queued search whose slot frees up within its visitor's wait is
+    // answered in that same request.
     backend.set_delay(Duration::from_millis(30));
     let mut cfg = config();
     cfg.compute_concurrency = 1;
@@ -374,8 +399,78 @@ async fn searches_beyond_the_slots_get_503_busy() {
         async move { get(&state, GOLD).await.0 }
     });
     tokio::time::sleep(Duration::from_millis(5)).await;
-    assert_eq!(get(&state, other).await.0, StatusCode::OK);
+    assert_eq!(get(&state, SILVER).await.0, StatusCode::OK);
     assert_eq!(first.await.unwrap(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_search_that_finds_the_queue_full_gets_503_busy_at_once() {
+    let backend = Slow::new(Duration::from_millis(600));
+    let mut cfg = config();
+    cfg.compute_concurrency = 1;
+    cfg.search_queue = 1;
+    let state = state_with(cfg, backend.clone()).await;
+
+    assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
+    assert_eq!(get(&state, SILVER).await.2["status"], "queued");
+    let started = Instant::now();
+    let (status, headers, body) = get(&state, COPPER).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["type"], "/errors/busy");
+    assert_eq!(headers[header::RETRY_AFTER], "5");
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert!(!body.to_string().contains("copper"));
+    // The queued search kept its place.
+    assert_eq!(get(&state, SILVER).await.2["ahead"], 0);
+}
+
+#[tokio::test]
+async fn a_search_queued_past_the_cap_is_busy_and_one_that_ran_gets_its_full_time() {
+    let backend = Slow::new(Duration::from_secs(30));
+    let mut cfg = config();
+    cfg.compute_concurrency = 1;
+    cfg.compute_cap = Duration::from_millis(500);
+    let state = state_with(cfg, backend.clone()).await;
+
+    // Gold runs 0–500 ms; silver queues from ~100 ms and runs 500–1000 ms,
+    // its full time although it waited; copper queues from ~200 ms and is
+    // still waiting at 700 ms.
+    assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
+    assert_eq!(get(&state, SILVER).await.2["status"], "queued");
+    assert_eq!(get(&state, COPPER).await.2["ahead"], 1);
+    let started = Instant::now();
+    let (gold, silver, copper) = tokio::join!(
+        poll(&state, GOLD),
+        poll(&state, SILVER),
+        poll(&state, COPPER)
+    );
+    assert_eq!(gold.1["type"], "/errors/backend-timeout", "{}", gold.1);
+    assert_eq!(silver.1["type"], "/errors/backend-timeout", "{}", silver.1);
+    assert!(started.elapsed() >= Duration::from_millis(600));
+    assert_eq!(copper.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(copper.1["type"], "/errors/busy", "{}", copper.1);
+    settled(&state).await;
+    assert_eq!(state.flights.queued(), 0);
+    assert_eq!(state.flights.free_slots(), 1);
+}
+
+#[tokio::test]
+async fn a_queued_search_nobody_asks_about_gives_up_its_place() {
+    let backend = Slow::new(Duration::from_secs(30));
+    let mut cfg = config();
+    cfg.compute_concurrency = 1;
+    cfg.abandon_after = Duration::from_millis(300);
+    let state = state_with(cfg, backend.clone()).await;
+
+    assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
+    assert_eq!(get(&state, SILVER).await.2["ahead"], 0);
+    // Only gold is asked about again; silver's visitor has left.
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
+    }
+    assert_eq!(state.flights.queued(), 0);
+    assert_eq!(get(&state, COPPER).await.2["ahead"], 0);
 }
 
 #[tokio::test]
@@ -440,7 +535,7 @@ async fn the_fixture_switch_slows_matching_searches_only() {
     let backend = Slow::new(Duration::ZERO);
     let state = state_with(cfg, backend).await;
     assert_eq!(get(&state, GOLD).await.0, StatusCode::ACCEPTED);
-    let silver = "/v1/aggregate?q=silver&from=1896-01-01&to=1896-12-31";
+    let silver = SILVER;
     assert_eq!(get(&state, silver).await.0, StatusCode::OK);
     assert_eq!(poll(&state, GOLD).await.0, StatusCode::OK);
 }
@@ -471,7 +566,7 @@ async fn persisted_results_need_no_slot() {
     let dir = std::env::temp_dir().join(format!("usnm-detached-blob-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let store: Arc<dyn usnm_store::ObjectStore> = Arc::new(LocalStore::new(&dir));
-    let silver = "/v1/aggregate?q=silver&from=1896-01-01&to=1896-12-31";
+    let silver = SILVER;
     // One replica computes silver and persists it.
     let mut cfg = config();
     cfg.persist_after = Duration::ZERO;

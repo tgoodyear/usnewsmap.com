@@ -56,15 +56,16 @@ export function App() {
   const paramsKey = JSON.stringify(searchParams(view));
   const params = useMemo(() => JSON.parse(paramsKey) as SearchParams, [paramsKey]);
 
-  // The search the API said it is still computing (a `202`), by query key.
+  // The search the API said it is still computing (a `202`), by query key,
+  // and how many searches are ahead of it while it waits for a slot.
   const aggKey = JSON.stringify([version, params]);
-  const [computing, setComputing] = useState<string | null>(null);
+  const [computing, setComputing] = useState<{ key: string; ahead: number | null } | null>(null);
   const agg = useQuery({
     queryKey: ["aggregate", version, params],
     queryFn: ({ signal }) => {
       // A new attempt starts as a plain search until the API says otherwise.
-      setComputing((c) => (c === aggKey ? null : c));
-      return api.aggregate(params, version, signal, () => setComputing(aggKey));
+      setComputing((c) => (c?.key === aggKey ? null : c));
+      return api.aggregate(params, version, signal, (ahead) => setComputing({ key: aggKey, ahead }));
     },
     enabled: !!version && !!view.q,
     // Keep showing the previous search while the next loads, but never a
@@ -81,7 +82,8 @@ export function App() {
   });
 
   const data = agg.data;
-  const stillComputing = agg.isFetching && computing === aggKey;
+  const stillComputing = agg.isFetching && computing?.key === aggKey;
+  const ahead = stillComputing ? computing.ahead : null;
   const count = data?.bucket.count ?? 0;
   // Scrubbing and playback update the view at once but write the URL only
   // when movement pauses: browsers throttle the History API (Firefox allows
@@ -383,7 +385,11 @@ export function App() {
           )}
           {stillComputing && (
             <p className="notice" role="status">
-              Large search, still working… This can take up to two minutes.
+              {ahead === null
+                ? "Large search, still working… This can take up to two minutes."
+                : ahead === 0
+                  ? "Other searches are running. Yours is next in line…"
+                  : `Other searches are running. Yours is in line behind ${ahead} more…`}
             </p>
           )}
           {placesFailed && (
