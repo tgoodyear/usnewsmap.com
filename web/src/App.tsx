@@ -442,7 +442,8 @@ export function App() {
                 <ShareButton />
               </div>
 
-              {data.total.hits > 0 && data.total.first && (
+              {/* Not while the previous search stands in: its pages would get this search's links. */}
+              {data.total.hits > 0 && data.total.first && !agg.isPlaceholderData && (
                 <Mentions
                   first={data.total.first}
                   last={data.total.last ?? null}

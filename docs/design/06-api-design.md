@@ -108,7 +108,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "bucket": { "unit": "week", "origin": "1896-06-01", "count": 31 },
   "total": {
     "hits": 18234, "places": 1187, "titles": 1402, "baseline_pages": 912345,
-    "first_day": 71978, "last_day": 72214,     // null when nothing matches
+    "first_day": 71778, "last_day": 71949,     // null when nothing matches
     "first": { "doc_id": "sn84031492_1896-07-10_ed-1_seq-1", "date": "1896-07-10", … },  // a /v1/hits item
     "last":  { … }
   },
@@ -119,8 +119,8 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "places": {                      // columnar arrays, one entry per place with ≥1 hit
     "id":    ["P00412", "P00087", …],
     "hits":  [612, 598, …],
-    "first_day": [71990, 71991, …],  // days since 1700-01-01
-    "last_day":  [72210, 72214, …]
+    "first_day": [71778, 71779, …],  // days since 1700-01-01
+    "last_day":  [71945, 71949, …]
   },
   "cube": {                        // sparse COO triplets: (place index, bucket index, hits)
     "p": [0, 0, 1, …],

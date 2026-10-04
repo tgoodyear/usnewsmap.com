@@ -345,16 +345,21 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
             series[i] += b.doc_count;
         }
     }
+    // Every place bucket has at least one page, so both days must be there.
     let places = agg::<Buckets<PlaceBucket>>(resp, "places")?
         .buckets
         .into_iter()
-        .map(|b| PlaceSummary {
-            first_day: MetricValue::day(b.first).unwrap_or(0),
-            last_day: MetricValue::day(b.last).unwrap_or(0),
-            place_id: b.key,
-            hits: b.doc_count,
+        .map(|b| {
+            let missing =
+                || SearchError::Backend("place bucket without its first or last day".into());
+            Ok(PlaceSummary {
+                first_day: MetricValue::day(b.first).ok_or_else(missing)?,
+                last_day: MetricValue::day(b.last).ok_or_else(missing)?,
+                place_id: b.key,
+                hits: b.doc_count,
+            })
         })
-        .collect();
+        .collect::<Result<_, SearchError>>()?;
     // Absent or null when nothing matched.
     let day = |name| {
         agg::<MetricValue>(resp, name)
@@ -739,6 +744,30 @@ mod tests {
         .unwrap();
         let s = parse_summary(&resp, &spec).unwrap();
         assert_eq!((s.first_day, s.last_day), (None, None));
+    }
+
+    #[test]
+    fn a_place_without_its_days_is_an_error_not_day_zero() {
+        let spec = BucketSpec::new(BucketUnit::Year, d("1895-01-01"), d("1897-12-31"));
+        for place in [
+            json!({"key": "P00001", "doc_count": 4, "first": {"value": 71000.0}}),
+            json!({"key": "P00001", "doc_count": 4, "first": {"value": null}, "last": {"value": 71200.0}}),
+        ] {
+            let resp: SearchResponse = serde_json::from_value(json!({
+                "num_hits": 4,
+                "aggregations": {
+                    "series": { "buckets": [] },
+                    "first": {"value": 71000.0},
+                    "last": {"value": 71200.0},
+                    "places": { "buckets": [place] }
+                }
+            }))
+            .unwrap();
+            assert!(matches!(
+                parse_summary(&resp, &spec),
+                Err(SearchError::Backend(_))
+            ));
+        }
     }
 
     #[test]
