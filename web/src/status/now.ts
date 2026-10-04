@@ -131,10 +131,13 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
         progress: { done, total, label: `${count(done)} of ${count(total)} pages sent` },
       };
     }
-    case "merging":
-      return {
-        text: "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live.",
-      };
+    case "merging": {
+      let text =
+        "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live.";
+      const m = mergeDetail(a);
+      if (m) text += ` ${m}.`;
+      return { text };
+    }
     case "publishing":
       return { text: "Publishing: the new index is going live (step 4 of 4)." };
     case "downloading": {
@@ -161,6 +164,20 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
       return { text };
     }
   }
+}
+
+/**
+ * Where the merge is: "settle" while the open index merges in the background,
+ * "finalize" once it is closed and its last pieces are merged.
+ */
+function mergeDetail(a: Activity | null | undefined): string | null {
+  const m = a?.merge;
+  if (!m) return null;
+  const pieces = `${count(m.splits)} ${m.splits === 1 ? "piece" : "pieces"}`;
+  const work = `${count(m.merges_running)} ${m.merges_running === 1 ? "merge" : "merges"} running, ${count(m.merges_queued)} waiting`;
+  return m.step === "finalize"
+    ? `Index closed for its final merges: ${pieces}, ${work}`
+    : `Index still open: ${pieces}, ${work}`;
 }
 
 /** How the last (or, while one runs, the previous) run ended, when that matters. */
@@ -260,7 +277,8 @@ export function steps(s: Status, now: number): Step[] {
   if ((doing === "indexing" || doing === "merging") && a?.done != null && a.total) {
     indexDetail = `${count(a.done)} of ${count(a.total)} pages sent`;
   } else if (doing === "merging") {
-    indexDetail = "Every page sent; merging the index";
+    const m = mergeDetail(a);
+    indexDetail = m ? `Every page sent. ${m}` : "Every page sent; merging the index";
   } else if (t && t.unpublished_batches !== null) {
     indexDetail =
       t.unpublished_batches === 0
