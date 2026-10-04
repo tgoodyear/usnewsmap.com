@@ -149,6 +149,29 @@ pub const TITLE_PAGES_FILE: &str = "title_pages.json";
 /// it existed don't have it.
 pub const DUPLICATES_FILE: &str = "duplicates.json";
 
+/// The file in a version's reference snapshot with pages published per place
+/// and day for each distinct set of title languages ([`LanguageBaselines`]),
+/// so a language filter keeps exact baselines. Snapshots written before it
+/// existed don't have it.
+pub const LANGUAGE_BASELINES_FILE: &str = "language_baselines.json";
+
+/// Pages published per place and day, split by the languages the pages' title
+/// lists. A page counts in exactly one set, so any selection of languages
+/// sums the sets that share one of them without counting a page twice.
+/// Titles that list no language are left out: no language filter matches them.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LanguageBaselines {
+    pub sets: Vec<LanguageSet>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LanguageSet {
+    /// Catalog language codes, sorted and without repeats.
+    pub languages: Vec<String>,
+    /// `{place id: sorted (day, pages)}`, as in `baselines.json`.
+    pub baselines: std::collections::BTreeMap<String, Vec<(u32, u32)>>,
+}
+
 /// One index build (partition key `/index_version`).
 ///
 /// The item holds only bounded fields. The version's batch list, which grows

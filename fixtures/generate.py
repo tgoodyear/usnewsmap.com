@@ -70,7 +70,7 @@ def sort_key(title_ordinal, edition, seq):
 def main():
     rng = random.Random(1896)
     OUT.mkdir(parents=True, exist_ok=True)
-    titles, docs_base, docs_delta, baselines, title_pages = [], [], [], {}, {}
+    titles, docs_base, docs_delta, baselines, title_pages, by_language = [], [], [], {}, {}, {}
     for pid, ordinal, name, state, *_ in PLACES:
         lccn = f"sn99{ordinal:06d}"
         languages = LANGUAGES.get(pid, ["eng"])
@@ -111,6 +111,7 @@ def main():
                 (docs_delta if d >= date(1897, 7, 1) else docs_base).append(doc)
             d += timedelta(days=7)
         baselines[pid] = sorted(counts.items())
+        by_language.setdefault(tuple(sorted(set(languages))), {})[pid] = sorted(counts.items())
         title_pages[lccn] = sum(counts.values())
 
     snap = OUT / VERSION
@@ -127,11 +128,17 @@ def main():
     (snap / "places.json").write_text(json.dumps(places, indent=1) + "\n")
     (snap / "titles.json").write_text(json.dumps(titles, indent=1) + "\n")
     (snap / "baselines.json").write_text(json.dumps(baselines) + "\n")
+    # The same pages split by the languages their title lists (one entry per
+    # distinct set, sets in sorted order), for exact baselines under `lang`.
+    language_baselines = {"sets": [
+        {"languages": list(langs), "baselines": by_language[langs]} for langs in sorted(by_language)
+    ]}
+    (snap / "language_baselines.json").write_text(json.dumps(language_baselines) + "\n")
     # Pages per title (the status page's pages by language), keys sorted.
     (snap / "title_pages.json").write_text(json.dumps(title_pages, indent=1, sort_keys=True) + "\n")
     # The API verifies every reference file against this manifest (04 §4.3).
     files = []
-    for name in ("baselines.json", "places.json", "title_pages.json", "titles.json"):
+    for name in ("baselines.json", "language_baselines.json", "places.json", "title_pages.json", "titles.json"):
         data = (snap / name).read_bytes()
         files.append({"path": name, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
     manifest = {"index_version": VERSION, "files": files}

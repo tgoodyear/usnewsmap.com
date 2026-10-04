@@ -45,8 +45,8 @@ use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
 use crate::state::{
-    Curated, IndexRun, RunBatch, RunStatus, State, Step, DUPLICATES_FILE, RUN_BATCHES_FILE,
-    TITLE_PAGES_FILE,
+    Curated, IndexRun, LanguageBaselines, LanguageSet, RunBatch, RunStatus, State, Step,
+    DUPLICATES_FILE, LANGUAGE_BASELINES_FILE, RUN_BATCHES_FILE, TITLE_PAGES_FILE,
 };
 
 pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
@@ -735,6 +735,9 @@ impl Release {
         // Every page counted once, by its title: the same pages as the
         // baselines, which sum them by place instead.
         let mut title_pages: BTreeMap<String, u64> = BTreeMap::new();
+        // The same pages again, by the languages their title lists.
+        let mut by_language: BTreeMap<Vec<String>, BTreeMap<String, BTreeMap<u32, u32>>> =
+            BTreeMap::new();
         let (mut first, mut last) = (u32::MAX, u32::MIN);
         for b in batches {
             for (lccn, days) in dedup::load_counts(self.curated.as_ref(), b).await? {
@@ -742,9 +745,19 @@ impl Release {
                     .title(&lccn)
                     .with_context(|| format!("title `{lccn}` is missing from the catalog"))?;
                 let series = baselines.entry(title.place_id.clone()).or_default();
+                let mut language_series = language_set(title).map(|set| {
+                    by_language
+                        .entry(set)
+                        .or_default()
+                        .entry(title.place_id.clone())
+                        .or_default()
+                });
                 let total = title_pages.entry(lccn).or_default();
                 for (day, pages) in days {
                     *series.entry(day).or_default() += pages;
+                    if let Some(s) = language_series.as_mut() {
+                        *s.entry(day).or_default() += pages;
+                    }
                     *total += u64::from(pages);
                     first = first.min(day);
                     last = last.max(day);
@@ -762,6 +775,13 @@ impl Release {
                 .context("a duplicated page outside the baselines")?;
             *pages -= extra;
             *title_pages.get_mut(lccn).context("title pages")? -= u64::from(extra);
+            if let Some(set) = language_set(title) {
+                *by_language
+                    .get_mut(&set)
+                    .and_then(|places| places.get_mut(&title.place_id))
+                    .and_then(|s| s.get_mut(&day))
+                    .context("a duplicated page outside the language baselines")? -= extra;
+            }
         }
         // Only titles and places with pages in this version.
         let titles: Vec<&Title> = catalog
@@ -779,6 +799,18 @@ impl Release {
             .into_iter()
             .map(|(k, v)| (k, v.into_iter().collect()))
             .collect();
+        let language_baselines = LanguageBaselines {
+            sets: by_language
+                .into_iter()
+                .map(|(languages, places)| LanguageSet {
+                    languages,
+                    baselines: places
+                        .into_iter()
+                        .map(|(k, v)| (k, v.into_iter().collect()))
+                        .collect(),
+                })
+                .collect(),
+        };
 
         let mut files = Vec::new();
         for (name, body) in [
@@ -786,6 +818,10 @@ impl Release {
             ("places.json", serde_json::to_vec(&places)?),
             ("baselines.json", serde_json::to_vec(&baselines)?),
             (TITLE_PAGES_FILE, serde_json::to_vec(&title_pages)?),
+            (
+                LANGUAGE_BASELINES_FILE,
+                serde_json::to_vec(&language_baselines)?,
+            ),
             (RUN_BATCHES_FILE, serde_json::to_vec(batches)?),
             (DUPLICATES_FILE, serde_json::to_vec(&dedup.hidden)?),
         ] {
@@ -829,9 +865,40 @@ impl Release {
     }
 }
 
+/// The languages a title lists, sorted and without repeats; `None` when it
+/// lists none (no language filter matches its pages).
+fn language_set(title: &Title) -> Option<Vec<String>> {
+    let set: BTreeSet<&str> = title
+        .languages
+        .iter()
+        .map(String::as_str)
+        .filter(|l| !l.is_empty())
+        .collect();
+    (!set.is_empty()).then(|| set.into_iter().map(str::to_owned).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn titles_group_by_their_sorted_language_set() {
+        let mut t = Title {
+            lccn: "sn1".into(),
+            name: "sn1".into(),
+            ordinal: 1,
+            place_id: "P1".into(),
+            state: "IL".into(),
+            languages: vec!["ger".into(), "eng".into(), "ger".into(), String::new()],
+            extra: BTreeMap::new(),
+        };
+        assert_eq!(
+            language_set(&t),
+            Some(vec!["eng".to_owned(), "ger".to_owned()])
+        );
+        t.languages = vec![];
+        assert_eq!(language_set(&t), None);
+    }
 
     #[tokio::test]
     async fn a_lost_lease_ends_a_wait() {

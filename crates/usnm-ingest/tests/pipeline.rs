@@ -283,6 +283,7 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     let v = &p2.index_version;
     for f in [
         "baselines.json",
+        "language_baselines.json",
         "titles.json",
         "places.json",
         "title_pages.json",
@@ -1473,7 +1474,11 @@ async fn pages_in_two_batches_are_kept_once() {
     want_hidden.sort_by_key(|h| h["doc_id"].as_str().unwrap().to_owned());
     assert_eq!(got, want_hidden);
     // Every page counts once: the snapshot matches the fixture's.
-    for f in ["baselines.json", "title_pages.json"] {
+    for f in [
+        "baselines.json",
+        "title_pages.json",
+        "language_baselines.json",
+    ] {
         let want: Value =
             serde_json::from_slice(&std::fs::read(fixtures().join("fixture-v1").join(f)).unwrap())
                 .unwrap();

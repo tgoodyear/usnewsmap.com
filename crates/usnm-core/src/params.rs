@@ -106,6 +106,14 @@ impl RawParams {
         }
     }
 
+    /// The `lang` filter: catalog language codes, lowercased, sorted, without repeats.
+    pub fn langs(&self) -> Result<Vec<String>, ParamError> {
+        list(self.get("lang"), "lang", |s| {
+            (s.len() == 3 && s.bytes().all(|b| b.is_ascii_alphabetic()))
+                .then(|| s.to_ascii_lowercase())
+        })
+    }
+
     /// Reject every key except `allowed` (for endpoints without search parameters).
     pub fn reject_only(&self, allowed: &[&str]) -> Result<(), ParamError> {
         match self.0.iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
@@ -166,10 +174,7 @@ impl SearchRequest {
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
             .then(|| s.to_owned())
         })?;
-        let langs = list(raw.get("lang"), "lang", |s| {
-            (s.len() == 3 && s.bytes().all(|b| b.is_ascii_alphabetic()))
-                .then(|| s.to_ascii_lowercase())
-        })?;
+        let langs = raw.langs()?;
         let front_only = match raw.get("front") {
             None | Some("false") | Some("0") => false,
             Some("true") | Some("1") => true,

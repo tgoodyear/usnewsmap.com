@@ -139,8 +139,7 @@ async fn health_and_meta() {
 }
 
 /// `lang` keeps the pages of titles that list any of the given languages; a
-/// title in two languages is found by either. Baselines are per place and day
-/// only, so the response has none (the relative rate is off, 07 §7.9).
+/// title in two languages is found by either.
 #[tokio::test]
 async fn lang_filters_by_any_title_language() {
     let s = state_with(None).await;
@@ -162,9 +161,6 @@ async fn lang_filters_by_any_title_language() {
     };
     let (ger, body) = places("ger").await;
     assert_eq!(ger, ["P00002", "P00006"]);
-    assert!(body["series"]["baseline"].is_null());
-    assert!(body["cube"]["baseline_ref"].is_null());
-    assert!(body["total"]["baseline_pages"].is_null());
     assert!(body["query"]["canonical"]
         .as_str()
         .unwrap()
@@ -181,6 +177,93 @@ async fn lang_filters_by_any_title_language() {
     let (none, body) = places("fre").await;
     assert!(none.is_empty());
     assert_eq!(body["total"]["hits"], 0);
+}
+
+/// Under a language filter the baseline is the pages of the titles that list
+/// any of the languages, each page once: the title in English and German is in
+/// both counts but not twice in their union. Every fixture title has 312 pages.
+#[tokio::test]
+async fn lang_filter_keeps_exact_baselines() {
+    let s = state_with(None).await;
+    let baseline = |lang: &'static str, extra: &'static str| {
+        let s = &s;
+        async move {
+            let uri = format!("/v1/aggregate?q=gold&lang={lang}{extra}");
+            let (status, _, body) = get(s, &uri).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let series: u64 = body["series"]["baseline"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap())
+                .sum();
+            assert_eq!(body["total"]["baseline_pages"], series);
+            (series, body)
+        }
+    };
+    assert_eq!(baseline("eng", "").await.0, 4 * 312);
+    // P00002 (English and German) and P00006 (German).
+    assert_eq!(baseline("ger", "").await.0, 2 * 312);
+    assert_eq!(baseline("spa", "").await.0, 312);
+    // Together: P00006 added to the four English titles, P00002 once.
+    assert_eq!(baseline("eng,ger", "").await.0, 5 * 312);
+    // Lowercased, de-duplicated and ordered like the search itself.
+    assert_eq!(baseline("GER,eng,ger", "").await.0, 5 * 312);
+    assert_eq!(baseline("fre", "").await.0, 0);
+    // With a state filter: only that state's places (P00002 is in New York).
+    assert_eq!(baseline("ger", "&state=NY").await.0, 312);
+
+    // The link names the same scope, and the coverage cube sums to the baseline.
+    let (pages, body) = baseline("ger", "").await;
+    let link = body["cube"]["baseline_ref"].as_str().unwrap().to_owned();
+    assert!(link.contains("lang=ger"), "{link}");
+    let (status, _, cov) = get(&s, &link).await;
+    assert_eq!(status, StatusCode::OK, "{cov}");
+    let covered: u64 = cov["pages"]["h"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(covered, pages);
+    assert_eq!(cov["places"], json!(["P00002", "P00006"]));
+    // Without the filter it is every page.
+    let (status, _, all) = get(&s, "/v1/coverage?bucket=year").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["places"].as_array().unwrap().len(), 6);
+    // Other filters still have no exact baseline, with or without a language.
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold&lang=ger&front=true").await;
+    assert!(body["series"]["baseline"].is_null());
+    assert!(body["cube"]["baseline_ref"].is_null());
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold&lang=ger&lccn=sn99000002").await;
+    assert!(body["series"]["baseline"].is_null());
+}
+
+/// A version published before baselines were kept per language serves the
+/// language filter without them, as it always did.
+#[tokio::test]
+async fn lang_filter_on_an_older_snapshot_has_no_baseline() {
+    let mut refdata = refdata().await;
+    refdata.language_baselines = None;
+    let s = Arc::new(AppState::new(
+        config(),
+        Arc::new(fixture_backend()),
+        refdata,
+    ));
+    let (status, _, body) = get(&s, "/v1/aggregate?q=gold&lang=ger").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["series"]["baseline"].is_null());
+    assert!(body["cube"]["baseline_ref"].is_null());
+    assert!(body["total"]["baseline_pages"].is_null());
+    let (status, _, _) = get(&s, "/v1/coverage?lang=ger").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // A request for another version is redirected, not rejected.
+    let (status, headers, _) = get(&s, "/v1/coverage?lang=ger&v=pages-v-other").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    // Searches without a language filter are unaffected.
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold").await;
+    assert!(body["cube"]["baseline_ref"].is_string());
 }
 
 #[tokio::test]
