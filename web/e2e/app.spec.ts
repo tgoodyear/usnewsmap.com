@@ -310,7 +310,7 @@ test("the status page says what the pipeline is doing right now", async ({ page 
   await page.goto("/status");
   const line = page.locator(".status-now__line");
   await expect(line).toHaveText(
-    /^Looking up newspaper details from the Library of Congress: 342 of 3,464 done \(9\.9%\)\. Paused until \d\d:\d\d UTC because loc\.gov asked us to slow down\.$/,
+    /^Looking up newspaper details from the Library of Congress: 342 of 3,464 done \(9\.9%\)\. Paused until (?:[A-Z][a-z]{2} \d{1,2} at )?\d\d:\d\d UTC because loc\.gov asked us to slow down\.$/,
   );
   await expect(page.getByRole("progressbar", { name: "342 of 3,464 newspapers looked up" })).toBeVisible();
   await expect(page.getByText(/^The previous run stopped at .* because of an error while building the search index; nothing changed on the site\.$/)).toBeVisible();
