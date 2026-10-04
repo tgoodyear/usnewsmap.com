@@ -53,12 +53,13 @@ class Archives(unittest.TestCase):
         got = jaocr.missing_pages(names, {"sn1"}, "x")
         self.assertEqual(sorted((r["date"], r["edition"], r["seq"]) for r in got),
                          [("1945-01-01", 1, 2), ("1945-01-08", 2, 10), ("1945-02-03", 1, 3)])
+        self.assertIsNotNone(jaocr.page_from_path("sn1/1945/01/01/ed-1/seq-32767/ocr.xml"))
         self.assertEqual(jaocr.page_from_path("sn1/1896-07-10/ed-2/seq-1/ocr.txt"),
                          ("sn1/1896-07-10/ed-2/seq-1", "ocr.txt"))
         for bad in ("sn1/18x6/07/10/ed-1/seq-1/ocr.xml", "sn1/1945/13/40/ed-1/seq-1/ocr.xml",
                     "SN1/1945/01/01/ed-1/seq-1/ocr.xml", "sn1/1945/01/01/ed-1/seq-0/ocr.xml",
                     "sn1/1945-02-30/ed-1/seq-1/ocr.xml", "sn1/1945/01/01/ed-0/seq-1/ocr.xml",
-                    "sn1/1945/01/01/ed-1/seq-70000/ocr.xml"):
+                    "sn1/1945/01/01/ed-1/seq-70000/ocr.xml", "sn1/1945/01/01/ed-1/seq-32768/ocr.xml"):
             self.assertIsNone(jaocr.page_from_path(bad), bad)
 
 

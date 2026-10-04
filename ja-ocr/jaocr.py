@@ -213,8 +213,9 @@ def page_from_path(path: str) -> tuple[str, str] | None:
     n = len(parts)
     if n < 5 or not parts[n - 2].startswith("seq-") or not parts[n - 3].startswith("ed-"):
         return None
-    # crates/usnm-core/src/ids.rs: ed and seq in 1..=65535 (a few archives hold a
-    # seq-0 page, which curation skips too), a real calendar date, lowercase LCCN.
+    # crates/usnm-core/src/ids.rs: ed and seq from 1 (a few archives hold a seq-0
+    # page, which curation skips too), a real calendar date, lowercase LCCN. The
+    # curated and overlay columns are int16, so at most 32767.
     ed, seq = number(parts[n - 3], "ed-"), number(parts[n - 2], "seq-")
     if ed is None or seq is None:
         return None
@@ -235,7 +236,7 @@ def page_from_path(path: str) -> tuple[str, str] | None:
 
 def number(part: str, prefix: str) -> int | None:
     v = part[len(prefix):] if part.startswith(prefix) else ""
-    return int(v) if v.isdigit() and 0 < int(v) <= 65535 else None
+    return int(v) if v.isdigit() and 0 < int(v) <= 32767 else None
 
 
 def missing_pages(names, jpn: set[str], batch: str) -> list[dict]:
