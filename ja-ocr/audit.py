@@ -18,7 +18,7 @@ Titles whose batches aren't all in the published version (still waiting for
 title details, say) are flagged `unpublished_batches`: their gap isn't (only)
 missing text. The CSV marks a version and scope done; while one replica
 works it holds a lock it renews as it goes, and a run that finds the lock
-unrenewed for JAOCR_AUDIT_LOCK_MINUTES (30) takes it over, so a crashed run
+unrenewed for JAOCR_AUDIT_LOCK_MINUTES (60) takes it over, so a crashed run
 doesn't block the report.
 """
 
@@ -84,15 +84,17 @@ def audit(reference, curated, all_languages: bool) -> None:
         return
     # The CSV is the completion marker. The lock keeps a second replica out
     # while one works: its owner rewrites it every RENEW titles, and a lock
-    # not renewed for JAOCR_AUDIT_LOCK_MINUTES (30) belongs to a dead run and
-    # is taken over. A replica that finds a live lock exits; run again later.
+    # not renewed for JAOCR_AUDIT_LOCK_MINUTES (60, above the longest single
+    # fetch with its retries) belongs to a dead run and is taken over. Renewal
+    # checks ownership, so a run that stalled past the limit stops instead of
+    # racing the one that took over. A replica that finds a live lock exits.
     lock = f"audit/loc-pages-{version}-{scope}.lock"
     owner = os.environ.get("CONTAINER_APP_REPLICA_NAME") or os.environ.get("HOSTNAME") or "local"
 
     def lease() -> bytes:
         return json.dumps({"owner": owner, "at": datetime.now(timezone.utc).isoformat()}).encode()
 
-    stale = timedelta(minutes=float(os.environ.get("JAOCR_AUDIT_LOCK_MINUTES", "30")))
+    stale = timedelta(minutes=float(os.environ.get("JAOCR_AUDIT_LOCK_MINUTES", "60")))
     if not (curated.create(lock, lease()) or curated.take_over(lock, lease(), stale)):
         jaocr.log("audit running in another replica", version=version, scope=scope)
         return
@@ -113,8 +115,10 @@ def audit(reference, curated, all_languages: bool) -> None:
         except Exception as e:  # noqa: BLE001 - one title mustn't end the audit
             jaocr.log("title failed", lccn=t["lccn"], error=f"{type(e).__name__}: {e}"[:300])
             loc[t["lccn"]] = None
-        if i % RENEW == 0:
-            curated.write(lock, lease())
+        if i % RENEW == 0 and not curated.renew(lock, lease(), owner):
+            # Another run took the lock (we stalled past the stale limit): leave the report to it.
+            jaocr.log("audit lock lost; stopping", version=version, scope=scope, done=i)
+            return
         if i % 50 == 0:
             jaocr.log("audit progress", done=i, of=len(titles))
     table = rows(titles, ours, loc, published, datasets)

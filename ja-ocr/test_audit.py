@@ -16,6 +16,14 @@ def facets(pages):
 
 
 class Audit(unittest.TestCase):
+    def test_renew_only_by_the_owner(self):
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            cur.write("l", json.dumps({"owner": "r1"}).encode())
+            self.assertTrue(cur.renew("l", json.dumps({"owner": "r1", "n": 2}).encode(), "r1"))
+            self.assertFalse(cur.renew("l", json.dumps({"owner": "r2"}).encode(), "r2"))
+            self.assertEqual(json.loads(cur.read("l"))["n"], 2)
+
     def test_loc_pages(self):
         self.assertEqual(audit.loc_pages(facets(1012)), 1012)
         self.assertIsNone(audit.loc_pages({"facets": []}))

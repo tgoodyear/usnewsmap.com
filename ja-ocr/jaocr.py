@@ -116,6 +116,16 @@ class LocalStore:
     def exists(self, path: str) -> bool:
         return (self.root / path).is_file()
 
+    def renew(self, path: str, data: bytes, owner: str) -> bool:
+        """Rewrite a lock only if `owner` still holds it. Not atomic: the local store is for one process."""
+        try:
+            if json.loads(self.read(path)).get("owner") != owner:
+                return False
+        except (OSError, ValueError):
+            return False
+        self.write(path, data)
+        return True
+
     def take_over(self, path: str, data: bytes, stale: timedelta) -> bool:
         """Replace a blob older than `stale`. Not atomic: the local store is for one process."""
         if datetime.now(timezone.utc) - self.modified(path) <= stale:
@@ -154,6 +164,22 @@ class BlobStore:
 
     def exists(self, path: str) -> bool:
         return self.client.get_blob_client(path).exists()
+
+    def renew(self, path: str, data: bytes, owner: str) -> bool:
+        """Rewrite a lock only if `owner` still holds it, and nobody wrote it since we read it (ETag)."""
+        from azure.core import MatchConditions
+        from azure.core.exceptions import ResourceModifiedError, ResourceNotFoundError
+
+        blob = self.client.get_blob_client(path)
+        try:
+            got = blob.download_blob()
+            if json.loads(got.readall()).get("owner") != owner:
+                return False
+            blob.upload_blob(data, overwrite=True, etag=got.properties.etag,
+                             match_condition=MatchConditions.IfNotModified)
+            return True
+        except (ResourceModifiedError, ResourceNotFoundError, ValueError):
+            return False
 
     def take_over(self, path: str, data: bytes, stale: timedelta) -> bool:
         """Replace a blob older than `stale`, only if nobody replaced it since we looked (ETag)."""
