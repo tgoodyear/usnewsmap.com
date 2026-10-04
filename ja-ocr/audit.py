@@ -11,15 +11,15 @@ text from LoC: Rocky Shimpo has 1,012 pages on loc.gov and 256 with text.
 By default it checks the titles whose catalog languages include anything
 but English (about 400 requests, ~25 minutes at loc.gov's pace); with
 --all-languages, every catalog title (~4,700, ~4.5 hours). It writes
-audit/loc-pages-<version>.csv to the curated store, sorted by pages
-missing, and logs a summary and the titles with the largest gaps.
+audit/loc-pages-<version>-<non-english|all>.csv to the curated store,
+sorted by pages missing, and logs a summary and the largest gaps.
 
 Titles whose batches aren't all in the published version (still waiting for
 title details, say) are flagged `unpublished_batches`: their gap isn't (only)
-missing text. The CSV marks the version done; while one replica works it
-holds audit/loc-pages-<version>.lock, which another run takes over once it
-is older than JAOCR_AUDIT_LOCK_HOURS (6), so a crashed run doesn't block
-the report.
+missing text. The CSV marks a version and scope done; while one replica
+works it holds a lock it renews as it goes, and a run that finds the lock
+unrenewed for JAOCR_AUDIT_LOCK_MINUTES (30) takes it over, so a crashed run
+doesn't block the report.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 
 import jaocr
 
+RENEW = 25  # titles between lock renewals (~1.5 minutes at loc.gov's pace)
 FACET = "https://www.loc.gov/collections/chronicling-america/?fo=json&c=1&at=facets&fa="
 
 
@@ -76,17 +77,24 @@ def audit(reference, curated, all_languages: bool) -> None:
     version = current["reference"]
     if not jaocr.SAFE_SEGMENT.match(version):
         raise ValueError(f"current.json names an unsafe reference version: {version!r}")
-    path = f"audit/loc-pages-{version}.csv"
+    scope = "all" if all_languages else "non-english"
+    path = f"audit/loc-pages-{version}-{scope}.csv"
     if curated.exists(path):
-        jaocr.log("audit already done for this version", version=version, csv=path)
+        jaocr.log("audit already done for this version and scope", version=version, csv=path)
         return
-    # The CSV is the completion marker; the lock only keeps a second replica
-    # out while one works, and is taken over once stale (a crashed run).
-    lock = f"audit/loc-pages-{version}.lock"
-    body = json.dumps({"at": datetime.now(timezone.utc).isoformat()}).encode()
-    stale = timedelta(hours=float(os.environ.get("JAOCR_AUDIT_LOCK_HOURS", "6")))
-    if not (curated.create(lock, body) or curated.take_over(lock, body, stale)):
-        jaocr.log("audit running in another replica", version=version)
+    # The CSV is the completion marker. The lock keeps a second replica out
+    # while one works: its owner rewrites it every RENEW titles, and a lock
+    # not renewed for JAOCR_AUDIT_LOCK_MINUTES (30) belongs to a dead run and
+    # is taken over. A replica that finds a live lock exits; run again later.
+    lock = f"audit/loc-pages-{version}-{scope}.lock"
+    owner = os.environ.get("CONTAINER_APP_REPLICA_NAME") or os.environ.get("HOSTNAME") or "local"
+
+    def lease() -> bytes:
+        return json.dumps({"owner": owner, "at": datetime.now(timezone.utc).isoformat()}).encode()
+
+    stale = timedelta(minutes=float(os.environ.get("JAOCR_AUDIT_LOCK_MINUTES", "30")))
+    if not (curated.create(lock, lease()) or curated.take_over(lock, lease(), stale)):
+        jaocr.log("audit running in another replica", version=version, scope=scope)
         return
     ours = json.loads(reference.read(f"{version}/title_pages.json"))
     titles = json.loads(reference.read("catalog/titles.json"))
@@ -105,6 +113,8 @@ def audit(reference, curated, all_languages: bool) -> None:
         except Exception as e:  # noqa: BLE001 - one title mustn't end the audit
             jaocr.log("title failed", lccn=t["lccn"], error=f"{type(e).__name__}: {e}"[:300])
             loc[t["lccn"]] = None
+        if i % RENEW == 0:
+            curated.write(lock, lease())
         if i % 50 == 0:
             jaocr.log("audit progress", done=i, of=len(titles))
     table = rows(titles, ours, loc, published, datasets)

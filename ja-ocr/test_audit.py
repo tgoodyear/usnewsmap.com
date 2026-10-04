@@ -51,22 +51,26 @@ class Audit(unittest.TestCase):
             jaocr.fetch = fake_fetch
             try:
                 # A crashed run left a fresh lock and no CSV: a new run waits it out.
-                cur.write("audit/loc-pages-v1.lock", b"{}")
+                cur.write("audit/loc-pages-v1-non-english.lock", b"{}")
                 audit.audit(ref, cur, all_languages=False)
                 self.assertEqual(calls, [])
                 # Once the lock is stale, the next run takes it over and finishes.
                 import os
-                os.environ["JAOCR_AUDIT_LOCK_HOURS"] = "-1"
+                os.environ["JAOCR_AUDIT_LOCK_MINUTES"] = "-1"
                 try:
                     audit.audit(ref, cur, all_languages=False)
                 finally:
-                    del os.environ["JAOCR_AUDIT_LOCK_HOURS"]
+                    del os.environ["JAOCR_AUDIT_LOCK_MINUTES"]
                 audit.audit(ref, cur, all_languages=False)  # done: the CSV exists
+                n = len(calls)
+                # A full audit is a different scope: it runs, and covers the English title too.
+                audit.audit(ref, cur, all_languages=True)
+                self.assertEqual(len(calls), n + 3)
             finally:
                 jaocr.fetch = orig
-            # English-only titles are skipped by default; the second run made no requests.
-            self.assertEqual(len(calls), 2)
-            rows = list(csv.DictReader(io.StringIO(cur.read("audit/loc-pages-v1.csv").decode())))
+            # Default scope: 2 requests (listing + 1 non-English title); full scope: 3.
+            self.assertEqual(len(calls), 2 + 3)
+            rows = list(csv.DictReader(io.StringIO(cur.read("audit/loc-pages-v1-non-english.csv").decode())))
             self.assertEqual([(r["lccn"], r["loc_pages"], r["our_pages"], r["missing"]) for r in rows],
                              [("a", "1012", "256", "756")])
 
