@@ -99,6 +99,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=128)
     ap.add_argument("--issues-per-title", type=int, default=4)
     ap.add_argument("--pages-per-issue", type=int, default=2)
+    ap.add_argument("--titles", nargs="+", help="only these LCCNs (default: every Japanese title)")
     a = ap.parse_args()
     rnd = random.Random(a.seed)
     for d in ("images", "alto"):
@@ -114,7 +115,7 @@ def main() -> None:
         w.writeheader()
     count = len(done)
 
-    titles = japanese_titles()
+    titles = a.titles or japanese_titles()
     rnd.shuffle(titles)
     print(f"{len(titles)} Japanese titles; {count} pages already sampled", file=sys.stderr)
     for lccn in titles:

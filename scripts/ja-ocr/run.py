@@ -69,31 +69,38 @@ def fit(img: Path) -> bytes:
     from PIL import Image
 
     im = Image.open(img).convert("L")
-    for q in (85, 75, 65, 55):
-        buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=q)
-        if buf.tell() <= AZURE_LIMIT:
-            return buf.getvalue()
+    for scale in (1.0, 0.85, 0.7):
+        sized = im if scale == 1.0 else im.resize((int(im.width * scale), int(im.height * scale)), Image.LANCZOS)
+        for q in (85, 75, 65):
+            buf = io.BytesIO()
+            sized.save(buf, "JPEG", quality=q)
+            if buf.tell() <= AZURE_LIMIT:
+                if scale < 1.0:
+                    print(f"{img.name}: scaled to {scale:.0%} to fit F0's 4 MB", file=sys.stderr)
+                return buf.getvalue()
     raise ValueError(f"{img.name}: can't fit under 4 MB")
+
+
+def open_retrying(req: urllib.request.Request, timeout: int):
+    for attempt in range(8):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 7:
+                raise
+            time.sleep(int(e.headers.get("Retry-After") or 10))
 
 
 def azure(endpoint: str, img: Path, out: Path) -> None:
     url = endpoint.rstrip("/") + "/documentintelligence/documentModels/prebuilt-read:analyze?api-version=2024-11-30"
     req = urllib.request.Request(url, data=fit(img), method="POST", headers={
         "Authorization": f"Bearer {azure_token()}", "Content-Type": "application/octet-stream"})
-    for attempt in range(6):
-        try:
-            with urllib.request.urlopen(req, timeout=120) as r:
-                op = r.headers["Operation-Location"]
-            break
-        except urllib.error.HTTPError as e:
-            if e.code != 429 or attempt == 5:
-                raise
-            time.sleep(int(e.headers.get("Retry-After", "10")))
+    with open_retrying(req, 120) as r:
+        op = r.headers["Operation-Location"]
     while True:
         time.sleep(2)
         poll = urllib.request.Request(op, headers={"Authorization": f"Bearer {azure_token()}"})
-        with urllib.request.urlopen(poll, timeout=60) as r:
+        with open_retrying(poll, 60) as r:
             body = json.load(r)
         if body["status"] in ("succeeded", "failed"):
             break
