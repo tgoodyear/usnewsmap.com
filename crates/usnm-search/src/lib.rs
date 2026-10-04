@@ -271,19 +271,30 @@ pub fn mark_html(segments: &[(bool, &str)]) -> String {
 
 /// Snippets of a Japanese page (#139) from its printed text, around the
 /// query's positive words and phrases, HTML-escaped with `<mark>`. Folding is
-/// one character for one, so the marks land on the text as printed.
+/// one character for one, so the marks land on the text as printed. An exact
+/// phrase is marked as a whole; a NEAR phrase's words are marked one by one;
+/// a prefix term marks each printed word that starts with it.
 pub fn ja_snippets(printed: &str, query: &Node) -> Vec<String> {
     const CONTEXT: usize = 40;
-    fn walk(node: &Node, out: &mut Vec<Vec<String>>) {
+    let tokens = usnm_core::ja::tokenize(printed);
+    let mut phrases: Vec<Vec<String>> = Vec::new();
+    let mut stack = vec![query];
+    while let Some(node) = stack.pop() {
         match node {
-            Node::Term(t) if !t.prefix && t.fuzzy == 0 => out.push(vec![t.text.clone()]),
-            Node::Term(_) | Node::Not(_) => {}
-            Node::Phrase { terms, .. } => out.push(terms.clone()),
-            Node::And(c) | Node::Or(c) => c.iter().for_each(|n| walk(n, out)),
+            Node::Term(t) if t.prefix => {
+                for tok in tokens.iter().filter(|tok| tok.starts_with(&t.text)) {
+                    phrases.push(vec![tok.clone()]);
+                }
+            }
+            Node::Term(t) => phrases.push(vec![t.text.clone()]),
+            Node::Phrase { terms, slop: 0 } => phrases.push(terms.clone()),
+            Node::Phrase { terms, .. } => phrases.extend(terms.iter().map(|t| vec![t.clone()])),
+            Node::And(c) | Node::Or(c) => stack.extend(c),
+            Node::Not(_) => {}
         }
     }
-    let mut phrases = Vec::new();
-    walk(query, &mut phrases);
+    phrases.sort();
+    phrases.dedup();
     usnm_core::ja::snippets(printed, &phrases, CONTEXT, 1)
         .into_iter()
         .map(|pieces| {

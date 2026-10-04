@@ -106,6 +106,27 @@ async fn japanese_words_match_through_folding_and_snippets_show_the_printed_text
         .await
         .unwrap();
     assert!(denver.total > 0 && denver.total < docs.len() as u64);
+    // Prefix and NEAR matches get snippets too.
+    let den = mem
+        .hits(&set, &parse("日本 OR den*").unwrap(), &f, &page)
+        .await
+        .unwrap();
+    assert!(den
+        .hits
+        .iter()
+        .all(|h| h.snippets.iter().any(|s| s.contains("<mark>"))));
+    assert!(den
+        .hits
+        .iter()
+        .any(|h| h.snippets.iter().any(|s| s.contains("<mark>Denver</mark>"))));
+    let near =
+        usnm_core::query::build("米国 日本", Some(usnm_core::query::Mode::Near), 3, 0).unwrap();
+    let near = mem.hits(&set, &near, &f, &page).await.unwrap();
+    assert!(near.total > 0);
+    assert!(near
+        .hits
+        .iter()
+        .all(|h| h.snippets.iter().any(|s| s.contains("<mark>"))));
     // A phrase across a particle.
     let p = mem
         .hits(&set, &parse("\"米国と日本\"").unwrap(), &f, &page)

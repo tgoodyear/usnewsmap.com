@@ -52,6 +52,7 @@ LANGUAGES = {"P00002": ["eng", "ger"], "P00003": ["spa"], "P00006": ["ger"]}
 # ourselves, in their own index (pages-ja-fixture), with the printed text in
 # `printed` and its search tokens in `text`. The printed text uses old forms
 # (戰爭, 米國, 選擧), small kana and voiced kana, so folding is exercised.
+# lccn, name, place, state, title ordinal (the place's ordinal sets place_shard)
 JA_TITLE = ("sn99000901", "Fixture Shimpo (Japanese)", "P00003", "CA", 7)
 JA_WORDS = ["日本", "東京", "米國", "戰爭", "平和", "選擧", "ニュース", "ロッキー", "新報",
             "學校", "ガス", "收容所", "デンバー", "がっこう"]
@@ -99,6 +100,7 @@ def ja_docs():
     """The Japanese fixture pages, from their own random stream."""
     rng = random.Random(901)
     lccn, _, pid, state, ordinal = JA_TITLE
+    place_ordinal = next(p[1] for p in PLACES if p[0] == pid)
     docs, d = [], date(1896, 1, 4)
     while d <= date(1897, 12, 25):
         topic = "war" if date(1896, 7, 1) <= d <= date(1896, 9, 30) else (
@@ -107,7 +109,7 @@ def ja_docs():
         docs.append({
             "doc_id": f"{lccn}_{d.isoformat()}_ed-1_seq-1",
             "day": day_number(d), "ym": d.year * 12 + d.month - 1, "year": d.year,
-            "place_id": pid, "place_shard": ordinal % 8, "lccn": lccn, "state": state,
+            "place_id": pid, "place_shard": place_ordinal % 8, "lccn": lccn, "state": state,
             "language": ["eng", "jpn"], "front_page": True, "edition": 1, "seq": 1,
             "sort_key": sort_key(ordinal, 1, 1), "date": d.isoformat(),
             "text": ja_index_text(printed), "printed": printed, "ocr_source": "usnm-ndlocr-lite",

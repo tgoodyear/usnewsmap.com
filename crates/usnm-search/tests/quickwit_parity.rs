@@ -328,11 +328,19 @@ async fn japanese_searches_match_the_reference_backend() {
     for (qname, q) in &queries {
         for (fname, f) in [("all", &all), ("jpn 1896", &jpn), ("CA", &ca)] {
             for spec in specs(f) {
-                let ctx = format!("{qname} / {fname} / {spec:?}");
-                let want = sorted(mem.summary(&set, q, f, &spec).await.unwrap());
-                let got = sorted(qw.summary(&set, q, f, &spec).await.expect(&ctx));
+                let mut f = f.clone();
+                // Day specs use their own window.
+                f.from = spec.from;
+                f.to = spec.to;
+                let ctx = format!("{qname} / {fname} / {:?}", spec.unit);
+                let want = sorted(mem.summary(&set, q, &f, &spec).await.unwrap());
+                let got = sorted(qw.summary(&set, q, &f, &spec).await.expect(&ctx));
                 assert_eq!(got, want, "summary: {ctx}");
                 nonzero += usize::from(want.total_hits > 0);
+                let all: Vec<u8> = (0..8).collect();
+                let want = sorted_cells(mem.cube(&set, q, &f, &spec, &all).await.unwrap());
+                let got = sorted_cells(qw.cube(&set, q, &f, &spec, &all).await.expect(&ctx));
+                assert_eq!(got, want, "cube: {ctx}");
             }
             let page = HitsQuery {
                 limit: 10,
