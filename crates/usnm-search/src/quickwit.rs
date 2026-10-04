@@ -360,16 +360,19 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
             })
         })
         .collect::<Result<_, SearchError>>()?;
-    // Absent or null when nothing matched.
-    let day = |name| {
-        agg::<MetricValue>(resp, name)
-            .ok()
-            .and_then(|m| MetricValue::day(Some(m)))
+    // Null when nothing matched; otherwise both days must be there.
+    let day = |name| -> Result<Option<u32>, SearchError> {
+        if resp.num_hits == 0 {
+            return Ok(None);
+        }
+        MetricValue::day(Some(agg::<MetricValue>(resp, name)?))
+            .map(Some)
+            .ok_or_else(|| SearchError::Backend(format!("aggregation `{name}` has no day")))
     };
     Ok(Summary {
         total_hits: resp.num_hits,
-        first_day: day("first").filter(|_| resp.num_hits > 0),
-        last_day: day("last").filter(|_| resp.num_hits > 0),
+        first_day: day("first")?,
+        last_day: day("last")?,
         series,
         places,
     })
@@ -744,6 +747,36 @@ mod tests {
         .unwrap();
         let s = parse_summary(&resp, &spec).unwrap();
         assert_eq!((s.first_day, s.last_day), (None, None));
+    }
+
+    #[test]
+    fn a_summary_with_matches_needs_its_first_and_last_day() {
+        let spec = BucketSpec::new(BucketUnit::Year, d("1895-01-01"), d("1897-12-31"));
+        for (first, last) in [
+            (
+                Some(json!({"value": null})),
+                Some(json!({"value": 71200.0})),
+            ),
+            (None, Some(json!({"value": 71200.0}))),
+            (
+                Some(json!({"value": 71000.0})),
+                Some(json!({"value": "late"})),
+            ),
+        ] {
+            let mut aggs = json!({ "series": { "buckets": [] }, "places": { "buckets": [] } });
+            if let Some(f) = first {
+                aggs["first"] = f;
+            }
+            if let Some(l) = last {
+                aggs["last"] = l;
+            }
+            let resp: SearchResponse =
+                serde_json::from_value(json!({ "num_hits": 4, "aggregations": aggs })).unwrap();
+            assert!(matches!(
+                parse_summary(&resp, &spec),
+                Err(SearchError::Backend(_))
+            ));
+        }
     }
 
     #[test]
