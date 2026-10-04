@@ -18,7 +18,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::text::{fold, tokenize};
+use crate::ja::{self, has_ja, tokenize, MAX_JA_RUN_CHARS};
+use crate::text::fold;
 
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_TERMS: usize = 12;
@@ -132,7 +133,15 @@ pub fn build(q: &str, mode: Option<Mode>, near: u8, fuzzy: u8) -> Result<Node, Q
             phrase(tokenize(q), near)?
         }
         Some(Mode::Any) => {
-            let terms: Vec<Node> = tokenize(q).into_iter().map(exact).collect();
+            // A Japanese word is a phrase of characters, not one alternative per character.
+            let mut terms: Vec<Node> = Vec::new();
+            for w in q.split_whitespace() {
+                if has_ja(w) {
+                    terms.push(word(w, 0, false, 0)?);
+                } else {
+                    terms.extend(tokenize(w).into_iter().map(exact));
+                }
+            }
             match terms.len() {
                 0 => return Err(QueryError::new("query has no searchable words")),
                 1 => terms.into_iter().next().expect("one term"),
@@ -434,6 +443,9 @@ impl Parser {
 }
 
 fn word(text: &str, fuzzy: u8, prefix: bool, pos: usize) -> Result<Node, QueryError> {
+    if has_ja(text) {
+        return ja_word(text, fuzzy, prefix, pos);
+    }
     let tokens = tokenize(text);
     match tokens.len() {
         0 => Err(QueryError::at("word has no searchable characters", pos)),
@@ -457,6 +469,74 @@ fn word(text: &str, fuzzy: u8, prefix: bool, pos: usize) -> Result<Node, QueryEr
             slop: 0,
         }),
         _ => Err(QueryError::at("fuzzy or prefix needs a single word", pos)),
+    }
+}
+
+/// A word with Japanese in it: each run between punctuation (、。「」 …) is a
+/// phrase of its characters, and the runs are ANDed. Prefix and fuzzy matching
+/// work on whole words, which Japanese text doesn't mark, so they're refused.
+fn ja_word(text: &str, fuzzy: u8, prefix: bool, pos: usize) -> Result<Node, QueryError> {
+    if fuzzy > 0 || prefix {
+        return Err(QueryError::at(
+            "prefix (*) and fuzzy (~) searches aren't available for Japanese",
+            pos,
+        ));
+    }
+    // Voicing marks stay in the run, so a decomposed か+゙ composes to が.
+    let runs: Vec<Node> = text
+        .split(|c: char| !c.is_alphanumeric() && !ja::is_voicing_mark(c))
+        .map(tokenize)
+        .filter(|t| !t.is_empty())
+        .map(|t| phrase(t, 0))
+        .collect::<Result<_, _>>()
+        .map_err(|e| QueryError::at(e.message, pos))?;
+    match runs.len() {
+        0 => Err(QueryError::at("word has no searchable characters", pos)),
+        1 => Ok(runs.into_iter().next().expect("one run")),
+        _ => Ok(Node::And(runs)),
+    }
+}
+
+/// Whether a term is Japanese (one Japanese character, as the tokenizer makes them).
+fn is_ja_term(t: &str) -> bool {
+    t.chars().count() == 1 && t.chars().all(ja::is_ja)
+}
+
+/// The lengths of the contiguous Japanese runs in a phrase's terms.
+fn ja_runs(terms: &[String]) -> Vec<usize> {
+    let mut runs = Vec::new();
+    let mut len = 0;
+    for t in terms {
+        if is_ja_term(t) {
+            len += 1;
+        } else if len > 0 {
+            runs.push(len);
+            len = 0;
+        }
+    }
+    if len > 0 {
+        runs.push(len);
+    }
+    runs
+}
+
+/// Whether the query has a Japanese word that isn't excluded: it then searches
+/// the Japanese pages (#139).
+pub fn is_japanese(node: &Node) -> bool {
+    match node {
+        Node::Term(t) => is_ja_term(&t.text),
+        Node::Phrase { terms, .. } => terms.iter().any(|t| is_ja_term(t)),
+        Node::And(c) | Node::Or(c) => c.iter().any(is_japanese),
+        Node::Not(_) => false,
+    }
+}
+
+fn has_any_ja(node: &Node) -> bool {
+    match node {
+        Node::Term(t) => is_ja_term(&t.text),
+        Node::Phrase { terms, .. } => terms.iter().any(|t| is_ja_term(t)),
+        Node::And(c) | Node::Or(c) => c.iter().any(has_any_ja),
+        Node::Not(n) => has_any_ja(n),
     }
 }
 
@@ -497,7 +577,9 @@ fn apply_fuzzy(node: Node, fuzzy: u8) -> Node {
         return node;
     }
     match node {
-        Node::Term(t) if !t.prefix && t.fuzzy == 0 => Node::Term(Term { fuzzy, ..t }),
+        Node::Term(t) if !t.prefix && t.fuzzy == 0 && !is_ja_term(&t.text) => {
+            Node::Term(Term { fuzzy, ..t })
+        }
         Node::And(c) => Node::And(c.into_iter().map(|n| apply_fuzzy(n, fuzzy)).collect()),
         Node::Or(c) => Node::Or(c.into_iter().map(|n| apply_fuzzy(n, fuzzy)).collect()),
         Node::Not(n) => Node::Not(Box::new(apply_fuzzy(*n, fuzzy))),
@@ -513,6 +595,11 @@ fn validate(node: &Node) -> Result<(), QueryError> {
         )));
     }
     check(node)?;
+    if has_any_ja(node) && !is_japanese(node) {
+        return Err(QueryError::new(
+            "a Japanese word can't only be excluded; search for one too",
+        ));
+    }
     if !has_positive(node) {
         return Err(QueryError::new(
             "query needs at least one word that is not excluded",
@@ -537,14 +624,27 @@ fn check(node: &Node) -> Result<(), QueryError> {
         }
         Node::And(c) => c.iter().try_for_each(check),
         Node::Not(n) => check(n),
-        Node::Term(_) | Node::Phrase { .. } => Ok(()),
+        Node::Phrase { terms, .. } => {
+            let longest = ja_runs(terms).into_iter().max().unwrap_or(0);
+            if longest > MAX_JA_RUN_CHARS {
+                return Err(QueryError::new(format!(
+                    "a Japanese phrase has {longest} characters; the limit is {MAX_JA_RUN_CHARS}"
+                )));
+            }
+            Ok(())
+        }
+        Node::Term(_) => Ok(()),
     }
 }
 
 fn count_terms(node: &Node) -> usize {
     match node {
         Node::Term(_) => 1,
-        Node::Phrase { terms, .. } => terms.len(),
+        // The characters of a Japanese run are one word between them.
+        Node::Phrase { terms, .. } => {
+            let latin = terms.iter().filter(|t| !is_ja_term(t)).count();
+            latin + ja_runs(terms).len()
+        }
         Node::And(c) | Node::Or(c) => c.iter().map(count_terms).sum(),
         Node::Not(n) => count_terms(n),
     }
@@ -590,7 +690,15 @@ impl fmt::Display for Node {
                 }
             }
             Node::Phrase { terms, slop } => {
-                write!(f, "\"{}\"", terms.join(" "))?;
+                // Japanese characters run together, as they're written (and reparse the same).
+                f.write_str("\"")?;
+                for (i, t) in terms.iter().enumerate() {
+                    if i > 0 && !(is_ja_term(&terms[i - 1]) && is_ja_term(t)) {
+                        f.write_str(" ")?;
+                    }
+                    f.write_str(t)?;
+                }
+                f.write_str("\"")?;
                 if *slop > 0 {
                     write!(f, "~{slop}")?;
                 }
@@ -630,6 +738,112 @@ mod tests {
 
     fn term(t: &str) -> Node {
         exact(t.to_owned())
+    }
+
+    fn ja(s: &str) -> Node {
+        Node::Phrase {
+            terms: s.chars().map(|c| c.to_string()).collect(),
+            slop: 0,
+        }
+    }
+
+    #[test]
+    fn japanese_words_are_character_phrases() {
+        let n = parse("真珠湾").unwrap();
+        assert_eq!(n, ja("真珠湾"));
+        assert_eq!(n.to_string(), "\"真珠湾\"");
+        assert_eq!(parse(&n.to_string()).unwrap(), n);
+        assert!(is_japanese(&n));
+        // Old forms fold, so both spellings are one query (and one cache key).
+        assert_eq!(parse("戰爭").unwrap(), parse("戦争").unwrap());
+        // Decomposed (IME) and halfwidth input parse like the composed forms.
+        assert_eq!(parse("か\u{3099}す").unwrap(), parse("がす").unwrap());
+        assert_eq!(parse("ｶﾞｽ").unwrap(), parse("ガス").unwrap());
+        // A single character is a term.
+        assert_eq!(parse("年").unwrap(), term("年"));
+    }
+
+    #[test]
+    fn japanese_punctuation_splits_runs() {
+        assert_eq!(
+            parse("東京、大阪").unwrap(),
+            Node::And(vec![ja("大阪"), ja("東京")])
+        );
+        assert_eq!(parse("「日本」").unwrap(), ja("日本"));
+    }
+
+    #[test]
+    fn mixed_japanese_and_latin() {
+        let n = parse("gold 東京").unwrap();
+        assert_eq!(n, Node::And(vec![ja("東京"), term("gold")]));
+        assert!(is_japanese(&n));
+        assert_eq!(
+            parse("Rocky新報").unwrap(),
+            Node::Phrase {
+                terms: vec!["rocky".into(), "新".into(), "報".into()],
+                slop: 0
+            }
+        );
+        assert!(!is_japanese(&parse("gold silver").unwrap()));
+    }
+
+    #[test]
+    fn japanese_in_each_mode() {
+        let any = build("東京 大阪 gold", Some(Mode::Any), 0, 0).unwrap();
+        assert_eq!(any, Node::Or(vec![ja("大阪"), ja("東京"), term("gold")]));
+        let near = build("真珠湾 攻撃", Some(Mode::Near), 3, 0).unwrap();
+        assert_eq!(
+            near,
+            Node::Phrase {
+                terms: "真珠湾攻撃".chars().map(String::from).collect(),
+                slop: 3
+            }
+        );
+        let phrase = build("真珠湾 攻撃", Some(Mode::Phrase), 0, 0).unwrap();
+        assert_eq!(phrase, ja("真珠湾攻撃"));
+        // fuzzy applies to Latin words only.
+        let fz = build("gold 東京", Some(Mode::All), 0, 1).unwrap();
+        assert_eq!(
+            fz,
+            Node::And(vec![
+                ja("東京"),
+                Node::Term(Term {
+                    text: "gold".into(),
+                    fuzzy: 1,
+                    prefix: false
+                })
+            ])
+        );
+    }
+
+    #[test]
+    fn japanese_limits() {
+        // A run is one word for the word limit...
+        let long = "日本".repeat(8);
+        assert!(parse(&long).is_ok());
+        // ...up to MAX_JA_RUN_CHARS characters.
+        assert!(parse(&"日".repeat(MAX_JA_RUN_CHARS + 1))
+            .unwrap_err()
+            .message
+            .contains("Japanese phrase"));
+        // The limit is per run: two 20-character runs either side of a Latin word are fine...
+        let two_runs = format!("\"{} gold {}\"", "日".repeat(20), "月".repeat(20));
+        assert!(parse(&two_runs).is_ok());
+        // ...and each run is a term: 日 gold 月 is three.
+        assert_eq!(count_terms(&parse("\"日 gold 月\"").unwrap()), 3);
+        assert!(parse("東京*")
+            .unwrap_err()
+            .message
+            .contains("aren't available for Japanese"));
+        assert!(parse("東京~1")
+            .unwrap_err()
+            .message
+            .contains("aren't available for Japanese"));
+        assert!(parse("gold -東京")
+            .unwrap_err()
+            .message
+            .contains("can't only be excluded"));
+        assert!(parse("東京 -大阪").is_ok());
     }
 
     #[test]
