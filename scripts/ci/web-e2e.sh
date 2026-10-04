@@ -22,13 +22,17 @@ if [ "$step" = build ] || [ "$step" = all ]; then
   npm ci
   npx playwright install --with-deps chromium > ../playwright-install.log 2>&1 &
   install=$!
-  npm run build
-  node scripts/precompress.mjs dist
-  if ! wait "$install"; then
+  # Always reap the installer, even when the site's build fails, so it
+  # isn't still writing its log when the step ends.
+  site=0
+  { npm run build && node scripts/precompress.mjs dist; } || site=$?
+  installed=0
+  wait "$install" || installed=$?
+  if [ "$installed" -ne 0 ]; then
     cat ../playwright-install.log
     echo "::error::installing Playwright's browser failed"
-    exit 1
   fi
+  [ "$site" -eq 0 ] && [ "$installed" -eq 0 ] || exit 1
 fi
 if [ "$step" = test ] || [ "$step" = all ]; then
   PW_BASE_URL=http://127.0.0.1:8080 npm run e2e
