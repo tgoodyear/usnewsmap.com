@@ -202,6 +202,7 @@ def issue_key(lccn: str, date: str, edition: int) -> str:
 
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 YMD = re.compile(r"^\d{4}$|^\d{2}$")
+LCCN = re.compile(r"^[a-z0-9]{1,16}$")
 
 
 def page_from_path(path: str) -> tuple[str, str] | None:
@@ -212,8 +213,10 @@ def page_from_path(path: str) -> tuple[str, str] | None:
     n = len(parts)
     if n < 5 or not parts[n - 2].startswith("seq-") or not parts[n - 3].startswith("ed-"):
         return None
-    seq, ed = parts[n - 2], parts[n - 3]
-    if not (seq[4:].isdigit() and ed[3:].isdigit()):
+    # crates/usnm-core/src/ids.rs: ed and seq in 1..=65535 (a few archives hold a
+    # seq-0 page, which curation skips too), a real calendar date, lowercase LCCN.
+    ed, seq = number(parts[n - 3], "ed-"), number(parts[n - 2], "seq-")
+    if ed is None or seq is None:
         return None
     if DATE.match(parts[n - 4]):
         date, lccn = parts[n - 4], parts[n - 5]
@@ -221,7 +224,18 @@ def page_from_path(path: str) -> tuple[str, str] | None:
         date, lccn = "-".join(parts[n - 6:n - 3]), parts[n - 7]
     else:
         return None
-    return f"{lccn}/{date}/ed-{int(ed[3:])}/seq-{int(seq[4:])}", parts[-1]
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return None
+    if not LCCN.match(lccn):
+        return None
+    return f"{lccn}/{date}/ed-{ed}/seq-{seq}", parts[-1]
+
+
+def number(part: str, prefix: str) -> int | None:
+    v = part[len(prefix):] if part.startswith(prefix) else ""
+    return int(v) if v.isdigit() and 0 < int(v) <= 65535 else None
 
 
 def missing_pages(names, jpn: set[str], batch: str) -> list[dict]:
