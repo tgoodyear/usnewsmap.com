@@ -143,6 +143,12 @@ pub const RUN_BATCHES_FILE: &str = "batches.json";
 /// written before it existed don't have it.
 pub const TITLE_PAGES_FILE: &str = "title_pages.json";
 
+/// The file in a version's reference snapshot with the copies of duplicated
+/// pages that searches must not see: `[{doc_id, batch}]`, the losing copies
+/// an earlier index of the version holds (04 §4.7). Snapshots written before
+/// it existed don't have it.
+pub const DUPLICATES_FILE: &str = "duplicates.json";
+
 /// The file in a version's reference snapshot with pages published per place
 /// and day for each distinct set of title languages ([`LanguageBaselines`]),
 /// so a language filter keeps exact baselines. Snapshots written before it
@@ -194,7 +200,12 @@ pub struct IndexRun {
     pub batches: Option<Vec<RunBatch>>,
     pub status: RunStatus,
     pub docs: u64,
+    /// Distinct pages in the version: a page in two batches counts once.
     pub pages: u64,
+    /// Copies of pages that also ship in another batch of the version, left
+    /// out of `pages` (04 §4.7). Runs before this was recorded leave it out.
+    #[serde(default)]
+    pub duplicate_pages: u64,
     pub started_at: DateTime<Utc>,
     #[serde(default)]
     pub published_at: Option<DateTime<Utc>>,

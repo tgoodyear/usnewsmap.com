@@ -315,17 +315,31 @@ export function steps(s: Status, now: number): Step[] {
   return [download, titles, index, live];
 }
 
-/** "Searchable now": published pages against every processed page. */
+/**
+ * "Searchable now": published pages against every processed page. The share
+ * compares downloaded copies on both sides: the backfill counts every copy of
+ * a page that ships in two batches, and the published version left out
+ * `duplicate_pages` such copies, so those are added back to its pages.
+ */
 export function headline(s: Status): { text: string; sub: string; share: number | null } {
   const p = s.published;
+  const duplicates = p.duplicate_pages ?? 0;
+  const copies = p.pages + duplicates;
   const total = s.backfill.available ? s.backfill.pages : 0;
   const years = `${p.bounds.from.slice(0, 4)} to ${p.bounds.to.slice(0, 4)}`;
-  const sub = `From ${count(p.titles)} ${p.titles === 1 ? "newspaper" : "newspapers"}, dated ${years}.`;
-  if (total > 0 && total >= p.pages) {
+  const sub =
+    `From ${count(p.titles)} ${p.titles === 1 ? "newspaper" : "newspapers"}, dated ${years}.` +
+    (duplicates > 0
+      ? ` ${count(duplicates)} of the downloaded pages ${duplicates === 1 ? "is a copy" : "are copies"} of pages in another batch, searchable once.`
+      : "");
+  if (total > 0 && total >= copies) {
     return {
-      text: `Searchable now: ${count(p.pages)} of ${count(total)} downloaded pages (${pct(p.pages, total)})`,
+      text:
+        duplicates > 0
+          ? `Searchable now: ${count(p.pages)} pages, from ${count(copies)} of ${count(total)} downloaded pages (${pct(copies, total)})`
+          : `Searchable now: ${count(p.pages)} of ${count(total)} downloaded pages (${pct(p.pages, total)})`,
       sub,
-      share: p.pages / total,
+      share: copies / total,
     };
   }
   return { text: `Searchable now: ${count(p.pages)} pages`, sub, share: null };

@@ -318,6 +318,22 @@ describe("headline", () => {
     expect(h.sub).toBe("From 1,217 newspapers, dated 1751 to 1963.");
   });
 
+  it("compares copies with copies when pages ship in two batches", () => {
+    const s = status({});
+    s.published.duplicate_pages = 20;
+    const h = headline(s);
+    expect(h.text).toBe(
+      "Searchable now: 6,557,925 pages, from 6,557,945 of 23,794,152 downloaded pages (28%)",
+    );
+    expect(h.sub).toBe(
+      "From 1,217 newspapers, dated 1751 to 1963. 20 of the downloaded pages are copies of pages in another batch, searchable once.",
+    );
+    expect(h.share).toBe(6_557_945 / 23_794_152);
+    // Everything published: the share reaches 1 although 20 copies aren't documents.
+    if (s.backfill.available) s.backfill.pages = 6_557_945;
+    expect(headline(s).share).toBe(1);
+  });
+
   it("without the pipeline state, only the searchable pages", () => {
     const s = status({});
     s.backfill = { available: false, reason: "none" };

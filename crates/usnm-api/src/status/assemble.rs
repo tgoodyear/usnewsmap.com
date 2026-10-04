@@ -67,6 +67,9 @@ pub struct Published {
     pub next_release_full: bool,
     /// Batches the version was built from, when its snapshot records them.
     pub batches: Option<usize>,
+    /// Copies of pages that also ship in another batch, counted once in
+    /// `pages` (04 §4.7); `None` when the snapshot doesn't record them.
+    pub duplicate_pages: Option<u64>,
     /// Pages by state or territory, most first.
     pub by_state: Vec<StatePages>,
     pub by_language: ByLanguage,
@@ -221,6 +224,7 @@ pub fn published(rd: &RefData) -> Published {
         max_deltas: MAX_DELTAS,
         next_release_full: deltas >= MAX_DELTAS,
         batches: rd.published_batches.as_ref().map(HashMap::len),
+        duplicate_pages: rd.duplicate_pages,
         by_state: by_state(rd),
         by_language: by_language(rd),
     }
@@ -351,6 +355,7 @@ pub struct Run {
     pub batches: Option<u64>,
     pub docs: u64,
     pub pages: u64,
+    pub duplicate_pages: u64,
     pub started_at: DateTime<Utc>,
     pub published_at: Option<DateTime<Utc>>,
     pub duration_secs: Option<i64>,
@@ -618,6 +623,7 @@ pub fn indexing(at: DateTime<Utc>, s: &Summary) -> Indexing {
                 batches: r.batches(),
                 docs: r.docs,
                 pages: r.pages,
+                duplicate_pages: r.duplicate_pages,
                 started_at: r.started_at,
                 published_at: r.published_at,
                 duration_secs: r.published_at.map(|p| (p - r.started_at).num_seconds()),

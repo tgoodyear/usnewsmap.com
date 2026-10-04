@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
 use usnm_state::state::{
-    LanguageBaselines, LanguageSet, LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
+    LanguageBaselines, LanguageSet, DUPLICATES_FILE, LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
 };
 use usnm_store::{is_safe_segment, ObjectStore};
 
@@ -84,6 +84,19 @@ pub struct RefData {
     /// The batches (and their versions) the version was built from, from the
     /// snapshot manifest; `None` for snapshots that don't record them.
     pub published_batches: Option<HashMap<String, u16>>,
+    /// Copies of pages that also ship in another batch, left out of `pages`
+    /// (04 §4.7); `None` for snapshots that don't record them.
+    pub duplicate_pages: Option<u64>,
+    /// Copies of duplicated pages that an index of the version holds but
+    /// searches must not see, from the snapshot's `duplicates.json`.
+    pub hidden: Vec<HiddenCopy>,
+}
+
+/// One copy of a page to hide: the document `doc_id` from `batch`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HiddenCopy {
+    pub doc_id: String,
+    pub batch: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +106,8 @@ struct Manifest {
     files: Vec<ManifestFile>,
     #[serde(default)]
     built_from: Option<BuiltFrom>,
+    #[serde(default)]
+    duplicate_pages: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,15 +161,19 @@ impl RefData {
             raw.push(fetch_checked(store, dir, entry).await?);
         }
         // Optional: only snapshots whose manifest lists it have it.
-        let title_pages = match manifest.files.iter().find(|f| f.path == TITLE_PAGES_FILE) {
+        let optional = |name: &str| manifest.files.iter().find(|f| f.path == name);
+        let title_pages = match optional(TITLE_PAGES_FILE) {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
         };
-        let language_baselines = match manifest
-            .files
-            .iter()
-            .find(|f| f.path == LANGUAGE_BASELINES_FILE)
-        {
+        let hidden = match optional(DUPLICATES_FILE) {
+            Some(entry) => {
+                let (path, bytes) = fetch_checked(store, dir, entry).await?;
+                parse(&path, &bytes)?
+            }
+            None => Vec::new(),
+        };
+        let language_baselines = match optional(LANGUAGE_BASELINES_FILE) {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
         };
@@ -182,6 +201,8 @@ impl RefData {
         .await
         .map_err(|e| e.to_string())??;
         refdata.published_batches = published_batches;
+        refdata.duplicate_pages = manifest.duplicate_pages;
+        refdata.hidden = hidden;
         Ok(refdata)
     }
 
@@ -216,6 +237,8 @@ impl RefData {
             place_pages,
             title_pages: None,
             published_batches: None,
+            duplicate_pages: None,
+            hidden: Vec::new(),
         })
     }
 
@@ -224,7 +247,11 @@ impl RefData {
     }
 
     pub fn index_set(&self) -> IndexSet {
-        IndexSet(self.current.indexes.clone())
+        IndexSet::new(self.current.indexes.clone()).hiding(
+            self.hidden
+                .iter()
+                .map(|h| (h.doc_id.clone(), h.batch.clone())),
+        )
     }
 
     pub fn bounds(&self) -> (NaiveDate, NaiveDate) {

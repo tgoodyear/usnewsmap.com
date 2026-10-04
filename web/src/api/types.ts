@@ -219,6 +219,8 @@ export interface IndexRun {
   started_at: string;
   published_at: string | null;
   duration_secs: number | null;
+  /** Pages also in another batch, left out of `pages` (04 §4.7). Absent from older APIs. */
+  duplicate_pages?: number;
   previous_version: string | null;
   error: string | null;
 }
@@ -355,6 +357,11 @@ export interface Status {
     max_deltas: number;
     next_release_full: boolean;
     batches: number | null;
+    /**
+     * Copies of pages that also ship in another batch, counted once in
+     * `pages`; null when the snapshot doesn't record them. Absent from older APIs.
+     */
+    duplicate_pages?: number | null;
     /** Added after schema 1 shipped; older APIs leave them out. */
     by_state?: StatePages[];
     by_language?: ByLanguage;

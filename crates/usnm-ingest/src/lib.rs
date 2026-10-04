@@ -9,6 +9,7 @@ pub mod activity;
 pub mod archive;
 pub mod catalog;
 pub mod curated;
+pub mod dedup;
 pub mod heartbeat;
 pub mod merges;
 pub mod progress;

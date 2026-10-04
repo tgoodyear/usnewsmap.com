@@ -150,9 +150,29 @@ pub fn filter_clauses(filters: &Filters) -> Vec<String> {
     out
 }
 
-fn full_query(node: &Node, filters: &Filters, extra: Vec<String>) -> Result<String, SearchError> {
+/// Clauses that hide the copies of duplicated pages `indexes` names, one per
+/// batch: that batch's documents with those ids (04 §4.7). Doc ids and batch
+/// names are our own (letters, digits, `_` and `-`), so they need no escaping.
+pub fn hidden_clauses(indexes: &IndexSet) -> Vec<String> {
+    indexes
+        .hidden()
+        .iter()
+        .map(|(batch, ids)| {
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            format!("NOT (batch:{batch} AND doc_id:IN [{}])", ids.join(" "))
+        })
+        .collect()
+}
+
+fn full_query(
+    node: &Node,
+    filters: &Filters,
+    indexes: &IndexSet,
+    extra: Vec<String>,
+) -> Result<String, SearchError> {
     let mut parts = vec![query_string(node)?];
     parts.extend(filter_clauses(filters));
+    parts.extend(hidden_clauses(indexes));
     parts.extend(extra);
     Ok(parts.join(" AND "))
 }
@@ -172,10 +192,11 @@ fn histogram(spec: &BucketSpec, min_doc_count: u64) -> Value {
 pub fn summary_request(
     node: &Node,
     filters: &Filters,
+    indexes: &IndexSet,
     spec: &BucketSpec,
 ) -> Result<Value, SearchError> {
     Ok(json!({
-        "query": full_query(node, filters, Vec::new())?,
+        "query": full_query(node, filters, indexes, Vec::new())?,
         "max_hits": 0,
         "aggs": {
             "series": histogram(spec, 1),
@@ -195,6 +216,7 @@ pub fn summary_request(
 pub fn cube_request(
     node: &Node,
     filters: &Filters,
+    indexes: &IndexSet,
     spec: &BucketSpec,
     shards: &[u8],
 ) -> Result<Value, SearchError> {
@@ -204,7 +226,7 @@ pub fn cube_request(
         extra.push(format!("place_shard:IN [{}]", list.join(" ")));
     }
     Ok(json!({
-        "query": full_query(node, filters, extra)?,
+        "query": full_query(node, filters, indexes, extra)?,
         "max_hits": 0,
         "aggs": {
             "places": {
@@ -218,6 +240,7 @@ pub fn cube_request(
 pub fn hits_request(
     node: &Node,
     filters: &Filters,
+    indexes: &IndexSet,
     page: &HitsQuery,
 ) -> Result<Value, SearchError> {
     let mut extra = Vec::new();
@@ -228,7 +251,7 @@ pub fn hits_request(
         extra.push(format!("lccn:{l}"));
     }
     Ok(json!({
-        "query": full_query(node, filters, extra)?,
+        "query": full_query(node, filters, indexes, extra)?,
         "max_hits": page.limit,
         "start_offset": page.offset,
         "sort_by": sort_by(page.sort),
@@ -473,7 +496,7 @@ impl SearchBackend for QuickwitBackend {
         spec: &BucketSpec,
     ) -> Result<Summary, SearchError> {
         let resp = self
-            .search(indexes, &summary_request(query, filters, spec)?)
+            .search(indexes, &summary_request(query, filters, indexes, spec)?)
             .await?;
         parse_summary(&resp, spec)
     }
@@ -487,7 +510,10 @@ impl SearchBackend for QuickwitBackend {
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError> {
         let resp = self
-            .search(indexes, &cube_request(query, filters, spec, shards)?)
+            .search(
+                indexes,
+                &cube_request(query, filters, indexes, spec, shards)?,
+            )
             .await?;
         parse_cube(&resp, spec)
     }
@@ -500,7 +526,7 @@ impl SearchBackend for QuickwitBackend {
         page: &HitsQuery,
     ) -> Result<HitsPage, SearchError> {
         let resp = self
-            .search(indexes, &hits_request(query, filters, page)?)
+            .search(indexes, &hits_request(query, filters, indexes, page)?)
             .await?;
         parse_hits(resp)
     }
@@ -559,6 +585,10 @@ mod tests {
         }
     }
 
+    fn none() -> IndexSet {
+        IndexSet::new(vec!["i".into()])
+    }
+
     /// Answers every request with `status` and an empty JSON object.
     async fn stub(status: u16) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -583,7 +613,7 @@ mod tests {
         for (status, rejected) in [(400, true), (422, true), (500, false), (503, false)] {
             let qw = QuickwitBackend::new(&stub(status).await, Duration::from_secs(5)).unwrap();
             let err = qw
-                .search(&IndexSet(vec!["i".into()]), &serde_json::json!({}))
+                .search(&IndexSet::new(vec!["i".into()]), &serde_json::json!({}))
                 .await
                 .unwrap_err();
             assert_eq!(
@@ -612,7 +642,7 @@ mod tests {
         let q = parse("gold").unwrap();
         let spec = BucketSpec::new(BucketUnit::Week, d("1896-06-01"), d("1896-12-31"));
         let origin = spec.histogram_field().origin;
-        let s = summary_request(&q, &filters(), &spec).unwrap();
+        let s = summary_request(&q, &filters(), &none(), &spec).unwrap();
         assert_eq!(
             s["query"],
             format!(
@@ -627,12 +657,12 @@ mod tests {
         assert_eq!(s["aggs"]["last"]["max"]["field"], "day");
         assert_eq!(s["aggs"]["places"]["aggs"]["first"]["min"]["field"], "day");
         assert_eq!(s["aggs"]["places"]["aggs"]["last"]["max"]["field"], "day");
-        let c = cube_request(&q, &filters(), &spec, &[0, 5]).unwrap();
+        let c = cube_request(&q, &filters(), &none(), &spec, &[0, 5]).unwrap();
         assert!(c["query"]
             .as_str()
             .unwrap()
             .ends_with("AND place_shard:IN [0 5]"));
-        let all = cube_request(&q, &filters(), &spec, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
+        let all = cube_request(&q, &filters(), &none(), &spec, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
         assert!(!all["query"].as_str().unwrap().contains("place_shard"));
     }
 
@@ -645,14 +675,14 @@ mod tests {
             offset: 50,
             limit: 25,
         };
-        let r = hits_request(&parse("gold").unwrap(), &filters(), &page).unwrap();
+        let r = hits_request(&parse("gold").unwrap(), &filters(), &none(), &page).unwrap();
         // A leading `-` is ascending in Quickwit 0.9 (S-2): oldest first.
         assert_eq!(r["sort_by"], "-day,-sort_key");
         let newest = HitsQuery {
             sort: HitSort::Newest,
             ..page.clone()
         };
-        let r2 = hits_request(&parse("gold").unwrap(), &filters(), &newest).unwrap();
+        let r2 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &newest).unwrap();
         assert_eq!(r2["sort_by"], "day,sort_key");
         assert_eq!(r["snippet_fields"], "text");
         assert_eq!(r["start_offset"], 50);

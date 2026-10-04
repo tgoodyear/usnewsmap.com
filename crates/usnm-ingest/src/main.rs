@@ -144,6 +144,10 @@ enum Command {
     /// Rebuild `catalog/titles.json` and `places.json` from the cached records
     /// and `overrides/places.json` (no network).
     Geocode,
+    /// Report pages that ship in more than one curated batch (04 §4.7):
+    /// JSON on stdout. Reads every batch's counts and the parts of the
+    /// batches that share title-days; changes nothing.
+    Duplicates,
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
         /// As for `enqueue`: LoC's listing unless another list is given.
@@ -467,6 +471,7 @@ impl Command {
             Command::Release { .. } => "release",
             Command::TitlesSync { .. } => "titles-sync",
             Command::Geocode => "geocode",
+            Command::Duplicates => "duplicates",
             Command::Run { .. } => "run",
         }
     }
@@ -485,7 +490,10 @@ fn first_step(command: &Command) -> Option<Step> {
         Command::Run { .. } => Some(Step::Listing),
         Command::TitlesSync { .. } => Some(Step::Titles),
         Command::Release { .. } => Some(Step::Indexing),
-        Command::Enqueue { .. } | Command::Curate { .. } | Command::Geocode => None,
+        Command::Enqueue { .. }
+        | Command::Curate { .. }
+        | Command::Geocode
+        | Command::Duplicates => None,
     }
 }
 
@@ -579,6 +587,12 @@ async fn command(
         Command::Geocode => geocode(usnm_store::open(&cli.stores.reference)?.as_ref())
             .await
             .map(|()| None),
+        Command::Duplicates => {
+            let curated = usnm_store::open(&cli.stores.curated)?;
+            let report = usnm_ingest::dedup::report(&state, curated.as_ref()).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(None)
+        }
         Command::Curate {
             max_batches,
             enqueue: first,

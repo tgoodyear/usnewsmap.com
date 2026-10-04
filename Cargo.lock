@@ -2534,6 +2534,7 @@ dependencies = [
  "tracing",
  "usnm-api",
  "usnm-core",
+ "usnm-search",
  "usnm-state",
  "usnm-store",
  "usnm-telemetry",

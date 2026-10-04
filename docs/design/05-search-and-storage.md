@@ -263,7 +263,7 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 | 4 months – 3 years | week | 157 |
 | ≤ 4 months | day | 122 |
 
-**Queries issued for Q1** (Quickwit; AI Search in the growth profile issues the equivalent facet requests):
+**Queries issued for Q1** (Quickwit; AI Search in the growth profile issues the equivalent facet requests). Every query, the hits queries included, also excludes the copies of duplicated pages the version's `duplicates.json` lists (04 §4.7), one clause per batch: `NOT (batch:{batch} AND doc_id:IN [{ids}])`. The list is empty after a full release.
 
 1. **Summary query** (always one call): `histogram(bucket_field)` for the national series, `min(day)` and `max(day)` for the first and last matching day, plus `terms(place_id, size = 5,000) → min(day), max(day)` for the first and last appearance per place. This also yields **P**, the number of places with at least one hit. It needs at most ~3,000 + 360 buckets.
 2. **Cube query:** `terms(place_id) → histogram(bucket_field, interval)` gives the sparse cube `[place][bucket] = pages`. Its upper bound is **P × B** buckets (B = number of time buckets).
