@@ -12,6 +12,10 @@
 set -euo pipefail
 cd web
 step=${1:-all}
+case "$step" in
+  build | test | all) ;;
+  *) echo "usage: web-e2e.sh [build|test]" >&2; exit 2 ;;
+esac
 if [ "$step" = build ] || [ "$step" = all ]; then
   npm ci
   npx playwright install --with-deps chromium
