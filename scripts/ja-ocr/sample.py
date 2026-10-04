@@ -79,7 +79,8 @@ def issues(lccn: str) -> list[str]:
     return sorted(set(urls))
 
 
-WORD = re.compile(r"^[A-Za-z][a-z]{2,}$")
+# A word: Capitalized or lower case, or ALL CAPS (headlines); mixed case is OCR noise.
+WORD = re.compile(r"^(?:[A-Z]?[a-z]{2,}|[A-Z]{3,15})$")
 
 
 def classify(alto: str) -> tuple[str, int, float]:
@@ -135,7 +136,8 @@ def main() -> None:
             files = (item.get("resources") or [{}])[0].get("files") or []
             m = re.search(r"/(\d{4}-\d\d-\d\d)/", url)
             date = m.group(1) if m else ""
-            found = 0
+            issue_prefix = f"{lccn}_{date}_{url.rstrip('/').split('/')[-1]}_seq-"
+            found = sum(1 for d in done if d.startswith(issue_prefix))
             for seq, page in enumerate(files, 1):
                 if found >= a.pages_per_issue or count >= a.pages:
                     break

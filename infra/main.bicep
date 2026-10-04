@@ -277,7 +277,8 @@ module ocrService 'modules/ocr.bicep' = if (ocr) {
     name: 'di-usnm-${env}-${suffix}'
     sku: ocrSku
     workspaceId: monitoring.outputs.workspaceId
-    users: union(filter(map(split(ocrUsers, ','), u => trim(u)), u => !empty(u)), [identities.outputs.ingestPrincipalId])
+    users: filter(map(split(ocrUsers, ','), u => trim(u)), u => !empty(u))
+    identities: [identities.outputs.ingestPrincipalId]
   }
 }
 

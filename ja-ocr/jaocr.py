@@ -52,7 +52,8 @@ UA = "usnewsmap-ja-ocr/1.0 (+https://usnewsmap.com)"
 OCR_SOURCE = "usnm-ndlocr-lite"
 PREFIX = "ocr-ja"
 MIN_PAGE_CHARS = 20  # crates/usnm-core/src/text.rs
-WORDLIKE = re.compile(r"^[A-Za-z][a-z]{2,}$")
+# A word: Capitalized or lower case, or ALL CAPS (headlines); mixed case is OCR noise.
+WORDLIKE = re.compile(r"^(?:[A-Z]?[a-z]{2,}|[A-Z]{3,15})$")
 PAGE_COLUMNS = ["doc_id", "page_key", "lccn", "date", "edition", "seq", "batch", "text_status", "text"]
 
 

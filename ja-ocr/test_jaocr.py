@@ -28,6 +28,10 @@ class Classify(unittest.TestCase):
         text = "The relocation center held a meeting about the new school for the children " * 3
         self.assertIsNone(jaocr.needs_ocr("ok", text))
 
+    def test_capitals_are_words(self):
+        text = "WAR NEWS TODAY ALLIED ARMIES CROSS THE RHINE " * 3
+        self.assertIsNone(jaocr.needs_ocr("ok", text))
+
     def test_garbled_latin_is_japanese(self):
         text = "Br H rJjr Jjw-Ini l iiiTTTTiwtiawyM d j.. s,y fr r vtT r i j TtTrHPPIIHHkVHHVBL"
         self.assertEqual(jaocr.needs_ocr("ok", text), "garbled")

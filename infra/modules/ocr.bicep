@@ -11,8 +11,10 @@ param name string
 @allowed(['F0', 'S0'])
 param sku string = 'F0'
 param workspaceId string
-@description('Entra object ids (people, groups or identities) that may call the service.')
+@description('Entra object ids of people or groups that may call the service.')
 param users array = []
+@description('Managed identities (service principals) that may call the service.')
+param identities array = []
 
 // Cognitive Services User: call the data-plane APIs, no keys or management.
 var cognitiveServicesUser = 'a97b65f3-24c7-4388-baec-2e87135dc908'
@@ -38,6 +40,20 @@ resource access 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
     name: guid(account.id, user, cognitiveServicesUser)
     properties: {
       principalId: user
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesUser)
+    }
+  }
+]
+
+// principalType set, so a just-created identity isn't looked up before it
+// has propagated (PrincipalNotFound).
+resource identityAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for id in identities: {
+    scope: account
+    name: guid(account.id, id, cognitiveServicesUser)
+    properties: {
+      principalId: id
+      principalType: 'ServicePrincipal'
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesUser)
     }
   }

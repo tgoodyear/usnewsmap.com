@@ -97,7 +97,10 @@ def azure(endpoint: str, img: Path, out: Path) -> None:
         "Authorization": f"Bearer {azure_token()}", "Content-Type": "application/octet-stream"})
     with open_retrying(req, 120) as r:
         op = r.headers["Operation-Location"]
+    deadline = time.monotonic() + 300
     while True:
+        if time.monotonic() > deadline:
+            raise RuntimeError("still running after 5 minutes")
         time.sleep(2)
         poll = urllib.request.Request(op, headers={"Authorization": f"Bearer {azure_token()}"})
         with open_retrying(poll, 60) as r:
@@ -119,6 +122,10 @@ def main() -> None:
     ap.add_argument("--tessdata", type=Path)
     ap.add_argument("--lang", default="jpn_vert")
     a = ap.parse_args()
+    if a.engine == "azure" and not a.endpoint:
+        ap.error("--engine azure needs --endpoint")
+    if a.engine == "tesseract" and not a.tessdata:
+        ap.error("--engine tesseract needs --tessdata")
     name = a.engine if a.engine != "tesseract" else f"tesseract-{a.lang}"
     out_dir = a.sample / "out" / name
     out_dir.mkdir(parents=True, exist_ok=True)
