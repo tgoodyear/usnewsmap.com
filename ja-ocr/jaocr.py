@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -266,7 +267,7 @@ def list_archive(url: str, pacer: "Pacer") -> list[str]:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=600) as r, tarfile.open(fileobj=r, mode="r|bz2") as tar:
                 return [m.name for m in tar]
-        except (urllib.error.URLError, TimeoutError, ConnectionError, EOFError, tarfile.TarError) as e:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, EOFError, tarfile.TarError) as e:
             log("retrying archive", url=url, error=str(e)[:200])
             time.sleep(120 * (attempt + 1))
     raise RuntimeError(f"giving up on {url}")
@@ -344,7 +345,9 @@ def fetch(url: str, pacer: Pacer, attempts: int = 5) -> bytes:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=180) as r:
                 return r.read()
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        # A dropped connection mid-body is http.client.IncompleteRead (an
+        # HTTPException, not a URLError); sockets raise OSError.
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
             if isinstance(e, urllib.error.HTTPError) and e.code == 404:
                 raise
             wait = 60 * (i + 1)
@@ -488,60 +491,65 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
             break
         if not claim(curated, f"{TARGETS}/{issue}", owner, stale):
             continue
-        pages = by_issue[issue]
-        p0 = pages[0]
-        item_url = f"https://www.loc.gov/item/{p0['lccn']}/{p0['date']}/ed-{p0['edition']}/?fo=json"
-        t0 = time.time()
         try:
-            images = page_images(json.loads(fetch(item_url, api)))
-        except urllib.error.HTTPError as e:
-            log("issue not found on loc.gov", issue=issue, status=e.code)
-            continue
-        with tempfile.TemporaryDirectory() as tmp:
-            src, out = Path(tmp, "img"), Path(tmp, "out")
-            src.mkdir()
-            urls = {}
-            for p in pages:
-                base = images.get(p["seq"])
-                if not base:
-                    log("no image for page", page=p["page_key"])
-                    continue
-                urls[p["doc_id"]] = base
-                (src / f"{p['doc_id']}.jpg").write_bytes(fetch(base + "/full/full/0/default.jpg", tile))
-            if not urls:
-                continue
-            try:
-                ndlocr(ndl_root, src, out)
-            except RuntimeError as e:
-                # No part: the issue is retried once its claim goes stale.
-                log("ocr failed", issue=issue, error=str(e)[:500])
-                continue
-            now = datetime.now(timezone.utc)
-            rows_out = []
-            for p in pages:
-                f = out / f"{p['doc_id']}.txt"
-                if p["doc_id"] not in urls or not f.exists():
-                    continue
-                text = normalize(f.read_text())
-                rows_out.append({
-                    **{k: p[k] for k in ("doc_id", "page_key", "lccn", "date", "edition", "seq", "batch", "loc_text")},
-                    "ocr_source": OCR_SOURCE, "ocr_engine": engine,
-                    "text_status": text_status(text), "text": text, "text_chars": len(text),
-                    "text_sha256": hashlib.sha256(text.encode()).digest(),
-                    "image_url": urls[p["doc_id"]], "ocred_at": now,
-                })
-        missing = [p["page_key"] for p in pages if p["doc_id"] not in {r["doc_id"] for r in rows_out}]
-        if missing:
-            # A part marks the issue done, so write one only when every target page has text;
-            # the issue is retried once its claim goes stale.
-            log("ocr incomplete; issue left for a later run", issue=issue, missing=missing[:10],
-                missing_count=len(missing))
-            continue
-        write_part(curated, part_name(curated, issue), rows_out)
-        pages_done += len(rows_out)
-        log("ocr issue done", issue=issue, pages=len(rows_out), secs=round(time.time() - t0, 1),
-            chars=sum(r["text_chars"] for r in rows_out))
+            pages_done += ocr_issue(curated, ndl_root, issue, by_issue[issue], api, tile, engine)
+        except Exception as e:  # noqa: BLE001 - one issue's failure mustn't end the replica
+            # No part: the issue is retried once its claim goes stale.
+            log("issue failed", issue=issue, error=f"{type(e).__name__}: {e}"[:500])
     log("ocr finished", pages=pages_done)
+
+
+def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pacer", tile: "Pacer",
+              engine: str) -> int:
+    """OCR one claimed issue's target pages and write its part; the number of pages written.
+
+    Writes nothing unless every page has text: the issue is then retried once its claim goes stale.
+    """
+    p0 = pages[0]
+    item_url = f"https://www.loc.gov/item/{p0['lccn']}/{p0['date']}/ed-{p0['edition']}/?fo=json"
+    t0 = time.time()
+    try:
+        images = page_images(json.loads(fetch(item_url, api)))
+    except urllib.error.HTTPError as e:
+        log("issue not found on loc.gov", issue=issue, status=e.code)
+        return 0
+    rows_out = []
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = Path(tmp, "img"), Path(tmp, "out")
+        src.mkdir()
+        urls = {}
+        for p in pages:
+            base = images.get(p["seq"])
+            if not base:
+                log("no image for page", page=p["page_key"])
+                continue
+            urls[p["doc_id"]] = base
+            (src / f"{p['doc_id']}.jpg").write_bytes(fetch(base + "/full/full/0/default.jpg", tile))
+        if urls:
+            ndlocr(ndl_root, src, out)
+        now = datetime.now(timezone.utc)
+        for p in pages:
+            f = out / f"{p['doc_id']}.txt"
+            if p["doc_id"] not in urls or not f.exists():
+                continue
+            text = normalize(f.read_text())
+            rows_out.append({
+                **{k: p[k] for k in ("doc_id", "page_key", "lccn", "date", "edition", "seq", "batch", "loc_text")},
+                "ocr_source": OCR_SOURCE, "ocr_engine": engine,
+                "text_status": text_status(text), "text": text, "text_chars": len(text),
+                "text_sha256": hashlib.sha256(text.encode()).digest(),
+                "image_url": urls[p["doc_id"]], "ocred_at": now,
+            })
+    got = {r["doc_id"] for r in rows_out}
+    missing = [p["page_key"] for p in pages if p["doc_id"] not in got]
+    if missing:
+        log("ocr incomplete; issue left for a later run", issue=issue, missing=missing[:10],
+            missing_count=len(missing))
+        return 0
+    write_part(curated, part_name(curated, issue), rows_out)
+    log("ocr issue done", issue=issue, pages=len(rows_out), secs=round(time.time() - t0, 1),
+        chars=sum(r["text_chars"] for r in rows_out))
+    return len(rows_out)
 
 
 def main() -> None:
