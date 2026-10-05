@@ -15,5 +15,7 @@ describe("activeOptions", () => {
 describe("searchKey", () => {
   it("changes with the language filter, so the form shows the URL's choice", () => {
     expect(searchKey({ ...DEFAULTS, q: "gold", lang: ["ger"] })).not.toBe(searchKey({ ...DEFAULTS, q: "gold" }));
+    // The newspaper filter is part of the search too (#121).
+    expect(searchKey({ ...DEFAULTS, q: "gold", lccn: ["sn99000001"] })).not.toBe(searchKey({ ...DEFAULTS, q: "gold" }));
   });
 });

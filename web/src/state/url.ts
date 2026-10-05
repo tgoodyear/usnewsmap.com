@@ -8,11 +8,12 @@ import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
 export type Layer = "points" | "heat";
 /**
- * What the map measures: pages with a match (`raw`) or the relative rate
- * against other places (`skew`, doc 11). The older share of pages
+ * What the map measures: pages with a match (`raw`), the relative rate
+ * against other places (`skew`, doc 11), or when each place's matches
+ * fell, by their median date (`when`, #127). The older share of pages
  * published (`norm=rel`) was removed; its permalinks open on Pages.
  */
-export type Norm = "raw" | "skew";
+export type Norm = "raw" | "skew" | "when";
 export type Tab = "map" | "table";
 
 export interface ViewState {
@@ -25,6 +26,8 @@ export interface ViewState {
   state: string[];
   /** Newspaper languages (catalog codes such as "ger"), lowercase, sorted, no repeats (07 §7.9). */
   lang: string[];
+  /** Newspapers (LCCNs), lowercase, sorted, no repeats: the API's `lccn` filter (#121). */
+  lccn: string[];
   /** Scrubber position (ISO date); empty = end of range. */
   t: string;
   /** Trailing window in buckets; null = cumulative. */
@@ -49,6 +52,7 @@ export const DEFAULTS: ViewState = {
   bucket: "auto",
   state: [],
   lang: [],
+  lccn: [],
   t: "",
   win: null,
   layer: "points",
@@ -84,6 +88,27 @@ export function parseLangs(v: string | null): string[] {
   return [...new Set(codes)].sort().slice(0, 60);
 }
 
+/**
+ * LCCNs as the API accepts them: lowercase letters and digits, sorted,
+ * without repeats, at most 60 (the API's limit for a list parameter).
+ */
+export function parseLccns(v: string | null): string[] {
+  const codes = (v ?? "")
+    .split(",")
+    .map((x) => x.trim().toLowerCase())
+    .filter((x) => /^[a-z0-9]{1,16}$/.test(x));
+  return [...new Set(codes)].sort().slice(0, 60);
+}
+
+/**
+ * The relative rate needs pages published as its baseline, which aren't
+ * kept per newspaper (06 §6.3.3): under a newspaper filter it is Pages,
+ * whether the view came from a click or a shared link.
+ */
+export function supportedNorm(norm: Norm, lccn: readonly string[]): Norm {
+  return norm === "skew" && lccn.length > 0 ? "raw" : norm;
+}
+
 function oneOf<T extends string>(v: string | null, allowed: readonly T[], d: T): T {
   return v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : d;
 }
@@ -116,12 +141,13 @@ export function parseView(search: string): ViewState {
       .map((x) => x.trim().toUpperCase())
       .filter((x) => /^[A-Z]{2}$/.test(x)),
     lang: parseLangs(s.get("lang")),
+    lccn: parseLccns(s.get("lccn")),
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
-    norm: oneOf(s.get("norm"), ["raw", "skew"] as const, DEFAULTS.norm),
+    norm: supportedNorm(oneOf(s.get("norm"), ["raw", "skew", "when"] as const, DEFAULTS.norm), parseLccns(s.get("lccn"))),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
-    sort: oneOf(s.get("sort"), ["oldest", "newest"] as const, DEFAULTS.sort),
+    sort: oneOf(s.get("sort"), ["oldest", "newest", "relevant"] as const, DEFAULTS.sort),
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),
     z: Number.isFinite(z) && z >= MIN_ZOOM && z <= MAX_ZOOM ? z : null,
     c:
@@ -144,10 +170,11 @@ export function serializeView(v: ViewState): string {
   put("bucket", v.bucket, DEFAULTS.bucket);
   put("state", v.state.join(","), "");
   put("lang", parseLangs(v.lang.join(",")).join(","), "");
+  put("lccn", parseLccns(v.lccn.join(",")).join(","), "");
   put("t", v.t, "");
   if (v.win !== null) s.set("win", String(v.win));
   put("layer", v.layer, DEFAULTS.layer);
-  put("norm", v.norm, DEFAULTS.norm);
+  put("norm", supportedNorm(v.norm, v.lccn), DEFAULTS.norm);
   put("place", v.place, "");
   put("sort", v.sort, DEFAULTS.sort);
   put("tab", v.tab, DEFAULTS.tab);
@@ -159,7 +186,17 @@ export function serializeView(v: ViewState): string {
 
 /** The search a view asks the API for (the rest of the view is display state). */
 export function searchParams(v: ViewState): SearchParams {
-  return { q: v.q, mode: v.mode, near: v.near, from: v.from, to: v.to, bucket: v.bucket, state: v.state, lang: v.lang };
+  return {
+    q: v.q,
+    mode: v.mode,
+    near: v.near,
+    from: v.from,
+    to: v.to,
+    bucket: v.bucket,
+    state: v.state,
+    lang: v.lang,
+    lccn: v.lccn,
+  };
 }
 
 function subscribe(cb: () => void): () => void {

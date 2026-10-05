@@ -3,8 +3,11 @@
 
 export type BucketUnit = "year" | "month" | "week" | "day";
 export type Mode = "phrase" | "all" | "any" | "near";
-/** Order of a `/v1/hits` list: by date, then title, edition and page (reversed for newest). */
-export type HitSort = "oldest" | "newest";
+/**
+ * Order of a `/v1/hits` list: by date, then title, edition and page (reversed
+ * for newest), or `relevant`: the pages that mention the search most first (#126).
+ */
+export type HitSort = "oldest" | "newest" | "relevant";
 
 export interface Meta {
   index_version: string;
@@ -89,6 +92,10 @@ export interface AggregateResponse {
     /** The earliest and latest matching page; null when nothing matches. Absent from older APIs. */
     first?: HitItem | null;
     last?: HitItem | null;
+    /** Newspapers with at least one matching page (#121). Absent from older APIs. */
+    papers?: number;
+    /** Days with at least one matching page (#127); an estimate on the full index. Absent from older APIs. */
+    days?: number;
   };
   series: { hits: number[]; baseline: number[] | null };
   places: {
@@ -99,6 +106,17 @@ export interface AggregateResponse {
     last_day?: number[];
   };
   cube: SparseCube & { calls: number; baseline_ref: string | null };
+  /**
+   * Matching pages per newspaper, most first, at most 500 (`total.papers`
+   * counts them all); title and place from the catalog (#121). Absent from older APIs.
+   */
+  papers?: { lccn: string[]; hits: number[]; title: (string | null)[]; place_id: (string | null)[] };
+  /**
+   * Matching pages per title language, most first. A page of a paper in
+   * several languages counts in each, so these can add up to more than
+   * `total.hits` (#121). Absent from older APIs.
+   */
+  languages?: { code: string[]; hits: number[] };
 }
 
 export interface CoverageResponse {
@@ -130,6 +148,8 @@ export interface HitsResponse {
   place: { id: string; name: string; state: string } | null;
   title: { lccn: string; name: string } | null;
   total: number;
+  /** Days with at least one of these pages, on a list's first page only (#127). Absent from older APIs. */
+  days?: number;
   items: HitItem[];
   next_cursor: string | null;
 }

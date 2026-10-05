@@ -203,12 +203,17 @@ async fn hits_pages_match_the_reference_backend() {
                 let page = HitsQuery {
                     offset,
                     limit: 7,
+                    days: offset == 0,
                     ..selector.clone()
                 };
                 let ctx = format!("{qname} / {selector:?} / offset {offset}");
                 let want = mem.hits(&set, &q, &f, &page).await.unwrap();
                 let got = qw.hits(&set, &q, &f, &page).await.expect(&ctx);
                 assert_eq!(got.total, want.total, "total: {ctx}");
+                // Distinct days (#127), on the first page only. Quickwit's is a
+                // HyperLogLog estimate, exact at the fixtures' size.
+                assert_eq!(got.days, want.days, "days: {ctx}");
+                assert_eq!(got.days.is_some(), offset == 0, "days: {ctx}");
                 let key = |h: &usnm_search::Hit| {
                     (
                         h.doc_id.clone(),
@@ -218,6 +223,8 @@ async fn hits_pages_match_the_reference_backend() {
                         h.edition,
                         h.seq,
                         h.front_page,
+                        // Both build snippets from the page text (#126).
+                        h.snippets.clone(),
                     )
                 };
                 assert_eq!(
@@ -243,6 +250,44 @@ async fn hits_pages_match_the_reference_backend() {
                 }
             }
         }
+    }
+}
+
+/// "Most mentions first" (#126): Quickwit's score weighs rare words per
+/// split, so its order isn't the reference's; the pages listed are the same.
+#[tokio::test]
+async fn relevant_hits_list_the_same_pages() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
+    let f = filters("1895-01-01", "1897-12-31");
+    for (qname, q) in queries() {
+        let mut pages = Vec::new();
+        for backend in [&mem as &dyn SearchBackend, &qw] {
+            let mut all = Vec::new();
+            let mut offset = 0;
+            loop {
+                let page = HitsQuery {
+                    sort: HitSort::Relevant,
+                    offset,
+                    limit: 500,
+                    ..Default::default()
+                };
+                let got = backend.hits(&set, &q, &f, &page).await.expect(qname);
+                let n = got.hits.len();
+                all.extend(got.hits.into_iter().map(|h| (h.doc_id, h.snippets)));
+                offset += n;
+                if n == 0 || offset as u64 >= got.total {
+                    break;
+                }
+            }
+            all.sort();
+            pages.push(all);
+        }
+        assert_eq!(pages[1], pages[0], "relevant: {qname}");
     }
 }
 

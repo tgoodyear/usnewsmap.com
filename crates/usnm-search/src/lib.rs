@@ -18,6 +18,7 @@ use usnm_core::time::BucketSpec;
 pub mod memory;
 pub mod plan;
 pub mod quickwit;
+pub mod snippet;
 
 /// One indexed page, as stored in the engine (05 §5.5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +123,13 @@ pub struct PlaceSummary {
     pub last_day: u32,
 }
 
+/// Matching pages for one value of a field: a title's LCCN or a language code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KeyCount {
+    pub key: String,
+    pub hits: u64,
+}
+
 /// Result of the summary call: national series, per-place totals, and first
 /// and last appearance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -133,6 +141,20 @@ pub struct Summary {
     /// One entry per bucket of the request's [`BucketSpec`].
     pub series: Vec<u64>,
     pub places: Vec<PlaceSummary>,
+    /// Matching pages per newspaper (LCCN), most first, ties by LCCN (#121).
+    pub papers: Vec<KeyCount>,
+    /// Matching pages per title language, most first, ties by code. A page
+    /// of a paper catalogued in several languages counts in each (#121).
+    pub languages: Vec<KeyCount>,
+    /// Days with at least one matching page (#127). Quickwit's count is a
+    /// HyperLogLog estimate, close but not always exact.
+    pub days: u64,
+}
+
+/// Sort counts most first, ties by key, so both backends agree.
+pub fn rank(mut counts: Vec<KeyCount>) -> Vec<KeyCount> {
+    counts.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| a.key.cmp(&b.key)));
+    counts
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -142,13 +164,20 @@ pub struct CubeCell {
     pub hits: u32,
 }
 
-/// Order of a hit list. Either way, pages on the same day keep the order of
+/// Order of a hit list. By date, pages on the same day keep the order of
 /// `sort_key` (title, edition, page), reversed for newest first.
+/// `Relevant` puts the pages that mention the query most first (#126): the
+/// engine's score, which with `fieldnorms: false` on `text` ignores page
+/// length. Quickwit weighs rare words per split, so it is "most mentions
+/// first", not an exact ranking. Ties go oldest first. Quickwit 0.9 sorts by at
+/// most two fields, so same-score pages on the same day come in the index's
+/// order: stable between requests, but not by `sort_key` as here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HitSort {
     #[default]
     Oldest,
     Newest,
+    Relevant,
 }
 
 impl HitSort {
@@ -156,6 +185,7 @@ impl HitSort {
         match self {
             HitSort::Oldest => "oldest",
             HitSort::Newest => "newest",
+            HitSort::Relevant => "relevant",
         }
     }
 
@@ -163,6 +193,7 @@ impl HitSort {
         match s {
             "oldest" => Some(HitSort::Oldest),
             "newest" => Some(HitSort::Newest),
+            "relevant" => Some(HitSort::Relevant),
             _ => None,
         }
     }
@@ -176,6 +207,9 @@ pub struct HitsQuery {
     pub sort: HitSort,
     pub offset: usize,
     pub limit: usize,
+    /// Also count the days the selected pages appeared on (#127): for the
+    /// first page of a list a visitor asked for, not the internal lookups.
+    pub days: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -201,6 +235,9 @@ pub struct Hit {
 pub struct HitsPage {
     pub total: u64,
     pub hits: Vec<Hit>,
+    /// Days with at least one of the selected pages (#127), when the query
+    /// asked for them (`HitsQuery::days`); an estimate from Quickwit.
+    pub days: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

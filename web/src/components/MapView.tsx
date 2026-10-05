@@ -11,7 +11,7 @@ import { MapboxOverlay } from "@deck.gl/mapbox";
 import { ScatterplotLayer } from "@deck.gl/layers";
 import { HeatmapLayer } from "@deck.gl/aggregation-layers";
 import type { Layer, Norm } from "../state/url";
-import { colorFor } from "../lib/scale";
+import { colorFor, timeColor } from "../lib/scale";
 import { ALPHA_CLEAR, ALPHA_UNCLEAR, skewColor } from "../lib/skewScale";
 import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
@@ -54,6 +54,11 @@ function skewRadius(p: MapPoint, maxExpected: number): number {
   const s = p.skew;
   if (!s || s.pages <= 0) return 0;
   return Math.max(MIN_SKEW_RADIUS_PX, MAX_RADIUS_PX * Math.sqrt(s.expected / Math.max(maxExpected, 1e-9)));
+}
+
+/** Pages: darker for more. Median date (#127): early to late on the time palette. */
+function pointColor(p: MapPoint, norm: Norm, maxValue: number): [number, number, number, number] {
+  return norm === "when" ? timeColor(p.when ?? Number.NaN) : colorFor(p.value / Math.max(maxValue, 1));
 }
 
 function radiusFor(p: MapPoint, norm: Norm, maxValue: number): number {
@@ -152,9 +157,10 @@ export default function MapView(props: Props) {
           return;
         }
         const skew = drawn.current.norm === "skew" ? p.skew : undefined;
+        const when = drawn.current.norm === "when" && p.whenLabel ? ` · median ${p.whenLabel}` : "";
         tip.textContent = skew
           ? skewSentence(`${p.name}, ${p.state}`, skew)
-          : `${p.name}, ${p.state} · ${p.value.toLocaleString()} pages`;
+          : `${p.name}, ${p.state} · ${p.value.toLocaleString()} pages${when}`;
         tip.classList.toggle("map-tooltip--wrap", skew !== undefined);
         tip.style.transform = `translate(${e.point.x + 12}px, ${e.point.y + 12}px)`;
         tip.hidden = false;
@@ -265,19 +271,13 @@ export default function MapView(props: Props) {
               lineWidthUnits: "pixels",
               // Area ∝ hits, so radius ∝ √hits (perceptually honest).
               getRadius: (p) => radiusOf(p.value, maxValue),
-              getFillColor: (p) =>
-                p.precision === "city"
-                  ? colorFor(p.value / Math.max(maxValue, 1))
-                  : [0, 0, 0, 0],
-              getLineColor: (p) =>
-                p.id === selected
-                  ? [20, 20, 20, 255]
-                  : colorFor(p.value / Math.max(maxValue, 1)),
+              getFillColor: (p) => (p.precision === "city" ? pointColor(p, norm, maxValue) : [0, 0, 0, 0]),
+              getLineColor: (p) => (p.id === selected ? [20, 20, 20, 255] : pointColor(p, norm, maxValue)),
               getLineWidth: (p) => (p.value <= 0 ? 0 : p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5),
               updateTriggers: {
                 getRadius: [maxValue],
-                getFillColor: [maxValue],
-                getLineColor: [maxValue, selected],
+                getFillColor: [maxValue, norm, points],
+                getLineColor: [maxValue, selected, norm, points],
                 getLineWidth: [selected, points],
               },
             }),

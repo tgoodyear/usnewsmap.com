@@ -1,6 +1,6 @@
 //! End-to-end tests of the API against the synthetic fixture corpus.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -429,6 +429,100 @@ async fn hits_are_sorted_marked_linked_and_paginated() {
     assert!(items.iter().all(|i| i["doc_id"] != second_first));
 }
 
+/// Newspapers and languages (#121) against a brute-force pass over the
+/// fixture files: counts, order (most first, ties by key), the catalog's
+/// names and places, and languages counted once per language a paper lists.
+#[tokio::test]
+async fn newspapers_and_languages_match_brute_force() {
+    let s = state_with(None).await;
+    let (status, _, body) = get(&s, "/v1/aggregate?q=gold&from=1895-01-01&to=1897-12-31").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let node = parse("gold").unwrap();
+    let (f, t) = (
+        day_number(chrono::NaiveDate::from_ymd_opt(1895, 1, 1).unwrap()),
+        day_number(chrono::NaiveDate::from_ymd_opt(1897, 12, 31).unwrap()),
+    );
+    let mut papers: BTreeMap<String, u64> = BTreeMap::new();
+    let mut langs: BTreeMap<String, u64> = BTreeMap::new();
+    for d in ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|i| load_docs(i))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+    {
+        *papers.entry(d.lccn.clone()).or_default() += 1;
+        for l in d.language {
+            *langs.entry(l).or_default() += 1;
+        }
+    }
+    let ranked = |m: BTreeMap<String, u64>| {
+        let mut v: Vec<(String, u64)> = m.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v
+    };
+    let column = |v: &Value| -> Vec<Value> { v.as_array().unwrap().clone() };
+    let got_papers: Vec<(String, u64)> = column(&body["papers"]["lccn"])
+        .iter()
+        .zip(column(&body["papers"]["hits"]))
+        .map(|(l, h)| (l.as_str().unwrap().to_owned(), h.as_u64().unwrap()))
+        .collect();
+    let want_papers = ranked(papers);
+    assert!(want_papers.len() > 1);
+    assert_eq!(got_papers, want_papers);
+    assert_eq!(body["total"]["papers"], want_papers.len());
+    let got_langs: Vec<(String, u64)> = column(&body["languages"]["code"])
+        .iter()
+        .zip(column(&body["languages"]["hits"]))
+        .map(|(l, h)| (l.as_str().unwrap().to_owned(), h.as_u64().unwrap()))
+        .collect();
+    let want_langs = ranked(langs);
+    // Multilingual papers count in each of their languages.
+    assert!(want_langs.iter().map(|l| l.1).sum::<u64>() > body["total"]["hits"].as_u64().unwrap());
+    assert_eq!(got_langs, want_langs);
+    // Names and places come from the catalog.
+    let titles: Vec<Value> =
+        serde_json::from_slice(&std::fs::read(data_dir().join("fixture-v1/titles.json")).unwrap())
+            .unwrap();
+    for (i, lccn) in column(&body["papers"]["lccn"]).iter().enumerate() {
+        let t = titles.iter().find(|t| t["lccn"] == *lccn).unwrap();
+        assert_eq!(body["papers"]["title"][i], t["name"]);
+        assert_eq!(body["papers"]["place_id"][i], t["place_id"]);
+    }
+}
+
+/// Distinct days (#127) against a brute-force pass: the whole search on
+/// `/v1/aggregate`, one place on the first page of `/v1/hits` (not later ones).
+#[tokio::test]
+async fn distinct_days_match_brute_force() {
+    let s = state_with(None).await;
+    let node = parse("gold").unwrap();
+    let (f, t) = (
+        day_number(chrono::NaiveDate::from_ymd_opt(1895, 1, 1).unwrap()),
+        day_number(chrono::NaiveDate::from_ymd_opt(1897, 12, 31).unwrap()),
+    );
+    let docs: Vec<PageDoc> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|i| load_docs(i))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+        .collect();
+    let days = |place: Option<&str>| {
+        docs.iter()
+            .filter(|d| place.is_none_or(|p| d.place_id == p))
+            .map(|d| d.day)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    };
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold&from=1895-01-01&to=1897-12-31").await;
+    assert!(days(None) > 1);
+    assert_eq!(body["total"]["days"], days(None));
+    let base = "/v1/hits?q=gold&from=1895-01-01&to=1897-12-31&place=P00001&limit=5";
+    let (status, _, first) = get(&s, base).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["days"], days(Some("P00001")));
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let (_, _, next) = get(&s, &format!("{base}&cursor={cursor}")).await;
+    assert!(next.get("days").is_none(), "{next}");
+}
+
 /// The newest-first list is the oldest-first list reversed, including the
 /// order of pages on the same day. `sort=oldest` is the default and shares its
 /// canonical URL; anything else is refused.
@@ -465,6 +559,12 @@ async fn hits_sort_oldest_or_newest() {
     let mut reversed = oldest.clone();
     reversed.reverse();
     assert_eq!(all("&sort=newest").await, reversed);
+    // Most mentions first (#126): the same pages in another order.
+    let mut relevant = all("&sort=relevant").await;
+    relevant.sort();
+    let mut sorted = oldest.clone();
+    sorted.sort();
+    assert_eq!(relevant, sorted);
 
     let (_, plain, _) = get(&s, base).await;
     let (_, explicit, _) = get(&s, &format!("{base}&sort=oldest")).await;
@@ -474,6 +574,8 @@ async fn hits_sort_oldest_or_newest() {
         header_str(&plain, header::CONTENT_LOCATION)
     );
     assert!(header_str(&newest, header::CONTENT_LOCATION).contains("&sort=newest"));
+    let (_, relevant, _) = get(&s, &format!("{base}&sort=relevant")).await;
+    assert!(header_str(&relevant, header::CONTENT_LOCATION).contains("&sort=relevant"));
 
     let (status, _, body) = get(&s, &format!("{base}&sort=sideways")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -761,7 +863,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f3")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f4")) else {
         return Vec::new();
     };
     entries
@@ -792,7 +894,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f3/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f4/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),

@@ -24,7 +24,7 @@ const row = (id: string, s: SkewInfo): SkewRow => ({ id, name: `Place ${id}`, st
 describe("MeasureToggle", () => {
   afterEach(cleanup);
 
-  it("offers pages and relative rate, and reports the choice", () => {
+  it("offers pages, relative rate and median date, and reports the choice", () => {
     const onChange = vi.fn();
     render(<MeasureToggle norm="raw" onChange={onChange} />);
     const group = screen.getByRole("group", { name: "Measure" });
@@ -32,9 +32,22 @@ describe("MeasureToggle", () => {
     expect(buttons.map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([
       ["Pages", "true"],
       ["Relative rate", "false"],
+      ["Median date", "false"],
     ]);
     fireEvent.click(screen.getByRole("button", { name: "Relative rate" }));
     expect(onChange).toHaveBeenCalledWith("skew");
+    fireEvent.click(screen.getByRole("button", { name: "Median date" }));
+    expect(onChange).toHaveBeenCalledWith("when");
+  });
+
+  it("disables a measure the search can't show, and says why", () => {
+    const onChange = vi.fn();
+    render(<MeasureToggle norm="raw" onChange={onChange} unavailable={{ skew: "Not for one newspaper." }} />);
+    const button = screen.getByRole("button", { name: "Relative rate" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(button.getAttribute("title")).toBe("Not for one newspaper.");
+    fireEvent.click(button);
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("has no share of pages button", () => {

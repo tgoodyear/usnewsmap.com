@@ -29,7 +29,16 @@ export function activeOptions(view: Pick<ViewState, "mode" | "from" | "to" | "st
 
 /** Identity of the search in the URL; remount the form when it changes. */
 export function searchKey(view: ViewState): string {
-  return [view.q, view.mode, view.near, view.from, view.to, view.state.join(), view.lang.join()].join("|");
+  return [
+    view.q,
+    view.mode,
+    view.near,
+    view.from,
+    view.to,
+    view.state.join(),
+    view.lang.join(),
+    view.lccn.join(),
+  ].join("|");
 }
 
 export function SearchBar({ view, meta, onSearch }: Props) {

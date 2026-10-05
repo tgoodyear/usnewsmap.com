@@ -3,16 +3,18 @@ import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
-import { alignCube, prefixSums, relative, windowValues } from "./engine/cube";
+import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./engine/cube";
 import { EXAMPLE_ORDER, EXAMPLES_SHOWN, examplesAt } from "./examples";
 import { bucketIndex, bucketLabel, bucketStart } from "./lib/time";
-import { cssColor } from "./lib/scale";
+import { cssColor, cssTimeColor } from "./lib/scale";
 import { searchParams, serializeView, useView, type ViewState } from "./state/url";
 import { SearchBar, searchKey } from "./components/SearchBar";
 import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
 import { PlaceTable } from "./components/PlaceTable";
+import { NewspaperTable, paperRows } from "./components/NewspaperTable";
+import { languageMix } from "./lib/languages";
 import { Mentions } from "./components/Mentions";
 import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
@@ -209,9 +211,17 @@ export function App() {
 
   // Relative frequency needs the coverage cube; until it arrives (or if it
   // fails) it is unknown (NaN), never 0.
-  const points: (MapPoint & { firstDay: number; lastDay: number })[] = useMemo(() => {
+  const points: (MapPoint & { firstDay: number; lastDay: number; middle: string })[] = useMemo(() => {
     if (!data || !hitSums) return [];
     const hits = windowValues(hitSums, t, view.win);
+    // When each place's matches fell (#127): the median and middle half of
+    // its pages in the window, by bucket.
+    const median = windowQuantile(hitSums, t, view.win, 0.5);
+    const q1 = windowQuantile(hitSums, t, view.win, 0.25);
+    const q3 = windowQuantile(hitSums, t, view.win, 0.75);
+    const label = (b: number) =>
+      Number.isNaN(b) ? "" : bucketLabel(data.bucket.unit, bucketStart(data.bucket.unit, data.bucket.from, b));
+    const span = Math.max(count - 1, 1);
     const rel = pageSums
       ? relative(hits, windowValues(pageSums, t, view.win))
       : new Float64Array(hits.length).fill(Number.NaN);
@@ -229,10 +239,13 @@ export function App() {
           rel: rel[i]!,
           firstDay: data.places.first_day[i]!,
           lastDay: data.places.last_day?.[i] ?? -1,
+          when: median[i]! / span,
+          whenLabel: label(median[i]!),
+          middle: q1[i] === q3[i] ? label(q1[i]!) : `${label(q1[i]!)} – ${label(q3[i]!)}`,
         },
       ];
     });
-  }, [data, hitSums, pageSums, features, t, view.win]);
+  }, [data, hitSums, pageSums, features, t, view.win, count]);
 
   // Scale circles to the largest value the playback will reach, so they
   // grow and shrink on one scale (cumulative: the totals; trailing: the
@@ -273,6 +286,38 @@ export function App() {
     return f ? `${f.properties.name}, ${f.properties.state}` : id;
   };
 
+  const papers = useMemo(
+    () =>
+      paperRows(data?.papers, (id) => {
+        const f = features.get(id);
+        return f ? `${f.properties.name}, ${f.properties.state}` : id;
+      }),
+    [data?.papers, features],
+  );
+  // Under a newspaper filter the view shows Pages, not the relative rate (supportedNorm).
+  const onlyPaper = (lccn: string) => setView({ lccn: [lccn], t: "", place: "", sort: "oldest" }, true);
+  const newspapers =
+    data && data.total.hits > 0 && data.papers ? (
+      <NewspaperTable
+        rows={papers}
+        total={data.total.papers ?? papers.length}
+        onOnly={onlyPaper}
+        filename={`usnewsmap-newspapers-${version}.csv`}
+      />
+    ) : null;
+  const days = data?.total.days;
+  const mix = data
+    ? [
+        days !== undefined && data.total.hits > 0
+          ? `Matching pages on ${days.toLocaleString("en-US")} ${days === 1 ? "day" : "days"}.`
+          : null,
+        languageMix(data.languages, data.total.hits, data.total.papers),
+      ]
+        .filter(Boolean)
+        .join(" ") || null
+    : null;
+  const filteredPaper = view.lccn.length > 0 ? (papers.find((p) => view.lccn.includes(p.lccn))?.title ?? view.lccn.join(", ")) : null;
+
   const visible = points.filter((p) => p.value > 0);
   const selected = points.find((p) => p.id === view.place);
   const updating = [agg.error, places.error, coverage.error].some((e) => e instanceof VersionChangedError);
@@ -303,6 +348,11 @@ export function App() {
       places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
       states={frame ? frame.statePages.filter((p) => p > 0).length : 0}
       unit={data.bucket.unit}
+    />
+  ) : norm === "when" ? (
+    <WhenLegend
+      from={bucketLabel(data.bucket.unit, bucketStart(data.bucket.unit, data.bucket.from, 0))}
+      to={bucketLabel(data.bucket.unit, bucketStart(data.bucket.unit, data.bucket.from, Math.max(count - 1, 0)))}
     />
   ) : (
     <Legend />
@@ -428,9 +478,17 @@ export function App() {
                     </button>
                   ))}
                 </div>
-                <MeasureToggle norm={view.norm} onChange={(n) => setView({ norm: n })} />
+                <MeasureToggle
+                  norm={view.norm}
+                  onChange={(n) => setView({ norm: n })}
+                  unavailable={
+                    view.lccn.length > 0
+                      ? { skew: "Not for one newspaper: pages published aren't counted per newspaper." }
+                      : undefined
+                  }
+                />
                 {/* The relative-rate view draws points only (doc 11, 11.6). */}
-                {view.norm !== "skew" && (
+                {view.norm === "raw" && (
                   <label>
                     <span className="visually-hidden">Map layer</span>
                     <select value={view.layer} onChange={(e) => setView({ layer: e.target.value as ViewState["layer"] })}>
@@ -448,6 +506,19 @@ export function App() {
                 <ShareButton />
               </div>
 
+              {mix && <p className="mix">{mix}</p>}
+              {filteredPaper && (
+                <p className="notice" role="status">
+                  Only pages from <cite>{filteredPaper}</cite>.{" "}
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => setView({ lccn: [], t: "", place: "", sort: "oldest" }, true)}
+                  >
+                    Show every newspaper
+                  </button>
+                </p>
+              )}
               {/* Not while the previous search stands in: its pages would get this search's links. */}
               {data.total.hits > 0 && data.total.first && !agg.isPlaceholderData && (
                 <Mentions
@@ -481,23 +552,27 @@ export function App() {
                         <div className="tables">
                           <PlaceTable key="skew" skew rows={skewListed} onSelect={select} selected={view.place} />
                           <StateTable rows={stateRows} />
+                          {newspapers}
                         </div>
                       ) : (
-                        <PlaceTable
-                          // A new sort when the share column comes or goes, so it never sorts by a hidden column.
-                          key={data.cube.baseline_ref !== null ? "raw" : "raw-no-share"}
-                          rows={visible}
-                          onSelect={select}
-                          selected={view.place}
-                          share={data.cube.baseline_ref !== null}
-                        />
+                        <div className="tables">
+                          <PlaceTable
+                            // A new sort when the share column comes or goes, so it never sorts by a hidden column.
+                            key={data.cube.baseline_ref !== null ? "raw" : "raw-no-share"}
+                            rows={visible}
+                            onSelect={select}
+                            selected={view.place}
+                            share={data.cube.baseline_ref !== null}
+                          />
+                          {newspapers}
+                        </div>
                       )}
                     </>
                   ) : (
                     <Suspense fallback={<div className="map map--loading">Loading map…</div>}>
                       <MapView
                         points={shown}
-                        layer={view.norm === "skew" ? "points" : view.layer}
+                        layer={view.norm === "raw" ? view.layer : "points"}
                         norm={norm}
                         maxValue={norm === "skew" ? maxExpected : maxValue}
                         selected={view.place}
@@ -619,6 +694,27 @@ function Legend() {
         <span>more</span>
       </div>
       <div className="legend__note">Circle area ∝ pages · hollow ring = county/state location</div>
+    </div>
+  );
+}
+
+/** The median-date view's legend (#127): the search's first and last buckets. */
+function WhenLegend({ from, to }: { from: string; to: string }) {
+  return (
+    <div className="legend" aria-hidden="true">
+      <div className="legend__title">Median date of the matching pages</div>
+      <div className="legend__ramp">
+        {[0, 0.25, 0.5, 0.75, 1].map((x) => (
+          <span key={x} style={{ background: cssTimeColor(x) }} />
+        ))}
+      </div>
+      <div className="legend__ends">
+        <span>{from}</span>
+        <span>{to}</span>
+      </div>
+      <div className="legend__note">
+        A place&apos;s colour is the period by whose end half its pages had appeared · circle area ∝ pages
+      </div>
     </div>
   );
 }

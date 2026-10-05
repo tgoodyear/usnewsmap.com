@@ -10,9 +10,10 @@ use usnm_core::query::{Node, Term};
 use usnm_core::text::tokenize;
 use usnm_core::time::BucketSpec;
 
+use crate::snippet::text_snippets;
 use crate::{
-    ja_snippets, mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
-    PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
+    ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
+    KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 struct Indexed {
@@ -97,9 +98,17 @@ impl SearchBackend for MemoryBackend {
         let mut places: BTreeMap<&str, (u64, u32, u32)> = BTreeMap::new();
         let mut total = 0;
         let mut span: Option<(u32, u32)> = None;
+        let mut days = std::collections::BTreeSet::new();
+        let mut papers: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut languages: BTreeMap<&str, u64> = BTreeMap::new();
         for d in self.matching(indexes, query, filters)? {
             let day = d.doc.day;
             total += 1;
+            days.insert(day);
+            *papers.entry(&d.doc.lccn).or_default() += 1;
+            for l in &d.doc.language {
+                *languages.entry(l).or_default() += 1;
+            }
             series[spec.index_of_day(day)] += 1;
             let e = places.entry(&d.doc.place_id).or_insert((0, u32::MAX, 0));
             e.0 += 1;
@@ -121,6 +130,9 @@ impl SearchBackend for MemoryBackend {
                     last_day,
                 })
                 .collect(),
+            papers: counts(papers),
+            languages: counts(languages),
+            days: days.len() as u64,
         })
     }
 
@@ -158,27 +170,34 @@ impl SearchBackend for MemoryBackend {
         filters: &Filters,
         page: &HitsQuery,
     ) -> Result<HitsPage, SearchError> {
-        let mut docs: Vec<&PageDoc> = self
+        let mut docs: Vec<(usize, &PageDoc)> = self
             .matching(indexes, query, filters)?
-            .map(|d| &d.doc)
-            .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.place_id == p))
-            .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.lccn == l))
+            .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.doc.place_id == p))
+            .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.doc.lccn == l))
+            .map(|d| (mentions(query, &d.tokens), &d.doc))
             .collect();
-        docs.sort_by(|a, b| {
+        docs.sort_by(|(ma, a), (mb, b)| {
             let order = (a.day, a.sort_key, &a.doc_id).cmp(&(b.day, b.sort_key, &b.doc_id));
             match page.sort {
                 HitSort::Oldest => order,
                 HitSort::Newest => order.reverse(),
+                HitSort::Relevant => mb.cmp(ma).then(order),
             }
         });
-        let highlight = positive_terms(query);
+        let days = page.days.then(|| {
+            docs.iter()
+                .map(|(_, d)| d.day)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len() as u64
+        });
         Ok(HitsPage {
             total: docs.len() as u64,
+            days,
             hits: docs
                 .into_iter()
                 .skip(page.offset)
                 .take(page.limit)
-                .map(|d| Hit {
+                .map(|(_, d)| Hit {
                     doc_id: d.doc_id.clone(),
                     day: d.day,
                     lccn: d.lccn.clone(),
@@ -188,7 +207,7 @@ impl SearchBackend for MemoryBackend {
                     front_page: d.front_page,
                     snippets: match &d.printed {
                         Some(printed) => ja_snippets(printed, query),
-                        None => snippet(&d.text, &highlight).into_iter().collect(),
+                        None => text_snippets(&d.text, query),
                     },
                     ocr_source: d.ocr_source.clone(),
                     ocr_engine: d.ocr_engine.clone(),
@@ -226,6 +245,15 @@ fn term_matches(t: &Term, token: &str) -> bool {
 /// Ordered phrase match where the total number of extra words between
 /// consecutive terms is at most `slop`.
 fn phrase_matches(terms: &[String], slop: u8, tokens: &[String]) -> bool {
+    phrase_starts(terms, slop, tokens).next().is_some()
+}
+
+/// Where in `tokens` the phrase starts a match, within `slop` extra words.
+fn phrase_starts<'a>(
+    terms: &'a [String],
+    slop: u8,
+    tokens: &'a [String],
+) -> impl Iterator<Item = usize> + 'a {
     fn from(terms: &[String], tokens: &[String], pos: usize, budget: usize) -> bool {
         let Some((first, rest)) = terms.split_first() else {
             return true;
@@ -233,13 +261,10 @@ fn phrase_matches(terms: &[String], slop: u8, tokens: &[String]) -> bool {
         let end = (pos + budget + 1).min(tokens.len());
         (pos..end).any(|i| tokens[i] == *first && from(rest, tokens, i + 1, budget - (i - pos)))
     }
-    let Some((first, rest)) = terms.split_first() else {
-        return false;
-    };
-    tokens
-        .iter()
-        .enumerate()
-        .any(|(i, t)| t == first && from(rest, tokens, i + 1, usize::from(slop)))
+    tokens.iter().enumerate().filter_map(move |(i, t)| {
+        let (first, rest) = terms.split_first()?;
+        (t == first && from(rest, tokens, i + 1, usize::from(slop))).then_some(i)
+    })
 }
 
 pub(crate) fn levenshtein_within(a: &str, b: &str, max: usize) -> bool {
@@ -261,53 +286,29 @@ pub(crate) fn levenshtein_within(a: &str, b: &str, max: usize) -> bool {
     prev[b.len()] <= max
 }
 
-/// Positive terms of the query, with their prefix/fuzzy semantics; phrase
-/// words become exact terms. Used to highlight exactly what matched.
-fn positive_terms(node: &Node) -> Vec<Term> {
-    fn walk(node: &Node, out: &mut Vec<Term>) {
-        match node {
-            Node::Term(t) => out.push(t.clone()),
-            Node::Phrase { terms, .. } => out.extend(terms.iter().map(|t| Term {
-                text: t.clone(),
-                fuzzy: 0,
-                prefix: false,
-            })),
-            Node::And(c) | Node::Or(c) => c.iter().for_each(|n| walk(n, out)),
-            Node::Not(_) => {}
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
+/// A ~25-word window around the first highlighted word, HTML-escaped with `<mark>`.
+fn counts(m: BTreeMap<&str, u64>) -> Vec<KeyCount> {
+    rank(
+        m.into_iter()
+            .map(|(k, hits)| KeyCount {
+                key: k.to_owned(),
+                hits,
+            })
+            .collect(),
+    )
 }
 
-/// A ~25-word window around the first highlighted word, HTML-escaped with `<mark>`.
-fn snippet(text: &str, highlight: &[Term]) -> Option<String> {
-    const WINDOW: usize = 12;
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let is_hit = |w: &str| {
-        tokenize(w)
-            .iter()
-            .any(|tok| highlight.iter().any(|t| term_matches(t, tok)))
-    };
-    let first = words.iter().position(|w| is_hit(w))?;
-    let start = first.saturating_sub(WINDOW);
-    let end = (first + WINDOW + 1).min(words.len());
-    let mut segments: Vec<(bool, String)> = Vec::new();
-    if start > 0 {
-        segments.push((false, "… ".to_owned()));
+/// How often the page mentions the query's positive parts: each word a term
+/// matches, and each place an exact or NEAR phrase matches as a phrase (not
+/// its words one by one, so the `of` in "cross of gold" counts only there).
+/// The reference for "most mentions first" (`HitSort::Relevant`).
+fn mentions(node: &Node, tokens: &[String]) -> usize {
+    match node {
+        Node::Term(t) => tokens.iter().filter(|tok| term_matches(t, tok)).count(),
+        Node::Phrase { terms, slop } => phrase_starts(terms, *slop, tokens).count(),
+        Node::And(c) | Node::Or(c) => c.iter().map(|n| mentions(n, tokens)).sum(),
+        Node::Not(_) => 0,
     }
-    for (i, w) in words[start..end].iter().enumerate() {
-        if i > 0 {
-            segments.push((false, " ".to_owned()));
-        }
-        segments.push((is_hit(w), (*w).to_owned()));
-    }
-    if end < words.len() {
-        segments.push((false, " …".to_owned()));
-    }
-    let borrowed: Vec<(bool, &str)> = segments.iter().map(|(m, s)| (*m, s.as_str())).collect();
-    Some(mark_html(&borrowed))
 }
 
 #[cfg(test)]
@@ -335,14 +336,27 @@ mod tests {
     }
 
     #[test]
-    fn snippets_are_escaped_and_marked() {
-        let hl = positive_terms(&parse("gold").unwrap());
-        let s = snippet("a <b> cross of Gold, & more", &hl).unwrap();
-        assert_eq!(s, "a &lt;b&gt; cross of <mark>Gold,</mark> &amp; more");
-        // Prefix and fuzzy terms highlight what they matched; exclusions don't.
-        let hl = positive_terms(&parse("cruc* mankimd~1 -upon").unwrap());
-        let s = snippet("not crucify mankind upon it", &hl).unwrap();
-        assert_eq!(s, "not <mark>crucify</mark> <mark>mankind</mark> upon it");
+    fn mentions_count_matching_words_and_whole_phrases() {
+        let q = parse("gold cruc* -silver").unwrap();
+        assert_eq!(
+            mentions(&q, &toks("gold, gold and crucify; silver gold")),
+            4
+        );
+        assert_eq!(mentions(&q, &toks("silver")), 0);
+        // A phrase counts where it occurs, not each of its words.
+        let phrase = parse(r#""cross of gold""#).unwrap();
+        assert_eq!(
+            mentions(
+                &phrase,
+                &toks("cross of gold, of this and of that, cross of gold")
+            ),
+            2
+        );
+        let near = parse(r#""crucify gold"~5"#).unwrap();
+        assert_eq!(
+            mentions(&near, &toks("crucify mankind upon a cross of gold; gold")),
+            1
+        );
     }
 }
 

@@ -86,7 +86,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 |---------------|---------|-------|
 | `GET /v1/meta` | `index_version`, corpus bounds, doc count, backend capabilities, build time, and `languages`: the choices for the site's language filter ([07 §7.9](07-frontend-design.md#79-language-filter)), `[{code, name, titles, pages}]` for each catalog language `lang` accepts, most pages first (`pages` is `null` when the snapshot doesn't record pages per title). A title in several languages counts in each | 5 min |
 | `GET /v1/aggregate` | Q1: totals, the first and last matching page, national series, per-place cube, first and last appearance | 1 day (+ `index_version`) |
-| `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date (`sort=oldest`, the default, or `newest`), with snippets; cursor pagination | 1 day |
+| `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date (`sort=oldest`, the default, or `newest`) or most mentions first (`relevant`), with snippets; cursor pagination | 1 day |
 | `GET /v1/compare` | Up to 4 queries (`q1…q4`); national series for each + per-place totals (no cube) | 1 day |
 | `GET /v1/pages/{doc_id}` | Page metadata + LoC links | 30 days |
 | `GET /v1/titles`, `GET /v1/titles/{lccn}` | Title metadata + coverage summary | 1 day |
@@ -107,7 +107,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "query": { "canonical": "q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896-12-31&bucket=week", "ast": "…" },
   "bucket": { "unit": "week", "origin": "1896-06-01", "count": 31 },
   "total": {
-    "hits": 18234, "places": 1187, "titles": 1402, "baseline_pages": 912345,
+    "hits": 18234, "places": 1187, "papers": 1402, "days": 214, "baseline_pages": 912345,
     "first_day": 71778, "last_day": 71949,     // null when nothing matches
     "first": { "doc_id": "sn84031492_1896-07-10_ed-1_seq-1", "date": "1896-07-10", … },  // a /v1/hits item
     "last":  { … }
@@ -122,6 +122,16 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
     "first_day": [71778, 71779, …],  // days since 1700-01-01
     "last_day":  [71945, 71949, …]
   },
+  "papers": {                      // newspapers, most matching pages first, at most 500
+    "lccn":     ["sn84031492", …],
+    "hits":     [214, …],
+    "title":    ["The Chicago Eagle", …],   // from the catalog; null if not catalogued
+    "place_id": ["P00412", …]
+  },
+  "languages": {                   // title languages, most first; can add up to more than total.hits
+    "code": ["eng", "ger", …],
+    "hits": [17502, 801, …]
+  },
   "cube": {                        // sparse COO triplets: (place index, bucket index, hits)
     "p": [0, 0, 1, …],
     "b": [4, 5, 4, …],
@@ -133,6 +143,8 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 }
 ```
 
+- **Days (#127).** `total.days` counts the days with at least one matching page: a `cardinality` aggregation on `day` in the summary request. Quickwit's is a HyperLogLog estimate (its `precision_threshold` is ignored), exact at the fixtures' size and close on the full index; the memory backend counts exactly. `/v1/hits` gives the same for its selection (`days`, on the first page only). Not per place in the aggregate: one sketch per place bucket, for up to 5,000 places, is a memory risk under `aggregation_memory_limit`. The median and quartile dates per place come from the cube in the browser instead (07 §7.4, `norm=when`): Quickwit's `percentiles` keeps about 1% relative error, which on day numbers near 72,000 is steps of about 1,400 days.
+- **Newspapers and languages (#121).** Two terms aggregations on the summary request, on the `lccn` and `language` fast fields: no extra engine call. `total.papers` counts every newspaper with a match (exact: the aggregation's size covers every title); `papers` lists the 500 with the most, ties by LCCN, with the catalog's name and place. `languages` counts matching pages per title language; `language` holds a title's whole list, so a page of a paper catalogued in English and German counts in both and the counts can add up to more than `total.hits`.
 - `total.first` and `total.last` are the pages `/v1/hits` lists first oldest-first and newest-first, in the same shape as its items, so the site can link the first and last mention to their pages ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)).
 - **Baselines and filters.** `series.baseline`, `total.baseline_pages` and `cube.baseline_ref` are the pages published in the search's scope: all pages, the pages in the `state` filter's states, and, under `lang`, only the pages of titles that list any of the languages (each page once, so `lang=eng,ger` doesn't count a title in both twice). `baseline_ref` names `/v1/coverage` with the same `state` and `lang`. They are `null` when `lccn` or `front` is set, because baselines are kept per place, day and title language only, and when `lang` is set on a version published before baselines were kept per language (a snapshot without `language_baselines.json`, [04 §4.3](04-data-sources-and-ingestion.md)). A client that gets `null` shows page counts only.
 - Place coordinates and names are **not** repeated here. The SPA loads `/v1/places` once (CDN-cached, ~150 KB compressed) and joins by id.
@@ -164,9 +176,9 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 }
 ```
 
-Items are oldest first, and pages on the same day by title, edition and page. `sort=newest` reverses the whole order; `sort=oldest` is the default and is left out of the canonical URL.
+Items are oldest first, and pages on the same day by title, edition and page. `sort=newest` reverses the whole order; `sort=oldest` is the default and is left out of the canonical URL. `sort=relevant` puts the pages that mention the search most first, ties oldest first (#126); Quickwit 0.9 sorts by at most two fields, so same-score pages on the same day come in the index's own order, which is stable between requests. It is Quickwit's score: `text` has no field norms, so page length doesn't count and more mentions rank higher, but rare words are weighted per split, so it is "most mentions first", not an exact ranking.
 
-Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer URLs follow the loc.gov resource pattern. The legacy `chroniclingamerica.loc.gov/lccn/…` form is kept only as a fallback, because LoC redirects it.
+Snippets are built by the API from the page's stored text, the same way for every backend (`usnm_search::snippet`, #126): up to three fragments of about 80 characters either side of the matches, an exact phrase marked as a whole, a NEAR phrase's words one by one, prefix and fuzzy terms on each word they match, `…` where a fragment doesn't reach the text's start or end. Quickwit's own snippets (one short fragment per field, with no length or count options in its REST API) aren't requested. Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer URLs follow the loc.gov resource pattern. The legacy `chroniclingamerica.loc.gov/lccn/…` form is kept only as a fallback, because LoC redirects it.
 
 **Japanese pages** (#139, 04 §4.8). A query with a Japanese word that isn't excluded (`usnm_core::query::is_japanese`, §6.4) searches the Japanese pages' index that `current.json` names under `ja`, instead of the main indexes. Any other query searches the main indexes. The two are never mixed, so a page with garbled LoC text in the main index and our OCR in the Japanese index is never counted twice. A version without a Japanese index answers a Japanese query with **422** (`Unsupported`). On these pages:
 - the item carries `"ocr": {"source": "usnm-ndlocr-lite", "engine": "ndlocr-lite 636d1cf"}`

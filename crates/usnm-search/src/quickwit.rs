@@ -15,13 +15,19 @@ use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
+use crate::snippet::text_snippets;
 use crate::{
-    ja_snippets, mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
-    PlaceSummary, SearchBackend, SearchError, Summary,
+    ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
+    KeyCount, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 /// Upper bound on places in one terms aggregation.
 const MAX_PLACES: u32 = 5_000;
+/// Upper bound on titles: every title (4,693 on loc.gov in October 2026)
+/// fits, so the newspaper count is exact (#121).
+pub const MAX_PAPERS: u32 = 10_000;
+/// Upper bound on title languages (about 50 in the catalog).
+const MAX_LANGUAGES: u32 = 200;
 
 pub struct QuickwitBackend {
     base_url: String,
@@ -360,7 +366,10 @@ pub fn summary_request(
                     "first": { "min": { "field": "day" } },
                     "last": { "max": { "field": "day" } }
                 }
-            }
+            },
+            "days": { "cardinality": { "field": "day" } },
+            "papers": { "terms": { "field": "lccn", "size": MAX_PAPERS } },
+            "languages": { "terms": { "field": "language", "size": MAX_LANGUAGES } }
         }
     }))
 }
@@ -402,22 +411,30 @@ pub fn hits_request(
     if let Some(l) = &page.lccn {
         extra.push(format!("lccn:{l}"));
     }
-    Ok(json!({
+    let mut req = json!({
         "query": full_query(node, filters, indexes, extra)?,
         "max_hits": page.limit,
         "start_offset": page.offset,
-        "sort_by": sort_by(page.sort),
-        // A comma-separated string, not an array, in Quickwit 0.9 (S-2).
-        "snippet_fields": "text"
-    }))
+        "sort_by": sort_by(page.sort)
+    });
+    // On how many days the pages appeared (#127), when asked: the first page
+    // of a visitor's list, not the aggregate's first and last page lookups.
+    if page.days {
+        req["aggs"] = json!({ "days": { "cardinality": { "field": "day" } } });
+    }
+    Ok(req)
 }
 
 /// By day, then title, edition and page (`sort_key`). Quickwit 0.9 can't sort
-/// on text fields, and a leading `-` means ascending (S-2).
+/// on text fields, and a leading `-` means ascending (S-2). `_score` sorts
+/// highest first; with `fieldnorms: false` on `text` it follows how often a
+/// page mentions the words (#126), and ties go oldest first. A third field
+/// (`-sort_key`) is refused: "sort by field must be up to 2 fields".
 fn sort_by(sort: HitSort) -> &'static str {
     match sort {
         HitSort::Oldest => "-day,-sort_key",
         HitSort::Newest => "day,sort_key",
+        HitSort::Relevant => "_score,-day",
     }
 }
 
@@ -428,8 +445,6 @@ pub struct SearchResponse {
     pub num_hits: u64,
     #[serde(default)]
     pub hits: Vec<StoredHit>,
-    #[serde(default)]
-    pub snippets: Option<Vec<Value>>,
     #[serde(default)]
     pub aggregations: Option<Value>,
     /// Partial failures (e.g. splits that could not be searched). A 200 with
@@ -449,6 +464,9 @@ pub struct StoredHit {
     pub lccn: String,
     pub edition: u16,
     pub seq: u16,
+    /// The page's stored text, for its snippets (#126).
+    #[serde(default)]
+    pub text: Option<String>,
     /// A Japanese page's printed text (pages-ja-index.yaml), for its snippets.
     #[serde(default)]
     pub printed: Option<String>,
@@ -570,7 +588,55 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
         last_day: day("last")?,
         series,
         places,
+        papers: key_counts(resp, "papers")?,
+        languages: key_counts(resp, "languages")?,
+        // Always requested: missing with matches is an incomplete response.
+        days: match distinct(resp)? {
+            Some(d) => d,
+            None if resp.num_hits == 0 => 0,
+            None => return Err(SearchError::Backend("missing aggregation `days`".into())),
+        },
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyBucket {
+    key: String,
+    doc_count: u64,
+}
+
+/// A terms aggregation's buckets, ranked as the memory backend ranks them.
+fn key_counts(resp: &SearchResponse, name: &str) -> Result<Vec<KeyCount>, SearchError> {
+    Ok(rank(
+        agg::<Buckets<KeyBucket>>(resp, name)?
+            .buckets
+            .into_iter()
+            .map(|b| KeyCount {
+                key: b.key,
+                hits: b.doc_count,
+            })
+            .collect(),
+    ))
+}
+
+/// The `days` cardinality, when the request asked for it. Quickwit's
+/// HyperLogLog gives a float; nothing matched is 0.
+fn distinct(resp: &SearchResponse) -> Result<Option<u64>, SearchError> {
+    if resp
+        .aggregations
+        .as_ref()
+        .and_then(|a| a.get("days"))
+        .is_none()
+    {
+        return Ok(None);
+    }
+    if resp.num_hits == 0 {
+        return Ok(Some(0));
+    }
+    let m = agg::<MetricValue>(resp, "days")?;
+    m.value
+        .map(|v| Some(v.round() as u64))
+        .ok_or_else(|| SearchError::Backend("aggregation `days` has no value".into()))
 }
 
 pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCell>, SearchError> {
@@ -590,29 +656,22 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
 }
 
 pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, SearchError> {
-    let snippets = resp.snippets.unwrap_or_default();
+    let days = distinct(&resp)?;
     let mut hits = Vec::with_capacity(resp.hits.len());
-    for (i, d) in resp.hits.into_iter().enumerate() {
+    for d in resp.hits {
         let day = d
             .day()
             .ok_or_else(|| SearchError::Backend("hit has an unparseable date".into()))?;
-        // A Japanese page's snippets come from its printed text: its indexed
-        // text is folded tokens with spaces between them.
-        let printed_snippets = d.printed.as_deref().map(|p| ja_snippets(p, query));
+        // Built here from the stored text, as the memory backend does (#126).
+        // A Japanese page's come from its printed text: its indexed text is
+        // folded tokens with spaces between them.
+        let snippets = match (&d.printed, &d.text) {
+            (Some(printed), _) => ja_snippets(printed, query),
+            (None, Some(text)) => text_snippets(text, query),
+            (None, None) => Vec::new(),
+        };
         hits.push(Hit {
-            snippets: printed_snippets.unwrap_or_else(|| {
-                snippets
-                    .get(i)
-                    .and_then(|s| s.get("text"))
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(Value::as_str)
-                            .map(convert_snippet)
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }),
+            snippets,
             ocr_source: d.ocr_source,
             ocr_engine: d.ocr_engine,
             front_page: d.seq == 1,
@@ -626,35 +685,9 @@ pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, Search
     }
     Ok(HitsPage {
         total: resp.num_hits,
+        days,
         hits,
     })
-}
-
-/// Quickwit highlights with `<b>…</b>`. Rebuild the snippet so that the only
-/// markup that can reach the browser is `<mark>`. Quickwit returns snippet
-/// text HTML-escaped (S-2), so it is unescaped here and re-escaped once.
-pub fn convert_snippet(s: &str) -> String {
-    let mut segments: Vec<(bool, String)> = Vec::new();
-    let mut rest = s;
-    while let Some(start) = rest.find("<b>") {
-        segments.push((false, unescape(&rest[..start])));
-        let after = &rest[start + 3..];
-        let end = after.find("</b>").unwrap_or(after.len());
-        segments.push((true, unescape(&after[..end])));
-        rest = after.get(end + 4..).unwrap_or("");
-    }
-    segments.push((false, unescape(rest)));
-    let borrowed: Vec<(bool, &str)> = segments.iter().map(|(m, t)| (*m, t.as_str())).collect();
-    mark_html(&borrowed)
-}
-
-fn unescape(s: &str) -> String {
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&amp;", "&")
 }
 
 #[async_trait]
@@ -902,6 +935,7 @@ mod tests {
             sort: HitSort::Oldest,
             offset: 50,
             limit: 25,
+            days: false,
         };
         let r = hits_request(&parse("gold").unwrap(), &filters(), &none(), &page).unwrap();
         // A leading `-` is ascending in Quickwit 0.9 (S-2): oldest first.
@@ -912,7 +946,28 @@ mod tests {
         };
         let r2 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &newest).unwrap();
         assert_eq!(r2["sort_by"], "day,sort_key");
-        assert_eq!(r["snippet_fields"], "text");
+        let relevant = HitsQuery {
+            sort: HitSort::Relevant,
+            ..page.clone()
+        };
+        let r3 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &relevant).unwrap();
+        assert_eq!(r3["sort_by"], "_score,-day");
+        // Snippets are built from the stored text, not asked of Quickwit (#126).
+        assert!(r.get("snippet_fields").is_none());
+        // Distinct days (#127) only when asked, even on a first page.
+        assert!(r.get("aggs").is_none());
+        let first = HitsQuery {
+            offset: 0,
+            ..page.clone()
+        };
+        let r4 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &first).unwrap();
+        assert!(r4.get("aggs").is_none());
+        let counted = HitsQuery {
+            days: true,
+            ..first.clone()
+        };
+        let r5 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &counted).unwrap();
+        assert_eq!(r5["aggs"]["days"]["cardinality"]["field"], "day");
         assert_eq!(r["start_offset"], 50);
         assert!(r["query"]
             .as_str()
@@ -926,11 +981,11 @@ mod tests {
             "num_hits": 2,
             "hits": [
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
-                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1, "text": "…"},
+                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1,
+                 "text": "a <gold> b"},
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-3", "date": "1896-07-10T00:00:00Z",
                  "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 3}
-            ],
-            "snippets": [{"text": ["a <b>gold</b> b"]}, {"text": []}]
+            ]
         }))
         .unwrap();
         let page = parse_hits(resp, &usnm_core::query::parse("gold").unwrap()).unwrap();
@@ -940,7 +995,16 @@ mod tests {
         );
         assert!(page.hits[0].front_page);
         assert!(!page.hits[1].front_page);
-        assert_eq!(page.hits[0].snippets, vec!["a <mark>gold</mark> b"]);
+        assert_eq!(page.hits[0].snippets, vec!["a &lt;<mark>gold</mark>&gt; b"]);
+        assert!(page.hits[1].snippets.is_empty());
+        // Without the `days` aggregation (a later page), no count.
+        assert_eq!(page.days, None);
+        let first: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 3, "hits": [], "aggregations": { "days": { "value": 2.0 } }
+        }))
+        .unwrap();
+        let q = usnm_core::query::parse("gold").unwrap();
+        assert_eq!(parse_hits(first, &q).unwrap().days, Some(2));
     }
 
     #[test]
@@ -1062,7 +1126,11 @@ mod tests {
                      "t": {"buckets": [{"key": 1895.0, "doc_count": 1}, {"key": 1896.0, "doc_count": 3}]}},
                     {"key": "P00002", "doc_count": 3, "first": {"value": 71100.0}, "last": {"value": 71250.0},
                      "t": {"buckets": [{"key": 1896.0, "doc_count": 3}]}}
-                ]}
+                ]},
+                "papers": { "buckets": [ {"key": "sn2", "doc_count": 3}, {"key": "sn1", "doc_count": 4},
+                                         {"key": "sn3", "doc_count": 3} ] },
+                "languages": { "buckets": [ {"key": "eng", "doc_count": 7}, {"key": "ger", "doc_count": 2} ] },
+                "days": { "value": 5.0 }
             }
         }))
         .unwrap();
@@ -1071,6 +1139,27 @@ mod tests {
         assert_eq!(s.places[0].first_day, 71000);
         assert_eq!(s.places[0].last_day, 71200);
         assert_eq!((s.first_day, s.last_day), (Some(71000), Some(71250)));
+        // Most first, ties by key, whatever order Quickwit gives them in.
+        let keys = |c: &[KeyCount]| {
+            c.iter()
+                .map(|k| (k.key.clone(), k.hits))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(&s.papers),
+            [("sn1".into(), 4), ("sn2".into(), 3), ("sn3".into(), 3)]
+        );
+        assert_eq!(keys(&s.languages), [("eng".into(), 7), ("ger".into(), 2)]);
+        assert_eq!(s.days, 5);
+        // Without `days`, a summary with matches is incomplete, not 0 days.
+        let mut partial = resp.aggregations.clone().unwrap();
+        partial.as_object_mut().unwrap().remove("days");
+        let incomplete: SearchResponse =
+            serde_json::from_value(json!({ "num_hits": 7, "aggregations": partial })).unwrap();
+        assert!(matches!(
+            parse_summary(&incomplete, &spec),
+            Err(SearchError::Backend(_))
+        ));
         let cells = parse_cube(&resp, &spec).unwrap();
         assert_eq!(cells.len(), 3);
         assert_eq!(
@@ -1092,7 +1181,9 @@ mod tests {
                 "series": { "buckets": [] },
                 "first": {"value": null},
                 "last": {"value": null},
-                "places": { "buckets": [] }
+                "places": { "buckets": [] },
+                "papers": { "buckets": [] },
+                "languages": { "buckets": [] }
             }
         }))
         .unwrap();
@@ -1114,7 +1205,10 @@ mod tests {
                 Some(json!({"value": "late"})),
             ),
         ] {
-            let mut aggs = json!({ "series": { "buckets": [] }, "places": { "buckets": [] } });
+            let mut aggs = json!({
+                "series": { "buckets": [] }, "places": { "buckets": [] },
+                "papers": { "buckets": [] }, "languages": { "buckets": [] }
+            });
             if let Some(f) = first {
                 aggs["first"] = f;
             }
@@ -1143,7 +1237,9 @@ mod tests {
                     "series": { "buckets": [] },
                     "first": {"value": 71000.0},
                     "last": {"value": 71200.0},
-                    "places": { "buckets": [place] }
+                    "places": { "buckets": [place] },
+                    "papers": { "buckets": [] },
+                    "languages": { "buckets": [] }
                 }
             }))
             .unwrap();
@@ -1152,17 +1248,5 @@ mod tests {
                 Err(SearchError::Backend(_))
             ));
         }
-    }
-
-    #[test]
-    fn snippets_only_ever_contain_mark_tags() {
-        assert_eq!(
-            convert_snippet("a &lt;script&gt; <b>gold</b> &amp; x"),
-            "a &lt;script&gt; <mark>gold</mark> &amp; x"
-        );
-        assert_eq!(
-            convert_snippet("<b>x<img></b>"),
-            "<mark>x&lt;img&gt;</mark>"
-        );
     }
 }

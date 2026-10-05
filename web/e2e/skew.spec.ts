@@ -103,7 +103,8 @@ test("an older share-of-pages permalink opens on Pages", async ({ page }) => {
   await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=rel");
   await expect(measure(page).getByRole("button", { name: "Pages" })).toHaveAttribute("aria-pressed", "true");
   await expect(measure(page).getByRole("button", { name: "Share of pages" })).toHaveCount(0);
-  await expect(measure(page).getByRole("button")).toHaveCount(2);
+  // Pages, Relative rate and Median date (#127).
+  await expect(measure(page).getByRole("button")).toHaveCount(3);
   await expect(page.locator(".legend")).toContainText("Pages containing the match");
   await expectAccessible(page);
   await measure(page).getByRole("button", { name: "Relative rate" }).click();

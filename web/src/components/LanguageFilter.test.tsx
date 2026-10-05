@@ -70,7 +70,15 @@ describe("PlaceTable under a language filter", () => {
       { id: "P1", name: "Place 1", state: "NE", precision: "city", position: [0, 0] as [number, number], value: 3, rel: Number.NaN, firstDay: -1, lastDay: -1 },
     ];
     render(<PlaceTable rows={rows} onSelect={() => undefined} selected="" share={false} />);
-    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Place", "State", "Pages", "First appearance", "Last seen"]);
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
+      "Place",
+      "State",
+      "Pages",
+      "First appearance",
+      "Last seen",
+      "Median date",
+      "Middle half",
+    ]);
     cleanup();
     render(<PlaceTable rows={rows} onSelect={() => undefined} selected="" />);
     expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toContain("Share of pages published");

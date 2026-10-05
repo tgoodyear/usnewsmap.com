@@ -4,21 +4,31 @@ import type { Norm } from "../state/url";
 interface Props {
   norm: Norm;
   onChange: (norm: Norm) => void;
+  /** Measures the current search can't show, with why (e.g. the relative rate under a newspaper filter). */
+  unavailable?: Partial<Record<Norm, string>>;
 }
 
 export const MEASURE_LABELS: Record<Norm, string> = {
   raw: "Pages",
   skew: "Relative rate",
+  when: "Median date",
 };
 
-/** Pages or relative rate (doc 11, 11.6). */
-export function MeasureToggle({ norm, onChange }: Props) {
-  const options: Norm[] = ["raw", "skew"];
+/** Pages, relative rate (doc 11, 11.6) or median date (#127). */
+export function MeasureToggle({ norm, onChange, unavailable }: Props) {
+  const options: Norm[] = ["raw", "skew", "when"];
   return (
     <div className="measure">
       <div className="segmented" role="group" aria-label="Measure">
         {options.map((n) => (
-          <button key={n} type="button" aria-pressed={norm === n} onClick={() => onChange(n)}>
+          <button
+            key={n}
+            type="button"
+            aria-pressed={norm === n}
+            disabled={unavailable?.[n] !== undefined}
+            title={unavailable?.[n]}
+            onClick={() => onChange(n)}
+          >
             {MEASURE_LABELS[n]}
           </button>
         ))}
