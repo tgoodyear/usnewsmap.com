@@ -510,3 +510,21 @@ test("the table lists the newspapers with matches, and one can limit the search 
   await expect(page).not.toHaveURL(/lccn=/);
   await expect(papers.locator("tbody tr").nth(1)).toBeVisible();
 });
+
+test("the median-date measure colours places by when they mentioned it", async ({ page }) => {
+  await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&bucket=month");
+  await expect(page.locator(".mix")).toContainText(/^Matching pages on \d+ days\./);
+  await page.getByRole("button", { name: "Median date" }).click();
+  await expect(page).toHaveURL(/norm=when/);
+  await expect(page.locator(".legend__title")).toHaveText("Median date of the matching pages");
+  await expect(page.locator(".legend__ends")).toContainText("Jan 1895");
+  // Points only: no heat layer for this measure.
+  await expect(page.getByRole("combobox", { name: "Map layer" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Table" }).click();
+  const places = page.locator("table.places").first();
+  await expect(places.getByRole("columnheader", { name: "Median date" })).toBeVisible();
+  await expect(places.getByRole("cell", { name: /^[A-Z][a-z]{2} 189\d$/ }).first()).toBeVisible();
+  await places.locator("tbody tr").first().getByRole("button").click();
+  await expect(page.locator(".panel__summary")).toContainText(/pages in this search on \d+ days?/);
+  await expectAccessible(page);
+});

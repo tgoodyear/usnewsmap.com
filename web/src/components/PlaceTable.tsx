@@ -9,6 +9,8 @@ interface Row extends MapPoint {
   /** First and last matching day in the whole search; negative when unknown. */
   firstDay: number;
   lastDay: number;
+  /** The first and third quartile of its matching pages' dates in the window, labelled (#127). */
+  middle?: string;
 }
 
 interface Column {
@@ -52,6 +54,19 @@ const RAW: Column[] = [
     label: "Last seen",
     get: (r) => (r.lastDay >= 0 ? r.lastDay : Number.NaN),
     show: (r) => (r.lastDay >= 0 ? formatDate(dateFromDay(r.lastDay)) : ""),
+  },
+  // When the place's matches fell (#127): by bucket, up to the current date.
+  {
+    key: "when",
+    label: "Median date",
+    get: (r) => r.when ?? Number.NaN,
+    show: (r) => r.whenLabel ?? "",
+  },
+  {
+    key: "middle",
+    label: "Middle half",
+    get: (r) => r.when ?? Number.NaN,
+    show: (r) => r.middle ?? "",
   },
 ];
 

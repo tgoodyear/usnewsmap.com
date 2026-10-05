@@ -132,6 +132,9 @@ pub struct Summary {
     /// Matching pages per title language, most first, ties by code. A page
     /// of a paper catalogued in several languages counts in each (#121).
     pub languages: Vec<KeyCount>,
+    /// Days with at least one matching page (#127). Quickwit's count is a
+    /// HyperLogLog estimate, close but not always exact.
+    pub days: u64,
 }
 
 /// Sort counts most first, ties by key, so both backends agree.
@@ -213,6 +216,9 @@ pub struct Hit {
 pub struct HitsPage {
     pub total: u64,
     pub hits: Vec<Hit>,
+    /// Days with at least one of the selected pages (#127), on the first
+    /// page of a list only (offset 0); an estimate from Quickwit.
+    pub days: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

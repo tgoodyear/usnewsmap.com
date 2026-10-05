@@ -107,7 +107,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
   "query": { "canonical": "q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896-12-31&bucket=week", "ast": "…" },
   "bucket": { "unit": "week", "origin": "1896-06-01", "count": 31 },
   "total": {
-    "hits": 18234, "places": 1187, "papers": 1402, "baseline_pages": 912345,
+    "hits": 18234, "places": 1187, "papers": 1402, "days": 214, "baseline_pages": 912345,
     "first_day": 71778, "last_day": 71949,     // null when nothing matches
     "first": { "doc_id": "sn84031492_1896-07-10_ed-1_seq-1", "date": "1896-07-10", … },  // a /v1/hits item
     "last":  { … }
@@ -143,6 +143,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 }
 ```
 
+- **Days (#127).** `total.days` counts the days with at least one matching page: a `cardinality` aggregation on `day` in the summary request. Quickwit's is a HyperLogLog estimate (its `precision_threshold` is ignored), exact at the fixtures' size and close on the full index; the memory backend counts exactly. `/v1/hits` gives the same for its selection (`days`, on the first page only). Not per place in the aggregate: one sketch per place bucket, for up to 5,000 places, is a memory risk under `aggregation_memory_limit`. The median and quartile dates per place come from the cube in the browser instead (07 §7.4, `norm=when`): Quickwit's `percentiles` keeps about 1% relative error, which on day numbers near 72,000 is steps of about 1,400 days.
 - **Newspapers and languages (#121).** Two terms aggregations on the summary request, on the `lccn` and `language` fast fields: no extra engine call. `total.papers` counts every newspaper with a match (exact: the aggregation's size covers every title); `papers` lists the 500 with the most, ties by LCCN, with the catalog's name and place. `languages` counts matching pages per title language; `language` holds a title's whole list, so a page of a paper catalogued in English and German counts in both and the counts can add up to more than `total.hits`.
 - `total.first` and `total.last` are the pages `/v1/hits` lists first oldest-first and newest-first, in the same shape as its items, so the site can link the first and last mention to their pages ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)).
 - **Baselines and filters.** `series.baseline`, `total.baseline_pages` and `cube.baseline_ref` are the pages published in the search's scope: all pages, the pages in the `state` filter's states, and, under `lang`, only the pages of titles that list any of the languages (each page once, so `lang=eng,ger` doesn't count a title in both twice). `baseline_ref` names `/v1/coverage` with the same `state` and `lang`. They are `null` when `lccn` or `front` is set, because baselines are kept per place, day and title language only, and when `lang` is set on a version published before baselines were kept per language (a snapshot without `language_baselines.json`, [04 §4.3](04-data-sources-and-ingestion.md)). A client that gets `null` shows page counts only.

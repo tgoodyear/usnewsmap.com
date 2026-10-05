@@ -61,6 +61,9 @@ struct Totals {
     places: usize,
     /// Newspapers with at least one matching page (#121).
     papers: usize,
+    /// Days with at least one matching page (#127); an estimate from
+    /// Quickwit on the full index.
+    days: u64,
     /// Pages published in scope; `null` when filters make the baseline inexact.
     baseline_pages: Option<u64>,
     /// Earliest and latest matching day; `null` when nothing matches.
@@ -336,6 +339,7 @@ async fn compute(
             hits: agg.summary.total_hits,
             places: place_ids.len(),
             papers: agg.summary.papers.len(),
+            days: agg.summary.days,
             baseline_pages: baseline.as_ref().map(|b| b.iter().sum()),
             first_day: agg.summary.first_day,
             last_day: agg.summary.last_day,

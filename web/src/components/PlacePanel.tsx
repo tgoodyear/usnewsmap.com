@@ -47,6 +47,7 @@ export function PlacePanel({ params, version, placeId, placeName, sort, onSort, 
       {note && <p className="panel__skew">{skewSentence(placeName, note)}</p>}
       <p className="panel__summary">
         {first ? `${first.total.toLocaleString()} pages in this search` : "Loading…"}
+        {first?.days !== undefined && ` on ${first.days.toLocaleString()} ${first.days === 1 ? "day" : "days"}`}
         {first && windowHits !== first.total ? ` · ${windowHits.toLocaleString()} up to the current date` : ""}
       </p>
       <div className="segmented" role="group" aria-label="Order of pages">

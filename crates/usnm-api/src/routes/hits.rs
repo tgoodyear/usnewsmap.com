@@ -37,6 +37,10 @@ struct HitsResponse {
     place: Option<PlaceOut>,
     title: Option<TitleOut>,
     total: u64,
+    /// Days with at least one of these pages (#127), on the first page of a
+    /// list only; an estimate from Quickwit on the full index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    days: Option<u64>,
     items: Vec<Item>,
     next_cursor: Option<String>,
 }
@@ -243,6 +247,7 @@ pub async fn hits(
                     name: t.name.clone(),
                 }),
             total: result.total,
+            days: result.days,
             items: result
                 .hits
                 .into_iter()

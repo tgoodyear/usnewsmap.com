@@ -94,6 +94,8 @@ export interface AggregateResponse {
     last?: HitItem | null;
     /** Newspapers with at least one matching page (#121). Absent from older APIs. */
     papers?: number;
+    /** Days with at least one matching page (#127); an estimate on the full index. Absent from older APIs. */
+    days?: number;
   };
   series: { hits: number[]; baseline: number[] | null };
   places: {
@@ -146,6 +148,8 @@ export interface HitsResponse {
   place: { id: string; name: string; state: string } | null;
   title: { lccn: string; name: string } | null;
   total: number;
+  /** Days with at least one of these pages, on a list's first page only (#127). Absent from older APIs. */
+  days?: number;
   items: HitItem[];
   next_cursor: string | null;
 }

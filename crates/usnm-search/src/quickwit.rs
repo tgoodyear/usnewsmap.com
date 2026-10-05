@@ -344,6 +344,7 @@ pub fn summary_request(
                     "last": { "max": { "field": "day" } }
                 }
             },
+            "days": { "cardinality": { "field": "day" } },
             "papers": { "terms": { "field": "lccn", "size": MAX_PAPERS } },
             "languages": { "terms": { "field": "language", "size": MAX_LANGUAGES } }
         }
@@ -387,12 +388,17 @@ pub fn hits_request(
     if let Some(l) = &page.lccn {
         extra.push(format!("lccn:{l}"));
     }
-    Ok(json!({
+    let mut req = json!({
         "query": full_query(node, filters, indexes, extra)?,
         "max_hits": page.limit,
         "start_offset": page.offset,
         "sort_by": sort_by(page.sort)
-    }))
+    });
+    // The first page also says on how many days the pages appeared (#127).
+    if page.offset == 0 {
+        req["aggs"] = json!({ "days": { "cardinality": { "field": "day" } } });
+    }
+    Ok(req)
 }
 
 /// By day, then title, edition and page (`sort_key`). Quickwit 0.9 can't sort
@@ -559,6 +565,7 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
         places,
         papers: key_counts(resp, "papers")?,
         languages: key_counts(resp, "languages")?,
+        days: distinct(resp)?.unwrap_or(0),
     })
 }
 
@@ -582,6 +589,26 @@ fn key_counts(resp: &SearchResponse, name: &str) -> Result<Vec<KeyCount>, Search
     ))
 }
 
+/// The `days` cardinality, when the request asked for it. Quickwit's
+/// HyperLogLog gives a float; nothing matched is 0.
+fn distinct(resp: &SearchResponse) -> Result<Option<u64>, SearchError> {
+    if resp
+        .aggregations
+        .as_ref()
+        .and_then(|a| a.get("days"))
+        .is_none()
+    {
+        return Ok(None);
+    }
+    if resp.num_hits == 0 {
+        return Ok(Some(0));
+    }
+    let m = agg::<MetricValue>(resp, "days")?;
+    m.value
+        .map(|v| Some(v.round() as u64))
+        .ok_or_else(|| SearchError::Backend("aggregation `days` has no value".into()))
+}
+
 pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCell>, SearchError> {
     let mut cells = Vec::new();
     for place in agg::<Buckets<PlaceBucket>>(resp, "places")?.buckets {
@@ -599,6 +626,7 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
 }
 
 pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, SearchError> {
+    let days = distinct(&resp)?;
     let mut hits = Vec::with_capacity(resp.hits.len());
     for d in resp.hits {
         let day = d
@@ -627,6 +655,7 @@ pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, Search
     }
     Ok(HitsPage {
         total: resp.num_hits,
+        days,
         hits,
     })
 }
@@ -855,6 +884,14 @@ mod tests {
         assert_eq!(r3["sort_by"], "_score,-day");
         // Snippets are built from the stored text, not asked of Quickwit (#126).
         assert!(r.get("snippet_fields").is_none());
+        // Distinct days (#127) on the first page only.
+        assert!(r.get("aggs").is_none());
+        let first = HitsQuery {
+            offset: 0,
+            ..page.clone()
+        };
+        let r4 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &first).unwrap();
+        assert_eq!(r4["aggs"]["days"]["cardinality"]["field"], "day");
         assert_eq!(r["start_offset"], 50);
         assert!(r["query"]
             .as_str()
@@ -884,6 +921,14 @@ mod tests {
         assert!(!page.hits[1].front_page);
         assert_eq!(page.hits[0].snippets, vec!["a &lt;<mark>gold</mark>&gt; b"]);
         assert!(page.hits[1].snippets.is_empty());
+        // Without the `days` aggregation (a later page), no count.
+        assert_eq!(page.days, None);
+        let first: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 3, "hits": [], "aggregations": { "days": { "value": 2.0 } }
+        }))
+        .unwrap();
+        let q = usnm_core::query::parse("gold").unwrap();
+        assert_eq!(parse_hits(first, &q).unwrap().days, Some(2));
     }
 
     #[test]
@@ -1008,7 +1053,8 @@ mod tests {
                 ]},
                 "papers": { "buckets": [ {"key": "sn2", "doc_count": 3}, {"key": "sn1", "doc_count": 4},
                                          {"key": "sn3", "doc_count": 3} ] },
-                "languages": { "buckets": [ {"key": "eng", "doc_count": 7}, {"key": "ger", "doc_count": 2} ] }
+                "languages": { "buckets": [ {"key": "eng", "doc_count": 7}, {"key": "ger", "doc_count": 2} ] },
+                "days": { "value": 5.0 }
             }
         }))
         .unwrap();
@@ -1028,6 +1074,7 @@ mod tests {
             [("sn1".into(), 4), ("sn2".into(), 3), ("sn3".into(), 3)]
         );
         assert_eq!(keys(&s.languages), [("eng".into(), 7), ("ger".into(), 2)]);
+        assert_eq!(s.days, 5);
         let cells = parse_cube(&resp, &spec).unwrap();
         assert_eq!(cells.len(), 3);
         assert_eq!(

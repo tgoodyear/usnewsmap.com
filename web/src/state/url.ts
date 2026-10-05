@@ -8,11 +8,12 @@ import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
 export type Layer = "points" | "heat";
 /**
- * What the map measures: pages with a match (`raw`) or the relative rate
- * against other places (`skew`, doc 11). The older share of pages
+ * What the map measures: pages with a match (`raw`), the relative rate
+ * against other places (`skew`, doc 11), or when each place's matches
+ * fell, by their median date (`when`, #127). The older share of pages
  * published (`norm=rel`) was removed; its permalinks open on Pages.
  */
-export type Norm = "raw" | "skew";
+export type Norm = "raw" | "skew" | "when";
 export type Tab = "map" | "table";
 
 export interface ViewState {
@@ -132,7 +133,7 @@ export function parseView(search: string): ViewState {
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
-    norm: oneOf(s.get("norm"), ["raw", "skew"] as const, DEFAULTS.norm),
+    norm: oneOf(s.get("norm"), ["raw", "skew", "when"] as const, DEFAULTS.norm),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
     sort: oneOf(s.get("sort"), ["oldest", "newest", "relevant"] as const, DEFAULTS.sort),
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),

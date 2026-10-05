@@ -9,11 +9,12 @@ interface Props {
 export const MEASURE_LABELS: Record<Norm, string> = {
   raw: "Pages",
   skew: "Relative rate",
+  when: "Median date",
 };
 
-/** Pages or relative rate (doc 11, 11.6). */
+/** Pages, relative rate (doc 11, 11.6) or median date (#127). */
 export function MeasureToggle({ norm, onChange }: Props) {
-  const options: Norm[] = ["raw", "skew"];
+  const options: Norm[] = ["raw", "skew", "when"];
   return (
     <div className="measure">
       <div className="segmented" role="group" aria-label="Measure">

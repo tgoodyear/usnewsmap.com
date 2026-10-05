@@ -489,6 +489,40 @@ async fn newspapers_and_languages_match_brute_force() {
     }
 }
 
+/// Distinct days (#127) against a brute-force pass: the whole search on
+/// `/v1/aggregate`, one place on the first page of `/v1/hits` (not later ones).
+#[tokio::test]
+async fn distinct_days_match_brute_force() {
+    let s = state_with(None).await;
+    let node = parse("gold").unwrap();
+    let (f, t) = (
+        day_number(chrono::NaiveDate::from_ymd_opt(1895, 1, 1).unwrap()),
+        day_number(chrono::NaiveDate::from_ymd_opt(1897, 12, 31).unwrap()),
+    );
+    let docs: Vec<PageDoc> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|i| load_docs(i))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+        .collect();
+    let days = |place: Option<&str>| {
+        docs.iter()
+            .filter(|d| place.is_none_or(|p| d.place_id == p))
+            .map(|d| d.day)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    };
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold&from=1895-01-01&to=1897-12-31").await;
+    assert!(days(None) > 1);
+    assert_eq!(body["total"]["days"], days(None));
+    let base = "/v1/hits?q=gold&from=1895-01-01&to=1897-12-31&place=P00001&limit=5";
+    let (status, _, first) = get(&s, base).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["days"], days(Some("P00001")));
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let (_, _, next) = get(&s, &format!("{base}&cursor={cursor}")).await;
+    assert!(next.get("days").is_none(), "{next}");
+}
+
 /// The newest-first list is the oldest-first list reversed, including the
 /// order of pages on the same day. `sort=oldest` is the default and shares its
 /// canonical URL; anything else is refused.

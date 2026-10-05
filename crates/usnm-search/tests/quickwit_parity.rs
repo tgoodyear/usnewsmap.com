@@ -209,6 +209,10 @@ async fn hits_pages_match_the_reference_backend() {
                 let want = mem.hits(&set, &q, &f, &page).await.unwrap();
                 let got = qw.hits(&set, &q, &f, &page).await.expect(&ctx);
                 assert_eq!(got.total, want.total, "total: {ctx}");
+                // Distinct days (#127), on the first page only. Quickwit's is a
+                // HyperLogLog estimate, exact at the fixtures' size.
+                assert_eq!(got.days, want.days, "days: {ctx}");
+                assert_eq!(got.days.is_some(), offset == 0, "days: {ctx}");
                 let key = |h: &usnm_search::Hit| {
                     (
                         h.doc_id.clone(),

@@ -83,3 +83,42 @@ export function relative(
   }
   return out;
 }
+
+/**
+ * Per place, the bucket where the `q` quantile of its matching pages falls in
+ * the view at bucket `t` (the same window as `windowValues`): the first
+ * bucket by which at least `q` of them have appeared. NaN for a place with
+ * no pages in the window. `q` = 0.5 is the median mention date (#127);
+ * O(places × log buckets) by binary search on the prefix sums.
+ */
+export function windowQuantile(
+  ps: PrefixSums,
+  t: number,
+  window: number | null,
+  q: number,
+  out: Float64Array = new Float64Array(ps.places),
+): Float64Array {
+  const stride = ps.buckets + 1;
+  const hi = Math.min(Math.max(t, 0), ps.buckets - 1) + 1;
+  const lo = window === null ? 0 : Math.max(0, hi - window);
+  for (let p = 0; p < ps.places; p++) {
+    const row = p * stride;
+    const base = ps.sums[row + lo]!;
+    const total = ps.sums[row + hi]! - base;
+    if (total <= 0) {
+      out[p] = Number.NaN;
+      continue;
+    }
+    const need = Math.max(q * total, Number.MIN_VALUE);
+    // The smallest b in [lo, hi) with sums[b + 1] - base >= need.
+    let a = lo;
+    let z = hi - 1;
+    while (a < z) {
+      const mid = (a + z) >> 1;
+      if (ps.sums[row + mid + 1]! - base >= need) z = mid;
+      else a = mid + 1;
+    }
+    out[p] = a;
+  }
+  return out;
+}

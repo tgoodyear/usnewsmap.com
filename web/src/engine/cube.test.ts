@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alignCube, prefixSums, relative, windowValues } from "./cube";
+import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./cube";
 
 // A deterministic random sparse cube and a brute-force oracle.
 function randomCube(places: number, buckets: number, seed: number) {
@@ -57,5 +57,48 @@ describe("coverage alignment and relative frequency", () => {
   it("divides safely", () => {
     const r = relative(new Float64Array([1, 2, 0]), new Float64Array([4, 0, 0]));
     expect(Array.from(r)).toEqual([0.25, 0, 0]);
+  });
+});
+
+describe("quantiles (#127)", () => {
+  // Place 0: 1 page in bucket 0, 2 in bucket 2, 1 in bucket 5. Place 1: none.
+  const ps = prefixSums({ p: [0, 0, 0], b: [0, 2, 5], h: [1, 2, 1] }, 2, 6);
+
+  it("finds the bucket where each share of a place's pages has appeared", () => {
+    expect(Array.from(windowQuantile(ps, 5, null, 0.5))).toEqual([2, Number.NaN]);
+    expect(windowQuantile(ps, 5, null, 0.25)[0]).toBe(0);
+    expect(windowQuantile(ps, 5, null, 0.75)[0]).toBe(2);
+    expect(windowQuantile(ps, 5, null, 1)[0]).toBe(5);
+  });
+
+  it("follows the window, as the page counts do", () => {
+    // Up to bucket 1, only the first page.
+    expect(windowQuantile(ps, 1, null, 0.5)[0]).toBe(0);
+    // The trailing 3 buckets ending at 5: buckets 3..5 hold the last page.
+    expect(windowQuantile(ps, 5, 3, 0.5)[0]).toBe(5);
+    // A window with nothing in it.
+    expect(windowQuantile(ps, 4, 2, 0.5)[0]).toBeNaN();
+  });
+
+  it("matches a brute-force median on random cubes", () => {
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+    for (let trial = 0; trial < 50; trial++) {
+      const buckets = 1 + Math.floor(rand() * 20);
+      const counts = Array.from({ length: buckets }, () => (rand() < 0.5 ? 0 : Math.floor(rand() * 5)));
+      const cube = { p: [] as number[], b: [] as number[], h: [] as number[] };
+      counts.forEach((h, b) => h > 0 && (cube.p.push(0), cube.b.push(b), cube.h.push(h)));
+      const got = windowQuantile(prefixSums(cube, 1, buckets), buckets - 1, null, 0.5)[0]!;
+      const total = counts.reduce((a, c) => a + c, 0);
+      let want = Number.NaN;
+      for (let b = 0, run = 0; b < buckets && total > 0; b++) {
+        run += counts[b]!;
+        if (run >= total / 2) {
+          want = b;
+          break;
+        }
+      }
+      expect(got).toEqual(want);
+    }
   });
 });

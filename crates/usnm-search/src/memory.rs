@@ -98,11 +98,13 @@ impl SearchBackend for MemoryBackend {
         let mut places: BTreeMap<&str, (u64, u32, u32)> = BTreeMap::new();
         let mut total = 0;
         let mut span: Option<(u32, u32)> = None;
+        let mut days = std::collections::BTreeSet::new();
         let mut papers: BTreeMap<&str, u64> = BTreeMap::new();
         let mut languages: BTreeMap<&str, u64> = BTreeMap::new();
         for d in self.matching(indexes, query, filters)? {
             let day = d.doc.day;
             total += 1;
+            days.insert(day);
             *papers.entry(&d.doc.lccn).or_default() += 1;
             for l in &d.doc.language {
                 *languages.entry(l).or_default() += 1;
@@ -130,6 +132,7 @@ impl SearchBackend for MemoryBackend {
                 .collect(),
             papers: counts(papers),
             languages: counts(languages),
+            days: days.len() as u64,
         })
     }
 
@@ -182,8 +185,15 @@ impl SearchBackend for MemoryBackend {
                 HitSort::Relevant => mb.cmp(ma).then(order),
             }
         });
+        let days = (page.offset == 0).then(|| {
+            docs.iter()
+                .map(|(_, d)| d.day)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len() as u64
+        });
         Ok(HitsPage {
             total: docs.len() as u64,
+            days,
             hits: docs
                 .into_iter()
                 .skip(page.offset)
