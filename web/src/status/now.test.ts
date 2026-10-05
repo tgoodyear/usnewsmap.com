@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Activity, IndexRun, OcrJa, Status } from "../api/types";
-import { big, headline, lastUpdate, longDate, pct, rightNow, steps, utc, utcDate } from "./now";
+import { big, headline, lastUpdate, longDate, ocrExperiment, pct, rightNow, steps, utc, utcDate } from "./now";
 
 const NOW = Date.parse("2026-10-02T19:30:00Z");
 const ago = (min: number) => new Date(NOW - min * 60_000).toISOString();
@@ -167,7 +167,7 @@ describe("rightNow", () => {
   it("merging", () => {
     const line = rightNow(status({ now: "merging", source: "job", since: ago(20) }), NOW);
     expect(line.text).toBe(
-      "Merging the index (step 4 of 5): every page is in, and its pieces are being combined before it goes live.",
+      "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live.",
     );
     expect(line.progress).toBeUndefined();
   });
@@ -175,20 +175,20 @@ describe("rightNow", () => {
   it("merging: where the merge is", () => {
     const merge = { step: "settle", splits: 227, merges_running: 1, merges_queued: 20 };
     expect(rightNow(status({ now: "merging", merge }), NOW).text).toBe(
-      "Merging the index (step 4 of 5): every page is in, and its pieces are being combined before it goes live. Index still open: 227 pieces, 1 merge running, 20 waiting.",
+      "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live. Index still open: 227 pieces, 1 merge running, 20 waiting.",
     );
     const final = { step: "finalize", splits: 9, merges_running: 2, merges_queued: 0 };
     expect(rightNow(status({ now: "merging", merge: final }), NOW).text).toMatch(
       / Index closed for its final merges: 9 pieces, 2 merges running, 0 waiting\.$/,
     );
-    expect(steps(status({ now: "merging", merge }), NOW)[3]!.detail).toBe(
+    expect(steps(status({ now: "merging", merge }), NOW)[2]!.detail).toBe(
       "Every page sent. Index still open: 227 pieces, 1 merge running, 20 waiting",
     );
   });
 
   it("publishing", () => {
     expect(rightNow(status({ now: "publishing", source: "job" }), NOW).text).toBe(
-      "Publishing: the new index is going live (step 5 of 5).",
+      "Publishing: the new index is going live (step 4 of 4).",
     );
   });
 
@@ -293,7 +293,7 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
     expect(rightNow(s, NOW).text).toBe(
       "Idle: the last update went live on Sep 29 at 14:23 UTC. No run is scheduled.",
     );
-    expect(steps(s, NOW)[4]!.detail).toBe("6,557,925 pages from 1,217 newspapers, live since Sep 29 at 14:23 UTC");
+    expect(steps(s, NOW)[3]!.detail).toBe("6,557,925 pages from 1,217 newspapers, live since Sep 29 at 14:23 UTC");
   });
 
   it("says a new update is on its way and the numbers are the old one's", () => {
@@ -343,12 +343,11 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
 describe("steps", () => {
   const states = (s: Status) => steps(s, NOW).map((st) => st.state);
 
-  it("titles-sync running: step 3 is current", () => {
+  it("titles-sync running: step 2 is current", () => {
     const s = status({ now: "titles", source: "job", done: 342, total: 3464 });
-    expect(states(s)).toEqual(["done", "waiting", "active", "waiting", "waiting"]);
-    const [download, ocr, titles, index, live] = steps(s, NOW);
+    expect(states(s)).toEqual(["done", "active", "waiting", "waiting"]);
+    const [download, titles, index, live] = steps(s, NOW);
     expect(download!.detail).toBe("2,997 of 2,997 batches, 23,794,152 pages");
-    expect(ocr!.detail).toBe("Not known on this server");
     expect(titles!.detail).toBe("1,559 of 4,681 newspapers; 1,955 batches wait for their newspapers' details");
     expect(index!.detail).toBe("2,115 batches aren't searchable yet; 160 are ready to index");
     expect(live!.detail).toBe("6,557,925 pages from 1,217 newspapers, live since Sep 29 at 14:23 UTC");
@@ -357,24 +356,23 @@ describe("steps", () => {
   it("titles-sync paused", () => {
     expect(states(status({ now: "titles", paused_until: later(45) }))).toEqual([
       "done",
-      "waiting",
       "paused",
       "waiting",
       "waiting",
     ]);
   });
 
-  it("indexing and merging: step 4 is current", () => {
+  it("indexing and merging: step 3 is current", () => {
     const s = status({ now: "indexing", done: 4_100_000, total: 7_800_000 });
-    expect(states(s)).toEqual(["done", "waiting", "waiting", "active", "waiting"]);
-    expect(steps(s, NOW)[3]!.detail).toBe("4,100,000 of 7,800,000 pages sent");
+    expect(states(s)).toEqual(["done", "waiting", "active", "waiting"]);
+    expect(steps(s, NOW)[2]!.detail).toBe("4,100,000 of 7,800,000 pages sent");
     const m = status({ now: "merging" });
-    expect(states(m)[3]).toBe("active");
-    expect(steps(m, NOW)[3]!.detail).toBe("Every page sent; merging the index");
+    expect(states(m)[2]).toBe("active");
+    expect(steps(m, NOW)[2]!.detail).toBe("Every page sent; merging the index");
   });
 
-  it("publishing: step 5 is current", () => {
-    expect(states(status({ now: "publishing" }))[4]).toBe("active");
+  it("publishing: step 4 is current", () => {
+    expect(states(status({ now: "publishing" }))[3]).toBe("active");
   });
 
   it("downloading", () => {
@@ -396,29 +394,50 @@ describe("steps", () => {
       ready_for_release: 0,
       recurated_awaiting_full: 0,
     };
-    s.ocr_ja = ocrJa({ done: { pages: 11_000, issues: 1500 }, running: false, eta: null });
-    expect(states(s)).toEqual(["done", "done", "done", "done", "done"]);
+    expect(states(s)).toEqual(["done", "done", "done", "done"]);
   });
 
-  it("Japanese pages being read: step 2 runs alongside the others", () => {
+  it("the Japanese OCR is not a step", () => {
     const s = status({ now: "titles", source: "job" });
     s.ocr_ja = ocrJa({});
-    const [, ocr, titles] = steps(s, NOW);
-    expect([ocr!.state, ocr!.parallel, titles!.state]).toEqual(["active", true, "active"]);
-    expect(ocr!.detail).toBe(
-      "3,300 of 11,000 pages read (30%), about 5 h left; searchable from the next update",
-    );
-    s.published.ja = { indexes: ["pages-ja-20261006-1"], fold: 1, pages: 3200 };
-    expect(steps(s, NOW)[1]!.detail).toBe(
-      "3,300 of 11,000 pages read (30%), about 5 h left; 3,200 searchable now",
-    );
-    expect(rightNow(s, NOW).notes).toContain(
-      "Separately, we're reading Japanese pages (step 2): 3,300 of 11,000 done.",
-    );
-    // Stopped part way: waiting for the job's next run, and no note.
-    s.ocr_ja = ocrJa({ running: false, eta: null });
-    expect(steps(s, NOW)[1]!.state).toBe("waiting");
+    expect(steps(s, NOW).map((st) => st.key)).toEqual(["download", "titles", "index", "live"]);
     expect(rightNow(s, NOW).notes.some((n) => n.includes("Japanese"))).toBe(false);
+  });
+});
+
+describe("ocrExperiment", () => {
+  it("reading, with the time left and when the pages become searchable", () => {
+    const s = status({});
+    s.ocr_ja = ocrJa({});
+    expect(ocrExperiment(s, NOW)).toEqual({
+      text: "Reading Japanese pages: 3,300 of 11,000 done (30%), about 5 h left.",
+      progress: { done: 3300, total: 11_000, label: "3,300 of 11,000 Japanese pages read" },
+      searchable: "They become searchable with the next update.",
+    });
+    s.published.ja = { indexes: ["pages-ja-20261006-1"], fold: 1, pages: 3200 };
+    expect(ocrExperiment(s, NOW)!.searchable).toBe("3,200 pages are searchable now.");
+  });
+
+  it("stopped and finished", () => {
+    const s = status({});
+    s.ocr_ja = ocrJa({ running: false, eta: null, updated_at: ago(120) });
+    expect(ocrExperiment(s, NOW)!.text).toBe(
+      "Stopped at 3,300 of 11,000 Japanese pages (30%). The job last reported 2 h ago.",
+    );
+    s.ocr_ja = ocrJa({ running: false, eta: null, done: { pages: 11_000, issues: 1500 } });
+    expect(ocrExperiment(s, NOW)!.text).toBe("All 11,000 Japanese pages read.");
+  });
+
+  it("nothing to show without a report or a Japanese index", () => {
+    const s = status({});
+    expect(ocrExperiment(s, NOW)).toBeNull();
+    s.ocr_ja = { available: false, reason: "The Japanese OCR job has not reported any progress." };
+    expect(ocrExperiment(s, NOW)).toBeNull();
+    s.published.ja = { indexes: ["pages-ja-20261006-1"], fold: 1, pages: 11_000 };
+    expect(ocrExperiment(s, NOW)).toEqual({
+      text: "Japanese pages we read ourselves are in the search.",
+      searchable: "11,000 pages are searchable now.",
+    });
   });
 });
 

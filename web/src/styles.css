@@ -397,8 +397,6 @@ details.status-error > summary { white-space: nowrap; overflow: hidden; text-ove
   display: grid; grid-template-columns: 2.2em 1fr; gap: 10px; align-items: start;
   padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius);
 }
-/* Runs alongside the other steps (Japanese OCR). */
-.step--parallel { border-style: dashed; }
 .step--current { border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
 .step__marker {
   display: inline-grid; place-items: center; width: 2em; height: 2em; border-radius: 50%;
@@ -424,7 +422,7 @@ details.status-error > summary { white-space: nowrap; overflow: hidden; text-ove
 .terms dt::after { content: ": "; }
 .terms dd { display: inline; margin: 0; }
 @media (min-width: 900px) {
-  .steps { grid-template-columns: repeat(5, 1fr); }
+  .steps { grid-template-columns: repeat(4, 1fr); }
   .step { grid-template-columns: 1fr; align-content: start; }
 }
 .pages-table td.num, .pages-table th.num { white-space: nowrap; }

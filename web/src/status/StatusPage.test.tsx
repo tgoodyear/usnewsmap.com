@@ -130,7 +130,7 @@ describe("StatusPage", () => {
     }
   });
 
-  it("leads with what is happening now, then the five steps as a list", async () => {
+  it("leads with what is happening now, then the four steps as a list", async () => {
     const live = {
       ...body,
       activity: {
@@ -174,11 +174,11 @@ describe("StatusPage", () => {
     const list = screen.getByRole("list");
     expect(list.tagName).toBe("OL");
     const items = Array.from(list.children);
-    expect(items).toHaveLength(5);
+    expect(items).toHaveLength(4);
     // The current step is marked for assistive technology and says its state in words.
     const current = items.filter((li) => li.getAttribute("aria-current") === "step");
     expect(current).toHaveLength(1);
-    expect(current[0]!.textContent).toContain("Step 3: Newspaper details looked up");
+    expect(current[0]!.textContent).toContain("Step 2: Newspaper details looked up");
     expect(current[0]!.textContent).toContain("Paused");
     // Operator details are collapsed.
     const technical = screen.getByText("Show the pipeline's own numbers and terms").closest("details")!;

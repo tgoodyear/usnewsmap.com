@@ -249,7 +249,9 @@ test("the status page shows the published version without the pipeline state", a
   await expect(page.getByRole("heading", { level: 2, name: "Right now" })).toBeVisible();
   await expect(page.getByText("What the pipeline is doing right now isn't available on this server.")).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 pages" })).toBeVisible();
-  await expect(page.getByRole("list").filter({ hasText: "Downloaded and processed" }).getByRole("listitem")).toHaveCount(5);
+  await expect(page.getByRole("list").filter({ hasText: "Downloaded and processed" }).getByRole("listitem")).toHaveCount(4);
+  // No OCR report on the fixture API: no OCR section.
+  await expect(page.getByRole("heading", { name: "OCR experiments" })).toBeHidden();
   // Operator details start collapsed.
   await expect(page.getByRole("heading", { name: "Index builds (releases)" })).toBeHidden();
   await page.getByText("Show the pipeline's own numbers and terms").click();
@@ -320,24 +322,24 @@ test("the status page says what the pipeline is doing right now", async ({ page 
   await expect(page.getByText(/^The previous run stopped at .* because of an error while building the search index; nothing changed on the site\.$/)).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 of 23,794,152 downloaded pages (under 0.1%)" })).toBeVisible();
 
-  // Five steps; the current one is marked, and its state is in words.
+  // Four steps; the current one is marked, and its state is in words.
   const steps = page.locator("ol.steps > li");
-  await expect(steps).toHaveCount(5);
+  await expect(steps).toHaveCount(4);
   const current = page.locator('ol.steps > li[aria-current="step"]');
   await expect(current).toHaveCount(1);
   await expect(current).toContainText("Newspaper details looked up");
   await expect(current).toContainText("Paused");
   await expect(steps.nth(0)).toContainText("Done");
-  // Japanese OCR runs alongside: in progress, but not the current step.
-  await expect(steps.nth(1)).toContainText("Japanese pages read");
-  await expect(steps.nth(1)).toContainText("3,300 of 11,000 pages read (30%)");
-  await expect(steps.nth(1)).toContainText("In progress");
-  await expect(steps.nth(3)).toContainText("Waiting");
+  await expect(steps.nth(2)).toContainText("Waiting");
+  // The Japanese OCR is its own section, not a step.
+  await expect(page.getByRole("heading", { level: 2, name: "OCR experiments" })).toBeVisible();
+  await expect(page.getByText(/^Reading Japanese pages: 3,300 of 11,000 done \(30%\), about [45] h/)).toBeVisible();
+  await expect(page.getByRole("progressbar", { name: "3,300 of 11,000 Japanese pages read" })).toBeVisible();
 
   // The steps stack on a phone and sit in a row on a wide screen; the page never scrolls sideways.
   const boxes = await steps.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().top));
   const width = page.viewportSize()!.width;
-  if (width < 900) expect(new Set(boxes.map(Math.round)).size).toBe(5);
+  if (width < 900) expect(new Set(boxes.map(Math.round)).size).toBe(4);
   else expect(new Set(boxes.map(Math.round)).size).toBe(1);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
