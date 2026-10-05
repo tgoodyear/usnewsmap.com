@@ -96,6 +96,8 @@ pub async fn load(
         .collect();
     paths.sort();
     let mut newest: BTreeMap<String, JaPage> = BTreeMap::new();
+    // Every page seen, so pages with no copy in the version count as skipped.
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut parts = Vec::with_capacity(paths.len());
     for path in paths {
         let bytes = store
@@ -109,6 +111,12 @@ pub async fn load(
         });
         for page in read_part(Bytes::from(bytes), &path).with_context(|| path.clone())? {
             let doc_id = page.key.doc_id();
+            seen.insert(doc_id.clone());
+            // Only copies from the version's batches, with catalogued titles,
+            // compete: a newer copy from elsewhere mustn't hide one that counts.
+            if !batches.contains(page.batch.as_str()) || catalog.title(&page.key.lccn).is_none() {
+                continue;
+            }
             let newer = newest
                 .get(&doc_id)
                 .is_none_or(|old| (page.ocred_at, &page.part) > (old.ocred_at, &old.part));
@@ -117,18 +125,11 @@ pub async fn load(
             }
         }
     }
-    let mut overlay = Overlay {
+    Ok(Overlay {
+        skipped: (seen.len() - newest.len()) as u64,
+        pages: newest.into_values().collect(),
         parts,
-        ..Overlay::default()
-    };
-    for (_, page) in newest {
-        if batches.contains(page.batch.as_str()) && catalog.title(&page.key.lccn).is_some() {
-            overlay.pages.push(page);
-        } else {
-            overlay.skipped += 1;
-        }
-    }
-    Ok(overlay)
+    })
 }
 
 /// The rows of one overlay part (the schema `jaocr.py write_part` writes).

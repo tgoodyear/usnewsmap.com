@@ -469,7 +469,7 @@ impl Release {
             for l in &layout {
                 l.log();
             }
-            let bounds = self
+            let (bounds, added) = self
                 .write_snapshot(
                     &version,
                     &version_batches,
@@ -480,10 +480,10 @@ impl Release {
                     ja.as_ref(),
                 )
                 .await?;
-            Ok::<_, anyhow::Error>((docs, bounds, ja))
+            Ok::<_, anyhow::Error>((docs, bounds, ja, added))
         }
         .await;
-        let (docs, (from, to), ja) = match outcome {
+        let (docs, (from, to), ja, added) = match outcome {
             Ok(v) => v,
             Err(e) => {
                 run.status = RunStatus::Failed;
@@ -494,6 +494,8 @@ impl Release {
             }
         };
         run.docs = docs;
+        // Pages of our Japanese OCR that curation never had are in the snapshot's counts.
+        run.pages += added;
         run.batch_list = Some(format!("{version}/{RUN_BATCHES_FILE}"));
         span.record("docs", docs);
         etag = self.state.update_run(&run, &etag).await?;
@@ -804,7 +806,7 @@ impl Release {
         layout: &[IndexLayout],
         overlay: &ocr_ja::Overlay,
         ja: Option<&(String, u64)>,
-    ) -> anyhow::Result<(NaiveDate, NaiveDate)> {
+    ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
         // baselines, which sum them by place instead.
@@ -858,9 +860,20 @@ impl Release {
             }
         }
         // Our OCR of pages curation never had (no ocr.txt in LoC's archive):
-        // they are in no counts.json, so they join the baselines here.
+        // they are in no counts.json, so they join the baselines here. A page
+        // missing from one batch's archive can have text in another batch of
+        // the version, which counted it already: those are left out.
+        let candidates: Vec<&ocr_ja::JaPage> = overlay
+            .pages
+            .iter()
+            .filter(|p| p.missing_from_curation())
+            .collect();
+        let curated_keys = self.curated_keys(batches, &candidates).await?;
         let mut added = 0u64;
-        for p in overlay.pages.iter().filter(|p| p.missing_from_curation()) {
+        for p in candidates
+            .into_iter()
+            .filter(|p| !curated_keys.contains(&p.key.doc_id()))
+        {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let day = day_number(p.key.date);
             *baselines
@@ -967,7 +980,44 @@ impl Release {
             serde_json::to_vec_pretty(&manifest)?,
         )
         .await?;
-        Ok((date_from_day(first), date_from_day(last)))
+        Ok(((date_from_day(first), date_from_day(last)), added))
+    }
+
+    /// The doc ids of `pages` that some batch of the version has in its
+    /// curated parts. Only the parts of batches holding these pages' titles
+    /// are read, without their text.
+    async fn curated_keys(
+        &self,
+        batches: &[RunBatch],
+        pages: &[&ocr_ja::JaPage],
+    ) -> anyhow::Result<BTreeSet<String>> {
+        let wanted: BTreeSet<String> = pages.iter().map(|p| p.key.doc_id()).collect();
+        let lccns: BTreeSet<&str> = pages.iter().map(|p| p.key.lccn.as_str()).collect();
+        let mut found = BTreeSet::new();
+        if wanted.is_empty() {
+            return Ok(found);
+        }
+        for b in batches
+            .iter()
+            .filter(|b| b.curated.lccns.iter().any(|l| lccns.contains(l.as_str())))
+        {
+            for path in &b.curated.parts {
+                let bytes = self
+                    .curated
+                    .get(path)
+                    .await?
+                    .with_context(|| format!("curated part `{path}` is missing"))?;
+                read_part(bytes.into(), false, |row| {
+                    let id = row.key.doc_id();
+                    if wanted.contains(&id) {
+                        found.insert(id);
+                    }
+                    Ok(())
+                })
+                .with_context(|| path.clone())?;
+            }
+        }
+        Ok(found)
     }
 
     async fn put_new(&self, path: &str, body: Vec<u8>) -> anyhow::Result<()> {

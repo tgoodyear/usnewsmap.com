@@ -1813,6 +1813,11 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
     .await;
 
     let p0 = pages.iter().find(|p| !p.text.is_empty()).unwrap();
+    // Another page of the same title and day that LoC gave text, in the same batch.
+    let p1 = pages
+        .iter()
+        .find(|p| p.lccn == p0.lccn && p.date == p0.date && p.seq != p0.seq && !p.text.is_empty())
+        .expect("two pages with text on one day");
     let same_day = pages
         .iter()
         .filter(|p| p.lccn == p0.lccn && p.date == p0.date)
@@ -1833,13 +1838,20 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
             row(90, "batch_fx_ja", "missing", "古い読み", 1),
             row(p0.seq, "batch_fx_ja", "garbled", "日本", 1),
             row(91, "batch_elsewhere", "missing", "東京", 1),
+            // In the version's batch; a newer copy below is from a batch outside it.
+            row(92, "batch_fx_ja", "missing", "大阪", 1),
+            // Marked missing (from some archive), but curation has it with text: counted already.
+            row(p1.seq, "batch_fx_ja", "missing", "平和", 1),
         ],
     )
     .await;
     put_overlay_part(
         &e,
         "ocr-ja/pages/a.2.parquet",
-        &[row(90, "batch_fx_ja", "missing", "米國と日本の戰爭", 2)],
+        &[
+            row(90, "batch_fx_ja", "missing", "米國と日本の戰爭", 2),
+            row(92, "batch_elsewhere", "missing", "外", 5),
+        ],
     )
     .await;
 
@@ -1850,11 +1862,16 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
         published.index_version.trim_start_matches("pages-v")
     );
     assert_eq!(current["ja"]["indexes"], serde_json::json!([ja_id]));
-    assert_eq!(current["ja"]["pages"], 2);
+    assert_eq!(current["ja"]["pages"], 4);
     assert_eq!(current["ja"]["fold"], usnm_core::ja::FOLD_VERSION);
 
     let ja = e.index(&ja_id);
-    assert_eq!(ja.len(), 2, "{:?}", ja.keys());
+    assert_eq!(ja.len(), 4, "{:?}", ja.keys());
+    // The out-of-version copy didn't hide the in-version one.
+    assert_eq!(
+        ja[&format!("{}_{}_ed-1_seq-92", p0.lccn, p0.date)]["printed"],
+        "大阪"
+    );
     let missing = &ja[&format!("{}_{}_ed-1_seq-90", p0.lccn, p0.date)];
     // The newest copy wins, and its text is the folded tokens of the printed text.
     assert_eq!(missing["printed"], "米國と日本の戰爭");
@@ -1864,7 +1881,8 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
     );
     assert_eq!(missing["ocr_engine"], "ndlocr-lite test");
 
-    // The missing page joins the baselines once; the garbled one was counted already.
+    // The missing pages join the baselines once; the garbled one, and the one
+    // curation had in spite of its label, were counted already.
     let v = &published.index_version;
     let titles: Vec<Value> =
         serde_json::from_value(e.reference_json(&format!("{v}/titles.json")).await).unwrap();
@@ -1885,7 +1903,7 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
         .unwrap()[1]
         .as_u64()
         .unwrap();
-    assert_eq!(at_day, same_day as u64 + 1);
+    assert_eq!(at_day, same_day as u64 + 2);
     let title_pages = e.reference_json(&format!("{v}/title_pages.json")).await;
     let fixture_title_pages: Value = serde_json::from_slice(
         &std::fs::read(fixtures().join("fixture-v1/title_pages.json")).unwrap(),
@@ -1893,11 +1911,19 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
     .unwrap();
     assert_eq!(
         title_pages[&p0.lccn],
-        fixture_title_pages[&p0.lccn].as_u64().unwrap() + 1
+        fixture_title_pages[&p0.lccn].as_u64().unwrap() + 2
     );
+    // The release's page total is the snapshot's.
+    let snapshot_total: u64 = title_pages
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(published.pages, snapshot_total);
 
     let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
-    assert_eq!(record["added_to_baselines"], 1);
+    assert_eq!(record["added_to_baselines"], 2);
     assert_eq!(record["skipped"], 1);
     assert_eq!(record["parts"].as_array().unwrap().len(), 2);
     let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
