@@ -181,7 +181,7 @@ impl Config {
                 .collect(),
             search_timeout: Duration::from_secs(num("USNM_SEARCH_TIMEOUT_SECS", 10)?),
             compute_cap: Duration::from_secs(num("USNM_COMPUTE_CAP_SECS", 120)?.max(1)),
-            compute_concurrency: usize::try_from(num("USNM_COMPUTE_CONCURRENCY", 4)?.max(1))
+            compute_concurrency: usize::try_from(num("USNM_COMPUTE_CONCURRENCY", 2)?.max(1))
                 .map_err(|e| e.to_string())?,
             search_queue: usize::try_from(num("USNM_SEARCH_QUEUE", 16)?)
                 .map_err(|e| e.to_string())?,
@@ -251,7 +251,7 @@ mod tests {
         assert!(c.search_log_url.is_none());
         assert_eq!(c.search_log_flush, Duration::from_secs(300));
         assert_eq!(c.compute_cap, Duration::from_secs(120));
-        assert_eq!(c.compute_concurrency, 4);
+        assert_eq!(c.compute_concurrency, 2);
         assert_eq!(c.search_queue, 16);
         assert_eq!(c.abandon_after, Duration::from_secs(15));
         assert_eq!(c.prewarm_top_searches, 20);

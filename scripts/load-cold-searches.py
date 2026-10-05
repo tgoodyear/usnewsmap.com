@@ -31,7 +31,7 @@ for this index version.
 How to read the result: `speedup` is a level's throughput (searches per
 second) over the concurrency-1 pass. When a cold search mostly waits on Blob
 reads, running more at once overlaps that waiting, and speedup grows with
-concurrency up to the API's slots (`USNM_COMPUTE_CONCURRENCY`, 4); raising
+concurrency up to the API's slots (`USNM_COMPUTE_CONCURRENCY`); raising
 the slot count would then help. When it mostly computes, speedup stops near
 the searcher's vCPU count (2), and only more CPU, or cheaper searches,
 helps. `ahead` is the most searches the API reported queued ahead of one of
