@@ -55,6 +55,11 @@ const INGEST_RETRY_FOR: Duration = Duration::from_secs(600);
 pub trait IndexSink: Send {
     /// Start a new, empty index. Fails if it already exists.
     async fn create(&mut self, index_id: &str) -> anyhow::Result<()>;
+    /// Create an index with another mapping (the Japanese pages',
+    /// `ocr_ja::JA_TEMPLATE`). Sinks without mappings just create it.
+    async fn create_with(&mut self, index_id: &str, _template: &str) -> anyhow::Result<()> {
+        self.create(index_id).await
+    }
     async fn add(&mut self, doc: &Value) -> anyhow::Result<()>;
     /// Flush and confirm the index holds exactly `expected` documents.
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()>;
@@ -340,7 +345,11 @@ impl QuickwitSink {
 #[async_trait]
 impl IndexSink for QuickwitSink {
     async fn create(&mut self, index_id: &str) -> anyhow::Result<()> {
-        let config = INDEX_TEMPLATE
+        self.create_with(index_id, INDEX_TEMPLATE).await
+    }
+
+    async fn create_with(&mut self, index_id: &str, template: &str) -> anyhow::Result<()> {
+        let config = template
             .replace("${INDEX_ID}", index_id)
             .replace("${INDEX_URI}", &format!("{}/{index_id}", self.index_root));
         let sent = self

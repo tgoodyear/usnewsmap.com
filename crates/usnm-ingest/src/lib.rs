@@ -12,6 +12,7 @@ pub mod curated;
 pub mod dedup;
 pub mod heartbeat;
 pub mod merges;
+pub mod ocr_ja;
 pub mod progress;
 pub mod release;
 pub mod sink;
