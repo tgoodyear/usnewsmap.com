@@ -161,6 +161,18 @@ impl StatusService {
         entry
     }
 
+    /// The pipeline reading the current document was built from, refreshed
+    /// like [`Self::get`] (so `/v1/versions` costs no extra reads), and when it
+    /// was taken. `None` without pipeline state or before a first good read.
+    pub async fn reading(&self, app: &crate::AppState) -> Option<(DateTime<Utc>, Arc<Summary>)> {
+        self.entry(app).await;
+        self.last_good
+            .read()
+            .expect("status reading")
+            .as_ref()
+            .map(|r| (r.at, r.summary.clone()))
+    }
+
     async fn read_pipeline(&self) -> Result<Option<Summary>, String> {
         let read = async {
             match &self.source {
@@ -563,6 +575,28 @@ mod tests {
             })
             .collect();
         assert_eq!(runs, [("v2", 3000), ("v1", 2)]);
+    }
+
+    #[tokio::test]
+    async fn versions_read_each_runs_build_from_the_same_reading() {
+        let docs = seeded().await;
+        docs.mem
+            .upsert(
+                "index_runs",
+                "v1",
+                &json!({"id": "v1", "index_version": "v1", "full": true, "indexes": ["b1"],
+                        "new_index": "b1", "status": "published", "docs": 9, "pages": 10,
+                        "started_at": "2026-10-06T10:00:00Z",
+                        "build": {"commit": "abc", "engine": "Quickwit 0.9.1"}}),
+            )
+            .await
+            .unwrap();
+        let app = app(PipelineSource::Docs(docs.clone()), Duration::from_secs(60)).await;
+        let (_, summary) = app.status.reading(&app).await.unwrap();
+        assert_eq!(summary.runs[0].build.as_ref().unwrap()["commit"], "abc");
+        // The status document and the versions share one reading.
+        app.status.get(&app).await;
+        assert_eq!(docs.selects.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

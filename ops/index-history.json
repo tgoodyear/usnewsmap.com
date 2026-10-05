@@ -1,0 +1,212 @@
+{
+  "pages-v20260928-1": {
+    "commit": "d8b9c3041b8eb7871f922e383a445874dd9f5832",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-8dmuvwz",
+    "features": {
+      "common_grams": null,
+      "ja_fold": null
+    },
+    "full": true,
+    "image": {
+      "digest": "sha256:8d7e4ad60740b5a7e1dcb1b8c1db5c9e38aec60ec004a7e67606a2e22a4a1864",
+      "pushed_at": "2026-09-28T18:33:50Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-28T22:36:26.099785764Z",
+    "templates": {
+      "pages": {
+        "sha256": "ec38c1f8f806951763740e6f745a1b5724919b9391be632974a72ce667816cfc"
+      }
+    }
+  },
+  "pages-v20260928-2": {
+    "commit": "d8b9c3041b8eb7871f922e383a445874dd9f5832",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-ed0jgw1",
+    "features": {
+      "common_grams": null,
+      "ja_fold": null
+    },
+    "full": true,
+    "image": {
+      "digest": "sha256:8d7e4ad60740b5a7e1dcb1b8c1db5c9e38aec60ec004a7e67606a2e22a4a1864",
+      "pushed_at": "2026-09-28T18:33:50Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-28T22:49:05.690418018Z",
+    "templates": {
+      "pages": {
+        "sha256": "ec38c1f8f806951763740e6f745a1b5724919b9391be632974a72ce667816cfc"
+      }
+    }
+  },
+  "pages-v20260929-1": {
+    "commit": "4d2ddc5cc272c477e7ba8c918bc75539b9f7f4c3",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-0jtt0pq",
+    "features": {
+      "common_grams": null,
+      "ja_fold": null
+    },
+    "full": true,
+    "image": {
+      "digest": "sha256:45748e3b897de0eb0908261bb5a82b14487253bc1284701956e248e46cd550e2",
+      "pushed_at": "2026-09-29T00:03:08Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-29T00:06:01.225497468Z",
+    "templates": {
+      "pages": {
+        "sha256": "216ab4350de87045c327e1718b9971fec4107f63098ec1b263b8e60df3d40dd3"
+      }
+    }
+  },
+  "pages-v20260929-2": {
+    "commit": "c6a2e3420318f208386cc66241b115447a41b173",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-e7vozye",
+    "features": {
+      "common_grams": null,
+      "ja_fold": null
+    },
+    "full": false,
+    "image": {
+      "digest": "sha256:4653c9d4d123951c17a895b9acc14b7cd9e821a8ea2d9459fc3334ef2c5c3c7a",
+      "pushed_at": "2026-09-29T01:43:11Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-29T01:46:57.249151829Z",
+    "templates": {
+      "pages": {
+        "sha256": "216ab4350de87045c327e1718b9971fec4107f63098ec1b263b8e60df3d40dd3"
+      }
+    }
+  },
+  "pages-v20260929-3": {
+    "commit": "5394beb20358fa86a1aff1574573e23696f1b751",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-56m8qcp",
+    "features": {
+      "common_grams": null,
+      "ja_fold": null
+    },
+    "full": false,
+    "image": {
+      "digest": "sha256:8cb83c6685a2112263cb8e833f8aac7406d6928eb93e461035940467d8023b75",
+      "pushed_at": "2026-09-29T02:26:19Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-29T09:09:19.278728264Z",
+    "templates": {
+      "pages": {
+        "sha256": "216ab4350de87045c327e1718b9971fec4107f63098ec1b263b8e60df3d40dd3"
+      }
+    }
+  },
+  "pages-v20260929-4": {
+    "commit": "6d3e8d3e85912abd4f67728718f1080f76c36c74",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-lds3nsm",
+    "features": {
+      "common_grams": null,
+      "ja_fold": null
+    },
+    "full": false,
+    "image": {
+      "digest": "sha256:d91e5e91f3e848d9432ccf994bb05866ee607179ff7aced517910ebc9ac314d3",
+      "pushed_at": "2026-09-29T13:31:55Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-29T13:48:54.897575239Z",
+    "templates": {
+      "pages": {
+        "sha256": "216ab4350de87045c327e1718b9971fec4107f63098ec1b263b8e60df3d40dd3"
+      }
+    }
+  },
+  "pages-v20261002-1": {
+    "commit": "6792a15ad20512fe19704a68c00a5362c626b5ff",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-orbp4d9",
+    "features": {
+      "common_grams": null,
+      "ja_fold": null
+    },
+    "full": true,
+    "image": {
+      "digest": "sha256:6b8aa53f4415c8aada9d5cc7e0c3d6cf1f4cb312a6374e8c9abbea9c8024f296",
+      "pushed_at": "2026-10-02T11:43:27Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-10-02T14:09:39.917479136Z",
+    "templates": {
+      "pages": {
+        "sha256": "236def7c3751195438e13208276009ac2ba02715d83d8bad0374edfc04b3019d"
+      }
+    }
+  },
+  "pages-v20261003-1": {
+    "commit": "bfa2baf32a96fb9f0c435887949a2d08db16629c",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-u728ofr",
+    "features": {
+      "common_grams": null,
+      "ja_fold": null
+    },
+    "full": true,
+    "image": {
+      "digest": "sha256:d4b678f73979ce7c72f361edacacd65473814b28fd56b737edaec24940b15050",
+      "pushed_at": "2026-10-03T11:16:05Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-10-03T13:33:16.451076571Z",
+    "templates": {
+      "pages": {
+        "sha256": "dd04a967c3bd9e948789fee9f17dd0c83bd46ce6ea5801f714ff60e13cf7de90"
+      }
+    }
+  },
+  "pages-v20261005-1": {
+    "commit": "307beb5482ffdea26ed21a7a9198e6fae003fa21",
+    "engine": "Quickwit 0.9.1",
+    "execution": "caj-usnm-ingest-prod-9ld8y3r",
+    "features": {
+      "common_grams": 1,
+      "ja_fold": 1
+    },
+    "full": true,
+    "image": {
+      "digest": "sha256:e0023c332b585a7ccd725b2ab5f371955b2b642fe4eec9cfb8a1ec68c376ff59",
+      "pushed_at": "2026-10-05T15:09:41Z",
+      "tag": "usnewsmap-ingest:main"
+    },
+    "ingest": "0.1.0",
+    "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-10-05T17:00:38.138931111Z",
+    "templates": {
+      "pages": {
+        "sha256": "42d78f0eb09ddf16986c12aa1520f01ba6d7921759082d3765889235095261a9"
+      },
+      "pages-ja": {
+        "sha256": "0365a75b054ccc7826ce2eb5b4c6d6044ea5bf7dc09027eb3f5d1475d7445b4e"
+      }
+    }
+  }
+}

@@ -1384,6 +1384,23 @@ async fn status_without_pipeline_state() {
 }
 
 #[tokio::test]
+async fn versions_without_pipeline_state() {
+    let state = state_with(None).await;
+    for uri in ["/v1/versions", "/api/v1/versions"] {
+        let (status, headers, body) = get(&state, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(
+            header_str(&headers, header::CACHE_CONTROL),
+            "public, max-age=30"
+        );
+        assert_eq!(body["schema"], 1);
+        assert_eq!(body["available"], false);
+        assert_eq!(body["serving"], "fixture-v1");
+        assert_eq!(body["versions"], json!([]));
+    }
+}
+
+#[tokio::test]
 async fn status_has_pages_by_state_and_language() {
     let state = state_with(None).await;
     let (_, _, body) = get(&state, "/v1/status").await;

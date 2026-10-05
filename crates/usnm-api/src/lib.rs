@@ -33,6 +33,7 @@ pub mod site;
 pub mod status;
 pub mod telemetry;
 pub mod version;
+pub mod versions;
 
 use config::Config;
 use error::ApiError;
@@ -203,6 +204,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/hits", get(routes::hits))
         .route("/coverage", get(routes::coverage))
         .route("/status", get(routes::status))
+        .route("/versions", get(routes::versions))
         .route("/beacon", post(routes::beacon))
         .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         // Unknown API paths are problem details, never the site's index.
