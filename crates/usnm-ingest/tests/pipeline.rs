@@ -409,6 +409,8 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     );
     assert!(item["build"]["templates"]["pages"].get("yaml").is_none());
     assert_eq!(item["build"]["full"], build["full"]);
+    // The memory sink has no engine to name.
+    assert_eq!(build["engine"], serde_json::Value::Null);
 
     // The API loads it: checksums, manifest and version pairing all hold.
     let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
@@ -2099,6 +2101,17 @@ async fn new_japanese_ocr_alone_is_released_on_the_same_indexes() {
     assert_eq!(e.index(&ja_id).len(), 2);
     let run = raw_run(&e, &v2.index_version).await;
     assert_eq!(run["new_index"], ja_id.as_str());
+    // Its build record lists only the template it applied (#161).
+    assert!(run["build"]["templates"].get("pages").is_none(), "{run}");
+    assert!(run["build"]["templates"]["pages-ja"]["sha256"].is_string());
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", v2.index_version))
+        .await;
+    assert_eq!(
+        manifest["build"]["templates"]["pages-ja"]["yaml"],
+        usnm_ingest::ocr_ja::JA_TEMPLATE
+    );
+    assert!(manifest["build"]["templates"].get("pages").is_none());
     let record = e
         .reference_json(&format!("{}/ocr_ja.json", v2.index_version))
         .await;
