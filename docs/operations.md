@@ -79,8 +79,8 @@ az containerapp job execution list -n "$JOB" -g "$RG" -o table
 
 - `title records` lines every 100 titles, and a `title records` report at the end (`left: 0` and no `throttled` or `out_of_time` when done).
 - `release progress` every 30 s: about 750 pages a second before the common-word pairs (#154), so 23.8M pages took about 9 h; the pairs make each page's index about 1.6× larger, so expect longer. `quickwit_rss_mb` should stay under about 5,500 (the ingest container has 7,680 MiB).
-- `release merges`: step `settle`, then `finalize`; `splits` falls by 9 every minute or two after ingest ends. About 1.7 h for 23.8M pages, and at most `USNM_MERGE_TIMEOUT_SECS`.
-- `merged; the index is closed to further writes`, `index layout` (about 400 splits for 23.8M pages at the 60,000-page target) and `released`. About 11 h from the start when the catalog was complete, in the October 2026 rebuild before #154, and at most about 22 h 45 min.
+- `release merges`: step `settle`, then `finalize`; `splits` falls by 9 every minute or two after ingest ends. About 1.7 h for 23.8M pages in October 2026; with the 60,000-page splits and the common-word pairs, expect about 2.7 h (#156), and at most `USNM_MERGE_TIMEOUT_SECS`.
+- `merged; the index is closed to further writes`, `index layout` (about 400 splits for 23.8M pages at the 60,000-page target) and `released`. About 11 h from the start when the catalog was complete, in the October 2026 rebuild before #154; with the pairs, expect about 18–21 h (#156), and at most about 22 h 45 min.
 
 Then turn the full rebuild off:
 
