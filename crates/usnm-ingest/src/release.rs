@@ -37,6 +37,7 @@ use usnm_core::time::{date_from_day, day_number, ym_number};
 use usnm_store::ObjectStore;
 
 use crate::activity::Reporter;
+use crate::build_info;
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
 use crate::dedup::{self, Plan};
@@ -462,6 +463,14 @@ impl Release {
             indexes.push(index_id.clone());
             index_id.clone()
         };
+        // What this run builds, for the version's build record (#161): the
+        // same predicate as `build_ja_index` for the Japanese index.
+        let mut built = build_info::Built {
+            full,
+            main_index: !overlay_only,
+            ja_index: overlay.pages.iter().any(|p| p.indexable()),
+            engine: sink.engine().await,
+        };
         let mut run = IndexRun {
             id: version.clone(),
             index_version: version.clone(),
@@ -481,6 +490,7 @@ impl Release {
             previous_version: previous.as_ref().map(|p| p.index_version.clone()),
             last_error: None,
             failed_at: None,
+            build: Some(build_info::summary(&built)),
         };
         if !self.state.create_run(&run).await? {
             bail!("index run `{version}` already exists");
@@ -505,6 +515,8 @@ impl Release {
             let ja = self
                 .build_ja_index(lease, sink, &version, &overlay, &catalog)
                 .await?;
+            // What it built in the end: the Japanese index can come out empty.
+            built.ja_index = ja.is_some();
             report.step(Step::Publishing).await;
             // What every index of the version is made of, for the log and
             // the manifest: how many splits a cold search opens (05 §5.5.1).
@@ -523,6 +535,7 @@ impl Release {
                     &layout,
                     &overlay,
                     ja.as_ref(),
+                    &build_info::record(&built),
                 )
                 .await?;
             Ok::<_, anyhow::Error>((docs, bounds, ja, added))
@@ -539,6 +552,8 @@ impl Release {
             }
         };
         run.docs = docs;
+        // What it built in the end, as the manifest has it.
+        run.build = Some(build_info::summary(&built));
         // Pages of our Japanese OCR that curation never had are in the snapshot's counts.
         run.pages += added;
         run.batch_list = Some(format!("{version}/{RUN_BATCHES_FILE}"));
@@ -882,6 +897,7 @@ impl Release {
         layout: &[IndexLayout],
         overlay: &ocr_ja::Overlay,
         ja: Option<&(String, u64)>,
+        build: &Value,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
@@ -1053,6 +1069,8 @@ impl Release {
         if !overlay.parts.is_empty() {
             manifest["built_from"]["ocr_ja"] = serde_json::to_value(&overlay.parts)?;
         }
+        // What built it (#161), with the index templates in full.
+        manifest["build"] = build.clone();
         self.put_new(
             &format!("{version}/manifest.json"),
             serde_json::to_vec_pretty(&manifest)?,

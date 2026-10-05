@@ -7,6 +7,7 @@
 
 pub mod activity;
 pub mod archive;
+pub mod build_info;
 pub mod catalog;
 pub mod curated;
 pub mod dedup;

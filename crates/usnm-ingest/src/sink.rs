@@ -65,6 +65,12 @@ pub trait IndexSink: Send {
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()>;
     /// `memory` or `quickwit`, recorded in `current.json`.
     fn backend(&self) -> &'static str;
+    /// The search engine's name and version ("Quickwit 0.9.1"), for the
+    /// version's build record (#161): the engine this sink writes to, however
+    /// it was started. `None` when the sink has no engine or can't tell.
+    async fn engine(&mut self) -> Option<String> {
+        None
+    }
     /// The published splits of `index_ids`, for the release log and
     /// manifest. Sinks without splits report none.
     async fn layout(&mut self, _index_ids: &[String]) -> anyhow::Result<Vec<IndexLayout>> {
@@ -432,6 +438,25 @@ impl IndexSink for QuickwitSink {
 
     fn backend(&self) -> &'static str {
         "quickwit"
+    }
+
+    async fn engine(&mut self) -> Option<String> {
+        let v: Value = self
+            .http
+            .get(format!("{}/api/v1/version", self.base))
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        let version = v["build"]["version"].as_str()?;
+        Some(match v["build"]["commit_short_hash"].as_str() {
+            Some(c) if !c.is_empty() => format!("Quickwit {version} ({c})"),
+            _ => format!("Quickwit {version}"),
+        })
     }
 
     async fn layout(&mut self, index_ids: &[String]) -> anyhow::Result<Vec<IndexLayout>> {
@@ -1056,6 +1081,29 @@ mod tests {
         let big = serde_json::json!({"doc_id": "big", "text": "x".repeat(CHUNK_BYTES)});
         let err = s.add(&big).await.unwrap_err().to_string();
         assert!(err.contains("`big`"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn engine_is_the_nodes_version() {
+        let app = axum::Router::new().route(
+            "/api/v1/version",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({
+                    "build": {"version": "0.9.1", "commit_short_hash": "abc1234"}
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut s = QuickwitSink::new(&format!("http://{addr}"), "file:///tmp/x").unwrap();
+        assert_eq!(
+            s.engine().await.as_deref(),
+            Some("Quickwit 0.9.1 (abc1234)")
+        );
+        // Nothing listening: unknown, not an error.
+        let mut gone = QuickwitSink::new("http://127.0.0.1:9", "file:///tmp/x").unwrap();
+        assert_eq!(gone.engine().await, None);
     }
 
     /// A fake ingest endpoint that answers with `statuses` in turn (then 200)

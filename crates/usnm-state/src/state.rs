@@ -217,6 +217,12 @@ pub struct IndexRun {
     /// recorded leave it out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_at: Option<DateTime<Utc>>,
+    /// What built the version (#161): commit, Quickwit, feature versions and
+    /// the index templates' checksums (`usnm_ingest::build_info::summary`).
+    /// The version's manifest has the templates in full. Runs before this
+    /// was recorded leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<serde_json::Value>,
 }
 
 /// How far the running release has got: the `ops/release-progress` item,

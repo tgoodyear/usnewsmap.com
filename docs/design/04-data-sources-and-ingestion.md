@@ -94,7 +94,16 @@ reference/                             (Hot; small; loaded by API; IMMUTABLE per
     ocr_ja.json                         our Japanese OCR in this version (§4.8), when the overlay has
                                         parts: {fold, index, indexed, pages, added_to_baselines,
                                         skipped, parts: [{path, sha256, bytes}]}
-    manifest.json                       { index_version, files: [{path, sha256, bytes}], built_from: {batches, ocr_ja?} }
+    manifest.json                       { index_version, files: [{path, sha256, bytes}], built_from: {batches, ocr_ja?},
+                                          indexes (split layout), build }. build (#161) is what this run
+                                          built: commit (USNM_GIT_SHA, from CI), ingest crate version, the
+                                          engine (the writer's /api/v1/version), full or delta, feature
+                                          versions (common_grams, ja_fold) and the template of each index it
+                                          wrote (pages, unless overlay-only; pages-ja, if it built one), in
+                                          full with its sha256. The Cosmos index_runs item keeps the same
+                                          without the templates' text. Indexes it kept (a delta's base, an
+                                          overlay-only release's main indexes) were built by earlier
+                                          versions: follow previous_version
   raw/titles.json                       the fields titles-sync keeps from each LoC title record
   current.json                          { index_version, backend, indexes: [base, delta…] (sealed), reference: "{index_version}", bounds, previous_version, published_at, synthetic, ja?: {indexes: [pages-ja-…], fold, pages} }
 (document state, meaning per-title, per-batch, per-issue and per-index-run status, lives in Cosmos DB, not here; see 05 §5.9.1)
