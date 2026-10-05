@@ -13,10 +13,14 @@ once per concurrency level: a pool of N workers drains the ten. Each request
 waits out `202 Accepted` and `503 busy` as the web app does (06 §6.3.5), so
 the time to a result includes any time queued for a computation slot.
 
-"Cold" means cold for the API: every pass moves each search's end date back
-by a few days (within the corpus, since the API clamps dates to it), so the
-canonical request, and with it the cache key, is new each time, and neither
-the in-process nor the persistent cache can answer it. Quickwit's own caches
+"Cold" means cold for the API: every pass shifts each search's date window
+back by one more day, so the canonical request, and with it the cache key,
+is new each time, and neither the in-process nor the persistent cache can
+answer it. The shift keeps a window's length (a whole-corpus window loses
+its last days, since the API clamps dates to the corpus), so every pass
+searches the same workload. The whole run starts from a random offset of up
+to 90 days (`--offset` sets it), so a second run doesn't meet the first
+run's cached results. Quickwit's own caches
 are a different matter: split footers and fast fields stay warm across
 passes. So the first pass, at concurrency 1, is reported apart as "first"
 (the searcher's cold start); the levels after it, including another pass at
@@ -47,7 +51,6 @@ import datetime
 import json
 import random
 import statistics
-import threading
 import time
 import urllib.error
 import urllib.parse
@@ -133,29 +136,27 @@ def run(base, path, name):
 class Paths:
     """A new canonical request for each search on each pass."""
 
-    def __init__(self, bounds, version):
+    def __init__(self, bounds, version, offset):
         self.lo = datetime.date.fromisoformat(bounds["from"])
         self.hi = datetime.date.fromisoformat(bounds["to"])
         self.version = version
-        self.used = set()
-        self.lock = threading.Lock()
+        self.offset = offset
+        self.passes = 0
 
-    def make(self, params, window):
+    def next_pass(self):
+        """Requests for every search, shifted one day further than the last pass."""
+        self.passes += 1
+        shift = datetime.timedelta(days=self.offset + self.passes)
+        return [self.make(p, w, shift) for p, w in SEARCHES]
+
+    def make(self, params, window, shift):
         start, end = (self.lo, self.hi) if window is None else map(datetime.date.fromisoformat, window)
         start, end = max(start, self.lo), min(end, self.hi)
         if end - start < datetime.timedelta(days=30):
             # The window is outside this corpus (the fixtures cover 1895-1897).
             start, end = self.lo, self.hi
-        with self.lock:
-            for _ in range(1000):
-                to = end - datetime.timedelta(days=random.randint(1, 120))
-                key = (json.dumps(params, sort_keys=True), to)
-                if to > start and key not in self.used:
-                    self.used.add(key)
-                    break
-            else:
-                raise SystemExit(f"no unused end date left for {params['q']}")
-        query = {**params, "from": start.isoformat(), "to": to.isoformat(), "v": self.version}
+        start, end = max(start - shift, self.lo), end - shift
+        query = {**params, "from": start.isoformat(), "to": end.isoformat(), "v": self.version}
         return "/v1/aggregate?" + urllib.parse.urlencode(query)
 
 
@@ -165,7 +166,7 @@ def name_of(params, window):
 
 
 def level(base, paths, concurrency, verbose):
-    jobs = [(paths.make(p, w), name_of(p, w)) for p, w in SEARCHES]
+    jobs = list(zip(paths.next_pass(), (name_of(p, w) for p, w in SEARCHES)))
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
         results = list(pool.map(lambda j: run(base, *j), jobs))
@@ -203,6 +204,7 @@ def main():
     ap.add_argument("base", nargs="?", default="http://localhost:8080")
     ap.add_argument("--levels", default="1,2,4,10", help="concurrency levels, comma-separated")
     ap.add_argument("--pause", type=float, default=30, help="seconds between levels (rate limit)")
+    ap.add_argument("--offset", type=int, help="days every window starts shifted back (default: random, 0-90)")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every search")
     args = ap.parse_args()
     base = args.base.rstrip("/")
@@ -212,8 +214,12 @@ def main():
     if status != 200:
         raise SystemExit(f"{base}/v1/meta answered {status}")
     meta = json.loads(body)
-    paths = Paths(meta["bounds"], meta["index_version"])
-    print(f"{base}, index version {meta['index_version']}, {len(SEARCHES)} cold searches per level")
+    offset = args.offset if args.offset is not None else random.randint(0, 90)
+    paths = Paths(meta["bounds"], meta["index_version"], offset)
+    print(
+        f"{base}, index version {meta['index_version']}, {len(SEARCHES)} cold searches per level, "
+        f"windows shifted back {offset} days plus one per pass"
+    )
     print(
         f"{'level':<7} {'wall s':>7} {'per s':>8} {'speedup':>7} {'p50 s':>7} {'max s':>7} "
         f"{'backend s':>9} {'202s':>5} {'ahead':>5} {'busy':>5} {'429s':>5} {'failed':>6}"

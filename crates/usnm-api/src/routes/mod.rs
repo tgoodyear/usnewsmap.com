@@ -30,7 +30,7 @@ use tokio::time::Instant;
 use usnm_store::ObjectStore;
 
 use crate::error::ApiError;
-use crate::flights::{Entry, Interest, Landing, Spot};
+use crate::flights::{Entry, Interest, Landing, SearchSlot, Spot};
 use crate::telemetry::ServedVersion;
 use crate::version::{self, Pinning};
 use crate::{AppState, Snapshot};
@@ -440,6 +440,14 @@ where
     }
 }
 
+/// The computation slot a computation holds while it runs, if any.
+#[allow(dead_code)] // Held for its `Drop`, never read.
+enum Held<'a> {
+    Nothing,
+    Search(SearchSlot<'a>),
+    WarmUp(tokio::sync::OwnedSemaphorePermit),
+}
+
 /// The body: from the persistent cache (visitors only), else computed, and
 /// persisted when it was slow. A search computes only once it has a slot:
 /// a visitor's queues for one (holding its place in `spot`) for at most
@@ -466,8 +474,8 @@ where
     }
     let slot = async {
         match (job.search, job.warm_up) {
-            (false, _) => Ok(None),
-            (true, false) => state.flights.slot(spot).await.map(Some),
+            (false, _) => Ok(Held::Nothing),
+            (true, false) => state.flights.slot(spot).await.map(Held::Search),
             // The semaphore is never closed.
             (true, true) => state
                 .flights
@@ -475,7 +483,7 @@ where
                 .clone()
                 .acquire_owned()
                 .await
-                .map(Some)
+                .map(Held::WarmUp)
                 .map_err(|e| ApiError::Backend(e.to_string())),
         }
     };
