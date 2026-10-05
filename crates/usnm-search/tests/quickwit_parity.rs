@@ -349,8 +349,10 @@ async fn japanese_searches_match_the_reference_backend() {
             let want = mem.hits(&set, q, f, &page).await.unwrap();
             let got = qw.hits(&set, q, f, &page).await.expect(qname);
             assert_eq!(got.total, want.total, "hits total: {qname} / {fname}");
-            let key =
-                |h: &usnm_search::Hit| (h.doc_id.clone(), h.snippets.clone(), h.ocr_source.clone());
+            let key = |h: &usnm_search::Hit| {
+                let ocr = (h.ocr_source.clone(), h.ocr_engine.clone());
+                (h.doc_id.clone(), h.snippets.clone(), ocr)
+            };
             assert_eq!(
                 got.hits.iter().map(key).collect::<Vec<_>>(),
                 want.hits.iter().map(key).collect::<Vec<_>>(),

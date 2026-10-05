@@ -191,6 +191,7 @@ impl SearchBackend for MemoryBackend {
                         None => snippet(&d.text, &highlight).into_iter().collect(),
                     },
                     ocr_source: d.ocr_source.clone(),
+                    ocr_engine: d.ocr_engine.clone(),
                 })
                 .collect(),
         })
@@ -356,6 +357,7 @@ mod shard_tests {
         PageDoc {
             printed: None,
             ocr_source: None,
+            ocr_engine: None,
             doc_id: format!("sn99{i:06}_1896-07-10_ed-1_seq-1"),
             day: 71_000 + i,
             ym: 1896 * 12 + 6,

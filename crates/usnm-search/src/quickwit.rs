@@ -302,6 +302,8 @@ pub struct StoredHit {
     pub printed: Option<String>,
     #[serde(default)]
     pub ocr_source: Option<String>,
+    #[serde(default)]
+    pub ocr_engine: Option<String>,
 }
 
 impl StoredHit {
@@ -447,6 +449,7 @@ pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, Search
                     .unwrap_or_default()
             }),
             ocr_source: d.ocr_source,
+            ocr_engine: d.ocr_engine,
             front_page: d.seq == 1,
             day,
             doc_id: d.doc_id,

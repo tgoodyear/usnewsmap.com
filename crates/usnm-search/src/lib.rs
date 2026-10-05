@@ -51,6 +51,9 @@ pub struct PageDoc {
     /// Who made the text when it isn't LoC's OCR (`usnm-ndlocr-lite`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr_source: Option<String>,
+    /// The engine and version that made it (`ndlocr-lite 636d1cf`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_engine: Option<String>,
 }
 
 /// The sealed indexes a published `index_version` names (08 §8.4.1), and
@@ -175,6 +178,9 @@ pub struct Hit {
     /// Who made the page's text when it isn't LoC's OCR (`usnm-ndlocr-lite`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ocr_source: Option<String>,
+    /// The engine and version that made it (`ndlocr-lite 636d1cf`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_engine: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

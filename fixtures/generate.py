@@ -113,6 +113,7 @@ def ja_docs():
             "language": ["eng", "jpn"], "front_page": True, "edition": 1, "seq": 1,
             "sort_key": sort_key(ordinal, 1, 1), "date": d.isoformat(),
             "text": ja_index_text(printed), "printed": printed, "ocr_source": "usnm-ndlocr-lite",
+            "ocr_engine": "ndlocr-lite 636d1cf",
         })
         d += timedelta(days=14)
     return docs

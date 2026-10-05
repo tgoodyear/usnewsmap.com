@@ -47,6 +47,7 @@ fn fixture_text_is_the_rust_tokenization_of_the_printed_text() {
         let printed = d.printed.as_deref().expect("printed");
         assert_eq!(d.text, ja::index_text(printed), "{}", d.doc_id);
         assert_eq!(d.ocr_source.as_deref(), Some("usnm-ndlocr-lite"));
+        assert_eq!(d.ocr_engine.as_deref(), Some("ndlocr-lite 636d1cf"));
     }
 }
 
@@ -91,6 +92,7 @@ async fn japanese_words_match_through_folding_and_snippets_show_the_printed_text
                 h.snippets
             );
             assert_eq!(h.ocr_source.as_deref(), Some("usnm-ndlocr-lite"));
+            assert_eq!(h.ocr_engine.as_deref(), Some("ndlocr-lite 636d1cf"));
         }
     }
     // Small kana fold: がつこう finds がっこう.

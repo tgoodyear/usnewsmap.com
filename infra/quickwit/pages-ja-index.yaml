@@ -6,7 +6,8 @@
 #   tokenizer, which keeps positions so phrases work. Quickwit's own
 #   `chinese_compatible` splits only Han, not kana, and can't fold old forms.
 # - `printed` is the text as printed, stored for snippets, not indexed.
-# - `ocr_source` says who made the text (`usnm-ndlocr-lite`).
+# - `ocr_source` says who made the text (`usnm-ndlocr-lite`), `ocr_engine` with
+#   which version (`ndlocr-lite 636d1cf`).
 # The indexing settings are pages-index.yaml's (a test keeps them equal).
 version: 0.9
 index_id: ${INDEX_ID}
@@ -19,6 +20,7 @@ doc_mapping:
     - { name: text, type: text, tokenizer: whitespace, record: position, stored: true, fieldnorms: false }
     - { name: printed, type: text, indexed: false, stored: true }
     - { name: ocr_source, type: text, tokenizer: raw, stored: true }
+    - { name: ocr_engine, type: text, indexed: false, stored: true }
     - { name: date, type: datetime, input_formats: ["%Y-%m-%d"], output_format: "%Y-%m-%d", fast: true, stored: true }
     - { name: day, type: u64, fast: true, indexed: true, stored: true }
     - { name: ym, type: u64, fast: true, indexed: true }
