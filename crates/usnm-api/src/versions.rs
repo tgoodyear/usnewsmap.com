@@ -28,6 +28,17 @@ fn history() -> &'static BTreeMap<String, Value> {
     H.get_or_init(|| serde_json::from_str(HISTORY).expect("ops/index-history.json is valid JSON"))
 }
 
+/// The reconstructed record of `run`: the history's entry for its version,
+/// only if it is the same run. Version names are only unique within one
+/// environment's pipeline state, so a staging run that happens to share a
+/// name with a production one must not get production's record; the run's
+/// start time, to the nanosecond, tells them apart.
+fn reconstructed(run: &usnm_state::summary::RunSummary) -> Option<&'static Value> {
+    let b = history().get(&run.index_version)?;
+    let started: DateTime<Utc> = b["run_started_at"].as_str()?.parse().ok()?;
+    (started == run.started_at).then_some(b)
+}
+
 const NOT_CONFIGURED: &str = "This server is not connected to the pipeline state.";
 
 #[derive(Debug, Serialize)]
@@ -86,7 +97,7 @@ pub fn assemble(
         .runs
         .iter()
         .map(|r| {
-            let (build, build_source) = match (&r.build, history().get(&r.index_version)) {
+            let (build, build_source) = match (&r.build, reconstructed(r)) {
                 (Some(b), _) => (Some(b.clone()), Some("recorded")),
                 (None, Some(b)) => (Some(b.clone()), Some("reconstructed")),
                 (None, None) => (None, None),
@@ -142,6 +153,8 @@ mod tests {
             assert_eq!(b["commit"].as_str().map(str::len), Some(40), "{v}");
             assert!(b["reconstructed"].is_string(), "{v}");
             assert!(b["templates"]["pages"]["sha256"].is_string(), "{v}");
+            let started = b["run_started_at"].as_str().unwrap_or_default();
+            assert!(started.parse::<DateTime<Utc>>().is_ok(), "{v}: {started}");
         }
     }
 
@@ -150,7 +163,7 @@ mod tests {
         let now = Utc::now();
         let s = summary(json!([
             {"index_version": "pages-v20260929-1", "full": true, "status": "published",
-             "started_at": "2026-09-29T00:06:01Z", "published_at": "2026-09-29T00:42:59Z"},
+             "started_at": "2026-09-29T00:06:01.225497468Z", "published_at": "2026-09-29T00:42:59Z"},
             {"index_version": "pages-v20991231-1", "full": false, "status": "published",
              "started_at": "2099-12-31T00:00:00Z", "previous_version": "pages-v20260929-1",
              "build": {"commit": "abc", "templates": {}}},
@@ -185,6 +198,18 @@ mod tests {
             v.versions[1].build.as_ref().unwrap()["commit"],
             history()["pages-v20260929-1"]["commit"]
         );
+    }
+
+    #[test]
+    fn another_environments_run_with_the_same_name_gets_no_record() {
+        let now = Utc::now();
+        let s = summary(json!([
+            {"index_version": "pages-v20260929-1", "full": true, "status": "published",
+             "started_at": "2026-09-29T07:00:00Z"}
+        ]));
+        let v = assemble(now, "pages-v20260929-1", Some((now, &s)));
+        assert_eq!(v.versions[0].build_source, None);
+        assert!(v.versions[0].build.is_none());
     }
 
     #[test]

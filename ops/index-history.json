@@ -15,6 +15,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-28T22:36:26.099785764Z",
     "templates": {
       "pages": {
         "sha256": "ec38c1f8f806951763740e6f745a1b5724919b9391be632974a72ce667816cfc"
@@ -37,6 +38,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-28T22:49:05.690418018Z",
     "templates": {
       "pages": {
         "sha256": "ec38c1f8f806951763740e6f745a1b5724919b9391be632974a72ce667816cfc"
@@ -59,6 +61,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-29T00:06:01.225497468Z",
     "templates": {
       "pages": {
         "sha256": "216ab4350de87045c327e1718b9971fec4107f63098ec1b263b8e60df3d40dd3"
@@ -81,6 +84,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-29T01:46:57.249151829Z",
     "templates": {
       "pages": {
         "sha256": "216ab4350de87045c327e1718b9971fec4107f63098ec1b263b8e60df3d40dd3"
@@ -103,6 +107,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-29T09:09:19.278728264Z",
     "templates": {
       "pages": {
         "sha256": "216ab4350de87045c327e1718b9971fec4107f63098ec1b263b8e60df3d40dd3"
@@ -125,6 +130,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-09-29T13:48:54.897575239Z",
     "templates": {
       "pages": {
         "sha256": "216ab4350de87045c327e1718b9971fec4107f63098ec1b263b8e60df3d40dd3"
@@ -147,6 +153,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-10-02T14:09:39.917479136Z",
     "templates": {
       "pages": {
         "sha256": "236def7c3751195438e13208276009ac2ba02715d83d8bad0374edfc04b3019d"
@@ -169,6 +176,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-10-03T13:33:16.451076571Z",
     "templates": {
       "pages": {
         "sha256": "dd04a967c3bd9e948789fee9f17dd0c83bd46ce6ea5801f714ff60e13cf7de90"
@@ -191,6 +199,7 @@
     },
     "ingest": "0.1.0",
     "reconstructed": "Reconstructed: the commit is the last usnewsmap-ingest image pushed before the execution started (every execution ran usnewsmap-ingest:main); the rest is from that commit in git.",
+    "run_started_at": "2026-10-05T17:00:38.138931111Z",
     "templates": {
       "pages": {
         "sha256": "42d78f0eb09ddf16986c12aa1520f01ba6d7921759082d3765889235095261a9"

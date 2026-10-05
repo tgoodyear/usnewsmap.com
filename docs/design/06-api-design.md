@@ -286,6 +286,7 @@ Every index version the pipeline has built, newest first, with what built each o
 - `build` sources:
   - `recorded`: what the release wrote into the run item (04, the manifest's `build`, without the templates' text). It has the commit, ingest version, engine, `full`, feature versions (`common_grams`, `ja_fold`) and the sha256 of each index template the run applied.
   - `reconstructed`: for versions released before releases recorded it, from `ops/index-history.json`, which `scripts/reconstruct-index-history.py` writes. The commit is the last ingest image pushed before the run's execution started, since every execution ran `usnewsmap-ingest:main`. The rest comes from that commit in git. These records also name the `execution` and the image's digest and push time.
+  - A reconstructed record applies only to the run whose start time matches its `run_started_at` to the nanosecond. Version names repeat across environments, and the history is production's. The script reads `/v1/versions`, skips recorded runs, merges with the existing file (`--merge`) so older entries survive, and fails instead of writing an empty history.
   - `null`: neither.
 - What a record covers: it describes the indexes that run wrote. A delta's base, and the main indexes an overlay-only release keeps, come from earlier versions: follow `previous_version`.
 

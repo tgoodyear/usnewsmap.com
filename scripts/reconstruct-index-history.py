@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Reconstruct the build records of index versions released before #161.
 
-    scripts/reconstruct-index-history.py prod > ops/index-history.json
+    scripts/reconstruct-index-history.py prod --merge ops/index-history.json > /tmp/h.json \
+      && mv /tmp/h.json ops/index-history.json
 
 Releases record what built them since #161 (`build` in the version's
 manifest and its `index_runs` item). For the versions before that, this
@@ -16,9 +17,16 @@ works it out:
   `usnm-core`, and the index templates' sha256 (`pages`, and `pages-ja`
   once releases built a Japanese index).
 
-Reads the runs from the live `/v1/status`, the executions and image tags with
-`az` (signed in as the operator), and git from this checkout (fetch first).
-Versions with a recorded build are left out. Prints JSON with sorted keys.
+Reads every run from the live `/v1/versions` (`--from-status` reads
+`/v1/status` instead, for an API without that endpoint: its latest 20 runs
+only), the executions and image tags with `az` (signed in as the operator),
+and git from this checkout (fetch first). Runs whose build was recorded are
+left out. `--merge` keeps the given file's entries for runs this reading
+doesn't cover, so older history isn't lost. Each entry records the run's
+start time (`run_started_at`): the API gives a reconstructed record only to
+the run with that exact start, since version names repeat across
+environments. Prints JSON with sorted keys; fails rather than print an empty
+history when the pipeline state isn't readable.
 """
 
 import argparse
@@ -80,6 +88,8 @@ def main() -> None:
     ap.add_argument("env", nargs="?", default="prod")
     ap.add_argument("--site", default="https://usnewsmap.com")
     # Without these, from scripts/settings.sh (which reads .azure/<env>/.env).
+    ap.add_argument("--from-status", action="store_true")
+    ap.add_argument("--merge", type=Path, help="an existing history to keep entries from")
     ap.add_argument("--resource-group")
     ap.add_argument("--job")
     ap.add_argument("--acr")
@@ -87,8 +97,18 @@ def main() -> None:
     rg = a.resource_group or setting(a.env, "AZURE_RESOURCE_GROUP")
     job = a.job or setting(a.env, "INGEST_JOB")
     acr = a.acr or setting(a.env, "ACR_NAME")
-    with urllib.request.urlopen(f"{a.site}/v1/status", timeout=30) as r:
-        runs = json.load(r)["indexing"]["runs"]
+    if a.from_status:
+        with urllib.request.urlopen(f"{a.site}/v1/status", timeout=30) as r:
+            doc = json.load(r)
+        if not doc["indexing"].get("available", True) or "runs" not in doc["indexing"]:
+            sys.exit("/v1/status has no pipeline state: nothing to reconstruct from")
+        runs = doc["indexing"]["runs"]
+    else:
+        with urllib.request.urlopen(f"{a.site}/v1/versions", timeout=30) as r:
+            doc = json.load(r)
+        if not doc.get("available"):
+            sys.exit(f"/v1/versions has no pipeline state ({doc.get('reason')}): nothing to reconstruct from")
+        runs = [v for v in doc["versions"] if v.get("build_source") != "recorded"]
     executions = []
     for e in az("containerapp", "job", "execution", "list", "-n", job, "-g", rg):
         image = e["properties"]["template"]["containers"][0]["image"]
@@ -99,10 +119,8 @@ def main() -> None:
             for t in az("acr", "repository", "show-tags", "-n", acr, "--repository", "usnewsmap-ingest",
                         "--detail")
             if re.fullmatch(r"[0-9a-f]{40}", t["name"])]
-    out = {}
+    out = json.loads(a.merge.read_text()) if a.merge else {}
     for run in runs:
-        if run.get("build"):
-            continue
         started = when(run["started_at"])
         ex_start, ex_name = max((e for e in executions if e[0] <= started), default=(None, None))
         if ex_name is None:
@@ -128,6 +146,7 @@ def main() -> None:
                       "tag": "usnewsmap-ingest:main"},
             "ingest": cargo.group(1) if cargo else None,
             "reconstructed": NOTE,
+            "run_started_at": run["started_at"],
             "templates": templates,
         }
     json.dump(sort_keys(out), sys.stdout, indent=2, ensure_ascii=False)
