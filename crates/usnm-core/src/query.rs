@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ja::{self, has_ja, tokenize, MAX_JA_RUN_CHARS};
-use crate::text::fold;
+use crate::text::{fold, MAX_TOKEN_CHARS};
 
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_TERMS: usize = 12;
@@ -524,6 +524,14 @@ fn wildcard_word(text: &str, pos: usize) -> Result<Node, QueryError> {
             }
             pattern.push_str(&folded);
         }
+    }
+    // The index drops words over MAX_TOKEN_CHARS (`remove_long`), so no word
+    // can match a pattern that needs more characters than that.
+    if pattern.chars().filter(|&c| c != '*').count() > MAX_TOKEN_CHARS {
+        return Err(QueryError::at(
+            format!("a word with * or ? can't be longer than {MAX_TOKEN_CHARS} letters"),
+            pos,
+        ));
     }
     let lead = lead.unwrap_or_default();
     let stem = pattern
@@ -1062,6 +1070,27 @@ mod tests {
         }
         assert_eq!(err("gold pr?sident").position, Some(5));
         assert!(err("o'bri?n").message.contains("single word"));
+        // No indexed word is longer than MAX_TOKEN_CHARS; `?` is one
+        // character and `*` can be none.
+        let long = |n: usize| "x".repeat(n);
+        assert!(err(&format!("{}*", long(41)))
+            .message
+            .contains("longer than 40"));
+        assert_eq!(
+            parse(&format!("{}*", long(40))).unwrap().to_string(),
+            format!("{}*", long(40))
+        );
+        assert!(err(&format!("abc?{}", long(37)))
+            .message
+            .contains("longer than 40"));
+        assert_eq!(
+            parse(&format!("abc?{}", long(36))).unwrap(),
+            wild(&format!("abc?{}", long(36)))
+        );
+        assert_eq!(
+            parse(&format!("abc*{}*", long(37))).unwrap(),
+            wild(&format!("abc*{}*", long(37)))
+        );
         assert!(err("pres?dent~1").message.contains("not both"));
         assert!(err("gold~1?").message.contains("not both"));
         assert!(err(r#""pres?dent lincoln""#)
