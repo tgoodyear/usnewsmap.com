@@ -57,7 +57,8 @@ class Line:
     y: float
     w: float
     h: float
-    order: int
+    # NDLOCR-Lite's reading order can be fractional (0.1, 0.8, ...).
+    order: float
     conf: float
     text: str
 
@@ -68,7 +69,7 @@ def _lines(elem: ET.Element) -> list[Line]:
         text = (ln.get("STRING") or "").strip()
         try:
             box = [float(ln.get(k)) for k in ("X", "Y", "WIDTH", "HEIGHT")]
-            order = int(float(ln.get("ORDER", "0")))
+            order = float(ln.get("ORDER", "0"))
             conf = float(ln.get("CONF", "0"))
         except (TypeError, ValueError):
             continue

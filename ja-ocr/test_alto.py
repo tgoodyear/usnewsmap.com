@@ -73,6 +73,15 @@ class Alto(unittest.TestCase):
         ids = [e.get("ID") for e in root.iter() if e.get("ID")]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_fractional_reading_order(self):
+        ndl = (b'<OCRDATASET><PAGE WIDTH="100" HEIGHT="100"><TEXTBLOCK>'
+               b'<LINE X="1" Y="1" WIDTH="5" HEIGHT="9" ORDER="0.8" STRING="c"/>'
+               b'<LINE X="9" Y="1" WIDTH="5" HEIGHT="9" ORDER="0.2" STRING="b"/>'
+               b'</TEXTBLOCK><LINE X="20" Y="1" WIDTH="5" HEIGHT="9" ORDER="0.1" STRING="a"/></PAGE></OCRDATASET>')
+        root = ET.fromstring(alto.ndlocr_to_alto(ndl, alto.Geometry(), image_url="u", engine="e", seq=1,
+                                                 ocred_at=AT))
+        self.assertEqual([s.get("CONTENT") for s in root.iter(f"{A}String")], ["a", "b", "c"])
+
     def test_inch1200_at_the_scans_dpi(self):
         root = convert()
         page = root.find(f".//{A}Page")
