@@ -47,7 +47,8 @@ pub const WORDS: &[&str] = &[
 ];
 
 pub fn is_common(word: &str) -> bool {
-    WORDS.contains(&word)
+    // Every word of every page asks this during a release: WORDS is sorted.
+    WORDS.binary_search(&word).is_ok()
 }
 
 /// A folded word as one whitespace-free token: compatibility forms can
@@ -126,6 +127,13 @@ mod tests {
 
     fn words(s: &str) -> Vec<String> {
         s.split(' ').map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn the_list_is_sorted_for_binary_search() {
+        assert!(WORDS.windows(2).all(|w| w[0] < w[1]));
+        assert!(WORDS.iter().all(|w| is_common(w)));
+        assert!(!is_common("gold") && !is_common(""));
     }
 
     #[test]
