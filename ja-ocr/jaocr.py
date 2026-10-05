@@ -29,11 +29,12 @@ Japanese script, so those are the Japanese pages. Two sources:
 than JAOCR_CLAIM_HOURS is taken over with an ETag compare-and-swap). For each issue it asks loc.gov for the
 page images (one API request per issue), downloads each target page's
 full-resolution JPEG from LoC's IIIF service, runs NDLOCR-Lite on the issue's
-pages together and writes ocr-ja/pages/<issue>[.<n>].parquet, an overlay keyed
+pages together, and writes each page's ALTO to ocr-ja/alto/<doc_id>.xml
+(alto.py, #151) and then ocr-ja/pages/<issue>[.<n>].parquet, an overlay keyed
 by doc_id (see write_part; not the full curated schema). A part is written
-only when every page it was asked for has text. A page is done when its
-doc_id is in a part, so an issue done before new targets appeared gets a
-second part for the new pages. loc.gov's API is paced JAOCR_API_GAP seconds
+only when every page it was asked for has text and ALTO. A page is done when
+its doc_id is in a part and it has ALTO, so an issue done before new targets
+appeared, or before the job wrote ALTO, gets another part for those pages. loc.gov's API is paced JAOCR_API_GAP seconds
 per request and the image server JAOCR_TILE_GAP seconds, each multiplied by
 JAOCR_REPLICAS so replicas together stay under LoC's limits.
 """
@@ -59,11 +60,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import alto
+
 UA = "usnewsmap-ja-ocr/1.0 (+https://usnewsmap.com)"
 OCR_SOURCE = "usnm-ndlocr-lite"
 PREFIX = "ocr-ja"
 # Bumped when the way targets are chosen changes, so a run lists them again.
 TARGETS = "targets-v2"
+# Claims for the run that adds ALTO: the targets' first claims are spent.
+CLAIMS = f"{TARGETS}-alto"
 COLLECTION = "https://www.loc.gov/collections/chronicling-america/?fo=json&c=1&at=datasets"
 MIN_PAGE_CHARS = 20  # crates/usnm-core/src/text.rs
 # A word: Capitalized or lower case, or ALL CAPS (headlines); mixed case is OCR noise.
@@ -405,6 +410,28 @@ def page_images(item: dict) -> dict[int, str]:
     return out
 
 
+def page_altos(item: dict) -> dict[int, str]:
+    """seq -> LoC's ALTO (ocr.xml) URL, from the same issue JSON."""
+    files = (item.get("resources") or [{}])[0].get("files") or []
+    out = {}
+    for seq, page in enumerate(files, 1):
+        xml = next((f.get("url", "") for f in page if f.get("mimetype") == "text/xml"), "")
+        if xml:
+            out[seq] = xml
+    return out
+
+
+def loc_geometry(url: str | None, pacer: "Pacer", page_key: str) -> alto.Geometry:
+    """The page's dpi and size from LoC's ALTO; 300 dpi and our image's size without it."""
+    if not url:
+        return alto.Geometry()
+    try:
+        return alto.loc_geometry(fetch(url, pacer))
+    except Exception as e:  # noqa: BLE001 - the defaults are right for every page checked
+        log("no LoC ALTO for page", page=page_key, error=f"{type(e).__name__}: {e}"[:200])
+        return alto.Geometry()
+
+
 # ---------------------------------------------------------------- OCR
 
 
@@ -498,21 +525,24 @@ STATUS = "status/ocr-ja.json"
 STATUS_EVERY = timedelta(minutes=2)
 
 
+def alto_pages(curated) -> set[str]:
+    """doc_ids with ALTO, from the listing alone."""
+    return {Path(n).name.removesuffix(".xml") for n in curated.list(f"{PREFIX}/alto/") if n.endswith(".xml")}
+
+
 def progress(curated, rows: list[dict]) -> dict:
-    """Target and done pages and issues. An issue with a part counts as done, which
-    reads only the listing; an issue whose pages were added to the targets after
-    its first part counts early, which is close enough for a progress bar."""
-    per_issue: dict[str, int] = {}
+    """Target and done pages and issues, from the ALTO listing alone: a page's
+    ALTO is written just before its part, so a page with ALTO is done but for
+    a part write that failed, which is close enough for a progress bar. An
+    issue is done when all its target pages are."""
+    with_alto = alto_pages(curated)
+    per_issue: dict[str, list[bool]] = {}
     for r in rows:
-        k = issue_key(r["lccn"], r["date"], r["edition"])
-        per_issue[k] = per_issue.get(k, 0) + 1
-    with_parts = {
-        Path(n).name.split(".")[0] for n in curated.list(f"{PREFIX}/pages/") if n.endswith(".parquet")
-    }
-    done = [i for i in per_issue if i in with_parts]
+        per_issue.setdefault(issue_key(r["lccn"], r["date"], r["edition"]), []).append(r["doc_id"] in with_alto)
     return {
         "targets": {"pages": len(rows), "issues": len(per_issue)},
-        "done": {"pages": sum(per_issue[i] for i in done), "issues": len(done)},
+        "done": {"pages": sum(sum(v) for v in per_issue.values()),
+                 "issues": sum(all(v) for v in per_issue.values())},
     }
 
 
@@ -547,7 +577,7 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
         rows = targets(reference, curated)
         curated.write(tfile, "\n".join(json.dumps(r) for r in rows).encode())
     parts = curated.list(f"{PREFIX}/pages/")
-    done = done_pages(curated, parts)
+    done = done_pages(curated, parts) & alto_pages(curated)
     by_issue: dict[str, list[dict]] = {}
     for r in rows:
         if r["doc_id"] not in done:
@@ -568,7 +598,7 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
             last_status = datetime.now(timezone.utc)
         if limit is not None and pages_done >= limit:
             break
-        if not claim(curated, f"{TARGETS}/{issue}", owner, stale):
+        if not claim(curated, f"{CLAIMS}/{issue}", owner, stale):
             continue
         try:
             pages_done += ocr_issue(curated, ndl_root, issue, by_issue[issue], api, tile, engine)
@@ -583,17 +613,19 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
               engine: str) -> int:
     """OCR one claimed issue's target pages and write its part; the number of pages written.
 
-    Writes nothing unless every page has text: the issue is then retried once its claim goes stale.
+    Writes nothing unless every page has text and ALTO: the issue is then retried once its claim goes stale.
     """
     p0 = pages[0]
     item_url = f"https://www.loc.gov/item/{p0['lccn']}/{p0['date']}/ed-{p0['edition']}/?fo=json"
     t0 = time.time()
     try:
-        images = page_images(json.loads(fetch(item_url, api)))
+        item = json.loads(fetch(item_url, api))
     except urllib.error.HTTPError as e:
         log("issue not found on loc.gov", issue=issue, status=e.code)
         return 0
+    images, altos = page_images(item), page_altos(item)
     rows_out = []
+    altos_out: dict[str, bytes] = {}
     with tempfile.TemporaryDirectory() as tmp:
         src, out = Path(tmp, "img"), Path(tmp, "out")
         src.mkdir()
@@ -609,10 +641,14 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
             ndlocr(ndl_root, src, out)
         now = datetime.now(timezone.utc)
         for p in pages:
-            f = out / f"{p['doc_id']}.txt"
-            if p["doc_id"] not in urls or not f.exists():
+            f, x = out / f"{p['doc_id']}.txt", out / f"{p['doc_id']}.xml"
+            if p["doc_id"] not in urls or not f.exists() or not x.exists():
                 continue
             text = normalize(f.read_text())
+            geometry = loc_geometry(altos.get(p["seq"]), tile, p["page_key"])
+            altos_out[p["doc_id"]] = alto.ndlocr_to_alto(
+                x.read_bytes(), geometry, image_url=urls[p["doc_id"]] + "/full/full/0/default.jpg",
+                engine=engine, seq=p["seq"], ocred_at=now)
             rows_out.append({
                 **{k: p[k] for k in ("doc_id", "page_key", "lccn", "date", "edition", "seq", "batch", "loc_text")},
                 "ocr_source": OCR_SOURCE, "ocr_engine": engine,
@@ -626,6 +662,9 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
         log("ocr incomplete; issue left for a later run", issue=issue, missing=missing[:10],
             missing_count=len(missing))
         return 0
+    # ALTO first: a page counts as done only once both are written.
+    for doc_id, xml in altos_out.items():
+        curated.write(f"{PREFIX}/alto/{doc_id}.xml", xml)
     write_part(curated, part_name(curated, issue), rows_out)
     log("ocr issue done", issue=issue, pages=len(rows_out), secs=round(time.time() - t0, 1),
         chars=sum(r["text_chars"] for r in rows_out))
