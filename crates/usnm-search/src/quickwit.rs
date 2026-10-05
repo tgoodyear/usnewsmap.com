@@ -15,9 +15,10 @@ use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
+use crate::snippet::text_snippets;
 use crate::{
-    ja_snippets, mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
-    PlaceSummary, SearchBackend, SearchError, Summary,
+    ja_snippets, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet, PlaceSummary,
+    SearchBackend, SearchError, Summary,
 };
 
 /// Upper bound on places in one terms aggregation.
@@ -383,18 +384,19 @@ pub fn hits_request(
         "query": full_query(node, filters, indexes, extra)?,
         "max_hits": page.limit,
         "start_offset": page.offset,
-        "sort_by": sort_by(page.sort),
-        // A comma-separated string, not an array, in Quickwit 0.9 (S-2).
-        "snippet_fields": "text"
+        "sort_by": sort_by(page.sort)
     }))
 }
 
 /// By day, then title, edition and page (`sort_key`). Quickwit 0.9 can't sort
-/// on text fields, and a leading `-` means ascending (S-2).
+/// on text fields, and a leading `-` means ascending (S-2). `_score` sorts
+/// highest first; with `fieldnorms: false` on `text` it follows how often a
+/// page mentions the words (#126), and ties go oldest first.
 fn sort_by(sort: HitSort) -> &'static str {
     match sort {
         HitSort::Oldest => "-day,-sort_key",
         HitSort::Newest => "day,sort_key",
+        HitSort::Relevant => "_score,-day",
     }
 }
 
@@ -405,8 +407,6 @@ pub struct SearchResponse {
     pub num_hits: u64,
     #[serde(default)]
     pub hits: Vec<StoredHit>,
-    #[serde(default)]
-    pub snippets: Option<Vec<Value>>,
     #[serde(default)]
     pub aggregations: Option<Value>,
     /// Partial failures (e.g. splits that could not be searched). A 200 with
@@ -426,6 +426,9 @@ pub struct StoredHit {
     pub lccn: String,
     pub edition: u16,
     pub seq: u16,
+    /// The page's stored text, for its snippets (#126).
+    #[serde(default)]
+    pub text: Option<String>,
     /// A Japanese page's printed text (pages-ja-index.yaml), for its snippets.
     #[serde(default)]
     pub printed: Option<String>,
@@ -567,29 +570,21 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
 }
 
 pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, SearchError> {
-    let snippets = resp.snippets.unwrap_or_default();
     let mut hits = Vec::with_capacity(resp.hits.len());
-    for (i, d) in resp.hits.into_iter().enumerate() {
+    for d in resp.hits {
         let day = d
             .day()
             .ok_or_else(|| SearchError::Backend("hit has an unparseable date".into()))?;
-        // A Japanese page's snippets come from its printed text: its indexed
-        // text is folded tokens with spaces between them.
-        let printed_snippets = d.printed.as_deref().map(|p| ja_snippets(p, query));
+        // Built here from the stored text, as the memory backend does (#126).
+        // A Japanese page's come from its printed text: its indexed text is
+        // folded tokens with spaces between them.
+        let snippets = match (&d.printed, &d.text) {
+            (Some(printed), _) => ja_snippets(printed, query),
+            (None, Some(text)) => text_snippets(text, query),
+            (None, None) => Vec::new(),
+        };
         hits.push(Hit {
-            snippets: printed_snippets.unwrap_or_else(|| {
-                snippets
-                    .get(i)
-                    .and_then(|s| s.get("text"))
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(Value::as_str)
-                            .map(convert_snippet)
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }),
+            snippets,
             ocr_source: d.ocr_source,
             ocr_engine: d.ocr_engine,
             front_page: d.seq == 1,
@@ -605,33 +600,6 @@ pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, Search
         total: resp.num_hits,
         hits,
     })
-}
-
-/// Quickwit highlights with `<b>…</b>`. Rebuild the snippet so that the only
-/// markup that can reach the browser is `<mark>`. Quickwit returns snippet
-/// text HTML-escaped (S-2), so it is unescaped here and re-escaped once.
-pub fn convert_snippet(s: &str) -> String {
-    let mut segments: Vec<(bool, String)> = Vec::new();
-    let mut rest = s;
-    while let Some(start) = rest.find("<b>") {
-        segments.push((false, unescape(&rest[..start])));
-        let after = &rest[start + 3..];
-        let end = after.find("</b>").unwrap_or(after.len());
-        segments.push((true, unescape(&after[..end])));
-        rest = after.get(end + 4..).unwrap_or("");
-    }
-    segments.push((false, unescape(rest)));
-    let borrowed: Vec<(bool, &str)> = segments.iter().map(|(m, t)| (*m, t.as_str())).collect();
-    mark_html(&borrowed)
-}
-
-fn unescape(s: &str) -> String {
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&amp;", "&")
 }
 
 #[async_trait]
@@ -850,7 +818,14 @@ mod tests {
         };
         let r2 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &newest).unwrap();
         assert_eq!(r2["sort_by"], "day,sort_key");
-        assert_eq!(r["snippet_fields"], "text");
+        let relevant = HitsQuery {
+            sort: HitSort::Relevant,
+            ..page.clone()
+        };
+        let r3 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &relevant).unwrap();
+        assert_eq!(r3["sort_by"], "_score,-day");
+        // Snippets are built from the stored text, not asked of Quickwit (#126).
+        assert!(r.get("snippet_fields").is_none());
         assert_eq!(r["start_offset"], 50);
         assert!(r["query"]
             .as_str()
@@ -864,11 +839,11 @@ mod tests {
             "num_hits": 2,
             "hits": [
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
-                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1, "text": "…"},
+                 "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1,
+                 "text": "a <gold> b"},
                 {"doc_id": "sn99000001_1896-07-10_ed-1_seq-3", "date": "1896-07-10T00:00:00Z",
                  "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 3}
-            ],
-            "snippets": [{"text": ["a <b>gold</b> b"]}, {"text": []}]
+            ]
         }))
         .unwrap();
         let page = parse_hits(resp, &usnm_core::query::parse("gold").unwrap()).unwrap();
@@ -878,7 +853,8 @@ mod tests {
         );
         assert!(page.hits[0].front_page);
         assert!(!page.hits[1].front_page);
-        assert_eq!(page.hits[0].snippets, vec!["a <mark>gold</mark> b"]);
+        assert_eq!(page.hits[0].snippets, vec!["a &lt;<mark>gold</mark>&gt; b"]);
+        assert!(page.hits[1].snippets.is_empty());
     }
 
     #[test]
@@ -1090,17 +1066,5 @@ mod tests {
                 Err(SearchError::Backend(_))
             ));
         }
-    }
-
-    #[test]
-    fn snippets_only_ever_contain_mark_tags() {
-        assert_eq!(
-            convert_snippet("a &lt;script&gt; <b>gold</b> &amp; x"),
-            "a &lt;script&gt; <mark>gold</mark> &amp; x"
-        );
-        assert_eq!(
-            convert_snippet("<b>x<img></b>"),
-            "<mark>x&lt;img&gt;</mark>"
-        );
     }
 }

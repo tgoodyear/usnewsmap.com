@@ -484,5 +484,11 @@ test("the first and last mention open their pages, and a place's pages sort eith
   await expect(top.locator("time")).not.toHaveAttribute("datetime", last.date);
   const oldest = await panel.locator(".hit time").evaluateAll((ts) => ts.map((t) => t.getAttribute("datetime")));
   expect(oldest).toEqual([...oldest].sort());
+
+  // Most mentions first (#126): the same pages, in the URL.
+  await panel.getByRole("button", { name: "Most mentions" }).click();
+  await expect(page).toHaveURL(/sort=relevant/);
+  await expect(panel.getByRole("button", { name: "Most mentions" })).toHaveAttribute("aria-pressed", "true");
+  await expect(panel.locator(".hit")).toHaveCount(oldest.length);
   await expectAccessible(page);
 });

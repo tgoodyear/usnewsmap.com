@@ -465,6 +465,12 @@ async fn hits_sort_oldest_or_newest() {
     let mut reversed = oldest.clone();
     reversed.reverse();
     assert_eq!(all("&sort=newest").await, reversed);
+    // Most mentions first (#126): the same pages in another order.
+    let mut relevant = all("&sort=relevant").await;
+    relevant.sort();
+    let mut sorted = oldest.clone();
+    sorted.sort();
+    assert_eq!(relevant, sorted);
 
     let (_, plain, _) = get(&s, base).await;
     let (_, explicit, _) = get(&s, &format!("{base}&sort=oldest")).await;
@@ -474,6 +480,8 @@ async fn hits_sort_oldest_or_newest() {
         header_str(&plain, header::CONTENT_LOCATION)
     );
     assert!(header_str(&newest, header::CONTENT_LOCATION).contains("&sort=newest"));
+    let (_, relevant, _) = get(&s, &format!("{base}&sort=relevant")).await;
+    assert!(header_str(&relevant, header::CONTENT_LOCATION).contains("&sort=relevant"));
 
     let (status, _, body) = get(&s, &format!("{base}&sort=sideways")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -761,7 +769,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f3")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f4")) else {
         return Vec::new();
     };
     entries
@@ -792,7 +800,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f3/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f4/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),

@@ -10,9 +10,10 @@ use usnm_core::query::{Node, Term};
 use usnm_core::text::tokenize;
 use usnm_core::time::BucketSpec;
 
+use crate::snippet::text_snippets;
 use crate::{
-    ja_snippets, mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
-    PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
+    ja_snippets, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet, PageDoc,
+    PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 struct Indexed {
@@ -158,27 +159,28 @@ impl SearchBackend for MemoryBackend {
         filters: &Filters,
         page: &HitsQuery,
     ) -> Result<HitsPage, SearchError> {
-        let mut docs: Vec<&PageDoc> = self
+        let highlight = positive_terms(query);
+        let mut docs: Vec<(usize, &PageDoc)> = self
             .matching(indexes, query, filters)?
-            .map(|d| &d.doc)
-            .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.place_id == p))
-            .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.lccn == l))
+            .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.doc.place_id == p))
+            .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.doc.lccn == l))
+            .map(|d| (mentions(&d.tokens, &highlight), &d.doc))
             .collect();
-        docs.sort_by(|a, b| {
+        docs.sort_by(|(ma, a), (mb, b)| {
             let order = (a.day, a.sort_key, &a.doc_id).cmp(&(b.day, b.sort_key, &b.doc_id));
             match page.sort {
                 HitSort::Oldest => order,
                 HitSort::Newest => order.reverse(),
+                HitSort::Relevant => mb.cmp(ma).then(order),
             }
         });
-        let highlight = positive_terms(query);
         Ok(HitsPage {
             total: docs.len() as u64,
             hits: docs
                 .into_iter()
                 .skip(page.offset)
                 .take(page.limit)
-                .map(|d| Hit {
+                .map(|(_, d)| Hit {
                     doc_id: d.doc_id.clone(),
                     day: d.day,
                     lccn: d.lccn.clone(),
@@ -188,7 +190,7 @@ impl SearchBackend for MemoryBackend {
                     front_page: d.front_page,
                     snippets: match &d.printed {
                         Some(printed) => ja_snippets(printed, query),
-                        None => snippet(&d.text, &highlight).into_iter().collect(),
+                        None => text_snippets(&d.text, query),
                     },
                     ocr_source: d.ocr_source.clone(),
                     ocr_engine: d.ocr_engine.clone(),
@@ -282,32 +284,13 @@ fn positive_terms(node: &Node) -> Vec<Term> {
 }
 
 /// A ~25-word window around the first highlighted word, HTML-escaped with `<mark>`.
-fn snippet(text: &str, highlight: &[Term]) -> Option<String> {
-    const WINDOW: usize = 12;
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let is_hit = |w: &str| {
-        tokenize(w)
-            .iter()
-            .any(|tok| highlight.iter().any(|t| term_matches(t, tok)))
-    };
-    let first = words.iter().position(|w| is_hit(w))?;
-    let start = first.saturating_sub(WINDOW);
-    let end = (first + WINDOW + 1).min(words.len());
-    let mut segments: Vec<(bool, String)> = Vec::new();
-    if start > 0 {
-        segments.push((false, "… ".to_owned()));
-    }
-    for (i, w) in words[start..end].iter().enumerate() {
-        if i > 0 {
-            segments.push((false, " ".to_owned()));
-        }
-        segments.push((is_hit(w), (*w).to_owned()));
-    }
-    if end < words.len() {
-        segments.push((false, " …".to_owned()));
-    }
-    let borrowed: Vec<(bool, &str)> = segments.iter().map(|(m, s)| (*m, s.as_str())).collect();
-    Some(mark_html(&borrowed))
+/// How many of the page's words match one of the query's positive words:
+/// the reference for "most mentions first" (`HitSort::Relevant`).
+fn mentions(tokens: &[String], highlight: &[Term]) -> usize {
+    tokens
+        .iter()
+        .filter(|tok| highlight.iter().any(|t| term_matches(t, tok)))
+        .count()
 }
 
 #[cfg(test)]
@@ -335,14 +318,13 @@ mod tests {
     }
 
     #[test]
-    fn snippets_are_escaped_and_marked() {
-        let hl = positive_terms(&parse("gold").unwrap());
-        let s = snippet("a <b> cross of Gold, & more", &hl).unwrap();
-        assert_eq!(s, "a &lt;b&gt; cross of <mark>Gold,</mark> &amp; more");
-        // Prefix and fuzzy terms highlight what they matched; exclusions don't.
-        let hl = positive_terms(&parse("cruc* mankimd~1 -upon").unwrap());
-        let s = snippet("not crucify mankind upon it", &hl).unwrap();
-        assert_eq!(s, "not <mark>crucify</mark> <mark>mankind</mark> upon it");
+    fn mentions_count_every_matching_word() {
+        let hl = positive_terms(&parse("gold cruc* -silver").unwrap());
+        assert_eq!(
+            mentions(&toks("gold, gold and crucify; silver gold"), &hl),
+            4
+        );
+        assert_eq!(mentions(&toks("silver"), &hl), 0);
     }
 }
 

@@ -121,7 +121,7 @@ export function parseView(search: string): ViewState {
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
     norm: oneOf(s.get("norm"), ["raw", "skew"] as const, DEFAULTS.norm),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
-    sort: oneOf(s.get("sort"), ["oldest", "newest"] as const, DEFAULTS.sort),
+    sort: oneOf(s.get("sort"), ["oldest", "newest", "relevant"] as const, DEFAULTS.sort),
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),
     z: Number.isFinite(z) && z >= MIN_ZOOM && z <= MAX_ZOOM ? z : null,
     c:

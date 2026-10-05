@@ -18,6 +18,7 @@ use usnm_core::time::BucketSpec;
 pub mod memory;
 pub mod plan;
 pub mod quickwit;
+pub mod snippet;
 
 /// One indexed page, as stored in the engine (05 §5.5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,13 +129,18 @@ pub struct CubeCell {
     pub hits: u32,
 }
 
-/// Order of a hit list. Either way, pages on the same day keep the order of
+/// Order of a hit list. By date, pages on the same day keep the order of
 /// `sort_key` (title, edition, page), reversed for newest first.
+/// `Relevant` puts the pages that mention the query most first (#126): the
+/// engine's score, which with `fieldnorms: false` on `text` ignores page
+/// length. Quickwit weighs rare words per split, so it is "most mentions
+/// first", not an exact ranking. Ties go oldest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HitSort {
     #[default]
     Oldest,
     Newest,
+    Relevant,
 }
 
 impl HitSort {
@@ -142,6 +148,7 @@ impl HitSort {
         match self {
             HitSort::Oldest => "oldest",
             HitSort::Newest => "newest",
+            HitSort::Relevant => "relevant",
         }
     }
 
@@ -149,6 +156,7 @@ impl HitSort {
         match s {
             "oldest" => Some(HitSort::Oldest),
             "newest" => Some(HitSort::Newest),
+            "relevant" => Some(HitSort::Relevant),
             _ => None,
         }
     }

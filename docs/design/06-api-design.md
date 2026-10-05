@@ -86,7 +86,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 |---------------|---------|-------|
 | `GET /v1/meta` | `index_version`, corpus bounds, doc count, backend capabilities, build time, and `languages`: the choices for the site's language filter ([07 §7.9](07-frontend-design.md#79-language-filter)), `[{code, name, titles, pages}]` for each catalog language `lang` accepts, most pages first (`pages` is `null` when the snapshot doesn't record pages per title). A title in several languages counts in each | 5 min |
 | `GET /v1/aggregate` | Q1: totals, the first and last matching page, national series, per-place cube, first and last appearance | 1 day (+ `index_version`) |
-| `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date (`sort=oldest`, the default, or `newest`), with snippets; cursor pagination | 1 day |
+| `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date (`sort=oldest`, the default, or `newest`) or most mentions first (`relevant`), with snippets; cursor pagination | 1 day |
 | `GET /v1/compare` | Up to 4 queries (`q1…q4`); national series for each + per-place totals (no cube) | 1 day |
 | `GET /v1/pages/{doc_id}` | Page metadata + LoC links | 30 days |
 | `GET /v1/titles`, `GET /v1/titles/{lccn}` | Title metadata + coverage summary | 1 day |
@@ -164,9 +164,9 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 }
 ```
 
-Items are oldest first, and pages on the same day by title, edition and page. `sort=newest` reverses the whole order; `sort=oldest` is the default and is left out of the canonical URL.
+Items are oldest first, and pages on the same day by title, edition and page. `sort=newest` reverses the whole order; `sort=oldest` is the default and is left out of the canonical URL. `sort=relevant` puts the pages that mention the search most first, ties oldest first (#126). It is Quickwit's score: `text` has no field norms, so page length doesn't count and more mentions rank higher, but rare words are weighted per split, so it is "most mentions first", not an exact ranking.
 
-Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer URLs follow the loc.gov resource pattern. The legacy `chroniclingamerica.loc.gov/lccn/…` form is kept only as a fallback, because LoC redirects it.
+Snippets are built by the API from the page's stored text, the same way for every backend (`usnm_search::snippet`, #126): up to three fragments of about 80 characters either side of the matches, an exact phrase marked as a whole, a NEAR phrase's words one by one, prefix and fuzzy terms on each word they match, `…` where a fragment doesn't reach the text's start or end. Quickwit's own snippets (one short fragment per field, with no length or count options in its REST API) aren't requested. Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer URLs follow the loc.gov resource pattern. The legacy `chroniclingamerica.loc.gov/lccn/…` form is kept only as a fallback, because LoC redirects it.
 
 **Japanese pages** (#139, 04 §4.8). A query with a Japanese word that isn't excluded (`usnm_core::query::is_japanese`, §6.4) searches the Japanese pages' index that `current.json` names under `ja`, instead of the main indexes. Any other query searches the main indexes. The two are never mixed, so a page with garbled LoC text in the main index and our OCR in the Japanese index is never counted twice. A version without a Japanese index answers a Japanese query with **422** (`Unsupported`). On these pages:
 - the item carries `"ocr": {"source": "usnm-ndlocr-lite", "engine": "ndlocr-lite 636d1cf"}`

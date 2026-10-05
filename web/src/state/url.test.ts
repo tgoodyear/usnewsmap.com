@@ -16,6 +16,7 @@ describe("view URL", () => {
     expect(parseView(serializeView(v))).toEqual(v);
     expect(serializeView(DEFAULTS)).toBe("");
     expect(serializeView({ ...DEFAULTS, q: "fever" })).toBe("?q=fever");
+    expect(parseView("?sort=relevant").sort).toBe("relevant");
   });
 
   it("drops invalid values instead of trusting them", () => {

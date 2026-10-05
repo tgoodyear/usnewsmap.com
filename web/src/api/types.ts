@@ -3,8 +3,11 @@
 
 export type BucketUnit = "year" | "month" | "week" | "day";
 export type Mode = "phrase" | "all" | "any" | "near";
-/** Order of a `/v1/hits` list: by date, then title, edition and page (reversed for newest). */
-export type HitSort = "oldest" | "newest";
+/**
+ * Order of a `/v1/hits` list: by date, then title, edition and page (reversed
+ * for newest), or `relevant`: the pages that mention the search most first (#126).
+ */
+export type HitSort = "oldest" | "newest" | "relevant";
 
 export interface Meta {
   index_version: string;

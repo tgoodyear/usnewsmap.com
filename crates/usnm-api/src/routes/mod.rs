@@ -63,7 +63,8 @@ impl Ctx {
 /// Bump when a response body's shape changes, so a new release never serves
 /// persisted bodies written by an older one for the same index version.
 /// 3: Japanese queries search the Japanese pages, and hits carry `ocr` (#139).
-pub(crate) const RESPONSE_FORMAT: u32 = 3;
+/// 4: snippets built from the page text, up to three per page (#126).
+pub(crate) const RESPONSE_FORMAT: u32 = 4;
 
 /// A persistent-cache read slower than this is abandoned and the response computed.
 const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);

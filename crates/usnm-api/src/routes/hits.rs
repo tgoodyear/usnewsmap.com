@@ -1,5 +1,6 @@
 //! `GET /v1/hits` (06 §6.3.4): pages for one place or one title (`lccn`),
-//! sorted by date (`sort=oldest`, the default, or `newest`), with snippets.
+//! sorted by date (`sort=oldest`, the default, or `newest`) or by how often
+//! they mention the query (`relevant`, #126), with snippets.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -157,8 +158,9 @@ pub async fn hits(
     };
     let sort = match raw.get("sort") {
         None => HitSort::default(),
-        Some(s) => HitSort::parse(s)
-            .ok_or_else(|| ApiError::BadRequest("`sort` must be `oldest` or `newest`".into()))?,
+        Some(s) => HitSort::parse(s).ok_or_else(|| {
+            ApiError::BadRequest("`sort` must be `oldest`, `newest` or `relevant`".into())
+        })?,
     };
     let offset = match raw.get("cursor") {
         None => 0,

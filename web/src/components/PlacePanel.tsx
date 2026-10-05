@@ -20,7 +20,13 @@ interface Props {
   onClose: () => void;
 }
 
-/** Place drill-down (F-03): date-sorted pages with snippets and LoC links. */
+const SORT_LABELS: Record<HitSort, string> = {
+  oldest: "Oldest first",
+  newest: "Newest first",
+  relevant: "Most mentions",
+};
+
+/** Place drill-down (F-03): pages by date or by mentions, with snippets and LoC links. */
 export function PlacePanel({ params, version, placeId, placeName, sort, onSort, windowHits, note, synthetic, onClose }: Props) {
   const query = useInfiniteQuery({
     queryKey: ["hits", version, params, placeId, sort],
@@ -44,9 +50,9 @@ export function PlacePanel({ params, version, placeId, placeName, sort, onSort, 
         {first && windowHits !== first.total ? ` · ${windowHits.toLocaleString()} up to the current date` : ""}
       </p>
       <div className="segmented" role="group" aria-label="Order of pages">
-        {(["oldest", "newest"] as const).map((s) => (
+        {(["oldest", "newest", "relevant"] as const).map((s) => (
           <button key={s} type="button" aria-pressed={sort === s} onClick={() => onSort(s)}>
-            {s === "oldest" ? "Oldest first" : "Newest first"}
+            {SORT_LABELS[s]}
           </button>
         ))}
       </div>
