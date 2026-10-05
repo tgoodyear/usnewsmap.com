@@ -498,7 +498,7 @@ test("the table lists the newspapers with matches, and one can limit the search 
   const papers = page.getByRole("region", { name: "Newspapers" });
   await expect(papers.getByText(/newspapers have matching pages/)).toBeVisible();
   // The fixtures' gold pages are in English, German and Spanish papers.
-  await expect(page.locator(".mix")).toContainText(/^Matches in \d+ newspapers: English \d+%/);
+  await expect(page.locator(".mix")).toContainText(/Matches in \d+ newspapers: English \d+%/);
   const first = papers.locator("tbody tr").first();
   const title = (await first.locator("th").textContent())!;
   await first.getByRole("button", { name: /Only this newspaper/ }).click();

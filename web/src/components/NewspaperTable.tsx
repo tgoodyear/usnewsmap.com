@@ -60,7 +60,7 @@ export function NewspaperTable({ rows, total, onOnly, filename }: Props) {
         search&apos;s dates
         {rows.length < total && `; the ${rows.length.toLocaleString("en-US")} with the most are listed`}.
       </p>
-      <table className="places">
+      <table className="papers">
         <thead>
           <tr>
             <th scope="col">Newspaper</th>

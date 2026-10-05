@@ -258,9 +258,9 @@ input, select {
 .hit mark { background: var(--mark); color: inherit; padding: 0 2px; border-radius: 2px; }
 
 .table-wrap { flex: 1; overflow: auto; padding: 0 16px; }
-.places { width: 100%; border-collapse: collapse; background: var(--panel); }
-.places th, .places td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
-.places .num { text-align: right; font-variant-numeric: tabular-nums; }
+.places, .papers { width: 100%; border-collapse: collapse; background: var(--panel); }
+.places th, .places td, .papers th, .papers td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+.places .num, .papers .num { text-align: right; font-variant-numeric: tabular-nums; }
 .places tr[aria-selected="true"] { background: color-mix(in srgb, var(--mark) 40%, transparent); }
 .newspapers h2 { font-size: 1rem; margin: 8px 0 4px; }
 .newspapers__note { color: var(--muted); font-size: 0.9rem; margin: 0 0 8px; }
