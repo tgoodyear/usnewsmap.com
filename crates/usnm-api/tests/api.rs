@@ -761,7 +761,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f2")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f3")) else {
         return Vec::new();
     };
     entries
@@ -792,7 +792,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f2/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f3/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),
@@ -1429,10 +1429,19 @@ async fn japanese_queries_search_the_japanese_pages() {
     }
     // Hits: our OCR is marked, snippets show the printed form, and the LoC
     // viewer link has no highlight (LoC has no text for these pages).
+    let (status, _, body) = get(&s, "/v1/meta").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ja"]["indexes"], json!(["pages-ja-fixture"]));
+    assert_eq!(body["ja"]["pages"], 52);
     let (status, _, body) = get(&s, "/v1/hits?q=%E6%88%A6%E4%BA%89&place=P00003").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let items = body["items"].as_array().unwrap();
-    assert_eq!(items.len() as u64, war.min(items.len() as u64));
+    assert_eq!(body["total"], war);
+    assert_eq!(
+        items.len() as u64,
+        war.min(50),
+        "a first page of the matches"
+    );
     for it in items {
         assert_eq!(it["ocr"]["source"], "usnm-ndlocr-lite");
         assert_eq!(it["ocr"]["engine"], "ndlocr-lite 636d1cf");
