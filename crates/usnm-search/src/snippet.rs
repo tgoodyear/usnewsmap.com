@@ -15,9 +15,11 @@ pub const MAX_FRAGMENTS: usize = 3;
 /// Characters of context on each side of a match, about a line of print.
 pub const CONTEXT: usize = 80;
 
-/// One indexed word: its folded token and its character range in the text.
+/// One word as the analyzer counts positions: its folded token, or `None`
+/// for an over-long OCR run the analyzer drops but still counts as a
+/// position (05 §5.5.3), and its character range in the text.
 struct Word {
-    token: String,
+    token: Option<String>,
     start: usize,
     end: usize,
 }
@@ -37,14 +39,12 @@ fn words(chars: &[char]) -> Vec<Word> {
         }
         let raw: String = chars[start..i].iter().collect();
         let token = fold(&raw);
-        // The analyzer drops over-long OCR runs, so they hold no position.
-        if token.chars().count() <= MAX_TOKEN_CHARS {
-            out.push(Word {
-                token,
-                start,
-                end: i,
-            });
-        }
+        // A dropped run keeps its position, so a phrase can't match across it.
+        out.push(Word {
+            token: (token.chars().count() <= MAX_TOKEN_CHARS).then_some(token),
+            start,
+            end: i,
+        });
     }
     out
 }
@@ -95,12 +95,16 @@ fn matches(words: &[Word], patterns: &[Pattern]) -> Vec<(usize, usize)> {
             Pattern::Term(t) => hits.extend(
                 words
                     .iter()
-                    .filter(|w| term_matches(t, &w.token))
+                    .filter(|w| w.token.as_deref().is_some_and(|tok| term_matches(t, tok)))
                     .map(|w| (w.start, w.end)),
             ),
             Pattern::Phrase(terms) if !terms.is_empty() => {
                 for run in words.windows(terms.len()) {
-                    if run.iter().zip(terms).all(|(w, t)| &w.token == t) {
+                    if run
+                        .iter()
+                        .zip(terms)
+                        .all(|(w, t)| w.token.as_ref() == Some(t))
+                    {
                         hits.push((run[0].start, run[terms.len() - 1].end));
                     }
                 }
@@ -280,6 +284,17 @@ mod tests {
             assert_eq!(f.matches("<mark>gold</mark>").count(), 1, "{f}");
             assert!(f.starts_with("… word") && f.ends_with("word …"), "{f}");
         }
+    }
+
+    #[test]
+    fn a_dropped_ocr_run_breaks_a_phrase() {
+        // The analyzer drops runs over 40 characters but keeps their position.
+        let run = "x".repeat(41);
+        assert!(snip(&format!("cross {run} of gold"), "\"cross of gold\"").is_empty());
+        assert_eq!(
+            snip(&format!("{run} gold"), "gold"),
+            [format!("{run} <mark>gold</mark>")]
+        );
     }
 
     #[test]
