@@ -40,7 +40,7 @@ files=$(grep -Ev '\.md$|^docs/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
 # infra/quickwit/ holds the index configs (read by the ingest image) and the
 # searcher config (applied on deploy).
-if matches '^infra/' && grep -Evq '^infra/quickwit/' <<< "$files"; then
+if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwit/'; then
   provision=true
 fi
 matches '^\.github/' && all "workflow changed"
