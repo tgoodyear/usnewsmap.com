@@ -36,6 +36,11 @@ export interface Meta {
     max_fuzzy: number;
     min_prefix_chars: number;
   };
+  /**
+   * The Japanese index of our own OCR (#139): a query in Japanese script
+   * searches only it. Null or absent when the version has none.
+   */
+  ja?: { indexes: string[]; fold: number; pages: number } | null;
 }
 
 export interface MetaLanguage {
@@ -140,6 +145,11 @@ export interface HitItem {
   front_page: boolean;
   /** HTML-escaped text with `<mark>` around matched terms. */
   snippets: string[];
+  /**
+   * Set when the text is our own OCR, not LoC's (#139): LoC has no text for
+   * the page, so its viewer shows the image only. Absent from older APIs.
+   */
+  ocr?: { source: string; engine: string | null };
   links: { viewer: string | null };
 }
 
