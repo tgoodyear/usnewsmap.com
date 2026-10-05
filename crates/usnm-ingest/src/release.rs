@@ -946,6 +946,8 @@ impl Release {
                 "pages": overlay.pages.len(),
                 "added_to_baselines": added,
                 "skipped": overlay.skipped,
+                // What the OCR found: Japanese text, near-blank pages, mostly Latin.
+                "kinds": ocr_ja::kinds(&overlay.pages),
                 "parts": overlay.parts,
             });
             snapshot_files.push((ocr_ja::OCR_JA_FILE, serde_json::to_vec(&record)?));
