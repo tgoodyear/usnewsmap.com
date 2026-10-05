@@ -72,7 +72,9 @@ curl "$(scripts/settings.sh prod API_URL)/readyz"
 curl "$(scripts/settings.sh prod API_URL)/v1/status"  # "pipeline": {"available": true, …} once the Cosmos role has propagated
 ```
 
-After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API app, which carries the site, onto the commit. To pin a specific build instead, run `scripts/settings.sh prod USNM_IMAGE_TAG <commit sha>` (default `main`) and `scripts/provision.sh prod`.
+After that, every green `ci` run on `main` publishes the images to each listed environment and rolls its API app, which carries the site, onto the commit. The rollout also applies the Quickwit searcher's config, `infra/quickwit/searcher.yaml`, when the running one differs (`scripts/ci/roll-api.sh`), so a change to that file goes live on merge.
+
+**Any other change under `infra/` is not deployed by a merge.** CI's identity can only roll the app ([Container registry](#container-registry)), so a change to the Bicep (resources, settings, scale rules, alerts, workbooks) waits until someone with Owner runs `scripts/provision.sh <env>` from an up-to-date `main`. CI says so on the run: the `stack change needs a provision` job adds a warning and the commands to the run's summary. To pin a specific build instead, run `scripts/settings.sh prod USNM_IMAGE_TAG <commit sha>` (default `main`) and `scripts/provision.sh prod`.
 
 | Parameter | Setting | Default |
 |-----------|---------|---------|
