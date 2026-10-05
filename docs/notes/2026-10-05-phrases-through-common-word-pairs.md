@@ -38,22 +38,34 @@ The list, `usnm_core::common_grams::WORDS`, is 89 words: the function words on a
 
 ## What we measured
 
-On 90,745 real pages from 11 LoC batches, October 2026 (05 §5.5.3):
+**Setup** (from #154, where the measurements were reported): 90,745 real Chronicling America OCR pages from 11 random LoC batches (2.6 GB of text, about one production split), indexed with Quickwit 0.9.1 once without `text_cg` and once with it; the searcher pinned to 2 CPUs with its result cache off; each search run cold, with the OS cache dropped first; medians of 3 runs; bytes read from disk and wall time per search. The commands themselves aren't in the repository, so the PR description is the record of the procedure, and rerunning it means setting it up again from that description.
 
-| What | Without pairs | With pairs | How |
-|------|---------------|------------|-----|
-| Index size | 3.0 GB | 4.8 GB (1.6×) | the release's `index layout` log line |
-| Indexing time | 1× | 1.9× | the same release |
-| Bytes read, phrases with a common word | e.g. 17.3 MB for `"cross of gold"` | 0.6 MB; 11–31× fewer across the phrases | cold (OS cache dropped), 2 CPUs |
-| Time, the same phrases | 1× | 2–6.5× less, same hits | same |
-| Over the corpus | | about +0.35 TB on Blob Hot, about +$7 a month | 09's cost model |
+| Phrase | Read from disk, `text` → `text_cg` | Time |
+|--------|-----------------------------------|------|
+| cross of gold | 17.3 MB → 0.6 MB (31× less) | 3.0× faster |
+| secretary of war | 17.5 → 0.8 MB (22×) | 3.2× |
+| united states of america | 17.8 → 1.1 MB (16×) | 2.3× |
+| in the city of new york | 52.6 → 4.6 MB (11×) | 3.8× |
+| board of trade | 17.5 → 0.8 MB (22×) | 2.7× |
+| the president | 21.4 → 0.8 MB (28×) | 6.5× |
+| for sale | 4.1 → 0.9 MB (4×) | 2.1× |
 
-Docstore blocks, same pages: cold hits about 3× faster, index about 8% larger (#160).
+Hit counts were identical for every phrase. Index size 4.8 GB against 3.0 GB (1.6×); indexing 273 s against 143 s (1.9×). Over the corpus that is about +0.35 TB on Blob Hot, about +$7 a month (05 §5.5.3).
 
-What the numbers don't show: the gain was measured on 11 batches on a laptop, not on the job's searcher against Blob. The live before/after is the next capture.
+**Docstore blocks** (#160, same pages, Quickwit 0.9.1): cold (OS cache dropped), a page of 50 hits, median of 5:
+
+| Query | 1 MB blocks | 128 KB blocks |
+|-------|-------------|---------------|
+| `text:gold` | 67 ms | 18 ms |
+| `text:silver AND text:bryan` | 57 ms | 19 ms |
+| `text:fever` | 51 ms | 19 ms |
+| Index size | 2.6 GB | 2.8 GB (+8%) |
+
+What the numbers don't show: both were measured on 11 batches on local disk, where times are mostly CPU, not on the job's searcher against Blob, where bytes read dominate. The 11–31× drop in bytes is the better guide to production; the times are a prediction. The live before/after is the next capture.
 
 ## What is left
 
 - **Capture `pages-v20261005-1`** at a quiet hour with `scripts/compare-versions.py capture`, keep it under `ops/version-snapshots/`, and `diff` it against the `pages-v20261003-1` capture. Expected: the same hits for every search (the equivalence proof says so; the diff flags any search whose hits move by more than 1%), and the two "cross of gold" searches several times faster. Record the result in a follow-up note.
-- **The other slow phrases.** `standard oil`, `civil service reform` and `new deal` have no word on the list, yet took 20–50 s on `pages-v20261003-1`. Whether that is the positions of frequent content words, the number of matches, or the docstore (the hits page, which the capture also waits for) isn't known. The 60,000-page splits and 128 KB blocks will have moved them too, so measure before explaining.
+- **The other slow phrases.** `standard oil`, `civil service reform` and `new deal` have no word on the list, yet took 20–50 s on `pages-v20261003-1`. Whether that is the positions of frequent content words or the number of matches isn't known; it isn't the docstore, because a capture asks only `/v1/aggregate`, whose engine requests ask for no hits (`max_hits: 0` in `usnm_search::quickwit`), so a capture's timings never touch it. The 60,000-page splits will have moved these searches too, so measure before explaining.
+- **The docstore change on the live site.** For the same reason, no capture can show the 128 KB blocks' effect. Measuring it means timing `/v1/hits` cold on both versions, which `scripts/compare-versions.py` doesn't do; adding a hits page per search to the capture is the simplest way.
 - **The list is from one week of 1896.** Whether the commonest words of 1850 or 1950 differ enough to matter hasn't been measured; the list is versioned, so changing it is a full rebuild.

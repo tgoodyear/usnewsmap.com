@@ -22,17 +22,19 @@ The size of the gap (#135, `jaocr.py audit`): LoC's per-title "Pages (Full Text)
 
 ## What we measured
 
-Engine accuracy on 23 reference crops from 1942–45 papers, typeset and hand-lettered (04 §4.8; details in #128):
+Engine accuracy: 124 sampled Japanese pages from 17 titles, 1942–45, scored against 23 reference crops (bigram F1, old character forms folded to modern; 04 §4.8, #135; details in #128):
 
-| Engine | Character pairs found (bigram F1) | Crops where it scored highest |
-|--------|-----------------------------------|-------------------------------|
-| NDLOCR-Lite (National Diet Library, CC BY 4.0, CPU only) | 77% | beat Azure on 19 of 23 |
-| Azure AI Document Intelligence Read | 61% | |
-| Tesseract `jpn_vert` | 26% | |
+| Engine | All crops | Typeset | Camp papers (hand-lettered mimeograph) | Crops where it scored highest |
+|--------|-----------|---------|----------------------------------------|-------------------------------|
+| NDLOCR-Lite (National Diet Library, CC BY 4.0, CPU only) | 77% | 83% | 72% | beat Azure on 19 of 23 |
+| Azure AI Document Intelligence Read | 61% | 72% | 49% | |
+| Tesseract `jpn_vert` | 26% | 40% | 11% | |
+
+**The references are not independently checked.** The reference transcriptions were machine-made, and one of them was checked against its scan (#135). So these figures measure agreement with a machine reference as much as accuracy, and the ranking between engines is better established than any one percentage. A Japanese reader should review a sample of the crops and of NDLOCR-Lite's output before anyone relies on the numbers; that review is on #135's list and hasn't happened.
 
 Scale, from the design documents: about 11k Japanese pages in the overlay, indexed in about a minute (04 §4.8).
 
-What the numbers don't show: 23 crops is a small sample, chosen to cover both kinds of printing; the per-page scores on mimeograph are well below the average; and bigram F1 says whether the words are there, not whether a snippet reads well.
+What the numbers don't show: 23 crops is a small sample, chosen to cover both kinds of printing; the camp papers score well below the typeset ones for every engine (72% against 83% for NDLOCR-Lite); and bigram F1 says whether the words are there, not whether a snippet reads well.
 
 ## What is left
 
@@ -40,4 +42,5 @@ What the numbers don't show: 23 crops is a small sample, chosen to cover both ki
 - **Progress to completion.** The job's `ocr-ja.json` report (targets, done, eta) is the record of how far the OCR has got; when it finishes, note the page and issue counts and the wall time per page on the job's CPU.
 - **The audit over every title** (`jaocr.py audit --all-languages`, about 4.5 hours at loc.gov's pace) would say whether the pages-without-text problem is only Japanese. The default run covers the non-English titles.
 - **LoC's own reprocessing.** LoC announced NDNP-Open-OCR reprocessing (04 §4.1). If it ever covers Japanese script, our overlay becomes a fallback; the batch-version path in 04 §4.7 is how its text would arrive.
-- **Mimeograph accuracy.** The camp papers are where NDLOCR-Lite scores lowest, and they are the pages with the most historical interest. No engine tried does well on them; a larger reference set for those pages would show whether anything is worth trying.
+- **Checked references.** A Japanese reader's review of the reference crops and a sample of NDLOCR-Lite's output (#135) is what would turn the table above from agreement with a machine reference into an accuracy measurement.
+- **Mimeograph accuracy.** The camp papers are where every engine scores lowest (NDLOCR-Lite 72%, Azure 49%, Tesseract 11%), and they are the pages with the most historical interest. A larger, checked reference set for those pages would show whether anything is worth trying.

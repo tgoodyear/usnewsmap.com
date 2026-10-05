@@ -15,7 +15,7 @@
 
 **What counts as a page.** The rules decide what the denominator means:
 
-- A page LoC ships with no `ocr.txt` never reaches the curated store, so it isn't in the baselines until our own OCR adds it (the Japanese pages, [the OCR note](2026-10-05-japanese-ocr.md)). A page with an `ocr.txt` that is empty, short or garbled is in the denominator but can't match.
+- A page LoC ships with no `ocr.txt` never reaches the curated store, so it isn't in the baselines until our own OCR adds it (the Japanese pages, [the OCR note](2026-10-05-japanese-ocr.md)). A page whose `ocr.txt` is empty or too short (`text_status` in `usnm_core::text`) is in the denominator and isn't indexed, so it can't match. A page whose text is garbled but long enough is indexed as `ok` like any other, so it can match the tokens LoC produced; the Japanese OCR's targets include such pages (`ok` but under 35% word-like tokens), and until our OCR replaces them they match only by accident.
 - LoC ships some issues in two batch archives (`wa_duwamish_ver01` and `wa_lacamas_ver01` both carry 20 pages of `sn87093109` from 1875). The release keeps one copy of each such page, the same copy every time (text before no text, then the batch whose name sorts first), lists copies an earlier index already holds in `duplicates.json` and hides them from every search; the page counts once (04 §4.7).
 - LoC's listing counts aren't exact: `ncu_cane_ver01` held 11,100 pages in 2,509 issues where the listing said 10,550 in 2,365 (04 §4.1.2), so completeness is checked by the archive's sha256 and our own counts, never by the listing.
 - Language codes come from LoC's title records through a MARC mapping. Adahooniłigii (sn92024097) lists its languages as navaho, navajo and english; neither name had a code, so both passed through and the pages-by-language table counted the title's 1,295 pages twice. Both map to `nav` now, and a title's codes are kept once each (#159).
@@ -32,16 +32,17 @@ The backfill, against LoC's listing of 2,997 batches, 23.7M pages and 2.47 TB of
 |------|----------------|---------|-------|-------|
 | 29 Sep 2026, `pages-v20260929-4` | the snapshot (11 §11.2) | 882 | 6,557,925 | 398 places in 42 states and territories; 1,217 titles, 195 places with exactly one; no pages yet from HI, ME, MT, NV, NM, ND, RI, SD, VT, PR, VI |
 | 30 Sep 2026 13:30 UTC | `/v1/status` | 66.0% curated | 15,788,248 curated, 15,766,980 with usable text | 0.13% without text: in the denominator, can't match |
-| 5 Oct 2026, `pages-v20261003-1` | the capture, `yellow fever` 1751–1963 | | 23,722,885 in the baseline | effectively LoC's listed total; 1,632 places had a `railroad` hit |
+| 5 Oct 2026, `pages-v20261003-1` | the capture, `yellow fever` 1736-09-03 to 1963-12-31 (the benchmark's window) | | 23,722,885 in the baseline | matches LoC's listed total; 1,632 places had a `railroad` hit |
 
 What limited the pace was LoC's download limit, not CPU: 10 bulk requests per 10 minutes per IP. The first production backfill ran 8 workers at about 140 downloads an hour, was tolerated for about 90 minutes, then refused almost everything for over an hour. Workers now take download slots 75 s apart from one shared Cosmos item, and a `429` pauses all of them for an hour: about 48 batches an hour, about 2.5 days for the corpus with 4 workers (04 §4.4).
 
 The gap, where measured: Rocky Shimpo, 1,012 pages on loc.gov and 256 with text; `dlc_ballston_ver01`, 2,433 of 5,791 pages with an `ocr.xml` and no `ocr.txt`.
 
-What the numbers don't show: the 23.7M baseline says every listed batch is curated, not that every page in every batch is; the per-batch sha256 and counts are the check for that, and the duplicates hidden per version are on the status page.
+What the numbers don't show: a page count that matches LoC's total doesn't prove every listed batch is curated. LoC's listing counts aren't exact (above), so a missing batch could hide behind excess pages elsewhere. The check is the version's `batches.json` against LoC's listing, and that comparison hasn't been recorded; within a batch, the archive's sha256 and our own counts are the check. The duplicates hidden per version are on the status page.
 
 ## What is left
 
+- **Batch completeness.** Compare `pages-v20261003-1`'s `batches.json` with LoC's `datasets` listing and record the result; the page count alone doesn't settle it.
 - **A full accounting of pages without text.** The audit's `--all-languages` run gives the gap for every title, not only the non-English ones. Its result, per language and per state, belongs in a follow-up note, with how much of it the Japanese OCR closes.
 - **The eleven states and territories with no pages** at `pages-v20260929-4`. Whether they have pages in `pages-v20261003-1` and after is a `/v1/status` reading away; which of them LoC has no digitized titles for at all is a catalog question the status page could answer.
 - **Baselines per title per day** aren't in the snapshot (the per-batch counts have them; the snapshot sums per place), which is why the relative rate can't be shown under a newspaper filter (11 §11.2). Title and place pages with a coverage chart (02, F-31) would want them.
