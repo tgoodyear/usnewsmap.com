@@ -1026,6 +1026,14 @@ async fn serves_the_site_alongside_the_api() {
     assert!(escaped.len() > 255);
     let (status, _, body) = get_site(&s, &format!("/{escaped}"), None).await;
     assert_eq!((status, body.as_str()), (StatusCode::OK, "found"));
+    // 253 bytes fits NAME_MAX, but `ServeDir` would also probe the 256-byte
+    // `.gz` name for a client that accepts gzip.
+    let (status, _, _) = get_site(&s, &format!("/{}.js", "e".repeat(250)), Some("gzip")).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a name that can't take .gz is a plain 404"
+    );
     let (status, _, _) = get_site(&s, &format!("/{}.js", "c".repeat(400)), None).await;
     assert_eq!(
         status,

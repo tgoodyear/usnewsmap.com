@@ -48,6 +48,10 @@ pub const SECURITY_HEADERS: [(&str, &str); 4] = [
 /// The longest file name the filesystem takes (Linux `NAME_MAX`).
 const NAME_MAX: usize = 255;
 
+/// The longest name `ServeDir` can look up: it also probes `<name>.br` and
+/// `<name>.gz`, which must fit `NAME_MAX` too. The site has no names near it.
+const NAME_LIMIT: usize = NAME_MAX - ".br".len();
+
 /// The site as a service for the API router's fallback.
 pub fn router(dir: PathBuf) -> Router {
     let index = dir.join("index.html");
@@ -62,9 +66,10 @@ pub fn router(dir: PathBuf) -> Router {
         .precompressed_br()
         .precompressed_gzip()
         .fallback(spa.into_service());
-    // A path segment longer than any file name can't name a file, and
-    // `ServeDir` answers the filesystem's "file name too long" with a 500, so
-    // such paths skip it and are answered like any other path with no file.
+    // A path segment too long to be a file name (or to take the `.br` or `.gz`
+    // suffix) can't name one of ours, and `ServeDir` answers the filesystem's
+    // "file name too long" with a 500, so such paths skip it and are answered
+    // like any other path with no file.
     let long_names = move |req: Request, next: Next| {
         let index = index.clone();
         async move {
@@ -72,7 +77,7 @@ pub fn router(dir: PathBuf) -> Router {
                 .uri()
                 .path()
                 .split('/')
-                .any(|s| decoded_len(s) > NAME_MAX)
+                .any(|s| decoded_len(s) > NAME_LIMIT)
             {
                 app_route(req, index).await
             } else {

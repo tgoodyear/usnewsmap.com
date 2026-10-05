@@ -87,7 +87,8 @@ impl QuickwitBackend {
             if status == reqwest::StatusCode::REQUEST_TIMEOUT {
                 return Err(SearchError::Timeout);
             }
-            let body = resp.text().await.unwrap_or_default();
+            // A failure reading it is the real cause, with its own chain.
+            let body = resp.text().await.map_err(map_err)?;
             let msg = format!("quickwit returned {status} ({})", cause(&body, &sent));
             return Err(if status.is_client_error() {
                 SearchError::Rejected(msg)
