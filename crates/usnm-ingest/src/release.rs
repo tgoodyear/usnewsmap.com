@@ -370,6 +370,38 @@ impl Release {
             tracing::info!("no curated batches; nothing to release");
             return Ok(None);
         }
+        // Our own OCR of the Japanese pages (04 §4.8): its own index, rebuilt
+        // at every release from the pages of the version's batches.
+        let batch_names: BTreeSet<&str> =
+            version_batches.iter().map(|b| b.batch.as_str()).collect();
+        let overlay = ocr_ja::load(self.curated.as_ref(), &batch_names, &catalog).await?;
+        if !overlay.parts.is_empty() {
+            tracing::info!(
+                parts = overlay.parts.len(),
+                pages = overlay.pages.len(),
+                skipped = overlay.skipped,
+                "Japanese OCR overlay"
+            );
+        }
+        // Decided before the duplicate-page plan, which reads every batch's
+        // counts: a run with nothing to release returns without it.
+        let overlay_only = nothing_new;
+        if overlay_only {
+            let prev = previous
+                .as_ref()
+                .expect("incremental has a previous version");
+            if !self.overlay_changed(&prev.index_version, &overlay).await? {
+                tracing::info!(
+                    "no newly curated batches with catalogued titles, and no new Japanese OCR; \
+                     nothing to release"
+                );
+                return Ok(None);
+            }
+            tracing::info!(
+                "no newly curated batches; releasing the new Japanese OCR on the same indexes"
+            );
+        }
+
         // Pages that ship in more than one batch: which copy the version
         // keeps. The batches outside the scope are in indexes it keeps.
         let new: BTreeSet<&str> = scope.iter().map(|b| b.batch.as_str()).collect();
@@ -396,36 +428,6 @@ impl Release {
                 hidden = dedup.hidden.len(),
                 pairs = ?dedup.pairs.iter().take(10).collect::<Vec<_>>(),
                 "pages ship in more than one batch; keeping one copy of each"
-            );
-        }
-
-        // Our own OCR of the Japanese pages (04 §4.8): its own index, rebuilt
-        // at every release from the pages of the version's batches.
-        let batch_names: BTreeSet<&str> =
-            version_batches.iter().map(|b| b.batch.as_str()).collect();
-        let overlay = ocr_ja::load(self.curated.as_ref(), &batch_names, &catalog).await?;
-        if !overlay.parts.is_empty() {
-            tracing::info!(
-                parts = overlay.parts.len(),
-                pages = overlay.pages.len(),
-                skipped = overlay.skipped,
-                "Japanese OCR overlay"
-            );
-        }
-        let overlay_only = nothing_new;
-        if overlay_only {
-            let prev = previous
-                .as_ref()
-                .expect("incremental has a previous version");
-            if !self.overlay_changed(&prev.index_version, &overlay).await? {
-                tracing::info!(
-                    "no newly curated batches with catalogued titles, and no new Japanese OCR; \
-                     nothing to release"
-                );
-                return Ok(None);
-            }
-            tracing::info!(
-                "no newly curated batches; releasing the new Japanese OCR on the same indexes"
             );
         }
 
