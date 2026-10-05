@@ -47,7 +47,9 @@ var quickwit = searchBackend == 'quickwit'
 // file-backed metastore read-only and polls it (08 §8.4.1); the API looks
 // each index up before serving a version that lists it, because the
 // searcher reads the index list only at start (S-2). Aggregation limits per
-// 05 §5.7; caches sized for the 4 GiB container.
+// 05 §5.7; caches sized for the 4 GiB container. Both search timeouts match
+// the API's 60 s warm-up limit (USNM_PREWARM_QUERY_SECS, #125); Quickwit's
+// default is 30 s for each, and the leaf one also applies on a single node.
 var quickwitConfig = join([
   'version: 0.8'
   'cluster_id: usnm-searcher'
@@ -70,6 +72,8 @@ var quickwitConfig = join([
   '  partial_request_cache_capacity: 32MB'
   '  predicate_cache_capacity: 32MB'
   '  max_num_concurrent_split_searches: 8'
+  '  request_timeout_secs: 60'
+  '  leaf_request_timeout_secs: 60'
 ], '\n')
 
 var apiEnv = [
