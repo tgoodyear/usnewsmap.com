@@ -89,7 +89,13 @@ impl QuickwitBackend {
             }
             // A failure reading it is the real cause, with its own chain.
             let body = resp.text().await.map_err(map_err)?;
-            let msg = format!("quickwit returned {status} ({})", cause(&body, &sent));
+            // With failed splits not allowed (the default), Quickwit answers a
+            // split's failure this way, naming the split in the body.
+            let msg = format!(
+                "quickwit returned {status} ({}){}",
+                cause(&body, &sent),
+                splits_named(&body, &sent)
+            );
             return Err(if status.is_client_error() {
                 SearchError::Rejected(msg)
             } else {
@@ -181,6 +187,34 @@ pub fn cause(message: &str, query: &str) -> &'static str {
         "empty"
     } else {
         "other"
+    }
+}
+
+/// `; splits A, B` for up to 5 split ids named in a Quickwit message, or
+/// nothing. Split ids are ULIDs: 26 characters of Crockford base32 in upper
+/// case, starting 0-7, with digits and letters. A word of `query` (the
+/// query string sent, which the message may echo) is never one, in any
+/// case, so no search text is logged.
+fn splits_named(message: &str, query: &str) -> String {
+    let echoed: std::collections::HashSet<String> = words(query).collect();
+    let crockford = |c: char| c.is_ascii_digit() || (c.is_ascii_uppercase() && !"ILOU".contains(c));
+    let mut ids: Vec<&str> = Vec::new();
+    for w in message.split(|c: char| !c.is_ascii_alphanumeric()) {
+        if w.len() == 26
+            && w.starts_with(|c: char| ('0'..='7').contains(&c))
+            && w.chars().all(crockford)
+            && !echoed.contains(&w.to_ascii_lowercase())
+            && w.chars().any(|c| c.is_ascii_digit())
+            && w.chars().any(|c| c.is_ascii_uppercase())
+            && !ids.contains(&w)
+        {
+            ids.push(w);
+        }
+    }
+    if ids.is_empty() {
+        String::new()
+    } else {
+        format!("; splits {}", ids[..ids.len().min(5)].join(", "))
     }
 }
 
@@ -417,39 +451,20 @@ pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchEr
         return Ok(());
     }
     let mut causes = std::collections::BTreeMap::<&str, usize>::new();
-    let mut splits = Vec::new();
+    let mut texts = Vec::new();
     for e in &resp.errors {
-        // An object ({split_id, error, ...}) or a plain message.
-        let (split, text) = match e {
-            Value::Object(o) => (
-                o.get("split_id").and_then(Value::as_str),
-                o.get("error")
-                    .map_or_else(|| e.to_string(), Value::to_string),
-            ),
-            Value::String(t) => (None, t.clone()),
-            other => (None, other.to_string()),
-        };
+        // Quickwit 0.9's REST response gives each error as a string.
+        let text = e.as_str().map_or_else(|| e.to_string(), str::to_owned);
         *causes.entry(cause(&text, query)).or_default() += 1;
-        if let Some(id) = split.filter(|id| {
-            id.len() <= 64
-                && id
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        }) {
-            if splits.len() < 5 {
-                splits.push(id.to_owned());
-            }
-        }
+        texts.push(text);
     }
     let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{c}×{n}")).collect();
-    let mut msg = format!(
-        "quickwit reported {} partial failure(s): {}",
+    let msg = format!(
+        "quickwit reported {} partial failure(s): {}{}",
         resp.errors.len(),
-        causes.join(", ")
+        causes.join(", "),
+        splits_named(&texts.join(" "), query)
     );
-    if !splits.is_empty() {
-        msg.push_str(&format!("; splits {}", splits.join(", ")));
-    }
     Err(SearchError::Backend(msg))
 }
 
@@ -885,22 +900,50 @@ mod tests {
         let resp: SearchResponse = serde_json::from_value(json!({
             "num_hits": 3,
             "errors": [
-                {"split_id": "01JA9X", "error": "aggregation memory limit exceeded on query text:secret"},
-                {"split_id": "01JA9Y", "error": "Aggregation Memory Limit exceeded"},
-                {"split_id": "text:secret", "error": "request timed out"},
+                "split 01JA9XQ3V5Z8M2K7T4R6N1P0WB: aggregation memory limit exceeded on query text:secret",
+                "split 01JA9XQ3V5Z8M2K7T4R6N1P0WC: Aggregation Memory Limit exceeded",
+                "request timed out for text:SECRETSECRETSECRETSECRET12",
                 "storage error: Azure blob read failed for text:secret"
             ]
         }))
         .unwrap();
-        let err = check_complete(&resp, "text:secret")
+        let err = check_complete(&resp, "text:secret OR text:SECRETSECRETSECRETSECRET12")
             .unwrap_err()
             .to_string();
         assert_eq!(
             err,
             "search backend error: quickwit reported 4 partial failure(s): \
-             memory_limit×2, storage×1, timeout×1; splits 01JA9X, 01JA9Y"
+             memory_limit×2, storage×1, timeout×1; \
+             splits 01JA9XQ3V5Z8M2K7T4R6N1P0WB, 01JA9XQ3V5Z8M2K7T4R6N1P0WC"
         );
-        assert!(!err.contains("secret"), "{err}");
+        assert!(!err.to_lowercase().contains("secret"), "{err}");
+    }
+
+    #[test]
+    fn split_ids_are_named_only_when_they_look_like_ulids() {
+        assert_eq!(
+            splits_named(
+                "failed splits: [01JA9XQ3V5Z8M2K7T4R6N1P0WB, 01JA9XQ3V5Z8M2K7T4R6N1P0WB]",
+                ""
+            ),
+            "; splits 01JA9XQ3V5Z8M2K7T4R6N1P0WB"
+        );
+        // Too short, lower case, a letter Crockford leaves out, or not 0-7 first.
+        assert_eq!(
+            splits_named(
+                "01JA9X 01ja9xq3v5z8m2k7t4r6n1p0wb 01JA9XQ3V5Z8M2K7T4R6N1P0WI 91JA9XQ3V5Z8M2K7T4R6N1P0WB",
+                ""
+            ),
+            ""
+        );
+        // A word of the query is never named, whatever its case.
+        assert_eq!(
+            splits_named(
+                "no match for 01JA9XQ3V5Z8M2K7T4R6N1P0WB",
+                "text:01ja9xq3v5z8m2k7t4r6n1p0wb"
+            ),
+            ""
+        );
     }
 
     #[test]
