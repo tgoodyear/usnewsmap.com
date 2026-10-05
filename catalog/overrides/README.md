@@ -20,6 +20,10 @@ Each entry names a place by its city and state, as the catalog shows it:
 
 `precision` is `city` (the default), `county` or `state`.
 
+Current entries:
+
+- **Vancouver, WA:** for The Vancouver Independent (pages `sn87093109`, record `sn84022797`, #120). Neither of its LoC records has coordinates, so without this it would sit at Washington's centroid. The coordinates are the city's, from public gazetteers, not from LoC.
+
 ## Title overrides
 
 `titles.json` is for a title whose pages ship under an LCCN that has no

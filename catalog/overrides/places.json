@@ -1,1 +1,3 @@
-[]
+[
+  { "city": "Vancouver", "lat": 45.6387, "lon": -122.6615, "state": "WA" }
+]

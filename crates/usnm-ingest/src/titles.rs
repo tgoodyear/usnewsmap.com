@@ -1361,6 +1361,12 @@ mod tests {
         assert_eq!(t.extra["loc_record"], "sn84022797");
         let p = c.place(&t.place_id).unwrap();
         assert_eq!((p.name.as_str(), p.state.as_str()), ("Vancouver", "WA"));
+        // Neither LoC record has coordinates: the override in git places it
+        // in the city, not at Washington's centroid.
+        assert_eq!(
+            (p.lat, p.lon, p.precision.as_str()),
+            (45.6387, -122.6615, "city")
+        );
 
         // Once catalogued, it isn't asked for again.
         let r = sync(store.as_ref(), &lccns, &records, false, &base, &unpaced())
