@@ -39,8 +39,9 @@ ours; `busy` counts `503 busy` answers (a full queue), which the script
 waits out like the web app.
 
 The API rate-limits each client address (120 requests a minute, bursts of
-40, by default); the script pauses between levels and waits out any `429`,
-counting them in `429s`. Its requests are not in the search log: they send
+40, by default); the script pauses between levels. Like the web app, it
+waits out a `429` met while waiting on a search (counted in `429s`), and
+counts one on a search's first request as that search failing. Its requests are not in the search log: they send
 no Origin or Sec-Fetch-Site header and a script's user agent (`admit` in
 crates/usnm-api/src/searchlog.rs). They do show in request telemetry.
 """
@@ -130,7 +131,9 @@ def run(base, path, name):
                 r.ahead = max(r.ahead or 0, doc.get("ahead", 0))
         elif status == 503 and doc.get("type") == "/errors/busy":
             r.busy += 1
-        elif status == 429:
+        elif status == 429 and (r.accepted or r.busy):
+            # Like the web app, a rate limit is waited out only once the
+            # search is under way; before that it is the answer.
             r.limited += 1
         else:
             r.status = status

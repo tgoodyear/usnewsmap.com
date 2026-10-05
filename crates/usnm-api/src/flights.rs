@@ -19,6 +19,8 @@
 //! as busy. A computation that nobody has waited on for `abandon_after`
 //! (15 s) is cancelled, so a visitor who changes the search or leaves frees
 //! its slot or its place in the queue. The warm-up has a slot of its own.
+//! All of this is per replica (06 §6.6): a request that reaches another
+//! replica starts or queues the search there afresh.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
