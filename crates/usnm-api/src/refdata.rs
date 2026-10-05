@@ -40,6 +40,10 @@ pub struct Current {
     /// The Japanese pages' index (#139, 04 §4.8), when the version has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ja: Option<JaIndexes>,
+    /// The `usnm_core::common_grams::VERSION` every index was built with
+    /// (05 §5.5.3); absent for versions without `text_cg`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_grams: Option<u32>,
 }
 
 /// `current.json`'s `ja`: the index of the Japanese pages we OCR ourselves.
@@ -269,11 +273,17 @@ impl RefData {
     }
 
     pub fn index_set(&self) -> IndexSet {
-        IndexSet::new(self.current.indexes.clone()).hiding(
-            self.hidden
-                .iter()
-                .map(|h| (h.doc_id.clone(), h.batch.clone())),
-        )
+        // Phrases search `text_cg` only when every index has it at this
+        // API's version: an older version, or one built with another word
+        // list, keeps them in `text` (05 §5.5.3).
+        let grams = self.current.common_grams == Some(usnm_core::common_grams::VERSION);
+        IndexSet::new(self.current.indexes.clone())
+            .with_common_grams(grams)
+            .hiding(
+                self.hidden
+                    .iter()
+                    .map(|h| (h.doc_id.clone(), h.batch.clone())),
+            )
     }
 
     /// The Japanese pages' index set, when the version has one.

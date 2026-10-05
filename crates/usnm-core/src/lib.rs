@@ -4,6 +4,7 @@
 //! - [`ids`]: page keys and collision-free document ids (04 §4.2)
 //! - [`time`]: day numbers and time buckets (05 §5.5, §5.7)
 //! - [`text`]: text normalization shared by ingest and query parsing (04 §4.5)
+//! - [`common_grams`]: common-word pairs, so phrases skip common words' positions (05 §5.5.3)
 //! - [`ja`]: Japanese tokens and folding for our own OCR (04 §4.8, #139)
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
@@ -11,6 +12,7 @@
 //! - [`names`]: LoC's language and state names (04 §4.6)
 //! - [`skew`]: where a term is printed more or less than corpus volume predicts (11)
 
+pub mod common_grams;
 pub mod cube;
 pub mod ids;
 pub mod ja;
