@@ -45,21 +45,67 @@ pub const SECURITY_HEADERS: [(&str, &str); 4] = [
     ),
 ];
 
+/// The longest file name the filesystem takes (Linux `NAME_MAX`).
+const NAME_MAX: usize = 255;
+
+/// The longest name `ServeDir` can look up: it also probes `<name>.br` and
+/// `<name>.gz`, which must fit `NAME_MAX` too. The site has no names near it.
+const NAME_LIMIT: usize = NAME_MAX - ".br".len();
+
 /// The site as a service for the API router's fallback.
 pub fn router(dir: PathBuf) -> Router {
     let index = dir.join("index.html");
-    let spa = move |req: Request| {
+    let spa = {
         let index = index.clone();
-        async move { app_route(req, index).await }
+        move |req: Request| {
+            let index = index.clone();
+            async move { app_route(req, index).await }
+        }
     };
     let files = ServeDir::new(dir)
         .precompressed_br()
         .precompressed_gzip()
         .fallback(spa.into_service());
+    // A path segment too long to be a file name (or to take the `.br` or `.gz`
+    // suffix) can't name one of ours, and `ServeDir` answers the filesystem's
+    // "file name too long" with a 500, so such paths skip it and are answered
+    // like any other path with no file.
+    let long_names = move |req: Request, next: Next| {
+        let index = index.clone();
+        async move {
+            if req
+                .uri()
+                .path()
+                .split('/')
+                .any(|s| decoded_len(s) > NAME_LIMIT)
+            {
+                app_route(req, index).await
+            } else {
+                next.run(req).await
+            }
+        }
+    };
     Router::new()
         .fallback_service(files)
+        .layer(middleware::from_fn(long_names))
         .layer(middleware::from_fn(cache_control))
         .layer(middleware::from_fn(robots_tag))
+}
+
+/// How many bytes a path segment is once percent-decoded, as `ServeDir`
+/// decodes it before it names a file: each valid `%XX` escape is one byte.
+fn decoded_len(segment: &str) -> usize {
+    let b = segment.as_bytes();
+    let (mut i, mut n) = (0, 0);
+    while i < b.len() {
+        let escape = b[i] == b'%'
+            && i + 2 < b.len()
+            && b[i + 1].is_ascii_hexdigit()
+            && b[i + 2].is_ascii_hexdigit();
+        i += if escape { 3 } else { 1 };
+        n += 1;
+    }
+    n
 }
 
 /// The paths the app renders a page for (`web/src/route.ts`), with or

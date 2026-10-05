@@ -70,6 +70,13 @@ var quickwitConfig = join([
   '  partial_request_cache_capacity: 32MB'
   '  predicate_cache_capacity: 32MB'
   '  max_num_concurrent_split_searches: 8'
+  // Quickwit cancels a search, and each split search in it, at these
+  // (both 30 s by default) and answers 408. The API's own limit on a
+  // computation is 120 s (USNM_COMPUTE_CAP_SECS), so Quickwit's must be
+  // longer, or busy cold searches fail at 30 s (October 2026 load test,
+  // 06 §6.5).
+  '  request_timeout_secs: 125'
+  '  leaf_request_timeout_secs: 125'
 ], '\n')
 
 var apiEnv = [
