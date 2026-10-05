@@ -19,7 +19,7 @@ Per page, the index holds the title (`lccn`), the place the title is catalogued 
 
 Each reference snapshot also holds `baselines.json`, the pages published per place and day, built at release from the per-batch counts of every curated page, including pages whose OCR text is empty (04 §4.5, `write_snapshot` in `crates/usnm-ingest/src/release.rs`). `/v1/coverage` serves it as a place by bucket cube from memory, and the site already fetches it with every search. So the denominator for "hits per page" exists for every place, bucket and version, with no new ingest work.
 
-What is not in the snapshot: pages per title per day (the per-batch counts files have them, but the snapshot sums them per place) and population. Snapshots written since the per-language baselines (§11.14) also hold `language_baselines.json`, the same pages split by the languages their title lists; older ones don't.
+What is not in the snapshot: pages per title per day (the per-batch counts files have them, but the snapshot sums them per place) and population. Snapshots written since the per-language baselines (§11.14) also hold `language_baselines.json`, the same pages split by the languages their title lists; older ones don't. A Japanese query (#139) searches only the Japanese pages of titles that list Japanese, so without a `lang` filter its baseline is `lang=jpn`: those titles' pages, including the Japanese pages LoC shipped without text, which the release adds to the baselines once we've OCR'd them (04 §4.8).
 
 The published version at the time of writing, `pages-v20260929-4`:
 

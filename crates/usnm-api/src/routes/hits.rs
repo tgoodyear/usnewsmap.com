@@ -15,7 +15,7 @@ use usnm_core::query::highlight_terms;
 use usnm_core::time::date_from_day;
 use usnm_search::{Hit, HitSort, HitsQuery};
 
-use super::{cached, uses_fuzzy, with_timeout, Job};
+use super::{cached, no_japanese, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
 use crate::refdata::RefData;
 use crate::{version, AppState};
@@ -65,7 +65,17 @@ pub(crate) struct Item {
     seq: u16,
     front_page: bool,
     snippets: Vec<String>,
+    /// When the text is our own OCR, not LoC's (#139).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ocr: Option<Ocr>,
     links: Links,
+}
+
+/// Who made a page's text when it isn't LoC's OCR.
+#[derive(Serialize)]
+struct Ocr {
+    source: String,
+    engine: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -80,10 +90,16 @@ impl Item {
             date: date_from_day(h.day).to_string(),
             title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),
             links: Links {
+                // LoC has no text for a page we OCR'd, so its viewer can't
+                // highlight the words: link the page without them.
                 viewer: PageKey::from_doc_id(&h.doc_id)
                     .ok()
-                    .map(|k| k.viewer_url(Some(highlight))),
+                    .map(|k| k.viewer_url(h.ocr_source.is_none().then_some(highlight))),
             },
+            ocr: h.ocr_source.map(|source| Ocr {
+                source,
+                engine: h.ocr_engine,
+            }),
             doc_id: h.doc_id,
             lccn: h.lccn,
             place_id: h.place_id,
@@ -191,9 +207,12 @@ pub async fn hits(
         let result = with_timeout(
             &st,
             st.config.compute_cap,
-            snap2
-                .backend
-                .hits(&rd.index_set(), &req.query, &req.filters, &page),
+            snap2.backend.hits(
+                &rd.index_set_for(&req.query).ok_or_else(no_japanese)?,
+                &req.query,
+                &req.filters,
+                &page,
+            ),
         )
         .await;
         st.metrics.backend("hits", t.elapsed(), &result);

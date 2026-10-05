@@ -11,12 +11,12 @@ use axum::response::Response;
 use serde::Serialize;
 use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{RawParams, SearchRequest};
-use usnm_core::query::highlight_terms;
+use usnm_core::query::{highlight_terms, is_japanese};
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::plan::{self, Planned};
 
 use super::hits::Item;
-use super::{cached_body, mount_prefix, uses_fuzzy, with_timeout, Ctx, Job};
+use super::{cached_body, mount_prefix, no_japanese, uses_fuzzy, with_timeout, Ctx, Job};
 use crate::error::ApiError;
 use crate::searchlog::{self, Admission, SearchLog};
 use crate::{version, AppState};
@@ -190,7 +190,7 @@ async fn compute(
     let started = Instant::now();
     let snap = &ctx.snap;
     let rd = &snap.refdata;
-    let indexes = rd.index_set();
+    let indexes = rd.index_set_for(&req.query).ok_or_else(no_japanese)?;
     let mut spec = req.bucket_spec();
     let mut coarsened = false;
     if let Some((term, delay)) = &state.config.fixture_slow {
@@ -268,14 +268,21 @@ async fn compute(
 
     let highlight = highlight_terms(&req.query).join(" ");
     let f = &req.filters;
-    let baseline_exact = f.lccns.is_empty() && !f.front_only && rd.has_baselines_for(&f.langs);
-    let baseline = baseline_exact.then(|| rd.national_baseline(&spec, &f.states, &f.langs));
+    // A Japanese query searches only pages of titles that list Japanese
+    // (#139), so its relative rate compares with those pages.
+    let langs: Vec<String> = if is_japanese(&req.query) && f.langs.is_empty() {
+        vec!["jpn".to_owned()]
+    } else {
+        f.langs.clone()
+    };
+    let baseline_exact = f.lccns.is_empty() && !f.front_only && rd.has_baselines_for(&langs);
+    let baseline = baseline_exact.then(|| rd.national_baseline(&spec, &f.states, &langs));
     let baseline_ref = baseline_exact.then(|| {
         let mut s = form_urlencoded::Serializer::new(String::new());
         s.append_pair("bucket", spec.unit.as_str());
         s.append_pair("from", &spec.from.to_string());
-        if !f.langs.is_empty() {
-            s.append_pair("lang", &f.langs.join(","));
+        if !langs.is_empty() {
+            s.append_pair("lang", &langs.join(","));
         }
         if !f.states.is_empty() {
             s.append_pair("state", &f.states.join(","));

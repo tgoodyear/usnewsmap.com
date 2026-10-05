@@ -168,6 +168,13 @@ Items are oldest first, and pages on the same day by title, edition and page. `s
 
 Snippets are HTML-escaped server-side, and only `<mark>` is allowed. LoC viewer URLs follow the loc.gov resource pattern. The legacy `chroniclingamerica.loc.gov/lccn/…` form is kept only as a fallback, because LoC redirects it.
 
+**Japanese pages** (#139, 04 §4.8). A query with a Japanese word that isn't excluded (`usnm_core::query::is_japanese`, §6.4) searches the Japanese pages' index that `current.json` names under `ja`, instead of the main indexes. Any other query searches the main indexes. The two are never mixed, so a page with garbled LoC text in the main index and our OCR in the Japanese index is never counted twice. A version without a Japanese index answers a Japanese query with **422** (`Unsupported`). On these pages:
+- the item carries `"ocr": {"source": "usnm-ndlocr-lite", "engine": "ndlocr-lite 636d1cf"}`
+- snippets come from the text as printed, so old forms such as 戰 stay as printed while 戦 matches them
+- the LoC viewer link has no `q`, because LoC has no text for the page and its viewer can't highlight the words
+
+Without a `lang` filter, a Japanese query's `baseline_ref` and national baseline use `lang=jpn`: its matches are all pages of titles that list Japanese, so the relative rate compares with those pages (11 §11.2).
+
 ### 6.3.5 Errors
 
 This is RFC 9457 `application/problem+json`, with `type` values such as `/errors/query-syntax`, `/errors/query-too-broad`, `/errors/rate-limited`, `/errors/backend-timeout`, `/errors/busy`, plus a `hint` field. Syntax errors return **400** with a caret position, broad queries **422**, rate limits **429**, a search that ran past its computation limit **503** `/errors/backend-timeout` with `Retry-After: 30`, and a search refused because every computation slot is taken and the queue for one is full, or that waited in the queue past its limit, **503** `/errors/busy` with `Retry-After: 5` (§6.6). `POST /v1/beacon` adds `/errors/bad-beacon` (**400**), `/errors/too-large` (**413**) and `/errors/unsupported-media-type` (**415**).

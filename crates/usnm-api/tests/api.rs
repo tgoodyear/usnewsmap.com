@@ -761,7 +761,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f2")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f3")) else {
         return Vec::new();
     };
     entries
@@ -792,7 +792,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f2/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f3/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),
@@ -1381,4 +1381,130 @@ async fn api_responses_are_compressed_and_cors_is_limited_to_allowed_origins() {
         header_str(resp.headers(), header::ACCESS_CONTROL_ALLOW_ORIGIN),
         ""
     );
+}
+
+/// The fixture state with the Japanese pages' index (#139) published, and its
+/// synthetic title in the catalog.
+async fn ja_state() -> Arc<AppState> {
+    let mut backend = fixture_backend();
+    backend.add_index("pages-ja-fixture", load_docs("pages-ja-fixture"));
+    let mut refdata = refdata().await;
+    refdata.current.ja = Some(usnm_api::refdata::JaIndexes {
+        indexes: vec!["pages-ja-fixture".into()],
+        fold: usnm_core::ja::FOLD_VERSION,
+        pages: 52,
+    });
+    refdata.titles.insert(
+        "sn99000901".into(),
+        serde_json::from_value(json!({
+            "lccn": "sn99000901", "name": "Fixture Shimpo (Japanese)",
+            "place_id": "P00003", "state": "CA", "languages": ["eng", "jpn"],
+        }))
+        .unwrap(),
+    );
+    Arc::new(AppState::new(config(), Arc::new(backend), refdata))
+}
+
+#[tokio::test]
+async fn japanese_queries_search_the_japanese_pages() {
+    let s = ja_state().await;
+    let docs = load_docs("pages-ja-fixture");
+    let printed_has = |w: &str| {
+        let q = vec![usnm_core::ja::tokenize(w)];
+        docs.iter()
+            .filter(|d| !usnm_core::ja::find(d.printed.as_deref().unwrap(), &q).is_empty())
+            .count() as u64
+    };
+    let war = printed_has("戰爭");
+    assert!(war > 0);
+    // Modern and printed forms are one search, on the Japanese pages only.
+    for q in ["%E6%88%A6%E4%BA%89", "%E6%88%B0%E7%88%AD"] {
+        let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["total"]["hits"], war, "{body}");
+        assert_eq!(body["places"]["id"], json!(["P00003"]));
+        // The relative rate compares with pages of titles that list Japanese.
+        let r = body["cube"]["baseline_ref"].as_str().unwrap();
+        assert!(r.contains("lang=jpn"), "{r}");
+    }
+    // Hits: our OCR is marked, snippets show the printed form, and the LoC
+    // viewer link has no highlight (LoC has no text for these pages).
+    let (status, _, body) = get(&s, "/v1/meta").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ja"]["indexes"], json!(["pages-ja-fixture"]));
+    assert_eq!(body["ja"]["pages"], 52);
+    let (status, _, body) = get(&s, "/v1/hits?q=%E6%88%A6%E4%BA%89&place=P00003").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(body["total"], war);
+    assert_eq!(
+        items.len() as u64,
+        war.min(50),
+        "a first page of the matches"
+    );
+    for it in items {
+        assert_eq!(it["ocr"]["source"], "usnm-ndlocr-lite");
+        assert_eq!(it["ocr"]["engine"], "ndlocr-lite 636d1cf");
+        assert_eq!(it["title"], "Fixture Shimpo (Japanese)");
+        assert!(it["snippets"][0]
+            .as_str()
+            .unwrap()
+            .contains("<mark>戰爭</mark>"));
+        assert!(!it["links"]["viewer"].as_str().unwrap().contains("&q="));
+    }
+    // A Latin query is untouched: the main indexes, LoC's text, highlighted viewer links.
+    let (_, _, body) = get(&s, "/v1/hits?q=gold&place=P00001").await;
+    let it = &body["items"][0];
+    assert!(it.get("ocr").is_none());
+    assert!(it["links"]["viewer"].as_str().unwrap().contains("&q=gold"));
+}
+
+#[tokio::test]
+async fn a_japanese_query_on_a_version_without_japanese_pages_is_refused() {
+    let s = state_with(None).await;
+    let (status, _, body) = get(&s, "/v1/aggregate?q=%E6%97%A5%E6%9C%AC").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, _, _) = get(&s, "/v1/hits?q=%E6%97%A5%E6%9C%AC&place=P00003").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Latin searches work as before.
+    let (status, _, _) = get(&s, "/v1/aggregate?q=gold").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// `current.json`'s Japanese index ids are checked like the main ones (#139).
+#[tokio::test]
+async fn current_json_japanese_index_ids_are_validated() {
+    use usnm_store::ObjectStore as _;
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::new(dir.path());
+    let base = json!({
+        "index_version": "v1", "indexes": ["pages-base-1"], "reference": "v1",
+        "bounds": {"from": "1895-01-01", "to": "1897-12-31"}, "published_at": "2026-10-05T00:00:00Z",
+    });
+    let put = |v: Value| {
+        let store = &store;
+        async move {
+            store
+                .put(
+                    "current.json",
+                    serde_json::to_vec(&v).unwrap(),
+                    "application/json",
+                )
+                .await
+                .unwrap();
+        }
+    };
+    let mut ok = base.clone();
+    ok["ja"] = json!({"indexes": ["pages-ja-1"], "fold": 1, "pages": 3});
+    put(ok).await;
+    assert!(usnm_api::refdata::read_current(&store).await.is_ok());
+    for bad in [json!(["../escape"]), json!(["a/b"]), json!([])] {
+        let mut v = base.clone();
+        v["ja"] = json!({"indexes": bad, "fold": 1});
+        put(v).await;
+        assert!(
+            usnm_api::refdata::read_current(&store).await.is_err(),
+            "{bad}"
+        );
+    }
 }

@@ -73,6 +73,8 @@ pub struct Published {
     /// Pages by state or territory, most first.
     pub by_state: Vec<StatePages>,
     pub by_language: ByLanguage,
+    /// The Japanese pages we OCR (#139), when the version has their index.
+    pub ja: Option<crate::refdata::JaIndexes>,
 }
 
 /// One state's (or territory's) share of the published pages.
@@ -227,6 +229,7 @@ pub fn published(rd: &RefData) -> Published {
         duplicate_pages: rd.duplicate_pages,
         by_state: by_state(rd),
         by_language: by_language(rd),
+        ja: c.ja.clone(),
     }
 }
 

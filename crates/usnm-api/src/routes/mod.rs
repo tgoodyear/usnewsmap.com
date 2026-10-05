@@ -62,7 +62,8 @@ impl Ctx {
 
 /// Bump when a response body's shape changes, so a new release never serves
 /// persisted bodies written by an older one for the same index version.
-pub(crate) const RESPONSE_FORMAT: u32 = 2;
+/// 3: Japanese queries search the Japanese pages, and hits carry `ocr` (#139).
+pub(crate) const RESPONSE_FORMAT: u32 = 3;
 
 /// A persistent-cache read slower than this is abandoned and the response computed.
 const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);
@@ -533,6 +534,13 @@ pub(crate) async fn with_timeout<T>(
 /// The mount prefix of a request path, e.g. `/api/v1` for `/api/v1/aggregate`.
 pub(crate) fn mount_prefix<'a>(path: &'a str, endpoint: &str) -> &'a str {
     path.strip_suffix(endpoint).unwrap_or("/v1")
+}
+
+/// A Japanese query on a version without the Japanese pages' index (#139).
+pub(crate) fn no_japanese() -> crate::error::ApiError {
+    crate::error::ApiError::Unsupported(
+        "Japanese text search on a version without Japanese pages".into(),
+    )
 }
 
 pub(crate) fn uses_fuzzy(node: &usnm_core::query::Node) -> bool {

@@ -45,6 +45,8 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         "places": rd.places.len(),
         "titles": rd.titles.len(),
         "pages": rd.pages,
+        // The Japanese pages we OCR (#139): searched by queries with Japanese words.
+        "ja": c.ja,
         "languages": filter_languages(rd),
         "capabilities": snap.backend.capabilities(),
         "limits": {
