@@ -555,6 +555,26 @@ pub(crate) fn uses_fuzzy(node: &usnm_core::query::Node) -> bool {
     }
 }
 
+/// Every index version and what built it (see [`crate::versions`]).
+pub async fn versions(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Response {
+    let reading = state.status.reading(&state).await;
+    let serving = state.snapshot.load().refdata.version().to_owned();
+    let doc = crate::versions::assemble(
+        chrono::Utc::now(),
+        &serving,
+        reading.as_ref().map(|(at, s)| (*at, s.as_ref())),
+    );
+    let mut resp = Json(doc).into_response();
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=30"),
+    );
+    resp.extensions_mut().insert(ServedVersion(serving));
+    resp
+}
+
 /// The pipeline status document (see [`crate::status`]).
 pub async fn status(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> Response {
     let (body, version) = state.status.get(&state).await;

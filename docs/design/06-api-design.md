@@ -96,6 +96,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | `GET /v1/export/hits.csv` | Hits (≤ 10,000 rows) with page keys and LoC URLs | 1 day |
 | `GET /v1/docs`, `GET /v1/openapi.json` | API documentation | 1 day |
 | `GET /v1/status` | Pipeline status for the public `/status` page: backfill, indexing, titles catalog (§6.3.6) | 30 s |
+| `GET /v1/versions` | Every index version the pipeline built and what built each one, for comparing versions (§6.3.8) | 30 s |
 | `POST /v1/beacon` | One page view from the site, forwarded to Application Insights; answers 204 (§6.3.7) | none |
 | `GET /healthz`, `GET /readyz` | Liveness; readiness (reference data loaded, backend reachable, and after a start the cache warm-up finished or its 1-minute cap passed, §6.6) | none |
 
@@ -272,6 +273,23 @@ Any other field, a duplicate field, or a body that isn't an object is **400** `/
 | `tags` | `ai.cloud.role: usnm-web`, `ai.internal.sdkVersion`, and `ai.location.ip`: the client address, taken from `X-Forwarded-For` as the rate limiter takes it |
 
 Ingestion derives the city, region and country from `ai.location.ip` and stores `0.0.0.0` in `ClientIP`, because the component keeps IP masking on (`DisableIpMasking: false`). The address goes nowhere else, neither into `properties` nor into the API's logs, and the raw user agent is neither forwarded nor logged. Nothing from the body is logged; a failed upload is logged as a count only.
+
+### 6.3.8 `GET /v1/versions`
+
+Every index version the pipeline has built, newest first, with what built each one (#161), so two versions can be compared without working out from merge times what each had. No sign-in, and the same rate limiter as every route. `schema: 1`:
+
+- `available`, `reason`, `read_at`: the pipeline state the list comes from. It's the same reading `/v1/status` makes, so the list costs no extra Cosmos reads. Without pipeline state (fixtures, CI), `available: false` and `versions: []`.
+- `serving`: the version this server serves.
+- `versions[]`: from `index_runs`:
+  - `index_version`, `serving`, `full`, `status`, `indexes`, `new_index`, `batches`, `docs`, `pages`, `duplicate_pages`, `started_at`, `published_at` and `previous_version`;
+  - `build` and `build_source`.
+- `build` sources:
+  - `recorded`: what the release wrote into the run item (04, the manifest's `build`, without the templates' text). It has the commit, ingest version, engine, `full`, feature versions (`common_grams`, `ja_fold`) and the sha256 of each index template the run applied.
+  - `reconstructed`: for versions released before releases recorded it, from `ops/index-history.json`, which `scripts/reconstruct-index-history.py` writes. The commit is the last ingest image pushed before the run's execution started, since every execution ran `usnewsmap-ingest:main`. The rest comes from that commit in git. These records also name the `execution` and the image's digest and push time.
+  - `null`: neither.
+- What a record covers: it describes the indexes that run wrote. A delta's base, and the main indexes an overlay-only release keeps, come from earlier versions: follow `previous_version`.
+
+Error text (`last_error`) isn't included; `/v1/status` shows it sanitized.
 
 ## 6.4 Query language and validation
 

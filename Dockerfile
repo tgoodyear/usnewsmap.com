@@ -27,6 +27,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 # The home page's example searches, which the API warms (include_str!).
 COPY web/src/examples.json ./web/src/examples.json
+# The reconstructed build records of early index versions, for /v1/versions (include_str!).
+COPY ops/index-history.json ./ops/index-history.json
 RUN cargo build --release --locked -p usnm-api
 
 FROM gcr.io/distroless/cc-debian12:nonroot
