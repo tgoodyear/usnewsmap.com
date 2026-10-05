@@ -1470,3 +1470,41 @@ async fn a_japanese_query_on_a_version_without_japanese_pages_is_refused() {
     let (status, _, _) = get(&s, "/v1/aggregate?q=gold").await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// `current.json`'s Japanese index ids are checked like the main ones (#139).
+#[tokio::test]
+async fn current_json_japanese_index_ids_are_validated() {
+    use usnm_store::ObjectStore as _;
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::new(dir.path());
+    let base = json!({
+        "index_version": "v1", "indexes": ["pages-base-1"], "reference": "v1",
+        "bounds": {"from": "1895-01-01", "to": "1897-12-31"}, "published_at": "2026-10-05T00:00:00Z",
+    });
+    let put = |v: Value| {
+        let store = &store;
+        async move {
+            store
+                .put(
+                    "current.json",
+                    serde_json::to_vec(&v).unwrap(),
+                    "application/json",
+                )
+                .await
+                .unwrap();
+        }
+    };
+    let mut ok = base.clone();
+    ok["ja"] = json!({"indexes": ["pages-ja-1"], "fold": 1, "pages": 3});
+    put(ok).await;
+    assert!(usnm_api::refdata::read_current(&store).await.is_ok());
+    for bad in [json!(["../escape"]), json!(["a/b"]), json!([])] {
+        let mut v = base.clone();
+        v["ja"] = json!({"indexes": bad, "fold": 1});
+        put(v).await;
+        assert!(
+            usnm_api::refdata::read_current(&store).await.is_err(),
+            "{bad}"
+        );
+    }
+}

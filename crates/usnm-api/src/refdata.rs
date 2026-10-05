@@ -377,9 +377,11 @@ fn add_series(out: &mut [u64], series: &[(u32, u32)], spec: &BucketSpec) {
 /// prefixes, so each must be a single safe path segment.
 pub async fn read_current(store: &dyn ObjectStore) -> Result<Current, String> {
     let current: Current = parse("current.json", &fetch(store, "current.json").await?)?;
+    let ja = current.ja.iter().flat_map(|j| &j.indexes);
     for id in [&current.index_version, &current.reference]
         .into_iter()
         .chain(&current.indexes)
+        .chain(ja)
     {
         if !is_safe_segment(id) {
             return Err(format!("current.json: `{id}` is not a valid id"));
@@ -387,6 +389,9 @@ pub async fn read_current(store: &dyn ObjectStore) -> Result<Current, String> {
     }
     if current.indexes.is_empty() {
         return Err("current.json lists no indexes".into());
+    }
+    if current.ja.as_ref().is_some_and(|j| j.indexes.is_empty()) {
+        return Err("current.json names a Japanese index set with no indexes".into());
     }
     Ok(current)
 }
