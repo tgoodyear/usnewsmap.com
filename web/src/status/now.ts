@@ -411,7 +411,9 @@ export function ocrExperiment(s: Status, now: number): OcrLine | null {
   if (!o) return { text: "Japanese pages we read ourselves are in the search.", searchable };
   const done = o.done.pages;
   const total = o.targets.pages;
-  const progress = { done, total, label: `${count(done)} of ${count(total)} Japanese pages read` };
+  // No bar for an empty target list: a zero-length range says nothing.
+  const progress = total > 0 ? { done, total, label: `${count(done)} of ${count(total)} Japanese pages read` } : undefined;
+  if (total === 0) return { text: "There are no Japanese pages to read.", searchable };
   if (done >= total) {
     return { text: `All ${count(total)} Japanese pages read.`, progress, searchable };
   }

@@ -426,6 +426,12 @@ describe("ocrExperiment", () => {
     );
     s.ocr_ja = ocrJa({ running: false, eta: null, done: { pages: 11_000, issues: 1500 } });
     expect(ocrExperiment(s, NOW)!.text).toBe("All 11,000 Japanese pages read.");
+    // Nothing to read: done, and no zero-length bar.
+    s.ocr_ja = ocrJa({ running: false, eta: null, targets: { pages: 0, issues: 0 }, done: { pages: 0, issues: 0 } });
+    expect(ocrExperiment(s, NOW)).toEqual({
+      text: "There are no Japanese pages to read.",
+      searchable: "They become searchable with the next update.",
+    });
   });
 
   it("nothing to show without a report or a Japanese index", () => {

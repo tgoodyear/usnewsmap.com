@@ -388,7 +388,7 @@ details.status-error > summary { white-space: nowrap; overflow: hidden; text-ove
   clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 .status-now { border-left: 4px solid var(--accent); }
-.status-now__line { font-size: 1.1rem; font-weight: 600; margin: 4px 0 8px; line-height: 1.45; }
+.status-now__line, .status-ocr__line { font-size: 1.1rem; font-weight: 600; margin: 4px 0 8px; line-height: 1.45; }
 .status-now__note { margin: 4px 0; line-height: 1.45; }
 .status-headline__text { font-size: 1.2rem; }
 .status-subsection { margin: 18px 0 0; }

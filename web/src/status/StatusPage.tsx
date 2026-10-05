@@ -227,7 +227,7 @@ function OcrExperiments({ s, now }: { s: Status; now: number }) {
         NDLOCR-Lite, text-recognition software from Japan&apos;s National Diet
         Library. This runs apart from the steps above.
       </p>
-      <p className="status-now__line">{line.text}</p>
+      <p className="status-ocr__line">{line.text}</p>
       {line.progress && (
         <Bar value={line.progress.done} max={line.progress.total} label={line.progress.label} />
       )}
