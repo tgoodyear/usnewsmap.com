@@ -397,6 +397,14 @@ impl Release {
                 );
                 return Ok(None);
             }
+            // The run records the Japanese index as the index it wrote, so
+            // there must be one: OCR that changed without a page to index waits.
+            if !overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
+                tracing::info!(
+                    "the Japanese OCR changed but has no page to index; nothing to release"
+                );
+                return Ok(None);
+            }
             tracing::info!(
                 "no newly curated batches; releasing the new Japanese OCR on the same indexes"
             );
@@ -808,7 +816,7 @@ impl Release {
         catalog: &Catalog,
     ) -> anyhow::Result<Option<(String, u64)>> {
         let mut docs = Vec::new();
-        for p in overlay.pages.iter().filter(|p| p.ok && p.printed.is_some()) {
+        for p in overlay.pages.iter().filter(|p| p.indexable()) {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let place = catalog.place(&title.place_id).context("place")?;
             docs.push(ocr_ja::ja_doc(p, title, place));

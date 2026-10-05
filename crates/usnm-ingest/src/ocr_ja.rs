@@ -57,6 +57,11 @@ pub struct JaPage {
 }
 
 impl JaPage {
+    /// Whether the page goes into the Japanese index: our OCR found text.
+    pub fn indexable(&self) -> bool {
+        self.ok && self.printed.is_some()
+    }
+
     /// A page curation never saw: not in any `counts.json`, so not in the baselines.
     pub fn missing_from_curation(&self) -> bool {
         self.loc_text == "missing"
