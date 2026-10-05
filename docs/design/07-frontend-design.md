@@ -108,6 +108,7 @@ https://usnewsmap.com/?q=%22cross+of+gold%22&mode=phrase&from=1896-06-01&to=1896
 ## 7.6 Accessibility (WCAG 2.2 AA)
 
 - Every map view has an equivalent **List/Table** tab (place, state, hits, relative, first appearance, last seen), sortable and exportable.
+- **Newspapers (#121).** Under the place table, a "Newspapers" table from the aggregate's `papers`: newspaper, place and matching pages between the search's dates, the first 25 with "Show all", a "Download newspapers CSV" button (`lccn,newspaper,place,matching_pages`), and on each row "Only this newspaper", which sets the `lccn` filter (in the URL as `lccn=`). While it is on, a notice names the paper with "Show every newspaper". The relative rate isn't available under it (the baselines aren't kept per title, 06 §6.3.3). Under the summary, a line gives the language mix when more than one language has matches: "Matches in 312 newspapers: English 96%, German 3% and Spanish 1%." Each share is against all matching pages, and a paper in several languages counts in each.
 - Playback is keyboard operable: `Space` plays or pauses, `←`/`→` step, `Shift+←/→` jumps 10 buckets, `Home`/`End` go to the ends. Focus is visible.
 - When `prefers-reduced-motion` is set, autoplay is off and transitions are instant.
 - A live region announces "Showing N places, M pages, up to July 12 1896" as the scrubber moves (throttled).

@@ -92,6 +92,8 @@ export interface AggregateResponse {
     /** The earliest and latest matching page; null when nothing matches. Absent from older APIs. */
     first?: HitItem | null;
     last?: HitItem | null;
+    /** Newspapers with at least one matching page (#121). Absent from older APIs. */
+    papers?: number;
   };
   series: { hits: number[]; baseline: number[] | null };
   places: {
@@ -102,6 +104,17 @@ export interface AggregateResponse {
     last_day?: number[];
   };
   cube: SparseCube & { calls: number; baseline_ref: string | null };
+  /**
+   * Matching pages per newspaper, most first, at most 500 (`total.papers`
+   * counts them all); title and place from the catalog (#121). Absent from older APIs.
+   */
+  papers?: { lccn: string[]; hits: number[]; title: (string | null)[]; place_id: (string | null)[] };
+  /**
+   * Matching pages per title language, most first. A page of a paper in
+   * several languages counts in each, so these can add up to more than
+   * `total.hits` (#121). Absent from older APIs.
+   */
+  languages?: { code: string[]; hits: number[] };
 }
 
 export interface CoverageResponse {

@@ -72,3 +72,24 @@ export function languageCounts(counts: Record<string, number> | undefined, title
   const listed = entries.reduce((a, e) => a + e.n, 0);
   return listed > titles ? `${sentence} A paper in more than one language counts in each.` : sentence;
 }
+
+/**
+ * "Matches in 312 newspapers: English 96%, German 3% and Spanish 1%." under a
+ * search's summary (#121), or null with fewer than two languages. Each share
+ * is the matching pages of papers in that language against all matching
+ * pages; a page of a paper in several languages counts in each, so the
+ * shares can add up to more than 100%. At most five languages, then "N more".
+ */
+export function languageMix(
+  langs: { code: string[]; hits: number[] } | undefined,
+  totalHits: number,
+  papers: number | undefined,
+): string | null {
+  if (!langs || langs.code.length < 2 || totalHits <= 0) return null;
+  const shown = langs.code.slice(0, 5).map((c, i) => `${languageName(c)} ${percent(langs.hits[i] ?? 0, totalHits)}`);
+  const more = langs.code.length - shown.length;
+  if (more > 0) shown.push(`${more} more`);
+  const list = shown.length === 1 ? shown[0]! : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+  const where = papers === undefined ? "Matches" : `Matches in ${papers.toLocaleString("en-US")} ${papers === 1 ? "newspaper" : "newspapers"}`;
+  return `${where}: ${list}.`;
+}

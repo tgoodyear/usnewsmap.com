@@ -17,12 +17,17 @@ use usnm_core::time::BucketSpec;
 
 use crate::snippet::text_snippets;
 use crate::{
-    ja_snippets, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet, PlaceSummary,
-    SearchBackend, SearchError, Summary,
+    ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
+    KeyCount, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 /// Upper bound on places in one terms aggregation.
 const MAX_PLACES: u32 = 5_000;
+/// Upper bound on titles: every title (4,693 on loc.gov in October 2026)
+/// fits, so the newspaper count is exact (#121).
+pub const MAX_PAPERS: u32 = 10_000;
+/// Upper bound on title languages (about 50 in the catalog).
+const MAX_LANGUAGES: u32 = 200;
 
 pub struct QuickwitBackend {
     base_url: String,
@@ -338,7 +343,9 @@ pub fn summary_request(
                     "first": { "min": { "field": "day" } },
                     "last": { "max": { "field": "day" } }
                 }
-            }
+            },
+            "papers": { "terms": { "field": "lccn", "size": MAX_PAPERS } },
+            "languages": { "terms": { "field": "language", "size": MAX_LANGUAGES } }
         }
     }))
 }
@@ -550,7 +557,29 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
         last_day: day("last")?,
         series,
         places,
+        papers: key_counts(resp, "papers")?,
+        languages: key_counts(resp, "languages")?,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyBucket {
+    key: String,
+    doc_count: u64,
+}
+
+/// A terms aggregation's buckets, ranked as the memory backend ranks them.
+fn key_counts(resp: &SearchResponse, name: &str) -> Result<Vec<KeyCount>, SearchError> {
+    Ok(rank(
+        agg::<Buckets<KeyBucket>>(resp, name)?
+            .buckets
+            .into_iter()
+            .map(|b| KeyCount {
+                key: b.key,
+                hits: b.doc_count,
+            })
+            .collect(),
+    ))
 }
 
 pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCell>, SearchError> {
@@ -976,7 +1005,10 @@ mod tests {
                      "t": {"buckets": [{"key": 1895.0, "doc_count": 1}, {"key": 1896.0, "doc_count": 3}]}},
                     {"key": "P00002", "doc_count": 3, "first": {"value": 71100.0}, "last": {"value": 71250.0},
                      "t": {"buckets": [{"key": 1896.0, "doc_count": 3}]}}
-                ]}
+                ]},
+                "papers": { "buckets": [ {"key": "sn2", "doc_count": 3}, {"key": "sn1", "doc_count": 4},
+                                         {"key": "sn3", "doc_count": 3} ] },
+                "languages": { "buckets": [ {"key": "eng", "doc_count": 7}, {"key": "ger", "doc_count": 2} ] }
             }
         }))
         .unwrap();
@@ -985,6 +1017,17 @@ mod tests {
         assert_eq!(s.places[0].first_day, 71000);
         assert_eq!(s.places[0].last_day, 71200);
         assert_eq!((s.first_day, s.last_day), (Some(71000), Some(71250)));
+        // Most first, ties by key, whatever order Quickwit gives them in.
+        let keys = |c: &[KeyCount]| {
+            c.iter()
+                .map(|k| (k.key.clone(), k.hits))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(&s.papers),
+            [("sn1".into(), 4), ("sn2".into(), 3), ("sn3".into(), 3)]
+        );
+        assert_eq!(keys(&s.languages), [("eng".into(), 7), ("ger".into(), 2)]);
         let cells = parse_cube(&resp, &spec).unwrap();
         assert_eq!(cells.len(), 3);
         assert_eq!(
@@ -1006,7 +1049,9 @@ mod tests {
                 "series": { "buckets": [] },
                 "first": {"value": null},
                 "last": {"value": null},
-                "places": { "buckets": [] }
+                "places": { "buckets": [] },
+                "papers": { "buckets": [] },
+                "languages": { "buckets": [] }
             }
         }))
         .unwrap();
@@ -1028,7 +1073,10 @@ mod tests {
                 Some(json!({"value": "late"})),
             ),
         ] {
-            let mut aggs = json!({ "series": { "buckets": [] }, "places": { "buckets": [] } });
+            let mut aggs = json!({
+                "series": { "buckets": [] }, "places": { "buckets": [] },
+                "papers": { "buckets": [] }, "languages": { "buckets": [] }
+            });
             if let Some(f) = first {
                 aggs["first"] = f;
             }
@@ -1057,7 +1105,9 @@ mod tests {
                     "series": { "buckets": [] },
                     "first": {"value": 71000.0},
                     "last": {"value": 71200.0},
-                    "places": { "buckets": [place] }
+                    "places": { "buckets": [place] },
+                    "papers": { "buckets": [] },
+                    "languages": { "buckets": [] }
                 }
             }))
             .unwrap();

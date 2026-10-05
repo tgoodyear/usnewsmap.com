@@ -17,6 +17,11 @@ describe("view URL", () => {
     expect(serializeView(DEFAULTS)).toBe("");
     expect(serializeView({ ...DEFAULTS, q: "fever" })).toBe("?q=fever");
     expect(parseView("?sort=relevant").sort).toBe("relevant");
+    // The newspaper filter (#121): lowercased, sorted, invalid codes dropped.
+    const paper = parseView("?q=gold&lccn=SN99000002,sn99000001,bad!code");
+    expect(paper.lccn).toEqual(["sn99000001", "sn99000002"]);
+    expect(serializeView(paper)).toBe("?q=gold&lccn=sn99000001%2Csn99000002");
+    expect(searchParams(paper).lccn).toEqual(["sn99000001", "sn99000002"]);
   });
 
   it("drops invalid values instead of trusting them", () => {

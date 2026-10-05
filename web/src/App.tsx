@@ -13,6 +13,8 @@ import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
 import { PlaceTable } from "./components/PlaceTable";
+import { NewspaperTable, paperRows } from "./components/NewspaperTable";
+import { languageMix } from "./lib/languages";
 import { Mentions } from "./components/Mentions";
 import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
@@ -273,6 +275,27 @@ export function App() {
     return f ? `${f.properties.name}, ${f.properties.state}` : id;
   };
 
+  const papers = useMemo(
+    () =>
+      paperRows(data?.papers, (id) => {
+        const f = features.get(id);
+        return f ? `${f.properties.name}, ${f.properties.state}` : id;
+      }),
+    [data?.papers, features],
+  );
+  const onlyPaper = (lccn: string) => setView({ lccn: [lccn], t: "", place: "", sort: "oldest" }, true);
+  const newspapers =
+    data && data.total.hits > 0 && data.papers ? (
+      <NewspaperTable
+        rows={papers}
+        total={data.total.papers ?? papers.length}
+        onOnly={onlyPaper}
+        filename={`usnewsmap-newspapers-${version}.csv`}
+      />
+    ) : null;
+  const mix = data ? languageMix(data.languages, data.total.hits, data.total.papers) : null;
+  const filteredPaper = view.lccn.length > 0 ? (papers.find((p) => view.lccn.includes(p.lccn))?.title ?? view.lccn.join(", ")) : null;
+
   const visible = points.filter((p) => p.value > 0);
   const selected = points.find((p) => p.id === view.place);
   const updating = [agg.error, places.error, coverage.error].some((e) => e instanceof VersionChangedError);
@@ -448,6 +471,19 @@ export function App() {
                 <ShareButton />
               </div>
 
+              {mix && <p className="mix">{mix}</p>}
+              {filteredPaper && (
+                <p className="notice" role="status">
+                  Only pages from <cite>{filteredPaper}</cite>.{" "}
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => setView({ lccn: [], t: "", place: "", sort: "oldest" }, true)}
+                  >
+                    Show every newspaper
+                  </button>
+                </p>
+              )}
               {/* Not while the previous search stands in: its pages would get this search's links. */}
               {data.total.hits > 0 && data.total.first && !agg.isPlaceholderData && (
                 <Mentions
@@ -481,16 +517,20 @@ export function App() {
                         <div className="tables">
                           <PlaceTable key="skew" skew rows={skewListed} onSelect={select} selected={view.place} />
                           <StateTable rows={stateRows} />
+                          {newspapers}
                         </div>
                       ) : (
-                        <PlaceTable
-                          // A new sort when the share column comes or goes, so it never sorts by a hidden column.
-                          key={data.cube.baseline_ref !== null ? "raw" : "raw-no-share"}
-                          rows={visible}
-                          onSelect={select}
-                          selected={view.place}
-                          share={data.cube.baseline_ref !== null}
-                        />
+                        <div className="tables">
+                          <PlaceTable
+                            // A new sort when the share column comes or goes, so it never sorts by a hidden column.
+                            key={data.cube.baseline_ref !== null ? "raw" : "raw-no-share"}
+                            rows={visible}
+                            onSelect={select}
+                            selected={view.place}
+                            share={data.cube.baseline_ref !== null}
+                          />
+                          {newspapers}
+                        </div>
                       )}
                     </>
                   ) : (

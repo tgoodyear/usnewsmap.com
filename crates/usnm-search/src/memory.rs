@@ -12,8 +12,8 @@ use usnm_core::time::BucketSpec;
 
 use crate::snippet::text_snippets;
 use crate::{
-    ja_snippets, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet, PageDoc,
-    PlaceSummary, SearchBackend, SearchError, Summary,
+    ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
+    KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 struct Indexed {
@@ -98,9 +98,15 @@ impl SearchBackend for MemoryBackend {
         let mut places: BTreeMap<&str, (u64, u32, u32)> = BTreeMap::new();
         let mut total = 0;
         let mut span: Option<(u32, u32)> = None;
+        let mut papers: BTreeMap<&str, u64> = BTreeMap::new();
+        let mut languages: BTreeMap<&str, u64> = BTreeMap::new();
         for d in self.matching(indexes, query, filters)? {
             let day = d.doc.day;
             total += 1;
+            *papers.entry(&d.doc.lccn).or_default() += 1;
+            for l in &d.doc.language {
+                *languages.entry(l).or_default() += 1;
+            }
             series[spec.index_of_day(day)] += 1;
             let e = places.entry(&d.doc.place_id).or_insert((0, u32::MAX, 0));
             e.0 += 1;
@@ -122,6 +128,8 @@ impl SearchBackend for MemoryBackend {
                     last_day,
                 })
                 .collect(),
+            papers: counts(papers),
+            languages: counts(languages),
         })
     }
 
@@ -284,6 +292,17 @@ fn positive_terms(node: &Node) -> Vec<Term> {
 }
 
 /// A ~25-word window around the first highlighted word, HTML-escaped with `<mark>`.
+fn counts(m: BTreeMap<&str, u64>) -> Vec<KeyCount> {
+    rank(
+        m.into_iter()
+            .map(|(k, hits)| KeyCount {
+                key: k.to_owned(),
+                hits,
+            })
+            .collect(),
+    )
+}
+
 /// How many of the page's words match one of the query's positive words:
 /// the reference for "most mentions first" (`HitSort::Relevant`).
 fn mentions(tokens: &[String], highlight: &[Term]) -> usize {

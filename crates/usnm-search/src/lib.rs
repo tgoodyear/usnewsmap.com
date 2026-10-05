@@ -109,6 +109,13 @@ pub struct PlaceSummary {
     pub last_day: u32,
 }
 
+/// Matching pages for one value of a field: a title's LCCN or a language code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KeyCount {
+    pub key: String,
+    pub hits: u64,
+}
+
 /// Result of the summary call: national series, per-place totals, and first
 /// and last appearance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -120,6 +127,17 @@ pub struct Summary {
     /// One entry per bucket of the request's [`BucketSpec`].
     pub series: Vec<u64>,
     pub places: Vec<PlaceSummary>,
+    /// Matching pages per newspaper (LCCN), most first, ties by LCCN (#121).
+    pub papers: Vec<KeyCount>,
+    /// Matching pages per title language, most first, ties by code. A page
+    /// of a paper catalogued in several languages counts in each (#121).
+    pub languages: Vec<KeyCount>,
+}
+
+/// Sort counts most first, ties by key, so both backends agree.
+pub fn rank(mut counts: Vec<KeyCount>) -> Vec<KeyCount> {
+    counts.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| a.key.cmp(&b.key)));
+    counts
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

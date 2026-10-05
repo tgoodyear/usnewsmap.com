@@ -30,6 +30,8 @@ struct AggregateResponse {
     total: Totals,
     series: Series,
     places: Places,
+    papers: Papers,
+    languages: Languages,
     cube: CubeOut,
     /// True when buckets were coarsened to keep the cube under the cell cap.
     coarsened: bool,
@@ -50,10 +52,15 @@ struct BucketEcho {
     count: usize,
 }
 
+/// Most newspapers listed in `papers`; `total.papers` counts them all.
+pub const MAX_PAPERS_LISTED: usize = 500;
+
 #[derive(Serialize)]
 struct Totals {
     hits: u64,
     places: usize,
+    /// Newspapers with at least one matching page (#121).
+    papers: usize,
     /// Pages published in scope; `null` when filters make the baseline inexact.
     baseline_pages: Option<u64>,
     /// Earliest and latest matching day; `null` when nothing matches.
@@ -79,6 +86,25 @@ struct Places {
     hits: Vec<u64>,
     first_day: Vec<u32>,
     last_day: Vec<u32>,
+}
+
+/// Matching pages per newspaper, most first (ties by LCCN), at most
+/// [`MAX_PAPERS_LISTED`]; name and place from the catalog (#121).
+#[derive(Serialize)]
+struct Papers {
+    lccn: Vec<String>,
+    hits: Vec<u64>,
+    title: Vec<Option<String>>,
+    place_id: Vec<Option<String>>,
+}
+
+/// Matching pages per title language, most first. A page of a paper
+/// catalogued in several languages counts in each, so these can add up to
+/// more than `total.hits` (#121).
+#[derive(Serialize)]
+struct Languages {
+    code: Vec<String>,
+    hits: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -309,6 +335,7 @@ async fn compute(
         total: Totals {
             hits: agg.summary.total_hits,
             places: place_ids.len(),
+            papers: agg.summary.papers.len(),
             baseline_pages: baseline.as_ref().map(|b| b.iter().sum()),
             first_day: agg.summary.first_day,
             last_day: agg.summary.last_day,
@@ -324,6 +351,31 @@ async fn compute(
             first_day: place_ids.iter().map(|id| by_id[id].first_day).collect(),
             last_day: place_ids.iter().map(|id| by_id[id].last_day).collect(),
             id: place_ids.iter().map(|s| (*s).to_owned()).collect(),
+        },
+        papers: {
+            let listed = &agg.summary.papers[..agg.summary.papers.len().min(MAX_PAPERS_LISTED)];
+            let title = |lccn: &str| rd.titles.get(lccn);
+            Papers {
+                lccn: listed.iter().map(|p| p.key.clone()).collect(),
+                hits: listed.iter().map(|p| p.hits).collect(),
+                title: listed
+                    .iter()
+                    .map(|p| title(&p.key).map(|t| t.name.clone()))
+                    .collect(),
+                place_id: listed
+                    .iter()
+                    .map(|p| title(&p.key).map(|t| t.place_id.clone()))
+                    .collect(),
+            }
+        },
+        languages: Languages {
+            code: agg
+                .summary
+                .languages
+                .iter()
+                .map(|l| l.key.clone())
+                .collect(),
+            hits: agg.summary.languages.iter().map(|l| l.hits).collect(),
         },
         cube: CubeOut {
             cells: SparseCube::from_cells(cells),

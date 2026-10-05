@@ -492,3 +492,21 @@ test("the first and last mention open their pages, and a place's pages sort eith
   await expect(panel.locator(".hit")).toHaveCount(oldest.length);
   await expectAccessible(page);
 });
+
+test("the table lists the newspapers with matches, and one can limit the search to a paper", async ({ page }) => {
+  await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&tab=table");
+  const papers = page.getByRole("region", { name: "Newspapers" });
+  await expect(papers.getByText(/newspapers have matching pages/)).toBeVisible();
+  // The fixtures' gold pages are in English, German and Spanish papers.
+  await expect(page.locator(".mix")).toContainText(/^Matches in \d+ newspapers: English \d+%/);
+  const first = papers.locator("tbody tr").first();
+  const title = (await first.locator("th").textContent())!;
+  await first.getByRole("button", { name: /Only this newspaper/ }).click();
+  await expect(page).toHaveURL(/lccn=sn\d+/);
+  await expect(page.getByRole("status").filter({ hasText: "Only pages from" })).toContainText(title);
+  await expect(papers.locator("tbody tr")).toHaveCount(1);
+  await expectAccessible(page);
+  await page.getByRole("button", { name: "Show every newspaper" }).click();
+  await expect(page).not.toHaveURL(/lccn=/);
+  await expect(papers.locator("tbody tr").nth(1)).toBeVisible();
+});
