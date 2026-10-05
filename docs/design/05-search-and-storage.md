@@ -129,6 +129,7 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 |-------|------|---------|-----------------|--------|---------|
 | `doc_id` | keyword | key | ✅ | ✅ | Identity |
 | `text` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | Search |
+| `text_cg` | text (positions) | ✅ tokenizer `whitespace` | – | – | Phrases holding common words (§5.5.3) |
 | `date` | date | ✅ | ✅ | ✅ | Quickwit timestamp field (pre-1970 confirmed in S-2) |
 | `day` | u32 | ✅ | ✅ sort | ✅ | Days since 1700-01-01; day/week buckets; range filter; hit order |
 | `sort_key` | u64 | – | ✅ sort | – | `title ordinal << 32 \| edition << 16 \| seq`: stable hit order within a day (Quickwit can't sort on text, §5.5.1) |
@@ -235,6 +236,18 @@ Indexes built before this keep their splits: they are older than any maturation 
 ```
 
 `place_year` and `place_ym` are the GA workaround for R2 (composite facets). With the preview API, `facets=["place_id > (year)"]` replaces them.
+
+### 5.5.3 Common-word pairs (`text_cg`)
+
+A phrase reads the positions of every word in it, and the commonest words are on almost every page many times over. Over 1896 the phrase "cross of gold" took 41 s, `cross gold` within 2 words 9 s, and the phrase "yellow fever" 8 s (06 §6.5). So each page is indexed a second time, in `text_cg`, with each common word joined to the word after it: "Upon a cross of gold" becomes `upon_a a_cross cross of_gold gold`.
+
+- **Same positions as `text`.** One token per word the `usnm_text` analyzer sees, including a `_` where it drops one (over 40 characters). The release writes the tokens (`usnm_core::common_grams::index_text`) and the field's `whitespace` tokenizer indexes them as written.
+- **Exact matches.** A phrase of two or more words with a common word that isn't last maps word for word: a common word to `word_next`, any other to itself (`cross of_gold gold`). It matches at a position in `text_cg` exactly when the phrase's words are at that position in `text`, because each common word's token also checks the word after it. A phrase ending in a common word, one without any, and phrases with slop stay in `text`. Unit tests check the equivalence over every phrase of up to 4 words from a small vocabulary; the Quickwit parity tests (`phrases_through_common_word_pairs_match_the_reference_backend`) check counts, cubes, hits and their order on the fixtures.
+- **Snippets.** The query also requires each phrase word that isn't common in `text` (`text:cross AND text:gold`): no page changes, and the snippets on `text` get their highlights. The common words in the phrase aren't highlighted.
+- **The list** (`usnm_core::common_grams::WORDS`, 89 words) is the function words on about half of all pages or more, measured over a week of 1896, and `mr`. Frequent content words (`new`, `time`) are left out. The list is part of the index: changing it bumps `common_grams::VERSION`.
+- **Rollout.** `current.json` names the `common_grams` version its indexes were built with. The API searches `text_cg` only when that is its own version, so a new API on older indexes keeps phrases in `text`. A release whose previous version has another version (or none) builds a full base, so the indexes in a version never mix.
+- **Cost.** `text_cg` holds a position for every word, like `text`. On 90,745 real pages (11 LoC batches, October 2026) it made the index 1.6× as big (4.8 GB against 3.0 GB) and indexing 1.9× as long; over the corpus that is about +0.35 TB on Blob Hot, about +$7 a month. Japanese pages (#139) have their own index and no pairs.
+- **Measured gain.** On the same pages, cold (OS cache dropped) on 2 CPUs, the searcher read 11–31× fewer bytes for phrases with a common word ("cross of gold" 17.3 MB → 0.6 MB) and took 2–6.5× less time, with the same hits.
 
 ## 5.6 Query semantics
 

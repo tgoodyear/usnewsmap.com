@@ -16,6 +16,11 @@ doc_mapping:
   field_mappings:
     - { name: doc_id, type: text, tokenizer: raw, fast: true, stored: true }
     - { name: text, type: text, tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }
+    # Common-word pairs (05 §5.5.3): the same words at the same positions,
+    # each common word joined to the next (`of_gold`), written by the
+    # release (usnm_core::common_grams::index_text). Phrases holding a common
+    # word search here, so they never read the common word's positions.
+    - { name: text_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }
     - { name: date, type: datetime, input_formats: ["%Y-%m-%d"], output_format: "%Y-%m-%d", fast: true, stored: true }
     - { name: day, type: u64, fast: true, indexed: true, stored: true }
     - { name: ym, type: u64, fast: true, indexed: true }

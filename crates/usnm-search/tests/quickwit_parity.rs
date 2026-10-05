@@ -365,3 +365,71 @@ async fn japanese_searches_match_the_reference_backend() {
         "only {nonzero} Japanese cases matched anything"
     );
 }
+
+/// Phrases holding common words search `text_cg` (05 §5.5.3) when the
+/// indexes have it: the counts, cubes, edges and hits must be exactly the
+/// exact phrase's, which the reference backend finds word by word.
+#[tokio::test]
+async fn phrases_through_common_word_pairs_match_the_reference_backend() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let ids: Vec<String> = INDEXES.iter().map(|s| (*s).to_owned()).collect();
+    let set = IndexSet::new(ids.clone());
+    let grams = IndexSet::new(ids).with_common_grams(true);
+    let phrases = [
+        r#""cross of gold""#,
+        r#""the friends of free""#,
+        r#""of the railroad""#,
+        r#""friends of free silver""#,
+        r#""of the the cotton""#,
+        r#""the cross of gold""#,
+        r#""of the gold of""#,
+        r#""cross of the gold""#,
+        r#""cross of gold" -silver"#,
+        r#""cross of gold" OR "the friends of free""#,
+    ];
+    let f = filters("1895-01-01", "1897-12-31");
+    let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
+    let all: Vec<u8> = (0..8).collect();
+    let mut matched = 0;
+    for p in phrases {
+        let q = parse(p).unwrap();
+        let ctx = p.to_owned();
+        let want = sorted(mem.summary(&set, &q, &f, &spec).await.unwrap());
+        let got = sorted(qw.summary(&grams, &q, &f, &spec).await.expect(&ctx));
+        assert_eq!(got, want, "summary: {ctx}");
+        if want.total_hits > 0 {
+            matched += 1;
+        }
+        let want = sorted_cells(mem.cube(&set, &q, &f, &spec, &all).await.unwrap());
+        let got = sorted_cells(qw.cube(&grams, &q, &f, &spec, &all).await.expect(&ctx));
+        assert_eq!(got, want, "cube: {ctx}");
+        for sort in [HitSort::Oldest, HitSort::Newest] {
+            let page = HitsQuery {
+                sort,
+                limit: 20,
+                ..HitsQuery::default()
+            };
+            let want = mem.hits(&set, &q, &f, &page).await.unwrap();
+            let got = qw.hits(&grams, &q, &f, &page).await.expect(&ctx);
+            assert_eq!(got.total, want.total, "hits total: {ctx}");
+            let ids = |h: &usnm_search::HitsPage| -> Vec<String> {
+                h.hits.iter().map(|h| h.doc_id.clone()).collect()
+            };
+            assert_eq!(ids(&got), ids(&want), "hits: {ctx}");
+            // The snippets still mark the phrase's words in `text`.
+            if want.total > 0 {
+                assert!(
+                    got.hits
+                        .iter()
+                        .any(|h| h.snippets.iter().any(|s| s.contains("<mark>"))),
+                    "no highlights: {ctx}"
+                );
+            }
+        }
+    }
+    assert!(matched >= 4, "only {matched} phrases matched the fixtures");
+}

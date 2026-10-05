@@ -191,10 +191,29 @@ impl Env {
         r.run(&mut sink).await.unwrap()
     }
 
+    /// An index's documents. A main index's are each checked for their
+    /// common-word pairs (`text_cg`, 05 §5.5.3) and returned without them,
+    /// as the fixtures hold; the Japanese pages' index has none.
     fn index(&self, id: &str) -> BTreeMap<String, Value> {
-        by_id(read_jsonl(
+        let mut docs = by_id(read_jsonl(
             &self.root.join(format!("reference/indexes/{id}.jsonl")),
-        ))
+        ));
+        if id.starts_with("pages-ja-") {
+            assert!(docs.values().all(|d| d.get("text_cg").is_none()), "{id}");
+            return docs;
+        }
+        for (doc_id, doc) in &mut docs {
+            let pairs = doc
+                .as_object_mut()
+                .unwrap()
+                .remove("text_cg")
+                .unwrap_or_else(|| panic!("{doc_id} has no text_cg"));
+            let want = doc["text"]
+                .as_str()
+                .map(usnm_core::common_grams::index_text);
+            assert_eq!(pairs.as_str().map(str::to_owned), want, "{doc_id}");
+        }
+        docs
     }
 
     async fn reference_json(&self, path: &str) -> Value {
@@ -226,6 +245,48 @@ fn listed(name: &str, path: &Path, sha256: Option<String>) -> ListedBatch {
 fn sha256_file(path: &Path) -> String {
     use sha2::Digest;
     source::hex(&sha2::Sha256::digest(std::fs::read(path).unwrap()))
+}
+
+#[tokio::test]
+async fn a_version_without_these_common_word_pairs_is_rebuilt_in_full() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let base_archive = e.root.join("batch_fx_early_ver01.tar.gz");
+    let delta_archive = e.root.join("batch_fx_late_ver01.tar.bz2");
+    write_archive(&base_archive, &early, true, true);
+    write_archive(&delta_archive, &late, false, false);
+    let list = [listed("batch_fx_early_ver01", &base_archive, None)];
+    source::enqueue(&e.state, &list).await.unwrap();
+    e.worker("w1").run(None).await.unwrap();
+    assert!(e.release(1, false).await.unwrap().full);
+    // The published version names the pairs its indexes hold (05 §5.5.3).
+    let mut pointer = e.reference_json("current.json").await;
+    assert_eq!(pointer["common_grams"], usnm_core::common_grams::VERSION);
+
+    // A version published before the pairs (or with another list): the
+    // next release rebuilds every index rather than add a delta to it.
+    pointer.as_object_mut().unwrap().remove("common_grams");
+    e.reference
+        .put(
+            "current.json",
+            serde_json::to_vec(&pointer).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let list = [listed("batch_fx_late_ver01", &delta_archive, None)];
+    source::enqueue(&e.state, &list).await.unwrap();
+    e.worker("w2").run(None).await.unwrap();
+    let p2 = e.release(8, false).await.unwrap();
+    assert!(
+        p2.full,
+        "a delta would mix indexes with and without the pairs"
+    );
+    assert_eq!(p2.indexes.len(), 1);
+    let pointer = e.reference_json("current.json").await;
+    assert_eq!(pointer["common_grams"], usnm_core::common_grams::VERSION);
 }
 
 #[tokio::test]

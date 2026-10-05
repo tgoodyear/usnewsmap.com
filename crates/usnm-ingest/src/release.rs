@@ -157,6 +157,7 @@ pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place) -> Value {
         "sort_key": (u64::from(title.ordinal) << 32) | (u64::from(k.edition) << 16) | u64::from(k.seq),
         "date": k.date.to_string(),
         "batch": row.batch,
+        "text_cg": row.text.as_deref().map(usnm_core::common_grams::index_text),
         "text": row.text,
     })
 }
@@ -288,9 +289,9 @@ impl Release {
     ) -> anyhow::Result<Option<Published>> {
         self.confirm(lease).await?;
         let current = Catalog::load(self.reference.as_ref()).await?;
-        let (previous, previous_backend) = match self.published_run().await? {
-            Some((run, backend)) => (Some(run), Some(backend)),
-            None => (None, None),
+        let (previous, previous_backend, previous_grams) = match self.published_run().await? {
+            Some((run, backend, grams)) => (Some(run), Some(backend), grams),
+            None => (None, None, None),
         };
         // Every batch's last committed curation, whatever its current status.
         let curated: BTreeMap<String, Curated> = self
@@ -311,8 +312,21 @@ impl Release {
                 "search backend changed; building a full base"
             );
         }
+        // A delta's pages would have `text_cg` at this version while the
+        // indexes it adds to don't, or have another: rebuild them all, so
+        // every index in the version has the same pairs (05 §5.5.3).
+        let regramming =
+            previous.is_some() && previous_grams != Some(usnm_core::common_grams::VERSION);
+        if regramming {
+            tracing::info!(
+                from = ?previous_grams,
+                to = usnm_core::common_grams::VERSION,
+                "common-word pairs changed; building a full base"
+            );
+        }
         let full = self.full
             || switching
+            || regramming
             || previous
                 .as_ref()
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
@@ -544,6 +558,9 @@ impl Release {
             "published_at": published_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "previous_version": run.previous_version,
             "synthetic": self.synthetic,
+            // Every index in the version has `text_cg` at this version
+            // (a release that would mix them builds a full base, above).
+            "common_grams": usnm_core::common_grams::VERSION,
         });
         // The Japanese pages' index (#139). An API without Japanese search
         // ignores the field; one with it checks the fold version matches.
@@ -589,7 +606,7 @@ impl Release {
     /// The published version's run. `current.json` is the source of truth:
     /// if a previous release crashed after writing it but before recording
     /// the publish in Cosmos, the run and `ops/current` are repaired here.
-    async fn published_run(&self) -> anyhow::Result<Option<(IndexRun, String)>> {
+    async fn published_run(&self) -> anyhow::Result<Option<(IndexRun, String, Option<u32>)>> {
         let Some(bytes) = self.reference.get("current.json").await? else {
             return Ok(None);
         };
@@ -616,7 +633,10 @@ impl Release {
             self.state.set_current_version(version).await?;
         }
         let backend = pointer["backend"].as_str().unwrap_or("memory").to_owned();
-        Ok(Some((run, backend)))
+        let grams = pointer["common_grams"]
+            .as_u64()
+            .and_then(|g| u32::try_from(g).ok());
+        Ok(Some((run, backend, grams)))
     }
 
     /// `pages-v{date}-{n}` and its new index, `pages-{base|delta}-{date}-{n}`.
