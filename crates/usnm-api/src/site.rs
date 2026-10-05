@@ -68,7 +68,12 @@ pub fn router(dir: PathBuf) -> Router {
     let long_names = move |req: Request, next: Next| {
         let index = index.clone();
         async move {
-            if req.uri().path().split('/').any(|s| s.len() > NAME_MAX) {
+            if req
+                .uri()
+                .path()
+                .split('/')
+                .any(|s| decoded_len(s) > NAME_MAX)
+            {
                 app_route(req, index).await
             } else {
                 next.run(req).await
@@ -80,6 +85,22 @@ pub fn router(dir: PathBuf) -> Router {
         .layer(middleware::from_fn(long_names))
         .layer(middleware::from_fn(cache_control))
         .layer(middleware::from_fn(robots_tag))
+}
+
+/// How many bytes a path segment is once percent-decoded, as `ServeDir`
+/// decodes it before it names a file: each valid `%XX` escape is one byte.
+fn decoded_len(segment: &str) -> usize {
+    let b = segment.as_bytes();
+    let (mut i, mut n) = (0, 0);
+    while i < b.len() {
+        let escape = b[i] == b'%'
+            && i + 2 < b.len()
+            && b[i + 1].is_ascii_hexdigit()
+            && b[i + 2].is_ascii_hexdigit();
+        i += if escape { 3 } else { 1 };
+        n += 1;
+    }
+    n
 }
 
 /// The paths the app renders a page for (`web/src/route.ts`), with or

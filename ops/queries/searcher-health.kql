@@ -11,7 +11,12 @@ let searcher = ContainerAppConsoleLogs
     | extend Line = replace_regex(Log, @"\x1b\[[0-9;]*m", "")
     | extend Level = extract(@"\b(WARN|ERROR)\b", 1, Line)
     | where isnotempty(Level)
-    | extend Module = extract(@"\b(?:WARN|ERROR)\s+([a-z_][a-z0-9_:]*)", 1, Line)
+    // The target is the first Rust path (a::b) followed by ": ", after any
+    // span context: "ERROR merge{…}:merge_executor: quickwit_indexing::
+    // actors::merge_executor: message" is quickwit_indexing::actors::merge_executor.
+    | extend Module = coalesce(
+        extract(@"\b(?:WARN|ERROR)\b.*?\b([a-z_][a-z0-9_]*(?:::[a-z0-9_]+)+): ", 1, Line),
+        "(no target)")
     | summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated)
         by Detail = strcat(Level, " ", Module), Replica = ContainerGroupName
     | extend Source = "quickwit";

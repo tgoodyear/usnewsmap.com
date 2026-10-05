@@ -61,6 +61,12 @@ impl QuickwitBackend {
                 "no indexes in the published version".into(),
             ));
         }
+        // The query string sent, whose words a failure's cause leaves out.
+        let sent = body
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let url = format!(
             "{}/api/v1/{}/search",
             self.base_url,
@@ -82,7 +88,7 @@ impl QuickwitBackend {
                 return Err(SearchError::Timeout);
             }
             let body = resp.text().await.unwrap_or_default();
-            let msg = format!("quickwit returned {status} ({})", cause(&body));
+            let msg = format!("quickwit returned {status} ({})", cause(&body, &sent));
             return Err(if status.is_client_error() {
                 SearchError::Rejected(msg)
             } else {
@@ -90,7 +96,7 @@ impl QuickwitBackend {
             });
         }
         let parsed: SearchResponse = resp.json().await.map_err(map_err)?;
-        check_complete(&parsed)?;
+        check_complete(&parsed, &sent)?;
         Ok(parsed)
     }
 }
@@ -123,50 +129,65 @@ fn map_err(e: reqwest::Error) -> SearchError {
 }
 
 /// What a Quickwit error message is about, by keyword, so its cause can be
-/// logged without its text (which may echo the query, 09 §9.4.2).
-pub fn cause(message: &str) -> &'static str {
-    let m = message.to_ascii_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| m.contains(w));
-    if has(&["memory"]) {
+/// logged without its text (which may echo the query, 09 §9.4.2). The
+/// message is compared word by word, leaving out the words of `query` (the
+/// Quickwit query string sent), so an echoed query can't decide the
+/// category: a search for "memory" that fails on storage is `storage`. A
+/// failure whose only telling word is also in the query is `other`.
+pub fn cause(message: &str, query: &str) -> &'static str {
+    let echoed: std::collections::HashSet<String> = words(query).collect();
+    let w: Vec<String> = words(message).filter(|w| !echoed.contains(w)).collect();
+    let any = |of: &[&str]| w.iter().any(|x| of.contains(&x.as_str()));
+    let pair = |a: &str, b: &str| w.windows(2).any(|p| p[0] == a && p[1] == b);
+    if any(&["memory"]) {
         "memory_limit"
-    } else if has(&["bucket"]) {
+    } else if any(&["bucket", "buckets"]) {
         "bucket_limit"
-    } else if has(&["timeout", "timed out", "deadline", "elapsed"]) {
+    } else if any(&["timeout", "deadline", "elapsed"]) || pair("timed", "out") {
         "timeout"
-    } else if has(&[
-        "too many",
-        "concurren",
-        "rate limit",
-        "throttl",
-        "503",
-        "429",
-    ]) {
+    } else if pair("too", "many")
+        || pair("rate", "limit")
+        || any(&[
+            "concurrent",
+            "concurrency",
+            "throttled",
+            "throttling",
+            "503",
+            "429",
+        ])
+    {
         "overloaded"
-    } else if has(&[
+    } else if any(&[
         "storage",
         "azure",
         "blob",
-        "i/o",
-        "io error",
+        "io",
         "connection",
         "http",
         "network",
     ]) {
         "storage"
-    } else if has(&[
+    } else if any(&[
         "split",
+        "splits",
         "footer",
         "hotcache",
         "corrupt",
-        "not found",
-        "does not exist",
+        "corrupted",
     ]) {
         "split"
-    } else if m.is_empty() {
+    } else if w.is_empty() {
         "empty"
     } else {
         "other"
     }
+}
+
+/// Lowercase ASCII alphanumeric words.
+fn words(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_lowercase)
 }
 
 // ------------------------------------------------------------ translation
@@ -390,7 +411,7 @@ impl StoredHit {
 /// Reject responses that report partial failures, without echoing their
 /// content: the error names how many, what they were about ([`cause`]) and
 /// up to 5 of the failed splits, whose ids are opaque.
-pub fn check_complete(resp: &SearchResponse) -> Result<(), SearchError> {
+pub fn check_complete(resp: &SearchResponse, query: &str) -> Result<(), SearchError> {
     if resp.errors.is_empty() {
         return Ok(());
     }
@@ -407,7 +428,7 @@ pub fn check_complete(resp: &SearchResponse) -> Result<(), SearchError> {
             Value::String(t) => (None, t.clone()),
             other => (None, other.to_string()),
         };
-        *causes.entry(cause(&text)).or_default() += 1;
+        *causes.entry(cause(&text, query)).or_default() += 1;
         if let Some(id) = split.filter(|id| {
             id.len() <= 64
                 && id
@@ -851,7 +872,9 @@ mod tests {
             "errors": [{"split_id": "x", "error": "failed on query text:secret"}]
         }))
         .unwrap();
-        let err = check_complete(&resp).unwrap_err().to_string();
+        let err = check_complete(&resp, "text:secret")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("1 partial failure"));
         assert!(!err.contains("secret"));
     }
@@ -868,7 +891,9 @@ mod tests {
             ]
         }))
         .unwrap();
-        let err = check_complete(&resp).unwrap_err().to_string();
+        let err = check_complete(&resp, "text:secret")
+            .unwrap_err()
+            .to_string();
         assert_eq!(
             err,
             "search backend error: quickwit reported 4 partial failure(s): \
@@ -880,16 +905,41 @@ mod tests {
     #[test]
     fn causes_are_classified_by_keyword() {
         assert_eq!(
-            cause("Aggregation memory limit of 768MB exceeded"),
+            cause("Aggregation memory limit of 768MB exceeded", ""),
             "memory_limit"
         );
-        assert_eq!(cause("too many buckets: 210000 > 200000"), "bucket_limit");
-        assert_eq!(cause("deadline exceeded"), "timeout");
-        assert_eq!(cause("Too many requests"), "overloaded");
-        assert_eq!(cause("failed to fetch footer"), "split");
-        assert_eq!(cause("Io error: broken pipe"), "storage");
-        assert_eq!(cause(""), "empty");
-        assert_eq!(cause("something else"), "other");
+        assert_eq!(
+            cause("too many buckets: 210000 > 200000", ""),
+            "bucket_limit"
+        );
+        assert_eq!(cause("deadline exceeded", ""), "timeout");
+        assert_eq!(cause("Too many requests", ""), "overloaded");
+        assert_eq!(cause("failed to fetch footer", ""), "split");
+        assert_eq!(cause("Io error: broken pipe", ""), "storage");
+        assert_eq!(cause("", ""), "empty");
+        assert_eq!(cause("something else", ""), "other");
+        assert_eq!(cause("timed out after 30s", ""), "timeout");
+    }
+
+    #[test]
+    fn an_echoed_query_does_not_decide_the_cause() {
+        // A search for "memory" that failed on storage is a storage failure.
+        assert_eq!(
+            cause(
+                "Azure blob read failed for query text:memory",
+                "text:memory"
+            ),
+            "storage"
+        );
+        assert_eq!(
+            cause("failed for text:\"bucket http\"", "text:\"bucket http\""),
+            "other"
+        );
+        // Words of the query that aren't echoed still count.
+        assert_eq!(
+            cause("aggregation memory limit exceeded", "text:gold"),
+            "memory_limit"
+        );
     }
 
     #[test]

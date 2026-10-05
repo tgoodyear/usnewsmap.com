@@ -941,6 +941,10 @@ fn site_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn site_dir_of(s: &AppState) -> PathBuf {
+    s.config.site_dir.clone().unwrap()
+}
+
 async fn get_site(
     state: &Arc<AppState>,
     uri: &str,
@@ -1014,6 +1018,14 @@ async fn serves_the_site_alongside_the_api() {
         StatusCode::NOT_FOUND,
         "a long name under /assets/ is a plain 404"
     );
+    // The limit is on the decoded name, as the file service decodes it: a
+    // 100-byte file name sent as 300 bytes of escapes is still served.
+    let name = format!("{}.txt", "d".repeat(96));
+    std::fs::write(site_dir_of(&s).join(&name), "found").unwrap();
+    let escaped: String = name.bytes().map(|b| format!("%{b:02X}")).collect();
+    assert!(escaped.len() > 255);
+    let (status, _, body) = get_site(&s, &format!("/{escaped}"), None).await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "found"));
     let (status, _, _) = get_site(&s, &format!("/{}.js", "c".repeat(400)), None).await;
     assert_eq!(
         status,
