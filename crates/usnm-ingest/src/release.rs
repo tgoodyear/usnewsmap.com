@@ -41,6 +41,7 @@ use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
 use crate::dedup::{self, Plan};
 use crate::merges::IndexLayout;
+use crate::ocr_ja;
 use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
@@ -403,6 +404,20 @@ impl Release {
             );
         }
 
+        // Our own OCR of the Japanese pages (04 §4.8): its own index, rebuilt
+        // at every release from the pages of the version's batches.
+        let batch_names: BTreeSet<&str> =
+            version_batches.iter().map(|b| b.batch.as_str()).collect();
+        let overlay = ocr_ja::load(self.curated.as_ref(), &batch_names, &catalog).await?;
+        if !overlay.parts.is_empty() {
+            tracing::info!(
+                parts = overlay.parts.len(),
+                pages = overlay.pages.len(),
+                skipped = overlay.skipped,
+                "Japanese OCR overlay"
+            );
+        }
+
         let (version, index_id) = self.next_names(full).await?;
         indexes.push(index_id.clone());
         let mut run = IndexRun {
@@ -442,20 +457,33 @@ impl Release {
                     lease, sink, &version, &index_id, &scope, &catalog, &dedup, report,
                 )
                 .await?;
+            let ja = self
+                .build_ja_index(lease, sink, &version, &overlay, &catalog)
+                .await?;
             report.step(Step::Publishing).await;
             // What every index of the version is made of, for the log and
             // the manifest: how many splits a cold search opens (05 §5.5.1).
-            let layout = sink.layout(&indexes).await?;
+            let mut laid_out = indexes.clone();
+            laid_out.extend(ja.iter().map(|(id, _)| id.clone()));
+            let layout = sink.layout(&laid_out).await?;
             for l in &layout {
                 l.log();
             }
             let bounds = self
-                .write_snapshot(&version, &version_batches, &catalog, &dedup, &layout)
+                .write_snapshot(
+                    &version,
+                    &version_batches,
+                    &catalog,
+                    &dedup,
+                    &layout,
+                    &overlay,
+                    ja.as_ref(),
+                )
                 .await?;
-            Ok::<_, anyhow::Error>((docs, bounds))
+            Ok::<_, anyhow::Error>((docs, bounds, ja))
         }
         .await;
-        let (docs, (from, to)) = match outcome {
+        let (docs, (from, to), ja) = match outcome {
             Ok(v) => v,
             Err(e) => {
                 run.status = RunStatus::Failed;
@@ -473,7 +501,7 @@ impl Release {
         // Publish: the version pointer is the last write (04 §4.7), and only
         // while this release still holds the writer lock.
         self.confirm(lease).await?;
-        let pointer = json!({
+        let mut pointer = json!({
             "index_version": version,
             "backend": sink.backend(),
             "indexes": indexes,
@@ -483,6 +511,15 @@ impl Release {
             "previous_version": run.previous_version,
             "synthetic": self.synthetic,
         });
+        // The Japanese pages' index (#139). An API without Japanese search
+        // ignores the field; one with it checks the fold version matches.
+        if let Some((id, pages)) = &ja {
+            pointer["ja"] = json!({
+                "indexes": [id],
+                "fold": usnm_core::ja::FOLD_VERSION,
+                "pages": pages,
+            });
+        }
         self.reference
             .put(
                 "current.json",
@@ -718,11 +755,46 @@ impl Release {
         Ok(docs)
     }
 
+    /// Build the Japanese pages' index for `version` from the overlay's pages
+    /// with text, or nothing when there are none. Its name and page count.
+    async fn build_ja_index(
+        &self,
+        lease: &WriterLease,
+        sink: &mut dyn IndexSink,
+        version: &str,
+        overlay: &ocr_ja::Overlay,
+        catalog: &Catalog,
+    ) -> anyhow::Result<Option<(String, u64)>> {
+        let mut docs = Vec::new();
+        for p in overlay.pages.iter().filter(|p| p.ok && p.printed.is_some()) {
+            let title = catalog.title(&p.key.lccn).context("title")?;
+            let place = catalog.place(&title.place_id).context("place")?;
+            docs.push(ocr_ja::ja_doc(p, title, place));
+        }
+        if docs.is_empty() {
+            return Ok(None);
+        }
+        let id = ocr_ja::index_id(version);
+        sink.create_with(&id, ocr_ja::JA_TEMPLATE).await?;
+        for d in &docs {
+            lease.check()?;
+            sink.add(d).await?;
+        }
+        let n = docs.len() as u64;
+        tokio::select! {
+            r = sink.finish(n) => r?,
+            () = lease.lost() => lease.check()?,
+        }
+        tracing::info!(index = %id, docs = n, "built the Japanese pages' index");
+        Ok(Some((id, n)))
+    }
+
     /// Write `{version}/` (titles, places, baselines, pages per title, the
     /// batch list, the hidden duplicate copies, manifest last) and return the
     /// version's date bounds. A page in more than one batch counts once.
     /// The manifest also records `layout`, the splits of each index, when
     /// the engine has splits.
+    #[allow(clippy::too_many_arguments)]
     async fn write_snapshot(
         &self,
         version: &str,
@@ -730,6 +802,8 @@ impl Release {
         catalog: &Catalog,
         dedup: &Plan,
         layout: &[IndexLayout],
+        overlay: &ocr_ja::Overlay,
+        ja: Option<&(String, u64)>,
     ) -> anyhow::Result<(NaiveDate, NaiveDate)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
@@ -783,6 +857,31 @@ impl Release {
                     .context("a duplicated page outside the language baselines")? -= extra;
             }
         }
+        // Our OCR of pages curation never had (no ocr.txt in LoC's archive):
+        // they are in no counts.json, so they join the baselines here.
+        let mut added = 0u64;
+        for p in overlay.pages.iter().filter(|p| p.missing_from_curation()) {
+            let title = catalog.title(&p.key.lccn).context("title")?;
+            let day = day_number(p.key.date);
+            *baselines
+                .entry(title.place_id.clone())
+                .or_default()
+                .entry(day)
+                .or_default() += 1;
+            *title_pages.entry(p.key.lccn.clone()).or_default() += 1;
+            if let Some(set) = language_set(title) {
+                *by_language
+                    .entry(set)
+                    .or_default()
+                    .entry(title.place_id.clone())
+                    .or_default()
+                    .entry(day)
+                    .or_default() += 1;
+            }
+            first = first.min(day);
+            last = last.max(day);
+            added += 1;
+        }
         // Only titles and places with pages in this version.
         let titles: Vec<&Title> = catalog
             .titles
@@ -812,8 +911,7 @@ impl Release {
                 .collect(),
         };
 
-        let mut files = Vec::new();
-        for (name, body) in [
+        let mut snapshot_files: Vec<(&str, Vec<u8>)> = vec![
             ("titles.json", serde_json::to_vec(&titles)?),
             ("places.json", serde_json::to_vec(&places)?),
             ("baselines.json", serde_json::to_vec(&baselines)?),
@@ -824,7 +922,23 @@ impl Release {
             ),
             (RUN_BATCHES_FILE, serde_json::to_vec(batches)?),
             (DUPLICATES_FILE, serde_json::to_vec(&dedup.hidden)?),
-        ] {
+        ];
+        // Which overlay parts the Japanese pages came from (only when there are any,
+        // so a version without them has the same files as before).
+        if !overlay.parts.is_empty() {
+            let record = json!({
+                "fold": usnm_core::ja::FOLD_VERSION,
+                "index": ja.map(|(id, _)| id),
+                "indexed": ja.map_or(0, |(_, n)| *n),
+                "pages": overlay.pages.len(),
+                "added_to_baselines": added,
+                "skipped": overlay.skipped,
+                "parts": overlay.parts,
+            });
+            snapshot_files.push((ocr_ja::OCR_JA_FILE, serde_json::to_vec(&record)?));
+        }
+        let mut files = Vec::new();
+        for (name, body) in snapshot_files {
             files.push(json!({
                 "path": name,
                 "sha256": hex(&Sha256::digest(&body)),
@@ -844,6 +958,9 @@ impl Release {
         });
         if !layout.is_empty() {
             manifest["indexes"] = serde_json::to_value(layout)?;
+        }
+        if !overlay.parts.is_empty() {
+            manifest["built_from"]["ocr_ja"] = serde_json::to_value(&overlay.parts)?;
         }
         self.put_new(
             &format!("{version}/manifest.json"),

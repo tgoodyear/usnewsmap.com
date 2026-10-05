@@ -1697,3 +1697,217 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
     assert_eq!(ids(&deduped).await, 1);
     node.stop().await.unwrap();
 }
+
+/// One row of a Japanese OCR overlay part, as `ja-ocr/jaocr.py` writes it.
+struct JaRow<'a> {
+    lccn: &'a str,
+    date: NaiveDate,
+    seq: u16,
+    batch: &'a str,
+    loc_text: &'a str,
+    text: &'a str,
+    ocred_at: i64,
+}
+
+async fn put_overlay_part(e: &Env, path: &str, rows: &[JaRow<'_>]) {
+    use arrow_array::{
+        ArrayRef, Date32Array, FixedSizeBinaryArray, Int16Array, Int32Array, LargeStringArray,
+        RecordBatch, StringArray, TimestampMicrosecondArray,
+    };
+    let s = |v: Vec<String>| Arc::new(StringArray::from(v)) as ArrayRef;
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let key = |r: &JaRow| format!("{}/{}/ed-1/seq-{}", r.lccn, r.date, r.seq);
+    let cols: Vec<(&str, ArrayRef)> = vec![
+        (
+            "doc_id",
+            s(rows.iter().map(|r| key(r).replace('/', "_")).collect()),
+        ),
+        ("page_key", s(rows.iter().map(key).collect())),
+        ("lccn", s(rows.iter().map(|r| r.lccn.to_owned()).collect())),
+        (
+            "date",
+            Arc::new(Date32Array::from(
+                rows.iter()
+                    .map(|r| (r.date - epoch).num_days() as i32)
+                    .collect::<Vec<_>>(),
+            )),
+        ),
+        (
+            "edition",
+            Arc::new(Int16Array::from(vec![1i16; rows.len()])),
+        ),
+        (
+            "seq",
+            Arc::new(Int16Array::from(
+                rows.iter().map(|r| r.seq as i16).collect::<Vec<_>>(),
+            )),
+        ),
+        (
+            "batch",
+            s(rows.iter().map(|r| r.batch.to_owned()).collect()),
+        ),
+        ("ocr_source", s(vec!["usnm-ndlocr-lite".into(); rows.len()])),
+        ("ocr_engine", s(vec!["ndlocr-lite test".into(); rows.len()])),
+        (
+            "loc_text",
+            s(rows.iter().map(|r| r.loc_text.to_owned()).collect()),
+        ),
+        ("text_status", s(vec!["ok".into(); rows.len()])),
+        (
+            "text",
+            Arc::new(LargeStringArray::from(
+                rows.iter().map(|r| r.text).collect::<Vec<_>>(),
+            )),
+        ),
+        (
+            "text_chars",
+            Arc::new(Int32Array::from(
+                rows.iter()
+                    .map(|r| r.text.chars().count() as i32)
+                    .collect::<Vec<_>>(),
+            )),
+        ),
+        (
+            "text_sha256",
+            Arc::new(FixedSizeBinaryArray::try_from_iter(rows.iter().map(|_| [0u8; 32])).unwrap()),
+        ),
+        (
+            "image_url",
+            s(vec!["https://tile.loc.gov/x".into(); rows.len()]),
+        ),
+        (
+            "ocred_at",
+            Arc::new(
+                TimestampMicrosecondArray::from(
+                    rows.iter().map(|r| r.ocred_at).collect::<Vec<_>>(),
+                )
+                .with_timezone("UTC"),
+            ),
+        ),
+    ];
+    let batch = RecordBatch::try_from_iter(cols).unwrap();
+    let mut buf = Vec::new();
+    let mut w = parquet::arrow::ArrowWriter::try_new(&mut buf, batch.schema(), None).unwrap();
+    w.write(&batch).unwrap();
+    w.close().unwrap();
+    e.curated
+        .put(path, buf, "application/octet-stream")
+        .await
+        .unwrap();
+}
+
+/// Our Japanese OCR (#139): a release indexes the overlay's pages in their own
+/// index, newest copy of each page, only for batches in the version, and adds
+/// the pages curation never had to the baselines (not the ones it had).
+#[tokio::test]
+async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let path = e.root.join("batch_fx_ja_ver01.tar.gz");
+    let all: Vec<&Page> = pages.iter().collect();
+    write_archive(&path, &all, false, true);
+    curate(
+        &e,
+        vec![listed("batch_fx_ja_ver01", &path, Some(sha256_file(&path)))],
+    )
+    .await;
+
+    let p0 = pages.iter().find(|p| !p.text.is_empty()).unwrap();
+    let same_day = pages
+        .iter()
+        .filter(|p| p.lccn == p0.lccn && p.date == p0.date)
+        .count();
+    let row = |seq, batch, loc_text, text, at| JaRow {
+        lccn: &p0.lccn,
+        date: p0.date,
+        seq,
+        batch,
+        loc_text,
+        text,
+        ocred_at: at,
+    };
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[
+            row(90, "batch_fx_ja", "missing", "古い読み", 1),
+            row(p0.seq, "batch_fx_ja", "garbled", "日本", 1),
+            row(91, "batch_elsewhere", "missing", "東京", 1),
+        ],
+    )
+    .await;
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.2.parquet",
+        &[row(90, "batch_fx_ja", "missing", "米國と日本の戰爭", 2)],
+    )
+    .await;
+
+    let published = e.release(5, true).await.expect("published");
+    let current = e.reference_json("current.json").await;
+    let ja_id = format!(
+        "pages-ja-{}",
+        published.index_version.trim_start_matches("pages-v")
+    );
+    assert_eq!(current["ja"]["indexes"], serde_json::json!([ja_id]));
+    assert_eq!(current["ja"]["pages"], 2);
+    assert_eq!(current["ja"]["fold"], usnm_core::ja::FOLD_VERSION);
+
+    let ja = e.index(&ja_id);
+    assert_eq!(ja.len(), 2, "{:?}", ja.keys());
+    let missing = &ja[&format!("{}_{}_ed-1_seq-90", p0.lccn, p0.date)];
+    // The newest copy wins, and its text is the folded tokens of the printed text.
+    assert_eq!(missing["printed"], "米國と日本の戰爭");
+    assert_eq!(
+        missing["text"],
+        usnm_core::ja::index_text("米國と日本の戰爭")
+    );
+    assert_eq!(missing["ocr_engine"], "ndlocr-lite test");
+
+    // The missing page joins the baselines once; the garbled one was counted already.
+    let v = &published.index_version;
+    let titles: Vec<Value> =
+        serde_json::from_value(e.reference_json(&format!("{v}/titles.json")).await).unwrap();
+    let place = titles
+        .iter()
+        .find(|t| t["lccn"] == p0.lccn.as_str())
+        .unwrap()["place_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let baselines = e.reference_json(&format!("{v}/baselines.json")).await;
+    let day = usnm_core::time::day_number(p0.date);
+    let at_day = baselines[&place]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d[0] == day)
+        .unwrap()[1]
+        .as_u64()
+        .unwrap();
+    assert_eq!(at_day, same_day as u64 + 1);
+    let title_pages = e.reference_json(&format!("{v}/title_pages.json")).await;
+    let fixture_title_pages: Value = serde_json::from_slice(
+        &std::fs::read(fixtures().join("fixture-v1/title_pages.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        title_pages[&p0.lccn],
+        fixture_title_pages[&p0.lccn].as_u64().unwrap() + 1
+    );
+
+    let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
+    assert_eq!(record["added_to_baselines"], 1);
+    assert_eq!(record["skipped"], 1);
+    assert_eq!(record["parts"].as_array().unwrap().len(), 2);
+    let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    assert!(manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["path"] == "ocr_ja.json"));
+    assert_eq!(
+        manifest["built_from"]["ocr_ja"].as_array().unwrap().len(),
+        2
+    );
+}
