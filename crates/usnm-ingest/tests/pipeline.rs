@@ -392,6 +392,23 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
         .unwrap()
         .iter()
         .any(|f| f["path"] == "batches.json"));
+    // What built it (#161): the manifest has the templates in full, the run
+    // item their checksums only.
+    let build = &manifest["build"];
+    assert_eq!(
+        build["features"]["common_grams"],
+        usnm_core::common_grams::VERSION
+    );
+    assert_eq!(
+        build["templates"]["pages"]["yaml"],
+        usnm_ingest::sink::INDEX_TEMPLATE
+    );
+    assert_eq!(
+        item["build"]["templates"]["pages"]["sha256"],
+        build["templates"]["pages"]["sha256"]
+    );
+    assert!(item["build"]["templates"]["pages"].get("yaml").is_none());
+    assert_eq!(item["build"]["full"], build["full"]);
 
     // The API loads it: checksums, manifest and version pairing all hold.
     let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())

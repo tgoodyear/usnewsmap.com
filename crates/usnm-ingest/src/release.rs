@@ -37,6 +37,7 @@ use usnm_core::time::{date_from_day, day_number, ym_number};
 use usnm_store::ObjectStore;
 
 use crate::activity::Reporter;
+use crate::build_info;
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
 use crate::dedup::{self, Plan};
@@ -69,6 +70,12 @@ pub struct Release {
     /// (asked for, or forced) doesn't, since it would replace the published
     /// one without them.
     pub titles_left: Option<String>,
+}
+
+/// The Quickwit binary the release runs as its writer (`USNM_QUICKWIT_BIN`,
+/// set by the ingest image), for the build record's version.
+fn quickwit_bin() -> Option<std::path::PathBuf> {
+    std::env::var_os("USNM_QUICKWIT_BIN").map(std::path::PathBuf::from)
 }
 
 /// A full release refused to start because titles-sync left titles unfetched
@@ -481,6 +488,11 @@ impl Release {
             previous_version: previous.as_ref().map(|p| p.index_version.clone()),
             last_error: None,
             failed_at: None,
+            build: Some(build_info::summary(
+                full,
+                !overlay.parts.is_empty(),
+                quickwit_bin().as_deref(),
+            )),
         };
         if !self.state.create_run(&run).await? {
             bail!("index run `{version}` already exists");
@@ -523,6 +535,7 @@ impl Release {
                     &layout,
                     &overlay,
                     ja.as_ref(),
+                    full,
                 )
                 .await?;
             Ok::<_, anyhow::Error>((docs, bounds, ja, added))
@@ -882,6 +895,7 @@ impl Release {
         layout: &[IndexLayout],
         overlay: &ocr_ja::Overlay,
         ja: Option<&(String, u64)>,
+        full: bool,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
@@ -1053,6 +1067,8 @@ impl Release {
         if !overlay.parts.is_empty() {
             manifest["built_from"]["ocr_ja"] = serde_json::to_value(&overlay.parts)?;
         }
+        // What built it (#161), with the index templates in full.
+        manifest["build"] = build_info::record(full, ja.is_some(), quickwit_bin().as_deref());
         self.put_new(
             &format!("{version}/manifest.json"),
             serde_json::to_vec_pretty(&manifest)?,

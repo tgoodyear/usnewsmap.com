@@ -348,6 +348,7 @@ jobs:
           file: Dockerfile.ingest
           push: true
           cache-from: type=gha,scope=ingest
+          build-args: USNM_GIT_SHA=${{ github.sha }}
           tags: |
             ${{ env.ACR }}/usnewsmap-ingest:main
             ${{ env.ACR }}/usnewsmap-ingest:${{ github.sha }}
