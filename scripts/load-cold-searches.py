@@ -73,14 +73,17 @@ SEARCHES = [
 
 # Give up on one search after this long, as the web app does (150 s).
 MAX_WAIT_S = 150
+# The longest one request waits on the API before a `202` (10 s, plus 2 s
+# for its persistent cache), as in web/src/api/client.ts.
+REQUEST_WAIT_S = 12
 USER_AGENT = "usnm-load/1 (scripts/load-cold-searches.py)"
 
 
-def get(url):
+def get(url, timeout=MAX_WAIT_S):
     """(status, headers, body) for one GET, without raising on 4xx/5xx."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=MAX_WAIT_S) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.headers, resp.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers, e.read()
@@ -106,11 +109,20 @@ class Result:
 
 
 def run(base, path, name):
-    """Ask as the web app does until there is an answer or the wait runs out."""
+    """Ask as the web app does until there is an answer or the wait runs out:
+    each request is held to what is left of the wait, and no request is
+    started that could outlast it."""
     r = Result(name)
     started = time.monotonic()
     while True:
-        status, headers, body = get(base + path)
+        try:
+            status, headers, body = get(base + path, max(MAX_WAIT_S - (time.monotonic() - started), 1))
+        except (TimeoutError, urllib.error.URLError) as e:
+            if isinstance(e, urllib.error.URLError) and not isinstance(e.reason, TimeoutError):
+                raise
+            r.status = "gave up"
+            r.seconds = time.monotonic() - started
+            return r
         doc = json_of(body)
         if status == 202:
             r.accepted += 1
@@ -126,7 +138,8 @@ def run(base, path, name):
             r.backend_ms = (doc.get("timing_ms") or {}).get("backend")
             return r
         wait = int(headers.get("Retry-After") or 2)
-        if time.monotonic() - started + wait > MAX_WAIT_S:
+        # The next request may itself wait up to REQUEST_WAIT_S for an answer.
+        if time.monotonic() - started + wait + REQUEST_WAIT_S > MAX_WAIT_S:
             r.status = "gave up"
             r.seconds = time.monotonic() - started
             return r

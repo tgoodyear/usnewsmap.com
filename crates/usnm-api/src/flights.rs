@@ -130,15 +130,18 @@ struct Slots {
 }
 
 impl Slots {
-    /// Hand a freed slot to the earliest waiting search that still wants
-    /// it, or put it back.
+    /// Hand a freed slot to the earliest waiting search, or put it back.
     fn release(&mut self) {
-        while let Some((_, wake)) = self.waiting.pop_first() {
-            if wake.send(()).is_ok() {
-                return;
+        match self.waiting.pop_first() {
+            // If the send fails, that search is being cancelled: its
+            // `Place`, dropped with it, finds its ticket gone and the slot
+            // not taken, and hands the slot on. Handing it on here as well
+            // would free it twice.
+            Some((_, wake)) => {
+                let _ = wake.send(());
             }
+            None => self.free += 1,
         }
-        self.free += 1;
     }
 }
 
@@ -357,6 +360,31 @@ mod tests {
         assert_eq!(flights.queued(), 0);
         drop(slot);
         assert_eq!(flights.free_slots(), 1);
+    }
+
+    #[test]
+    fn a_slot_whose_handover_fails_is_freed_once() {
+        let flights = Flights::new(1, 8);
+        let mut slots = flights.slots();
+        slots.free = 0;
+        let (wake, handed) = oneshot::channel();
+        slots.waiting.insert(7, wake);
+        drop(slots);
+        let spot = Spot::default();
+        *spot.ticket() = Some(7);
+        let place = Place {
+            flights: &flights,
+            spot: &spot,
+            ticket: 7,
+            taken: false,
+        };
+        // The waiting search is cancelled: its receiver goes first, then
+        // the slot is released (the send fails), then its place goes.
+        drop(handed);
+        drop(SearchSlot(&flights));
+        assert_eq!(flights.free_slots(), 0, "the failed send freed nothing");
+        drop(place);
+        assert_eq!(flights.free_slots(), 1, "the place freed it, once");
     }
 
     #[tokio::test]
