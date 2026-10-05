@@ -233,7 +233,8 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 /// searches `text_cg`, which never reads the common word's positions. Each
 /// of its other words is also required in `text`: that changes no match (a
 /// page with the phrase has the words) and gives the snippets on `text`
-/// their highlights.
+/// their highlights. A word that folds to several (`ﷺ`) is left out of those:
+/// unquoted it would be several terms, and the pairs already require it.
 pub fn query_string(node: &Node, grams: bool) -> Result<String, SearchError> {
     Ok(match node {
         Node::Term(t) if t.fuzzy > 0 => {
@@ -256,7 +257,8 @@ pub fn query_string(node: &Node, grams: bool) -> Result<String, SearchError> {
                 parts.extend(
                     terms
                         .iter()
-                        .filter(|t| !usnm_core::common_grams::is_common(t) && seen.insert(*t))
+                        .filter(|t| !usnm_core::common_grams::is_common(t))
+                        .filter(|t| !t.contains(char::is_whitespace) && seen.insert(*t))
                         .map(|w| format!("text:{w}")),
                 );
                 format!("({})", parts.join(" AND "))
@@ -837,6 +839,12 @@ mod tests {
             query_string(&parse(r#""the gold of the cross""#).unwrap(), true).unwrap(),
             "(text_cg:\"the_gold gold of_the the_cross cross\" AND text:gold AND text:cross)"
         );
+        // A word that folds to several is only required through the pairs.
+        let q = parse("\"of \u{fdfa} gold\"").unwrap();
+        let s = query_string(&q, true).unwrap();
+        assert!(s.starts_with("(text_cg:\"of_"), "{s}");
+        assert!(s.ends_with(" AND text:gold)"), "{s}");
+        assert_eq!(s.matches(" AND ").count(), 1, "{s}");
         // Without the field, or for a phrase ending in a common word: `text`.
         assert_eq!(
             query_string(&parse(r#""cross of gold""#).unwrap(), false).unwrap(),
