@@ -292,6 +292,12 @@ Every index version the pipeline has built, newest first, with what built each o
 
 Error text (`last_error`) isn't included; `/v1/status` shows it sanitized.
 
+**Comparing versions.** The API answers only for the version it serves, so search results are compared through captures.
+- `scripts/compare-versions.py capture` runs a fixed set of 63 searches against the live version and records what each returns. The set is the ten benchmark searches of 05 §5.8, the 50 home page examples, and three Japanese searches.
+- Each record holds: the status, the totals, the per-bucket hits, hits by language, the backend's `timing_ms` and the wall time.
+- Keep a capture of each version in `ops/version-snapshots/{version}.json`, taken while it is live (before a release replaces it).
+- `scripts/compare-versions.py diff A B` puts two captures' hits and timings side by side, and flags searches whose hits changed by more than 1% or whose status changed.
+
 ## 6.4 Query language and validation
 
 ```
