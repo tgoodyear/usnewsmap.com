@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     /// No title overrides.
-    fn none() -> BTreeMap<String, String> {
+    fn no_title_overrides() -> BTreeMap<String, String> {
         BTreeMap::new()
     }
 
@@ -1159,9 +1159,16 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let r = sync(store.as_ref(), &lccns, &none(), false, &base, &unpaced())
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &lccns,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
         assert_eq!((r.wanted, r.fetched), (3, 1));
         assert_eq!(r.not_found, ["sn3"]);
         assert_eq!(r.failed, ["sn2"]);
@@ -1182,9 +1189,16 @@ mod tests {
 
         // A second run only retries what failed, and changes nothing.
         let before = hits.load(Ordering::SeqCst);
-        let r = sync(store.as_ref(), &lccns, &none(), false, &base, &unpaced())
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &lccns,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
         assert_eq!((r.wanted, r.fetched), (2, 0));
         assert!(hits.load(Ordering::SeqCst) - before >= 2);
         assert!(!geocode(store.as_ref()).await.unwrap().written);
@@ -1192,9 +1206,16 @@ mod tests {
         // Rate limiting stops the run at once: nothing after it is requested.
         let before = hits.load(Ordering::SeqCst);
         let limited: BTreeSet<String> = ["sn8", "sn99"].iter().map(|s| s.to_string()).collect();
-        let r = sync(store.as_ref(), &limited, &none(), false, &base, &unpaced())
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &limited,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
         assert!(r.throttled);
         assert_eq!((r.wanted, r.fetched, r.not_found.len()), (2, 0, 0));
         assert_eq!(hits.load(Ordering::SeqCst) - before, 1);
@@ -1205,7 +1226,7 @@ mod tests {
         let r = sync(
             store.as_ref(),
             &challenged,
-            &none(),
+            &no_title_overrides(),
             false,
             &base,
             &unpaced(),
@@ -1236,7 +1257,7 @@ mod tests {
         let r = sync(
             store.as_ref(),
             &set(&["sn6", "sn3"]),
-            &none(),
+            &no_title_overrides(),
             false,
             &base,
             &pacing,
@@ -1260,7 +1281,7 @@ mod tests {
         let r = sync(
             store.as_ref(),
             &set(&["sn8", "sn99"]),
-            &none(),
+            &no_title_overrides(),
             false,
             &base,
             &pacing,
@@ -1280,7 +1301,7 @@ mod tests {
         let r = sync(
             store.as_ref(),
             &set(&["sn98", "sn99"]),
-            &none(),
+            &no_title_overrides(),
             false,
             &base,
             &pacing,
@@ -1297,12 +1318,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
         let (base, _) = fake_loc().await;
-        let lccns: BTreeSet<String> = ["sn87093109".to_owned()].into();
+        let lccns: BTreeSet<String> = ["sn87093109"].iter().map(|s| s.to_string()).collect();
 
         // Without the override, LoC has nothing under the title's LCCN.
-        let r = sync(store.as_ref(), &lccns, &none(), false, &base, &unpaced())
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &lccns,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
         assert_eq!(r.not_found, ["sn87093109"]);
 
         let records = record_lccns(r#"{"sn87093109": {"record": "sn84022797"}}"#).unwrap();
