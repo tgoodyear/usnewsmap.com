@@ -234,8 +234,14 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 // ------------------------------------------------------------ translation
 
 /// Quickwit query-language string for the AST. Terms are folded alphanumerics
-/// from our own parser, so they never need escaping.
-pub fn query_string(node: &Node) -> Result<String, SearchError> {
+/// from our own parser, so they never need escaping. With `grams` (the
+/// indexes have `text_cg`, 05 §5.5.3), an exact phrase holding a common word
+/// searches `text_cg`, which never reads the common word's positions. Each
+/// of its other words is also required in `text`: that changes no match (a
+/// page with the phrase has the words) and gives the snippets on `text`
+/// their highlights. A word that folds to several (`ﷺ`) is left out of those:
+/// unquoted it would be several terms, and the pairs already require it.
+pub fn query_string(node: &Node, grams: bool) -> Result<String, SearchError> {
     Ok(match node {
         Node::Term(t) if t.fuzzy > 0 => {
             // S-2: Quickwit 0.9's query language has no fuzzy terms (`~n` on a
@@ -247,17 +253,34 @@ pub fn query_string(node: &Node) -> Result<String, SearchError> {
         Node::Term(t) if t.prefix => format!("text:{}*", t.text),
         Node::Term(t) => format!("text:{}", t.text),
         Node::Phrase { terms, slop } if *slop > 0 => format!("text:\"{}\"~{slop}", terms.join(" ")),
-        Node::Phrase { terms, .. } => format!("text:\"{}\"", terms.join(" ")),
-        Node::And(c) => format!("({})", join(c, " AND ")?),
-        Node::Or(c) => format!("({})", join(c, " OR ")?),
-        Node::Not(n) => format!("NOT {}", query_string(n)?),
+        Node::Phrase { terms, .. } => match grams
+            .then(|| usnm_core::common_grams::query_terms(terms))
+            .flatten()
+        {
+            Some(pairs) => {
+                let mut parts = vec![format!("text_cg:\"{}\"", pairs.join(" "))];
+                let mut seen = std::collections::BTreeSet::new();
+                parts.extend(
+                    terms
+                        .iter()
+                        .filter(|t| !usnm_core::common_grams::is_common(t))
+                        .filter(|t| !t.contains(char::is_whitespace) && seen.insert(*t))
+                        .map(|w| format!("text:{w}")),
+                );
+                format!("({})", parts.join(" AND "))
+            }
+            None => format!("text:\"{}\"", terms.join(" ")),
+        },
+        Node::And(c) => format!("({})", join(c, " AND ", grams)?),
+        Node::Or(c) => format!("({})", join(c, " OR ", grams)?),
+        Node::Not(n) => format!("NOT {}", query_string(n, grams)?),
     })
 }
 
-fn join(children: &[Node], sep: &str) -> Result<String, SearchError> {
+fn join(children: &[Node], sep: &str, grams: bool) -> Result<String, SearchError> {
     Ok(children
         .iter()
-        .map(query_string)
+        .map(|c| query_string(c, grams))
         .collect::<Result<Vec<_>, _>>()?
         .join(sep))
 }
@@ -305,7 +328,7 @@ fn full_query(
     indexes: &IndexSet,
     extra: Vec<String>,
 ) -> Result<String, SearchError> {
-    let mut parts = vec![query_string(node)?];
+    let mut parts = vec![query_string(node, indexes.common_grams())?];
     parts.extend(filter_clauses(filters));
     parts.extend(hidden_clauses(indexes));
     parts.extend(extra);
@@ -821,13 +844,52 @@ mod tests {
     fn translates_ast_to_query_language() {
         let q = parse(r#""cross of gold" -bryan (silver OR free*) "gold silver"~3"#).unwrap();
         assert_eq!(
-            query_string(&q).unwrap(),
+            query_string(&q, false).unwrap(),
             r#"(text:"cross of gold" AND text:"gold silver"~3 AND NOT text:bryan AND (text:free* OR text:silver))"#
         );
         assert!(matches!(
-            query_string(&parse("gold~1").unwrap()),
+            query_string(&parse("gold~1").unwrap(), false),
             Err(SearchError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn phrases_with_common_words_search_the_pairs_field() {
+        let q = parse(r#""cross of gold" -bryan "gold silver"~3 "yellow fever""#).unwrap();
+        assert_eq!(
+            query_string(&q, true).unwrap(),
+            "((text_cg:\"cross of_gold gold\" AND text:cross AND text:gold) \
+             AND text:\"gold silver\"~3 AND text:\"yellow fever\" AND NOT text:bryan)"
+        );
+        // A repeated word is required once.
+        assert_eq!(
+            query_string(&parse(r#""the gold of the cross""#).unwrap(), true).unwrap(),
+            "(text_cg:\"the_gold gold of_the the_cross cross\" AND text:gold AND text:cross)"
+        );
+        // A word that folds to several is only required through the pairs.
+        let q = parse("\"of \u{fdfa} gold\"").unwrap();
+        let s = query_string(&q, true).unwrap();
+        assert!(s.starts_with("(text_cg:\"of_"), "{s}");
+        assert!(s.ends_with(" AND text:gold)"), "{s}");
+        assert_eq!(s.matches(" AND ").count(), 1, "{s}");
+        // Without the field, or for a phrase ending in a common word: `text`.
+        assert_eq!(
+            query_string(&parse(r#""cross of gold""#).unwrap(), false).unwrap(),
+            r#"text:"cross of gold""#
+        );
+        assert_eq!(
+            query_string(&parse(r#""remember the""#).unwrap(), true).unwrap(),
+            r#"text:"remember the""#
+        );
+        let set = IndexSet::new(vec!["i".into()]).with_common_grams(true);
+        let r = summary_request(
+            &parse(r#""cross of gold""#).unwrap(),
+            &filters(),
+            &set,
+            &BucketSpec::new(BucketUnit::Year, d("1896-01-01"), d("1896-12-31")),
+        )
+        .unwrap();
+        assert!(r["query"].as_str().unwrap().starts_with("(text_cg:"), "{r}");
     }
 
     #[test]

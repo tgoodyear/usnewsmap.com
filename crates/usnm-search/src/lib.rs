@@ -64,6 +64,9 @@ pub struct PageDoc {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IndexSet {
     ids: Vec<String>,
+    /// Every index has the `text_cg` field at the API's
+    /// `usnm_core::common_grams::VERSION` (05 §5.5.3).
+    common_grams: bool,
     /// Batch → ids of its documents to hide.
     hidden: Arc<BTreeMap<String, BTreeSet<String>>>,
 }
@@ -72,8 +75,19 @@ impl IndexSet {
     pub fn new(ids: Vec<String>) -> Self {
         Self {
             ids,
+            common_grams: false,
             hidden: Arc::default(),
         }
+    }
+
+    /// Whether phrases may search `text_cg` (05 §5.5.3).
+    pub fn with_common_grams(mut self, on: bool) -> Self {
+        self.common_grams = on;
+        self
+    }
+
+    pub fn common_grams(&self) -> bool {
+        self.common_grams
     }
 
     /// Hide each `(doc_id, batch)`: that batch's copy of the page.

@@ -344,7 +344,7 @@ Running more searches at once added no throughput: two at once each took twice a
 
 With no searches cancelled at 30 s, throughput stayed at about 0.064 searches/s at every level: about 16 s of the searcher's CPU per cold search, however many share it. The two failures ran past the API's 120 s limit while four heavy searches shared the two vCPUs, so the slots went from 4 to 2 (§6.6): the same throughput, with each running search getting half the CPU rather than a quarter. Ten at once all finish in about 140 s, a median of about a minute.
 
-One search cost 4–5 times the rest: the phrase "cross of gold" (65 s alone on a warm searcher). A phrase reads the positions of every word in it, and "of" is on almost every page: over 1896, the phrase took 41 s, `cross gold` within 2 words 9 s, the phrase "yellow fever" 8 s, and `gold` alone 4 s. Phrases holding common words are the expensive searches.
+One search cost 4–5 times the rest: the phrase "cross of gold" (65 s alone on a warm searcher). A phrase reads the positions of every word in it, and "of" is on almost every page: over 1896, the phrase took 41 s, `cross gold` within 2 words 9 s, the phrase "yellow fever" 8 s, and `gold` alone 4 s. Phrases holding common words are the expensive searches. They now search common-word pairs instead (05 §5.5.3), once a release has rebuilt the indexes with them.
 
 ## 6.6 Service internals
 
