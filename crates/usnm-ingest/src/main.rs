@@ -236,6 +236,7 @@ async fn titles_sync(
     let report = titles::sync(
         reference.as_ref(),
         &lccns,
+        &titles::title_records()?,
         refresh,
         items,
         &titles::Pacing::loc(deadline).reporting(report.clone()),

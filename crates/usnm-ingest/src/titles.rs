@@ -13,7 +13,10 @@
 //!   would pass it, the run stops early. The cache keeps what was fetched,
 //!   so the next run continues. A title takes about 4.5 s (LoC's response
 //!   time, over the 3.5 s pace), so ~3,100 titles take about 4 hours, plus
-//!   an hour for each block.
+//!   an hour for each block. A few titles have no record under the LCCN
+//!   their pages ship with, but one under another LCCN:
+//!   `catalog/overrides/titles.json` names it, and the sync fetches that
+//!   record for the title instead.
 //! - **geocode** builds the catalog from that cache alone, so it is
 //!   deterministic and needs no network. A title's place is the city in its
 //!   LoC title, e.g. "(North Platte, Neb.)". Coordinates are, in order: a
@@ -45,6 +48,43 @@ pub const RAW: &str = "raw/titles.json";
 /// (`catalog/overrides/places.json`) and compiled in, so every environment
 /// applies the same corrections (08 §8.9).
 pub const PLACE_OVERRIDES: &str = include_str!("../../../catalog/overrides/places.json");
+/// Titles whose LoC record is under another LCCN, `{lccn: {record, note?}}`,
+/// kept in git (`catalog/overrides/titles.json`) and compiled in like the
+/// place overrides.
+pub const TITLE_OVERRIDES: &str = include_str!("../../../catalog/overrides/titles.json");
+
+/// One entry of [`TITLE_OVERRIDES`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleOverride {
+    /// The LCCN of the LoC record that describes the title.
+    pub record: String,
+    /// Why, and where that was found.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// The record LCCN to fetch for each overridden title, from `json` in the
+/// form of [`TITLE_OVERRIDES`].
+pub fn record_lccns(json: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let entries: BTreeMap<String, TitleOverride> =
+        serde_json::from_str(json).context("catalog/overrides/titles.json")?;
+    let mut records = BTreeMap::new();
+    for (lccn, o) in entries {
+        anyhow::ensure!(
+            valid_lccn(&lccn) && valid_lccn(&o.record) && o.record != lccn,
+            "catalog/overrides/titles.json: `{lccn}` → `{}` isn't a pair of different, valid LCCNs",
+            o.record
+        );
+        records.insert(lccn, o.record);
+    }
+    Ok(records)
+}
+
+/// The record LCCNs of the overrides in git.
+pub fn title_records() -> anyhow::Result<BTreeMap<String, String>> {
+    record_lccns(TITLE_OVERRIDES)
+}
 
 /// What `geocode` uses from a LoC title record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +102,10 @@ pub struct RawTitle {
     pub dates: Option<String>,
     #[serde(default)]
     pub languages: Vec<String>,
+    /// The LCCN of the record this came from, when it isn't the title's own
+    /// (`catalog/overrides/titles.json`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
 }
 
 /// Parse LoC's item JSON (`{"item": {...}}`) for `lccn`.
@@ -120,6 +164,7 @@ pub fn parse_item(lccn: &str, bytes: &[u8]) -> anyhow::Result<RawTitle> {
             .and_then(Value::as_str)
             .map(str::to_owned),
         languages: strings("language"),
+        record: None,
     })
 }
 
@@ -192,11 +237,14 @@ impl SyncReport {
 
 /// Fetch the records of `lccns` that are neither cached nor already in the
 /// catalog (all of them with `refresh`), one at a time as `pacing` says, and
-/// save them to [`RAW`]. Failures are reported, not fatal, and retried by the
-/// next run. Rate limiting pauses the sync, or stops it (see [`Pacing`]).
+/// save them to [`RAW`]. A title in `records` is fetched from the record
+/// named there and cached under its own LCCN. Failures are reported, not
+/// fatal, and retried by the next run. Rate limiting pauses the sync, or
+/// stops it (see [`Pacing`]).
 pub async fn sync(
     reference: &dyn ObjectStore,
     lccns: &BTreeSet<String>,
+    records: &BTreeMap<String, String>,
     refresh: bool,
     items_base: &str,
     pacing: &Pacing,
@@ -243,9 +291,16 @@ pub async fn sync(
             report.out_of_time = true;
             break;
         }
-        let url = format!("{base}/{lccn}/?fo=json");
+        let record = records.get(lccn).unwrap_or(lccn);
+        let url = format!("{base}/{record}/?fo=json");
         let r = match source::get_json(&url).await {
-            Ok(Some(b)) => parse_item(lccn, &b).map(Some),
+            Ok(Some(b)) => parse_item(record, &b).map(|mut t| {
+                if record != lccn {
+                    t.lccn = lccn.clone();
+                    t.record = Some(record.clone());
+                }
+                Some(t)
+            }),
             Ok(None) => Ok(None),
             Err(e) if e.is::<source::Throttled>() => {
                 if pacing.deadline.is_none()
@@ -535,6 +590,9 @@ pub fn build(
         let place_id = place_of[&key_of(d.city.as_deref(), d.state)].clone();
         let mut extra = BTreeMap::new();
         extra.insert("loc_title".into(), Value::from(d.raw.title.clone()));
+        if let Some(r) = &d.raw.record {
+            extra.insert("loc_record".into(), Value::from(r.clone()));
+        }
         if let Some(p) = &d.place_label {
             extra.insert("place_of_publication".into(), Value::from(p.clone()));
         }
@@ -602,6 +660,7 @@ fn place_key(p: &Place) -> Option<(String, String)> {
 
 /// The `extra` fields geocode owns on a title.
 const DERIVED_KEYS: &[&str] = &[
+    "loc_record",
     "loc_title",
     "place_of_publication",
     "dates",
@@ -780,6 +839,7 @@ mod tests {
             latlong: ll,
             dates: Some("1890-18??".into()),
             languages: vec!["english".into(), "german".into()],
+            record: None,
         }
     }
 
@@ -973,6 +1033,11 @@ mod tests {
         assert_eq!((nowhere2.lat, nowhere2.precision.as_str()), (42.0, "city"));
     }
 
+    /// No title overrides.
+    fn no_title_overrides() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
     /// No pace, and stop at the first block.
     fn unpaced() -> Pacing {
         Pacing {
@@ -1017,6 +1082,12 @@ mod tests {
                                 "location_city": ["elko"], "location_state": ["nevada"], "latlong": [40.83, -115.76],
                                 "dates_of_publication": "1883-1900", "language": ["english"]}}"#.to_owned())
                         }
+                    } else if path.starts_with("/item/sn84022797/") {
+                        // The record of a title whose own LCCN has none.
+                        ("200 OK", r#"{"item": {"number_lccn": ["sn84022797"],
+                            "title": "The Vancouver Independent (Vancouver, Wash. Territory [i.e. Wash.]) 1875-1910",
+                            "location_city": ["vancouver"], "location_state": ["washington"], "latlong": null,
+                            "dates_of_publication": "1875-1910", "language": ["english"]}}"#.to_owned())
                     } else if path.starts_with("/item/sn2/") {
                         ("200 OK", "{not json".to_owned())
                     } else if path.starts_with("/item/sn8/") {
@@ -1088,9 +1159,16 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let r = sync(store.as_ref(), &lccns, false, &base, &unpaced())
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &lccns,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
         assert_eq!((r.wanted, r.fetched), (3, 1));
         assert_eq!(r.not_found, ["sn3"]);
         assert_eq!(r.failed, ["sn2"]);
@@ -1111,9 +1189,16 @@ mod tests {
 
         // A second run only retries what failed, and changes nothing.
         let before = hits.load(Ordering::SeqCst);
-        let r = sync(store.as_ref(), &lccns, false, &base, &unpaced())
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &lccns,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
         assert_eq!((r.wanted, r.fetched), (2, 0));
         assert!(hits.load(Ordering::SeqCst) - before >= 2);
         assert!(!geocode(store.as_ref()).await.unwrap().written);
@@ -1121,9 +1206,16 @@ mod tests {
         // Rate limiting stops the run at once: nothing after it is requested.
         let before = hits.load(Ordering::SeqCst);
         let limited: BTreeSet<String> = ["sn8", "sn99"].iter().map(|s| s.to_string()).collect();
-        let r = sync(store.as_ref(), &limited, false, &base, &unpaced())
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &limited,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
         assert!(r.throttled);
         assert_eq!((r.wanted, r.fetched, r.not_found.len()), (2, 0, 0));
         assert_eq!(hits.load(Ordering::SeqCst) - before, 1);
@@ -1131,9 +1223,16 @@ mod tests {
         // So does an HTML challenge page, whatever its status.
         let before = hits.load(Ordering::SeqCst);
         let challenged: BTreeSet<String> = ["sn7", "sn99"].iter().map(|s| s.to_string()).collect();
-        let r = sync(store.as_ref(), &challenged, false, &base, &unpaced())
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &challenged,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
         assert!(r.throttled);
         assert_eq!(hits.load(Ordering::SeqCst) - before, 1);
     }
@@ -1155,9 +1254,16 @@ mod tests {
             report: Reporter::off(),
         };
         let started = std::time::Instant::now();
-        let r = sync(store.as_ref(), &set(&["sn6", "sn3"]), false, &base, &pacing)
-            .await
-            .unwrap();
+        let r = sync(
+            store.as_ref(),
+            &set(&["sn6", "sn3"]),
+            &no_title_overrides(),
+            false,
+            &base,
+            &pacing,
+        )
+        .await
+        .unwrap();
         assert!(started.elapsed() >= Duration::from_millis(300));
         assert!(r.finished(), "{r:?}");
         assert_eq!((r.wanted, r.fetched, r.paused, r.left), (2, 1, 1, 0));
@@ -1175,6 +1281,7 @@ mod tests {
         let r = sync(
             store.as_ref(),
             &set(&["sn8", "sn99"]),
+            &no_title_overrides(),
             false,
             &base,
             &pacing,
@@ -1194,6 +1301,7 @@ mod tests {
         let r = sync(
             store.as_ref(),
             &set(&["sn98", "sn99"]),
+            &no_title_overrides(),
             false,
             &base,
             &pacing,
@@ -1203,6 +1311,129 @@ mod tests {
         assert!(r.out_of_time && !r.finished());
         assert_eq!((r.wanted, r.fetched, r.left), (2, 0, 2));
         assert_eq!(hits.load(Ordering::SeqCst), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_title_without_its_own_record_takes_the_one_its_override_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
+        let (base, _) = fake_loc().await;
+        let lccns: BTreeSet<String> = ["sn87093109"].iter().map(|s| s.to_string()).collect();
+
+        // Without the override, LoC has nothing under the title's LCCN.
+        let r = sync(
+            store.as_ref(),
+            &lccns,
+            &no_title_overrides(),
+            false,
+            &base,
+            &unpaced(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.not_found, ["sn87093109"]);
+
+        let records = record_lccns(r#"{"sn87093109": {"record": "sn84022797"}}"#).unwrap();
+        let r = sync(store.as_ref(), &lccns, &records, false, &base, &unpaced())
+            .await
+            .unwrap();
+        assert_eq!((r.wanted, r.fetched), (1, 1), "{r:?}");
+        let raw = load_raw(store.as_ref()).await.unwrap();
+        assert!(!raw.contains_key("sn84022797"));
+        let t = &raw["sn87093109"];
+        assert_eq!(
+            (t.lccn.as_str(), t.record.as_deref()),
+            ("sn87093109", Some("sn84022797"))
+        );
+
+        // The catalog has it under the title's LCCN, placed from the record.
+        assert!(geocode(store.as_ref()).await.unwrap().written);
+        let c = Catalog::load(store.as_ref()).await.unwrap();
+        let t = c.title("sn87093109").unwrap();
+        assert_eq!(
+            (t.name.as_str(), t.state.as_str(), t.languages.as_slice()),
+            (
+                "The Vancouver Independent",
+                "WA",
+                ["eng".to_owned()].as_slice()
+            )
+        );
+        assert_eq!(t.extra["loc_record"], "sn84022797");
+        let p = c.place(&t.place_id).unwrap();
+        assert_eq!((p.name.as_str(), p.state.as_str()), ("Vancouver", "WA"));
+        // Neither LoC record has coordinates: the override in git places it
+        // in the city, not at Washington's centroid.
+        assert_eq!(
+            (p.lat, p.lon, p.precision.as_str()),
+            (45.6387, -122.6615, "city")
+        );
+
+        // Once catalogued, it isn't asked for again.
+        let r = sync(store.as_ref(), &lccns, &records, false, &base, &unpaced())
+            .await
+            .unwrap();
+        assert_eq!(r.wanted, 0);
+    }
+
+    #[test]
+    fn title_overrides_must_name_another_valid_lccn() {
+        assert!(record_lccns(r#"{"sn1": {"record": "sn1"}}"#).is_err());
+        assert!(record_lccns(r#"{"sn1": {"record": "BAD/x"}}"#).is_err());
+        assert!(record_lccns(r#"{"sn1": {"record": "sn2", "place": "x"}}"#).is_err());
+        assert_eq!(
+            record_lccns(r#"{"sn1": {"record": "sn2", "note": "why"}}"#).unwrap()["sn1"],
+            "sn2"
+        );
+    }
+
+    #[test]
+    fn the_title_overrides_in_git_parse_with_sorted_keys() {
+        let records = title_records().unwrap();
+        assert!(!records.is_empty());
+        // Keyed JSON in git keeps its keys in ascending order: read the
+        // object's keys in file order with a JSON parser (a text search could
+        // match inside a value), then compare with the sorted map's.
+        let in_file = object_keys_in_order(TITLE_OVERRIDES);
+        assert_eq!(
+            in_file,
+            records.keys().cloned().collect::<Vec<_>>(),
+            "keys out of order"
+        );
+    }
+
+    /// The top-level keys of a JSON object, in the order the text has them.
+    fn object_keys_in_order(json: &str) -> Vec<String> {
+        struct Keys(Vec<String>);
+        impl<'de> serde::Deserialize<'de> for Keys {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                struct V;
+                impl<'de> serde::de::Visitor<'de> for V {
+                    type Value = Keys;
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("a JSON object")
+                    }
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut m: A,
+                    ) -> Result<Keys, A::Error> {
+                        let mut keys = Vec::new();
+                        while let Some(k) = m.next_key::<String>()? {
+                            m.next_value::<serde::de::IgnoredAny>()?;
+                            keys.push(k);
+                        }
+                        Ok(Keys(keys))
+                    }
+                }
+                d.deserialize_map(V)
+            }
+        }
+        serde_json::from_str::<Keys>(json).unwrap().0
+    }
+
+    #[test]
+    fn keys_are_read_in_file_order_not_by_text_search() {
+        let json = r#"{"b": {"note": "\"a\": inside a value"}, "a": {}}"#;
+        assert_eq!(object_keys_in_order(json), ["b", "a"]);
     }
 
     #[test]

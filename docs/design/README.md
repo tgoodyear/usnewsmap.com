@@ -1,6 +1,6 @@
 # US News Map Revival: Design Document
 
-**Status:** Draft for review · **Date:** September 2026 · **Scope:** Architecture and design for bringing back [usnewsmap.com](https://usnewsmap.com) on Azure with a modern stack.
+**Status:** Living design record, kept current with the code · **First draft:** September 2026 · **Scope:** Architecture and design for bringing back [usnewsmap.com](https://usnewsmap.com) on Azure with a modern stack.
 
 US News Map (2015–2016, Georgia Tech Research Institute and eHistory.org at the University of Georgia) let anyone search the Library of Congress's *Chronicling America* newspaper collection and watch where and when a word or phrase appeared across the United States. You typed a term, a map lit up with cities whose newspapers printed it, and a playback control showed coverage spreading over time. The site won a prize in the NEH *Chronicling America Data Challenge*, and the Washington Post, UGA/Newswise, the Library of Virginia and genealogy societies all wrote about it. It later went offline because no organization was left to support it.
 

@@ -1,5 +1,6 @@
-import { useId, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { Meta, Mode } from "../api/types";
+import { hasJapanese } from "../lib/japanese";
 import { DEFAULTS, type ViewState } from "../state/url";
 import { LanguageFilter, languageChoices } from "./LanguageFilter";
 
@@ -25,6 +26,18 @@ export function activeOptions(view: Pick<ViewState, "mode" | "from" | "to" | "st
     view.state.length > 0,
     view.lang.length > 0,
   ].filter(Boolean).length;
+}
+
+/**
+ * What a query in Japanese script searches (#139): only the Japanese pages we
+ * read ourselves, or nothing yet on a version without them. Null otherwise.
+ */
+export function japaneseHint(q: string, meta: Pick<Meta, "ja"> | undefined): string | null {
+  // Before /v1/meta loads, it isn't known yet whether Japanese search is there.
+  if (!hasJapanese(q) || !meta) return null;
+  const ja = meta.ja;
+  if (!ja) return "Searching Japanese text isn't available yet. It arrives with the next update.";
+  return `Japanese searches cover only the ${ja.pages.toLocaleString("en-US")} Japanese-language pages we read ourselves. The Library of Congress has no searchable text for them.`;
 }
 
 /** Identity of the search in the URL; remount the form when it changes. */
@@ -75,6 +88,16 @@ export function SearchBar({ view, meta, onSearch }: Props) {
 
   const lo = meta?.bounds.from;
   const hi = meta?.bounds.to;
+  const jaHint = japaneseHint(draft.q, meta);
+  // An input method (IME) uses Enter to confirm a word: that Enter mustn't
+  // submit the search. Safari ends the composition before the keydown, so
+  // keyCode 229 ("being composed") is checked too.
+  const composing = useRef(false);
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && (composing.current || e.nativeEvent.isComposing || e.keyCode === 229)) {
+      e.preventDefault();
+    }
+  };
   return (
     <form
       className={open ? "search search--open" : "search"}
@@ -93,12 +116,21 @@ export function SearchBar({ view, meta, onSearch }: Props) {
         value={draft.q}
         maxLength={meta?.limits.max_query_chars ?? 256}
         onChange={(e) => setDraft({ ...draft, q: e.target.value })}
+        onKeyDown={onKeyDown}
+        onCompositionStart={() => (composing.current = true)}
+        onCompositionEnd={() => (composing.current = false)}
+        aria-describedby={jaHint ? `${id}-ja` : undefined}
         autoComplete="off"
         spellCheck={false}
       />
       <button type="submit" className="button button--primary search__go">
         Search
       </button>
+      {jaHint && (
+        <p id={`${id}-ja`} className="search__hint" role="note">
+          {jaHint}
+        </p>
+      )}
       <button
         type="button"
         className="button search__toggle"

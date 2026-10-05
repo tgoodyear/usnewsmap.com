@@ -192,3 +192,15 @@ Visitors can limit a search to newspapers printed in chosen languages, for examp
 **Wording.** Plain headings in sentence case, no em dashes; copy goes through the house no-slop review before it ships. The page never shows search text (the status document has none).
 
 **Tests.** `web/src/status/now.test.ts` (each "Right now" state, the step states, the headline), `StatusPage.test.tsx` (list semantics, the current step, the collapsed details) and `web/e2e/app.spec.ts` (the fixture API without pipeline state, and the same document with a paused titles-sync routed in, with axe, on desktop and mobile).
+
+## 7.11 Japanese pages
+
+LoC has no searchable text for its Japanese-language pages, so we read them ourselves (04 §4.8) into an index of their own. A query with any Japanese character searches only that index (06 §6.4, #139). Results never mix the two indexes. The site makes that visible in three places:
+
+- **Search bar.** While the box holds Japanese script (`lib/japanese.ts`, the same ranges as `usnm_core::ja::is_ja`), a note under it says what the search covers: "Japanese searches cover only the 11,058 Japanese-language pages we read ourselves. The Library of Congress has no searchable text for them." The count comes from `/v1/meta` `ja.pages`. Before `/v1/meta` loads there is no note. On a version without a Japanese index the note says the feature isn't available yet, and the API answers such a search with 422. The box points to the note with `aria-describedby`.
+- **Input methods.** Typing Japanese uses an input method (IME), and its Enter confirms a word. That Enter must not send the search. The box ignores Enter while a composition is open (`compositionstart`/`compositionend`, `isComposing`), and also when `keyCode` is 229, because Safari ends the composition before the confirming keydown.
+- **Hits.** A page whose text is our OCR (`ocr` on the hit, 06 §6.3.4) gets an "Our OCR" badge, with a title explaining that LoC has no searchable text for the page, that ours comes from NDLOCR-Lite, and to expect some misread characters. Its link reads "View the page image at the Library of Congress" and carries no highlight terms, since LoC's viewer has nothing to highlight. The same explanation is also in the badge as visually hidden text, because the title isn't announced reliably and isn't shown on touch screens.
+
+Progress of the OCR itself is on the status page's "OCR experiments" section (§7.10).
+
+**Tests.** `lib/japanese.test.ts`, `components/SearchBar.ime.test.tsx` (the note, `aria-describedby`, the IME Enter), `components/PlacePanel.test.tsx` (the badge and link) and `e2e/app.spec.ts` (the note on the fixture API, with axe).

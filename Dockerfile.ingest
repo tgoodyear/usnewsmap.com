@@ -19,7 +19,7 @@ COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --locked -p usnm-ingest --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-# The index config and the place overrides are compiled into the binary.
+# The index config and the catalog overrides are compiled into the binary.
 COPY infra/quickwit ./infra/quickwit
 COPY catalog ./catalog
 RUN cargo build --release --locked -p usnm-ingest
