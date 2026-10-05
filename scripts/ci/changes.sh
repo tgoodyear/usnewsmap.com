@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Which parts of CI a change needs, as step outputs rust/web/image/fixtures/
-# code=true|false (code: anything but Markdown and docs/ changed, so the
+# code=true|false (code: anything but documentation changed, so the
 # infrastructure checks and the shared-key scan run), and provision=true|false:
 # whether it changes the Azure stack beyond what a deploy applies (the API
 # image and infra/quickwit/searcher.yaml, which scripts/ci/roll-api.sh
-# applies), so scripts/provision.sh must run. A change to documentation alone
-# runs nothing but this job.
+# applies), so scripts/provision.sh must run. Documentation (Markdown
+# anywhere, anything under docs/) counts for no output: a change to it alone
+# runs no other job of this workflow.
 # Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
 # the changed files can't be worked out.
@@ -31,10 +32,13 @@ esac
 files=$(git diff --name-only "$range") || all "git diff failed for $range"
 [ -n "$files" ] || all "no changed files found"
 echo "$files" | sed 's/^/changed: /'
-matches() { grep -Eq "$1" <<< "$files"; }
+# Documentation is only read: nothing below counts it. No README is compiled
+# into a binary or an image.
+files=$(grep -Ev '\.md$|^docs/' <<< "$files" || true)
+matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
 # infra/quickwit/ holds the index configs (read by the ingest image) and the
-# searcher config (applied on deploy); Markdown is only read.
-if grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwit/|\.md$'; then
+# searcher config (applied on deploy).
+if matches '^infra/' && grep -Evq '^infra/quickwit/' <<< "$files"; then
   provision=true
 fi
 matches '^\.github/' && all "workflow changed"
@@ -49,6 +53,5 @@ fixtures='^fixtures/'
 for part in rust web image fixtures; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
-# Documentation alone (Markdown anywhere, anything under docs/) needs no check.
-if grep -Evq '\.md$|^docs/' <<< "$files"; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
+if [ -n "$files" ]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
 echo "provision=$provision" >> "$out"
