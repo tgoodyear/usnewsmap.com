@@ -1924,6 +1924,10 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
 
     let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
     assert_eq!(record["added_to_baselines"], 2);
+    // The four pages kept have short test texts: all near-blank (no other kind is listed).
+    assert_eq!(record["kinds"]["all"]["near_blank"], 4);
+    assert!(record["kinds"]["all"].get("japanese").is_none());
+    assert_eq!(record["kinds"]["by_loc_text"]["garbled"]["near_blank"], 1);
     assert_eq!(record["skipped"], 1);
     assert_eq!(record["parts"].as_array().unwrap().len(), 2);
     let manifest = e.reference_json(&format!("{v}/manifest.json")).await;

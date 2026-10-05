@@ -222,6 +222,39 @@ pub fn ja_doc(page: &JaPage, title: &Title, place: &Place) -> Value {
     })
 }
 
+/// What our OCR found on a page: `japanese` (at least 20 characters, half of
+/// them or more Japanese), `near_blank` (under 20 characters: a blank page,
+/// a picture, a masthead) or `mostly_latin` (the rest). For the snapshot's
+/// record of what the overlay holds.
+pub fn kind(printed: Option<&str>) -> &'static str {
+    let printed = printed.unwrap_or_default();
+    let chars = printed.chars().filter(|c| !c.is_whitespace()).count();
+    let ja = printed.chars().filter(|c| ja::is_ja(*c)).count();
+    if chars < usnm_core::text::MIN_PAGE_CHARS {
+        "near_blank"
+    } else if ja * 2 >= chars {
+        "japanese"
+    } else {
+        "mostly_latin"
+    }
+}
+
+/// How many pages of each [`kind`], overall and by why LoC's text wasn't used.
+pub fn kinds(pages: &[JaPage]) -> Value {
+    let mut all: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut by_loc_text: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
+    for p in pages {
+        let k = kind(p.printed.as_deref());
+        *all.entry(k).or_default() += 1;
+        *by_loc_text
+            .entry(p.loc_text.as_str())
+            .or_default()
+            .entry(k)
+            .or_default() += 1;
+    }
+    json!({ "all": all, "by_loc_text": by_loc_text })
+}
+
 /// The Japanese index for a version: `pages-v20261005-1` → `pages-ja-20261005-1`.
 pub fn index_id(version: &str) -> String {
     format!(
@@ -233,6 +266,22 @@ pub fn index_id(version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_what_the_ocr_found() {
+        assert_eq!(
+            kind(Some(
+                "去年の大記事は何?やはり西歐大侵略戰。米國通信社の面白い調査"
+            )),
+            "japanese"
+        );
+        assert_eq!(
+            kind(Some("NEW YEAR'S EDITION The Rocky Shimpo DENVER COLORADO")),
+            "mostly_latin"
+        );
+        assert_eq!(kind(Some("  ﾉ 1 \n")), "near_blank");
+        assert_eq!(kind(None), "near_blank");
+    }
 
     #[test]
     fn names_the_index_after_the_version() {
