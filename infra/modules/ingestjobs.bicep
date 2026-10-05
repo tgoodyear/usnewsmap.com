@@ -60,6 +60,8 @@ param rootImage string = ''
 // Past 4 h, a full rebuild may no longer fit the ingest job's replica timeout (below).
 @maxValue(14400)
 param mergeTimeoutSecs int = 14400
+@description('A dedicated workload profile to run the ingest job on (the E4 profile for a full rebuild, #172); empty: Consumption.')
+param ingestProfile string = ''
 @description('The Japanese OCR image (usnewsmap-ja-ocr). Empty: no Japanese OCR job.')
 param jaOcrImage string = ''
 @minValue(1)
@@ -101,8 +103,12 @@ var scratch = !empty(scratchStorageName)
 // belongs to root.
 var scratchDir = '/scratch/usnm'
 // The init container's 0.25 vCPU / 0.5 GiB count toward the replica's
-// 4 vCPU / 8 GiB on the Consumption profile.
-var ingestResources = scratch ? { cpu: json('3.75'), memory: '7.5Gi' } : { cpu: json('4.0'), memory: '8Gi' }
+// 4 vCPU / 8 GiB on the Consumption profile. On the E4 profile (4 vCPU /
+// 32 GiB a node, less what the platform keeps) the writer gets 26 GiB: the
+// full rebuild with common-word pairs was killed for memory at 7.5 GiB
+// (#172).
+var consumptionResources = scratch ? { cpu: json('3.75'), memory: '7.5Gi' } : { cpu: json('4.0'), memory: '8Gi' }
+var ingestResources = empty(ingestProfile) ? consumptionResources : { cpu: json('3.25'), memory: '26Gi' }
 var scratchEnv = scratch
   ? [
       { name: 'USNM_WORK_DIR', value: scratchDir }
@@ -131,7 +137,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
   }
   properties: {
     environmentId: environmentId
-    workloadProfileName: 'Consumption'
+    workloadProfileName: empty(ingestProfile) ? 'Consumption' : ingestProfile
     configuration: {
       registries: [{ server: registryServer, identity: ingestIdentityId }]
       triggerType: empty(cron) ? 'Manual' : 'Schedule'
