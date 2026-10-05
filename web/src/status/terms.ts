@@ -15,16 +15,16 @@ export const TERMS: [term: string, meaning: string][] = [
   ["Backfill", "Downloading and processing every batch the Library lists, not only new ones."],
   [
     "Titles-sync",
-    "Looking up newspaper details (step 3): each newspaper's name, place and languages, from loc.gov.",
+    "Looking up newspaper details (step 2): each newspaper's name, place and languages, from loc.gov.",
   ],
   ["Catalog", "The newspapers whose details are looked up."],
   [
     "OCR",
-    "Optical character recognition: reading the text off a page image. We run it ourselves (step 2) only on Japanese-language pages the Library ships without searchable text.",
+    "Optical character recognition: reading the text off a page image. We run it ourselves only on Japanese-language pages the Library ships without searchable text (see OCR experiments).",
   ],
   [
     "Release",
-    "Building a new version of the search index (step 4) and publishing it (step 5).",
+    "Building a new version of the search index (step 3) and publishing it (step 4).",
   ],
   [
     "Version",

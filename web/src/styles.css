@@ -392,7 +392,7 @@ details.status-error > summary { white-space: nowrap; overflow: hidden; text-ove
   clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 .status-now { border-left: 4px solid var(--accent); }
-.status-now__line { font-size: 1.1rem; font-weight: 600; margin: 4px 0 8px; line-height: 1.45; }
+.status-now__line, .status-ocr__line { font-size: 1.1rem; font-weight: 600; margin: 4px 0 8px; line-height: 1.45; }
 .status-now__note { margin: 4px 0; line-height: 1.45; }
 .status-headline__text { font-size: 1.2rem; }
 .status-subsection { margin: 18px 0 0; }
@@ -401,8 +401,6 @@ details.status-error > summary { white-space: nowrap; overflow: hidden; text-ove
   display: grid; grid-template-columns: 2.2em 1fr; gap: 10px; align-items: start;
   padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius);
 }
-/* Runs alongside the other steps (Japanese OCR). */
-.step--parallel { border-style: dashed; }
 .step--current { border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
 .step__marker {
   display: inline-grid; place-items: center; width: 2em; height: 2em; border-radius: 50%;
@@ -428,7 +426,7 @@ details.status-error > summary { white-space: nowrap; overflow: hidden; text-ove
 .terms dt::after { content: ": "; }
 .terms dd { display: inline; margin: 0; }
 @media (min-width: 900px) {
-  .steps { grid-template-columns: repeat(5, 1fr); }
+  .steps { grid-template-columns: repeat(4, 1fr); }
   .step { grid-template-columns: 1fr; align-content: start; }
 }
 .pages-table td.num, .pages-table th.num { white-space: nowrap; }

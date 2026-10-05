@@ -143,12 +143,6 @@ export function rightNow(s: Status, now: number): NowLine {
   }
   const last = lastRun(a, s, now);
   if (last) notes.push(last);
-  const ocr = s.ocr_ja?.available ? s.ocr_ja : null;
-  if (ocr?.running) {
-    notes.push(
-      `Separately, we're reading Japanese pages (step 2): ${count(ocr.done.pages)} of ${count(ocr.targets.pages)} done.`,
-    );
-  }
   return { ...line, notes };
 }
 
@@ -181,13 +175,13 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
     }
     case "merging": {
       let text =
-        "Merging the index (step 4 of 5): every page is in, and its pieces are being combined before it goes live.";
+        "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live.";
       const m = mergeDetail(a);
       if (m) text += ` ${m}.`;
       return { text };
     }
     case "publishing":
-      return { text: "Publishing: the new index is going live (step 5 of 5)." };
+      return { text: "Publishing: the new index is going live (step 4 of 4)." };
     case "downloading": {
       let text = "Downloading and processing batches from the Library of Congress";
       text += has ? `: ${count(done)} of ${count(total)} done.` : ".";
@@ -261,18 +255,16 @@ export const STATE_LABEL: Record<StepState, string> = {
 };
 
 export interface Step {
-  key: "download" | "ocr" | "titles" | "index" | "live";
+  key: "download" | "titles" | "index" | "live";
   title: string;
   /** One line on what the step is. */
   explain: string;
   /** The step's numbers, in words. */
   detail: string;
   state: StepState;
-  /** Runs alongside the others, so it is never the one current step. */
-  parallel?: boolean;
 }
 
-/** The five steps a page goes through, with each one's numbers and state. */
+/** The four steps a page goes through, with each one's numbers and state. */
 export function steps(s: Status, now: number): Step[] {
   const a = s.activity?.available ? s.activity : null;
   const doing = a?.now ?? "idle";
@@ -296,33 +288,6 @@ export function steps(s: Status, now: number): Step[] {
           : "active"
         : remaining === 0 && (b?.total ?? 0) > 0
           ? "done"
-          : "waiting",
-  };
-
-  const o = s.ocr_ja?.available ? s.ocr_ja : null;
-  let ocrDetail = "Not known on this server";
-  if (o) {
-    ocrDetail = `${count(o.done.pages)} of ${count(o.targets.pages)} pages read (${pct(o.done.pages, o.targets.pages)})`;
-    const left = o.eta ? Date.parse(o.eta) - now : NaN;
-    if (left > 60_000) ocrDetail += `, about ${span(left)} left`;
-    const ja = s.published.ja;
-    ocrDetail += ja
-      ? `; ${count(ja.pages)} searchable now`
-      : "; searchable from the next update";
-  }
-  const ocr: Step = {
-    key: "ocr",
-    title: "Japanese pages read",
-    explain:
-      "The Library of Congress has no searchable text for most of its Japanese-language pages, so we read those page images ourselves with NDLOCR-Lite, text-recognition software from Japan's National Diet Library. This step runs alongside the others. Pages in other languages skip it.",
-    detail: ocrDetail,
-    parallel: true,
-    state: !o
-      ? "waiting"
-      : o.done.pages >= o.targets.pages
-        ? "done"
-        : o.running
-          ? "active"
           : "waiting",
   };
 
@@ -380,7 +345,7 @@ export function steps(s: Status, now: number): Step[] {
   const live: Step = {
     key: "live",
     title: "Live",
-    explain: "The site searches the last published version of the index. Each update adds the pages step 4 indexed.",
+    explain: "The site searches the last published version of the index. Each update adds the pages step 3 indexed.",
     detail: `${count(p.pages)} pages from ${count(p.titles)} newspapers, live since ${utcDate(lastUpdate(s))}`,
     state:
       doing === "publishing"
@@ -389,7 +354,7 @@ export function steps(s: Status, now: number): Step[] {
           ? "done"
           : "waiting",
   };
-  return [download, ocr, titles, index, live];
+  return [download, titles, index, live];
 }
 
 /**
@@ -420,4 +385,49 @@ export function headline(s: Status): { text: string; sub: string; share: number 
     };
   }
   return { text: `Searchable now: ${count(p.pages)} pages`, sub, share: null };
+}
+
+export interface OcrLine {
+  /** What the OCR job is doing, in a sentence. */
+  text: string;
+  /** Pages read of the target pages, while there are any. */
+  progress?: { done: number; total: number; label: string };
+  /** How many are searchable, or when they will be. */
+  searchable: string;
+}
+
+/**
+ * "OCR experiments": our own text recognition of the Japanese pages LoC has
+ * no text for (`ocr_ja`, #139). Not a pipeline step; `null` when this server
+ * has nothing to say about it (no report and no Japanese index).
+ */
+export function ocrExperiment(s: Status, now: number): OcrLine | null {
+  const o = s.ocr_ja?.available ? s.ocr_ja : null;
+  const ja = s.published.ja;
+  if (!o && !ja) return null;
+  const searchable = ja
+    ? `${count(ja.pages)} ${ja.pages === 1 ? "page is" : "pages are"} searchable now.`
+    : "They become searchable with the next update.";
+  if (!o) return { text: "Japanese pages we read ourselves are in the search.", searchable };
+  const done = o.done.pages;
+  const total = o.targets.pages;
+  // No bar for an empty target list: a zero-length range says nothing.
+  const progress = total > 0 ? { done, total, label: `${count(done)} of ${count(total)} Japanese pages read` } : undefined;
+  if (total === 0) return { text: "There are no Japanese pages to read.", searchable };
+  if (done >= total) {
+    return { text: `All ${count(total)} Japanese pages read.`, progress, searchable };
+  }
+  if (o.running) {
+    const left = o.eta ? Date.parse(o.eta) - now : NaN;
+    return {
+      text: `Reading Japanese pages: ${count(done)} of ${count(total)} done (${pct(done, total)})${left > 60_000 ? `, about ${span(left)} left` : ""}.`,
+      progress,
+      searchable,
+    };
+  }
+  return {
+    text: `Stopped at ${count(done)} of ${count(total)} Japanese pages (${pct(done, total)}). The job last reported ${relative(o.updated_at, now)}.`,
+    progress,
+    searchable,
+  };
 }

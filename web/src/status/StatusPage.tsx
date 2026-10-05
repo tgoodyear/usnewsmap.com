@@ -15,6 +15,7 @@ import {
   headline,
   lastUpdate,
   longDate,
+  ocrExperiment,
   rightNow,
   steps,
   utcDate,
@@ -63,6 +64,7 @@ export default function StatusPage() {
         {s && <Headline s={s} />}
         {s && <Steps s={s} now={now} />}
         {s && <Searchable s={s} />}
+        {s && <OcrExperiments s={s} now={now} />}
         {s && <Technical s={s} now={now} />}
       </main>
       <footer className="credits">
@@ -153,7 +155,7 @@ function Headline({ s }: { s: Status }) {
   );
 }
 
-/** The five steps a page goes through, as an ordered list. */
+/** The four steps a page goes through, as an ordered list. */
 function Steps({ s, now }: { s: Status; now: number }) {
   const list = steps(s, now);
   return (
@@ -161,11 +163,11 @@ function Steps({ s, now }: { s: Status; now: number }) {
       <h2 id="steps">How pages get onto the map</h2>
       <ol className="steps">
         {list.map((st, i) => {
-          const current = !st.parallel && (st.state === "active" || st.state === "paused");
+          const current = st.state === "active" || st.state === "paused";
           return (
             <li
               key={st.key}
-              className={`step step--${st.state}${st.parallel ? " step--parallel" : ""}${current ? " step--current" : ""}`}
+              className={`step step--${st.state}${current ? " step--current" : ""}`}
               aria-current={current ? "step" : undefined}
             >
               <span className="step__marker" aria-hidden="true">
@@ -207,6 +209,35 @@ function Searchable({ s }: { s: Status }) {
       </p>
       {p.by_state && <StatesSection rows={p.by_state} pages={p.pages} />}
       {p.by_language && <LanguagesSection data={p.by_language} />}
+    </section>
+  );
+}
+
+/** Our own OCR of the Japanese pages LoC has no text for: not a pipeline step. */
+function OcrExperiments({ s, now }: { s: Status; now: number }) {
+  const line = ocrExperiment(s, now);
+  if (!line) return null;
+  const o = s.ocr_ja?.available ? s.ocr_ja : null;
+  return (
+    <section aria-labelledby="ocr-experiments" className="status-section">
+      <h2 id="ocr-experiments">OCR experiments</h2>
+      <p>
+        The Library of Congress has no searchable text for its Japanese-language
+        pages. We read those page images ourselves with
+        NDLOCR-Lite, text-recognition software from Japan&apos;s National Diet
+        Library. This runs apart from the steps above.
+      </p>
+      <p className="status-ocr__line">{line.text}</p>
+      {line.progress && (
+        <Bar value={line.progress.done} max={line.progress.total} label={line.progress.label} />
+      )}
+      <p>{line.searchable}</p>
+      {o && (
+        <p className="status-meta">
+          Last report <Time iso={o.updated_at} now={now} />
+          {o.engine && <> · {o.engine.replace(/^(\S+ [0-9a-f]{7})[0-9a-f]+$/, "$1")}</>}
+        </p>
+      )}
     </section>
   );
 }
