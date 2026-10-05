@@ -16,8 +16,8 @@ use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
 use crate::{
-    mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet, PlaceSummary,
-    SearchBackend, SearchError, Summary,
+    ja_snippets, mark_html, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
+    PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
 /// Upper bound on places in one terms aggregation.
@@ -297,6 +297,13 @@ pub struct StoredHit {
     pub lccn: String,
     pub edition: u16,
     pub seq: u16,
+    /// A Japanese page's printed text (pages-ja-index.yaml), for its snippets.
+    #[serde(default)]
+    pub printed: Option<String>,
+    #[serde(default)]
+    pub ocr_source: Option<String>,
+    #[serde(default)]
+    pub ocr_engine: Option<String>,
 }
 
 impl StoredHit {
@@ -417,25 +424,32 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
     Ok(cells)
 }
 
-pub fn parse_hits(resp: SearchResponse) -> Result<HitsPage, SearchError> {
+pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, SearchError> {
     let snippets = resp.snippets.unwrap_or_default();
     let mut hits = Vec::with_capacity(resp.hits.len());
     for (i, d) in resp.hits.into_iter().enumerate() {
         let day = d
             .day()
             .ok_or_else(|| SearchError::Backend("hit has an unparseable date".into()))?;
+        // A Japanese page's snippets come from its printed text: its indexed
+        // text is folded tokens with spaces between them.
+        let printed_snippets = d.printed.as_deref().map(|p| ja_snippets(p, query));
         hits.push(Hit {
-            snippets: snippets
-                .get(i)
-                .and_then(|s| s.get("text"))
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_str)
-                        .map(convert_snippet)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            snippets: printed_snippets.unwrap_or_else(|| {
+                snippets
+                    .get(i)
+                    .and_then(|s| s.get("text"))
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(convert_snippet)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }),
+            ocr_source: d.ocr_source,
+            ocr_engine: d.ocr_engine,
             front_page: d.seq == 1,
             day,
             doc_id: d.doc_id,
@@ -528,7 +542,7 @@ impl SearchBackend for QuickwitBackend {
         let resp = self
             .search(indexes, &hits_request(query, filters, indexes, page)?)
             .await?;
-        parse_hits(resp)
+        parse_hits(resp, query)
     }
 
     /// A read-only searcher reads the metastore manifest once at start, so it
@@ -705,7 +719,7 @@ mod tests {
             "snippets": [{"text": ["a <b>gold</b> b"]}, {"text": []}]
         }))
         .unwrap();
-        let page = parse_hits(resp).unwrap();
+        let page = parse_hits(resp, &usnm_core::query::parse("gold").unwrap()).unwrap();
         assert_eq!(
             page.hits[0].day,
             usnm_core::time::day_number(d("1896-07-10"))

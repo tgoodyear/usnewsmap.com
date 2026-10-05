@@ -41,7 +41,19 @@ pub struct PageDoc {
     /// The batch this copy of the page came from. The fixtures don't have it.
     #[serde(default)]
     pub batch: String,
+    /// The indexed text. For a Japanese page (#139), the tokens of `printed`
+    /// joined by spaces ([`usnm_core::ja::index_text`]).
     pub text: String,
+    /// A Japanese page's text as printed, for snippets (the index holds
+    /// folded tokens). `None` on other pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub printed: Option<String>,
+    /// Who made the text when it isn't LoC's OCR (`usnm-ndlocr-lite`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_source: Option<String>,
+    /// The engine and version that made it (`ndlocr-lite 636d1cf`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_engine: Option<String>,
 }
 
 /// The sealed indexes a published `index_version` names (08 §8.4.1), and
@@ -163,6 +175,12 @@ pub struct Hit {
     pub front_page: bool,
     /// HTML-escaped text with matches wrapped in `<mark>`.
     pub snippets: Vec<String>,
+    /// Who made the page's text when it isn't LoC's OCR (`usnm-ndlocr-lite`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_source: Option<String>,
+    /// The engine and version that made it (`ndlocr-lite 636d1cf`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_engine: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -255,4 +273,50 @@ pub fn mark_html(segments: &[(bool, &str)]) -> String {
         }
     }
     out
+}
+
+/// Snippets of a Japanese page (#139) from its printed text, around the
+/// query's positive words and phrases, HTML-escaped with `<mark>`. Folding is
+/// one character for one, so the marks land on the text as printed. An exact
+/// phrase is marked as a whole; a NEAR phrase's words are marked one by one;
+/// a prefix term marks each printed word that starts with it, and a fuzzy
+/// term each printed word within its edit distance.
+pub fn ja_snippets(printed: &str, query: &Node) -> Vec<String> {
+    const CONTEXT: usize = 40;
+    let tokens = usnm_core::ja::tokenize(printed);
+    let mut phrases: Vec<Vec<String>> = Vec::new();
+    let mut stack = vec![query];
+    while let Some(node) = stack.pop() {
+        match node {
+            Node::Term(t) if t.prefix => {
+                for tok in tokens.iter().filter(|tok| tok.starts_with(&t.text)) {
+                    phrases.push(vec![tok.clone()]);
+                }
+            }
+            // Fuzzy (memory backend only): mark the printed words within the distance.
+            Node::Term(t) if t.fuzzy > 0 => {
+                for tok in tokens
+                    .iter()
+                    .filter(|tok| memory::levenshtein_within(&t.text, tok, usize::from(t.fuzzy)))
+                {
+                    phrases.push(vec![tok.clone()]);
+                }
+            }
+            Node::Term(t) => phrases.push(vec![t.text.clone()]),
+            Node::Phrase { terms, slop: 0 } => phrases.push(terms.clone()),
+            Node::Phrase { terms, .. } => phrases.extend(terms.iter().map(|t| vec![t.clone()])),
+            Node::And(c) | Node::Or(c) => stack.extend(c),
+            Node::Not(_) => {}
+        }
+    }
+    phrases.sort();
+    phrases.dedup();
+    usnm_core::ja::snippets(printed, &phrases, CONTEXT, 1)
+        .into_iter()
+        .map(|pieces| {
+            let borrowed: Vec<(bool, &str)> =
+                pieces.iter().map(|(m, s)| (*m, s.as_str())).collect();
+            mark_html(&borrowed)
+        })
+        .collect()
 }
