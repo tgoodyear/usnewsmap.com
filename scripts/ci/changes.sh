@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Which parts of CI a change needs, as step outputs rust/web/image=true|false,
-# and provision=true|false: whether it changes the Azure stack beyond what a
-# deploy applies (the API image and infra/quickwit/searcher.yaml, which
-# scripts/ci/roll-api.sh applies), so scripts/provision.sh must run.
+# Which parts of CI a change needs, as step outputs rust/web/image/fixtures/
+# code=true|false (code: anything but Markdown and docs/ changed, so the
+# infrastructure checks and the shared-key scan run), and provision=true|false:
+# whether it changes the Azure stack beyond what a deploy applies (the API
+# image and infra/quickwit/searcher.yaml, which scripts/ci/roll-api.sh
+# applies), so scripts/provision.sh must run. A change to documentation alone
+# runs nothing but this job.
 # Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
 # the changed files can't be worked out.
@@ -11,7 +14,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 # Known only once the changed files are; "run everything" keeps it.
 provision=false
 all() {
-  printf 'rust=true\nweb=true\nimage=true\nprovision=%s\n' "$provision" >> "$out"
+  printf 'rust=true\nweb=true\nimage=true\nfixtures=true\ncode=true\nprovision=%s\n' "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -41,7 +44,11 @@ matches '^\.github/' && all "workflow changed"
 rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|scripts/(ci/|quickwit-fixtures\.sh))'
 web='^(web/|fixtures/|scripts/ci/)'
 image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$)"
-for part in rust web image; do
+# The synthetic corpus must match its generator.
+fixtures='^fixtures/'
+for part in rust web image fixtures; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
+# Documentation alone (Markdown anywhere, anything under docs/) needs no check.
+if grep -Evq '\.md$|^docs/' <<< "$files"; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
 echo "provision=$provision" >> "$out"
