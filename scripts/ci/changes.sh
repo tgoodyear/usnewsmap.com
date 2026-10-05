@@ -29,7 +29,9 @@ case "${GITHUB_EVENT_NAME:-}" in
     ;;
   *) all "event ${GITHUB_EVENT_NAME:-unknown}" ;;
 esac
-files=$(git diff --name-only "$range") || all "git diff failed for $range"
+# Both sides of a rename: a source file moved under docs/ is still a removal
+# the checks must see.
+files=$(git diff --name-only --no-renames "$range") || all "git diff failed for $range"
 [ -n "$files" ] || all "no changed files found"
 echo "$files" | sed 's/^/changed: /'
 # Documentation is only read: nothing below counts it. No README is compiled
