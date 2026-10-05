@@ -128,8 +128,10 @@ stops
 // A release that started ("building index") and hasn't ended ("published"
 // or "command failed") but has logged no "release progress" line for 10
 // minutes: the job hung, or died without a word. Progress is logged every
-// 30 s while the index builds. The window is a day, the job's replica
-// timeout: a full release can take most of it (04 §4.1.1). Split by
+// 30 s while the index builds. The window is two days, the ingest job's
+// replica timeout (48 h, #172): a full release can take most of it, and a
+// shorter window would lose a release's "building index" line while it
+// still runs (04 §4.1.1). Split by
 // Execution and Detail: the version, when it started, and the last
 // progress line's time and pages sent (fixed while it is stalled).
 var releaseStalled = '''
@@ -263,7 +265,7 @@ var rules = [
     description: 'A release is building an index but has logged no progress for 10 minutes; Execution and Detail say which version and where it stopped. Next: scripts/logs.sh <env> release-progress for the last lines (disk, memory, Quickwit retries) and job-executions to see if the replica is still running.'
     severity: 2
     frequency: 'PT15M'
-    window: 'P1D'
+    window: 'P2D'
     query: releaseStalled
     dimensions: ['Execution', 'Detail']
   }
