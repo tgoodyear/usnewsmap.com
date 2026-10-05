@@ -299,6 +299,15 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     assert_eq!(current["backend"], "memory");
     assert_eq!(current["bounds"]["from"], "1895-01-05");
     assert_eq!(current["synthetic"], true);
+    // Stamped when the pointer was written, not when the run started (#119):
+    // the same instant the run records as its publish.
+    assert_ne!(current["published_at"], "2026-10-08T03:00:00Z");
+    let run_published: chrono::DateTime<Utc> =
+        serde_json::from_value(raw_run(&e, v).await["published_at"].clone()).unwrap();
+    assert_eq!(
+        current["published_at"],
+        run_published.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
 
     // The run item points at the batch list in the snapshot instead of
     // carrying it, and the manifest checksums the list like its other files.

@@ -72,9 +72,41 @@ export interface NowLine {
 
 const SLOW_DOWN = "because loc.gov asked us to slow down";
 
-/** When the site last changed: the last publish the pipeline recorded, else the version's own date. */
+/**
+ * When the version the site searches went live. The pipeline's last publish
+ * is a newer version for the few minutes the API takes to switch to it, so
+ * the served version's own run comes first. Versions published before
+ * 5 October 2026 carry their run's start in `published_at`, hence the run.
+ */
 export function lastUpdate(s: Status): string {
-  return (s.indexing.available && s.indexing.last_published_at) || s.published.published_at;
+  const i = s.indexing;
+  const served = s.published.index_version;
+  if (i.available) {
+    if (i.current_version === served && i.last_published_at) return i.last_published_at;
+    const run = i.runs.find((r) => r.index_version === served && r.published_at);
+    if (run?.published_at) return run.published_at;
+  }
+  return s.published.published_at;
+}
+
+/**
+ * A newer version the pipeline has published that the API doesn't serve yet
+ * (it checks every few minutes, then warms the new version up): when it was
+ * published, else null.
+ */
+export function pendingUpdate(s: Status): string | null {
+  const i = s.indexing;
+  if (!i.available || !i.current_version || i.current_version === s.published.index_version) {
+    return null;
+  }
+  return i.last_published_at ?? "";
+}
+
+function pendingNote(s: Status): string | null {
+  const at = pendingUpdate(s);
+  if (at === null) return null;
+  const when = at ? ` on ${utcDate(at)}` : "";
+  return `A new update was published${when}, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.`;
 }
 
 /**
@@ -83,15 +115,17 @@ export function lastUpdate(s: Status): string {
  */
 export function rightNow(s: Status, now: number): NowLine {
   const a = s.activity;
+  const pending = pendingNote(s);
   if (!a || !a.available) {
     return {
       text: "What the pipeline is doing right now isn't available on this server.",
       notes: [
+        ...(pending ? [pending] : []),
         `The site searches the update published ${utcDate(lastUpdate(s))}.`,
       ],
     };
   }
-  const notes: string[] = [];
+  const notes: string[] = pending ? [pending] : [];
   const line = sentence(a, s, now);
   if (a.now !== "idle" && a.since) {
     notes.push(`This step started ${relative(a.since, now)}.`);
