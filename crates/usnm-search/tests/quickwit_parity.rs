@@ -72,6 +72,11 @@ fn queries() -> Vec<(&'static str, Node)> {
         ("or", parse("(yellow OR orator)").unwrap()),
         ("not", parse("gold -standard").unwrap()),
         ("prefix", parse("silve*").unwrap()),
+        // Wildcards inside words (#124).
+        ("wildcard ?", parse("silv?r").unwrap()),
+        ("wildcard *", parse("con*tion").unwrap()),
+        ("wildcards and", parse("rai*ad fev?r -port").unwrap()),
+        ("wildcard no match", parse("gol?en").unwrap()),
         (
             "mode any",
             build("bankers orator", Some(Mode::Any), 0, 0).unwrap(),
@@ -524,6 +529,7 @@ async fn japanese_searches_match_the_reference_backend() {
         ("or", parse("戦争 OR 選挙").unwrap()),
         ("not", parse("日本 -戦争").unwrap()),
         ("mixed latin", parse("denver 日本").unwrap()),
+        ("latin wildcard", parse("den?er 日本").unwrap()),
         ("punctuation", parse("東京、平和").unwrap()),
         ("near", build("米国 日本", Some(Mode::Near), 3, 0).unwrap()),
         ("any", build("戦争 選挙", Some(Mode::Any), 0, 0).unwrap()),

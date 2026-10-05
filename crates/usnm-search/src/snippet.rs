@@ -7,7 +7,7 @@
 use usnm_core::query::{Node, Term};
 use usnm_core::text::{fold, tokenize, MAX_TOKEN_CHARS};
 
-use crate::memory::{eval, levenshtein_within};
+use crate::memory::{eval, term_matches};
 use crate::{mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES};
 
 /// Fragments per page.
@@ -68,6 +68,7 @@ fn patterns(query: &Node) -> Vec<Pattern> {
                     text: t.clone(),
                     fuzzy: 0,
                     prefix: false,
+                    wildcard: false,
                 })
             })),
             Node::And(c) | Node::Or(c) => stack.extend(c),
@@ -75,16 +76,6 @@ fn patterns(query: &Node) -> Vec<Pattern> {
         }
     }
     out
-}
-
-fn term_matches(t: &Term, token: &str) -> bool {
-    if t.prefix {
-        token.starts_with(&t.text)
-    } else if t.fuzzy > 0 {
-        levenshtein_within(&t.text, token, usize::from(t.fuzzy))
-    } else {
-        token == t.text
-    }
 }
 
 /// Character ranges of the matches, sorted and merged.
@@ -149,9 +140,9 @@ fn word_end(chars: &[char], mut at: usize) -> usize {
 
 /// Up to [`MAX_FRAGMENTS`] fragments of `text` around the matches of the
 /// query's positive words and phrases: exact phrases marked as a whole, a
-/// NEAR phrase's words one by one, prefix and fuzzy terms on each word they
-/// match. Matches closer together than the context share a fragment, and
-/// fragments never overlap. Line breaks (columns) become spaces; a fragment
+/// NEAR phrase's words one by one, prefix, wildcard and fuzzy terms on each
+/// word they match. Matches closer together than the context share a
+/// fragment, and fragments never overlap. Line breaks (columns) become spaces; a fragment
 /// that doesn't reach the text's start or end is marked with `…`.
 pub fn text_snippets(text: &str, query: &Node) -> Vec<String> {
     let chars: Vec<char> = text
@@ -298,6 +289,21 @@ mod tests {
                 "\"bryan mankind\"~5 cruci* mankimd~1 -silver"
             ),
             ["<mark>Bryan</mark> spoke; <mark>crucify</mark> <mark>mankind</mark> upon silver"]
+        );
+    }
+
+    #[test]
+    fn marks_each_word_a_wildcard_matches() {
+        assert_eq!(
+            snip(
+                "The President and the Presidency, the Presidents; pres",
+                "pres?dent*"
+            ),
+            ["The <mark>President</mark> and the Presidency, the <mark>Presidents</mark>; pres"]
+        );
+        assert_eq!(
+            snip("Washington, Washton, Wash. ton", "wash*ton"),
+            ["<mark>Washington</mark>, <mark>Washton</mark>, Wash. ton"]
         );
     }
 

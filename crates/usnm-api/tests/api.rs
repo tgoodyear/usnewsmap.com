@@ -757,6 +757,60 @@ async fn problems_for_bad_requests() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// Wildcards inside words (#124): counted like the reference, one cache key
+/// per spelling, marked in snippets, and refused with a 400 where they
+/// can't work.
+#[tokio::test]
+async fn wildcard_words_count_mark_and_refuse() {
+    let s = state_with(None).await;
+    let all = ["pages-base-fixture", "pages-delta-fixture-1"];
+    let (status, headers, body) = get(
+        &s,
+        "/v1/aggregate?q=CON*%3FTION&from=1895-01-01&to=1897-12-31",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let expected = oracle_count("con?*tion", "1895-01-01", "1897-12-31", &all);
+    assert!(expected > 0);
+    assert_eq!(body["total"]["hits"], expected);
+    assert_eq!(
+        expected,
+        oracle_count("convention", "1895-01-01", "1897-12-31", &all)
+    );
+    assert!(
+        header_str(&headers, header::CONTENT_LOCATION).contains("&q=con%3F*tion&"),
+        "{}",
+        header_str(&headers, header::CONTENT_LOCATION)
+    );
+
+    let (status, _, page) = get(&s, "/v1/hits?q=silv%3Fr&place=P00001&limit=3").await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let snippet = page["items"][0]["snippets"][0].as_str().unwrap();
+    assert!(
+        snippet.to_lowercase().contains("<mark>silver</mark>"),
+        "{snippet}"
+    );
+
+    for (q, detail) in [
+        ("pr%3Fsident", "at least 3 letters"),
+        ("%2Agold", "at least 3 letters"),
+        ("%22pres%3Fdent+lincoln%22", "inside quotes"),
+        ("pres%3Fdent~1", "not both"),
+    ] {
+        let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{q}");
+        assert_eq!(body["type"], "/errors/query-syntax", "{q}");
+        assert!(
+            body["detail"].as_str().unwrap().contains(detail),
+            "{q}: {body}"
+        );
+        assert!(body["hint"].is_string(), "{q}");
+    }
+    // A question mark that ends a word is still punctuation.
+    let (status, _, body) = get(&s, "/v1/aggregate?q=convention%3F&mode=phrase").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 #[tokio::test]
 async fn hits_are_sorted_marked_linked_and_paginated() {
     let s = state_with(None).await;

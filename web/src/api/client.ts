@@ -256,6 +256,9 @@ export function sameSearch(a: SearchParams, b: SearchParams): boolean {
 export function isPlain(q: string): boolean {
   return (
     !/["()~*:]/.test(q) &&
+    // A `?` with more of the word after it is a wildcard; one that ends a
+    // word ("president?") is a question mark.
+    !/\?\S*[\p{L}\p{N}]/u.test(q) &&
     !q.split(/\s+/).some((w) => w === "AND" || w === "OR" || w === "NOT" || w.startsWith("-"))
   );
 }

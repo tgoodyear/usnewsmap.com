@@ -7,8 +7,12 @@
 //! unary     := ("-" | "NOT") primary | primary
 //! primary   := PHRASE [ "~" INT ]
 //!            | TERM [ "~" ("1" | "2") | "*" ]
+//!            | WILDCARD
 //!            | "(" query ")"
 //! ```
+//!
+//! A `WILDCARD` is a word with `?` (exactly one character) or `*` (any run)
+//! inside it, after at least 3 letters (#124).
 //!
 //! Only the parsed AST ever reaches a search backend; raw user syntax is never
 //! forwarded, which removes the legacy Solr injection risk structurally.
@@ -64,6 +68,11 @@ pub struct Term {
     /// Edit distance for OCR-tolerant matching (0 = exact).
     pub fuzzy: u8,
     pub prefix: bool,
+    /// `text` is a pattern (#124): `?` stands for exactly one character and
+    /// `*` for any run of them, after at least [`MIN_PREFIX_CHARS`] letters.
+    /// A word with only a trailing `*` is a `prefix` instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wildcard: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -142,7 +151,7 @@ pub fn build(q: &str, mode: Option<Mode>, near: u8, fuzzy: u8) -> Result<Node, Q
             let mut terms: Vec<Node> = Vec::new();
             for w in q.split_whitespace() {
                 if has_ja(w) {
-                    terms.push(word(w, 0, false, 0)?);
+                    terms.push(word(w, 0, 0)?);
                 } else {
                     terms.extend(tokenize(w).into_iter().map(exact));
                 }
@@ -182,7 +191,7 @@ fn is_plain(q: &str) -> bool {
         .any(|c| matches!(c, '"' | '(' | ')' | '~' | '*' | ':'))
         && !q
             .split_whitespace()
-            .any(|w| w == "AND" || w == "OR" || w == "NOT" || w.starts_with('-'))
+            .any(|w| w == "AND" || w == "OR" || w == "NOT" || w.starts_with('-') || has_wildcard(w))
 }
 
 fn exact(text: String) -> Node {
@@ -190,6 +199,7 @@ fn exact(text: String) -> Node {
         text,
         fuzzy: 0,
         prefix: false,
+        wildcard: false,
     })
 }
 
@@ -215,10 +225,10 @@ enum Tok {
         text: String,
         slop: u8,
     },
+    /// A word as typed, with any `*` and `?` in it.
     Word {
         text: String,
         fuzzy: u8,
-        prefix: bool,
     },
 }
 
@@ -278,7 +288,7 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
                 let start = i;
                 while i < chars.len()
                     && !chars[i].is_whitespace()
-                    && !matches!(chars[i], '(' | ')' | '"' | '~' | '*')
+                    && !matches!(chars[i], '(' | ')' | '"' | '~')
                 {
                     if chars[i] == ':' {
                         return Err(QueryError::at("field syntax (':') is not supported", i));
@@ -287,36 +297,22 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
                 }
                 let text: String = chars[start..i].iter().collect();
                 if text.is_empty() {
-                    let what = if chars[i] == '*' {
-                        format!("wildcards must follow at least {MIN_PREFIX_CHARS} letters")
-                    } else {
-                        "'~' must follow a word or phrase".to_owned()
-                    };
-                    return Err(QueryError::at(what, i));
+                    return Err(QueryError::at("'~' must follow a word or phrase", i));
                 }
                 let tok = match text.as_str() {
                     "AND" => Tok::And,
                     "OR" => Tok::Or,
                     "NOT" => Tok::Not,
                     _ => {
-                        let (fuzzy, prefix, next) = if i < chars.len() && chars[i] == '*' {
-                            (0, true, i + 1)
-                        } else {
-                            let (f, next) = read_tilde(&chars, i, MAX_FUZZY, "fuzzy distance")?;
-                            (f, false, next)
-                        };
-                        if next < chars.len() && matches!(chars[next], '*' | '~') {
-                            return Err(QueryError::at(
-                                "a term can be fuzzy or a prefix, not both",
-                                next,
-                            ));
+                        if has_wildcard(&text) && i < chars.len() && chars[i] == '~' {
+                            return Err(QueryError::at(NOT_BOTH, i));
+                        }
+                        let (fuzzy, next) = read_tilde(&chars, i, MAX_FUZZY, "fuzzy distance")?;
+                        if next < chars.len() && matches!(chars[next], '*' | '?' | '~') {
+                            return Err(QueryError::at(NOT_BOTH, next));
                         }
                         i = next;
-                        Tok::Word {
-                            text,
-                            fuzzy,
-                            prefix,
-                        }
+                        Tok::Word { text, fuzzy }
                     }
                 };
                 out.push(Spanned { tok, pos: start });
@@ -325,6 +321,8 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
     }
     Ok(out)
 }
+
+const NOT_BOTH: &str = "a term can be fuzzy or have wildcards (* or ?), not both";
 
 /// Read an optional `~N` at `i`. Returns (N, next index).
 fn read_tilde(chars: &[char], i: usize, max: u8, what: &str) -> Result<(u8, usize), QueryError> {
@@ -430,14 +428,15 @@ impl Parser {
                     _ => Err(QueryError::at("missing ')'", t.pos)),
                 }
             }
+            // Quickwit's phrases take no wildcards (its tokenizer would drop
+            // them), so refuse them rather than search without them.
+            Tok::Phrase { text, .. } if text.split_whitespace().any(has_wildcard) => Err(
+                QueryError::at("wildcards (* and ?) don't work inside quotes", t.pos),
+            ),
             Tok::Phrase { text, slop } => {
                 phrase(tokenize(&text), slop).map_err(|e| QueryError::at(e.message, t.pos))
             }
-            Tok::Word {
-                text,
-                fuzzy,
-                prefix,
-            } => word(&text, fuzzy, prefix, t.pos),
+            Tok::Word { text, fuzzy } => word(&text, fuzzy, t.pos),
             Tok::RParen => Err(QueryError::at("unexpected ')'", t.pos)),
             Tok::And | Tok::Or | Tok::Not | Tok::Minus => Err(QueryError::at(
                 "operator is missing a word before or after it",
@@ -447,43 +446,153 @@ impl Parser {
     }
 }
 
-fn word(text: &str, fuzzy: u8, prefix: bool, pos: usize) -> Result<Node, QueryError> {
+fn word(text: &str, fuzzy: u8, pos: usize) -> Result<Node, QueryError> {
     if has_ja(text) {
-        return ja_word(text, fuzzy, prefix, pos);
+        return ja_word(text, fuzzy, has_wildcard(text), pos);
+    }
+    if has_wildcard(text) {
+        return wildcard_word(text, pos);
     }
     let tokens = tokenize(text);
     match tokens.len() {
         0 => Err(QueryError::at("word has no searchable characters", pos)),
-        1 => {
-            let text = tokens.into_iter().next().expect("one token");
-            if prefix && text.chars().count() < MIN_PREFIX_CHARS {
-                return Err(QueryError::at(
-                    format!("prefix searches need at least {MIN_PREFIX_CHARS} letters"),
-                    pos,
-                ));
-            }
-            Ok(Node::Term(Term {
-                text,
-                fuzzy,
-                prefix,
-            }))
-        }
+        1 => Ok(Node::Term(Term {
+            text: tokens.into_iter().next().expect("one token"),
+            fuzzy,
+            prefix: false,
+            wildcard: false,
+        })),
         // "well-known" → the phrase "well known"
-        _ if fuzzy == 0 && !prefix => Ok(Node::Phrase {
+        _ if fuzzy == 0 => Ok(Node::Phrase {
             terms: tokens,
             slop: 0,
         }),
-        _ => Err(QueryError::at("fuzzy or prefix needs a single word", pos)),
+        _ => Err(QueryError::at("fuzzy needs a single word", pos)),
     }
 }
 
-/// A word with Japanese in it: each run between punctuation (、。「」 …) is a
-/// phrase of its characters, and the runs are ANDed. Prefix and fuzzy matching
-/// work on whole words, which Japanese text doesn't mark, so they're refused.
-fn ja_word(text: &str, fuzzy: u8, prefix: bool, pos: usize) -> Result<Node, QueryError> {
-    if fuzzy > 0 || prefix {
+/// The part of a word that can hold wildcards, without the punctuation
+/// around it: a `?` that ends a word ("president?") is a question mark, as
+/// it was before wildcards (#124).
+fn wildcard_span(word: &str) -> &str {
+    word.trim_start_matches(|c: char| !c.is_alphanumeric() && !matches!(c, '*' | '?'))
+        .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '*')
+}
+
+/// Whether a word has a `*`, or a `?` that is a wildcard.
+fn has_wildcard(word: &str) -> bool {
+    wildcard_span(word).contains(['*', '?'])
+}
+
+/// A word with wildcards (#124): `?` matches exactly one character and `*`
+/// any run of them, as in Quickwit's wildcard queries. The letters between
+/// the wildcards are folded like any word. At least [`MIN_PREFIX_CHARS`]
+/// letters must come before the first wildcard: the engine then walks only
+/// the index's words that start with them, where a leading wildcard would
+/// walk all of them. A run of wildcards is written as its `?`s, then one `*`
+/// if it has any, so `wash*?ton` and `wash?**ton` are one query (and one
+/// cache key). A word whose only wildcard is a trailing `*` is a prefix.
+fn wildcard_word(text: &str, pos: usize) -> Result<Node, QueryError> {
+    let chars: Vec<char> = wildcard_span(text).chars().collect();
+    let mut pattern = String::new();
+    // Folded letters before the first wildcard.
+    let mut lead: Option<usize> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let start = i;
+        let wild = matches!(chars[i], '*' | '?');
+        while i < chars.len() && matches!(chars[i], '*' | '?') == wild {
+            i += 1;
+        }
+        let run = &chars[start..i];
+        if wild {
+            lead.get_or_insert(pattern.chars().count());
+            pattern.extend(run.iter().filter(|&&c| c == '?'));
+            if run.contains(&'*') {
+                pattern.push('*');
+            }
+        } else {
+            // A letter can fold to more than letters (`½` is `1⁄2`).
+            let folded = fold(&run.iter().collect::<String>());
+            if !run.iter().all(|c| c.is_alphanumeric())
+                || !folded.chars().all(char::is_alphanumeric)
+            {
+                return Err(QueryError::at(
+                    "wildcards (* and ?) need a single word",
+                    pos,
+                ));
+            }
+            pattern.push_str(&folded);
+        }
+    }
+    let lead = lead.unwrap_or_default();
+    let stem = pattern
+        .strip_suffix('*')
+        .filter(|s| lead > 0 && !s.contains(['*', '?']));
+    if let Some(stem) = stem {
+        if lead < MIN_PREFIX_CHARS {
+            return Err(QueryError::at(
+                format!("prefix searches need at least {MIN_PREFIX_CHARS} letters"),
+                pos,
+            ));
+        }
+        return Ok(Node::Term(Term {
+            text: stem.to_owned(),
+            fuzzy: 0,
+            prefix: true,
+            wildcard: false,
+        }));
+    }
+    if lead < MIN_PREFIX_CHARS {
         return Err(QueryError::at(
-            "prefix (*) and fuzzy (~) searches aren't available for Japanese",
+            format!("wildcards must follow at least {MIN_PREFIX_CHARS} letters"),
+            pos,
+        ));
+    }
+    Ok(Node::Term(Term {
+        text: pattern,
+        fuzzy: 0,
+        prefix: false,
+        wildcard: true,
+    }))
+}
+
+/// Whether `token` matches a wildcard term's pattern as a whole (#124): `?`
+/// is exactly one character and `*` any run of them, as Quickwit matches a
+/// wildcard query against the index's words.
+pub fn wildcard_matches(pattern: &str, token: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = token.chars().collect();
+    let (mut i, mut j) = (0, 0);
+    // The last `*` seen and where in the token it started: on a mismatch,
+    // it takes one more character and matching resumes after it.
+    let mut star: Option<(usize, usize)> = None;
+    while j < t.len() {
+        if i < p.len() && p[i] == '*' {
+            star = Some((i, j));
+            i += 1;
+        } else if i < p.len() && (p[i] == '?' || p[i] == t[j]) {
+            i += 1;
+            j += 1;
+        } else if let Some((si, sj)) = star {
+            star = Some((si, sj + 1));
+            i = si + 1;
+            j = sj + 1;
+        } else {
+            return false;
+        }
+    }
+    p[i..].iter().all(|&c| c == '*')
+}
+
+/// A word with Japanese in it: each run between punctuation (、。「」 …) is a
+/// phrase of its characters, and the runs are ANDed. Wildcard and fuzzy
+/// matching work on whole words, which Japanese text doesn't mark, so they're
+/// refused.
+fn ja_word(text: &str, fuzzy: u8, wildcard: bool, pos: usize) -> Result<Node, QueryError> {
+    if fuzzy > 0 || wildcard {
+        return Err(QueryError::at(
+            "wildcard (* and ?) and fuzzy (~) searches aren't available for Japanese",
             pos,
         ));
     }
@@ -582,7 +691,7 @@ fn apply_fuzzy(node: Node, fuzzy: u8) -> Node {
         return node;
     }
     match node {
-        Node::Term(t) if !t.prefix && t.fuzzy == 0 && !is_ja_term(&t.text) => {
+        Node::Term(t) if !t.prefix && !t.wildcard && t.fuzzy == 0 && !is_ja_term(&t.text) => {
             Node::Term(Term { fuzzy, ..t })
         }
         Node::And(c) => Node::And(c.into_iter().map(|n| apply_fuzzy(n, fuzzy)).collect()),
@@ -815,7 +924,8 @@ mod tests {
                 Node::Term(Term {
                     text: "gold".into(),
                     fuzzy: 1,
-                    prefix: false
+                    prefix: false,
+                    wildcard: false
                 })
             ])
         );
@@ -889,7 +999,8 @@ mod tests {
             Node::Term(Term {
                 text: "miscegenaton".into(),
                 fuzzy: 2,
-                prefix: false
+                prefix: false,
+                wildcard: false
             })
         );
         assert_eq!(
@@ -897,9 +1008,88 @@ mod tests {
             Node::Term(Term {
                 text: "influ".into(),
                 fuzzy: 0,
-                prefix: true
+                prefix: true,
+                wildcard: false
             })
         );
+    }
+
+    fn wild(p: &str) -> Node {
+        Node::Term(Term {
+            text: p.into(),
+            fuzzy: 0,
+            prefix: false,
+            wildcard: true,
+        })
+    }
+
+    #[test]
+    fn wildcards_inside_words() {
+        assert_eq!(parse("pres?dent").unwrap(), wild("pres?dent"));
+        assert_eq!(parse("Wash*TON").unwrap(), wild("wash*ton"));
+        assert_eq!(parse("Æso?").unwrap(), parse("aeso?").unwrap());
+        assert_eq!(parse("caf?é").unwrap(), wild("caf?e"));
+        // A trailing `*` alone is still a prefix; with a `?` it's a pattern.
+        assert_eq!(parse("influ*").unwrap().to_string(), "influ*");
+        assert!(matches!(parse("influ*").unwrap(), Node::Term(t) if t.prefix && !t.wildcard));
+        assert_eq!(parse("infl?e*").unwrap(), wild("infl?e*"));
+        // Runs of wildcards have one spelling, so one cache key.
+        assert_eq!(parse("wash*?ton").unwrap(), wild("wash?*ton"));
+        assert_eq!(parse("wash?**ton").unwrap(), wild("wash?*ton"));
+        // A `?` that ends a word is punctuation, as before.
+        assert_eq!(parse("president?").unwrap(), term("president"));
+        assert_eq!(parse("pres?dent?!").unwrap(), wild("pres?dent"));
+        // The canonical form reparses to the same AST.
+        for q in ["pres?dent", "wash*ton OR lincoln", "-colo?r gold", "abc??"] {
+            let n = parse(q).unwrap();
+            assert_eq!(parse(&n.to_string()).unwrap(), n, "{q}");
+        }
+        // `fuzzy` leaves wildcard terms alone; modes need plain words.
+        assert_eq!(
+            build("pres?dent gold", None, 0, 1).unwrap().to_string(),
+            "gold~1 AND pres?dent"
+        );
+        assert!(build("pres?dent", Some(Mode::Phrase), 0, 0).is_err());
+        assert!(is_plain("who was president?"));
+        assert!(!is_plain("pres?dent"));
+    }
+
+    #[test]
+    fn wildcards_need_three_leading_letters_and_a_single_word() {
+        let err = |q: &str| parse(q).unwrap_err();
+        for q in ["*gold", "?old", "pr?sident", "go*d", "*", "ab*?"] {
+            assert!(err(q).message.contains("at least 3 letters"), "{q}");
+        }
+        assert_eq!(err("gold pr?sident").position, Some(5));
+        assert!(err("o'bri?n").message.contains("single word"));
+        assert!(err("pres?dent~1").message.contains("not both"));
+        assert!(err("gold~1?").message.contains("not both"));
+        assert!(err(r#""pres?dent lincoln""#)
+            .message
+            .contains("inside quotes"));
+        assert!(err(r#""cross of gol*""#).message.contains("inside quotes"));
+        // A question mark ending a word in quotes is still punctuation.
+        assert!(parse(r#""who is he?""#).is_ok());
+        assert!(err("東?京")
+            .message
+            .contains("aren't available for Japanese"));
+    }
+
+    #[test]
+    fn wildcard_patterns_match_whole_words() {
+        let m = wildcard_matches;
+        assert!(m("pres?dent", "president"));
+        assert!(!m("pres?dent", "presdent"));
+        assert!(!m("pres?dent", "presidents"));
+        assert!(m("wash*ton", "washington"));
+        assert!(m("wash*ton", "washton"));
+        assert!(!m("wash*ton", "washingtons"));
+        assert!(m("wash*ton*", "washingtons"));
+        assert!(m("a*b*c", "axxbyybc"));
+        assert!(!m("a*b*c", "axxbyyb"));
+        assert!(m("abc?*", "abcd"));
+        assert!(!m("abc?*", "abc"));
+        assert!(m("ab??", "abçd"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use usnm_core::params::Filters;
-use usnm_core::query::{Node, Term};
+use usnm_core::query::{wildcard_matches, Node, Term};
 use usnm_core::text::tokenize;
 use usnm_core::time::BucketSpec;
 
@@ -315,9 +315,12 @@ pub fn eval_texts(node: &Node, texts: &[&[String]]) -> bool {
     }
 }
 
-fn term_matches(t: &Term, token: &str) -> bool {
+/// Whether a term matches one indexed word.
+pub(crate) fn term_matches(t: &Term, token: &str) -> bool {
     if t.prefix {
         token.starts_with(&t.text)
+    } else if t.wildcard {
+        wildcard_matches(&t.text, token)
     } else if t.fuzzy > 0 {
         levenshtein_within(&t.text, token, usize::from(t.fuzzy))
     } else {
@@ -416,6 +419,11 @@ mod tests {
         assert!(eval(&parse("cruci*").unwrap(), &t));
         assert!(eval(&parse("mankimd~1").unwrap(), &t));
         assert!(!eval(&parse("mankxxd~1").unwrap(), &t));
+        // Wildcards match whole words (#124).
+        assert!(eval(&parse("cruc?fy").unwrap(), &t));
+        assert!(eval(&parse("man*nd").unwrap(), &t));
+        assert!(!eval(&parse("man?nd").unwrap(), &t));
+        assert!(!eval(&parse("cro*ld").unwrap(), &t));
     }
 
     #[test]
