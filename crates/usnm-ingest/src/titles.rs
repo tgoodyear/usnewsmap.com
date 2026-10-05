@@ -1390,12 +1390,50 @@ mod tests {
     fn the_title_overrides_in_git_parse_with_sorted_keys() {
         let records = title_records().unwrap();
         assert!(!records.is_empty());
-        // Keyed JSON in git keeps its keys in ascending order.
-        let at: Vec<usize> = records
-            .keys()
-            .map(|l| TITLE_OVERRIDES.find(&format!("\"{l}\":")).unwrap())
-            .collect();
-        assert!(at.windows(2).all(|w| w[0] < w[1]), "keys out of order");
+        // Keyed JSON in git keeps its keys in ascending order: read the
+        // object's keys in file order with a JSON parser (a text search could
+        // match inside a value), then compare with the sorted map's.
+        let in_file = object_keys_in_order(TITLE_OVERRIDES);
+        assert_eq!(
+            in_file,
+            records.keys().cloned().collect::<Vec<_>>(),
+            "keys out of order"
+        );
+    }
+
+    /// The top-level keys of a JSON object, in the order the text has them.
+    fn object_keys_in_order(json: &str) -> Vec<String> {
+        struct Keys(Vec<String>);
+        impl<'de> serde::Deserialize<'de> for Keys {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                struct V;
+                impl<'de> serde::de::Visitor<'de> for V {
+                    type Value = Keys;
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("a JSON object")
+                    }
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut m: A,
+                    ) -> Result<Keys, A::Error> {
+                        let mut keys = Vec::new();
+                        while let Some(k) = m.next_key::<String>()? {
+                            m.next_value::<serde::de::IgnoredAny>()?;
+                            keys.push(k);
+                        }
+                        Ok(Keys(keys))
+                    }
+                }
+                d.deserialize_map(V)
+            }
+        }
+        serde_json::from_str::<Keys>(json).unwrap().0
+    }
+
+    #[test]
+    fn keys_are_read_in_file_order_not_by_text_search() {
+        let json = r#"{"b": {"note": "\"a\": inside a value"}, "a": {}}"#;
+        assert_eq!(object_keys_in_order(json), ["b", "a"]);
     }
 
     #[test]
