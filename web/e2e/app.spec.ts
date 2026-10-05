@@ -213,6 +213,19 @@ test("the API serves the site: app routes, security headers, cached assets", asy
   expect(errors).toEqual([]);
 });
 
+test("a Japanese query says what it searches before it's sent", async ({ page }) => {
+  await page.goto("/");
+  const box = page.getByRole("searchbox");
+  await box.fill("東京");
+  // The fixture version has no Japanese index (#139).
+  const hint = page.getByRole("note").filter({ hasText: "Japanese" });
+  await expect(hint).toHaveText(/isn't available yet/);
+  await expect(box).toHaveAttribute("aria-describedby", (await hint.getAttribute("id"))!);
+  await expectAccessible(page);
+  await box.fill("tokyo");
+  await expect(hint).toBeHidden();
+});
+
 test("the search options open with an extra tap on phones", async ({ page, isMobile }) => {
   await page.goto("/");
   const match = page.getByLabel("Match");

@@ -1,6 +1,6 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api, ApiError, type SearchParams } from "../api/client";
-import type { HitSort } from "../api/types";
+import type { HitItem, HitSort } from "../api/types";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
 import { skewSentence, type SkewInfo } from "../lib/skewText";
@@ -25,6 +25,10 @@ const SORT_LABELS: Record<HitSort, string> = {
   newest: "Newest first",
   relevant: "Most mentions",
 };
+
+/** Why a page is marked "Our OCR" (#139). */
+const OCR_NOTE =
+  "The Library of Congress has no searchable text for this page. We read it ourselves with NDLOCR-Lite, text-recognition software from Japan's National Diet Library. Expect some misread characters.";
 
 /** Place drill-down (F-03): pages by date or by mentions, with snippets and LoC links. */
 export function PlacePanel({ params, version, placeId, placeName, sort, onSort, windowHits, note, synthetic, onClose }: Props) {
@@ -64,24 +68,7 @@ export function PlacePanel({ params, version, placeId, placeName, sort, onSort, 
       )}
       <ol className="hits">
         {items.map((h) => (
-          <li key={h.doc_id} className="hit">
-            <div className="hit__meta">
-              <time dateTime={h.date}>{formatDate(h.date)}</time> · {h.title ?? h.lccn} · page {h.seq}
-              {h.front_page ? " (front page)" : ""}
-            </div>
-            {h.snippets.map((s, i) => (
-              <p key={i} className="hit__snippet">
-                {snippetSegments(s).map((seg, j) => (seg.mark ? <mark key={j}>{seg.text}</mark> : seg.text))}
-              </p>
-            ))}
-            {synthetic ? (
-              <p className="hit__demo">Demo page: not a real Library of Congress page.</p>
-            ) : h.links.viewer && (
-              <a href={h.links.viewer} target="_blank" rel="noopener noreferrer">
-                View page at the Library of Congress
-              </a>
-            )}
-          </li>
+          <Hit key={h.doc_id} h={h} synthetic={synthetic} />
         ))}
       </ol>
       {query.hasNextPage && (
@@ -95,5 +82,39 @@ export function PlacePanel({ params, version, placeId, placeName, sort, onSort, 
         </button>
       )}
     </aside>
+  );
+}
+
+/** One page in the list: date, newspaper, snippets and the LoC link. */
+export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
+  return (
+    <li className="hit">
+      <div className="hit__meta">
+        <time dateTime={h.date}>{formatDate(h.date)}</time> · {h.title ?? h.lccn} · page {h.seq}
+        {h.front_page ? " (front page)" : ""}
+        {h.ocr && (
+          <>
+            {" "}
+            <span className="badge badge--ocr" title={OCR_NOTE}>
+              Our OCR
+              {/* The title isn't announced reliably or shown on touch: say it in text too. */}
+              <span className="visually-hidden">. {OCR_NOTE}</span>
+            </span>
+          </>
+        )}
+      </div>
+      {h.snippets.map((s, i) => (
+        <p key={i} className="hit__snippet">
+          {snippetSegments(s).map((seg, j) => (seg.mark ? <mark key={j}>{seg.text}</mark> : seg.text))}
+        </p>
+      ))}
+      {synthetic ? (
+        <p className="hit__demo">Demo page: not a real Library of Congress page.</p>
+      ) : h.links.viewer && (
+        <a href={h.links.viewer} target="_blank" rel="noopener noreferrer">
+          {h.ocr ? "View the page image at the Library of Congress" : "View page at the Library of Congress"}
+        </a>
+      )}
+    </li>
   );
 }

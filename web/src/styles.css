@@ -118,6 +118,8 @@ input, select {
 .search__q { flex: 1 1 160px; min-width: 160px; }
 .search__options { display: contents; }
 .search__toggle { display: none; }
+/* What a Japanese query searches (#139): its own line, under the box and options. */
+.search__hint { flex: 1 0 100%; order: 100; margin: 0; font-size: 0.85rem; color: var(--muted); }
 /* Last on wide screens, after the options; next to the box on phones. */
 .search__go { order: 1; }
 .search__date, .search__state, .search__near { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; color: var(--muted); }
@@ -347,6 +349,8 @@ input, select {
 .badge--ok { color: var(--ok); }
 .badge--attention { color: var(--warn); }
 .badge--problem { color: var(--danger); }
+/* A page whose text we OCR'd (#139). */
+.badge--ocr { color: var(--accent); font-weight: 500; }
 .progress {
   height: 14px; border-radius: 7px; background: color-mix(in srgb, var(--line) 70%, transparent);
   overflow: hidden; margin: 6px 0 12px;
