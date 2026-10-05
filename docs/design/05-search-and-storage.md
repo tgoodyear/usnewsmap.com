@@ -246,7 +246,8 @@ A phrase reads the positions of every word in it, and the commonest words are on
 - **Snippets.** The query also requires each phrase word that isn't common in `text` (`text:cross AND text:gold`): no page changes, and the snippets on `text` get their highlights. The common words in the phrase aren't highlighted.
 - **The list** (`usnm_core::common_grams::WORDS`, 89 words) is the function words on about half of all pages or more, measured over a week of 1896, and `mr`. Frequent content words (`new`, `time`) are left out. The list is part of the index: changing it bumps `common_grams::VERSION`.
 - **Rollout.** `current.json` names the `common_grams` version its indexes were built with. The API searches `text_cg` only when that is its own version, so a new API on older indexes keeps phrases in `text`. A release whose previous version has another version (or none) builds a full base, so the indexes in a version never mix.
-- **Cost.** `text_cg` holds a position for every word, like `text`, so it roughly doubles the index (about +0.5–0.9 TB on Blob Hot, +$10–18 a month) and the bytes a release sends to the writer. Japanese pages (#139) have their own index and no pairs.
+- **Cost.** `text_cg` holds a position for every word, like `text`. On 90,745 real pages (11 LoC batches, October 2026) it made the index 1.6× as big (4.8 GB against 3.0 GB) and indexing 1.9× as long; over the corpus that is about +0.35 TB on Blob Hot, about +$7 a month. Japanese pages (#139) have their own index and no pairs.
+- **Measured gain.** On the same pages, cold (OS cache dropped) on 2 CPUs, the searcher read 11–31× fewer bytes for phrases with a common word ("cross of gold" 17.3 MB → 0.6 MB) and took 2–6.5× less time, with the same hits.
 
 ## 5.6 Query semantics
 
