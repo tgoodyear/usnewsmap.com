@@ -143,6 +143,7 @@ class Resilience(unittest.TestCase):
             cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
             # An earlier run read the first issue; this one stops before its first.
             cur.write("ocr-ja/pages/sn1_1945-01-01_ed-1.parquet", b"")
+            cur.write(f"ocr-ja/alto/{rows[0]['doc_id']}.xml", b"<alto/>")
             orig_done, orig_ocr = jaocr.done_pages, jaocr.ocr_issue
             jaocr.done_pages = lambda c, parts: {rows[0]["doc_id"]}
             jaocr.ocr_issue = lambda *a: (_ for _ in ()).throw(ConnectionError("boom"))
@@ -154,25 +155,50 @@ class Resilience(unittest.TestCase):
             self.assertEqual(status["done"]["pages"], 1)
             self.assertIsNone(status["eta"])
 
-    def test_progress_counts_issues_with_parts(self):
+    def test_progress_counts_pages_with_alto(self):
         with tempfile.TemporaryDirectory() as d:
             cur = jaocr.LocalStore(d)
-            rows = [{"lccn": "sn1", "date": "1945-01-01", "edition": 1, "seq": s} for s in (1, 2, 3)]
-            rows.append({"lccn": "sn1", "date": "1945-01-02", "edition": 1, "seq": 1})
+            rows = [{"doc_id": f"sn1_1945-01-01_ed-1_seq-{s}", "lccn": "sn1", "date": "1945-01-01",
+                     "edition": 1, "seq": s} for s in (1, 2, 3)]
+            rows.append({"doc_id": "sn1_1945-01-02_ed-1_seq-1", "lccn": "sn1", "date": "1945-01-02",
+                         "edition": 1, "seq": 1})
             self.assertEqual(jaocr.progress(cur, rows)["done"], {"pages": 0, "issues": 0})
-            # Only the listing is read.
-            cur.write("ocr-ja/pages/sn1_1945-01-01_ed-1.parquet", b"")
-            cur.write("ocr-ja/pages/sn1_1945-01-01_ed-1.2.parquet", b"")
-            cur.write("ocr-ja/pages/sn9_1945-01-01_ed-1.parquet", b"")  # not a target
+            # Only the listing is read; a part without ALTO doesn't count.
+            cur.write("ocr-ja/pages/sn1_1945-01-02_ed-1.parquet", b"")
+            for doc in ("sn1_1945-01-01_ed-1_seq-1", "sn1_1945-01-01_ed-1_seq-2", "sn1_1945-01-01_ed-1_seq-3",
+                        "sn9_1945-01-01_ed-1_seq-1"):  # the last is not a target
+                cur.write(f"ocr-ja/alto/{doc}.xml", b"<alto/>")
             p = jaocr.progress(cur, rows)
             self.assertEqual(p["targets"], {"pages": 4, "issues": 2})
             self.assertEqual(p["done"], {"pages": 3, "issues": 1})
+
+    def test_pages_without_alto_are_read_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            rows = [{"doc_id": f"sn1_1945-01-0{i}_ed-1_seq-1", "page_key": "k", "lccn": "sn1",
+                     "date": f"1945-01-0{i}", "edition": 1, "seq": 1, "batch": "b", "loc_text": "missing"}
+                    for i in (1, 2)]
+            cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
+            # Both have text from before ALTO; only the first has ALTO. Its old claim is spent.
+            cur.write(f"ocr-ja/alto/{rows[0]['doc_id']}.xml", b"<alto/>")
+            cur.write(f"ocr-ja/claims/{jaocr.TARGETS}/sn1_1945-01-02_ed-1.json", b"{}")
+            seen = []
+            orig_done, orig_ocr = jaocr.done_pages, jaocr.ocr_issue
+            jaocr.done_pages = lambda c, parts: {r["doc_id"] for r in rows}
+            jaocr.ocr_issue = lambda c, root, issue, pages, *a: seen.append(issue) or len(pages)
+            try:
+                jaocr.run(cur, cur, jaocr.Path("/nonexistent"), None, "t")
+            finally:
+                jaocr.done_pages, jaocr.ocr_issue = orig_done, orig_ocr
+            self.assertEqual(seen, ["sn1_1945-01-02_ed-1"])
+            self.assertTrue(cur.exists(f"ocr-ja/claims/{jaocr.CLAIMS}/sn1_1945-01-02_ed-1.json"))
 
     def test_status_estimates_the_finish(self):
         from datetime import datetime, timedelta, timezone
         with tempfile.TemporaryDirectory() as d:
             cur = jaocr.LocalStore(d)
-            rows = [{"lccn": "sn1", "date": f"1945-01-0{i}", "edition": 1, "seq": 1} for i in (1, 2)]
+            rows = [{"doc_id": f"d{i}", "lccn": "sn1", "date": f"1945-01-0{i}", "edition": 1, "seq": 1}
+                    for i in (1, 2)]
             started = datetime.now(timezone.utc) - timedelta(hours=1)
             body = jaocr.write_status(cur, cur, rows, started, 0, "e")
             self.assertIsNone(body["eta"])
