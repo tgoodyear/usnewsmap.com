@@ -72,9 +72,49 @@ export interface NowLine {
 
 const SLOW_DOWN = "because loc.gov asked us to slow down";
 
-/** When the site last changed: the last publish the pipeline recorded, else the version's own date. */
+/**
+ * When the version the site searches went live: its own run's publish time.
+ * Without that run, the pipeline's last publish, but only when nothing says
+ * it belongs to another version: `last_published_at` is the latest publish
+ * of any run, and a new run is marked published just before `ops/current`
+ * names it. Last, the version's own `published_at` (versions published
+ * before 5 October 2026 carry their run's start there).
+ */
 export function lastUpdate(s: Status): string {
-  return (s.indexing.available && s.indexing.last_published_at) || s.published.published_at;
+  const i = s.indexing;
+  const served = s.published.index_version;
+  if (i.available) {
+    const run = i.runs.find((r) => r.index_version === served && r.published_at);
+    if (run?.published_at) return run.published_at;
+    const last = i.last_published_at;
+    const another = i.runs.some((r) => r.published_at === last && r.index_version !== served);
+    if (last && i.current_version === served && !another) return last;
+  }
+  return s.published.published_at;
+}
+
+/**
+ * A newer version the pipeline has published that the API doesn't serve yet
+ * (it checks every few minutes, then warms the version up): when it was
+ * published, else null. A version that differs but isn't newer (a pipeline
+ * reading older than the API's switch) is not one.
+ */
+export function pendingUpdate(s: Status): string | null {
+  const i = s.indexing;
+  if (!i.available || !i.current_version || i.current_version === s.published.index_version) {
+    return null;
+  }
+  const at =
+    i.runs.find((r) => r.index_version === i.current_version && r.published_at)?.published_at ??
+    i.last_published_at;
+  if (!at || !(Date.parse(at) > Date.parse(lastUpdate(s)))) return null;
+  return at;
+}
+
+function pendingNote(s: Status): string | null {
+  const at = pendingUpdate(s);
+  if (at === null) return null;
+  return `A new update was published on ${utcDate(at)}, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.`;
 }
 
 /**
@@ -83,15 +123,17 @@ export function lastUpdate(s: Status): string {
  */
 export function rightNow(s: Status, now: number): NowLine {
   const a = s.activity;
+  const pending = pendingNote(s);
   if (!a || !a.available) {
     return {
       text: "What the pipeline is doing right now isn't available on this server.",
       notes: [
+        ...(pending ? [pending] : []),
         `The site searches the update published ${utcDate(lastUpdate(s))}.`,
       ],
     };
   }
-  const notes: string[] = [];
+  const notes: string[] = pending ? [pending] : [];
   const line = sentence(a, s, now);
   if (a.now !== "idle" && a.since) {
     notes.push(`This step started ${relative(a.since, now)}.`);

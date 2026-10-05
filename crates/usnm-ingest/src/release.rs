@@ -61,7 +61,8 @@ pub struct Release {
     /// Mark the version as synthetic demo data (the fixture batches); the
     /// site then says so and doesn't link to loc.gov.
     pub synthetic: bool,
-    /// Names versions and stamps `published_at`.
+    /// Names versions (`pages-v{date}-{n}`). `published_at` is stamped when
+    /// the version pointer is written, which can be many hours later.
     pub now: DateTime<Utc>,
     /// Why titles-sync stopped before trying every title, if it did. A delta
     /// goes ahead without the batches whose titles are missing; a full base
@@ -533,13 +534,14 @@ impl Release {
         // Publish: the version pointer is the last write (04 §4.7), and only
         // while this release still holds the writer lock.
         self.confirm(lease).await?;
+        let published_at = Utc::now();
         let mut pointer = json!({
             "index_version": version,
             "backend": sink.backend(),
             "indexes": indexes,
             "reference": version,
             "bounds": {"from": from.to_string(), "to": to.to_string()},
-            "published_at": self.now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "published_at": published_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "previous_version": run.previous_version,
             "synthetic": self.synthetic,
         });
@@ -562,7 +564,7 @@ impl Release {
         // The version is live from here on: a failure to record it says so
         // (the next release repairs the record, `published_run`).
         run.status = RunStatus::Published;
-        run.published_at = Some(Utc::now());
+        run.published_at = Some(published_at);
         let recorded = async {
             self.state.update_run(&run, &etag).await?;
             self.state.set_current_version(&version).await
@@ -601,7 +603,13 @@ impl Release {
         if run.status != RunStatus::Published {
             tracing::warn!(version, "recording a publish that was interrupted");
             run.status = RunStatus::Published;
-            run.published_at.get_or_insert_with(Utc::now);
+            // The pointer's own time, so the run and current.json agree
+            // however long after the crash this runs.
+            let pointer_at = pointer["published_at"]
+                .as_str()
+                .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.with_timezone(&Utc));
+            run.published_at = pointer_at.or(run.published_at).or_else(|| Some(Utc::now()));
             self.state.update_run(&run, &etag).await?;
         }
         if self.state.current_version().await?.as_deref() != Some(version) {
