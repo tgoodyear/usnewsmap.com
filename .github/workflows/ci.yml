@@ -30,6 +30,8 @@ jobs:
       rust: ${{ steps.f.outputs.rust }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
+      fixtures: ${{ steps.f.outputs.fixtures }}
+      code: ${{ steps.f.outputs.code }}
       provision: ${{ steps.f.outputs.provision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,6 +95,8 @@ jobs:
 
   fixtures:
     name: fixtures are reproducible
+    needs: changes
+    if: needs.changes.outputs.fixtures == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -151,6 +155,9 @@ jobs:
 
   infra:
     name: infra (bicep lint, build)
+    # Also the shared-key scan, so every change but documentation runs it.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     env:
       BICEP_VERSION: v0.47.16
