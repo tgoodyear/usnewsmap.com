@@ -57,7 +57,7 @@ param scratchGiB int = 0
 param rootImage string = ''
 @description('Seconds a release waits for its new index\'s merges before failing without publishing (08 §8.4). Budgeted under the 24 h replica timeout below.')
 @minValue(600)
-// Past 4 h, a full rebuild no longer fits the 24 h replica timeout (below).
+// Past 4 h, a full rebuild may no longer fit the ingest job's replica timeout (below).
 @maxValue(14400)
 param mergeTimeoutSecs int = 14400
 @description('The Japanese OCR image (usnewsmap-ja-ocr). Empty: no Japanese OCR job.')
@@ -71,6 +71,14 @@ param jaOcrReplicas int = 2
 // max runtime instead, and a batch already downloading then takes at most 45
 // minutes more (the per-batch watchdog), so each command ends on its own.
 var replicaTimeoutSecs = 86400
+// The ingest job gets 48 h (#172): a full rebuild with common-word pairs
+// (#154) sent only about 230 to 460 pages a second on 2026-10-05, so the
+// 23.7M pages take up to about 29 h, after titles-sync (at most 8 h) and
+// before the merge wait (at most 4 h): about 41 h. A release can't resume
+// in a new execution, so a timeout throws the whole rebuild away. The
+// platform can interrupt long replicas for maintenance (`replicaRetryLimit`
+// is 0), which a longer run is more exposed to.
+var ingestReplicaTimeoutSecs = 172800
 // Backfill: 22 h + 45 min watchdog = 22 h 45 min, leaving 75 minutes of
 // margin under the 24 h timeout for the startup enqueue and the last commit.
 var backfillMaxRuntimeSecs = 79200
@@ -81,7 +89,8 @@ var backfillMaxRuntimeSecs = 79200
 // the corpus then sends 23.8M pages in about 8.8 h (750 pages a second, the
 // October 2026 rate) or 10.7 h at 620, and waits at most `mergeTimeoutSecs`
 // (4 h; about 1.7 h expected) for its merges, 08 §8.4: 22 h 45 min at the
-// slowest, inside the 24 h timeout. A full run that titles-sync didn't
+// slowest at that rate. With common-word pairs the rate halved, so the
+// ingest job has its own 48 h timeout (`ingestReplicaTimeoutSecs`). A full run that titles-sync didn't
 // finish releases nothing and fails, so the next execution resumes the sync
 // before it rebuilds (docs/operations.md, "Full rebuild").
 var ingestCurateMaxRuntimeSecs = 21600
@@ -130,8 +139,8 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
       scheduleTriggerConfig: empty(cron)
         ? null
         : { cronExpression: cron, parallelism: 1, replicaCompletionCount: 1 }
-      // A full rebuild of the corpus can take many hours.
-      replicaTimeout: replicaTimeoutSecs
+      // A full rebuild of the corpus can take more than a day (#172).
+      replicaTimeout: ingestReplicaTimeoutSecs
       replicaRetryLimit: 0
     }
     template: {
