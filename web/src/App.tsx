@@ -294,10 +294,8 @@ export function App() {
       }),
     [data?.papers, features],
   );
-  // The relative rate needs baselines, which aren't kept per newspaper
-  // (06 §6.3.3), so a newspaper filter shows pages.
-  const onlyPaper = (lccn: string) =>
-    setView({ lccn: [lccn], t: "", place: "", sort: "oldest", norm: view.norm === "skew" ? "raw" : view.norm }, true);
+  // Under a newspaper filter the view shows Pages, not the relative rate (supportedNorm).
+  const onlyPaper = (lccn: string) => setView({ lccn: [lccn], t: "", place: "", sort: "oldest" }, true);
   const newspapers =
     data && data.total.hits > 0 && data.papers ? (
       <NewspaperTable
@@ -480,7 +478,15 @@ export function App() {
                     </button>
                   ))}
                 </div>
-                <MeasureToggle norm={view.norm} onChange={(n) => setView({ norm: n })} />
+                <MeasureToggle
+                  norm={view.norm}
+                  onChange={(n) => setView({ norm: n })}
+                  unavailable={
+                    view.lccn.length > 0
+                      ? { skew: "Not for one newspaper: pages published aren't counted per newspaper." }
+                      : undefined
+                  }
+                />
                 {/* The relative-rate view draws points only (doc 11, 11.6). */}
                 {view.norm === "raw" && (
                   <label>

@@ -590,7 +590,12 @@ pub fn parse_summary(resp: &SearchResponse, spec: &BucketSpec) -> Result<Summary
         places,
         papers: key_counts(resp, "papers")?,
         languages: key_counts(resp, "languages")?,
-        days: distinct(resp)?.unwrap_or(0),
+        // Always requested: missing with matches is an incomplete response.
+        days: match distinct(resp)? {
+            Some(d) => d,
+            None if resp.num_hits == 0 => 0,
+            None => return Err(SearchError::Backend("missing aggregation `days`".into())),
+        },
     })
 }
 
@@ -1146,6 +1151,15 @@ mod tests {
         );
         assert_eq!(keys(&s.languages), [("eng".into(), 7), ("ger".into(), 2)]);
         assert_eq!(s.days, 5);
+        // Without `days`, a summary with matches is incomplete, not 0 days.
+        let mut partial = resp.aggregations.clone().unwrap();
+        partial.as_object_mut().unwrap().remove("days");
+        let incomplete: SearchResponse =
+            serde_json::from_value(json!({ "num_hits": 7, "aggregations": partial })).unwrap();
+        assert!(matches!(
+            parse_summary(&incomplete, &spec),
+            Err(SearchError::Backend(_))
+        ));
         let cells = parse_cube(&resp, &spec).unwrap();
         assert_eq!(cells.len(), 3);
         assert_eq!(

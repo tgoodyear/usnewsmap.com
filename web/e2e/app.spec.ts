@@ -509,6 +509,7 @@ test("the table lists the newspapers with matches, and one can limit the search 
     "aria-pressed",
     "true",
   );
+  await expect(page.getByRole("group", { name: "Measure" }).getByRole("button", { name: "Relative rate" })).toBeDisabled();
   await expect(page.getByRole("status").filter({ hasText: "Only pages from" })).toContainText(title);
   await expect(papers.locator("tbody tr")).toHaveCount(1);
   await expectAccessible(page);

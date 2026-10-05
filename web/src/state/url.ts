@@ -100,6 +100,15 @@ export function parseLccns(v: string | null): string[] {
   return [...new Set(codes)].sort().slice(0, 60);
 }
 
+/**
+ * The relative rate needs pages published as its baseline, which aren't
+ * kept per newspaper (06 §6.3.3): under a newspaper filter it is Pages,
+ * whether the view came from a click or a shared link.
+ */
+export function supportedNorm(norm: Norm, lccn: readonly string[]): Norm {
+  return norm === "skew" && lccn.length > 0 ? "raw" : norm;
+}
+
 function oneOf<T extends string>(v: string | null, allowed: readonly T[], d: T): T {
   return v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : d;
 }
@@ -136,7 +145,7 @@ export function parseView(search: string): ViewState {
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
-    norm: oneOf(s.get("norm"), ["raw", "skew", "when"] as const, DEFAULTS.norm),
+    norm: supportedNorm(oneOf(s.get("norm"), ["raw", "skew", "when"] as const, DEFAULTS.norm), parseLccns(s.get("lccn"))),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
     sort: oneOf(s.get("sort"), ["oldest", "newest", "relevant"] as const, DEFAULTS.sort),
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),
@@ -165,7 +174,7 @@ export function serializeView(v: ViewState): string {
   put("t", v.t, "");
   if (v.win !== null) s.set("win", String(v.win));
   put("layer", v.layer, DEFAULTS.layer);
-  put("norm", v.norm, DEFAULTS.norm);
+  put("norm", supportedNorm(v.norm, v.lccn), DEFAULTS.norm);
   put("place", v.place, "");
   put("sort", v.sort, DEFAULTS.sort);
   put("tab", v.tab, DEFAULTS.tab);

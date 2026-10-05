@@ -40,6 +40,16 @@ describe("MeasureToggle", () => {
     expect(onChange).toHaveBeenCalledWith("when");
   });
 
+  it("disables a measure the search can't show, and says why", () => {
+    const onChange = vi.fn();
+    render(<MeasureToggle norm="raw" onChange={onChange} unavailable={{ skew: "Not for one newspaper." }} />);
+    const button = screen.getByRole("button", { name: "Relative rate" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(button.getAttribute("title")).toBe("Not for one newspaper.");
+    fireEvent.click(button);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("has no share of pages button", () => {
     render(<MeasureToggle norm="skew" onChange={() => undefined} />);
     expect(screen.queryByRole("button", { name: "Share of pages" })).toBeNull();

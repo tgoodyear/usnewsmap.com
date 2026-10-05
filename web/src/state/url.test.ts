@@ -18,6 +18,10 @@ describe("view URL", () => {
     expect(serializeView({ ...DEFAULTS, q: "fever" })).toBe("?q=fever");
     expect(parseView("?sort=relevant").sort).toBe("relevant");
     expect(parseView("?norm=when").norm).toBe("when");
+    // No relative rate for one newspaper, even from a shared link.
+    const shared = parseView("?q=gold&lccn=sn99000001&norm=skew");
+    expect(shared.norm).toBe("raw");
+    expect(serializeView({ ...shared, norm: "skew" })).toBe("?q=gold&lccn=sn99000001");
     // The newspaper filter (#121): lowercased, sorted, invalid codes dropped.
     const paper = parseView("?q=gold&lccn=SN99000002,sn99000001,bad!code");
     expect(paper.lccn).toEqual(["sn99000001", "sn99000002"]);
