@@ -88,13 +88,16 @@ export function parseLangs(v: string | null): string[] {
   return [...new Set(codes)].sort().slice(0, 60);
 }
 
-/** LCCNs as the API accepts them: lowercase letters and digits, sorted, without repeats. */
+/**
+ * LCCNs as the API accepts them: lowercase letters and digits, sorted,
+ * without repeats, at most 60 (the API's limit for a list parameter).
+ */
 export function parseLccns(v: string | null): string[] {
   const codes = (v ?? "")
     .split(",")
     .map((x) => x.trim().toLowerCase())
     .filter((x) => /^[a-z0-9]{1,16}$/.test(x));
-  return [...new Set(codes)].sort().slice(0, 20);
+  return [...new Set(codes)].sort().slice(0, 60);
 }
 
 function oneOf<T extends string>(v: string | null, allowed: readonly T[], d: T): T {

@@ -155,7 +155,9 @@ pub struct CubeCell {
 /// `Relevant` puts the pages that mention the query most first (#126): the
 /// engine's score, which with `fieldnorms: false` on `text` ignores page
 /// length. Quickwit weighs rare words per split, so it is "most mentions
-/// first", not an exact ranking. Ties go oldest first.
+/// first", not an exact ranking. Ties go oldest first. Quickwit 0.9 sorts by at
+/// most two fields, so same-score pages on the same day come in the index's
+/// order: stable between requests, but not by `sort_key` as here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HitSort {
     #[default]

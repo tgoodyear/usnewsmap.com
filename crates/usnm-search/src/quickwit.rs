@@ -404,7 +404,8 @@ pub fn hits_request(
 /// By day, then title, edition and page (`sort_key`). Quickwit 0.9 can't sort
 /// on text fields, and a leading `-` means ascending (S-2). `_score` sorts
 /// highest first; with `fieldnorms: false` on `text` it follows how often a
-/// page mentions the words (#126), and ties go oldest first.
+/// page mentions the words (#126), and ties go oldest first. A third field
+/// (`-sort_key`) is refused: "sort by field must be up to 2 fields".
 fn sort_by(sort: HitSort) -> &'static str {
     match sort {
         HitSort::Oldest => "-day,-sort_key",

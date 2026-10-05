@@ -23,6 +23,9 @@ describe("view URL", () => {
     expect(paper.lccn).toEqual(["sn99000001", "sn99000002"]);
     expect(serializeView(paper)).toBe("?q=gold&lccn=sn99000001%2Csn99000002");
     expect(searchParams(paper).lccn).toEqual(["sn99000001", "sn99000002"]);
+    // As many as the API takes (60), so a valid permalink keeps its search.
+    const many = Array.from({ length: 60 }, (_, i) => `sn${String(i).padStart(8, "0")}`);
+    expect(parseView(`?lccn=${many.join(",")}`).lccn).toEqual(many);
   });
 
   it("drops invalid values instead of trusting them", () => {
