@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title">
+<title id="title">US News Map architecture</title>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; text-anchor: middle; }
+  .t { font-size: 15px; font-weight: 600; fill: #1f2328; }
+  .s { font-size: 12.5px; fill: #59636e; }
+  .c { font-size: 12.5px; fill: #1f2328; }
+  .l { font-size: 12px; fill: #59636e; font-style: italic; }
+  .ll { font-size: 12px; fill: #59636e; font-style: italic; text-anchor: start; }
+  .g { font-size: 12px; fill: #6e7781; text-anchor: start; letter-spacing: .04em; text-transform: uppercase; }
+  .a { stroke: #59636e; stroke-width: 1.6; fill: none; }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#59636e"/>
+  </marker>
+  <marker id="dot" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6">
+    <circle cx="5" cy="5" r="4" fill="#59636e"/>
+  </marker>
+</defs>
+<rect width="960" height="540" fill="none"/>
+<rect x="340" y="30" width="590" height="160" rx="12" fill="none" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="356" y="54" class="g">Azure Container App · one replica, two containers</text>
+<rect x="40" y="75" width="230" height="90" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<text x="155.0" y="109.0" class="t">Browser</text>
+<text x="155.0" y="129.0" class="s">React · MapLibre GL · deck.gl</text>
+<text x="155.0" y="147.0" class="s">usnewsmap.com</text>
+<rect x="370" y="75" width="240" height="90" rx="8" fill="#ddf4ff" stroke="#54aeff" stroke-width="1.5"/>
+<text x="490.0" y="117.0" class="t">Rust API (axum)</text>
+<text x="490.0" y="137.0" class="s">serves /v1 and the site</text>
+<rect x="670" y="75" width="230" height="90" rx="8" fill="#ddf4ff" stroke="#54aeff" stroke-width="1.5"/>
+<text x="785.0" y="117.0" class="t">Quickwit searcher</text>
+<text x="785.0" y="137.0" class="s">read-only sidecar</text>
+<line x1="270" y1="120" x2="370" y2="120" class="a" marker-end="url(#arrow)"/>
+<text x="320" y="110" class="l">GET /v1/…</text>
+<line x1="610" y1="120" x2="670" y2="120" class="a" marker-end="url(#arrow)"/>
+<text x="640" y="110" class="l">localhost</text>
+<rect x="340" y="270" width="590" height="110" rx="8" fill="#fff8c5" stroke="#d4a72c" stroke-width="1.5"/>
+<text x="635.0" y="330.0" class="t"></text>
+<text x="635" y="298" class="t">Azure Blob Storage</text>
+<rect x="372" y="322" width="150" height="32" rx="16" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
+<text x="447.0" y="343" class="c">search indexes</text>
+<rect x="540" y="322" width="200" height="32" rx="16" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
+<text x="640.0" y="343" class="c">curated corpus (Parquet)</text>
+<rect x="758" y="322" width="140" height="32" rx="16" fill="#ffffff" stroke="#d0d7de" stroke-width="1.2"/>
+<text x="828.0" y="343" class="c">reference data</text>
+<line x1="490" y1="165" x2="490" y2="270" class="a" marker-end="url(#arrow)"/>
+<text x="500" y="222" class="ll">reference data · response cache</text>
+<line x1="785" y1="165" x2="785" y2="270" class="a" marker-end="url(#arrow)"/>
+<text x="795" y="222" class="ll">index splits</text>
+<rect x="40" y="440" width="230" height="80" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<text x="155.0" y="477.0" class="t">Library of Congress</text>
+<text x="155.0" y="497.0" class="s">Chronicling America OCR batches</text>
+<rect x="340" y="440" width="360" height="80" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<text x="520.0" y="477.0" class="t">Ingest jobs (Rust)</text>
+<text x="520.0" y="497.0" class="s">curate → build indexes → publish a version</text>
+<rect x="750" y="440" width="180" height="80" rx="8" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5"/>
+<text x="840.0" y="477.0" class="t">Cosmos DB</text>
+<text x="840.0" y="497.0" class="s">pipeline state</text>
+<line x1="270" y1="480" x2="340" y2="480" class="a" marker-end="url(#arrow)"/>
+<line x1="520" y1="440" x2="520" y2="380" class="a" marker-end="url(#arrow)"/>
+<text x="530" y="414" class="ll">writes each release</text>
+<line x1="700" y1="480" x2="750" y2="480" class="a" marker-end="url(#arrow)" marker-start="url(#dot)"/>
+</svg>

@@ -83,7 +83,7 @@ var backfillMaxRuntimeSecs = 79200
 // (4 h; about 1.7 h expected) for its merges, 08 §8.4: 22 h 45 min at the
 // slowest, inside the 24 h timeout. A full run that titles-sync didn't
 // finish releases nothing and fails, so the next execution resumes the sync
-// before it rebuilds (infra/README.md, step 7).
+// before it rebuilds (docs/operations.md, "Full rebuild").
 var ingestCurateMaxRuntimeSecs = 21600
 var ingestTitlesMaxRuntimeSecs = 28800
 
