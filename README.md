@@ -19,14 +19,10 @@ The pages come from [Chronicling America](https://www.loc.gov/collections/chroni
 
 ## How it's built
 
-```
-Browser (React + MapLibre/deck.gl) ──GET /v1/…──► Rust API ──localhost──► Quickwit searcher
-                                                     │                          │
-                                                     ▼                          ▼
-                                    Azure Blob Storage: search indexes · curated corpus · reference data
-                                                     ▲
-                    Ingest jobs: Chronicling America batches → curated Parquet → indexes → a published version
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.svg">
+  <img alt="Architecture: the browser calls the Rust API, which queries a Quickwit searcher beside it; both read Azure Blob Storage, which the ingest jobs fill from Chronicling America batches, keeping their state in Cosmos DB" src="docs/images/architecture.svg" width="960">
+</picture>
 
 A Rust API ([axum](https://github.com/tokio-rs/axum)) and a [Quickwit](https://quickwit.io/) searcher run side by side in one Azure Container App, and the API also serves the site. A Rust ingest pipeline, run as Container Apps jobs, turns the Library of Congress's bulk OCR into curated Parquet on Blob Storage, builds the search indexes from it and publishes versioned snapshots. Everything is defined in Bicep, every service signs in with an Entra ID managed identity rather than a key, and there are no servers to maintain. The [architecture overview](docs/design/03-architecture-overview.md) has the details.
 
