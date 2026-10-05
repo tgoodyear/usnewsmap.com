@@ -2,7 +2,7 @@
 
 Issues and pull requests are welcome. For anything bigger than a small fix, open an issue first so the approach can be agreed before you write the code.
 
-The [design documents](docs/design/README.md) explain how the system works and why. If a change alters a decision recorded there, update the document or the [ADR](docs/design/adr/README.md) in the same pull request.
+The [design documents](docs/design/README.md) explain how the system works and why. If a change alters a decision recorded there, update the document or the [ADR](docs/design/adr/README.md) in the same pull request. Work worth a write-up, a measurement, an experiment, a change whose numbers someone will want later, gets a [technical note](docs/notes/README.md).
 
 ## Run the checks
 

@@ -10,6 +10,8 @@ The original site (2015–2016, Georgia Tech Research Institute and eHistory.org
 
 Start with the **[design document](docs/design/README.md)**: background, requirements, architecture, data and ingestion, search and storage, API, frontend, Azure infrastructure, operations and cost, the roadmap, and the [architecture decision records](docs/design/adr/README.md).
 
+The **[technical notes](docs/notes/README.md)** are dated write-ups of work on the index, the OCR and the corpus's coverage, with the measurements behind each change.
+
 ## Repository layout
 
 | Path | What |
@@ -23,6 +25,7 @@ Start with the **[design document](docs/design/README.md)**: background, require
 | `infra/` | Bicep for the lean Azure profile, deployed as one deployment stack per environment (see [`infra/README.md`](infra/README.md)) |
 | `fixtures/` | A small **synthetic** corpus for local development and tests (not real newspaper data) |
 | `docs/design/` | The design document set |
+| `docs/notes/` | Dated technical notes: what was tried, measured and decided, and what is left |
 
 In production, the API searches through a Quickwit sidecar, using indexes the ingest pipeline builds from Chronicling America's batches. Locally and in CI, the API serves the small synthetic corpus in `fixtures/`, so you don't need an Azure account or the real data to run it.
 

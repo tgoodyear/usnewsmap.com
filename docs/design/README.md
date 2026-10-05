@@ -23,6 +23,8 @@ This document set evaluates the legacy system ([`tgoodyear/usnewsmap`](https://g
 | 11 | [Geographic skew of search terms](11-term-geographic-skew.md) | Proposal: comparing places with what their digitized pages predict (time-standardized lift with empirical-Bayes shrinkage), with measurements on the published index |
 | ADR | [Architecture decision records](adr/) | Short records of each major decision and the alternatives rejected |
 
+The [technical notes](../notes/README.md) are dated write-ups of the work, with its measurements; they say what was true when, where these documents say how the system stands now.
+
 ## Executive summary
 
 **What failed before.** The legacy system was a Python 2 / Flask API in front of a self-managed Solr cluster on university-internal hosts. It kept per-user session state in MongoDB and needed hand-run Python scripts to ingest data. Every part depended on one institution's servers and on individual people. When that support went away, nothing could keep it running. It also showed only a **random sample of 500 hits per request**, so the map was a sample rather than a full count. See [01](01-background-and-legacy-analysis.md).
