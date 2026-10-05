@@ -127,10 +127,45 @@ class Resilience(unittest.TestCase):
             orig = jaocr.ocr_issue
             jaocr.ocr_issue = fake
             try:
-                jaocr.run(None, cur, jaocr.Path("/nonexistent"), None, "t")
+                jaocr.run(cur, cur, jaocr.Path("/nonexistent"), None, "t")
             finally:
                 jaocr.ocr_issue = orig
             self.assertEqual(seen, ["sn1_1945-01-01_ed-1", "sn1_1945-01-02_ed-1"])
+            status = json.loads(cur.read(jaocr.STATUS))
+            self.assertEqual(status["targets"], {"pages": 2, "issues": 2})
+
+    def test_progress_counts_issues_with_parts(self):
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            rows = [{"lccn": "sn1", "date": "1945-01-01", "edition": 1, "seq": s} for s in (1, 2, 3)]
+            rows.append({"lccn": "sn1", "date": "1945-01-02", "edition": 1, "seq": 1})
+            self.assertEqual(jaocr.progress(cur, rows)["done"], {"pages": 0, "issues": 0})
+            # Only the listing is read.
+            cur.write("ocr-ja/pages/sn1_1945-01-01_ed-1.parquet", b"")
+            cur.write("ocr-ja/pages/sn1_1945-01-01_ed-1.2.parquet", b"")
+            cur.write("ocr-ja/pages/sn9_1945-01-01_ed-1.parquet", b"")  # not a target
+            p = jaocr.progress(cur, rows)
+            self.assertEqual(p["targets"], {"pages": 4, "issues": 2})
+            self.assertEqual(p["done"], {"pages": 3, "issues": 1})
+
+    def test_status_estimates_the_finish(self):
+        from datetime import datetime, timedelta, timezone
+        with tempfile.TemporaryDirectory() as d:
+            cur = jaocr.LocalStore(d)
+            rows = [{"lccn": "sn1", "date": f"1945-01-0{i}", "edition": 1, "seq": 1} for i in (1, 2)]
+            started = datetime.now(timezone.utc) - timedelta(hours=1)
+            body = jaocr.write_status(cur, cur, rows, started, 0, "e")
+            self.assertIsNone(body["eta"])
+            orig = jaocr.progress
+            jaocr.progress = lambda c, r: {"targets": {"pages": 2, "issues": 2},
+                                           "done": {"pages": 1, "issues": 1}}
+            try:
+                body = jaocr.write_status(cur, cur, rows, started, 0, "e")
+            finally:
+                jaocr.progress = orig
+            eta = datetime.fromisoformat(body["eta"]) - datetime.now(timezone.utc)
+            self.assertTrue(timedelta(minutes=55) < eta < timedelta(minutes=65))
+            self.assertEqual(json.loads(cur.read(jaocr.STATUS))["engine"], "e")
 
 
 class Text(unittest.TestCase):

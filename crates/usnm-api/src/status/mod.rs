@@ -24,6 +24,7 @@ use usnm_store::ObjectStore;
 
 pub mod activity;
 pub mod assemble;
+pub mod ocr_ja;
 pub mod sanitize;
 pub mod schedule;
 
@@ -71,6 +72,8 @@ pub struct Status {
     pub backfill: Section<Backfill>,
     pub indexing: Section<Indexing>,
     pub titles: Titles,
+    /// The Japanese OCR job's progress.
+    pub ocr_ja: Section<ocr_ja::OcrJa>,
 }
 
 struct Entry {
@@ -100,6 +103,8 @@ pub struct StatusService {
 const NOT_CONFIGURED: &str = "This server is not connected to the pipeline state.";
 const UNREADABLE: &str = "The pipeline state could not be read.";
 const NO_CATALOG: &str = "The titles catalog is not available on this server.";
+const NO_OCR_JA: &str = "The Japanese OCR job has not reported any progress.";
+const UNREADABLE_OCR_JA: &str = "The Japanese OCR job's progress could not be read.";
 
 impl StatusService {
     pub fn new(source: PipelineSource, refresh: Duration) -> Self {
@@ -194,7 +199,21 @@ impl StatusService {
                 .await
                 .unwrap_or_else(|_| Err("reading the title cache timed out".to_owned()))
         };
-        let (pipeline, catalog, cache) = tokio::join!(self.read_pipeline(), catalog, cache);
+        let ocr = async {
+            tokio::time::timeout(READ_TIMEOUT, ocr_ja::read(reference_store(app)))
+                .await
+                .unwrap_or_else(|_| Err("reading the OCR progress timed out".to_owned()))
+        };
+        let (pipeline, catalog, cache, ocr) =
+            tokio::join!(self.read_pipeline(), catalog, cache, ocr);
+        let ocr_ja = match ocr {
+            Ok(Some(p)) => Section::of(ocr_ja::section(p, now)),
+            Ok(None) => Section::unavailable(NO_OCR_JA),
+            Err(e) => {
+                tracing::warn!(error = %e, "status: could not read the OCR progress");
+                Section::unavailable(UNREADABLE_OCR_JA)
+            }
+        };
         let cache = cache.unwrap_or_else(|e| {
             tracing::warn!(error = %e, "status: could not read the title cache");
             None
@@ -270,6 +289,7 @@ impl StatusService {
             backfill,
             indexing,
             titles: assemble::titles(rd, catalog.as_ref(), NO_CATALOG, summary, reason),
+            ocr_ja,
         }
     }
 }
@@ -468,6 +488,10 @@ mod tests {
         assert_eq!(v["activity"]["available"], false);
         assert_eq!(v["titles"]["pipeline"]["available"], false);
         assert_eq!(v["titles"]["catalog"]["available"], false);
+        assert_eq!(
+            v["ocr_ja"],
+            json!({"available": false, "reason": NO_OCR_JA})
+        );
         assert_eq!(v["published"]["index_version"], "fixture-v1");
         assert_eq!(v["published"]["deltas"], 1);
         assert!(v["published"]["pages"].as_u64().unwrap() > 0);

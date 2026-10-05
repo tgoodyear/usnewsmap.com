@@ -167,22 +167,24 @@ Visitors can limit a search to newspapers printed in chosen languages, for examp
 1. **Right now.** One sentence for what is happening at this moment (`rightNow` in `now.ts`), from `activity` (06 §6.3.6), with a progress bar when the step counts something and short notes under it: when the step started, and how the last run ended if it failed or stopped. The sentences, by `activity.now`:
    - `titles`: "Looking up newspaper details from the Library of Congress: 342 of 3,464 done (9.9%)." plus "Paused until 20:15 UTC because loc.gov asked us to slow down." during a rate-limit pause, or "At this pace, about 4 h left." otherwise.
    - `indexing`: "Building the search index: 4.1M of 7.8M pages sent (53%), about 1 h 20 min left."
-   - `merging`: "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live." When `activity.merge` is present it adds where the merge is: "Index still open: 227 pieces, 1 merge running, 20 waiting." while the open index merges (`settle`), or "Index closed for its final merges: …" once it is closed (`finalize`). Step 3's detail carries the same numbers. There is no time estimate: queued merges grow as smaller ones finish, so the count isn't a countdown.
-   - `publishing`: "Publishing: the new index is going live (step 4 of 4)."
+   - `merging`: "Merging the index (step 4 of 5): every page is in, and its pieces are being combined before it goes live." When `activity.merge` is present it adds where the merge is: "Index still open: 227 pieces, 1 merge running, 20 waiting." while the open index merges (`settle`), or "Index closed for its final merges: …" once it is closed (`finalize`). Step 4's detail carries the same numbers. There is no time estimate: queued merges grow as smaller ones finish, so the count isn't a countdown.
+   - `publishing`: "Publishing: the new index is going live (step 5 of 5)."
    - `downloading` and `listing`: batches processed of all listed, and a loc.gov download pause if there is one.
    - `idle`: "Idle: the last update went live on Sep 29 at 14:23 UTC." and the next scheduled run, or "No run is scheduled."
    - The last run, when it ended after the live update: "The last run stopped at 14:09 UTC because of an error while building the search index; nothing changed on the site." ("The previous run" while another runs), "stopped without finishing", or "ran out of time … while looking up newspaper details … The next run continues where it stopped."
+   - While the Japanese OCR job runs (`ocr_ja.running`), a note: "Separately, we're reading Japanese pages (step 2): 2,410 of 11,234 done."
    Times are in UTC. When `activity.source` is `inferred`, a note says when the progress is from.
 2. **Searchable now: X of Y downloaded pages (Z%).** Published pages (`published.pages`) against pages in downloaded batches (`backfill.pages`), with the number of newspapers and the years covered.
-3. **How pages get onto the map.** The four steps as an ordered list (`<ol>`), each with a count, a one-line explanation and its state in words ("Done", "In progress", "Paused", "Waiting"; colour only repeats it). The current step has `aria-current="step"` and a heavier border. On screens under 900 px the steps stack; wider, they sit in a row. The steps and their internal names:
+3. **How pages get onto the map.** The five steps as an ordered list (`<ol>`), each with a count, a one-line explanation and its state in words ("Done", "In progress", "Paused", "Waiting"; colour only repeats it). The current step has `aria-current="step"` and a heavier border. On screens under 900 px the steps stack; wider, they sit in a row. The steps and their internal names:
    1. Downloaded and processed (*curated*): batches processed of those listed, and their pages.
-   2. Newspaper details looked up (*titles-sync*): newspapers in the catalog of those in processed batches, and the batches that wait for the rest.
-   3. Indexed (*release*: build, then merge): pages sent while it runs; otherwise batches not yet searchable and how many are ready.
-   4. Live (*published*): the pages and newspapers the site searches.
+   2. Japanese pages read (*OCR*, `ocr_ja`): target pages read of all, the time left while it runs, and how many are searchable (`published.ja.pages`) or that they will be from the next update. Only Japanese pages LoC ships without text go through it, and it runs alongside the other steps, so it has a dashed border and is never the `aria-current` step. "Not known on this server" without `ocr_ja`.
+   3. Newspaper details looked up (*titles-sync*): newspapers in the catalog of those in processed batches, and the batches that wait for the rest.
+   4. Indexed (*release*: build, then merge): pages sent while it runs; otherwise batches not yet searchable and how many are ready.
+   5. Live (*published*): the pages and newspapers the site searches.
 4. **What's searchable now.** The published version in plain words, then "Pages by state" and "Pages by language".
 5. **Technical details**, collapsed in a `<details>`: the glossary, the activity's raw fields, downloads (leases, retries, hourly throughput, versions), index builds (version ids, base and deltas, writer lock, recent runs and their errors), the catalog counts and the raw response.
 
-**Glossary.** The internal terms (batch, curated, backfill, titles-sync, catalog, release, version, base and delta, merge, lease, writer lock, rate limit) are defined in one place, `web/src/status/terms.ts`, which the page shows at the top of Technical details. Other docs use the terms without redefining them.
+**Glossary.** The internal terms (batch, curated, backfill, titles-sync, catalog, OCR, release, version, base and delta, merge, lease, writer lock, rate limit) are defined in one place, `web/src/status/terms.ts`, which the page shows at the top of Technical details. Other docs use the terms without redefining them.
 
 **Wording.** Plain headings in sentence case, no em dashes; copy goes through the house no-slop review before it ships. The page never shows search text (the status document has none).
 

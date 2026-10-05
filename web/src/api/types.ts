@@ -340,6 +340,26 @@ export interface Activity {
 }
 
 /** `GET /v1/status` (schema 1): the ingest pipeline's status. */
+export interface OcrCount {
+  pages: number;
+  issues: number;
+}
+
+/** Japanese pages LoC ships without text, which our OCR job reads (#139). */
+export interface OcrJa {
+  /** Reported recently with pages left. */
+  running: boolean;
+  targets: OcrCount;
+  done: OcrCount;
+  /** Of the target pages, to one decimal, never rounded up to 100. */
+  percent: number;
+  engine: string | null;
+  started_at: string | null;
+  updated_at: string;
+  /** Only while running. */
+  eta: string | null;
+}
+
 export interface Status {
   schema: number;
   generated_at: string;
@@ -367,11 +387,15 @@ export interface Status {
     /** Added after schema 1 shipped; older APIs leave them out. */
     by_state?: StatePages[];
     by_language?: ByLanguage;
+    /** The Japanese index built from our own OCR; null or absent when the version has none. */
+    ja?: { indexes: string[]; fold: number; pages: number } | null;
   };
   /** Added after schema 1 shipped; older APIs leave it out. */
   activity?: Section<Activity>;
   backfill: Section<Backfill>;
   indexing: Section<Indexing>;
+  /** The Japanese OCR job's progress. Absent from older APIs. */
+  ocr_ja?: Section<OcrJa>;
   titles: {
     catalog: Section<{ titles: number; places: number }>;
     published_titles: number;

@@ -491,6 +491,50 @@ def claim(curated, issue: str, owner: str, stale: timedelta) -> bool:
     return False
 
 
+# Progress for the status page (#139), in the reference store, which the
+# API reads: the totals come from the part listing, so every replica writes
+# the same numbers.
+STATUS = "status/ocr-ja.json"
+STATUS_EVERY = timedelta(minutes=2)
+
+
+def progress(curated, rows: list[dict]) -> dict:
+    """Target and done pages and issues. An issue with a part counts as done, which
+    reads only the listing; an issue whose pages were added to the targets after
+    its first part counts early, which is close enough for a progress bar."""
+    per_issue: dict[str, int] = {}
+    for r in rows:
+        k = issue_key(r["lccn"], r["date"], r["edition"])
+        per_issue[k] = per_issue.get(k, 0) + 1
+    with_parts = {
+        Path(n).name.split(".")[0] for n in curated.list(f"{PREFIX}/pages/") if n.endswith(".parquet")
+    }
+    done = [i for i in per_issue if i in with_parts]
+    return {
+        "targets": {"pages": len(rows), "issues": len(per_issue)},
+        "done": {"pages": sum(per_issue[i] for i in done), "issues": len(done)},
+    }
+
+
+def write_status(reference, curated, rows: list[dict], started: datetime, done_at_start: int,
+                 engine: str) -> dict:
+    """Write the progress record, with a finish estimate from this run's pace."""
+    p = progress(curated, rows)
+    now = datetime.now(timezone.utc)
+    gained = p["done"]["pages"] - done_at_start
+    remaining = p["targets"]["pages"] - p["done"]["pages"]
+    eta = None
+    if gained > 0 and remaining > 0:
+        eta = (now + (now - started) * (remaining / gained)).isoformat()
+    body = {"schema": 1, "updated_at": now.isoformat(), "started_at": started.isoformat(),
+            "engine": engine, **p, "eta": eta}
+    try:
+        reference.write(STATUS, json.dumps(body).encode())
+    except Exception as e:  # the status page is not worth stopping the OCR for
+        log("status write failed", error=f"{type(e).__name__}: {e}")
+    return body
+
+
 def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> None:
     replicas = max(1, int(os.environ.get("JAOCR_REPLICAS", "1")))
     api = Pacer(float(os.environ.get("JAOCR_API_GAP", "3.5")) * replicas)
@@ -512,8 +556,14 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
     log("ocr starting", targets=len(rows), done_pages=len(done), todo_issues=len(todo),
         todo_pages=sum(len(v) for v in by_issue.values()), replicas=replicas)
     engine = f"ndlocr-lite {ndlocr_version(ndl_root)}"
+    started = datetime.now(timezone.utc)
+    done_at_start = write_status(reference, curated, rows, started, 0, engine)["done"]["pages"]
+    last_status = started
     pages_done = 0
     for issue in todo:
+        if datetime.now(timezone.utc) - last_status >= STATUS_EVERY:
+            write_status(reference, curated, rows, started, done_at_start, engine)
+            last_status = datetime.now(timezone.utc)
         if limit is not None and pages_done >= limit:
             break
         if not claim(curated, f"{TARGETS}/{issue}", owner, stale):
@@ -523,6 +573,7 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
         except Exception as e:  # noqa: BLE001 - one issue's failure mustn't end the replica
             # No part: the issue is retried once its claim goes stale.
             log("issue failed", issue=issue, error=f"{type(e).__name__}: {e}"[:500])
+    write_status(reference, curated, rows, started, done_at_start, engine)
     log("ocr finished", pages=pages_done)
 
 
