@@ -557,7 +557,9 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
         todo_pages=sum(len(v) for v in by_issue.values()), replicas=replicas)
     engine = f"ndlocr-lite {ndlocr_version(ndl_root)}"
     started = datetime.now(timezone.utc)
-    done_at_start = write_status(reference, curated, rows, started, 0, engine)["done"]["pages"]
+    # Pages done before this run don't count toward its pace.
+    done_at_start = progress(curated, rows)["done"]["pages"]
+    write_status(reference, curated, rows, started, done_at_start, engine)
     last_status = started
     pages_done = 0
     for issue in todo:
