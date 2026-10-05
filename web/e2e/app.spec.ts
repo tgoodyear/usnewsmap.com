@@ -494,7 +494,8 @@ test("the first and last mention open their pages, and a place's pages sort eith
 });
 
 test("the table lists the newspapers with matches, and one can limit the search to a paper", async ({ page }) => {
-  await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&tab=table");
+  // From the relative rate, which a newspaper filter can't show (no baselines per newspaper).
+  await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&tab=table&norm=skew");
   const papers = page.getByRole("region", { name: "Newspapers" });
   await expect(papers.getByText(/newspapers have matching pages/)).toBeVisible();
   // The fixtures' gold pages are in English, German and Spanish papers.
@@ -503,6 +504,11 @@ test("the table lists the newspapers with matches, and one can limit the search 
   const title = (await first.locator("th").textContent())!;
   await first.getByRole("button", { name: /Only this newspaper/ }).click();
   await expect(page).toHaveURL(/lccn=sn\d+/);
+  await expect(page).not.toHaveURL(/norm=skew/);
+  await expect(page.getByRole("group", { name: "Measure" }).getByRole("button", { name: "Pages" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await expect(page.getByRole("status").filter({ hasText: "Only pages from" })).toContainText(title);
   await expect(papers.locator("tbody tr")).toHaveCount(1);
   await expectAccessible(page);

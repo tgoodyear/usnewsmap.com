@@ -185,7 +185,7 @@ impl SearchBackend for MemoryBackend {
                 HitSort::Relevant => mb.cmp(ma).then(order),
             }
         });
-        let days = (page.offset == 0).then(|| {
+        let days = page.days.then(|| {
             docs.iter()
                 .map(|(_, d)| d.day)
                 .collect::<std::collections::BTreeSet<_>>()

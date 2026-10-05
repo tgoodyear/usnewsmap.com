@@ -208,6 +208,8 @@ pub async fn hits(
             sort,
             offset,
             limit,
+            // The first page says on how many days the pages appeared (#127).
+            days: offset == 0,
         };
         let t = Instant::now();
         let result = with_timeout(

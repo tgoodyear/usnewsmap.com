@@ -207,6 +207,9 @@ pub struct HitsQuery {
     pub sort: HitSort,
     pub offset: usize,
     pub limit: usize,
+    /// Also count the days the selected pages appeared on (#127): for the
+    /// first page of a list a visitor asked for, not the internal lookups.
+    pub days: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -232,8 +235,8 @@ pub struct Hit {
 pub struct HitsPage {
     pub total: u64,
     pub hits: Vec<Hit>,
-    /// Days with at least one of the selected pages (#127), on the first
-    /// page of a list only (offset 0); an estimate from Quickwit.
+    /// Days with at least one of the selected pages (#127), when the query
+    /// asked for them (`HitsQuery::days`); an estimate from Quickwit.
     pub days: Option<u64>,
 }
 

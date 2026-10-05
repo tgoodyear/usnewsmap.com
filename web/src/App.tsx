@@ -294,7 +294,10 @@ export function App() {
       }),
     [data?.papers, features],
   );
-  const onlyPaper = (lccn: string) => setView({ lccn: [lccn], t: "", place: "", sort: "oldest" }, true);
+  // The relative rate needs baselines, which aren't kept per newspaper
+  // (06 §6.3.3), so a newspaper filter shows pages.
+  const onlyPaper = (lccn: string) =>
+    setView({ lccn: [lccn], t: "", place: "", sort: "oldest", norm: view.norm === "skew" ? "raw" : view.norm }, true);
   const newspapers =
     data && data.total.hits > 0 && data.papers ? (
       <NewspaperTable
@@ -703,7 +706,9 @@ function WhenLegend({ from, to }: { from: string; to: string }) {
         <span>{from}</span>
         <span>{to}</span>
       </div>
-      <div className="legend__note">Half of a place&apos;s pages are from before its colour · circle area ∝ pages</div>
+      <div className="legend__note">
+        A place&apos;s colour is the period by whose end half its pages had appeared · circle area ∝ pages
+      </div>
     </div>
   );
 }

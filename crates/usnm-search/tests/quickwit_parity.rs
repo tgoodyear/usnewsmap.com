@@ -203,6 +203,7 @@ async fn hits_pages_match_the_reference_backend() {
                 let page = HitsQuery {
                     offset,
                     limit: 7,
+                    days: offset == 0,
                     ..selector.clone()
                 };
                 let ctx = format!("{qname} / {selector:?} / offset {offset}");

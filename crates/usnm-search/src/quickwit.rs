@@ -417,8 +417,9 @@ pub fn hits_request(
         "start_offset": page.offset,
         "sort_by": sort_by(page.sort)
     });
-    // The first page also says on how many days the pages appeared (#127).
-    if page.offset == 0 {
+    // On how many days the pages appeared (#127), when asked: the first page
+    // of a visitor's list, not the aggregate's first and last page lookups.
+    if page.days {
         req["aggs"] = json!({ "days": { "cardinality": { "field": "day" } } });
     }
     Ok(req)
@@ -929,6 +930,7 @@ mod tests {
             sort: HitSort::Oldest,
             offset: 50,
             limit: 25,
+            days: false,
         };
         let r = hits_request(&parse("gold").unwrap(), &filters(), &none(), &page).unwrap();
         // A leading `-` is ascending in Quickwit 0.9 (S-2): oldest first.
@@ -947,14 +949,20 @@ mod tests {
         assert_eq!(r3["sort_by"], "_score,-day");
         // Snippets are built from the stored text, not asked of Quickwit (#126).
         assert!(r.get("snippet_fields").is_none());
-        // Distinct days (#127) on the first page only.
+        // Distinct days (#127) only when asked, even on a first page.
         assert!(r.get("aggs").is_none());
         let first = HitsQuery {
             offset: 0,
             ..page.clone()
         };
         let r4 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &first).unwrap();
-        assert_eq!(r4["aggs"]["days"]["cardinality"]["field"], "day");
+        assert!(r4.get("aggs").is_none());
+        let counted = HitsQuery {
+            days: true,
+            ..first.clone()
+        };
+        let r5 = hits_request(&parse("gold").unwrap(), &filters(), &none(), &counted).unwrap();
+        assert_eq!(r5["aggs"]["days"]["cardinality"]["field"], "day");
         assert_eq!(r["start_offset"], 50);
         assert!(r["query"]
             .as_str()
