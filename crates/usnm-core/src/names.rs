@@ -51,6 +51,10 @@ pub static LANGUAGES: &[(&str, &str)] = &[
     ("bulgarian", "bul"),
     ("albanian", "alb"),
     ("creek", "mus"),
+    // LoC lists both spellings for one title (Adahooniłigii, sn92024097).
+    // The first is the name shown for the code.
+    ("navajo", "nav"),
+    ("navaho", "nav"),
 ];
 
 /// LoC language names to MARC codes; anything else stays as LoC wrote it.
@@ -187,6 +191,11 @@ mod tests {
         assert_eq!(language_name("eng"), "English");
         assert_eq!(language_name("ger"), "German");
         assert_eq!(language_name("mus"), "Creek");
+        assert_eq!(
+            (language_code("Navaho"), language_code("navajo")),
+            ("nav".into(), "nav".into())
+        );
+        assert_eq!(language_name("nav"), "Navajo");
         // Unknown names stay LoC's, capitalized for display.
         assert_eq!(language_code("Pennsylvania German"), "pennsylvania german");
         assert_eq!(language_name("pennsylvania german"), "Pennsylvania German");

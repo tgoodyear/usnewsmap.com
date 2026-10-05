@@ -548,7 +548,13 @@ pub fn build(
                 extra.insert("last_year".into(), Value::from(y));
             }
         }
-        let languages = d.raw.languages.iter().map(|l| language_code(l)).collect();
+        // Two of LoC's names can be one language (navaho, navajo): one code each.
+        let mut languages: Vec<String> = Vec::new();
+        for code in d.raw.languages.iter().map(|l| language_code(l)) {
+            if !languages.contains(&code) {
+                languages.push(code);
+            }
+        }
         match by_lccn.get_mut(&d.raw.lccn) {
             Some(t) => {
                 t.name = d.name.clone();
@@ -775,6 +781,21 @@ mod tests {
             dates: Some("1890-18??".into()),
             languages: vec!["english".into(), "german".into()],
         }
+    }
+
+    #[test]
+    fn two_names_for_one_language_are_one_code() {
+        let mut t = raw(
+            "sn92024097",
+            "Adahooniłigii (Phoenix, Ariz.) 1943-????",
+            &["phoenix"],
+            &["arizona"],
+            Some([33.45, -112.07]),
+        );
+        t.languages = vec!["navaho".into(), "navajo".into(), "english".into()];
+        let r = BTreeMap::from([(t.lccn.clone(), t)]);
+        let (c, _) = build(&r, vec![], vec![], &[]).unwrap();
+        assert_eq!(c.title("sn92024097").unwrap().languages, ["nav", "eng"]);
     }
 
     #[test]
