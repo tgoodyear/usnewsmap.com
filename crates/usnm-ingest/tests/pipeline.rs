@@ -1941,3 +1941,96 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
         2
     );
 }
+
+/// New Japanese OCR with no new batches (#139): an incremental release
+/// publishes it on the same main indexes, with a new Japanese index and
+/// snapshot; with neither new batches nor new OCR, nothing is released.
+#[tokio::test]
+async fn new_japanese_ocr_alone_is_released_on_the_same_indexes() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let path = e.root.join("batch_fx_ja_ver01.tar.gz");
+    let all: Vec<&Page> = pages.iter().collect();
+    write_archive(&path, &all, false, true);
+    curate(
+        &e,
+        vec![listed("batch_fx_ja_ver01", &path, Some(sha256_file(&path)))],
+    )
+    .await;
+    let p0 = pages.iter().find(|p| !p.text.is_empty()).unwrap();
+    let row = |seq, text| JaRow {
+        lccn: &p0.lccn,
+        date: p0.date,
+        seq,
+        batch: "batch_fx_ja",
+        loc_text: "missing",
+        text,
+        ocred_at: 1,
+    };
+
+    // A base with the first OCR part.
+    put_overlay_part(&e, "ocr-ja/pages/a.parquet", &[row(90, "米國と日本の戰爭")]).await;
+    let v1 = e.release(5, true).await.expect("base");
+    // No new batches, no new OCR: nothing to release.
+    assert!(e.release(6, false).await.is_none());
+
+    // New OCR arrives: released on the same main indexes.
+    put_overlay_part(&e, "ocr-ja/pages/b.parquet", &[row(91, "東京の新聞")]).await;
+    let v2 = e.release(6, false).await.expect("overlay-only release");
+    assert!(!v2.full);
+    assert_eq!(v2.indexes, v1.indexes, "no new main index");
+    assert_eq!(v2.docs, 0);
+    assert_eq!(v2.pages, v1.pages + 1);
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["index_version"], v2.index_version.as_str());
+    assert_eq!(current["indexes"], serde_json::json!(v1.indexes));
+    let ja_id = format!(
+        "pages-ja-{}",
+        v2.index_version.trim_start_matches("pages-v")
+    );
+    assert_eq!(current["ja"]["indexes"], serde_json::json!([ja_id]));
+    assert_eq!(e.index(&ja_id).len(), 2);
+    let run = raw_run(&e, &v2.index_version).await;
+    assert_eq!(run["new_index"], ja_id.as_str());
+    let record = e
+        .reference_json(&format!("{}/ocr_ja.json", v2.index_version))
+        .await;
+    assert_eq!(record["added_to_baselines"], 2);
+
+    // And again nothing, until something changes.
+    assert!(e.release(7, false).await.is_none());
+}
+
+/// OCR that changed without a page to index doesn't make an overlay-only
+/// release: the run would name a Japanese index it never wrote.
+#[tokio::test]
+async fn japanese_ocr_with_nothing_to_index_waits() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let path = e.root.join("batch_fx_ja_ver01.tar.gz");
+    let all: Vec<&Page> = pages.iter().collect();
+    write_archive(&path, &all, false, true);
+    curate(
+        &e,
+        vec![listed("batch_fx_ja_ver01", &path, Some(sha256_file(&path)))],
+    )
+    .await;
+    let p0 = pages.iter().find(|p| !p.text.is_empty()).unwrap();
+    e.release(5, true).await.expect("base");
+    // A part whose only page is from a batch outside the version: changed, nothing to index.
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/x.parquet",
+        &[JaRow {
+            lccn: &p0.lccn,
+            date: p0.date,
+            seq: 90,
+            batch: "batch_elsewhere",
+            loc_text: "missing",
+            text: "東京",
+            ocred_at: 1,
+        }],
+    )
+    .await;
+    assert!(e.release(6, false).await.is_none());
+}

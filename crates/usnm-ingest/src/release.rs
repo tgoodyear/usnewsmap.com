@@ -325,6 +325,10 @@ impl Release {
             }
             tracing::warn!("{why}; releasing with the catalog as it is");
         }
+        // An incremental release with no new batches still publishes when our
+        // Japanese OCR has changed (04 §4.8): same main indexes, a new
+        // Japanese index and snapshot.
+        let mut nothing_new = false;
         let (scope, version_batches, catalog, mut indexes) = if full {
             let all: Vec<RunBatch> = curated
                 .into_iter()
@@ -354,27 +358,58 @@ impl Release {
                     Some(_) => {}
                 }
             }
-            if new.is_empty() {
-                tracing::info!("no newly curated batches; nothing to release");
-                return Ok(None);
-            }
             let published_catalog = self.load_snapshot_catalog(&prev.index_version).await?;
             let catalog = Catalog::carried_forward(&published_catalog, &current)?;
             let new = catalogued(new, &catalog);
-            if new.is_empty() {
-                tracing::info!(
-                    "no newly curated batches with catalogued titles; nothing to release"
-                );
-                return Ok(None);
-            }
+            nothing_new = new.is_empty();
             let mut all = prev_batches;
             all.extend(new.iter().cloned());
             (new, all, catalog, prev.indexes.clone())
         };
-        if scope.is_empty() {
+        if scope.is_empty() && !nothing_new {
             tracing::info!("no curated batches; nothing to release");
             return Ok(None);
         }
+        // Our own OCR of the Japanese pages (04 §4.8): its own index, rebuilt
+        // at every release from the pages of the version's batches.
+        let batch_names: BTreeSet<&str> =
+            version_batches.iter().map(|b| b.batch.as_str()).collect();
+        let overlay = ocr_ja::load(self.curated.as_ref(), &batch_names, &catalog).await?;
+        if !overlay.parts.is_empty() {
+            tracing::info!(
+                parts = overlay.parts.len(),
+                pages = overlay.pages.len(),
+                skipped = overlay.skipped,
+                "Japanese OCR overlay"
+            );
+        }
+        // Decided before the duplicate-page plan, which reads every batch's
+        // counts: a run with nothing to release returns without it.
+        let overlay_only = nothing_new;
+        if overlay_only {
+            let prev = previous
+                .as_ref()
+                .expect("incremental has a previous version");
+            if !self.overlay_changed(&prev.index_version, &overlay).await? {
+                tracing::info!(
+                    "no newly curated batches with catalogued titles, and no new Japanese OCR; \
+                     nothing to release"
+                );
+                return Ok(None);
+            }
+            // The run records the Japanese index as the index it wrote, so
+            // there must be one: OCR that changed without a page to index waits.
+            if !overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
+                tracing::info!(
+                    "the Japanese OCR changed but has no page to index; nothing to release"
+                );
+                return Ok(None);
+            }
+            tracing::info!(
+                "no newly curated batches; releasing the new Japanese OCR on the same indexes"
+            );
+        }
+
         // Pages that ship in more than one batch: which copy the version
         // keeps. The batches outside the scope are in indexes it keeps.
         let new: BTreeSet<&str> = scope.iter().map(|b| b.batch.as_str()).collect();
@@ -404,28 +439,20 @@ impl Release {
             );
         }
 
-        // Our own OCR of the Japanese pages (04 §4.8): its own index, rebuilt
-        // at every release from the pages of the version's batches.
-        let batch_names: BTreeSet<&str> =
-            version_batches.iter().map(|b| b.batch.as_str()).collect();
-        let overlay = ocr_ja::load(self.curated.as_ref(), &batch_names, &catalog).await?;
-        if !overlay.parts.is_empty() {
-            tracing::info!(
-                parts = overlay.parts.len(),
-                pages = overlay.pages.len(),
-                skipped = overlay.skipped,
-                "Japanese OCR overlay"
-            );
-        }
-
         let (version, index_id) = self.next_names(full).await?;
-        indexes.push(index_id.clone());
+        // An overlay-only release adds no main index: the run's new index is the Japanese one.
+        let new_index = if overlay_only {
+            ocr_ja::index_id(&version)
+        } else {
+            indexes.push(index_id.clone());
+            index_id.clone()
+        };
         let mut run = IndexRun {
             id: version.clone(),
             index_version: version.clone(),
             full,
             indexes: indexes.clone(),
-            new_index: index_id.clone(),
+            new_index: new_index.clone(),
             batch_count: Some(version_batches.len() as u64),
             batch_list: None,
             batches: None,
@@ -447,16 +474,19 @@ impl Release {
         span.record("version", version.as_str());
         span.record("full", full);
         span.record("batches", scope.len());
-        tracing::info!(%version, index = %index_id, full, batches = scope.len(), "building index");
+        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, "building index");
 
         report.version(&version);
         report.step(Step::Indexing).await;
         let outcome = async {
-            let docs = self
-                .build_index(
+            let docs = if overlay_only {
+                0
+            } else {
+                self.build_index(
                     lease, sink, &version, &index_id, &scope, &catalog, &dedup, report,
                 )
-                .await?;
+                .await?
+            };
             let ja = self
                 .build_ja_index(lease, sink, &version, &overlay, &catalog)
                 .await?;
@@ -757,6 +787,24 @@ impl Release {
         Ok(docs)
     }
 
+    /// Whether the overlay's parts differ from the ones `version` was built
+    /// from (its `ocr_ja.json`; none if it has none).
+    async fn overlay_changed(
+        &self,
+        version: &str,
+        overlay: &ocr_ja::Overlay,
+    ) -> anyhow::Result<bool> {
+        let before = match self
+            .reference
+            .get(&format!("{version}/{}", ocr_ja::OCR_JA_FILE))
+            .await?
+        {
+            Some(bytes) => serde_json::from_slice::<Value>(&bytes)?["parts"].clone(),
+            None => json!([]),
+        };
+        Ok(serde_json::to_value(&overlay.parts)? != before)
+    }
+
     /// Build the Japanese pages' index for `version` from the overlay's pages
     /// with text, or nothing when there are none. Its name and page count.
     async fn build_ja_index(
@@ -768,7 +816,7 @@ impl Release {
         catalog: &Catalog,
     ) -> anyhow::Result<Option<(String, u64)>> {
         let mut docs = Vec::new();
-        for p in overlay.pages.iter().filter(|p| p.ok && p.printed.is_some()) {
+        for p in overlay.pages.iter().filter(|p| p.indexable()) {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let place = catalog.place(&title.place_id).context("place")?;
             docs.push(ocr_ja::ja_doc(p, title, place));
