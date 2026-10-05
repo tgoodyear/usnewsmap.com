@@ -1382,3 +1382,82 @@ async fn api_responses_are_compressed_and_cors_is_limited_to_allowed_origins() {
         ""
     );
 }
+
+/// The fixture state with the Japanese pages' index (#139) published, and its
+/// synthetic title in the catalog.
+async fn ja_state() -> Arc<AppState> {
+    let mut backend = fixture_backend();
+    backend.add_index("pages-ja-fixture", load_docs("pages-ja-fixture"));
+    let mut refdata = refdata().await;
+    refdata.current.ja = Some(usnm_api::refdata::JaIndexes {
+        indexes: vec!["pages-ja-fixture".into()],
+        fold: usnm_core::ja::FOLD_VERSION,
+        pages: 52,
+    });
+    refdata.titles.insert(
+        "sn99000901".into(),
+        serde_json::from_value(json!({
+            "lccn": "sn99000901", "name": "Fixture Shimpo (Japanese)",
+            "place_id": "P00003", "state": "CA", "languages": ["eng", "jpn"],
+        }))
+        .unwrap(),
+    );
+    Arc::new(AppState::new(config(), Arc::new(backend), refdata))
+}
+
+#[tokio::test]
+async fn japanese_queries_search_the_japanese_pages() {
+    let s = ja_state().await;
+    let docs = load_docs("pages-ja-fixture");
+    let printed_has = |w: &str| {
+        let q = vec![usnm_core::ja::tokenize(w)];
+        docs.iter()
+            .filter(|d| !usnm_core::ja::find(d.printed.as_deref().unwrap(), &q).is_empty())
+            .count() as u64
+    };
+    let war = printed_has("戰爭");
+    assert!(war > 0);
+    // Modern and printed forms are one search, on the Japanese pages only.
+    for q in ["%E6%88%A6%E4%BA%89", "%E6%88%B0%E7%88%AD"] {
+        let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["total"]["hits"], war, "{body}");
+        assert_eq!(body["places"]["id"], json!(["P00003"]));
+        // The relative rate compares with pages of titles that list Japanese.
+        let r = body["cube"]["baseline_ref"].as_str().unwrap();
+        assert!(r.contains("lang=jpn"), "{r}");
+    }
+    // Hits: our OCR is marked, snippets show the printed form, and the LoC
+    // viewer link has no highlight (LoC has no text for these pages).
+    let (status, _, body) = get(&s, "/v1/hits?q=%E6%88%A6%E4%BA%89&place=P00003").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len() as u64, war.min(items.len() as u64));
+    for it in items {
+        assert_eq!(it["ocr"]["source"], "usnm-ndlocr-lite");
+        assert_eq!(it["ocr"]["engine"], "ndlocr-lite 636d1cf");
+        assert_eq!(it["title"], "Fixture Shimpo (Japanese)");
+        assert!(it["snippets"][0]
+            .as_str()
+            .unwrap()
+            .contains("<mark>戰爭</mark>"));
+        assert!(!it["links"]["viewer"].as_str().unwrap().contains("&q="));
+    }
+    // A Latin query is untouched: the main indexes, LoC's text, highlighted viewer links.
+    let (_, _, body) = get(&s, "/v1/hits?q=gold&place=P00001").await;
+    let it = &body["items"][0];
+    assert!(it.get("ocr").is_none());
+    assert!(it["links"]["viewer"].as_str().unwrap().contains("&q=gold"));
+}
+
+#[tokio::test]
+async fn a_japanese_query_on_a_version_without_japanese_pages_is_refused() {
+    let s = state_with(None).await;
+    let (status, _, body) = get(&s, "/v1/aggregate?q=%E6%97%A5%E6%9C%AC").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, _, _) = get(&s, "/v1/hits?q=%E6%97%A5%E6%9C%AC&place=P00003").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Latin searches work as before.
+    let (status, _, _) = get(&s, "/v1/aggregate?q=gold").await;
+    assert_eq!(status, StatusCode::OK);
+}

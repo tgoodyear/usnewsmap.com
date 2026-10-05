@@ -77,7 +77,10 @@ impl Loader {
             Engine::Shared(b) => b.clone(),
             Engine::Memory { indexes_dir } => {
                 let dir = indexes_dir.clone();
-                let ids = refdata.current.indexes.clone();
+                let mut ids = refdata.current.indexes.clone();
+                if let Some(ja) = &refdata.current.ja {
+                    ids.extend(ja.indexes.iter().cloned());
+                }
                 tokio::task::spawn_blocking(move || memory_backend(&dir, &ids))
                     .await
                     .map_err(|e| e.to_string())??
@@ -85,6 +88,10 @@ impl Loader {
         };
         let set = refdata.index_set();
         backend.prepare(&set).await.map_err(|e| e.to_string())?;
+        // A version goes live only with its Japanese index searchable too.
+        if let Some(ja) = refdata.ja_index_set() {
+            backend.prepare(&ja).await.map_err(|e| e.to_string())?;
+        }
         Ok(Snapshot { refdata, backend })
     }
 }

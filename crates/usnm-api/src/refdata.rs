@@ -37,6 +37,19 @@ pub struct Current {
     pub published_at: String,
     #[serde(default)]
     pub synthetic: bool,
+    /// The Japanese pages' index (#139, 04 §4.8), when the version has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ja: Option<JaIndexes>,
+}
+
+/// `current.json`'s `ja`: the index of the Japanese pages we OCR ourselves.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct JaIndexes {
+    pub indexes: Vec<String>,
+    /// The `usnm_core::ja::FOLD_VERSION` the index was built with.
+    pub fold: u32,
+    #[serde(default)]
+    pub pages: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -226,6 +239,15 @@ impl RefData {
             .map(|(id, series)| (id.clone(), series.iter().map(|&(_, n)| u64::from(n)).sum()))
             .collect();
         let pages = place_pages.values().sum();
+        if let Some(ja) = &current.ja {
+            if ja.fold != usnm_core::ja::FOLD_VERSION {
+                tracing::warn!(
+                    index_fold = ja.fold,
+                    api_fold = usnm_core::ja::FOLD_VERSION,
+                    "the Japanese index was folded differently from this API; Japanese searches may miss"
+                );
+            }
+        }
         Ok(Self {
             current,
             places,
@@ -252,6 +274,25 @@ impl RefData {
                 .iter()
                 .map(|h| (h.doc_id.clone(), h.batch.clone())),
         )
+    }
+
+    /// The Japanese pages' index set, when the version has one.
+    pub fn ja_index_set(&self) -> Option<IndexSet> {
+        self.current
+            .ja
+            .as_ref()
+            .map(|j| IndexSet::new(j.indexes.clone()))
+    }
+
+    /// The indexes a query searches: a query with a Japanese word searches
+    /// the Japanese pages (#139), any other the main indexes. `None` for a
+    /// Japanese query on a version without Japanese pages.
+    pub fn index_set_for(&self, query: &usnm_core::query::Node) -> Option<IndexSet> {
+        if usnm_core::query::is_japanese(query) {
+            self.ja_index_set()
+        } else {
+            Some(self.index_set())
+        }
     }
 
     pub fn bounds(&self) -> (NaiveDate, NaiveDate) {

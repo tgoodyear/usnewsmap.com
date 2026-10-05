@@ -535,6 +535,13 @@ pub(crate) fn mount_prefix<'a>(path: &'a str, endpoint: &str) -> &'a str {
     path.strip_suffix(endpoint).unwrap_or("/v1")
 }
 
+/// A Japanese query on a version without the Japanese pages' index (#139).
+pub(crate) fn no_japanese() -> crate::error::ApiError {
+    crate::error::ApiError::Unsupported(
+        "Japanese text search on a version without Japanese pages".into(),
+    )
+}
+
 pub(crate) fn uses_fuzzy(node: &usnm_core::query::Node) -> bool {
     use usnm_core::query::Node;
     match node {
