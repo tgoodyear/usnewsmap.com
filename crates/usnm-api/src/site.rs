@@ -45,19 +45,39 @@ pub const SECURITY_HEADERS: [(&str, &str); 4] = [
     ),
 ];
 
+/// The longest file name the filesystem takes (Linux `NAME_MAX`).
+const NAME_MAX: usize = 255;
+
 /// The site as a service for the API router's fallback.
 pub fn router(dir: PathBuf) -> Router {
     let index = dir.join("index.html");
-    let spa = move |req: Request| {
+    let spa = {
         let index = index.clone();
-        async move { app_route(req, index).await }
+        move |req: Request| {
+            let index = index.clone();
+            async move { app_route(req, index).await }
+        }
     };
     let files = ServeDir::new(dir)
         .precompressed_br()
         .precompressed_gzip()
         .fallback(spa.into_service());
+    // A path segment longer than any file name can't name a file, and
+    // `ServeDir` answers the filesystem's "file name too long" with a 500, so
+    // such paths skip it and are answered like any other path with no file.
+    let long_names = move |req: Request, next: Next| {
+        let index = index.clone();
+        async move {
+            if req.uri().path().split('/').any(|s| s.len() > NAME_MAX) {
+                app_route(req, index).await
+            } else {
+                next.run(req).await
+            }
+        }
+    };
     Router::new()
         .fallback_service(files)
+        .layer(middleware::from_fn(long_names))
         .layer(middleware::from_fn(cache_control))
         .layer(middleware::from_fn(robots_tag))
 }

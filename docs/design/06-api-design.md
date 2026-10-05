@@ -300,6 +300,18 @@ The lean profile has no edge CDN in front of the API, so the API caches in three
 
 **Measuring cold searches under load.** `scripts/load-cold-searches.py [base-url] [--levels 1,2,4,10]` runs ten searches from the benchmark classes (05 §5.8) at each concurrency level, waiting out `202`s and `503 busy` as the web app does. Each pass moves the searches' end dates, so the API's caches can't answer them; Quickwit's own caches warm after the first pass, which it reports apart. Per level it prints throughput and its speedup over concurrency 1, the median and slowest time to a result, the mean backend time, and the `202`s, queue places and busy answers seen. The speedup says what limits a cold search: if it keeps growing up to the 4 slots, the searcher mostly waits on Blob reads and more slots would help; if it stops near 2, the searcher's two vCPUs are the limit. Run it against staging, or against production once at a quiet hour; it sends the same requests as a burst of real visitors would.
 
+**First run (production, 2026-10-05, index `pages-v20261003-1`, 23.7M pages, searcher 2 vCPU / 4 GiB):**
+
+| Searches at once | Searches/s | Speedup | Median s | Slowest s | Mean backend s | Failed |
+|---|---|---|---|---|---|---|
+| 1 (cold searcher) | 0.046 | – | 15.6 | 51.6 | 14.9 | 1/10 |
+| 1 | 0.074 | 1.00 | 7.4 | 44.0 | 8.3 | 1/10 |
+| 2 | 0.075 | 1.02 | 16.7 | 57.4 | 14.6 | 1/10 |
+| 4 | 0.042 | 0.56 | 32.9 | 46.9 | 24.8 | 6/10 |
+| 10 | 0.059 | 0.80 | 70.3 | 84.6 | 24.2 | 5/10 |
+
+Running more searches at once added no throughput: two at once each took twice as long, so the searcher's CPU, not Blob latency, limits a cold search. A cold search alone took 5–16 s on a warm searcher, longer than the 2–7 s first assumed. Every failure was Quickwit answering `408`: it cancels a search at its own `searcher.request_timeout_secs` and `leaf_request_timeout_secs` (30 s by default), well before the API's 120 s, and the warm-up had been hitting it after every deploy. The sidecar now sets both to 125 s (`infra/modules/containerapp.bicep`), and a `408` counts as a timeout. The queue (§6.6) held: queued searches reported their places and none was refused as busy.
+
 ## 6.6 Service internals
 
 ```mermaid

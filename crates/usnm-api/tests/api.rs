@@ -991,14 +991,35 @@ async fn serves_the_site_alongside_the_api() {
         assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache");
     }
 
-    // Other paths get the shell, where the app shows a not-found page, with a 404.
-    for uri in ["/search/gold", "/does-not-exist", "/statuses"] {
+    // Other paths get the shell, where the app shows a not-found page, with a
+    // 404; so do paths with a segment too long to be a file name, which the
+    // filesystem would refuse (a 500 from the file service).
+    let long = format!("/{}", "a".repeat(300));
+    let long_nested = format!("/assets/{}/x", "b".repeat(256));
+    for uri in [
+        "/search/gold",
+        "/does-not-exist",
+        "/statuses",
+        long.as_str(),
+    ] {
         let (status, h, body) = get_site(&s, uri, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         assert!(body.contains("id=root"), "{uri}");
         assert!(header_str(&h, header::CONTENT_TYPE).starts_with("text/html"));
         assert_eq!(header_str(&h, header::CACHE_CONTROL), "no-cache", "{uri}");
     }
+    let (status, _, _) = get_site(&s, &long_nested, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a long name under /assets/ is a plain 404"
+    );
+    let (status, _, _) = get_site(&s, &format!("/{}.js", "c".repeat(400)), None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a long file name is a plain 404"
+    );
 
     // HEAD on an app route: GET's headers and status, no body.
     let resp = app(s.clone())

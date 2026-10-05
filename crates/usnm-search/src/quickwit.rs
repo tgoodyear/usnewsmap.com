@@ -74,8 +74,15 @@ impl QuickwitBackend {
         let status = resp.status();
         if !status.is_success() {
             // Never include the response body: Quickwit may echo the query, and
-            // query text must not reach logs (09 §9.4.2).
-            let msg = format!("quickwit returned {status}");
+            // query text must not reach logs (09 §9.4.2). Its cause, classified
+            // from the body, is safe to log.
+            // 408 is Quickwit cancelling a search at its own
+            // `searcher.request_timeout_secs`: a timeout, not a refusal.
+            if status == reqwest::StatusCode::REQUEST_TIMEOUT {
+                return Err(SearchError::Timeout);
+            }
+            let body = resp.text().await.unwrap_or_default();
+            let msg = format!("quickwit returned {status} ({})", cause(&body));
             return Err(if status.is_client_error() {
                 SearchError::Rejected(msg)
             } else {
@@ -90,9 +97,75 @@ impl QuickwitBackend {
 
 fn map_err(e: reqwest::Error) -> SearchError {
     if e.is_timeout() {
-        SearchError::Timeout
+        return SearchError::Timeout;
+    }
+    // The whole chain (e.g. "connection refused" or "connection closed before
+    // message completed"), which says whether the sidecar went away. It holds
+    // the URL (index names) and transport errors, never the query, which is
+    // in the request body.
+    let mut msg = e.to_string();
+    let mut source = std::error::Error::source(&e);
+    while let Some(s) = source {
+        msg.push_str(": ");
+        msg.push_str(&s.to_string());
+        source = s.source();
+    }
+    let kind = if e.is_connect() {
+        "connect"
+    } else if e.is_decode() {
+        "decode"
+    } else if e.is_body() {
+        "body"
     } else {
-        SearchError::Backend(e.to_string())
+        "request"
+    };
+    SearchError::Backend(format!("quickwit {kind} error: {msg}"))
+}
+
+/// What a Quickwit error message is about, by keyword, so its cause can be
+/// logged without its text (which may echo the query, 09 §9.4.2).
+pub fn cause(message: &str) -> &'static str {
+    let m = message.to_ascii_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| m.contains(w));
+    if has(&["memory"]) {
+        "memory_limit"
+    } else if has(&["bucket"]) {
+        "bucket_limit"
+    } else if has(&["timeout", "timed out", "deadline", "elapsed"]) {
+        "timeout"
+    } else if has(&[
+        "too many",
+        "concurren",
+        "rate limit",
+        "throttl",
+        "503",
+        "429",
+    ]) {
+        "overloaded"
+    } else if has(&[
+        "storage",
+        "azure",
+        "blob",
+        "i/o",
+        "io error",
+        "connection",
+        "http",
+        "network",
+    ]) {
+        "storage"
+    } else if has(&[
+        "split",
+        "footer",
+        "hotcache",
+        "corrupt",
+        "not found",
+        "does not exist",
+    ]) {
+        "split"
+    } else if m.is_empty() {
+        "empty"
+    } else {
+        "other"
     }
 }
 
@@ -314,16 +387,48 @@ impl StoredHit {
     }
 }
 
-/// Reject responses that report partial failures, without echoing their content.
+/// Reject responses that report partial failures, without echoing their
+/// content: the error names how many, what they were about ([`cause`]) and
+/// up to 5 of the failed splits, whose ids are opaque.
 pub fn check_complete(resp: &SearchResponse) -> Result<(), SearchError> {
     if resp.errors.is_empty() {
-        Ok(())
-    } else {
-        Err(SearchError::Backend(format!(
-            "quickwit reported {} partial failure(s)",
-            resp.errors.len()
-        )))
+        return Ok(());
     }
+    let mut causes = std::collections::BTreeMap::<&str, usize>::new();
+    let mut splits = Vec::new();
+    for e in &resp.errors {
+        // An object ({split_id, error, ...}) or a plain message.
+        let (split, text) = match e {
+            Value::Object(o) => (
+                o.get("split_id").and_then(Value::as_str),
+                o.get("error")
+                    .map_or_else(|| e.to_string(), Value::to_string),
+            ),
+            Value::String(t) => (None, t.clone()),
+            other => (None, other.to_string()),
+        };
+        *causes.entry(cause(&text)).or_default() += 1;
+        if let Some(id) = split.filter(|id| {
+            id.len() <= 64
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        }) {
+            if splits.len() < 5 {
+                splits.push(id.to_owned());
+            }
+        }
+    }
+    let causes: Vec<String> = causes.iter().map(|(c, n)| format!("{c}×{n}")).collect();
+    let mut msg = format!(
+        "quickwit reported {} partial failure(s): {}",
+        resp.errors.len(),
+        causes.join(", ")
+    );
+    if !splits.is_empty() {
+        msg.push_str(&format!("; splits {}", splits.join(", ")));
+    }
+    Err(SearchError::Backend(msg))
 }
 
 #[derive(Debug, Deserialize)]
@@ -623,6 +728,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quickwit_cancelling_a_search_at_its_timeout_is_a_timeout() {
+        let qw = QuickwitBackend::new(&stub(408).await, Duration::from_secs(5)).unwrap();
+        let err = qw
+            .search(&IndexSet::new(vec!["i".into()]), &serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SearchError::Timeout), "{err}");
+    }
+
+    #[tokio::test]
     async fn a_refused_request_is_rejected_and_a_server_error_is_not() {
         for (status, rejected) in [(400, true), (422, true), (500, false), (503, false)] {
             let qw = QuickwitBackend::new(&stub(status).await, Duration::from_secs(5)).unwrap();
@@ -739,6 +854,42 @@ mod tests {
         let err = check_complete(&resp).unwrap_err().to_string();
         assert!(err.contains("1 partial failure"));
         assert!(!err.contains("secret"));
+    }
+
+    #[test]
+    fn partial_failures_say_what_they_were_about() {
+        let resp: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 3,
+            "errors": [
+                {"split_id": "01JA9X", "error": "aggregation memory limit exceeded on query text:secret"},
+                {"split_id": "01JA9Y", "error": "Aggregation Memory Limit exceeded"},
+                {"split_id": "text:secret", "error": "request timed out"},
+                "storage error: Azure blob read failed for text:secret"
+            ]
+        }))
+        .unwrap();
+        let err = check_complete(&resp).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "search backend error: quickwit reported 4 partial failure(s): \
+             memory_limit×2, storage×1, timeout×1; splits 01JA9X, 01JA9Y"
+        );
+        assert!(!err.contains("secret"), "{err}");
+    }
+
+    #[test]
+    fn causes_are_classified_by_keyword() {
+        assert_eq!(
+            cause("Aggregation memory limit of 768MB exceeded"),
+            "memory_limit"
+        );
+        assert_eq!(cause("too many buckets: 210000 > 200000"), "bucket_limit");
+        assert_eq!(cause("deadline exceeded"), "timeout");
+        assert_eq!(cause("Too many requests"), "overloaded");
+        assert_eq!(cause("failed to fetch footer"), "split");
+        assert_eq!(cause("Io error: broken pipe"), "storage");
+        assert_eq!(cause(""), "empty");
+        assert_eq!(cause("something else"), "other");
     }
 
     #[test]
