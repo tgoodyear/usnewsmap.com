@@ -31,8 +31,8 @@ A Rust API ([axum](https://github.com/tokio-rs/axum)) and a [Quickwit](https://q
 Needs a stable Rust toolchain (`rust-toolchain.toml`) and Node.js 24. No Azure account or newspaper data: the API serves a small synthetic corpus from `fixtures/`.
 
 ```sh
-cargo run -p usnm-api                 # the API on http://localhost:8080
-cd web && npm ci && npm run dev       # the site on http://localhost:5173
+cargo run -p usnm-api                 # terminal 1: the API on http://localhost:8080
+cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost:5173
 ```
 
 `cargo test --workspace` runs the unit and API tests against the same fixtures. The [development guide](docs/development.md) covers running against Quickwit, the ingest pipeline and the local Azure stand-ins.

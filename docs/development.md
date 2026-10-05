@@ -22,7 +22,7 @@ The same fixtures can be served by [Quickwit 0.9.1](https://github.com/quickwit-
 ```sh
 url=$(QUICKWIT_BIN=/path/to/quickwit scripts/quickwit-fixtures.sh /tmp/qw)
 QUICKWIT_URL=$url cargo test -p usnm-search --test quickwit_parity   # Quickwit vs the reference backend
-USNM_BACKEND=quickwit cargo run -p usnm-api
+USNM_BACKEND=quickwit USNM_QUICKWIT_URL=$url cargo run -p usnm-api
 kill "$(cat /tmp/qw/quickwit.pid)"
 ```
 
