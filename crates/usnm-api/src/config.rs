@@ -47,8 +47,12 @@ pub struct Config {
     pub compute_cap: Duration,
     /// Search computations (`/v1/aggregate`, `/v1/hits`) allowed to run at
     /// once, including those still running after their visitor got a `202`.
-    /// A new one waits for a slot up to the visitor's wait, then gets a `503`.
+    /// A new one queues for a slot (see `search_queue`).
     pub compute_concurrency: usize,
+    /// Searches allowed to wait for a slot, first come, first served. A
+    /// queued search keeps its place while its visitor keeps asking, within
+    /// `compute_cap`; one that finds the queue full gets a `503` busy.
+    pub search_queue: usize,
     /// A computation nobody has waited on for this long is cancelled (the
     /// visitor changed the search or left). Visitors ask again within
     /// `Retry-After` (2 s) of each `202`.
@@ -179,6 +183,8 @@ impl Config {
             compute_cap: Duration::from_secs(num("USNM_COMPUTE_CAP_SECS", 120)?.max(1)),
             compute_concurrency: usize::try_from(num("USNM_COMPUTE_CONCURRENCY", 4)?.max(1))
                 .map_err(|e| e.to_string())?,
+            search_queue: usize::try_from(num("USNM_SEARCH_QUEUE", 16)?)
+                .map_err(|e| e.to_string())?,
             abandon_after: match num("USNM_ABANDON_AFTER_SECS", 15)? {
                 // Well above the 2 s Retry-After, or a slow search still being
                 // polled could be cancelled between two polls.
@@ -246,6 +252,7 @@ mod tests {
         assert_eq!(c.search_log_flush, Duration::from_secs(300));
         assert_eq!(c.compute_cap, Duration::from_secs(120));
         assert_eq!(c.compute_concurrency, 4);
+        assert_eq!(c.search_queue, 16);
         assert_eq!(c.abandon_after, Duration::from_secs(15));
         assert_eq!(c.prewarm_top_searches, 20);
         assert_eq!(c.prewarm_log_days, 28);

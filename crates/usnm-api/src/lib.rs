@@ -134,7 +134,7 @@ impl AppState {
                 .rate_limit
                 .map(|l| Limiter::new(l, config.trusted_proxy_hops)),
             permits: Semaphore::new(config.backend_concurrency),
-            flights: flights::Flights::new(config.compute_concurrency),
+            flights: flights::Flights::new(config.compute_concurrency, config.search_queue),
             status: status::StatusService::new(status::PipelineSource::None, config.status_refresh),
             config,
             snapshot: ArcSwap::from_pointee(snapshot),

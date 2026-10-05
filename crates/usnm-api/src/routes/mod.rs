@@ -30,7 +30,7 @@ use tokio::time::Instant;
 use usnm_store::ObjectStore;
 
 use crate::error::ApiError;
-use crate::flights::{Entry, Interest, Landing};
+use crate::flights::{Entry, Interest, Landing, SearchSlot, Spot};
 use crate::telemetry::ServedVersion;
 use crate::version::{self, Pinning};
 use crate::{AppState, Snapshot};
@@ -184,14 +184,17 @@ pub(crate) fn visitor_wait(state: &AppState) -> Duration {
     }
 }
 
-/// `202 Accepted`: the response is still being computed; the same request
-/// later gets it (06 §6.3.5). Never cached; carries nothing from the query.
-fn computing(serving: &str) -> Response {
-    let mut resp = (
-        StatusCode::ACCEPTED,
-        Json(json!({ "status": "computing", "retry_after": COMPUTING_RETRY_SECS })),
-    )
-        .into_response();
+/// `202 Accepted`: the response is still being computed, or still waiting
+/// for a slot behind `ahead` other searches; the same request later gets it
+/// (06 §6.3.5). Never cached; carries nothing from the query.
+fn computing(serving: &str, ahead: Option<usize>) -> Response {
+    let body = match ahead {
+        Some(ahead) => {
+            json!({ "status": "queued", "ahead": ahead, "retry_after": COMPUTING_RETRY_SECS })
+        }
+        None => json!({ "status": "computing", "retry_after": COMPUTING_RETRY_SECS }),
+    };
+    let mut resp = (StatusCode::ACCEPTED, Json(body)).into_response();
     let headers = resp.headers_mut();
     headers.insert(header::RETRY_AFTER, HeaderValue::from(COMPUTING_RETRY_SECS));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -262,7 +265,7 @@ where
         .clone()
         .map(|store| (store, persisted_path(serving, &key)));
     let metrics = &state.metrics;
-    let body = match find_or_start(state, job, &key, wait, persistent, compute).await {
+    let body = match find_or_start(state, job, &key, persistent, compute).await {
         Source::Cached(body) => {
             if !job.warm_up {
                 metrics.cache("memory", true);
@@ -276,7 +279,7 @@ where
             // Keeps the computation from being abandoned while this waits.
             // One being abandoned right now is gone in a moment: ask again.
             let Some(_watching) = entry.interest.watch() else {
-                return Ok((computing(serving), None));
+                return Ok((computing(serving, None), None));
             };
             let result = match wait {
                 None => entry.flight.await,
@@ -284,7 +287,10 @@ where
                     Ok(r) => r,
                     // Giving up drops only this request's wait: the
                     // computation carries on in its own task.
-                    Err(_) => return Ok((computing(serving), None)),
+                    Err(_) => {
+                        let ahead = state.flights.ahead(&entry.spot);
+                        return Ok((computing(serving, ahead), None));
+                    }
                 },
             };
             // A request that waited on an identical one that failed counts as neither.
@@ -308,13 +314,11 @@ where
     Ok((resp, Some(body)))
 }
 
-/// Join the computation running for `key`, take its cached body, or start
-/// it. `wait` is when this request stops waiting (`None` for a warm-up).
+/// Join the computation running for `key`, take its cached body, or start it.
 async fn find_or_start<F, T>(
     state: &Arc<AppState>,
     job: Job,
     key: &str,
-    wait: Option<Instant>,
     persistent: Option<(Arc<dyn ObjectStore>, String)>,
     compute: F,
 ) -> Source
@@ -345,7 +349,7 @@ where
             // under the lock the body is either running or cached (unless
             // it failed or has been evicted, and then it's computed again).
             if !state.cache.contains_key(key) {
-                let entry = start(state, job, key.to_owned(), wait, persistent, compute);
+                let entry = start(state, job, key.to_owned(), persistent, compute);
                 running.insert(key.to_owned(), entry.clone());
                 return Source::Flight {
                     entry,
@@ -359,16 +363,14 @@ where
     }
 }
 
-/// Spawn the computation for `key`. It ends at `job.limit` at the latest,
-/// or once nobody has waited on it for `abandon_after` (not a warm-up's),
+/// Spawn the computation for `key`. It ends once nobody has waited on it for
+/// `abandon_after` (not a warm-up's), or at the limits in [`produce`],
 /// stores a successful body in the in-process cache, and leaves the map (see
-/// [`Landing`]) after that. `wait` is when the request that started it stops
-/// waiting: a search that can't get a slot by then fails as busy.
+/// [`Landing`]) after that.
 fn start<F, T>(
     state: &Arc<AppState>,
     job: Job,
     key: String,
-    wait: Option<Instant>,
     persistent: Option<(Arc<dyn ObjectStore>, String)>,
     compute: F,
 ) -> Entry
@@ -379,13 +381,15 @@ where
     let state = state.clone();
     let interest = Interest::new();
     let watched = interest.clone();
+    let spot = Arc::new(Spot::default());
+    let place = spot.clone();
     let task = tokio::spawn(async move {
         let landing = Landing {
             state: state.clone(),
             key,
         };
         let started = Instant::now();
-        let work = tokio::time::timeout(job.limit, produce(&state, job, wait, persistent, compute));
+        let work = produce(&state, job, &place, persistent, compute);
         let after = state.config.abandon_after;
         let abandoned = async {
             if job.warm_up {
@@ -401,10 +405,10 @@ where
         };
         let (result, outcome) = tokio::select! {
             r = work => match r {
-                Ok(Ok(body)) => (Ok(body), "ok"),
-                Ok(Err(ApiError::Busy)) => (Err(ApiError::Busy), "busy"),
-                Ok(Err(ApiError::Timeout)) | Err(_) => (Err(ApiError::Timeout), "timeout"),
-                Ok(Err(e)) => (Err(e), "error"),
+                Ok(body) => (Ok(body), "ok"),
+                Err(ApiError::Busy) => (Err(ApiError::Busy), "busy"),
+                Err(ApiError::Timeout) => (Err(ApiError::Timeout), "timeout"),
+                Err(e) => (Err(e), "error"),
             },
             () = abandoned => (Err(ApiError::Timeout), "abandoned"),
         };
@@ -429,17 +433,31 @@ where
     }
     .boxed()
     .shared();
-    Entry { flight, interest }
+    Entry {
+        flight,
+        interest,
+        spot,
+    }
+}
+
+/// The computation slot a computation holds while it runs, if any.
+#[allow(dead_code)] // Held for its `Drop`, never read.
+enum Held<'a> {
+    Nothing,
+    Search(SearchSlot<'a>),
+    WarmUp(tokio::sync::OwnedSemaphorePermit),
 }
 
 /// The body: from the persistent cache (visitors only), else computed, and
 /// persisted when it was slow. A search computes only once it has a slot:
-/// a visitor's waits until shortly before `wait` and is otherwise busy; the
-/// warm-up uses its own slot.
+/// a visitor's queues for one (holding its place in `spot`) for at most
+/// `job.limit`, and is busy past that; the warm-up uses its own. The
+/// computation itself then has `job.limit`, so a search that queued long
+/// still gets its full time.
 async fn produce<F, T>(
     state: &AppState,
     job: Job,
-    wait: Option<Instant>,
+    spot: &Spot,
     persistent: Option<(Arc<dyn ObjectStore>, String)>,
     compute: F,
 ) -> Result<Arc<Vec<u8>>, ApiError>
@@ -454,31 +472,36 @@ where
             return Ok(Arc::new(body));
         }
     }
-    let _slot = if job.search {
-        let slots = if job.warm_up {
-            &state.flights.warm_up_slot
-        } else {
-            &state.flights.slots
-        };
-        let acquire = slots.clone().acquire_owned();
-        let acquired = match wait {
-            None => acquire.await,
-            // A little before the request stops waiting, so it hears that
-            // the API is busy rather than a 202 for a search that isn't running.
-            Some(at) => {
-                let margin = visitor_wait(state).min(Duration::from_secs(2)) / 4;
-                tokio::time::timeout_at(at - margin, acquire)
-                    .await
-                    .map_err(|_| ApiError::Busy)?
-            }
-        };
-        // The semaphores are never closed.
-        Some(acquired.map_err(|e| ApiError::Backend(e.to_string()))?)
-    } else {
-        None
+    let slot = async {
+        match (job.search, job.warm_up) {
+            (false, _) => Ok(Held::Nothing),
+            (true, false) => state.flights.slot(spot).await.map(Held::Search),
+            // The semaphore is never closed.
+            (true, true) => state
+                .flights
+                .warm_up_slot
+                .clone()
+                .acquire_owned()
+                .await
+                .map(Held::WarmUp)
+                .map_err(|e| ApiError::Backend(e.to_string())),
+        }
     };
+    let queued = Instant::now();
+    let slot = tokio::time::timeout(job.limit, slot)
+        .await
+        .unwrap_or(Err(ApiError::Busy));
+    if job.search && !job.warm_up {
+        let got = !matches!(slot, Err(ApiError::Busy));
+        state
+            .metrics
+            .queue_wait(job.endpoint, queued.elapsed(), got);
+    }
+    let _slot = slot?;
     let started = Instant::now();
-    let value = compute.await?;
+    let value = tokio::time::timeout(job.limit, compute)
+        .await
+        .map_err(|_| ApiError::Timeout)??;
     let body = serde_json::to_vec(&value)
         .map(Arc::new)
         .map_err(|e| ApiError::Backend(e.to_string()))?;

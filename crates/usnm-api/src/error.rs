@@ -21,8 +21,9 @@ pub enum ApiError {
     /// A search ran past its computation limit (`USNM_COMPUTE_CAP_SECS`),
     /// or the backend gave up on it.
     Timeout,
-    /// Every slot for search computations is taken and none freed up while
-    /// the visitor waited (`USNM_COMPUTE_CONCURRENCY`).
+    /// Every slot for search computations is taken (`USNM_COMPUTE_CONCURRENCY`)
+    /// and the queue for one is full (`USNM_SEARCH_QUEUE`), or the search
+    /// waited in it past its limit (`USNM_COMPUTE_CAP_SECS`).
     Busy,
     Backend(String),
     /// The search backend refused the request (a bug on our side, not an

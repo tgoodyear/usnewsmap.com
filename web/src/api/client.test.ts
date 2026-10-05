@@ -63,6 +63,21 @@ describe("searches the API is still computing", () => {
     expect(new Set(urls).size).toBe(1);
   });
 
+  it("reports the place in the API's queue while the search waits for a slot", async () => {
+    vi.useFakeTimers();
+    const queued = (ahead: number) => () =>
+      new Response(JSON.stringify({ status: "queued", ahead, retry_after: 2 }), {
+        status: 202,
+        headers: { "content-type": "application/json", "retry-after": "2" },
+      });
+    sequence(queued(2), queued(0), computing, () => problem(503, "/errors/busy", "5"), ok);
+    const onComputing = vi.fn();
+    const result = api.aggregate({ q: "radio" }, "v1", undefined, onComputing);
+    await vi.advanceTimersByTimeAsync(2000 * 3 + 5000);
+    await expect(result).resolves.toMatchObject({ index_version: "v1" });
+    expect(onComputing.mock.calls).toEqual([[2], [0], [null], [null]]);
+  });
+
   it("stops asking when the search changes (the signal aborts)", async () => {
     vi.useFakeTimers();
     const fetch = sequence(computing, computing, ok);

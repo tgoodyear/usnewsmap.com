@@ -38,7 +38,8 @@ export class ApiError extends Error {
 
 /**
  * How long a request keeps asking about a search the API is still
- * computing. The API gives a search at most 2 minutes, so a little more.
+ * computing, time queued for a slot included. The API gives a computation
+ * at most 2 minutes, so a little more.
  */
 export const MAX_COMPUTE_WAIT_MS = 150_000;
 
@@ -149,8 +150,22 @@ async function fetchBy(
 export interface GetOptions {
   signal?: AbortSignal;
   cache?: RequestCache;
-  /** Called each time the API answers that the response is still being computed. */
-  onComputing?: () => void;
+  /**
+   * Called each time the API answers that the response is still being
+   * computed, with how many searches are ahead of it while it is queued
+   * for a slot, or `null` when it is running (or its place isn't known).
+   */
+  onComputing?: (ahead: number | null) => void;
+}
+
+/** How many searches are ahead of a `202`'s search in the API's queue (06 §6.3.5). */
+async function aheadOf(resp: Response): Promise<number | null> {
+  try {
+    const body = (await resp.json()) as { status?: unknown; ahead?: unknown };
+    return body.status === "queued" && typeof body.ahead === "number" ? body.ahead : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -173,14 +188,14 @@ async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
     if (resp.status === 202) {
       wait = retryAfter(resp);
       waiting = true;
-      onComputing?.();
+      onComputing?.(await aheadOf(resp));
     } else if (!resp.ok) {
       problem = await problemOf(resp);
       if (problem.type === BUSY) {
-        // Large searches are queued behind others: the same wait for the visitor.
+        // The API's queue is full: the same wait for the visitor.
         wait = retryAfter(resp);
         waiting = true;
-        onComputing?.();
+        onComputing?.(null);
       } else if (resp.status === 429 && waiting) {
         wait = retryAfter(resp);
       }
@@ -201,7 +216,7 @@ async function getPinned<T extends { index_version: string }>(
   path: string,
   version: string,
   signal?: AbortSignal,
-  onComputing?: () => void,
+  onComputing?: (ahead: number | null) => void,
 ): Promise<T> {
   const body = await getJson<T>(path, { signal, onComputing });
   if (body.index_version !== version) throw new VersionChangedError(version, body.index_version);
@@ -267,7 +282,12 @@ export const api = {
   places: (version: string, signal?: AbortSignal) =>
     getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, signal),
   /** `onComputing` is called while the API is still computing a large search. */
-  aggregate: (p: SearchParams, version: string, signal?: AbortSignal, onComputing?: () => void) =>
+  aggregate: (
+    p: SearchParams,
+    version: string,
+    signal?: AbortSignal,
+    onComputing?: (ahead: number | null) => void,
+  ) =>
     getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, signal, onComputing),
   /** `ref` is the response's `baseline_ref`, already canonical and versioned. */
   coverage: (ref: string, version: string, signal?: AbortSignal) =>

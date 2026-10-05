@@ -57,6 +57,10 @@ pub struct Metrics {
     /// `outcome` (ok, timeout, error, abandoned), counted once each when they
     /// end; and searches that found no free computation slot (busy).
     slow_searches: Counter<u64>,
+    /// How long a visitor's search waited for a computation slot, by
+    /// `endpoint` and `outcome` (`slot`, or `busy` when the queue was full or
+    /// it waited past its limit). Zero when a slot was free.
+    queue_wait: Histogram<f64>,
     /// Reference-data reloads by `outcome` (published, failed).
     reloads: Counter<u64>,
     /// One warm-up run, by `trigger` (startup, publish).
@@ -99,6 +103,14 @@ impl Metrics {
                 .with_description(
                     "Searches that took longer than a visitor waits, by endpoint and outcome \
                      (ok, timeout, error, abandoned, busy)",
+                )
+                .build(),
+            queue_wait: meter
+                .f64_histogram("api.search_queue_wait_seconds")
+                .with_unit("s")
+                .with_description(
+                    "Time a search waited for a computation slot, by endpoint and outcome \
+                     (slot, busy)",
                 )
                 .build(),
             reloads: meter
@@ -164,6 +176,16 @@ impl Metrics {
             &[
                 KeyValue::new("layer", layer),
                 KeyValue::new("result", if hit { "hit" } else { "miss" }),
+            ],
+        );
+    }
+
+    pub(crate) fn queue_wait(&self, endpoint: &'static str, elapsed: Duration, got_slot: bool) {
+        self.queue_wait.record(
+            elapsed.as_secs_f64(),
+            &[
+                KeyValue::new("endpoint", endpoint),
+                KeyValue::new("outcome", if got_slot { "slot" } else { "busy" }),
             ],
         );
     }
