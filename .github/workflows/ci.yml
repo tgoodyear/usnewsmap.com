@@ -30,6 +30,7 @@ jobs:
       rust: ${{ steps.f.outputs.rust }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
+      provision: ${{ steps.f.outputs.provision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -246,6 +247,36 @@ jobs:
             api.log
             cargo-build.log
             playwright-install.log
+
+  provision-reminder:
+    name: stack change needs a provision
+    # A deploy rolls the API image and applies infra/quickwit/searcher.yaml
+    # (scripts/ci/roll-api.sh); CI's identity can't deploy the rest of the
+    # stack (08 §8.2). When a merge to main changes it, say so on the run,
+    # so the change isn't taken for deployed.
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.provision == 'true'
+      && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Ask for a provision
+        env:
+          ENVS: ${{ vars.USNM_DEPLOY_ENVIRONMENTS || '[]' }}
+        run: |
+          envs=$(jq -r '.[]' <<< "$ENVS")
+          msg="This merge changes the Azure stack (infra/), which a deploy doesn't apply. Run scripts/provision.sh for each environment: ${envs//$'\n'/, }."
+          echo "::warning title=Stack change not deployed::$msg"
+          {
+            echo "### Stack change not deployed"
+            echo
+            echo "This merge changes \`infra/\` beyond what a deploy applies. From an up-to-date \`main\`, run:"
+            echo
+            echo '```sh'
+            for e in $envs; do echo "scripts/provision.sh $e"; done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     name: publish and roll out (${{ matrix.environment }})

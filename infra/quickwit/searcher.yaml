@@ -1,0 +1,38 @@
+# The Quickwit searcher sidecar's node config (08 §8.4). Bicep loads this
+# file into the quickwit container's USNM_QW_CONFIG (modules/containerapp.bicep),
+# and every CI deploy applies it to the running app when it differs
+# (scripts/ci/roll-api.sh), so a change here goes live on merge without a
+# provision. __STORAGE_ACCOUNT__ becomes the environment's storage account.
+#
+# Searcher-only node on localhost. The metastore service opens the
+# file-backed metastore read-only and polls it (08 §8.4.1); the API looks
+# each index up before serving a version that lists it, because the
+# searcher reads the index list only at start (S-2). Aggregation limits per
+# 05 §5.7; caches sized for the 4 GiB container.
+version: 0.8
+cluster_id: usnm-searcher
+node_id: searcher
+enabled_services: [searcher, metastore]
+listen_address: 127.0.0.1
+rest:
+  listen_port: 7280
+data_dir: /quickwit/qwdata
+metastore_uri: azure://qw-index#polling_interval=30s
+default_index_root_uri: azure://qw-index
+storage:
+  azure:
+    account: __STORAGE_ACCOUNT__
+searcher:
+  aggregation_bucket_limit: 200000
+  aggregation_memory_limit: 768MB
+  fast_field_cache_capacity: 1GB
+  split_footer_cache_capacity: 256MB
+  partial_request_cache_capacity: 32MB
+  predicate_cache_capacity: 32MB
+  max_num_concurrent_split_searches: 8
+  # Quickwit cancels a search, and each split search in it, at these (both
+  # 30 s by default) and answers 408. The API's own limit on a computation
+  # is 120 s (USNM_COMPUTE_CAP_SECS), so Quickwit's must be longer, or busy
+  # cold searches fail at 30 s (October 2026 load test, 06 §6.5).
+  request_timeout_secs: 125
+  leaf_request_timeout_secs: 125

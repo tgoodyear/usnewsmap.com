@@ -153,7 +153,7 @@ function Headline({ s }: { s: Status }) {
   );
 }
 
-/** The four steps a page goes through, as an ordered list. */
+/** The five steps a page goes through, as an ordered list. */
 function Steps({ s, now }: { s: Status; now: number }) {
   const list = steps(s, now);
   return (
@@ -161,11 +161,11 @@ function Steps({ s, now }: { s: Status; now: number }) {
       <h2 id="steps">How pages get onto the map</h2>
       <ol className="steps">
         {list.map((st, i) => {
-          const current = st.state === "active" || st.state === "paused";
+          const current = !st.parallel && (st.state === "active" || st.state === "paused");
           return (
             <li
               key={st.key}
-              className={`step step--${st.state}${current ? " step--current" : ""}`}
+              className={`step step--${st.state}${st.parallel ? " step--parallel" : ""}${current ? " step--current" : ""}`}
               aria-current={current ? "step" : undefined}
             >
               <span className="step__marker" aria-hidden="true">

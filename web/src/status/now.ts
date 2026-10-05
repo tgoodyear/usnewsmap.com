@@ -143,6 +143,12 @@ export function rightNow(s: Status, now: number): NowLine {
   }
   const last = lastRun(a, s, now);
   if (last) notes.push(last);
+  const ocr = s.ocr_ja?.available ? s.ocr_ja : null;
+  if (ocr?.running) {
+    notes.push(
+      `Separately, we're reading Japanese pages (step 2): ${count(ocr.done.pages)} of ${count(ocr.targets.pages)} done.`,
+    );
+  }
   return { ...line, notes };
 }
 
@@ -175,13 +181,13 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
     }
     case "merging": {
       let text =
-        "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live.";
+        "Merging the index (step 4 of 5): every page is in, and its pieces are being combined before it goes live.";
       const m = mergeDetail(a);
       if (m) text += ` ${m}.`;
       return { text };
     }
     case "publishing":
-      return { text: "Publishing: the new index is going live (step 4 of 4)." };
+      return { text: "Publishing: the new index is going live (step 5 of 5)." };
     case "downloading": {
       let text = "Downloading and processing batches from the Library of Congress";
       text += has ? `: ${count(done)} of ${count(total)} done.` : ".";
@@ -255,16 +261,18 @@ export const STATE_LABEL: Record<StepState, string> = {
 };
 
 export interface Step {
-  key: "download" | "titles" | "index" | "live";
+  key: "download" | "ocr" | "titles" | "index" | "live";
   title: string;
   /** One line on what the step is. */
   explain: string;
   /** The step's numbers, in words. */
   detail: string;
   state: StepState;
+  /** Runs alongside the others, so it is never the one current step. */
+  parallel?: boolean;
 }
 
-/** The four steps a page goes through, with each one's numbers and state. */
+/** The five steps a page goes through, with each one's numbers and state. */
 export function steps(s: Status, now: number): Step[] {
   const a = s.activity?.available ? s.activity : null;
   const doing = a?.now ?? "idle";
@@ -288,6 +296,33 @@ export function steps(s: Status, now: number): Step[] {
           : "active"
         : remaining === 0 && (b?.total ?? 0) > 0
           ? "done"
+          : "waiting",
+  };
+
+  const o = s.ocr_ja?.available ? s.ocr_ja : null;
+  let ocrDetail = "Not known on this server";
+  if (o) {
+    ocrDetail = `${count(o.done.pages)} of ${count(o.targets.pages)} pages read (${pct(o.done.pages, o.targets.pages)})`;
+    const left = o.eta ? Date.parse(o.eta) - now : NaN;
+    if (left > 60_000) ocrDetail += `, about ${span(left)} left`;
+    const ja = s.published.ja;
+    ocrDetail += ja
+      ? `; ${count(ja.pages)} searchable now`
+      : "; searchable from the next update";
+  }
+  const ocr: Step = {
+    key: "ocr",
+    title: "Japanese pages read",
+    explain:
+      "The Library of Congress has no searchable text for most of its Japanese-language pages, so we read those page images ourselves with NDLOCR-Lite, text-recognition software from Japan's National Diet Library. This step runs alongside the others. Pages in other languages skip it.",
+    detail: ocrDetail,
+    parallel: true,
+    state: !o
+      ? "waiting"
+      : o.done.pages >= o.targets.pages
+        ? "done"
+        : o.running
+          ? "active"
           : "waiting",
   };
 
@@ -345,7 +380,7 @@ export function steps(s: Status, now: number): Step[] {
   const live: Step = {
     key: "live",
     title: "Live",
-    explain: "The site searches the last published version of the index. Each update adds the pages step 3 indexed.",
+    explain: "The site searches the last published version of the index. Each update adds the pages step 4 indexed.",
     detail: `${count(p.pages)} pages from ${count(p.titles)} newspapers, live since ${utcDate(lastUpdate(s))}`,
     state:
       doing === "publishing"
@@ -354,7 +389,7 @@ export function steps(s: Status, now: number): Step[] {
           ? "done"
           : "waiting",
   };
-  return [download, titles, index, live];
+  return [download, ocr, titles, index, live];
 }
 
 /**
