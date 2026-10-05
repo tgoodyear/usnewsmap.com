@@ -777,10 +777,22 @@ async fn recovers_from_a_crash_between_publish_and_bookkeeping() {
         .unwrap();
     e.worker("w").run(None).await.unwrap();
     let p1 = e.release(1, false).await.unwrap();
+    // A publish well before the restart, so the restart's time can't match it.
+    let mut pointer = e.reference_json("current.json").await;
+    pointer["published_at"] = "2026-10-01T04:00:00Z".into();
+    e.reference
+        .put(
+            "current.json",
+            serde_json::to_vec(&pointer).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
 
     // Undo the bookkeeping, as if the process died right after current.json.
     let (mut run, etag) = e.state.run(&p1.index_version).await.unwrap().unwrap();
     run.status = RunStatus::Building;
+    run.published_at = None;
     e.state.update_run(&run, &etag).await.unwrap();
     e.state
         .set_current_version("pages-v20260901-1")
@@ -805,6 +817,14 @@ async fn recovers_from_a_crash_between_publish_and_bookkeeping() {
             .0
             .status,
         RunStatus::Published
+    );
+    // The repaired run takes current.json's time, not the restart's.
+    let repaired = e.state.run(&p1.index_version).await.unwrap().unwrap().0;
+    assert_eq!(
+        repaired
+            .published_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        Some("2026-10-01T04:00:00Z".to_owned())
     );
     assert_eq!(
         e.state.current_version().await.unwrap().as_deref(),

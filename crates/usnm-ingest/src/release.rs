@@ -603,7 +603,13 @@ impl Release {
         if run.status != RunStatus::Published {
             tracing::warn!(version, "recording a publish that was interrupted");
             run.status = RunStatus::Published;
-            run.published_at.get_or_insert_with(Utc::now);
+            // The pointer's own time, so the run and current.json agree
+            // however long after the crash this runs.
+            let pointer_at = pointer["published_at"]
+                .as_str()
+                .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| t.with_timezone(&Utc));
+            run.published_at = pointer_at.or(run.published_at).or_else(|| Some(Utc::now()));
             self.state.update_run(&run, &etag).await?;
         }
         if self.state.current_version().await?.as_deref() != Some(version) {

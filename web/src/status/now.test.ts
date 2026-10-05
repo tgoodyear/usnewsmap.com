@@ -307,6 +307,28 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
     expect(rightNow(status({}), NOW).notes).toEqual([]);
   });
 
+  it("ignores the new run's time while ops/current still names the served version", () => {
+    // The release marks the new run published just before ops/current names it.
+    const s = switching();
+    if (!s.indexing.available) throw new Error("the fixture has the indexing section");
+    s.indexing.current_version = "pages-v20260929-4";
+    expect(lastUpdate(s)).toBe("2026-09-29T14:23:36Z");
+    // Without the served version's run, the new run's time is still not taken.
+    s.indexing.runs = s.indexing.runs.filter((r) => r.index_version !== "pages-v20260929-4");
+    expect(lastUpdate(s)).toBe("2026-09-29T13:48:53Z");
+    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+  });
+
+  it("doesn't call an older pipeline reading a new update", () => {
+    // The API already serves the new version; the pipeline reading is from before.
+    const s = status({});
+    s.published = { ...s.published, index_version: "pages-v20261003-1", published_at: "2026-10-04T00:46:12Z" };
+    if (!s.indexing.available) throw new Error("the fixture has the indexing section");
+    s.indexing.runs = [run("pages-v20260929-4", "2026-09-29T13:48:53Z", "2026-09-29T14:23:36Z")];
+    expect(lastUpdate(s)).toBe("2026-10-04T00:46:12Z");
+    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+  });
+
   it("without the served version's run, falls back to the version's own date", () => {
     const s = switching();
     s.indexing = { ...s.indexing, runs: [] } as Status["indexing"];
