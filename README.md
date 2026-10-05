@@ -1,139 +1,66 @@
 # US News Map
 
-[US News Map](https://usnewsmap.com) searches [Chronicling America](https://www.loc.gov/collections/chronicling-america/), the National Endowment for the Humanities and Library of Congress collection of digitized American newspapers, and maps every matching page by where and when it was printed. Play the timeline to watch a word or a story move across the country.
+[![CI](https://github.com/tgoodyear/usnewsmap.com/actions/workflows/ci.yml/badge.svg)](https://github.com/tgoodyear/usnewsmap.com/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-This repository holds the whole system: the search API and ingest pipeline in Rust, the web app in React, the Azure infrastructure in Bicep, and the design documents.
+**[usnewsmap.com](https://usnewsmap.com)** searches 23 million pages of historical American newspapers and maps every match by where and when it was printed. Play the timeline to watch a word, a name or a story spread across the country.
 
-The original site (2015–2016, Georgia Tech Research Institute and eHistory.org at the University of Georgia) is preserved at [`tgoodyear/usnewsmap`](https://github.com/tgoodyear/usnewsmap).
+[![The map for "cross of gold" in 1896](web/public/og-image.png)](https://usnewsmap.com)
 
-## Design
+The pages come from [Chronicling America](https://www.loc.gov/collections/chronicling-america/), the Library of Congress and National Endowment for the Humanities collection of digitized newspapers, 1736–1963. This is a rebuild of the original US News Map (2015–2016, Georgia Tech Research Institute and eHistory.org at the University of Georgia), whose code is preserved at [`tgoodyear/usnewsmap`](https://github.com/tgoodyear/usnewsmap).
 
-Start with the **[design document](docs/design/README.md)**: background, requirements, architecture, data and ingestion, search and storage, API, frontend, Azure infrastructure, operations and cost, the roadmap, and the [architecture decision records](docs/design/adr/README.md).
+## What it does
+
+- Phrase, all-words, any-word and proximity search over the OCR text, with filters by date, state and language.
+- Complete counts for every matching page, by place and time, in one cacheable response; playback and cumulative views run in the browser.
+- A relative-rate view: how much more or less a place printed a term than its digitized pages predict.
+- Snippets with a link to each page at the Library of Congress, a table view, keyboard playback, and a shareable URL for every search.
+- A public JSON API under `/v1`, the same one the site uses ([design doc 06](docs/design/06-api-design.md)).
+
+## How it's built
+
+```
+Browser (React + MapLibre/deck.gl) ──GET /v1/…──► Rust API ──localhost──► Quickwit searcher
+                                                     │                          │
+                                                     ▼                          ▼
+                                    Azure Blob Storage: search indexes · curated corpus · reference data
+                                                     ▲
+                    Ingest jobs: Chronicling America batches → curated Parquet → indexes → a published version
+```
+
+A Rust API ([axum](https://github.com/tokio-rs/axum)) and a [Quickwit](https://quickwit.io/) searcher run side by side in one Azure Container App, and the API also serves the site. A Rust ingest pipeline, run as Container Apps jobs, turns the Library of Congress's bulk OCR into curated Parquet on Blob Storage, builds the search indexes from it and publishes versioned snapshots. Everything is defined in Bicep, every service signs in with an Entra ID managed identity rather than a key, and there are no servers to maintain. The [architecture overview](docs/design/03-architecture-overview.md) has the details.
+
+## Quick start
+
+Needs a stable Rust toolchain (`rust-toolchain.toml`) and Node.js 24. No Azure account or newspaper data: the API serves a small synthetic corpus from `fixtures/`.
+
+```sh
+cargo run -p usnm-api                 # the API on http://localhost:8080
+cd web && npm ci && npm run dev       # the site on http://localhost:5173
+```
+
+`cargo test --workspace` runs the unit and API tests against the same fixtures. The [development guide](docs/development.md) covers running against Quickwit, the ingest pipeline and the local Azure stand-ins.
 
 ## Repository layout
 
 | Path | What |
 |------|------|
-| `crates/usnm-core` | Domain types: page keys and doc ids, day/bucket math, the query language parser, canonical request parameters, text normalization, the sparse cube |
-| `crates/usnm-search` | `SearchBackend` trait, the Quickwit translator and client, an in-memory reference backend, and the sharded aggregate planner |
-| `crates/usnm-store` | Object storage: Azure Blob over REST with managed identity (Entra ID only), or a local directory with the same layout |
-| `crates/usnm-api` | The public search API (axum): `/v1/meta`, `/v1/places`, `/v1/aggregate`, `/v1/hits`, `/v1/coverage`, `/v1/status`, `POST /v1/beacon` (the site's page views), health probes; it also serves the site |
-| `crates/usnm-ingest` | The ingest pipeline (`usnm-ingest`): enqueue LoC batches, curate them to Parquet, build sealed indexes and reference snapshots, publish. State in Cosmos DB |
-| `web/` | The single-page app: React + MapLibre + deck.gl (see [`web/README.md`](web/README.md)) |
-| `infra/` | Bicep for the lean Azure profile, deployed as one deployment stack per environment (see [`infra/README.md`](infra/README.md)) |
-| `fixtures/` | A small **synthetic** corpus for local development and tests (not real newspaper data) |
-| `docs/design/` | The design document set |
+| `crates/` | The Rust workspace: `usnm-core` (domain types and the query language), `usnm-search` (search backends), `usnm-store` (Blob Storage), `usnm-api` (the API, which also serves the site) and `usnm-ingest` (the pipeline) |
+| `web/` | The web app: React, MapLibre GL and deck.gl ([README](web/README.md)) |
+| `infra/` | The Azure infrastructure in Bicep, one deployment stack per environment, and the Quickwit configs ([README](infra/README.md)) |
+| `ja-ocr/` | The Japanese OCR job (Python, NDLOCR-Lite) |
+| `scripts/` | Stand an environment up, deploy and tear it down; read its logs; local Azure stand-ins; load tests |
+| `fixtures/` | A small synthetic corpus for development and tests ([README](fixtures/README.md)) |
+| `ops/` | Saved log queries and the history of published index versions |
+| `docs/` | Guides and the design documents ([index](docs/README.md)) |
 
-In production, the API searches through a Quickwit sidecar, using indexes the ingest pipeline builds from Chronicling America's batches. Locally and in CI, the API serves the small synthetic corpus in `fixtures/`, so you don't need an Azure account or the real data to run it.
+## Documentation
 
-## Local development
-
-Requires a stable Rust toolchain (see `rust-toolchain.toml`). The web app also needs Node.js 24.
-
-```sh
-cargo test --workspace                 # unit + API integration tests against the fixtures
-cargo run -p usnm-api                  # serves the synthetic fixture corpus on :8080
-curl 'localhost:8080/v1/aggregate?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31'
-curl 'localhost:8080/v1/hits?q=%22cross+of+gold%22&place=P00001&limit=5'
-```
-
-With the API running, `cd web && npm ci && npm run dev` serves the site on `http://localhost:5173` (see [`web/README.md`](web/README.md)).
-
-### Against Quickwit
-
-The same fixtures can be served by [Quickwit 0.9.1](https://github.com/quickwit-oss/quickwit/releases/tag/v0.9.1), the pinned version, set up the way production runs it. `scripts/quickwit-fixtures.sh` loads the fixture indexes with a writer node, stops it, and starts a read-only searcher that polls the metastore:
-
-```sh
-url=$(QUICKWIT_BIN=/path/to/quickwit scripts/quickwit-fixtures.sh /tmp/qw)
-QUICKWIT_URL=$url cargo test -p usnm-search --test quickwit_parity   # Quickwit vs the reference backend
-USNM_BACKEND=quickwit cargo run -p usnm-api
-kill "$(cat /tmp/qw/quickwit.pid)"
-```
-
-Without `QUICKWIT_URL`, the parity tests skip; CI runs them in the `quickwit` job. Quickwit has no fuzzy term queries, so on this backend `/v1/meta` reports `"fuzzy": false` and fuzzy queries return 422 (05 §5.5.1).
-
-### Ingest pipeline
-
-`usnm-ingest` turns LoC batch archives into a published version: `enqueue` records a batch list, `curate` claims queued batches and writes curated Parquet, and `release` builds a new index (a delta, or a base with `--full`) and its reference snapshot, then writes `current.json` last. `run` does all three. To try it on the synthetic corpus, rebuilt as two batch archives:
-
-```sh
-repo=$PWD                                                    # run from the repository root
-python3 scripts/fixture-batches.py /tmp/usnm-ingest          # archives, batches.json, reference/catalog/
-cd /tmp/usnm-ingest
-cargo run --manifest-path "$repo/Cargo.toml" -p usnm-ingest -- \
-  --state-file state.json --curated curated --reference reference \
-  run --list batches.json --synthetic --index-dir reference/indexes
-USNM_DATA_DIR=/tmp/usnm-ingest/reference USNM_STATE_FILE=/tmp/usnm-ingest/state.json \
-  cargo run --manifest-path "$repo/Cargo.toml" -p usnm-api
-```
-
-With `USNM_STATE_FILE`, the API's `/v1/status` (and the site's `/status` page) reads the local pipeline state; in Azure it reads Cosmos (`USNM_COSMOS_ENDPOINT`). To index into Quickwit instead, replace `--index-dir …` with `--quickwit-bin /path/to/quickwit --quickwit-metastore file:///tmp/usnm-ingest/qw --quickwit-index-root file:///tmp/usnm-ingest/qw`; the pipeline runs its own writer node for the release.
-
-In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos https://{account}.documents.azure.com/`, Blob URLs for `--curated` and `--reference`, and `--quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index`. The store, state and index-target options also read environment variables (`USNM_CURATED_URL`, `USNM_REFERENCE_URL`, `USNM_COSMOS_ENDPOINT`, `USNM_QUICKWIT_*`, …; see `usnm-ingest --help`). `enqueue` with no `--list` reads LoC's own batch listing; add `--batches name_ver01,…` to take only some.
-
-### Against local Azure stand-ins
-
-`scripts/local-azure/` runs the Blob and Cosmos code paths without an Azure account. That includes Entra tokens, conditional Cosmos writes, and several `curate` workers sharing one queue, which the `--state-file` store can't do because it serves one process at a time. It starts:
-
-- [Azurite](https://github.com/Azure/Azurite) for Blob Storage, in OAuth mode, so it checks each token's audience, issuer and expiry
-- `shim.py`: a managed identity endpoint, and a plain-HTTP proxy in front of Azurite's HTTPS port (the Rust clients only trust public CAs)
-- `cosmos.py`: the Cosmos DB REST calls `CosmosDocs` makes, with etags, 409/412, query paging and session tokens. It only accepts Entra tokens for Cosmos. It follows our reading of the REST API, so the first run against a real account is still the real test.
-
-It needs `azurite-blob` on `PATH` (`npm install -g azurite`), Python 3 and `openssl`.
-
-```sh
-. "$(scripts/local-azure/up.sh /tmp/usnm-azure)"     # starts everything, exports the USNM_* and IDENTITY_* variables
-cargo build --release -p usnm-ingest -p usnm-api
-ingest=target/release/usnm-ingest
-$ingest enqueue --batches dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01
-$ingest curate & $ingest curate & wait                  # two workers, one queue
-$ingest titles-sync --lccns sn85042252,sn83025894,sn83021129
-$ingest release --index-dir /tmp/usnm-azure/indexes
-USNM_DATA_DIR=/tmp/usnm-azure target/release/usnm-api   # reads the snapshot from Azurite, caches responses there
-scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on the same directory resumes
-```
-
-`$ingest duplicates` reports the pages that ship in more than one curated batch (JSON on stdout; changes nothing). `titles-sync` with no `--lccns` or `--list` fetches every title in LoC's listing (hours); `run --batches …` syncs only the titles for those batches. Set these on `up.sh` to change the Cosmos stand-in: `COSMOS_PAGE=2` exercises query continuation, `COSMOS_429=0.1` throttles a tenth of requests, and `COSMOS_SEED=state.json` starts from a `--state-file` run.
-
-### Configuration (environment variables)
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `USNM_BIND` | `0.0.0.0:8080` | Listen address |
-| `USNM_BACKEND` | `memory` | `memory` (JSONL indexes under `USNM_DATA_DIR/indexes`) or `quickwit` |
-| `USNM_QUICKWIT_URL` | `http://127.0.0.1:7280` | Quickwit base URL (the localhost sidecar in production) |
-| `USNM_DATA_DIR` | `fixtures/data` | Local data directory: the memory backend's `indexes/`, and the default reference location |
-| `USNM_REFERENCE_URL` | `USNM_DATA_DIR` | Where `current.json` and the reference snapshots live: a Blob container URL (`https://{account}.blob.core.windows.net/reference`) or a local directory. Every file is checked against the snapshot's `manifest.json` |
-| `USNM_RESPONSE_CACHE_URL` | unset | Persistent response cache (`https://{account}.blob.core.windows.net/cache` or a directory). Entries are `{index_version}/f{format}/{sha256}.json.zst` |
-| `USNM_PERSIST_AFTER_MS` | `500` | Only responses that took at least this long to compute are persisted |
-| `USNM_ALLOWED_ORIGINS` | `https://usnewsmap.com` | Comma-separated CORS origins (GET only) |
-| `USNM_SITE_HOST` | `usnewsmap.com` | The site's hostname. Requests for `www.` plus this name get a 301 to `https://` plus this name, with the same path and query |
-| `USNM_SEARCH_TIMEOUT_SECS` | `10` | How long a visitor's request waits for a response (plus 2 s with a persistent cache); past it the API answers `202 Accepted` and the search carries on (06 §6.3.5) |
-| `USNM_COMPUTE_CAP_SECS` | `120` | Limit on one search computation and each backend call in it, from when it gets its slot; past it the search fails with a `503` timeout, which is not cached. A search still queued for a slot after this long gets `503 /errors/busy` |
-| `USNM_COMPUTE_CONCURRENCY` | `2` | Searches computed at once (one per searcher vCPU: more add no throughput, 06 §6.5), including those still running after a `202`; when all are busy, a new search queues for one (06 §6.6) |
-| `USNM_SEARCH_QUEUE` | `16` | Searches allowed to wait for a slot, first come, first served; each keeps its place while its visitor keeps asking, and its `202` says how many are ahead. A search that finds the queue full gets `503 /errors/busy` at once |
-| `USNM_ABANDON_AFTER_SECS` | `15` | A computation no request has waited on for this long is cancelled (the visitor changed the search or left); at least 5 |
-| `USNM_REFRESH_SECS` | `600` | How often `current.json` is re-read for a newly published version |
-| `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |
-| `USNM_PREWARM_BUDGET_SECS` | `900` | Cache warm-up before a publish swaps a version in: limit on the whole run; the rest is skipped |
-| `USNM_PREWARM_STARTUP_BUDGET_SECS` | `300` | The same limit for the warm-up after a start, which can go on past the readiness cap while the replica serves |
-| `USNM_PREWARM_TOP_SEARCHES` | `20` | Cache warm-up: after the examples, this many of the most frequent searches in the search log (`0` turns it off) |
-| `USNM_PREWARM_LOG_DAYS` | `28` | Cache warm-up: how many days of the search log are counted, back from yesterday |
-| `USNM_READY_CAP_SECS` | `60` | After a start, `/readyz` reports ready once the warm-up ends or this much time passes |
-| `USNM_CACHE_MB` | `256` | In-process response cache size |
-| `USNM_RATE_PER_MIN` | `120` | Per-client token bucket refill rate on `/v1` (`0` disables) |
-| `USNM_RATE_BURST` | `40` | Per-client bucket size |
-| `USNM_TRUSTED_PROXY_HOPS` | `1` | Proxies that append to `X-Forwarded-For` (1 = Container Apps ingress, 2 = a proxy such as Front Door + ingress, 0 = use the peer address) |
-| `USNM_BACKEND_CONCURRENCY` | `8` | Backend queries allowed at once; waiting for a free one counts against the computation limit |
-| `USNM_FIXTURE_SLOW_TERM`, `USNM_FIXTURE_SLOW_MS` | unset, `5000` | End-to-end tests only, memory backend only: an aggregate search whose query contains the term waits this many milliseconds first, to stand in for a cold search |
-| `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`, `AZURE_CLIENT_ID` | set by Container Apps | Managed identity for Blob; `AZURE_CLIENT_ID` selects the user-assigned identity. Without them, the Azure CLI login is used (`az login`) |
-| `RUST_LOG` | `info` | Log filter (logs are JSON and never include query strings) |
-
-## Deployment
-
-Production runs in Azure on the lean hosting profile ([design doc 08](docs/design/08-azure-infrastructure.md)): one Container App serves the API and the site, with Quickwit as a sidecar; Container Apps jobs run the ingest pipeline; Blob Storage and Cosmos DB hold the data and the pipeline's state. Every service signs in with an Entra ID managed identity. There are no account keys, SAS tokens or connection strings with keys ([ADR-0009](docs/design/adr/0009-entra-identity-only.md)), and CI fails if one appears (`scripts/ci/no-shared-keys.sh`).
-
-`scripts/bootstrap.sh` creates or updates an environment as one deployment stack ([`infra/README.md`](infra/README.md)). When a commit on `main` changes the images and the checks pass, the `publish` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) signs in to Azure through OIDC from each GitHub Environment listed in `USNM_DEPLOY_ENVIRONMENTS` (`prod` for the live site), pushes the images and rolls the API onto the new commit. Pull requests only run the checks.
+- [Development](docs/development.md): running and testing locally.
+- [Configuration](docs/configuration.md): the API's settings.
+- [Operations](docs/operations.md): running the ingest pipeline in Azure.
+- [Infrastructure](infra/README.md): what the Bicep deploys and how to stand an environment up.
+- [Design documents](docs/design/README.md) and [architecture decision records](docs/design/adr/README.md): what was built and why.
 
 ## Contributing and security
 

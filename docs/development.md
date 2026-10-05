@@ -1,0 +1,76 @@
+# Development
+
+How to run and test US News Map locally. Nothing here needs an Azure account or the real newspaper data: the API serves a small **synthetic** corpus from [`fixtures/`](../fixtures/README.md), and local stand-ins cover the Azure code paths.
+
+## Run the API and the site
+
+Requires a stable Rust toolchain (see `rust-toolchain.toml`). The web app also needs Node.js 24.
+
+```sh
+cargo test --workspace                 # unit + API integration tests against the fixtures
+cargo run -p usnm-api                  # serves the synthetic fixture corpus on :8080
+curl 'localhost:8080/v1/aggregate?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31'
+curl 'localhost:8080/v1/hits?q=%22cross+of+gold%22&place=P00001&limit=5'
+```
+
+With the API running, `cd web && npm ci && npm run dev` serves the site on `http://localhost:5173` (see [`web/README.md`](../web/README.md)).
+
+## Against Quickwit
+
+The same fixtures can be served by [Quickwit 0.9.1](https://github.com/quickwit-oss/quickwit/releases/tag/v0.9.1), the pinned version, set up the way production runs it. `scripts/quickwit-fixtures.sh` loads the fixture indexes with a writer node, stops it, and starts a read-only searcher that polls the metastore:
+
+```sh
+url=$(QUICKWIT_BIN=/path/to/quickwit scripts/quickwit-fixtures.sh /tmp/qw)
+QUICKWIT_URL=$url cargo test -p usnm-search --test quickwit_parity   # Quickwit vs the reference backend
+USNM_BACKEND=quickwit cargo run -p usnm-api
+kill "$(cat /tmp/qw/quickwit.pid)"
+```
+
+Without `QUICKWIT_URL`, the parity tests skip; CI runs them in the `quickwit` job. Quickwit has no fuzzy term queries, so on this backend `/v1/meta` reports `"fuzzy": false` and fuzzy queries return 422 (05 §5.5.1).
+
+## Ingest pipeline
+
+`usnm-ingest` turns LoC batch archives into a published version: `enqueue` records a batch list, `curate` claims queued batches and writes curated Parquet, and `release` builds a new index (a delta, or a base with `--full`) and its reference snapshot, then writes `current.json` last. `run` does all three. To try it on the synthetic corpus, rebuilt as two batch archives:
+
+```sh
+repo=$PWD                                                    # run from the repository root
+python3 scripts/fixture-batches.py /tmp/usnm-ingest          # archives, batches.json, reference/catalog/
+cd /tmp/usnm-ingest
+cargo run --manifest-path "$repo/Cargo.toml" -p usnm-ingest -- \
+  --state-file state.json --curated curated --reference reference \
+  run --list batches.json --synthetic --index-dir reference/indexes
+USNM_DATA_DIR=/tmp/usnm-ingest/reference USNM_STATE_FILE=/tmp/usnm-ingest/state.json \
+  cargo run --manifest-path "$repo/Cargo.toml" -p usnm-api
+```
+
+With `USNM_STATE_FILE`, the API's `/v1/status` (and the site's `/status` page) reads the local pipeline state; in Azure it reads Cosmos (`USNM_COSMOS_ENDPOINT`). To index into Quickwit instead, replace `--index-dir …` with `--quickwit-bin /path/to/quickwit --quickwit-metastore file:///tmp/usnm-ingest/qw --quickwit-index-root file:///tmp/usnm-ingest/qw`; the pipeline runs its own writer node for the release.
+
+In Azure the same binary runs from the `usnewsmap-ingest` image with `--cosmos https://{account}.documents.azure.com/`, Blob URLs for `--curated` and `--reference`, and `--quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index`. The store, state and index-target options also read environment variables (`USNM_CURATED_URL`, `USNM_REFERENCE_URL`, `USNM_COSMOS_ENDPOINT`, `USNM_QUICKWIT_*`, …; see `usnm-ingest --help`). `enqueue` with no `--list` reads LoC's own batch listing; add `--batches name_ver01,…` to take only some.
+
+## Against local Azure stand-ins
+
+`scripts/local-azure/` runs the Blob and Cosmos code paths without an Azure account. That includes Entra tokens, conditional Cosmos writes, and several `curate` workers sharing one queue, which the `--state-file` store can't do because it serves one process at a time. It starts:
+
+- [Azurite](https://github.com/Azure/Azurite) for Blob Storage, in OAuth mode, so it checks each token's audience, issuer and expiry
+- `shim.py`: a managed identity endpoint, and a plain-HTTP proxy in front of Azurite's HTTPS port (the Rust clients only trust public CAs)
+- `cosmos.py`: the Cosmos DB REST calls `CosmosDocs` makes, with etags, 409/412, query paging and session tokens. It only accepts Entra tokens for Cosmos. It follows our reading of the REST API, so the first run against a real account is still the real test.
+
+It needs `azurite-blob` on `PATH` (`npm install -g azurite`), Python 3 and `openssl`.
+
+```sh
+. "$(scripts/local-azure/up.sh /tmp/usnm-azure)"     # starts everything, exports the USNM_* and IDENTITY_* variables
+cargo build --release -p usnm-ingest -p usnm-api
+ingest=target/release/usnm-ingest
+$ingest enqueue --batches dlc_zurich_ver04,dlc_misctopsn83025894_ver01,dlc_misctopsn83021129_ver01
+$ingest curate & $ingest curate & wait                  # two workers, one queue
+$ingest titles-sync --lccns sn85042252,sn83025894,sn83021129
+$ingest release --index-dir /tmp/usnm-azure/indexes
+USNM_DATA_DIR=/tmp/usnm-azure target/release/usnm-api   # reads the snapshot from Azurite, caches responses there
+scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on the same directory resumes
+```
+
+`$ingest duplicates` reports the pages that ship in more than one curated batch (JSON on stdout; changes nothing). `titles-sync` with no `--lccns` or `--list` fetches every title in LoC's listing (hours); `run --batches …` syncs only the titles for those batches. Set these on `up.sh` to change the Cosmos stand-in: `COSMOS_PAGE=2` exercises query continuation, `COSMOS_429=0.1` throttles a tenth of requests, and `COSMOS_SEED=state.json` starts from a `--state-file` run.
+
+## Checks
+
+The formatting, lint, test and build commands CI runs are listed in [CONTRIBUTING.md](../CONTRIBUTING.md). The web app's end-to-end tests are described in [`web/README.md`](../web/README.md).

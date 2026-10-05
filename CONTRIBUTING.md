@@ -32,7 +32,7 @@ bicep build infra/guardrails.bicep --stdout > /dev/null
 AZURE_ENV_NAME=ci bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
-`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [README](README.md#against-quickwit).
+`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
 ## Rules
 
