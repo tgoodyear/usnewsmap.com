@@ -20,6 +20,11 @@ describe("SearchBar with Japanese", () => {
     expect(box.getAttribute("aria-describedby")).toBe(hint.id);
   });
 
+  it("says nothing before /v1/meta has loaded", () => {
+    render(<SearchBar view={{ ...DEFAULTS, q: "東京" }} meta={undefined} onSearch={() => {}} />);
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("says when Japanese search isn't there yet, and nothing for other queries", () => {
     const { rerender } = render(<SearchBar view={{ ...DEFAULTS, q: "真珠湾" }} meta={meta(null)} onSearch={() => {}} />);
     expect(screen.getByRole("note").textContent).toMatch(/isn't available yet/);

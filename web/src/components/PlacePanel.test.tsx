@@ -21,14 +21,16 @@ afterEach(cleanup);
 describe("Hit", () => {
   it("marks a page whose text is our own OCR and links to LoC's page image", () => {
     render(<ul><Hit h={{ ...page, ocr: { source: "usnm-ndlocr-lite", engine: "ndlocr-lite 636d1cf" } }} synthetic={false} /></ul>);
-    const badge = screen.getByText("Our OCR");
+    const badge = screen.getByText(/^Our OCR/);
     expect(badge.getAttribute("title")).toMatch(/no searchable text for this page/);
+    // The explanation is in the text too, for screen readers and touch screens.
+    expect(badge.textContent).toMatch(/^Our OCR\. The Library of Congress has no searchable text/);
     expect(screen.getByRole("link").textContent).toBe("View the page image at the Library of Congress");
   });
 
   it("shows a LoC page as before", () => {
     render(<ul><Hit h={page} synthetic={false} /></ul>);
-    expect(screen.queryByText("Our OCR")).toBeNull();
+    expect(screen.queryByText(/^Our OCR/)).toBeNull();
     expect(screen.getByRole("link").textContent).toBe("View page at the Library of Congress");
   });
 });

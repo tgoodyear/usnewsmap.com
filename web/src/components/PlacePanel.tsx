@@ -97,6 +97,8 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
             {" "}
             <span className="badge badge--ocr" title={OCR_NOTE}>
               Our OCR
+              {/* The title isn't announced reliably or shown on touch: say it in text too. */}
+              <span className="visually-hidden">. {OCR_NOTE}</span>
             </span>
           </>
         )}

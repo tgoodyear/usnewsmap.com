@@ -33,8 +33,9 @@ export function activeOptions(view: Pick<ViewState, "mode" | "from" | "to" | "st
  * read ourselves, or nothing yet on a version without them. Null otherwise.
  */
 export function japaneseHint(q: string, meta: Pick<Meta, "ja"> | undefined): string | null {
-  if (!hasJapanese(q)) return null;
-  const ja = meta?.ja;
+  // Before /v1/meta loads, it isn't known yet whether Japanese search is there.
+  if (!hasJapanese(q) || !meta) return null;
+  const ja = meta.ja;
   if (!ja) return "Searching Japanese text isn't available yet. It arrives with the next update.";
   return `Japanese searches cover only the ${ja.pages.toLocaleString("en-US")} Japanese-language pages we read ourselves. The Library of Congress has no searchable text for them.`;
 }
