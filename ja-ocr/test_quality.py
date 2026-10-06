@@ -172,6 +172,13 @@ class Aggregation(unittest.TestCase):
                          [("b2_ver01", "ger:4"), ("b1_ver01", "eng:6")])
         self.assertEqual(quality.Tally(titles).tables({}, 1)["worst_titles"], [])
 
+    def test_thresholds_are_strict_at_the_boundaries(self):
+        # 0.5 and 0.7 aren't exact in 32-bit floats: stored as such, 0.7 would read as fair.
+        t = quality.Tally(quality.title_infos([{"lccn": "e1", "languages": ["eng"]}]))
+        t.add("b1_ver01", [page("e1", 1880, dict_share=x) for x in (0.5, 0.7)])
+        r = t.tables({}, 1)["by_language_decade"][0]
+        self.assertEqual((r["poor_share"], r["fair_share"]), (0.0, 0.5))
+
 
 @unittest.skipIf(pa is None, "pyarrow not installed")
 class Run(unittest.TestCase):
@@ -259,6 +266,9 @@ class Run(unittest.TestCase):
             for pct in (0, -1, 101, 0.001):
                 with self.assertRaises(ValueError, msg=pct):
                     quality.quality(ref, cur, sample_pct=pct, workers=1, loader=loader)
+            for n in (0, -5):
+                with self.assertRaises(ValueError, msg=n):
+                    quality.quality(ref, cur, min_pages=n, workers=1, loader=loader)
             ref.write("current.json", json.dumps({"reference": "../x"}).encode())
             with self.assertRaises(ValueError):
                 quality.quality(ref, cur, workers=1, loader=loader)

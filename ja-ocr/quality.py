@@ -250,7 +250,7 @@ class Stats:
     empty: int = 0
     short: int = 0
     multilingual: int = 0
-    dict_shares: array = field(default_factory=lambda: array("f"))
+    dict_shares: array = field(default_factory=lambda: array("d"))
     garbage_sum: float = 0.0
     garbage_n: int = 0
     chars: int = 0
@@ -355,7 +355,7 @@ class Tally:
         decades = [lrow("all", dec, s) for dec, s in sorted(by_decade.items())]
 
         def worst(groups: dict[str, Stats], n: int):
-            ok = [(k, s.row()) for k, s in groups.items() if len(s.dict_shares) >= max(min_pages, 1)]
+            ok = [(k, s.row()) for k, s in groups.items() if len(s.dict_shares) >= min_pages]
             ok.sort(key=lambda kv: (kv[1]["dict_share_median"], kv[0]))
             return ok[:n]
 
@@ -448,6 +448,8 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
             workers: int | None = None, loader=None) -> dict | None:
     if not 0 < sample_pct <= 100:
         raise ValueError(f"--sample-pct must be above 0 and at most 100, not {sample_pct}")
+    if min_pages < 1:
+        raise ValueError(f"--min-pages must be at least 1, not {min_pages}")
     cut = round(sample_pct * 100)
     if cut < 1:
         raise ValueError(f"--sample-pct {sample_pct} samples nothing: use at least 0.01")
