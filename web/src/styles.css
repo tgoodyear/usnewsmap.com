@@ -250,8 +250,11 @@ input, select {
 }
 .panel__head { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
 .panel__head h2 { font-size: 1.1rem; margin: 0; }
-/* The place lists, hidden: just the button to bring them back. */
-.panel--collapsed { width: auto; padding: 8px; }
+/* The place lists, hidden: just the button to bring them back, over the map's corner. */
+.panel--collapsed {
+  position: absolute; top: 10px; right: 10px; z-index: 2; width: auto; padding: 0;
+  border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 1px 4px rgb(0 0 0 / 0.15);
+}
 .panel__toggle { white-space: nowrap; }
 .panel__summary { color: var(--muted); margin: 4px 0 12px; }
 .panel .segmented { margin-bottom: 8px; }
@@ -305,6 +308,7 @@ input, select {
   .stage { flex-direction: column; }
   .map { min-height: 55vh; }
   .panel { width: 100%; max-height: none; border-left: 0; border-top: 1px solid var(--line); }
+  .panel--collapsed { position: static; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; padding: 4px 8px; }
   .legend { position: static; margin: 8px 16px; max-width: none; }
 }
 
