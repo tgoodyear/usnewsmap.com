@@ -64,6 +64,54 @@
     "view": { "bucket": "week", "from": "1859-09-01", "q": "\"John Brown\"", "to": "1860-03-31" }
   },
   {
+    "aggregate": "q=cholera&mode=phrase&from=1830-01-01&to=1856-12-31&bucket=month",
+    "blurb": "Reports of the cholera epidemics of 1832, 1849, and 1854.",
+    "era": "1828-1860",
+    "id": "cholera",
+    "title": "Cholera",
+    "view": { "bucket": "month", "from": "1830-01-01", "q": "cholera", "to": "1856-12-31" }
+  },
+  {
+    "aggregate": "q=Mormons&mode=phrase&from=1838-01-01&to=1858-12-31&bucket=month",
+    "blurb": "The Latter Day Saints, from the Missouri conflict of 1838 to the Utah War of 1857.",
+    "era": "1828-1860",
+    "id": "mormons",
+    "title": "Mormons",
+    "view": { "bucket": "month", "from": "1838-01-01", "q": "Mormons", "to": "1858-12-31" }
+  },
+  {
+    "aggregate": "q=sucre&mode=phrase&from=1840-01-01&to=1860-12-31&bucket=month&lang=fre",
+    "blurb": "Sucre, French for sugar, in Louisiana's French and bilingual papers.",
+    "era": "1828-1860",
+    "id": "sucre-louisiana-french",
+    "title": "Sucre in Louisiana French papers",
+    "view": { "bucket": "month", "from": "1840-01-01", "lang": ["fre"], "q": "sucre", "to": "1860-12-31" }
+  },
+  {
+    "aggregate": "q=%22gold+diggings%22+OR+%22gold+region%22+OR+%22gold+mines%22&from=1847-06-01&to=1850-12-31&bucket=week",
+    "blurb": "News of gold in California and the rush of 1849 that followed.",
+    "era": "1828-1860",
+    "id": "california-gold-rush",
+    "title": "California gold rush",
+    "view": { "bucket": "week", "from": "1847-06-01", "q": "\"gold diggings\" OR \"gold region\" OR \"gold mines\"", "to": "1850-12-31" }
+  },
+  {
+    "aggregate": "q=Sklaverei+OR+Sclaverei+OR+Selaverei&from=1850-01-01&to=1860-12-31&bucket=month&lang=ger",
+    "blurb": "Sklaverei, German for slavery, in German-language papers from Baltimore to Minnesota.",
+    "era": "1828-1860",
+    "id": "sklaverei-german",
+    "title": "Sklaverei in German papers",
+    "view": { "bucket": "month", "from": "1850-01-01", "lang": ["ger"], "q": "Sklaverei OR Sclaverei OR Selaverei", "to": "1860-12-31" }
+  },
+  {
+    "aggregate": "q=Uncle+Tom%27s+Cabin&mode=phrase&from=1851-06-01&to=1855-12-31&bucket=month",
+    "blurb": "Harriet Beecher Stowe's antislavery novel, published as a book in 1852.",
+    "era": "1828-1860",
+    "id": "uncle-toms-cabin",
+    "title": "Uncle Tom's Cabin",
+    "view": { "bucket": "month", "from": "1851-06-01", "q": "Uncle Tom's Cabin", "to": "1855-12-31" }
+  },
+  {
     "aggregate": "q=secession&mode=phrase&from=1860-07-01&to=1861-06-30&bucket=week",
     "blurb": "Southern states left the Union between December 1860 and June 1861.",
     "era": "1860-1865",
@@ -128,6 +176,54 @@
     "view": { "bucket": "week", "from": "1865-04-01", "q": "\"Wilkes Booth\"", "to": "1865-12-31" }
   },
   {
+    "aggregate": "q=conf%C3%A9d%C3%A9r%C3%A9s&mode=phrase&from=1861-01-01&to=1865-12-31&bucket=month&lang=fre",
+    "blurb": "Confédérés, French for Confederates, in French-language papers during the Civil War.",
+    "era": "1860-1865",
+    "id": "confederes-french",
+    "title": "Confédérés in French papers",
+    "view": { "bucket": "month", "from": "1861-01-01", "lang": ["fre"], "q": "confédérés", "to": "1865-12-31" }
+  },
+  {
+    "aggregate": "q=Rebellen&mode=phrase&from=1861-01-01&to=1865-12-31&bucket=month&lang=ger",
+    "blurb": "Rebellen, German for rebels, in German-language papers during the Civil War.",
+    "era": "1860-1865",
+    "id": "rebellen-german",
+    "title": "Rebellen in German papers",
+    "view": { "bucket": "month", "from": "1861-01-01", "lang": ["ger"], "q": "Rebellen", "to": "1865-12-31" }
+  },
+  {
+    "aggregate": "q=contrabands&mode=phrase&from=1861-05-01&to=1865-12-31&bucket=month",
+    "blurb": "Enslaved people who fled to Union lines, whom the army called contraband of war.",
+    "era": "1860-1865",
+    "id": "contrabands",
+    "title": "Contrabands",
+    "view": { "bucket": "month", "from": "1861-05-01", "q": "contrabands", "to": "1865-12-31" }
+  },
+  {
+    "aggregate": "q=%22Merrimac%22+%22Monitor%22&from=1862-01-01&to=1862-12-31&bucket=week",
+    "blurb": "The first battle between ironclad warships, fought at Hampton Roads in March 1862.",
+    "era": "1860-1865",
+    "id": "monitor-merrimac",
+    "title": "Monitor and Merrimac, 1862",
+    "view": { "bucket": "week", "from": "1862-01-01", "q": "\"Merrimac\" \"Monitor\"", "to": "1862-12-31" }
+  },
+  {
+    "aggregate": "q=copperhead%2A&from=1862-06-01&to=1865-06-30&bucket=month",
+    "blurb": "The label for antiwar Northern Democrats, most used around the 1864 election.",
+    "era": "1860-1865",
+    "id": "copperheads",
+    "title": "Copperheads",
+    "view": { "bucket": "month", "from": "1862-06-01", "q": "copperhead*", "to": "1865-06-30" }
+  },
+  {
+    "aggregate": "q=Vicksburg&mode=phrase&from=1862-06-01&to=1863-12-31&bucket=week",
+    "blurb": "The Union campaign and siege that took the Mississippi River city in July 1863.",
+    "era": "1860-1865",
+    "id": "vicksburg",
+    "title": "Vicksburg, 1863",
+    "view": { "bucket": "week", "from": "1862-06-01", "q": "Vicksburg", "to": "1863-12-31" }
+  },
+  {
     "aggregate": "q=%22pacific+railroad%22&from=1860-01-01&to=1872-12-31&bucket=month",
     "blurb": "The first transcontinental line, joined at Promontory Summit in May 1869.",
     "era": "1865-1877",
@@ -174,6 +270,70 @@
     "id": "election-1876",
     "title": "Disputed election, 1876",
     "view": { "bucket": "week", "from": "1876-11-01", "q": "\"electoral commission\"", "to": "1877-04-30" }
+  },
+  {
+    "aggregate": "q=%22Freedmen%27s+Bureau%22+OR+%22Freedmen+Bureau%22&from=1865-01-01&to=1872-12-31&bucket=month",
+    "blurb": "The agency aiding freed people, most covered when Johnson vetoed its renewal in 1866.",
+    "era": "1865-1877",
+    "id": "freedmens-bureau",
+    "title": "Freedmen's Bureau",
+    "view": { "bucket": "month", "from": "1865-01-01", "q": "\"Freedmen's Bureau\" OR \"Freedmen Bureau\"", "to": "1872-12-31" }
+  },
+  {
+    "aggregate": "q=impeachment&mode=phrase&from=1867-06-01&to=1868-08-31&bucket=week",
+    "blurb": "Andrew Johnson's impeachment in February 1868 and his acquittal by one vote in May.",
+    "era": "1865-1877",
+    "id": "johnson-impeachment",
+    "title": "Johnson impeachment, 1868",
+    "view": { "bucket": "week", "from": "1867-06-01", "q": "impeachment", "to": "1868-08-31" }
+  },
+  {
+    "aggregate": "q=%22Fifteenth+Amendment%22&from=1869-01-01&to=1870-12-31&bucket=week",
+    "blurb": "The amendment barring denial of the vote by race, ratified in February 1870.",
+    "era": "1865-1877",
+    "id": "fifteenth-amendment",
+    "title": "Fifteenth Amendment, 1870",
+    "view": { "bucket": "week", "from": "1869-01-01", "q": "\"Fifteenth Amendment\"", "to": "1870-12-31" }
+  },
+  {
+    "aggregate": "q=Krieg&mode=phrase&from=1870-01-01&to=1871-12-31&bucket=week&lang=ger",
+    "blurb": "Krieg, German for war, in German-language papers as the Franco-Prussian War began.",
+    "era": "1865-1877",
+    "id": "krieg-1870",
+    "title": "Krieg in German papers, 1870",
+    "view": { "bucket": "week", "from": "1870-01-01", "lang": ["ger"], "q": "Krieg", "to": "1871-12-31" }
+  },
+  {
+    "aggregate": "q=%22Chicago+fire%22&from=1871-09-01&to=1872-06-30&bucket=week",
+    "blurb": "The October 1871 fire that burned much of Chicago, and the relief and rebuilding after.",
+    "era": "1865-1877",
+    "id": "chicago-fire",
+    "title": "Chicago fire, 1871",
+    "view": { "bucket": "week", "from": "1871-09-01", "q": "\"Chicago fire\"", "to": "1872-06-30" }
+  },
+  {
+    "aggregate": "q=Kulturkampf+OR+Culturkampf&from=1872-01-01&to=1877-12-31&bucket=month&lang=ger",
+    "blurb": "Kulturkampf, Bismarck's struggle with the Catholic Church, in German-language papers.",
+    "era": "1865-1877",
+    "id": "kulturkampf",
+    "title": "Kulturkampf in German papers",
+    "view": { "bucket": "month", "from": "1872-01-01", "lang": ["ger"], "q": "Kulturkampf OR Culturkampf", "to": "1877-12-31" }
+  },
+  {
+    "aggregate": "q=%22Jay+Cooke%22&from=1873-06-01&to=1874-06-30&bucket=week",
+    "blurb": "Jay Cooke & Company failed in September 1873, setting off a financial panic.",
+    "era": "1865-1877",
+    "id": "panic-of-1873",
+    "title": "Panic of 1873",
+    "view": { "bucket": "week", "from": "1873-06-01", "q": "\"Jay Cooke\"", "to": "1874-06-30" }
+  },
+  {
+    "aggregate": "q=%22Centennial+Exhibition%22&from=1875-01-01&to=1877-06-30&bucket=week",
+    "blurb": "The Philadelphia world's fair marking 100 years of independence, opened May 1876.",
+    "era": "1865-1877",
+    "id": "centennial-exhibition",
+    "title": "Centennial Exhibition, 1876",
+    "view": { "bucket": "week", "from": "1875-01-01", "q": "\"Centennial Exhibition\"", "to": "1877-06-30" }
   },
   {
     "aggregate": "q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week",
@@ -248,6 +408,54 @@
     "view": { "bucket": "week", "from": "1898-01-01", "q": "\"battleship maine\"", "to": "1898-12-31" }
   },
   {
+    "aggregate": "q=Temperenzler&mode=phrase&from=1877-01-01&to=1900-12-31&bucket=month&lang=ger",
+    "blurb": "Temperenzler, German for temperance advocates, in German-language papers, 1877 to 1900.",
+    "era": "1877-1900",
+    "id": "temperenzler",
+    "title": "Temperenzler in German papers",
+    "view": { "bucket": "month", "from": "1877-01-01", "lang": ["ger"], "q": "Temperenzler", "to": "1900-12-31" }
+  },
+  {
+    "aggregate": "q=Guiteau&mode=phrase&from=1881-06-01&to=1882-08-31&bucket=week",
+    "blurb": "Charles Guiteau, who shot President Garfield in July 1881, through his trial and hanging.",
+    "era": "1877-1900",
+    "id": "guiteau-trial",
+    "title": "Guiteau trial, 1881",
+    "view": { "bucket": "week", "from": "1881-06-01", "q": "Guiteau", "to": "1882-08-31" }
+  },
+  {
+    "aggregate": "q=%22Johnstown+flood%22&from=1889-05-01&to=1890-06-30&bucket=week",
+    "blurb": "The South Fork dam failure of May 31, 1889, that destroyed Johnstown, Pennsylvania.",
+    "era": "1877-1900",
+    "id": "johnstown-flood",
+    "title": "Johnstown flood, 1889",
+    "view": { "bucket": "week", "from": "1889-05-01", "q": "\"Johnstown flood\"", "to": "1890-06-30" }
+  },
+  {
+    "aggregate": "q=%22Wounded+Knee%22+OR+%22ghost+dance%22&from=1890-06-01&to=1891-06-30&bucket=week",
+    "blurb": "The Ghost Dance and the Army's killing of Lakota people at Wounded Knee in December 1890.",
+    "era": "1877-1900",
+    "id": "wounded-knee",
+    "title": "Wounded Knee, 1890",
+    "view": { "bucket": "week", "from": "1890-06-01", "q": "\"Wounded Knee\" OR \"ghost dance\"", "to": "1891-06-30" }
+  },
+  {
+    "aggregate": "q=Weltausstellung&mode=phrase&from=1892-01-01&to=1894-06-30&bucket=week&lang=ger",
+    "blurb": "Weltausstellung, German for world's fair, in German papers around the 1893 Chicago fair.",
+    "era": "1877-1900",
+    "id": "weltausstellung-1893",
+    "title": "Weltausstellung in German papers",
+    "view": { "bucket": "week", "from": "1892-01-01", "lang": ["ger"], "q": "Weltausstellung", "to": "1894-06-30" }
+  },
+  {
+    "aggregate": "q=Coxey&mode=phrase&from=1894-01-01&to=1894-12-31&bucket=week",
+    "blurb": "Jacob Coxey's march of unemployed men from Ohio to Washington in the spring of 1894.",
+    "era": "1877-1900",
+    "id": "coxeys-army",
+    "title": "Coxey's Army, 1894",
+    "view": { "bucket": "week", "from": "1894-01-01", "q": "Coxey", "to": "1894-12-31" }
+  },
+  {
     "aggregate": "q=Aguinaldo&mode=phrase&from=1898-01-01&to=1903-12-31&bucket=month",
     "blurb": "Emilio Aguinaldo led Filipino forces against the US from 1899 until his capture in 1901.",
     "era": "1900-1929",
@@ -320,6 +528,54 @@
     "view": { "bucket": "week", "from": "1925-03-01", "q": "Scopes", "to": "1925-12-31" }
   },
   {
+    "aggregate": "q=%22San+Francisco%22+earthquake&from=1906-01-01&to=1906-12-31&bucket=week",
+    "blurb": "The April 18 earthquake and fire that destroyed much of San Francisco.",
+    "era": "1900-1929",
+    "id": "san-francisco-earthquake",
+    "title": "San Francisco earthquake, 1906",
+    "view": { "bucket": "week", "from": "1906-01-01", "q": "\"San Francisco\" earthquake", "to": "1906-12-31" }
+  },
+  {
+    "aggregate": "q=Carranza&mode=phrase&from=1911-01-01&to=1921-12-31&bucket=month&lang=spa",
+    "blurb": "Venustiano Carranza in Spanish and bilingual papers, from his 1913 revolt to his death.",
+    "era": "1900-1929",
+    "id": "carranza-spanish-press",
+    "title": "Carranza in Spanish papers",
+    "view": { "bucket": "month", "from": "1911-01-01", "lang": ["spa"], "q": "Carranza", "to": "1921-12-31" }
+  },
+  {
+    "aggregate": "q=Titanic&mode=phrase&from=1912-01-01&to=1912-12-31&bucket=week",
+    "blurb": "The White Star liner sinks on its maiden voyage in April 1912.",
+    "era": "1900-1929",
+    "id": "titanic-1912",
+    "title": "Titanic, 1912",
+    "view": { "bucket": "week", "from": "1912-01-01", "q": "Titanic", "to": "1912-12-31" }
+  },
+  {
+    "aggregate": "q=Trieste&mode=phrase&from=1912-01-01&to=1921-12-31&bucket=month&lang=ita",
+    "blurb": "Trieste, the Austrian port Italy sought in the First World War, in Italian papers.",
+    "era": "1900-1929",
+    "id": "trieste-italian-press",
+    "title": "Trieste in Italian papers",
+    "view": { "bucket": "month", "from": "1912-01-01", "lang": ["ita"], "q": "Trieste", "to": "1921-12-31" }
+  },
+  {
+    "aggregate": "q=niepodleg%2A&from=1914-01-01&to=1921-12-31&bucket=month&lang=pol",
+    "blurb": "Niepodległość, Polish for independence, in Polish papers as Poland regained it in 1918.",
+    "era": "1900-1929",
+    "id": "niepodleglosc-polish",
+    "title": "Niepodległość in Polish papers",
+    "view": { "bucket": "month", "from": "1914-01-01", "lang": ["pol"], "q": "niepodleg*", "to": "1921-12-31" }
+  },
+  {
+    "aggregate": "q=Spanish+influenza&mode=phrase&from=1918-01-01&to=1919-06-30&bucket=week",
+    "blurb": "The influenza pandemic, which peaked in American papers in October 1918.",
+    "era": "1900-1929",
+    "id": "spanish-influenza-1918",
+    "title": "Spanish influenza, 1918",
+    "view": { "bucket": "week", "from": "1918-01-01", "q": "Spanish influenza", "to": "1919-06-30" }
+  },
+  {
     "aggregate": "q=%22bank+holiday%22&from=1932-10-01&to=1933-06-30&bucket=week",
     "blurb": "Roosevelt closed the nation's banks in March 1933, days after taking office.",
     "era": "1929-1945",
@@ -384,6 +640,54 @@
     "view": { "bucket": "month", "from": "1942-01-01", "q": "\"relocation center\"", "to": "1946-06-30" }
   },
   {
+    "aggregate": "q=Huey+Long&mode=phrase&from=1929-01-01&to=1936-12-31&bucket=month",
+    "blurb": "The Louisiana governor and senator, assassinated in Baton Rouge in September 1935.",
+    "era": "1929-1945",
+    "id": "huey-long",
+    "title": "Huey Long",
+    "view": { "bucket": "month", "from": "1929-01-01", "q": "Huey Long", "to": "1936-12-31" }
+  },
+  {
+    "aggregate": "q=repatriados&mode=phrase&from=1929-01-01&to=1939-12-31&bucket=month&lang=spa",
+    "blurb": "Repatriados, Spanish for repatriates, as Mexican families left the US in the 1930s.",
+    "era": "1929-1945",
+    "id": "repatriados",
+    "title": "Repatriados in Spanish papers",
+    "view": { "bucket": "month", "from": "1929-01-01", "lang": ["spa"], "q": "repatriados", "to": "1939-12-31" }
+  },
+  {
+    "aggregate": "q=Works+Progress+Administration&mode=phrase&from=1934-01-01&to=1943-12-31&bucket=month",
+    "blurb": "The New Deal jobs agency created in 1935 that hired millions for public works projects.",
+    "era": "1929-1945",
+    "id": "works-progress-administration",
+    "title": "Works Progress Administration",
+    "view": { "bucket": "month", "from": "1934-01-01", "q": "Works Progress Administration", "to": "1943-12-31" }
+  },
+  {
+    "aggregate": "q=guerra+civil&mode=phrase&from=1935-01-01&to=1940-12-31&bucket=month&lang=spa",
+    "blurb": "Guerra civil, Spanish for civil war, in Spanish-language papers during the war in Spain.",
+    "era": "1929-1945",
+    "id": "guerra-civil-spain",
+    "title": "Guerra civil in Spanish papers",
+    "view": { "bucket": "month", "from": "1935-01-01", "lang": ["spa"], "q": "guerra civil", "to": "1940-12-31" }
+  },
+  {
+    "aggregate": "q=Normandy&mode=phrase&from=1944-01-01&to=1944-12-31&bucket=week",
+    "blurb": "The Allied landings in Normandy on June 6, 1944, and the summer campaign that followed.",
+    "era": "1929-1945",
+    "id": "normandy-1944",
+    "title": "Normandy, 1944",
+    "view": { "bucket": "week", "from": "1944-01-01", "q": "Normandy", "to": "1944-12-31" }
+  },
+  {
+    "aggregate": "q=%22V-E+Day%22+OR+%22VE+Day%22&from=1945-01-01&to=1945-12-31&bucket=week",
+    "blurb": "Victory in Europe Day, May 8, 1945, when the German surrender took effect.",
+    "era": "1929-1945",
+    "id": "ve-day-1945",
+    "title": "V-E Day, 1945",
+    "view": { "bucket": "week", "from": "1945-01-01", "q": "\"V-E Day\" OR \"VE Day\"", "to": "1945-12-31" }
+  },
+  {
     "aggregate": "q=%22atomic+bomb%22&from=1944-01-01&to=1963-12-31&bucket=month",
     "blurb": "From Hiroshima and Nagasaki in August 1945 through the tests of the 1950s.",
     "era": "1945-1963",
@@ -446,5 +750,53 @@
     "id": "civil-rights",
     "title": "Civil rights",
     "view": { "bucket": "month", "from": "1945-01-01", "q": "\"civil rights\"", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=statehood&mode=phrase&from=1945-01-01&to=1963-12-31&bucket=month",
+    "blurb": "Peaks as Congress voted to admit Alaska in July 1958 and Hawaii in March 1959.",
+    "era": "1945-1963",
+    "id": "alaska-hawaii-statehood",
+    "title": "Alaska and Hawaii statehood",
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "statehood", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=%22juvenile+delinquency%22&from=1945-01-01&to=1963-12-31&bucket=month",
+    "blurb": "A postwar worry that peaked after the Senate formed a subcommittee on it in 1953.",
+    "era": "1945-1963",
+    "id": "juvenile-delinquency",
+    "title": "Juvenile delinquency",
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "\"juvenile delinquency\"", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=television&mode=phrase&from=1945-01-01&to=1963-12-31&bucket=month",
+    "blurb": "Mentions of television, which grew quickly after 1945 and leveled off in the mid-1950s.",
+    "era": "1945-1963",
+    "id": "television",
+    "title": "Television",
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "television", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=%22United+Nations%22&from=1945-01-01&to=1963-12-31&bucket=month",
+    "blurb": "The world body, from its founding conference in San Francisco in 1945.",
+    "era": "1945-1963",
+    "id": "united-nations",
+    "title": "United Nations",
+    "view": { "bucket": "month", "from": "1945-01-01", "q": "\"United Nations\"", "to": "1963-12-31" }
+  },
+  {
+    "aggregate": "q=%22flying+saucer%22+OR+%22flying+saucers%22&from=1947-01-01&to=1957-12-31&bucket=month",
+    "blurb": "Saucer reports began in mid-1947, with a second wave in the summer of 1952.",
+    "era": "1945-1963",
+    "id": "flying-saucers",
+    "title": "Flying saucers",
+    "view": { "bucket": "month", "from": "1947-01-01", "q": "\"flying saucer\" OR \"flying saucers\"", "to": "1957-12-31" }
+  },
+  {
+    "aggregate": "q=%22Salk+vaccine%22+OR+%22polio+vaccine%22&from=1953-01-01&to=1957-12-31&bucket=month",
+    "blurb": "Jonas Salk's vaccine was declared safe and effective in April 1955.",
+    "era": "1945-1963",
+    "id": "polio-vaccine",
+    "title": "Polio vaccine, 1955",
+    "view": { "bucket": "month", "from": "1953-01-01", "q": "\"Salk vaccine\" OR \"polio vaccine\"", "to": "1957-12-31" }
   }
 ]

@@ -113,6 +113,23 @@ describe("example rotation", () => {
     }
   });
 
+  it("mixes any count of examples in nearly equal eras", () => {
+    for (let count = 21; count <= 110; count++) {
+      // Seven eras whose sizes differ by at most one.
+      const items = Array.from({ length: count }, (_, i) => ({ era: `era-${i % 7}`, i }));
+      for (let start = 1; start <= 10; start++) {
+        let seed = start * 7919 + count;
+        const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+        const order = mixByEra(items, random);
+        expect(new Set(order).size, `${count} examples`).toBe(count);
+        for (let page = 0; page < Math.ceil(count / EXAMPLES_SHOWN); page++) {
+          const eras = examplesAt(order, page).map((e) => e.era);
+          expect(new Set(eras).size, `${count} examples, seed ${start}, set ${page}`).toBe(EXAMPLES_SHOWN);
+        }
+      }
+    }
+  });
+
   it("are spread across eras", () => {
     const sizes = new Map<string, number>();
     for (const ex of EXAMPLES) {
