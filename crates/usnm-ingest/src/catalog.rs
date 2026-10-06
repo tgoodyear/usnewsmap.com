@@ -111,9 +111,14 @@ impl Catalog {
         self.place_index.get(id).map(|&i| &self.places[i])
     }
 
-    /// For an incremental release: titles and places already published keep
-    /// their published record (changes wait for the next full rebuild, 04
-    /// §4.7); new ones come from the current catalog.
+    /// For an incremental release: titles already published keep their
+    /// published record, so their pages stay with the place the published
+    /// indexes give them (changes wait for the next full rebuild, 04 §4.7).
+    /// A published place keeps its id, ordinal and state but takes its
+    /// name, coordinates and precision from the current catalog: index
+    /// documents carry only the place's id and shard, so a corrected point
+    /// needs no reindex (04 §4.6). New titles and places come from the
+    /// current catalog.
     pub fn carried_forward(published: &Catalog, current: &Catalog) -> anyhow::Result<Self> {
         let mut titles = published.titles.clone();
         titles.extend(
@@ -123,7 +128,20 @@ impl Catalog {
                 .filter(|t| published.title(&t.lccn).is_none())
                 .cloned(),
         );
-        let mut places = published.places.clone();
+        let mut places: Vec<Place> = published
+            .places
+            .iter()
+            .map(|p| match current.place(&p.id) {
+                Some(now) => Place {
+                    name: now.name.clone(),
+                    lat: now.lat,
+                    lon: now.lon,
+                    precision: now.precision.clone(),
+                    ..p.clone()
+                },
+                None => p.clone(),
+            })
+            .collect();
         places.extend(
             current
                 .places
@@ -132,6 +150,23 @@ impl Catalog {
                 .cloned(),
         );
         Self::new(titles, places)
+    }
+
+    /// The published titles the current catalog puts in another place (a
+    /// merge, an alias, a corrected city), in LCCN order. A delta would
+    /// keep their pages where they were published, so the release builds
+    /// a full base instead (04 §4.6).
+    pub fn regrouped(published: &Catalog, current: &Catalog) -> Vec<String> {
+        published
+            .titles
+            .iter()
+            .filter(|t| {
+                current
+                    .title(&t.lccn)
+                    .is_some_and(|now| now.place_id != t.place_id)
+            })
+            .map(|t| t.lccn.clone())
+            .collect()
     }
 }
 
@@ -191,6 +226,19 @@ mod tests {
         assert_eq!(c.title("sn1").unwrap().place_id, "P1");
         assert_eq!(c.title("sn2").unwrap().place_id, "P2");
         assert_eq!(c.places.len(), 2);
+        assert_eq!(Catalog::regrouped(&published, &current), ["sn1"]);
+        assert!(Catalog::regrouped(&published, &published).is_empty());
+    }
+
+    #[test]
+    fn incremental_releases_take_corrected_points() {
+        let published = Catalog::new(vec![title("sn1", 1, "P1")], vec![place("P1", 1)]).unwrap();
+        let mut moved = place("P1", 1);
+        (moved.name, moved.lat, moved.lon) = ("Memphis".into(), 35.15, -90.05);
+        let current = Catalog::new(vec![title("sn1", 1, "P1")], vec![moved.clone()]).unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        assert_eq!(c.place("P1").unwrap(), &moved);
+        assert!(Catalog::regrouped(&published, &current).is_empty());
     }
 
     #[test]

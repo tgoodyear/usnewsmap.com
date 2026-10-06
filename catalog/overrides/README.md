@@ -7,22 +7,49 @@ next image and applies on the next ingest run, in every environment (08
 ## Place overrides
 
 `places.json` corrects the coordinates `geocode` would otherwise take from
-LoC's title records (or a state centroid).
+LoC's title records, the gazetteer or a state centroid (04 §4.6), and can
+rename the place.
 
-Each entry names a place by its city and state, as the catalog shows it:
+Each entry names a place by its city and state, as the catalog shows it
+(spelling variants such as "St."/"Saint" match), with its keys in
+alphabetical order:
 
 ```json
 [
-  { "city": "Lusk", "state": "WY", "lat": 42.7625, "lon": -104.4522 },
-  { "city": "Honolulu", "state": "HI", "lat": 21.3069, "lon": -157.8583, "precision": "city" }
+  { "city": "Lusk", "lat": 42.7625, "lon": -104.4522, "state": "WY" },
+  { "city": "Honolulu", "lat": 21.3069, "lon": -157.8583, "name": "Honolulu", "precision": "city", "state": "HI" }
 ]
 ```
 
-`precision` is `city` (the default), `county` or `state`.
+`name` replaces the place's name. `precision` is `city` (the default),
+`county` or `state`.
 
 Current entries:
 
 - **Vancouver, WA:** for The Vancouver Independent (pages `sn87093109`, record `sn84022797`, #120). Neither of its LoC records has coordinates, so without this it would sit at Washington's centroid. The coordinates are the city's, from public gazetteers, not from LoC.
+
+## Place aliases
+
+`place-aliases.json` names misspelled and renamed towns, so their titles
+share a place with the town's other titles, under the town's name:
+
+```json
+[
+  { "from": "Skaguay", "note": "old spelling", "state": "AK", "to": "Skagway" }
+]
+```
+
+`from` is the city as LoC spells it (spelling variants match); `to` is
+the town's name, and becomes the place's name. Entries are sorted by
+state, then `from`, with keys in alphabetical order. A `to` can't be
+another alias's `from`. Only merge towns that are one point on the map: a
+town that was separate (East Providence, Winston before 1913) keeps its
+own place. A title naming two cities ("Fort Worth-Dallas") goes to the
+first.
+
+The gazetteer `geocode` uses is `../gazetteer/us-places.csv`, built by
+`scripts/build-gazetteer.py` from the Census Bureau's national places
+file (public domain).
 
 ## Title overrides
 
