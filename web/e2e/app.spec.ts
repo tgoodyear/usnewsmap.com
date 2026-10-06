@@ -587,11 +587,16 @@ test("the toolbar's buttons stay put whichever measure is chosen", async ({ page
         ),
       ),
     );
-  const first = await where();
-  for (const m of ["Relative rate", "Median date", "Pages"]) {
-    await measure.getByRole("button", { name: m }).click();
-    await expect(measure.getByRole("button", { name: m })).toHaveAttribute("aria-pressed", "true");
-    expect(await where(), m).toBe(first);
+  // Both sides of the 1100 px switch between the one-row and stacked toolbars, and between.
+  for (const width of [1440, 1100, 1099, 900, 641]) {
+    await page.setViewportSize({ width, height: 900 });
+    await measure.getByRole("button", { name: "Pages" }).click();
+    const first = await where();
+    for (const m of ["Relative rate", "Median date", "Pages"]) {
+      await measure.getByRole("button", { name: m }).click();
+      await expect(measure.getByRole("button", { name: m })).toHaveAttribute("aria-pressed", "true");
+      expect(await where(), `${width} px, ${m}`).toBe(first);
+    }
   }
 });
 
