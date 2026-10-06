@@ -380,6 +380,7 @@ input, select {
 .badge--ok { color: var(--ok); }
 .badge--attention { color: var(--warn); }
 .badge--problem { color: var(--danger); }
+.badge--muted { color: var(--muted); }
 /* A page whose text we OCR'd (#139). */
 .badge--ocr { color: var(--accent); font-weight: 500; }
 .progress {
