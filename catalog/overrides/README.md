@@ -26,7 +26,7 @@ alphabetical order:
 
 Current entries:
 
-- **Anacostia, DC:** for The Weekly News (`sn82016441`). Anacostia is a part of Washington, so the gazetteer has no point for it; it stays its own place, at Anacostia rather than central Washington.
+- **Anacostia, DC:** for The Weekly News (`sn82016441`). Anacostia is part of Washington, so the gazetteer has no point for it; it stays its own place, at Anacostia rather than central Washington.
 - **Vancouver, WA:** for The Vancouver Independent (pages `sn87093109`, record `sn84022797`, #120). Neither of its LoC records has coordinates, so without this it would sit at Washington's centroid. The coordinates are the city's, from public gazetteers, not from LoC.
 
 ## Place aliases
@@ -45,8 +45,8 @@ the town's name, and becomes the place's name. Entries are sorted by
 state, then `from`, with keys in alphabetical order. A `to` can't be
 another alias's `from`. Only merge towns that are one point on the map: a
 town that was separate (East Providence, Winston before 1913) keeps its
-own place. A title naming two cities ("Fort Worth-Dallas") goes to the
-first.
+own place. For a title naming two cities ("Fort Worth-Dallas"), alias it
+to the first.
 
 The gazetteer `geocode` uses is `../gazetteer/us-places.csv`, built by
 `scripts/build-gazetteer.py` from the Census Bureau's national places
@@ -60,7 +60,7 @@ Entries are sorted by `lccn`, with keys in alphabetical order:
 
 ```json
 [
-  { "city": "Chicago", "lccn": "sn84024055", "note": "Why.", "state": "IL" }
+  { "city": "Chicago", "lccn": "sn84024055", "note": "Where and when it was published.", "state": "IL" }
 ]
 ```
 

@@ -22,8 +22,8 @@ name, with a header row:
   Consolidated governments get the city's own name (see SPECIAL), and
   "Urban Honolulu" is "Honolulu".
 - A name with another in parentheses ("San Buenaventura (Ventura)") is
-  listed under both, the second only where the state has no place of that
-  name already.
+  listed under both; the second ranks below any other place of that name
+  in the state.
 - Every place is listed, so a name a state has twice (a city and a CDP,
   or two villages) has two rows: `geocode` treats such a name as
   ambiguous. Rows of one name are in order of preference: an incorporated

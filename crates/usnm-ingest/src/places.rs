@@ -9,8 +9,9 @@
 //!   misspellings and renamed towns, `[{from, note, state, to}]`, applied to
 //!   a city before it is keyed.
 //! - **Keys** ignore case, accents, punctuation and spacing, and fold the
-//!   generic variants LoC's records use: "St."/"Saint", "Mt."/"Mount",
-//!   "Ft."/"Fort", a leading "The", "City of", "Borough of", a trailing
+//!   generic variants LoC's records use: "St."/"Saint", "Ste."/"Sainte",
+//!   "Mt."/"Mount", "Ft."/"Fort", a leading "The", "City of", "Borough of",
+//!   "Town of", "Village of", a trailing
 //!   state name or abbreviation ("Chicago Ill."), "Court House"/"C.H."
 //!   (unless the gazetteer knows the full name, as for Washington Court
 //!   House, Ohio), "M'" for "Mc", and LoC's "X i.e. Y" corrections.
