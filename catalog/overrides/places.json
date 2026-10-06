@@ -1,3 +1,4 @@
 [
+  { "city": "Anacostia", "lat": 38.8662, "lon": -76.9853, "name": "Anacostia", "state": "DC" },
   { "city": "Vancouver", "lat": 45.6387, "lon": -122.6615, "state": "WA" }
 ]

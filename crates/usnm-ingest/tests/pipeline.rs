@@ -1129,6 +1129,135 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
     assert!(release(false, why).run(&mut sink).await.unwrap().is_none());
 }
 
+/// A published title the catalog puts in another place (a merge) stays
+/// where it was published until a full release, and a corrected point
+/// rides a delta with the published place's id (04 §4.6).
+#[tokio::test]
+async fn a_title_moved_to_another_place_waits_for_a_full_release() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let (late_a, late_b) = late.split_at(late.len() / 2);
+    let archives: Vec<(String, PathBuf)> = [("early", &early[..]), ("a", late_a), ("b", late_b)]
+        .iter()
+        .map(|(name, pages)| {
+            let name = format!("batch_fx_{name}_ver01");
+            let path = e.root.join(format!("{name}.tar.gz"));
+            write_archive(&path, pages, true, true);
+            (name, path)
+        })
+        .collect();
+    let add = |i: usize| {
+        let (name, path) = archives[i].clone();
+        let e = &e;
+        async move {
+            source::enqueue(&e.state, &[listed(&name, &path, None)])
+                .await
+                .unwrap();
+            e.worker("w").run(None).await.unwrap();
+        }
+    };
+    let edit = |f: Box<dyn Fn(&mut Value)>, path: &'static str| {
+        let e = &e;
+        async move {
+            let mut v = e.reference_json(path).await;
+            f(&mut v);
+            e.reference
+                .put(path, serde_json::to_vec(&v).unwrap(), "application/json")
+                .await
+                .unwrap();
+        }
+    };
+    add(0).await;
+    let p1 = e.release(1, false).await.unwrap();
+
+    // A corrected point for a published place: a delta, whose snapshot has
+    // the new point under the same id.
+    edit(
+        Box::new(|v| v[0]["lat"] = serde_json::json!(41.5)),
+        "catalog/places.json",
+    )
+    .await;
+    add(1).await;
+    let p2 = e.release(2, false).await.unwrap();
+    assert!(!p2.full);
+    assert_ne!(p2.index_version, p1.index_version);
+    let places = e
+        .reference_json(&format!("{}/places.json", p2.index_version))
+        .await;
+    let first = places
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "P00001")
+        .unwrap();
+    assert_eq!(first["lat"], 41.5);
+
+    // A published title moved to another place: the delta keeps it where
+    // it was published, so its new pages join its published ones.
+    let moved = late_b
+        .iter()
+        .find(|p| !p.text.is_empty())
+        .unwrap()
+        .lccn
+        .clone();
+    let catalog = e.reference_json("catalog/titles.json").await;
+    let at = catalog
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|t| t["lccn"] == moved.as_str())
+        .unwrap();
+    let was = catalog[at]["place_id"].as_str().unwrap().to_owned();
+    let to = if was == "P00001" { "P00002" } else { "P00001" };
+    edit(
+        Box::new(move |v| v[at]["place_id"] = serde_json::json!(to)),
+        "catalog/titles.json",
+    )
+    .await;
+    add(2).await;
+    let p3 = e.release(3, false).await.unwrap();
+    assert!(!p3.full, "no full base on its own (#172)");
+    let place_in = |titles: &Value| {
+        titles
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["lccn"] == moved.as_str())
+            .unwrap()["place_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let titles = e
+        .reference_json(&format!("{}/titles.json", p3.index_version))
+        .await;
+    assert_eq!(place_in(&titles), was, "kept where it was published");
+    let delta = e.index(p3.indexes.last().unwrap());
+    let of_title: Vec<&Value> = delta
+        .values()
+        .filter(|d| d["lccn"] == moved.as_str())
+        .collect();
+    assert!(!of_title.is_empty());
+    assert!(of_title.iter().all(|d| d["place_id"] == was.as_str()));
+
+    // A full release moves it everywhere.
+    let p4 = e.release(4, true).await.unwrap();
+    assert!(p4.full);
+    let titles = e
+        .reference_json(&format!("{}/titles.json", p4.index_version))
+        .await;
+    assert_eq!(place_in(&titles), to);
+    let docs = e.index(&p4.indexes[0]);
+    let of_title: Vec<&Value> = docs
+        .values()
+        .filter(|d| d["lccn"] == moved.as_str())
+        .collect();
+    assert!(!of_title.is_empty());
+    assert!(of_title.iter().all(|d| d["place_id"] == to));
+}
+
 /// The pipeline state with writes of the release's progress item failing,
 /// as when Cosmos throttles or drops one request.
 struct NoProgress(MemoryDocs, Arc<std::sync::atomic::AtomicUsize>);

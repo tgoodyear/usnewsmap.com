@@ -2532,6 +2532,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "unicode-normalization",
  "usnm-api",
  "usnm-core",
  "usnm-search",

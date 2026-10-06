@@ -7,7 +7,9 @@
 //! - **Full** (compaction): every curated batch goes into a new base index.
 //!   Also forced when there is no published version or it already has 8
 //!   deltas. Replacements (new batch versions) and catalog changes to
-//!   published titles take effect only here (04 §4.7).
+//!   published titles, a move to another place included, take effect only
+//!   here (04 §4.7); a published place's corrected name or point rides the
+//!   next delta (04 §4.6).
 //!
 //! A Quickwit index is merged into a few large splits and closed before it
 //! is published (`crate::merges`); the version's manifest records the
@@ -375,6 +377,20 @@ impl Release {
                 }
             }
             let published_catalog = self.load_snapshot_catalog(&prev.index_version).await?;
+            // Published titles the catalog now puts in another place (a
+            // merge, an alias, 04 §4.6) stay where they were published: a
+            // full release on the E4 profile moves them, since one on the
+            // Consumption profile runs out of memory (#172).
+            let moved = Catalog::regrouped(&published_catalog, &current);
+            if !moved.is_empty() {
+                let n = moved.len();
+                tracing::warn!(
+                    titles = n,
+                    first = ?moved.iter().take(10).collect::<Vec<_>>(),
+                    "{n} published titles' place changes wait for the next full release \
+                     (USNM_INGEST_FULL, run on the E4 profile: docs/operations.md, Full rebuild)"
+                );
+            }
             let catalog = Catalog::carried_forward(&published_catalog, &current)?;
             let new = catalogued(new, &catalog);
             nothing_new = new.is_empty();
