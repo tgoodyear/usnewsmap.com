@@ -45,7 +45,7 @@ pub struct Config {
     /// response), whether or not anyone still waits for it. Past it the
     /// search is cancelled and fails with a timeout, which is not cached.
     pub compute_cap: Duration,
-    /// Search computations (`/v1/aggregate`, `/v1/hits`) allowed to run at
+    /// Search computations (`/v1/aggregate`, `/v1/hits`, `/v1/days`) allowed to run at
     /// once, including those still running after their visitor got a `202`.
     /// A new one queues for a slot (see `search_queue`).
     pub compute_concurrency: usize,

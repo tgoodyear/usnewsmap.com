@@ -429,6 +429,191 @@ async fn hits_are_sorted_marked_linked_and_paginated() {
     assert!(items.iter().all(|i| i["doc_id"] != second_first));
 }
 
+/// Matching pages per day for some places, against a brute-force pass over
+/// the fixture files and the aggregate's per-place totals.
+#[tokio::test]
+async fn days_per_place_match_brute_force() {
+    let s = state_with(None).await;
+    let search = "q=%22cross+of+gold%22&from=1896-01-01&to=1896-12-31";
+    let (status, headers, body) = get(&s, &format!("/v1/days?{search}&place=P00006,P00001")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let places = body["places"].as_array().unwrap();
+    // In the order asked.
+    assert_eq!(places.len(), 2);
+    assert_eq!(places[0]["id"], "P00006");
+    assert_eq!(places[1]["id"], "P00001");
+
+    let node = parse(r#""cross of gold""#).unwrap();
+    let (from, to) = (
+        day_number(chrono::NaiveDate::from_ymd_opt(1896, 1, 1).unwrap()),
+        day_number(chrono::NaiveDate::from_ymd_opt(1896, 12, 31).unwrap()),
+    );
+    let (_, _, agg) = get(&s, &format!("/v1/aggregate?{search}")).await;
+    let agg_ids: Vec<&str> = agg["places"]["id"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    for p in places {
+        let id = p["id"].as_str().unwrap();
+        let mut expected: BTreeMap<u32, u64> = BTreeMap::new();
+        for d in ["pages-base-fixture", "pages-delta-fixture-1"]
+            .iter()
+            .flat_map(|i| load_docs(i))
+            .filter(|d| d.place_id == id && d.day >= from && d.day <= to)
+            .filter(|d| eval(&node, &tokenize(&d.text)))
+        {
+            *expected.entry(d.day).or_default() += 1;
+        }
+        assert!(!expected.is_empty(), "{id}");
+        let days: Vec<u32> = p["days"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u32)
+            .collect();
+        let hits: Vec<u64> = p["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        assert_eq!(days, expected.keys().copied().collect::<Vec<_>>(), "{id}");
+        assert_eq!(hits, expected.values().copied().collect::<Vec<_>>(), "{id}");
+        // Same day numbers and totals as the aggregate's.
+        let i = agg_ids.iter().position(|x| *x == id).unwrap();
+        assert_eq!(agg["places"]["first_day"][i], days[0]);
+        assert_eq!(agg["places"]["last_day"][i], *days.last().unwrap());
+        assert_eq!(agg["places"]["hits"][i], hits.iter().sum::<u64>());
+    }
+
+    // Unversioned: short cache, Content-Location pins the version, by day
+    // whatever `bucket` said, with the places in the order asked.
+    assert_eq!(
+        header_str(&headers, header::CACHE_CONTROL),
+        "public, max-age=300"
+    );
+    let location = header_str(&headers, header::CONTENT_LOCATION);
+    assert!(
+        location.starts_with("/v1/days?bucket=day&from=1896-01-01&q="),
+        "{location}"
+    );
+    assert!(
+        location.ends_with("&place=P00006%2CP00001&v=fixture-v1"),
+        "{location}"
+    );
+    let (_, h2, again) = get(
+        &s,
+        &format!("/v1/days?{search}&bucket=week&place=P00006,P00001"),
+    )
+    .await;
+    assert_eq!(again, body);
+    assert_eq!(header_str(&h2, header::CONTENT_LOCATION), location);
+
+    // Pinned: cached for a day; another version redirects to this one.
+    let (status, headers, _) =
+        get(&s, &format!("/v1/days?{search}&place=P00001&v=fixture-v1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_str(&headers, header::CACHE_CONTROL),
+        "public, max-age=86400"
+    );
+    let (status, headers, _) = get(&s, &format!("/v1/days?{search}&place=P00001&v=old")).await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
+    let location = header_str(&headers, header::LOCATION);
+    assert!(location.starts_with("/v1/days?bucket=day&"), "{location}");
+    assert!(
+        location.ends_with("&place=P00001&v=fixture-v1"),
+        "{location}"
+    );
+
+    // A place without matches is listed with empty lists.
+    let (status, _, body) = get(
+        &s,
+        &format!("/v1/days?{search}&lccn=sn99000001&place=P00002,P00001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["places"][0],
+        json!({"id": "P00002", "days": [], "hits": []})
+    );
+    assert!(!body["places"][1]["days"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn days_problems_for_bad_requests() {
+    let s = state_with(None).await;
+    let many: Vec<String> = (1..=21).map(|i| format!("P{i:05}")).collect();
+    for (query, status, kind) in [
+        ("q=gold", StatusCode::BAD_REQUEST, "/errors/bad-parameter"),
+        (
+            "q=gold&place=",
+            StatusCode::BAD_REQUEST,
+            "/errors/bad-parameter",
+        ),
+        (
+            "q=gold&place=P00001,P00002,P00001",
+            StatusCode::BAD_REQUEST,
+            "/errors/bad-parameter",
+        ),
+        (
+            &format!("q=gold&place={}", many.join(",")),
+            StatusCode::BAD_REQUEST,
+            "/errors/bad-parameter",
+        ),
+        (
+            "q=gold&place=P00001&limit=5",
+            StatusCode::BAD_REQUEST,
+            "/errors/bad-parameter",
+        ),
+        (
+            "q=gold&place=P00001&bucket=decade",
+            StatusCode::BAD_REQUEST,
+            "/errors/bad-parameter",
+        ),
+        (
+            "place=P00001",
+            StatusCode::BAD_REQUEST,
+            "/errors/bad-parameter",
+        ),
+        (
+            "q=text:gold&place=P00001",
+            StatusCode::BAD_REQUEST,
+            "/errors/query-syntax",
+        ),
+        (
+            "q=gold&place=P99999",
+            StatusCode::NOT_FOUND,
+            "/errors/not-found",
+        ),
+        (
+            "q=gold&place=P00001,P%20OR%20x",
+            StatusCode::NOT_FOUND,
+            "/errors/not-found",
+        ),
+    ] {
+        let (got, headers, body) = get(&s, &format!("/v1/days?{query}")).await;
+        assert_eq!(got, status, "{query}: {body}");
+        assert_eq!(body["type"], kind, "{query}");
+        assert_eq!(
+            header_str(&headers, header::CONTENT_TYPE),
+            "application/problem+json"
+        );
+    }
+    // More day cells than the budget → 422, and nothing asked by day.
+    let tiny = state_with_cells(5).await;
+    let (status, _, body) = get(
+        &tiny,
+        "/v1/days?q=gold&from=1896-01-01&to=1896-12-31&place=P00001",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["type"], "/errors/query-too-broad");
+    assert!(body["detail"].as_str().unwrap().contains("days"), "{body}");
+}
+
 /// Newspapers and languages (#121) against a brute-force pass over the
 /// fixture files: counts, order (most first, ties by key), the catalog's
 /// names and places, and languages counted once per language a paper lists.

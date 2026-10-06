@@ -134,7 +134,8 @@ async fn one_search_on_the_site_is_one_record() {
     let v = version(&state).await;
 
     // What the site requests for one search: places, the aggregate, the
-    // coverage cube it links to, and a page of hits for a place.
+    // coverage cube it links to, matching pages per day for the listed
+    // places, and a page of hits for a place.
     send(&state, from_site(&format!("/v1/places?v={v}"))).await;
     let search = format!("/v1/aggregate?q=gold&mode=phrase&from=1896-01-01&to=1896-12-31&v={v}");
     let (status, agg) = send(&state, from_site(&search)).await;
@@ -146,6 +147,9 @@ async fn one_search_on_the_site_is_one_record() {
         "/v1/hits?q=gold&mode=phrase&from=1896-01-01&to=1896-12-31&place={place}&limit=20&v={v}"
     );
     assert_eq!(send(&state, from_site(&hits)).await.0, StatusCode::OK);
+    let days =
+        format!("/v1/days?q=gold&mode=phrase&from=1896-01-01&to=1896-12-31&place={place}&v={v}");
+    assert_eq!(send(&state, from_site(&days)).await.0, StatusCode::OK);
     assert_eq!(send(&state, from_site("/healthz")).await.0, StatusCode::OK);
 
     log.shutdown(Duration::from_secs(5)).await;

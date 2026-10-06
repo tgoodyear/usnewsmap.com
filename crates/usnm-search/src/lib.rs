@@ -283,6 +283,22 @@ pub trait SearchBackend: Send + Sync {
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError>;
 
+    /// Cube cells for the places in `places` only, whatever their shard
+    /// (`/v1/days`). Callers pass validated place ids. A backend without it
+    /// refuses.
+    async fn place_cube(
+        &self,
+        _indexes: &IndexSet,
+        _query: &Node,
+        _filters: &Filters,
+        _spec: &BucketSpec,
+        _places: &[String],
+    ) -> Result<Vec<CubeCell>, SearchError> {
+        Err(SearchError::Unsupported(
+            "matching pages per place and day".into(),
+        ))
+    }
+
     /// Hits by date in `page.sort` order, then by `sort_key` (title, edition,
     /// page), with snippets.
     async fn hits(

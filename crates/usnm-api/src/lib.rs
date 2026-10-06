@@ -202,6 +202,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/places", get(routes::places))
         .route("/aggregate", get(routes::aggregate))
         .route("/hits", get(routes::hits))
+        .route("/days", get(routes::days))
         .route("/coverage", get(routes::coverage))
         .route("/status", get(routes::status))
         .route("/versions", get(routes::versions))
