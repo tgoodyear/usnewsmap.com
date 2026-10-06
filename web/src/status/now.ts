@@ -516,3 +516,45 @@ export function ocrExperiment(s: Status, now: number): OcrLine | null {
     searchable,
   };
 }
+
+export interface AuditLine {
+  text: string;
+  progress?: { done: number; total: number; label: string };
+  /** Once finished: how often a page's language isn't its newspaper's first. */
+  agreement?: string;
+}
+
+const share = (x: number) => (x > 0 && x < 0.001 ? "under 0.1%" : `${(x * 100).toFixed(1)}%`);
+
+/** A rate or share in the audit's table: "–" without a word list, never "0.0%" for one observed. */
+export function auditRate(x: number | null): string {
+  return x === null ? "–" : share(x);
+}
+
+/**
+ * The OCR quality audit (`ocr_quality`): a sample of pages, each page's
+ * language and how damaged its OCR text is. `null` when it has never run.
+ */
+export function ocrAudit(s: Status, now: number): AuditLine | null {
+  const q = s.ocr_quality?.available ? s.ocr_quality : null;
+  if (!q) return null;
+  const { done, total } = q.batches;
+  const progress = total > 0 ? { done, total, label: `${count(done)} of ${count(total)} batches checked` } : undefined;
+  if (q.finished_at && q.summary) {
+    const a = q.summary.agreement;
+    return {
+      text: `Checked ${count(q.pages_sampled)} pages, a ${q.sample_pct}% sample of every batch, on ${localDate(q.finished_at)}.`,
+      agreement: `On ${share(a.differs_share)} of pages with text, the language we detected is not the first language in the newspaper's catalog record (${share(a.multilingual_differs_share)} for newspapers whose record lists more than one). That includes ${share(a.mixed_share)} that mix two languages and ${share(a.und_share)} we could not place: too short, too garbled, or in a language we have no word list for.`,
+    };
+  }
+  if (q.running) {
+    return {
+      text: `Checking a ${q.sample_pct}% sample of pages: ${count(done)} of ${count(total)} batches (${pct(done, total)}), ${count(q.pages_sampled)} pages so far.`,
+      progress,
+    };
+  }
+  return {
+    text: `The audit stopped at ${count(done)} of ${count(total)} batches. It last reported ${relative(q.updated_at, now)}.`,
+    progress,
+  };
+}

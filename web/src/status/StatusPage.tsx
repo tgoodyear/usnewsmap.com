@@ -5,6 +5,7 @@ import type {
   Backfill,
   HourBin,
   Indexing,
+  OcrJa,
   Status,
   TitlesPipeline,
 } from "../api/types";
@@ -15,12 +16,15 @@ import {
   headline,
   lastUpdate,
   longDate,
+  auditRate,
+  ocrAudit,
   ocrExperiment,
   rightNow,
   steps,
   localDate,
 } from "./now";
 import { TERMS } from "./terms";
+import { languageName } from "../lib/languages";
 import { Brand } from "../components/Brand";
 import { LanguagesSection, StatesSection } from "./PagesTables";
 
@@ -223,11 +227,69 @@ function Searchable({ s }: { s: Status }) {
 /** Our own OCR of the Japanese pages LoC has no text for: not a pipeline step. */
 function OcrExperiments({ s, now }: { s: Status; now: number }) {
   const line = ocrExperiment(s, now);
-  if (!line) return null;
+  const audit = ocrAudit(s, now);
+  if (!line && !audit) return null;
   const o = s.ocr_ja?.available ? s.ocr_ja : null;
   return (
     <section aria-labelledby="ocr-experiments" className="status-section">
       <h2 id="ocr-experiments">OCR experiments</h2>
+      {line && <JapaneseOcr line={line} o={o} now={now} />}
+      {audit && <OcrAudit audit={audit} s={s} />}
+    </section>
+  );
+}
+
+/** The OCR quality audit: progress, then the summary by language. */
+function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>>; s: Status }) {
+  const q = s.ocr_quality?.available ? s.ocr_quality : null;
+  const rows = q?.finished_at ? (q.summary?.languages ?? []) : [];
+
+  return (
+    <section aria-labelledby="ocr-audit" className="status-subsection">
+      <h3 id="ocr-audit">OCR quality audit</h3>
+      <p>
+        We check how readable the Library of Congress&apos;s text is. For a sample of pages, we detect
+        each page&apos;s language and count how often that language&apos;s 20 most common words are misread
+        by one letter (&quot;tbe&quot; for &quot;the&quot;, &quot;ift&quot; for German &quot;ist&quot;)
+        instead of read correctly. The table calls this the misread rate.
+      </p>
+      <p className="status-ocr__line">{audit.text}</p>
+      {audit.progress && (
+        <Bar value={audit.progress.done} max={audit.progress.total} label={audit.progress.label} />
+      )}
+      {audit.agreement && <p>{audit.agreement}</p>}
+      {rows.length > 0 && (
+        <Table
+          caption="Misread rate by page language"
+          head={["Language", "Pages sampled", "Misread rate, median page", "Pages with misread rate over 10%"]}
+          empty="No languages."
+          rows={rows.map((r) => [
+            languageName(r.language),
+            count(r.pages),
+            auditRate(r.damage_rate_median),
+            auditRate(r.damaged_share),
+          ])}
+        />
+      )}
+      {rows.some((r) => r.damage_rate_median === null) && (
+        <p className="status-note">– means we have no word list for that language.</p>
+      )}
+    </section>
+  );
+}
+
+/** Our own OCR of the Japanese pages LoC has no text for. */
+function JapaneseOcr({
+  line,
+  o,
+  now,
+}: {
+  line: NonNullable<ReturnType<typeof ocrExperiment>>;
+  o: OcrJa | null;
+  now: number;
+}) {
+  return (
+    <>
       <p>
         The Library of Congress has no searchable text for its Japanese-language
         pages. We read those page images ourselves with NDLOCR-Lite,
@@ -251,7 +313,7 @@ function OcrExperiments({ s, now }: { s: Status; now: number }) {
           )}
         </p>
       )}
-    </section>
+    </>
   );
 }
 
