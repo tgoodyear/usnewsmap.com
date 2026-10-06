@@ -126,18 +126,27 @@ def main():
         f"Japanese index: {ja.get('indexes') if ja else None}, {(ja or {}).get('pages', 0):,} pages",
     )
 
+    first = None
     for word in WORDS:
         q = urllib.parse.urlencode({"q": word, "v": version})
         status, doc = ask(args.api, f"/v1/aggregate?{q}")
+        if first is None and status == 200:
+            first = doc
         hits = (doc or {}).get("total", {}).get("hits") if status == 200 else None
         places = (doc or {}).get("total", {}).get("places") if status == 200 else None
         check(status == 200 and (hits or 0) > 0, f"{word}: {status}, {hits} pages in {places} places")
 
-    status, doc = ask(args.api, "/v1/hits?" + urllib.parse.urlencode({"q": WORDS[0], "v": version}))
-    items = (doc or {}).get("items", []) if status == 200 else []
+    # /v1/hits lists one place's pages: the place with the most for the first word.
+    places = (first or {}).get("places", {})
+    ranked = sorted(zip(places.get("id", []), places.get("hits", [])), key=lambda p: -p[1])
+    items, status = [], None
+    if ranked:
+        q = urllib.parse.urlencode({"q": WORDS[0], "place": ranked[0][0], "v": version})
+        status, doc = ask(args.api, f"/v1/hits?{q}")
+        items = (doc or {}).get("items", []) if status == 200 else []
     marked = [i for i in items if (i.get("ocr") or {}).get("source") and (i.get("ocr") or {}).get("engine")]
     engines = sorted({i["ocr"]["engine"] for i in marked})
-    check(bool(items) and len(marked) == len(items), f"{WORDS[0]} hits marked as our OCR, with the engine: {len(marked)} of {len(items)} ({', '.join(engines)})")
+    check(bool(items) and len(marked) == len(items), f"{WORDS[0]} hits in {ranked[0][0] if ranked else 'no place'} marked as our OCR, with the engine ({status}): {len(marked)} of {len(items)} ({', '.join(engines)})")
 
     for issue in args.expect:
         status, pages = issue_pages(args.api, issue, version)
