@@ -328,4 +328,121 @@ mod tests {
             PlannedDays::Complete(_) => panic!("within budget"),
         }
     }
+
+    /// Places with synthetic yearly counts big enough to need several day
+    /// calls; records which places each day call asked for.
+    struct Packing {
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SearchBackend for Packing {
+        fn capabilities(&self) -> crate::Capabilities {
+            crate::Capabilities {
+                fuzzy: false,
+                max_slop: 0,
+                nested_aggregations: true,
+            }
+        }
+        async fn summary(
+            &self,
+            _: &IndexSet,
+            _: &Node,
+            _: &Filters,
+            _: &BucketSpec,
+        ) -> Result<Summary, SearchError> {
+            unreachable!("days asks for no summary")
+        }
+        async fn cube(
+            &self,
+            _: &IndexSet,
+            _: &Node,
+            _: &Filters,
+            _: &BucketSpec,
+            _: &[u8],
+        ) -> Result<Vec<CubeCell>, SearchError> {
+            unreachable!("days asks for no sharded cube")
+        }
+        async fn place_cube(
+            &self,
+            _: &IndexSet,
+            _: &Node,
+            _: &Filters,
+            spec: &BucketSpec,
+            places: &[String],
+        ) -> Result<Vec<CubeCell>, SearchError> {
+            let cell = |p: &str, bucket: u32, hits: u32| CubeCell {
+                place_id: p.to_owned(),
+                bucket,
+                hits,
+            };
+            if spec.unit == BucketUnit::Year {
+                // A, B and C have pages every day of every year (about
+                // 110,000 day cells each); D has 10 in one year; E none.
+                let mut cells = Vec::new();
+                for p in places {
+                    match p.as_str() {
+                        "A" | "B" | "C" => {
+                            cells.extend((0..spec.len() as u32).map(|y| cell(p, y, 1_000)))
+                        }
+                        "D" => cells.push(cell(p, 3, 10)),
+                        _ => {}
+                    }
+                }
+                return Ok(cells);
+            }
+            self.calls.lock().unwrap().push(places.to_vec());
+            // Out of day order, to check the merge sorts each place's days.
+            Ok(places
+                .iter()
+                .flat_map(|p| [cell(p, 2, 5), cell(p, 0, 1)])
+                .collect())
+        }
+        async fn hits(
+            &self,
+            _: &IndexSet,
+            _: &Node,
+            _: &Filters,
+            _: &HitsQuery,
+        ) -> Result<crate::HitsPage, SearchError> {
+            unreachable!("days asks for no hits")
+        }
+        async fn health(&self) -> Result<(), SearchError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn days_pack_big_places_into_separate_calls_and_keep_the_order_asked() {
+        let b = Packing {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let idx = IndexSet::new(vec!["i".into()]);
+        let q = usnm_core::query::parse("gold").unwrap();
+        let from =
+            usnm_core::time::day_number(chrono::NaiveDate::from_ymd_opt(1700, 1, 1).unwrap());
+        let to =
+            usnm_core::time::day_number(chrono::NaiveDate::from_ymd_opt(2000, 12, 31).unwrap());
+        let f = filters(from, to);
+        let asked = ids(&["A", "E", "B", "C", "D"]);
+        let PlannedDays::Complete(days) = days(&b, &idx, &q, &f, &asked, 1_000_000).await.unwrap()
+        else {
+            panic!("within the budget")
+        };
+        // Over 150,000 cells together, so A, B and C each get a call; D
+        // (10 cells) joins C's; E has no pages and is never asked for.
+        let mut calls = b.calls.lock().unwrap().clone();
+        calls.sort();
+        assert_eq!(calls, vec![ids(&["A"]), ids(&["B"]), ids(&["C", "D"])]);
+        let order: Vec<&str> = days.iter().map(|d| d.place_id.as_str()).collect();
+        assert_eq!(order, ["A", "E", "B", "C", "D"]);
+        for d in &days {
+            if d.place_id == "E" {
+                assert!(d.days.is_empty() && d.hits.is_empty());
+            } else {
+                assert_eq!(d.days, [from, from + 2], "{}", d.place_id);
+                assert_eq!(d.hits, [1, 5], "{}", d.place_id);
+            }
+        }
+    }
 }

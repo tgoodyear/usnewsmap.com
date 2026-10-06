@@ -21,6 +21,8 @@ pub const MAX_PLACES: usize = 20;
 
 #[derive(Serialize)]
 struct DaysResponse {
+    /// The version the counts come from, so the site can tell them from another snapshot's.
+    index_version: String,
     places: Vec<PlaceOut>,
 }
 
@@ -123,6 +125,7 @@ pub async fn days(
         });
         st.metrics.backend("days", t.elapsed(), &planned);
         Ok::<_, ApiError>(DaysResponse {
+            index_version: rd.version().to_owned(),
             places: planned?
                 .into_iter()
                 .map(|p| PlaceOut {

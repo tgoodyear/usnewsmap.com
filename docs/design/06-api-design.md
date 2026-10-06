@@ -301,11 +301,12 @@ Error text (`last_error`) isn't included; `/v1/status` shows it sanitized.
 
 ### 6.3.9 `GET /v1/days` response
 
-Matching pages per day for up to 20 places, so the site can work out their exact median and quartile dates (the "Median date" list, 07 §7.4) for any playback window. The aggregate's cube only knows them to the bucket. It takes the search parameters of `/v1/aggregate` (§6.3.1) plus `place`, a comma-separated list of 1 to 20 distinct place ids. `bucket` is accepted but has no effect: the canonical URL always says `bucket=day`.
+Matching pages per day for up to 20 places, so the site can work out their exact median and quartile dates (the "Median date" list, 07 §7.2) for any playback window. The aggregate's cube only knows them to the bucket. It takes the search parameters of `/v1/aggregate` (§6.3.1) plus `place`, a comma-separated list of 1 to 20 distinct place ids. `bucket` is accepted but has no effect: the canonical URL always says `bucket=day`.
 
 ```jsonc
 // GET /v1/days?q=%22cross+of+gold%22&from=1896-01-01&to=1896-12-31&place=P00412,P00007&v=pages-v20261001-1
 {
+  "index_version": "pages-v20261001-1",
   "places": [
     { "id": "P00412", "days": [71777, 71778, 71784], "hits": [3, 1, 2] },
     { "id": "P00007", "days": [], "hits": [] }
@@ -313,7 +314,7 @@ Matching pages per day for up to 20 places, so the site can work out their exact
 }
 ```
 
-- `places` is in the order asked. `days` are day numbers (days since 1700-01-01), the same numbers as `places.first_day` and `places.last_day` in `/v1/aggregate`, ascending, and only days with a matching page. `hits[i]` is the number of matching pages on `days[i]`. A place with no matches has empty lists.
+- `index_version` is the version the counts come from; the site checks it as for the aggregate, so it never mixes snapshots. `places` is in the order asked. `days` are day numbers (days since 1700-01-01), the same numbers as `places.first_day` and `places.last_day` in `/v1/aggregate`, ascending, and only days with a matching page. `hits[i]` is the number of matching pages on `days[i]`. A place with no matches has empty lists.
 - **Errors.** A missing or empty `place`, an id given twice, or more than 20 ids answer 400 `/errors/bad-parameter`. An unknown place answers 404, as on `/v1/hits`. Before asking for days, the API asks for the places' matching pages by year. A place-year has at most as many day cells as it has pages, and as the year has days in the range. If that bound, summed over the places, is over the cube's cap of 700,000 cells, the answer is 422 `/errors/query-too-broad` and the site keeps the bucket medians.
 - **Engine.** It's the cube's request (§6.3.3, [05 §5.7](05-search-and-storage.md#57-aggregation-strategy)), `terms(place_id) → histogram(day, interval 1)`, with `place_id:IN [...]` in place of the shard filter. Place ids are checked against the reference data before they reach the query. The places are split across calls so each call holds at most 150,000 cells by the year bound, run two at a time. A typical request takes two calls: the year bound and one day cube.
 - **Caching.** As for `/v1/hits`: the canonical URL is the search's plus `place`, in the order asked, with the same version pinning, in-process and Blob caches, and `202 Accepted` while it computes (§6.3.5). It takes a computation slot like any search. It is not in the search log (§6.8), because it follows a search the visitor already made.

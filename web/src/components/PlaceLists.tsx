@@ -68,23 +68,25 @@ export function medianExtremes<R extends ListRow>(rows: R[]): { earliest: R[]; l
   };
 }
 
-/** At most this many places per end are asked for their exact median day (the API takes 20). */
-const MAX_CANDIDATES = 10;
+/** The most places one /v1/days request takes. */
+const MAX_CANDIDATES = 20;
 
 /**
  * The places that could be among the five earliest or latest once medians
- * are known to the day: those ranked by bucket up to the fifth, and any that
- * share the fifth's bucket, at most MAX_CANDIDATES per end (more pages first).
+ * are known to the day: those ranked by bucket up to the fifth, and every
+ * place sharing the fifth's bucket. Empty when that is more than one
+ * request takes: an incomplete set could leave out the true earliest, so the
+ * lists keep the bucket instead.
  */
 export function medianCandidates(rows: ListRow[]): string[] {
   const usable = rows.filter((r) => r.value >= MIN_MEDIAN_PAGES && r.when !== undefined && !Number.isNaN(r.when));
   const end = (dir: 1 | -1) => {
-    const sorted = [...usable].sort((a, b) => dir * (a.when! - b.when!) || b.value - a.value || a.name.localeCompare(b.name));
+    const sorted = [...usable].sort((a, b) => dir * (a.when! - b.when!));
     const edge = sorted[Math.min(LIST_LENGTH, sorted.length) - 1];
-    if (!edge) return [];
-    return sorted.filter((r) => dir * (r.when! - edge.when!) <= 0).slice(0, MAX_CANDIDATES);
+    return edge ? sorted.filter((r) => dir * (r.when! - edge.when!) <= 0) : [];
   };
-  return [...new Set([...end(1), ...end(-1)].map((r) => r.id))].sort();
+  const ids = [...new Set([...end(1), ...end(-1)].map((r) => r.id))].sort();
+  return ids.length > MAX_CANDIDATES ? [] : ids;
 }
 
 /**

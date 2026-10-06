@@ -315,6 +315,6 @@ export const api = {
     const s = searchQuery(p, version);
     s.delete("bucket");
     s.set("place", places.join(","));
-    return getJson<DaysResponse>(`/v1/days?${s}`, { signal });
+    return getPinned<DaysResponse>(`/v1/days?${s}`, version, signal);
   },
 };

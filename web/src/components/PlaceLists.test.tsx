@@ -120,12 +120,12 @@ describe("exact median days", () => {
   it("asks for the places that could make either list, ties at the fifth included", () => {
     // Six eligible places: all of them could be in one list or the other.
     expect(medianCandidates(ROWS)).toEqual(["Albany", "Boise", "Buffalo", "Chicago", "Peoria", "Tucson"]);
-    // Twelve places in one month: the ten with the most pages.
-    const same = Array.from({ length: 12 }, (_, i) => row(`P${String(i).padStart(2, "0")}`, "IL", 10 + i, 0.5, "Jun 1896"));
-    const c = medianCandidates(same);
-    expect(c).toHaveLength(10);
-    expect(c).not.toContain("P00");
-    expect(c).not.toContain("P01");
+    // Twelve places in one month: any could be first, so all twelve.
+    const same = (n: number) =>
+      Array.from({ length: n }, (_, i) => row(`P${String(i).padStart(2, "0")}`, "IL", 10 + i, 0.5, "Jun 1896"));
+    expect(medianCandidates(same(12))).toHaveLength(12);
+    // More than one request takes: none, so the lists keep the month.
+    expect(medianCandidates(same(21))).toEqual([]);
   });
 
   it("finds the first day by which half the window's pages had been printed", () => {
