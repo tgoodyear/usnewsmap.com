@@ -44,7 +44,13 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
 
   const legend = page.locator(".legend");
   await expect(legend).toContainText("Relative rate");
-  await expect(legend).toContainText("compared with the other 5 places with pages in this window, in 6 states, over the same months");
+  // The explanation is behind the legend's info button.
+  const note = legend.getByText("compared with the other 5 places with pages in this window, in 6 states, over the same months", { exact: false });
+  await expect(note).toBeHidden();
+  await legend.getByRole("button", { name: "About this legend" }).click();
+  await expect(note).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(note).toBeHidden();
   await expect(legend).not.toContainText("fixture-v1");
   await expect(page.getByRole("complementary", { name: "Places that differ most clearly" })).toBeVisible();
   // Points only: the heat layer isn't offered in this view.
@@ -58,13 +64,24 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
   await expect(info).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByText("pulled toward the typical rate")).toBeVisible();
   // The explanation fits on the screen, phones included.
-  const box = await page.locator(".infotip__body").boundingBox();
-  const width = page.viewportSize()!.width;
-  expect(box!.x).toBeGreaterThanOrEqual(0);
-  expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+  const onScreen = async (tip: string) => {
+    const box = (await page.locator(tip).boundingBox())!;
+    const { width, height } = page.viewportSize()!;
+    expect(box.x, tip).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, tip).toBeLessThanOrEqual(width);
+    expect(box.y, tip).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height, tip).toBeLessThanOrEqual(height);
+  };
+  await onScreen(".measure .infotip__body");
   await expectAccessible(page);
   await page.keyboard.press("Escape");
   await expect(info).toHaveAttribute("aria-expanded", "false");
+  // So does the legend's, which opens upward from the bottom of the map.
+  const legendInfo = legend.getByRole("button", { name: "About this legend" });
+  await legendInfo.scrollIntoViewIfNeeded();
+  await legendInfo.click();
+  await onScreen(".legend .infotip__body");
+  await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "Table" }).click();
   const places = page.getByRole("table", { name: /Relative rate of each place/ });

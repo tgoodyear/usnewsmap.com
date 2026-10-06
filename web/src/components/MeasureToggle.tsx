@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState } from "react";
 import type { Norm } from "../state/url";
+import { InfoTip } from "./InfoTip";
 
 interface Props {
   norm: Norm;
@@ -33,50 +33,23 @@ export function MeasureToggle({ norm, onChange, unavailable }: Props) {
           </button>
         ))}
       </div>
-      <InfoTip />
+      <RateInfo />
     </div>
   );
 }
 
-/** A small disclosure that explains the relative rate. */
-function InfoTip() {
-  const [open, setOpen] = useState(false);
-  const id = useId();
-  const wrap = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: Event) => {
-      if (e instanceof KeyboardEvent ? e.key === "Escape" : !wrap.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("keydown", close);
-    document.addEventListener("pointerdown", close);
-    return () => {
-      document.removeEventListener("keydown", close);
-      document.removeEventListener("pointerdown", close);
-    };
-  }, [open]);
+/** What the relative rate means. */
+function RateInfo() {
   return (
-    <div className="infotip" ref={wrap}>
-      <button
-        type="button"
-        className="infotip__button"
-        aria-expanded={open}
-        aria-controls={id}
-        aria-label="About the relative rate"
-        onClick={() => setOpen((o) => !o)}
-      >
-        <span aria-hidden="true">i</span>
-      </button>
-      <div id={id} className="infotip__body" hidden={!open}>
-        <p>
-          Relative rate compares each place's share of matching pages with the other places' share in the same
-          time periods, so places with more newspapers don't stand out just for their size. 1× is the same rate.
-        </p>
-        <p>
-          Places with few pages are pulled toward the typical rate. Each place's 90% range is where the model puts
-          its rate with 90% probability. Places drawn faded could be at 1× (their 90% range includes it).
-        </p>
-      </div>
-    </div>
+    <InfoTip label="About the relative rate">
+      <p>
+        Relative rate compares each place's share of matching pages with the other places' share in the same
+        time periods, so places with more newspapers don't stand out just for their size. 1× is the same rate.
+      </p>
+      <p>
+        Places with few pages are pulled toward the typical rate. Each place's 90% range is where the model puts
+        its rate with 90% probability. Places drawn faded could be at 1× (their 90% range includes it).
+      </p>
+    </InfoTip>
   );
 }
