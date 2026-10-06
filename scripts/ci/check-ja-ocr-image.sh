@@ -14,6 +14,11 @@ for lang, code in sorted(quality.WORDFREQ.items()):
     assert words and len(words) > 20000, (lang, code, words and len(words))
 s = quality.score("The council met on Tuesday and voted for the new school", quality.wordfreq_words("en"), "eng")
 assert s.dict_share == 1.0, s
+models = quality.Models()
+for lang in sorted(quality.WORDFREQ):
+    m = models.get(lang)
+    assert m and len(m.top) >= 100 and len(m.head) >= 20 and m.near, lang
+assert models.get("eng").near.get("tbe") == "the" and "she" not in models.get("eng").near
 print("word lists ok")'
 work=$(mktemp -d)
 mkdir -p "$work/img" "$work/out"

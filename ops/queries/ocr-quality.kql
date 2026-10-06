@@ -1,6 +1,8 @@
 // OCR quality audit (jaocr.py quality): the "ocr quality" rows (by language,
 // by decade, by language and decade, Japanese pages skipped, worst titles and
-// batches), its progress lines, failed parts and the summary.
+// batches; v2 also the language agreement crosstab and summary and the
+// undetermined titles), its progress lines, failed parts and the summary.
+// Metric is "v2" (the default) or "v1"; empty on rows logged before v2.
 // Lines that could carry the managed identity endpoint's secret are dropped.
 ContainerAppConsoleLogs
 | where ContainerName == "jaocr"
@@ -12,19 +14,36 @@ ContainerAppConsoleLogs
 | project
     TimeGenerated,
     Message,
+    Metric = tostring(j.metric),
     Version = tostring(j.version),
     Table = tostring(j.table),
     Rank = tolong(j.rank),
     Language = tostring(j.language),
     Decade = tostring(j.decade),
+    TitleLanguage = tostring(j.title_language),
+    Detected = tostring(j.detected),
+    Scope = tostring(j.scope),
+    Share = todouble(j.share),
     Lccn = tostring(j.lccn),
     Name = tostring(j.name),
     State = tostring(j.state),
     Batch = tostring(j.batch),
     Pages = tolong(j.pages),
+    TextPages = tolong(j.text_pages),
     ScoredPages = tolong(j.scored_pages),
     EmptyShare = todouble(j.empty_share),
     ShortShare = todouble(j.short_share),
+    UndShare = todouble(j.und_share),
+    MixedShare = todouble(j.mixed_share),
+    SameShare = todouble(j.same_share),
+    DiffersShare = todouble(j.differs_share),
+    FunctionMedian = todouble(j.function_share_median),
+    FunctionP10 = todouble(j.function_share_p10),
+    DamagePages = tolong(j.damage_pages),
+    DamageMedian = todouble(j.damage_rate_median),
+    DamageMean = todouble(j.damage_rate_mean),
+    DamagedShare = todouble(j.damaged_share),
+    BadlyDamagedShare = todouble(j.badly_damaged_share),
     DictMedian = todouble(j.dict_share_median),
     DictMean = todouble(j.dict_share_mean),
     PoorShare = todouble(j.poor_share),
