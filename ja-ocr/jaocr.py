@@ -4,6 +4,8 @@
     python3 jaocr.py targets          list the pages to OCR (writes ocr-ja/targets-v2.jsonl)
     python3 jaocr.py run [--limit N]  OCR the targets not done yet
     python3 jaocr.py audit            titles LoC ships pages without text for (audit.py)
+    python3 jaocr.py quality [--sample-pct 2] [--min-pages 50]
+                                      how good LoC's OCR is, by language and decade (quality.py)
 
 Stores are blob container URLs (Entra auth via the managed identity) or local
 directories, so the job runs the same way against a copy on disk:
@@ -144,7 +146,12 @@ class BlobStore:
         from azure.identity import DefaultAzureCredential
         from azure.storage.blob import ContainerClient
 
+        self.url = url
         self.client = ContainerClient.from_container_url(url, credential=DefaultAzureCredential())
+
+    def __reduce__(self):
+        # A worker process (quality.py) opens its own client from the URL.
+        return (BlobStore, (self.url,))
 
     def read(self, path: str) -> bytes:
         return self.client.download_blob(path).readall()
@@ -673,9 +680,12 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=["targets", "run", "audit"])
+    ap.add_argument("command", choices=["targets", "run", "audit", "quality"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
     ap.add_argument("--all-languages", action="store_true", help="audit: every title, not just non-English ones")
+    ap.add_argument("--sample-pct", type=float, default=2.0, help="quality: percent of pages to score (default 2)")
+    ap.add_argument("--min-pages", type=int, default=50,
+                    help="quality: scored pages a title or batch needs for the worst lists (default 50)")
     a = ap.parse_args()
     reference = store(os.environ["USNM_REFERENCE_URL"])
     curated = store(os.environ["USNM_CURATED_URL"])
@@ -683,6 +693,10 @@ def main() -> None:
         import audit
 
         audit.audit(reference, curated, a.all_languages)
+    elif a.command == "quality":
+        import quality
+
+        quality.quality(reference, curated, a.sample_pct, a.min_pages)
     elif a.command == "targets":
         rows = targets(reference, curated)
         curated.write(f"{PREFIX}/{TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
