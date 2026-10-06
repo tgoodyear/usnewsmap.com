@@ -4,7 +4,7 @@
     python3 jaocr.py targets          list the pages to OCR (writes ocr-ja/targets-v2.jsonl)
     python3 jaocr.py run [--limit N]  OCR the targets not done yet
     python3 jaocr.py audit            titles LoC ships pages without text for (audit.py)
-    python3 jaocr.py quality [--sample-pct 2] [--min-pages 50]
+    python3 jaocr.py quality [--sample-pct 2] [--min-pages 50] [--metric v2]
                                       how good LoC's OCR is, by language and decade (quality.py)
 
 Stores are blob container URLs (Entra auth via the managed identity) or local
@@ -686,6 +686,8 @@ def main() -> None:
     ap.add_argument("--sample-pct", type=float, default=2.0, help="quality: percent of pages to score (default 2)")
     ap.add_argument("--min-pages", type=int, default=50,
                     help="quality: scored pages a title or batch needs for the worst lists (default 50)")
+    ap.add_argument("--metric", choices=["v1", "v2"], default="v2",
+                    help="quality: v2 (page language, function words, damage rate; default) or v1 (dict_share)")
     a = ap.parse_args()
     reference = store(os.environ["USNM_REFERENCE_URL"])
     curated = store(os.environ["USNM_CURATED_URL"])
@@ -696,7 +698,7 @@ def main() -> None:
     elif a.command == "quality":
         import quality
 
-        quality.quality(reference, curated, a.sample_pct, a.min_pages)
+        quality.quality(reference, curated, a.sample_pct, a.min_pages, metric=a.metric)
     elif a.command == "targets":
         rows = targets(reference, curated)
         curated.write(f"{PREFIX}/{TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
