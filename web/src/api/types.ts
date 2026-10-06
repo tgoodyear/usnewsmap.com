@@ -237,7 +237,8 @@ export interface Backfill {
   listed_limit: number;
 }
 
-export type RunStatus = "building" | "published" | "failed";
+/** `stopped`: left building by a release that ended without recording it (a job stopped by hand). */
+export type RunStatus = "building" | "published" | "failed" | "stopped";
 
 export interface IndexRun {
   index_version: string;

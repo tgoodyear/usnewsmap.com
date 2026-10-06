@@ -817,7 +817,9 @@ function RunBadge({ status }: { status: string }) {
       ? "badge--problem"
       : status === "building"
         ? "badge--attention"
-        : "badge--ok";
+        : status === "stopped"
+          ? "badge--muted"
+          : "badge--ok";
   return <span className={`badge ${cls}`}>{status}</span>;
 }
 

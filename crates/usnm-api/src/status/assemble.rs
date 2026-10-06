@@ -348,11 +348,24 @@ pub struct ReleaseProgress {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A run's state as the status page shows it. The pipeline records only
+/// building, published and failed; a release that was stopped (a job stopped
+/// by hand, a replica killed) never records an end, so a run left `building`
+/// that isn't the one holding the writer is shown as stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    Building,
+    Published,
+    Failed,
+    Stopped,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Run {
     pub index_version: String,
     pub full: bool,
-    pub status: RunStatus,
+    pub status: RunState,
     pub new_index: String,
     pub indexes: usize,
     pub batches: Option<u64>,
@@ -620,7 +633,18 @@ pub fn indexing(at: DateTime<Utc>, s: &Summary) -> Indexing {
             .map(|r| Run {
                 index_version: r.index_version.clone(),
                 full: r.full,
-                status: r.status,
+                status: match r.status {
+                    RunStatus::Published => RunState::Published,
+                    RunStatus::Failed => RunState::Failed,
+                    // Building only while it is the newest run and a writer
+                    // holds the lock; otherwise nothing is building it.
+                    RunStatus::Building
+                        if writer.is_some() && running == Some(r.index_version.as_str()) =>
+                    {
+                        RunState::Building
+                    }
+                    RunStatus::Building => RunState::Stopped,
+                },
                 new_index: r.new_index.clone(),
                 indexes: r.indexes.len(),
                 batches: r.batches(),
@@ -921,6 +945,28 @@ mod tests {
             "new_index": "d3", "status": "failed", "started_at": "2026-09-29T12:20:00Z"}),
         ));
         assert!(indexing(at(), &crashed).release.is_none());
+
+        // A run left `building` under a newer one was stopped; so is the newest
+        // once no writer holds the lock.
+        let mut stopped = s.clone();
+        stopped.runs.push(run(
+            json!({"index_version": "v0", "full": true, "indexes": ["b0"], "new_index": "b0",
+            "status": "building", "started_at": "2026-09-27T12:00:00Z"}),
+        ));
+        let i = indexing(at(), &stopped);
+        let state =
+            |i: &Indexing, v: &str| i.runs.iter().find(|r| r.index_version == v).unwrap().status;
+        assert_eq!(state(&i, "v0"), RunState::Stopped);
+        assert_eq!(
+            state(&i, &i.runs[0].index_version.clone()),
+            RunState::Building
+        );
+        stopped.ops.writer.as_mut().unwrap().until = at() - Duration::minutes(1);
+        let i = indexing(at(), &stopped);
+        assert_eq!(
+            state(&i, &i.runs[0].index_version.clone()),
+            RunState::Stopped
+        );
 
         // A version published after the failure supersedes it.
         let mut recovered = s.clone();
