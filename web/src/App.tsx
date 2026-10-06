@@ -19,6 +19,7 @@ import { Mentions } from "./components/Mentions";
 import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
 import { MeasureToggle } from "./components/MeasureToggle";
+import { InfoTip } from "./components/InfoTip";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { PagesLists, WhenLists, exactMedian, medianCandidates } from "./components/PlaceLists";
@@ -718,18 +719,23 @@ function Announcer({ message }: { message: string }) {
 
 function Legend() {
   return (
-    <div className="legend" aria-hidden="true">
-      <div className="legend__title">Pages containing the match</div>
-      <div className="legend__ramp">
+    <div className="legend">
+      <div className="legend__head">
+        <div className="legend__title">Pages containing the match</div>
+        <InfoTip label="About this legend" up>
+          <p>Circle area is proportional to a place's matching pages.</p>
+          <p>A hollow ring is a place known only to its county or state.</p>
+        </InfoTip>
+      </div>
+      <div className="legend__ramp" aria-hidden="true">
         {[0, 0.25, 0.5, 0.75, 1].map((x) => (
           <span key={x} style={{ background: cssColor(x) }} />
         ))}
       </div>
-      <div className="legend__ends">
+      <div className="legend__ends" aria-hidden="true">
         <span>fewer</span>
         <span>more</span>
       </div>
-      <div className="legend__note">Circle area ∝ pages · hollow ring = county/state location</div>
     </div>
   );
 }
@@ -737,19 +743,22 @@ function Legend() {
 /** The median-date view's legend (#127): the search's first and last buckets. */
 function WhenLegend({ from, to }: { from: string; to: string }) {
   return (
-    <div className="legend" aria-hidden="true">
-      <div className="legend__title">Median date of the matching pages</div>
-      <div className="legend__ramp">
+    <div className="legend">
+      <div className="legend__head">
+        <div className="legend__title">Median date of the matching pages</div>
+        <InfoTip label="About this legend" up>
+          <p>A place&apos;s colour is the period by whose end half its matching pages had appeared.</p>
+          <p>Circle area is proportional to its matching pages.</p>
+        </InfoTip>
+      </div>
+      <div className="legend__ramp" aria-hidden="true">
         {[0, 0.25, 0.5, 0.75, 1].map((x) => (
           <span key={x} style={{ background: cssTimeColor(x) }} />
         ))}
       </div>
-      <div className="legend__ends">
+      <div className="legend__ends" aria-hidden="true">
         <span>{from}</span>
         <span>{to}</span>
-      </div>
-      <div className="legend__note">
-        A place&apos;s colour is the period by whose end half its pages had appeared · circle area ∝ pages
       </div>
     </div>
   );
