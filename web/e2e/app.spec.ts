@@ -368,8 +368,12 @@ test("the status page lists published pages by state and by language", async ({ 
   await page.goto("/status");
   // The fixtures: six places in six states, 312 pages each; four titles in
   // English (one of them also German), one German and one Spanish.
-  const states = page.getByRole("table", { name: "Published pages by state" });
+  const states = page.getByRole("table", { name: "Published pages by state", includeHidden: true });
   await expect(page.getByRole("heading", { level: 3, name: "Pages by state" })).toBeVisible();
+  // Each table starts collapsed under its heading and summary.
+  await expect(states).toBeHidden();
+  await page.getByText("Show the table of pages by state").click();
+  await expect(states).toBeVisible();
   await expect(states.locator("tbody tr")).toHaveCount(6);
   await expect(states.locator("tbody tr").first()).toHaveText(/California\s*1\s*1\s*312\s*16\.7%/);
   await expect(states.locator("tfoot tr")).toHaveText(/Total\s*6\s*6\s*1,872\s*100\.0%/);
@@ -381,8 +385,11 @@ test("the status page lists published pages by state and by language", async ({ 
   await expect(states.getByRole("columnheader", { name: "State" })).toHaveAttribute("aria-sort", "descending");
   await expect(states.locator("tbody th").first()).toHaveText("South Carolina");
 
-  const languages = page.getByRole("table", { name: "Published pages by language" });
+  const languages = page.getByRole("table", { name: "Published pages by language", includeHidden: true });
   await expect(page.getByRole("heading", { level: 3, name: "Pages by language" })).toBeVisible();
+  await expect(languages).toBeHidden();
+  await page.getByText("Show the table of pages by language").click();
+  await expect(languages).toBeVisible();
   await expect(languages.locator("tbody tr")).toHaveCount(3);
   await expect(languages.locator("tbody tr").first()).toHaveText(/English\s*4\s*1,248\s*66\.7%/);
   await expect(page.getByText("1 newspaper lists more than one language", { exact: false })).toBeVisible();

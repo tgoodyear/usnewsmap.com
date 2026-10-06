@@ -200,20 +200,23 @@ export function StatesSection({
             Each newspaper counts toward the state of the place it was published
             in.
           </p>
-          <SortableTable
-            caption="Published pages by state"
-            columns={STATE_COLUMNS}
-            rows={rows}
-            rowKey={(r) => r.state}
-            initial={{ key: "pages", desc: true }}
-            foot={[
-              "Total",
-              count(sum((r) => r.places)),
-              count(sum((r) => r.titles)),
-              count(pages),
-              "100.0%",
-            ]}
-          />
+          <details className="status-table">
+            <summary>Show the table of pages by state</summary>
+            <SortableTable
+              caption="Published pages by state"
+              columns={STATE_COLUMNS}
+              rows={rows}
+              rowKey={(r) => r.state}
+              initial={{ key: "pages", desc: true }}
+              foot={[
+                "Total",
+                count(sum((r) => r.places)),
+                count(sum((r) => r.titles)),
+                count(pages),
+                "100.0%",
+              ]}
+            />
+          </details>
         </>
       )}
     </section>
@@ -278,17 +281,22 @@ export function LanguagesSection({ data }: { data: ByLanguage }) {
               newer search index goes live.
             </p>
           )}
-          <SortableTable
-            caption={
-              known
-                ? "Published pages by language"
-                : "Published newspapers by language"
-            }
-            columns={languageColumns(known)}
-            rows={data.rows}
-            rowKey={(r) => (r.code === null ? "none" : `code:${r.code}`)}
-            initial={{ key: known ? "pages" : "titles", desc: true }}
-          />
+          <details className="status-table">
+            <summary>
+              Show the table of {known ? "pages" : "newspapers"} by language
+            </summary>
+            <SortableTable
+              caption={
+                known
+                  ? "Published pages by language"
+                  : "Published newspapers by language"
+              }
+              columns={languageColumns(known)}
+              rows={data.rows}
+              rowKey={(r) => (r.code === null ? "none" : `code:${r.code}`)}
+              initial={{ key: known ? "pages" : "titles", desc: true }}
+            />
+          </details>
         </>
       )}
     </section>

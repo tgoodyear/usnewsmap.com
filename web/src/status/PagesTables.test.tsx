@@ -55,6 +55,22 @@ function bodyRows(table: HTMLElement): string[][] {
 }
 
 describe("StatesSection", () => {
+  it("keeps the table collapsed under the heading and summary until opened", () => {
+    render(<StatesSection rows={STATES} pages={15003} />);
+    const table = screen.getByRole("table", {
+      name: "Published pages by state",
+    });
+    const details = table.closest("details")!;
+    expect(details.open).toBe(false);
+    expect(
+      screen
+        .getByText(/4 states and territories have pages/)
+        .closest("details"),
+    ).toBeNull();
+    fireEvent.click(screen.getByText("Show the table of pages by state"));
+    expect(details.open).toBe(true);
+  });
+
   it("lists states by pages with separators, shares and a total", () => {
     render(<StatesSection rows={STATES} pages={15003} />);
     expect(
@@ -135,6 +151,16 @@ const LANGUAGES: ByLanguage = {
 };
 
 describe("LanguagesSection", () => {
+  it("keeps the table collapsed until opened", () => {
+    render(<LanguagesSection data={LANGUAGES} />);
+    const details = screen
+      .getByRole("table", { name: "Published pages by language" })
+      .closest("details")!;
+    expect(details.open).toBe(false);
+    fireEvent.click(screen.getByText("Show the table of pages by language"));
+    expect(details.open).toBe(true);
+  });
+
   it("counts a bilingual newspaper in each language and says so", () => {
     render(<LanguagesSection data={LANGUAGES} />);
     expect(
