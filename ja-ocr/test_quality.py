@@ -360,7 +360,7 @@ class Detection(unittest.TestCase):
     def test_bilingual_page_is_mixed(self):
         text = " ".join([GERMAN_TEXT] * 3 + [ENGLISH_TEXT] * 3)
         got = self.detect(text, ("ger", "eng"))
-        self.assertEqual((got["decision"], got["lang"], got["mixed_with"]), ("mixed", "ger", "eng"))
+        self.assertEqual((got["decision"], {got["lang"], got["mixed_with"]}), ("mixed", {"ger", "eng"}))
         self.assertGreater(got["function_share"], 0.3)
         # A few English lines on a German page don't make it mixed.
         got = self.detect(" ".join([GERMAN_TEXT] * 6 + [ENGLISH_TEXT]), ("ger", "eng"))
@@ -381,6 +381,50 @@ class Detection(unittest.TestCase):
         # An English column beside the Yiddish: mixed.
         both = self.detect(YIDDISH_TEXT + " " + ENGLISH_TEXT, ("yid", "eng"))
         self.assertEqual((both["decision"], {both["lang"], both["mixed_with"]}), ("mixed", {"eng", "yid"}))
+
+    def words(self, text, n):
+        """The first n word tokens of text, repeated as needed."""
+        out = []
+        while len(out) < n:
+            out += quality.text_words(text)[1]
+        return " ".join(out[:n])
+
+    def test_windows_are_fixed_50_word_slices(self):
+        words = [f"w{i}" for i in range(240)]
+        self.assertEqual([len(w) for w in quality.windows_of(words)], [50, 50, 50, 50, 40])
+        self.assertEqual([len(w) for w in quality.windows_of(words[:210])], [50, 50, 50, 50])  # a 10-word tail
+        self.assertEqual(quality.windows_of(words[:199]), [])
+
+    def test_240_words_english_then_german_is_mixed(self):
+        text = self.words(ENGLISH_TEXT, 140) + " " + self.words(GERMAN_TEXT, 100)
+        self.assertEqual(len(quality.text_words(text)[1]), 240)
+        got = self.detect(text, ("ger", "eng"))
+        self.assertEqual((got["decision"], got["lang"], got["mixed_with"]), ("mixed", "eng", "ger"))
+
+    def test_undecided_windows_are_not_scored(self):
+        # 3 English windows, 2 German, then a garbled one full of English near-misses that no language wins.
+        garbled = " ".join(["tbe aud nnd tlie thc"] * 10)
+        text = " ".join([self.words(ENGLISH_TEXT, 150), self.words(GERMAN_TEXT, 100), garbled])
+        got = self.detect(text, ("ger", "eng"))
+        self.assertEqual((got["decision"], got["lang"], got["mixed_with"]), ("mixed", "eng", "ger"))
+        self.assertEqual(got["damage_rate"], 0.0)
+        clean = self.detect(" ".join([self.words(ENGLISH_TEXT, 150), self.words(GERMAN_TEXT, 100)]), ("ger", "eng"))
+        self.assertEqual(got["function_share"], clean["function_share"])
+
+    def test_a_short_second_script_part_makes_a_page_mixed(self):
+        # 50 words: 40 in Hebrew script, 10 English function words (20%).
+        text = self.words(YIDDISH_TEXT, 40) + " the of and to in is for that it was"
+        got = self.detect(text, ("yid", "eng"))
+        self.assertEqual((got["decision"], got["lang"], got["mixed_with"]), ("mixed", "yid", "eng"))
+        # Under 20%, or under 5 different function words: Yiddish only.
+        self.assertEqual(self.detect(self.words(YIDDISH_TEXT, 45) + " the of and to in", ("yid", "eng"))["decision"],
+                         "detected")
+        self.assertEqual(self.detect(text.replace("that it was", "the the the"), ("yid", "eng"))["decision"],
+                         "mixed")  # still 7 different
+        self.assertEqual(self.detect(self.words(YIDDISH_TEXT, 40) + " the the the the of of of and and and",
+                                     ("yid", "eng"))["decision"], "detected")
+        # A whole page under 20 words is und, whatever its script.
+        self.assertEqual(self.detect(self.words(YIDDISH_TEXT, 15), ("yid",))["decision"], "und")
 
     def test_cyrillic_serbian_has_no_word_list(self):
         # wordfreq's Serbo-Croatian list is in Latin script: a Cyrillic page is Serbian, unscored.
@@ -638,6 +682,34 @@ class Run2(unittest.TestCase):
                  "language": "eng", "pages": 60},
                 {"damage_rate_median": 0.0, "damaged_share": 0.0, "function_share_median": 0.4762,
                  "language": "ger", "pages": 40}])
+
+    def test_status_summary_nulls(self):
+        # No multilingual title, and Yiddish pages with no word list to score them by.
+        titles = quality.title_infos([{"lccn": "e1", "languages": ["eng"]}, {"lccn": "y1", "languages": ["yid"]}])
+        t = quality.Tally2(titles)
+        t.add("b1_ver01", [page2("e1", 1880, damage_rate=x) for x in (0.0, 0.2, 0.3)]
+              + [page2("y1", 1900, "yid", function_share=None, damage_rate=None) for _ in range(3)])
+        old = quality.STATUS_MIN_PAGES
+        quality.STATUS_MIN_PAGES = 3
+        try:
+            got = quality.status_summary(t.tables({}, 1))
+        finally:
+            quality.STATUS_MIN_PAGES = old
+        self.assertEqual(got["agreement"], {"differs_share": 0.0, "mixed_share": 0.0,
+                                            "multilingual_differs_share": None, "und_share": 0.0})
+        self.assertEqual(got["languages"], [
+            {"damage_rate_median": 0.2, "damaged_share": round(2 / 3, 4), "function_share_median": 0.4,
+             "language": "eng", "pages": 3},
+            {"damage_rate_median": None, "damaged_share": None, "function_share_median": None,
+             "language": "yid", "pages": 3}])
+        # Nothing with text at all: every agreement share null, no languages.
+        t = quality.Tally2(titles)
+        t.add("b1_ver01", [page2("e1", 1880, status="empty")])
+        got = quality.status_summary(t.tables({}, 1))
+        self.assertEqual(got, {"agreement": {"differs_share": None, "mixed_share": None,
+                                             "multilingual_differs_share": None, "und_share": None},
+                               "languages": []})
+        self.assertIn("null", json.dumps(got))
 
     def test_v1_writes_no_status(self):
         with tempfile.TemporaryDirectory() as d:

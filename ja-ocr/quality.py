@@ -22,10 +22,13 @@ the page against it:
   are mostly in another script (Hebrew, Cyrillic, Greek, ...) takes the
   title's language in that script (`yid` or `heb` for Hebrew script; the
   best-fitting one if it lists several with word lists), or `und` if it
-  lists none. A page is `mixed` when, cut into windows of WINDOW words, two
-  languages each win at least MIXED_SHARE of the windows one wins (and 2
-  or more), or when a title's language in a second script covers
-  MIXED_SHARE of its words.
+  lists none. A page of MIXED_MIN_WORDS or more is `mixed` when, cut into
+  windows of WINDOW words (a shorter last window only if it has MIN_TAIL),
+  two languages each win at least MIXED_SHARE of the windows one wins (and
+  2 or more); its windows are then scored against their own languages, and
+  windows no language wins aren't scored. A title's language in a second
+  script that covers MIXED_SHARE of the words (with WINDOW_TYPES different
+  function words) makes a page mixed too.
 - function_share: the share of its word tokens in the language's top 100.
 - damage_rate: near-misses / (near-misses + tokens that are one of the
   language's 20 most frequent words). A near-miss is one OCR edit from one
@@ -411,11 +414,13 @@ class Tally:
 # ---------------------------------------------------------------- v2: the page's language and OCR damage
 
 TOP_FUNCTION, TOP_HEAD, TOP_REAL = 100, 20, 5000
-MIN_WORDS = 20  # fewer word tokens than this (in the page's main script): und
+MIN_WORDS = 20  # a page with fewer word tokens than this: und
 MIN_SHARE = 0.10  # the winner's function-word share must reach this,
 PAGE_TYPES, WINDOW_TYPES = 10, 5  # with this many different function words (a page, a window),
 LEAD = 2.0  # and this many times the runner-up's tokens among the function words only one of them has
-WINDOW = 50  # word tokens per window for bilingual pages
+WINDOW = 50  # word tokens per window for bilingual pages, on pages of MIXED_MIN_WORDS or more
+MIXED_MIN_WORDS = 4 * WINDOW
+MIN_TAIL = WINDOW // 2  # a page's last, shorter window counts only with this many words
 MIXED_SHARE = 0.2  # a second language winning this share of decided windows (and 2 or more) makes a page mixed
 DAMAGED, BADLY_DAMAGED = 0.1, 0.25
 WORST_UNDETERMINED = 100
@@ -661,12 +666,14 @@ def detect(words: list[str], languages: tuple, models: Models) -> Language:
     for w in words:
         by_script.setdefault(script(w), []).append(w)
     main = max(by_script, key=lambda s: (len(by_script[s]), s == "latin", s))
-    out = script_language(main, by_script[main], languages, models)
+    out = script_language(main, by_script[main], languages, models, PAGE_TYPES)
     if out.decision != DETECTED:
         return out
+    # The 20% share is the only size test for a second script's words (10 words of a 50-word page);
+    # they need as many different function words as a window does.
     for s, sw in sorted(by_script.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         if s != main and len(sw) >= MIXED_SHARE * len(words):
-            other = script_language(s, sw, languages, models)
+            other = script_language(s, sw, languages, models, WINDOW_TYPES)
             if other.decision == DETECTED and other.lang != out.lang:
                 out.decision, out.mixed_with = MIXED, other.lang
                 if other.damage is not None:
@@ -677,15 +684,25 @@ def detect(words: list[str], languages: tuple, models: Models) -> Language:
     return out
 
 
-def script_language(s: str, words: list[str], languages: tuple, models: Models) -> Language:
+def script_language(s: str, words: list[str], languages: tuple, models: Models, min_types: int) -> Language:
+    """The language of a page's words in one script. The caller has checked there are enough of them."""
     if s == "latin":
-        return latin_language(words, languages, models)
-    return other_script_language(s, words, languages, models)
+        return latin_language(words, languages, models, min_types)
+    return other_script_language(s, words, languages, models, min_types)
 
 
-def latin_language(words: list[str], languages: tuple, models: Models) -> Language:
+def windows_of(words: list[str]) -> list[list[str]]:
+    """A page of MIXED_MIN_WORDS or more cut into WINDOW-word windows; a last, shorter one only if it has
+    MIN_TAIL words. A shorter page: none."""
+    if len(words) < MIXED_MIN_WORDS:
+        return []
+    out = [words[i:i + WINDOW] for i in range(0, len(words), WINDOW)]
+    return out if len(out[-1]) >= MIN_TAIL else out[:-1]
+
+
+def latin_language(words: list[str], languages: tuple, models: Models, min_types: int = PAGE_TYPES) -> Language:
     """Latin-script words: the title's languages with word lists, and English, compete on function words."""
-    if len(words) < MIN_WORDS:
+    if not words:
         return Language(UNKNOWN, UNKNOWN)
     cands, seen = [], set()
     for lang in [*languages, ENGLISH]:
@@ -704,10 +721,10 @@ def latin_language(words: list[str], languages: tuple, models: Models) -> Langua
         return tuple(m for x, m in cands if x != lang)
 
     # Windows of the page, each given a language if one clearly wins in it: two languages each winning a
-    # fair share of the windows make the page mixed, and each window is scored against its own language.
-    n_windows = len(words) // WINDOW
-    if n_windows >= 4:
-        windows = [words[i * WINDOW:(i + 1) * WINDOW if i < n_windows - 1 else len(words)] for i in range(n_windows)]
+    # fair share of the windows make the page mixed. Each window is then scored against its own language,
+    # and windows no language wins (garbled, too few function words) aren't scored.
+    windows = windows_of(words)
+    if windows:
         winners = []
         for win in windows:
             c = counted(win)
@@ -723,27 +740,28 @@ def latin_language(words: list[str], languages: tuple, models: Models) -> Langua
             out.runner_up, out.runner_up_share = b, _r(next(f.share for f in fs if f.lang == b))
             d = Damage()
             for win, w in zip(windows, winners):
-                lang = w or a
-                d.add(model_of[lang], win, others(lang))
+                if w:
+                    d.add(model_of[w], win, others(w))
             out.damage = d
             return out
-    best = winner(fs, counts, PAGE_TYPES)
+    best = winner(fs, counts, min_types)
     if best is not None:
         out.lang, out.decision = best, DETECTED
         out.damage = damage(model_of[best], words, others(best))
     return out
 
 
-def other_script_language(s: str, words: list[str], languages: tuple, models: Models) -> Language:
+def other_script_language(s: str, words: list[str], languages: tuple, models: Models,
+                          min_types: int = PAGE_TYPES) -> Language:
     """Words in a script other than Latin: the title's language in that script; if it lists several, the
     one with a word list that clearly fits best, else the one without a list; else und."""
     langs = [lang for lang in languages if s in scripts_of(lang)]
-    if not langs or len(words) < MIN_WORDS:
+    if not langs or not words:
         return Language(UNKNOWN, UNKNOWN, script=s)
     modelled = [(lang, m) for lang in langs if (m := models.get(lang)) is not None and m.script == s]
     counts = counted(words)
     fs = fits(modelled, counts, len(words))
-    best = winner(fs, counts, PAGE_TYPES)
+    best = winner(fs, counts, min_types)
     if best is None:
         unmodelled = [lang for lang in langs if lang not in dict(modelled)]
         if len(langs) == 1:
@@ -1226,7 +1244,8 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
         wordlists = {"source": "wordfreq top_n_list", "function_words": TOP_FUNCTION, "damage_words": TOP_HEAD,
                      "real_words": TOP_REAL, "codes": WORDFREQ, "version": _wordfreq_version()}
         method = {"min_words": MIN_WORDS, "min_share": MIN_SHARE, "page_types": PAGE_TYPES,
-                  "window_types": WINDOW_TYPES, "lead": LEAD, "window": WINDOW, "mixed_share": MIXED_SHARE,
+                  "window_types": WINDOW_TYPES, "lead": LEAD, "window": WINDOW,
+                  "mixed_min_words": MIXED_MIN_WORDS, "min_tail": MIN_TAIL, "mixed_share": MIXED_SHARE,
                   "thin_letters": THIN_LETTERS, "damaged": DAMAGED, "badly_damaged": BADLY_DAMAGED}
     else:
         wordlists = {"source": "wordfreq top_n_list", "size": WORDLIST_SIZE, "codes": WORDFREQ,
@@ -1274,7 +1293,12 @@ def _iso(t: datetime) -> str:
 
 
 def status_summary(tables: dict[str, list[dict]]) -> dict:
-    """The v2 numbers the status page shows: language agreement, and per detected language its damage."""
+    """The v2 numbers the status page shows: language agreement, and per detected language its damage.
+
+    Every field is present; these are null when there is nothing to measure: agreement.differs_share,
+    mixed_share and und_share (no sampled page with text), agreement.multilingual_differs_share (no page
+    of a multilingual title with text), and a language's function_share_median, damage_rate_median and
+    damaged_share (no page of it scored: a language with no word list, such as Yiddish)."""
     agree = {r["scope"]: r for r in tables["agreement_summary"]}
     a, m = agree.get("all") or {}, agree.get("multilingual_titles") or {}
     languages = [{"damage_rate_median": r["damage_rate_median"], "damaged_share": r["damaged_share"],
