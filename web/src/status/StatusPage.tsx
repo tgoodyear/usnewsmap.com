@@ -16,6 +16,7 @@ import {
   headline,
   lastUpdate,
   longDate,
+  auditRate,
   ocrAudit,
   ocrExperiment,
   rightNow,
@@ -242,7 +243,7 @@ function OcrExperiments({ s, now }: { s: Status; now: number }) {
 function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>>; s: Status }) {
   const q = s.ocr_quality?.available ? s.ocr_quality : null;
   const rows = q?.finished_at ? (q.summary?.languages ?? []) : [];
-  const fmt = (x: number | null) => (x === null ? "–" : `${(x * 100).toFixed(1)}%`);
+
   return (
     <section aria-labelledby="ocr-audit" className="status-subsection">
       <h3 id="ocr-audit">OCR quality audit</h3>
@@ -265,8 +266,8 @@ function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>
           rows={rows.map((r) => [
             languageName(r.language),
             count(r.pages),
-            fmt(r.damage_rate_median),
-            fmt(r.damaged_share),
+            auditRate(r.damage_rate_median),
+            auditRate(r.damaged_share),
           ])}
         />
       )}

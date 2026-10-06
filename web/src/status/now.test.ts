@@ -7,6 +7,7 @@ import {
   localDate,
   localTime,
   longDate,
+  auditRate,
   ocrAudit,
   ocrExperiment,
   pct,
@@ -717,5 +718,17 @@ describe("ocrAudit", () => {
       agreement:
         "On 3.1% of pages with text, the language we detected is not the first language in the newspaper's catalog record (41.0% for newspapers whose record lists more than one). That includes 0.4% that mix two languages and under 0.1% we could not place: too short, too garbled, or in a language we have no word list for.",
     });
+  });
+});
+
+describe("auditRate", () => {
+  it("never shows an observed rate as zero", () => {
+    expect([auditRate(null), auditRate(0), auditRate(0.0004), auditRate(0.001), auditRate(0.0423)]).toEqual([
+      "–",
+      "0.0%",
+      "under 0.1%",
+      "0.1%",
+      "4.2%",
+    ]);
   });
 });

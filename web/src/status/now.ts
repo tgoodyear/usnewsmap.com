@@ -526,6 +526,11 @@ export interface AuditLine {
 
 const share = (x: number) => (x > 0 && x < 0.001 ? "under 0.1%" : `${(x * 100).toFixed(1)}%`);
 
+/** A rate or share in the audit's table: "–" without a word list, never "0.0%" for one observed. */
+export function auditRate(x: number | null): string {
+  return x === null ? "–" : share(x);
+}
+
 /**
  * The OCR quality audit (`ocr_quality`): a sample of pages, each page's
  * language and how damaged its OCR text is. `null` when it has never run.
