@@ -39,12 +39,15 @@ export function shuffle<T>(items: readonly T[], random: () => number): T[] {
 }
 
 /**
- * The `page`th set of `n` examples from `order`, wrapping around the end, so
- * every set is full and paging through shows every example.
+ * The `page`th set of `n` examples from `order`. A pass is every set until
+ * each example has shown; the last set of a pass wraps around to the start, so
+ * every set is full, and the next page begins the pass again, so paging on
+ * shows the same sets `mixByEra` checked.
  */
 export function examplesAt<T>(order: readonly T[], page: number, n = EXAMPLES_SHOWN): T[] {
   const count = Math.min(n, order.length);
-  const start = ((page * n) % order.length + order.length) % order.length;
+  const sets = Math.max(Math.ceil(order.length / n), 1);
+  const start = (((page % sets) + sets) % sets) * n;
   return Array.from({ length: count }, (_, i) => order[(start + i) % order.length]!);
 }
 

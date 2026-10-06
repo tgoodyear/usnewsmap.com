@@ -150,6 +150,13 @@ describe("example rotation", () => {
       for (const ex of shown) seen.add(ex.id);
     }
     expect(seen.size).toBe(EXAMPLES.length);
-    expect(examplesAt(["a", "b"], 5)).toEqual(["b", "a"]);
+    // Paging on past a pass starts it again: the same, checked, sets.
+    for (let page = 0; page < pages; page++) {
+      expect(examplesAt(EXAMPLE_ORDER, page + pages)).toEqual(examplesAt(EXAMPLE_ORDER, page));
+      expect(examplesAt(EXAMPLE_ORDER, page + 3 * pages)).toEqual(examplesAt(EXAMPLE_ORDER, page));
+    }
+    expect(examplesAt(["a", "b"], 5)).toEqual(["a", "b"]);
+    expect(examplesAt(["a", "b", "c", "d"], 1, 3)).toEqual(["d", "a", "b"]);
+    expect(examplesAt(["a", "b", "c", "d"], 2, 3)).toEqual(["a", "b", "c"]);
   });
 });
