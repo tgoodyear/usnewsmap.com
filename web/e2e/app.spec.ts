@@ -597,6 +597,16 @@ test("the toolbar's buttons stay put whichever measure is chosen", async ({ page
       await expect(measure.getByRole("button", { name: m })).toHaveAttribute("aria-pressed", "true");
       expect(await where(), `${width} px, ${m}`).toBe(first);
     }
+    // Tab goes through the toolbar in the order it reads: top to bottom, then left to right.
+    const order = await page.locator(".toolbar button, .toolbar select").evaluateAll((els) =>
+      els.map((e) => {
+        const r = e.getBoundingClientRect();
+        // Rows by their middle: the small info button sits lower than its neighbours' tops.
+        return [Math.round((r.top + r.height / 2) / 12), Math.round(r.left)];
+      }),
+    );
+    const sorted = [...order].sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!);
+    expect(order, `${width} px reading order`).toEqual(sorted);
   }
 });
 

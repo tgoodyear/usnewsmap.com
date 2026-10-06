@@ -176,14 +176,13 @@ input, select {
   .toolbar > * { flex: none; }
   .toolbar .summary { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
-/* Narrower: the counts on their own line, then View with Share pinned right, then the
-   measures, then a row kept for the measure's options even when it has none. */
+/* Narrower: rows in the same order as the markup (and so as Tab goes): the counts, then a row
+   kept for the measure's options even when it has none, then View, the measures and Share,
+   which wrap the same way whatever the measure. */
 @media (max-width: 1099px) {
   .toolbar .summary { flex-basis: 100%; }
-  .toolbar__view { order: 1; }
-  .toolbar__share { order: 2; margin-left: auto; }
-  .toolbar .measure { order: 3; flex-basis: 100%; }
-  .toolbar__options, .toolbar__options:empty { display: flex; order: 4; flex-basis: 100%; min-height: 36px; }
+  .toolbar__options, .toolbar__options:empty { display: flex; flex-basis: 100%; min-height: 36px; }
+  .toolbar__share { margin-left: auto; }
 }
 .mentions { margin: 0; padding: 0 16px 8px; color: var(--muted); }
 .mentions a { text-decoration: underline; }
