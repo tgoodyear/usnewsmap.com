@@ -419,11 +419,12 @@ async fn slow_failures_share_one_limit_per_query() {
     let mut cfg = config();
     let limit = Duration::from_millis(350);
     cfg.prewarm_query_timeout = limit;
-    cfg.prewarm_startup_budget = Duration::from_secs(30);
+    let n = prewarm::examples().len();
+    // Room for every example to use its whole limit, however many there are.
+    cfg.prewarm_startup_budget = limit * n as u32 + Duration::from_secs(5);
     let state = Arc::new(reloading_state(&dir, cfg, backend).await);
     let started = std::time::Instant::now();
     let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
-    let n = prewarm::examples().len();
     // Every example got its turn: none used up the run's budget.
     assert_eq!(report.skipped, 0, "{report:?}");
     assert_eq!(report.failed + report.timed_out, n, "{report:?}");

@@ -59,8 +59,8 @@ const exampleCards = (page: Page) => page.locator("ul.examples button.example");
 /** Page through "Show other examples" until the card named `name` shows. */
 async function findExample(page: Page, name: RegExp) {
   const card = exampleCards(page).filter({ hasText: name });
-  // 19 sets of 3 cover 56 examples; allow for a longer list.
-  for (let i = 0; i < 40 && (await card.count()) === 0; i++) {
+  // 34 sets of 3 cover 100 examples; allow for a longer list.
+  for (let i = 0; i < 60 && (await card.count()) === 0; i++) {
     await page.getByRole("button", { name: "Show other examples" }).click();
   }
   return card;
