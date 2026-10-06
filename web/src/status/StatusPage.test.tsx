@@ -168,7 +168,7 @@ describe("StatusPage", () => {
     );
     expect(await screen.findByRole("heading", { level: 2, name: "Right now" })).toBeTruthy();
     expect(
-      screen.getByText(/^Looking up newspaper details from the Library of Congress: 342 of 3,464 done \(9\.9%\)\. Paused until (?:[A-Z][a-z]{2} \d{1,2} at )?\d\d:\d\d UTC because loc\.gov asked us to slow down\.$/),
+      screen.getByText(/^Looking up newspaper details from the Library of Congress: 342 of 3,464 done \(9\.9%\)\. Paused until (?:[A-Z][a-z]{2} \d{1,2} at )?\d{1,2}:\d\d [AP]M \S+ because loc\.gov asked us to slow down\.$/),
     ).toBeTruthy();
     expect(screen.getByRole("progressbar", { name: "342 of 3,464 newspapers looked up" })).toBeTruthy();
     const list = screen.getByRole("list");

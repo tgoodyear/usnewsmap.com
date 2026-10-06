@@ -1,24 +1,40 @@
 import type { Activity, Now, Status } from "../api/types";
 import { count, relative, span } from "./format";
 
-/** "20:15 UTC" today (in UTC), "Oct 2 at 20:15 UTC" on another day. */
-export function utc(iso: string, now: number): string {
+// Times are in the visitor's own time zone, with the zone named.
+const clock = new Intl.DateTimeFormat("en-US", {
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+const calendarDay = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+});
+const monthDay = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+});
+
+/** "4:15 PM EDT" today (the visitor's today), "Oct 2 at 4:15 PM EDT" on another day. */
+export function localTime(iso: string, now: number): string {
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return iso;
-  const time = `${String(t.getUTCHours()).padStart(2, "0")}:${String(t.getUTCMinutes()).padStart(2, "0")} UTC`;
-  const today = new Date(now);
-  const sameDay =
-    t.getUTCFullYear() === today.getUTCFullYear() &&
-    t.getUTCMonth() === today.getUTCMonth() &&
-    t.getUTCDate() === today.getUTCDate();
-  return sameDay ? time : `${day(t)} at ${time}`;
+  const sameDay = calendarDay.format(t) === calendarDay.format(new Date(now));
+  return sameDay ? hm(t) : localDate(iso);
 }
 
-/** "Oct 2 at 20:15 UTC", whatever the day. */
-export function utcDate(iso: string): string {
+/** "Oct 2 at 4:15 PM EDT", whatever the day. */
+export function localDate(iso: string): string {
   const t = new Date(iso);
   if (Number.isNaN(t.getTime())) return iso;
-  return `${day(t)} at ${String(t.getUTCHours()).padStart(2, "0")}:${String(t.getUTCMinutes()).padStart(2, "0")} UTC`;
+  return `${monthDay.format(t)} at ${hm(t)}`;
+}
+
+/** ICU puts a narrow no-break space before AM/PM; plain text wants a space. */
+function hm(t: Date): string {
+  return clock.format(t).replace(/\u202f/g, " ");
 }
 
 /** "May 9, 1751" from "1751-05-09". */
@@ -28,11 +44,20 @@ export function longDate(ymd: string): string {
   return `${MONTHS[m - 1]} ${d}, ${y}`;
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function day(t: Date): string {
-  return `${MONTHS[t.getUTCMonth()]} ${t.getUTCDate()}`;
-}
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
 
 /** "4.1M" from a million up, the full number below. */
 export function big(n: number): string {
@@ -84,10 +109,14 @@ export function lastUpdate(s: Status): string {
   const i = s.indexing;
   const served = s.published.index_version;
   if (i.available) {
-    const run = i.runs.find((r) => r.index_version === served && r.published_at);
+    const run = i.runs.find(
+      (r) => r.index_version === served && r.published_at,
+    );
     if (run?.published_at) return run.published_at;
     const last = i.last_published_at;
-    const another = i.runs.some((r) => r.published_at === last && r.index_version !== served);
+    const another = i.runs.some(
+      (r) => r.published_at === last && r.index_version !== served,
+    );
     if (last && i.current_version === served && !another) return last;
   }
   return s.published.published_at;
@@ -101,12 +130,16 @@ export function lastUpdate(s: Status): string {
  */
 export function pendingUpdate(s: Status): string | null {
   const i = s.indexing;
-  if (!i.available || !i.current_version || i.current_version === s.published.index_version) {
+  if (
+    !i.available ||
+    !i.current_version ||
+    i.current_version === s.published.index_version
+  ) {
     return null;
   }
   const at =
-    i.runs.find((r) => r.index_version === i.current_version && r.published_at)?.published_at ??
-    i.last_published_at;
+    i.runs.find((r) => r.index_version === i.current_version && r.published_at)
+      ?.published_at ?? i.last_published_at;
   if (!at || !(Date.parse(at) > Date.parse(lastUpdate(s)))) return null;
   return at;
 }
@@ -114,7 +147,7 @@ export function pendingUpdate(s: Status): string | null {
 function pendingNote(s: Status): string | null {
   const at = pendingUpdate(s);
   if (at === null) return null;
-  return `A new update was published on ${utcDate(at)}, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.`;
+  return `A new update was published on ${localDate(at)}, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.`;
 }
 
 /**
@@ -129,7 +162,7 @@ export function rightNow(s: Status, now: number): NowLine {
       text: "What the pipeline is doing right now isn't available on this server.",
       notes: [
         ...(pending ? [pending] : []),
-        `The site searches the update published ${utcDate(lastUpdate(s))}.`,
+        `The site searches the update published ${localDate(lastUpdate(s))}.`,
       ],
     };
   }
@@ -139,7 +172,7 @@ export function rightNow(s: Status, now: number): NowLine {
     notes.push(`This step started ${relative(a.since, now)}.`);
   }
   if (a.source === "inferred" && a.reported_at && a.now !== "idle") {
-    notes.push(`Progress as of ${utc(a.reported_at, now)}.`);
+    notes.push(`Progress as of ${localTime(a.reported_at, now)}.`);
   }
   const last = lastRun(a, s, now);
   if (last) notes.push(last);
@@ -155,14 +188,21 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
   switch (a.now) {
     case "titles": {
       let text = "Looking up newspaper details from the Library of Congress";
-      text += has ? `: ${count(done)} of ${count(total)} done (${pct(done, total)}).` : ".";
+      text += has
+        ? `: ${count(done)} of ${count(total)} done (${pct(done, total)}).`
+        : ".";
       const paused = a.paused_until && Date.parse(a.paused_until) > now;
-      if (paused) text += ` Paused until ${utc(a.paused_until!, now)} ${SLOW_DOWN}.`;
+      if (paused)
+        text += ` Paused until ${localTime(a.paused_until!, now)} ${SLOW_DOWN}.`;
       else if (eta) text += ` At this pace, ${eta}.`;
       return {
         text,
         progress: has
-          ? { done, total, label: `${count(done)} of ${count(total)} newspapers looked up` }
+          ? {
+              done,
+              total,
+              label: `${count(done)} of ${count(total)} newspapers looked up`,
+            }
           : undefined,
       };
     }
@@ -170,7 +210,11 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
       if (!has) return { text: "Building the search index." };
       return {
         text: `Building the search index: ${big(done)} of ${big(total)} pages sent (${pct(done, total)})${eta ? `, ${eta}` : ""}.`,
-        progress: { done, total, label: `${count(done)} of ${count(total)} pages sent` },
+        progress: {
+          done,
+          total,
+          label: `${count(done)} of ${count(total)} pages sent`,
+        },
       };
     }
     case "merging": {
@@ -183,25 +227,30 @@ function sentence(a: Activity, s: Status, now: number): Omit<NowLine, "notes"> {
     case "publishing":
       return { text: "Publishing: the new index is going live (step 4 of 4)." };
     case "downloading": {
-      let text = "Downloading and processing batches from the Library of Congress";
+      let text =
+        "Downloading and processing batches from the Library of Congress";
       text += has ? `: ${count(done)} of ${count(total)} done.` : ".";
       const b = s.backfill;
       if (b.available && b.loc.throttled && b.loc.blocked_until) {
-        text += ` Downloads are paused until ${utc(b.loc.blocked_until, now)} ${SLOW_DOWN}.`;
+        text += ` Downloads are paused until ${localTime(b.loc.blocked_until, now)} ${SLOW_DOWN}.`;
       }
       return {
         text,
         progress: has
-          ? { done, total, label: `${count(done)} of ${count(total)} batches processed` }
+          ? {
+              done,
+              total,
+              label: `${count(done)} of ${count(total)} batches processed`,
+            }
           : undefined,
       };
     }
     case "listing":
       return { text: "Checking the Library of Congress for new batches." };
     case "idle": {
-      let text = `Idle: the last update went live on ${utcDate(lastUpdate(s))}.`;
+      let text = `Idle: the last update went live on ${localDate(lastUpdate(s))}.`;
       text += a.next_run
-        ? ` The next scheduled run is ${utcDate(a.next_run)}.`
+        ? ` The next scheduled run is ${localDate(a.next_run)}.`
         : " No run is scheduled.";
       return { text };
     }
@@ -227,9 +276,13 @@ function lastRun(a: Activity, s: Status, now: number): string | null {
   const l = a.last;
   if (!l) return null;
   // A run that ended before the update the site shows is history.
-  if (Date.parse(l.ended_at) < Date.parse(lastUpdate(s)) && l.outcome !== "published") return null;
+  if (
+    Date.parse(l.ended_at) < Date.parse(lastUpdate(s)) &&
+    l.outcome !== "published"
+  )
+    return null;
   const which = a.now === "idle" ? "The last run" : "The previous run";
-  const when = utc(l.ended_at, now);
+  const when = localTime(l.ended_at, now);
   const doing = l.step ? DOING[l.step] : null;
   switch (l.outcome) {
     case "failed":
@@ -239,7 +292,9 @@ function lastRun(a: Activity, s: Status, now: number): string | null {
     case "titles_left":
       return `${which} ran out of time at ${when} while looking up newspaper details, because loc.gov limits how fast we can ask; nothing changed on the site. The next run continues where it stopped.`;
     case "nothing_new":
-      return a.now === "idle" ? `${which}, which ended at ${when}, found nothing new to add.` : null;
+      return a.now === "idle"
+        ? `${which}, which ended at ${when}, found nothing new to add.`
+        : null;
     case "published":
       return null;
   }
@@ -282,7 +337,9 @@ export function steps(s: Status, now: number): Step[] {
       ? `${count(b.by_status.curated)} of ${count(b.total)} batches, ${count(b.pages)} pages`
       : "Not known on this server",
     state:
-      doing === "downloading" || doing === "listing" || (b?.in_progress ?? 0) > 0
+      doing === "downloading" ||
+      doing === "listing" ||
+      (b?.in_progress ?? 0) > 0
         ? b?.loc.throttled
           ? "paused"
           : "active"
@@ -291,7 +348,8 @@ export function steps(s: Status, now: number): Step[] {
           : "waiting",
   };
 
-  const looked = t && t.awaiting_sync !== null ? t.curated_titles - t.awaiting_sync : null;
+  const looked =
+    t && t.awaiting_sync !== null ? t.curated_titles - t.awaiting_sync : null;
   let titlesDetail = "Not known on this server";
   if (t && looked !== null) {
     titlesDetail = `${count(looked)} of ${count(t.curated_titles)} newspapers`;
@@ -316,11 +374,17 @@ export function steps(s: Status, now: number): Step[] {
   };
 
   let indexDetail = "Not known on this server";
-  if ((doing === "indexing" || doing === "merging") && a?.done != null && a.total) {
+  if (
+    (doing === "indexing" || doing === "merging") &&
+    a?.done != null &&
+    a.total
+  ) {
     indexDetail = `${count(a.done)} of ${count(a.total)} pages sent`;
   } else if (doing === "merging") {
     const m = mergeDetail(a);
-    indexDetail = m ? `Every page sent. ${m}` : "Every page sent; merging the index";
+    indexDetail = m
+      ? `Every page sent. ${m}`
+      : "Every page sent; merging the index";
   } else if (t && t.unpublished_batches !== null) {
     indexDetail =
       t.unpublished_batches === 0
@@ -345,8 +409,9 @@ export function steps(s: Status, now: number): Step[] {
   const live: Step = {
     key: "live",
     title: "Live",
-    explain: "The site searches the last published version of the index. Each update adds the pages step 3 indexed.",
-    detail: `${count(p.pages)} pages from ${count(p.titles)} newspapers, live since ${utcDate(lastUpdate(s))}`,
+    explain:
+      "The site searches the last published version of the index. Each update adds the pages step 3 indexed.",
+    detail: `${count(p.pages)} pages from ${count(p.titles)} newspapers, live since ${localDate(lastUpdate(s))}`,
     state:
       doing === "publishing"
         ? "active"
@@ -363,7 +428,11 @@ export function steps(s: Status, now: number): Step[] {
  * a page that ships in two batches, and the published version left out
  * `duplicate_pages` such copies, so those are added back to its pages.
  */
-export function headline(s: Status): { text: string; sub: string; share: number | null } {
+export function headline(s: Status): {
+  text: string;
+  sub: string;
+  share: number | null;
+} {
   const p = s.published;
   const duplicates = p.duplicate_pages ?? 0;
   const copies = p.pages + duplicates;
@@ -408,14 +477,30 @@ export function ocrExperiment(s: Status, now: number): OcrLine | null {
   const searchable = ja
     ? `${count(ja.pages)} ${ja.pages === 1 ? "page is" : "pages are"} searchable now.`
     : "They become searchable with the next update.";
-  if (!o) return { text: "Japanese pages we read ourselves are in the search.", searchable };
+  if (!o)
+    return {
+      text: "Japanese pages we read ourselves are in the search.",
+      searchable,
+    };
   const done = o.done.pages;
   const total = o.targets.pages;
   // No bar for an empty target list: a zero-length range says nothing.
-  const progress = total > 0 ? { done, total, label: `${count(done)} of ${count(total)} Japanese pages read` } : undefined;
-  if (total === 0) return { text: "There are no Japanese pages to read.", searchable };
+  const progress =
+    total > 0
+      ? {
+          done,
+          total,
+          label: `${count(done)} of ${count(total)} Japanese pages read`,
+        }
+      : undefined;
+  if (total === 0)
+    return { text: "There are no Japanese pages to read.", searchable };
   if (done >= total) {
-    return { text: `All ${count(total)} Japanese pages read.`, progress, searchable };
+    return {
+      text: `All ${count(total)} Japanese pages read.`,
+      progress,
+      searchable,
+    };
   }
   if (o.running) {
     const left = o.eta ? Date.parse(o.eta) - now : NaN;
