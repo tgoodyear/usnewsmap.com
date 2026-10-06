@@ -540,6 +540,34 @@ test("the table lists the newspapers with matches, and one can limit the search 
   await expect(papers.locator("tbody tr").nth(1)).toBeVisible();
 });
 
+test("Pages and Median date list places beside the map, and the lists can be hidden", async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&bucket=month");
+  const most = page.getByRole("complementary", { name: "Places and states with the most pages" });
+  await expect(most.getByRole("heading", { level: 2, name: "Most pages" })).toBeVisible();
+  await expect(most.locator("ol").first().locator("li").first()).toContainText(/\d pages? \(\d+\.\d%\)/);
+  await expectAccessible(page);
+
+  await page.getByRole("button", { name: "Median date" }).click();
+  const when = page.getByRole("complementary", { name: "Places with the earliest and latest median dates" });
+  await expect(when.getByRole("heading", { level: 3, name: "Earliest median date" })).toBeVisible();
+
+  // Hidden in one measure stays hidden in the others and after a reload.
+  await when.getByRole("button", { name: "Hide" }).click();
+  await expect(page.getByRole("button", { name: "Show earliest and latest" })).toBeVisible();
+  await page.getByRole("group", { name: "Measure" }).getByRole("button", { name: "Pages" }).click();
+  await expect(page.getByRole("button", { name: "Show most pages" })).toHaveAttribute("aria-expanded", "false");
+  await page.reload();
+  await page.getByRole("button", { name: "Show most pages" }).click();
+  // A place from the list opens its pages.
+  const first = most.locator("ol").first().getByRole("button").first();
+  await first.click();
+  await expect(page).toHaveURL(/place=/);
+  await expect(page.locator(".panel__summary")).toContainText(/pages in this search/);
+  await expectAccessible(page);
+  expect(errors).toEqual([]);
+});
+
 test("the median-date measure colours places by when they mentioned it", async ({ page }) => {
   await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&bucket=month");
   await expect(page.locator(".mix")).toContainText(/^Matching pages on \d+ days\./);

@@ -50,6 +50,16 @@ The design keeps the legacy "map-first" identity: a full-bleed map with controls
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Side panel
+
+With a place selected, the panel lists that place's pages. With none selected, it lists places for the current measure, in the playback window (everything up to the scrubber's date, or the "Last N" window ending there, and the lists' notes say which), and each place name opens its pages:
+
+- **Pages:** "Most pages", the five places and five states with the most matching pages, with each one's share of them. A state counts the places in it.
+- **Median date:** "Earliest and latest", the five places with the earliest and the five with the latest median date, among places with at least 5 matching pages (one page has a date, not a median). With fewer than ten such places, the two lists split them so none is in both, ties included.
+- **Relative rate:** "Clearest differences" (11 §11.6).
+
+"Hide" collapses the lists to a "Show …" button and gives the map the width. The choice applies to all three measures and is kept in `localStorage` (`usnm.lists`), not the URL: it is how this visitor likes the page, not part of the search.
+
 ### Mobile (< 640 px)
 
 - The search bar collapses to a single field with a filter sheet.
