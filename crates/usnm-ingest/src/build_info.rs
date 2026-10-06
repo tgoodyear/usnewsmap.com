@@ -67,6 +67,14 @@ pub fn summary(b: &Built) -> Value {
     for (name, yaml) in templates(b) {
         templates_v[name] = json!({ "sha256": hex(&Sha256::digest(yaml.as_bytes())) });
     }
+    // What the writer was given (#172). The queue is the node's; the heap
+    // and commit timeout are only the main index's (the Japanese template
+    // keeps its own), so an overlay-only run doesn't record them.
+    let mut writer = json!({ "queue": b.writer.queue });
+    if b.main_index {
+        writer["heap"] = Value::from(b.writer.heap.clone());
+        writer["commit_timeout_secs"] = Value::from(b.writer.commit_timeout_secs);
+    }
     json!({
         "commit": std::env::var(COMMIT_ENV).ok().filter(|s| !s.is_empty()),
         "ingest": env!("CARGO_PKG_VERSION"),
@@ -77,12 +85,7 @@ pub fn summary(b: &Built) -> Value {
             "ja_fold": usnm_core::ja::FOLD_VERSION,
         },
         "templates": templates_v,
-        // What the writer was given (#172); the main template above has it.
-        "writer": {
-            "heap": b.writer.heap,
-            "commit_timeout_secs": b.writer.commit_timeout_secs,
-            "queue": b.writer.queue,
-        },
+        "writer": writer,
     })
 }
 
@@ -117,6 +120,18 @@ mod tests {
         );
         assert_eq!(v["writer"]["heap"], "6GiB");
         assert_eq!(v["writer"]["commit_timeout_secs"], 600);
+    }
+
+    #[test]
+    fn an_overlay_only_run_records_only_the_queue() {
+        let mut b = built(false, true);
+        b.writer = crate::sink::WriterTuning {
+            heap: "6GiB".into(),
+            commit_timeout_secs: 600,
+            queue: "4GiB".into(),
+        };
+        let v = summary(&b);
+        assert_eq!(v["writer"], json!({ "queue": "4GiB" }));
     }
 
     #[test]
