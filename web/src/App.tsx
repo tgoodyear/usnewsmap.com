@@ -21,6 +21,7 @@ import type { MapPoint } from "./components/mapTypes";
 import { MeasureToggle } from "./components/MeasureToggle";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
+import { PagesLists, WhenLists } from "./components/PlaceLists";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
@@ -360,6 +361,8 @@ export function App() {
   const sidePanel = !data ? null : (
     <>
       {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
+      {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} />}
+      {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} />}
       {view.place && (
         <PlacePanel
           params={params}

@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { formatTimes } from "../lib/skewScale";
 import { formatExpected, formatRange, type SkewInfo } from "../lib/skewText";
 import { dateFromDay } from "../lib/time";
+import { ListsPanel } from "./PlaceLists";
 
 export interface SkewRow {
   id: string;
@@ -65,12 +66,11 @@ export function SkewLists({ rows, onSelect }: ListsProps) {
     </section>
   );
   return (
-    <aside className="panel skew-lists" aria-label="Places that differ most clearly">
-      <h2>Clearest differences</h2>
+    <ListsPanel title="Clearest differences" label="Places that differ most clearly" className="skew-lists">
       {list(above, "Most clearly above 1×", "No place is clearly above 1× in this window.")}
       {list(below, "Most clearly below 1×", "No place is clearly below 1× in this window.")}
       <p className="skew-list__note">Ranked by the end of each place's 90% range nearest 1×.</p>
-    </aside>
+    </ListsPanel>
   );
 }
 

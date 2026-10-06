@@ -250,6 +250,9 @@ input, select {
 }
 .panel__head { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
 .panel__head h2 { font-size: 1.1rem; margin: 0; }
+/* The place lists, hidden: just the button to bring them back. */
+.panel--collapsed { width: auto; padding: 8px; }
+.panel__toggle { white-space: nowrap; }
 .panel__summary { color: var(--muted); margin: 4px 0 12px; }
 .panel .segmented { margin-bottom: 8px; }
 .hits { list-style: none; padding: 0; margin: 0; }
