@@ -325,8 +325,10 @@ export function App() {
   // places that could be listed get their pages per day (/v1/days) and their
   // exact median for the playback window. The set is asked for once it has
   // held still for a second, so playback doesn't send a request per step.
+  // Not while the previous search stands in for the next: its places would
+  // be asked about under the new search's parameters.
   const candidatesKey =
-    norm === "when" && !view.place && data ? medianCandidates(visible).join(",") : "";
+    norm === "when" && !view.place && data && !agg.isPlaceholderData ? medianCandidates(visible).join(",") : "";
   const [settledKey, setSettledKey] = useState("");
   useEffect(() => {
     const id = setTimeout(() => setSettledKey(candidatesKey), 1000);
