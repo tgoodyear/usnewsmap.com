@@ -1,6 +1,7 @@
 import type {
   AggregateResponse,
   CoverageResponse,
+  DaysResponse,
   HitSort,
   HitsResponse,
   Meta,
@@ -308,5 +309,12 @@ export const api = {
     if (sort !== "oldest") s.set("sort", sort);
     if (cursor) s.set("cursor", cursor);
     return getPinned<HitsResponse>(`/v1/hits?${s}`, version, signal);
+  },
+  /** Matching pages per day for up to 20 places, for exact median dates. */
+  days: (p: SearchParams, version: string, places: string[], signal?: AbortSignal) => {
+    const s = searchQuery(p, version);
+    s.delete("bucket");
+    s.set("place", places.join(","));
+    return getPinned<DaysResponse>(`/v1/days?${s}`, version, signal);
   },
 };

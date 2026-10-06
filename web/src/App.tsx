@@ -5,7 +5,7 @@ import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./engine/cube";
 import { EXAMPLE_ORDER, EXAMPLES_SHOWN, examplesAt } from "./examples";
-import { bucketIndex, bucketLabel, bucketStart } from "./lib/time";
+import { bucketIndex, bucketLabel, bucketStart, dayNumber } from "./lib/time";
 import { cssColor, cssTimeColor } from "./lib/scale";
 import { searchParams, serializeView, useView, type ViewState } from "./state/url";
 import { SearchBar, searchKey } from "./components/SearchBar";
@@ -21,7 +21,7 @@ import type { MapPoint } from "./components/mapTypes";
 import { MeasureToggle } from "./components/MeasureToggle";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
-import { PagesLists, WhenLists } from "./components/PlaceLists";
+import { PagesLists, WhenLists, exactMedian, medianCandidates } from "./components/PlaceLists";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
@@ -320,6 +320,35 @@ export function App() {
   const filteredPaper = view.lccn.length > 0 ? (papers.find((p) => view.lccn.includes(p.lccn))?.title ?? view.lccn.join(", ")) : null;
 
   const visible = points.filter((p) => p.value > 0);
+
+  // Median date lists: the bucket only gives a month (or year), so the
+  // places that could be listed get their pages per day (/v1/days) and their
+  // exact median for the playback window. The set is asked for once it has
+  // held still for a second, so playback doesn't send a request per step.
+  // Not while the previous search stands in for the next: its places would
+  // be asked about under the new search's parameters.
+  const candidatesKey =
+    norm === "when" && !view.place && data && !agg.isPlaceholderData ? medianCandidates(visible).join(",") : "";
+  const [settledKey, setSettledKey] = useState("");
+  useEffect(() => {
+    const id = setTimeout(() => setSettledKey(candidatesKey), 1000);
+    return () => clearTimeout(id);
+  }, [candidatesKey]);
+  const dayCounts = useQuery({
+    queryKey: ["days", version, params, settledKey],
+    queryFn: ({ signal }) => api.days(params, version, settledKey.split(","), signal),
+    enabled: !!version && settledKey !== "" && settledKey === candidatesKey,
+    staleTime: Infinity,
+    retry: false,
+  });
+  const exactMedians = useMemo(() => {
+    if (!data || !dayCounts.data || settledKey !== candidatesKey || candidatesKey === "") return null;
+    const unit = data.bucket.unit;
+    const from = data.bucket.from;
+    const lo = view.win === null ? -Infinity : dayNumber(bucketStart(unit, from, Math.max(0, t - view.win + 1)));
+    const hi = t + 1 >= count ? Infinity : dayNumber(bucketStart(unit, from, t + 1)) - 1;
+    return new Map(dayCounts.data.places.map((p) => [p.id, exactMedian(p.days, p.hits, lo, hi)]));
+  }, [data, dayCounts.data, settledKey, candidatesKey, view.win, t, count]);
   const selected = points.find((p) => p.id === view.place);
   const updating = [agg.error, places.error, coverage.error].some((e) => e instanceof VersionChangedError);
   const problem: Problem | null = updating || !agg.error
@@ -362,7 +391,7 @@ export function App() {
     <>
       {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
       {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} trailing={view.win !== null} />}
-      {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} trailing={view.win !== null} />}
+      {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} trailing={view.win !== null} exact={exactMedians} />}
       {view.place && (
         <PlacePanel
           params={params}

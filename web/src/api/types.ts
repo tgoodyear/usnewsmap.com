@@ -433,3 +433,9 @@ export interface Status {
     pipeline: Section<TitlesPipeline>;
   };
 }
+
+/** `GET /v1/days`: matching pages per day for a few places (06 §6.3.9). */
+export interface DaysResponse {
+  index_version: string;
+  places: { id: string; days: number[]; hits: number[] }[];
+}

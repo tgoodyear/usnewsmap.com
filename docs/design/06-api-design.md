@@ -87,6 +87,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 | `GET /v1/meta` | `index_version`, corpus bounds, doc count, backend capabilities, build time, and `languages`: the choices for the site's language filter ([07 §7.9](07-frontend-design.md#79-language-filter)), `[{code, name, titles, pages}]` for each catalog language `lang` accepts, most pages first (`pages` is `null` when the snapshot doesn't record pages per title). A title in several languages counts in each | 5 min |
 | `GET /v1/aggregate` | Q1: totals, the first and last matching page, national series, per-place cube, first and last appearance | 1 day (+ `index_version`) |
 | `GET /v1/hits` | Q2: page hits for `place` or `lccn`, sorted by date (`sort=oldest`, the default, or `newest`) or most mentions first (`relevant`), with snippets; cursor pagination | 1 day |
+| `GET /v1/days` | Matching pages per day for 1 to 20 places (`place`), for their exact median and quartile dates (§6.3.9) | 1 day |
 | `GET /v1/compare` | Up to 4 queries (`q1…q4`); national series for each + per-place totals (no cube) | 1 day |
 | `GET /v1/pages/{doc_id}` | Page metadata + LoC links | 30 days |
 | `GET /v1/titles`, `GET /v1/titles/{lccn}` | Title metadata + coverage summary | 1 day |
@@ -144,7 +145,7 @@ The API **canonicalizes** parameters (sorted, defaults made explicit, dates norm
 }
 ```
 
-- **Days (#127).** `total.days` counts the days with at least one matching page: a `cardinality` aggregation on `day` in the summary request. Quickwit's is a HyperLogLog estimate (its `precision_threshold` is ignored), exact at the fixtures' size and close on the full index; the memory backend counts exactly. `/v1/hits` gives the same for its selection (`days`, on the first page only). Not per place in the aggregate: one sketch per place bucket, for up to 5,000 places, is a memory risk under `aggregation_memory_limit`. The median and quartile dates per place come from the cube in the browser instead (07 §7.4, `norm=when`): Quickwit's `percentiles` keeps about 1% relative error, which on day numbers near 72,000 is steps of about 1,400 days.
+- **Days (#127).** `total.days` counts the days with at least one matching page: a `cardinality` aggregation on `day` in the summary request. Quickwit's is a HyperLogLog estimate (its `precision_threshold` is ignored), exact at the fixtures' size and close on the full index; the memory backend counts exactly. `/v1/hits` gives the same for its selection (`days`, on the first page only). Not per place in the aggregate: one sketch per place bucket, for up to 5,000 places, is a memory risk under `aggregation_memory_limit`. The median and quartile dates per place come from the cube in the browser instead (07 §7.4, `norm=when`): Quickwit's `percentiles` keeps about 1% relative error, which on day numbers near 72,000 is steps of about 1,400 days. The cube knows them only to the bucket, so for the places it lists the site asks `/v1/days` for their matching pages per day (§6.3.9).
 - **Newspapers and languages (#121).** Two terms aggregations on the summary request, on the `lccn` and `language` fast fields: no extra engine call. `total.papers` counts every newspaper with a match (exact: the aggregation's size covers every title); `papers` lists the 500 with the most, ties by LCCN, with the catalog's name and place. `languages` counts matching pages per title language; `language` holds a title's whole list, so a page of a paper catalogued in English and German counts in both and the counts can add up to more than `total.hits`.
 - `total.first` and `total.last` are the pages `/v1/hits` lists first oldest-first and newest-first, in the same shape as its items, so the site can link the first and last mention to their pages ([05 §5.7](05-search-and-storage.md#57-aggregation-strategy)).
 - **Baselines and filters.** `series.baseline`, `total.baseline_pages` and `cube.baseline_ref` are the pages published in the search's scope: all pages, the pages in the `state` filter's states, and, under `lang`, only the pages of titles that list any of the languages (each page once, so `lang=eng,ger` doesn't count a title in both twice). `baseline_ref` names `/v1/coverage` with the same `state` and `lang`. They are `null` when `lccn` or `front` is set, because baselines are kept per place, day and title language only, and when `lang` is set on a version published before baselines were kept per language (a snapshot without `language_baselines.json`, [04 §4.3](04-data-sources-and-ingestion.md)). A client that gets `null` shows page counts only.
@@ -209,7 +210,7 @@ A search still waiting for a computation slot (§6.6) says so, with the number o
 {"status":"queued","ahead":3,"retry_after":2}
 ```
 
-The computation carries on without the request. The client sends the same request again after `Retry-After`. The new request joins the running computation (one per cache key, however many requests ask) or gets the cached result, and again waits no longer than the visitor's limit. The body never echoes the query. A computation is cancelled `USNM_COMPUTE_CAP_SECS` (120 s) after it starts computing, and any request waiting on it then gets the `/errors/backend-timeout` 503; time spent queued for a slot doesn't count against it. It is also cancelled once no request has waited on it for `USNM_ABANDON_AFTER_SECS` (15 s): the visitor changed the search or left. Timeouts and other errors are never cached, so asking again starts a new computation. This applies to every cached response (`/v1/aggregate`, `/v1/hits`, `/v1/coverage`, `/v1/places`). The web app shows "Large search, still working…" while it waits (or, while the search is queued, how many searches are ahead of it), and stops asking when the visitor changes the search or after about 150 s (07).
+The computation carries on without the request. The client sends the same request again after `Retry-After`. The new request joins the running computation (one per cache key, however many requests ask) or gets the cached result, and again waits no longer than the visitor's limit. The body never echoes the query. A computation is cancelled `USNM_COMPUTE_CAP_SECS` (120 s) after it starts computing, and any request waiting on it then gets the `/errors/backend-timeout` 503; time spent queued for a slot doesn't count against it. It is also cancelled once no request has waited on it for `USNM_ABANDON_AFTER_SECS` (15 s): the visitor changed the search or left. Timeouts and other errors are never cached, so asking again starts a new computation. This applies to every cached response (`/v1/aggregate`, `/v1/hits`, `/v1/days`, `/v1/coverage`, `/v1/places`). The web app shows "Large search, still working…" while it waits (or, while the search is queued, how many searches are ahead of it), and stops asking when the visitor changes the search or after about 150 s (07).
 
 ### 6.3.6 `GET /v1/status`
 
@@ -297,6 +298,26 @@ Error text (`last_error`) isn't included; `/v1/status` shows it sanitized.
 - Each record holds: the status, the totals, the per-bucket hits, hits by language, the backend's `timing_ms` and the wall time.
 - Keep a capture of each version in `ops/version-snapshots/{version}.json`, taken while it is live (before a release replaces it).
 - `scripts/compare-versions.py diff A B` puts two captures' hits and timings side by side, and flags searches whose hits changed by more than 1% or whose status changed. A search that kept its name but changed its query (an edited example) is flagged and not compared.
+
+### 6.3.9 `GET /v1/days` response
+
+Matching pages per day for up to 20 places, so the site can work out their exact median and quartile dates (the "Median date" list, 07 §7.2) for any playback window. The aggregate's cube only knows them to the bucket. It takes the search parameters of `/v1/aggregate` (§6.3.1) plus `place`, a comma-separated list of 1 to 20 distinct place ids. `bucket` is accepted but has no effect: the canonical URL always says `bucket=day`.
+
+```jsonc
+// GET /v1/days?q=%22cross+of+gold%22&from=1896-01-01&to=1896-12-31&place=P00412,P00007&v=pages-v20261001-1
+{
+  "index_version": "pages-v20261001-1",
+  "places": [
+    { "id": "P00412", "days": [71777, 71778, 71784], "hits": [3, 1, 2] },
+    { "id": "P00007", "days": [], "hits": [] }
+  ]
+}
+```
+
+- `index_version` is the version the counts come from; the site checks it as for the aggregate, so it never mixes snapshots. `places` is in the order asked. `days` are day numbers (days since 1700-01-01), the same numbers as `places.first_day` and `places.last_day` in `/v1/aggregate`, ascending, and only days with a matching page. `hits[i]` is the number of matching pages on `days[i]`. A place with no matches has empty lists.
+- **Errors.** A missing or empty `place`, an id given twice, or more than 20 ids answer 400 `/errors/bad-parameter`. An unknown place answers 404, as on `/v1/hits`. Before asking for days, the API asks for the places' matching pages by year. A place-year has at most as many day cells as it has pages, and as the year has days in the range. If that bound, summed over the places, is over the cube's cap of 700,000 cells, the answer is 422 `/errors/query-too-broad` and the site keeps the bucket medians.
+- **Engine.** It's the cube's request (§6.3.3, [05 §5.7](05-search-and-storage.md#57-aggregation-strategy)), `terms(place_id) → histogram(day, interval 1)`, with `place_id:IN [...]` in place of the shard filter. Place ids are checked against the reference data before they reach the query. The places are split across calls so each call holds at most 150,000 cells by the year bound, run two at a time. A typical request takes two calls: the year bound and one day cube.
+- **Caching.** As for `/v1/hits`: the canonical URL is the search's plus `place`, in the order asked, with the same version pinning, in-process and Blob caches, and `202 Accepted` while it computes (§6.3.5). It takes a computation slot like any search. It is not in the search log (§6.8), because it follows a search the visitor already made.
 
 ## 6.4 Query language and validation
 

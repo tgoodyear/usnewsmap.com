@@ -386,12 +386,48 @@ pub fn cube_request(
         let list: Vec<String> = shards.iter().map(u8::to_string).collect();
         extra.push(format!("place_shard:IN [{}]", list.join(" ")));
     }
+    cube_body(node, filters, indexes, spec, extra, MAX_PLACES)
+}
+
+/// The cube for the places in `places` only (`/v1/days`). Place ids are
+/// our own (letters, digits, `_` and `-`), so they need no escaping; any
+/// other id is refused rather than put in the query.
+pub fn place_cube_request(
+    node: &Node,
+    filters: &Filters,
+    indexes: &IndexSet,
+    spec: &BucketSpec,
+    places: &[String],
+) -> Result<Value, SearchError> {
+    let plain = |p: &String| {
+        !p.is_empty()
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    };
+    if places.is_empty() || !places.iter().all(plain) {
+        return Err(SearchError::Rejected(
+            "place ids must be letters, digits, `_` or `-`".into(),
+        ));
+    }
+    let extra = vec![format!("place_id:IN [{}]", places.join(" "))];
+    let size = u32::try_from(places.len()).unwrap_or(MAX_PLACES);
+    cube_body(node, filters, indexes, spec, extra, size)
+}
+
+fn cube_body(
+    node: &Node,
+    filters: &Filters,
+    indexes: &IndexSet,
+    spec: &BucketSpec,
+    extra: Vec<String>,
+    places: u32,
+) -> Result<Value, SearchError> {
     Ok(json!({
         "query": full_query(node, filters, indexes, extra)?,
         "max_hits": 0,
         "aggs": {
             "places": {
-                "terms": { "field": "place_id", "size": MAX_PLACES },
+                "terms": { "field": "place_id", "size": places },
                 "aggs": { "t": histogram(spec, 1) }
             }
         }
@@ -730,6 +766,23 @@ impl SearchBackend for QuickwitBackend {
         parse_cube(&resp, spec)
     }
 
+    async fn place_cube(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+        places: &[String],
+    ) -> Result<Vec<CubeCell>, SearchError> {
+        let resp = self
+            .search(
+                indexes,
+                &place_cube_request(query, filters, indexes, spec, places)?,
+            )
+            .await?;
+        parse_cube(&resp, spec)
+    }
+
     async fn hits(
         &self,
         indexes: &IndexSet,
@@ -925,6 +978,55 @@ mod tests {
             .ends_with("AND place_shard:IN [0 5]"));
         let all = cube_request(&q, &filters(), &none(), &spec, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
         assert!(!all["query"].as_str().unwrap().contains("place_shard"));
+    }
+
+    #[test]
+    fn builds_place_cube_requests_by_day() {
+        let q = parse("gold").unwrap();
+        let spec = BucketSpec::new(BucketUnit::Day, d("1896-06-01"), d("1896-12-31"));
+        let places = vec!["P00003".to_owned(), "P00001".to_owned()];
+        let r = place_cube_request(&q, &filters(), &none(), &spec, &places).unwrap();
+        assert_eq!(
+            r["query"],
+            format!(
+                "text:gold AND day:[{} TO {}] AND state:IN [GA SC] AND front_page:true \
+                 AND place_id:IN [P00003 P00001]",
+                filters().from_day(),
+                filters().to_day()
+            )
+        );
+        assert_eq!(r["max_hits"], 0);
+        let places_agg = &r["aggs"]["places"];
+        assert_eq!(places_agg["terms"]["field"], "place_id");
+        assert_eq!(places_agg["terms"]["size"], 2);
+        let h = &places_agg["aggs"]["t"]["histogram"];
+        assert_eq!(h["field"], "day");
+        assert_eq!(h["interval"], 1);
+        assert_eq!(h["min_doc_count"], 1);
+        assert_eq!(h["offset"], 0);
+        // Keys come back as day numbers: bucket = day - from.
+        let from = usnm_core::time::day_number(d("1896-06-01"));
+        let resp: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 3,
+            "aggregations": { "places": { "buckets": [
+                {"key": "P00003", "doc_count": 3,
+                 "t": {"buckets": [{"key": f64::from(from + 2), "doc_count": 1},
+                                   {"key": f64::from(from + 9), "doc_count": 2}]}}
+            ]}}
+        }))
+        .unwrap();
+        let cells = parse_cube(&resp, &spec).unwrap();
+        assert_eq!(
+            cells.iter().map(|c| (c.bucket, c.hits)).collect::<Vec<_>>(),
+            [(2, 1), (9, 2)]
+        );
+        // Anything but a plain id never reaches the query.
+        for bad in [vec![], vec!["P1 OR x".to_owned()], vec![String::new()]] {
+            assert!(matches!(
+                place_cube_request(&q, &filters(), &none(), &spec, &bad),
+                Err(SearchError::Rejected(_))
+            ));
+        }
     }
 
     #[test]

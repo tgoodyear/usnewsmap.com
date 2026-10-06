@@ -161,6 +161,26 @@ async fn summaries_and_cubes_match_the_reference_backend() {
                     parts.extend(qw.cube(&set, &q, &f, &spec, &shards).await.expect(&ctx));
                 }
                 assert_eq!(sorted_cells(parts), want, "sharded cube: {ctx}");
+
+                // A cube of some places (`/v1/days`) is the full cube's cells
+                // for those places, one with no pages included.
+                let places = vec![
+                    "P00002".to_owned(),
+                    "P00005".to_owned(),
+                    "P99999".to_owned(),
+                ];
+                let want: Vec<CubeCell> = want
+                    .iter()
+                    .filter(|c| places.contains(&c.place_id))
+                    .cloned()
+                    .collect();
+                let got = qw
+                    .place_cube(&set, &q, &f, &spec, &places)
+                    .await
+                    .expect(&ctx);
+                assert_eq!(sorted_cells(got), want, "place cube: {ctx}");
+                let mem_got = mem.place_cube(&set, &q, &f, &spec, &places).await.unwrap();
+                assert_eq!(sorted_cells(mem_got), want, "memory place cube: {ctx}");
                 checked += 1;
             }
         }

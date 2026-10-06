@@ -1,6 +1,7 @@
 mod aggregate;
 mod beacon;
 mod coverage;
+mod days;
 mod hits;
 mod meta;
 
@@ -10,6 +11,7 @@ pub use beacon::beacon;
 pub(crate) use beacon::is_bot;
 pub use coverage::coverage;
 pub(crate) use coverage::coverage_in;
+pub use days::days;
 pub use hits::hits;
 pub(crate) use meta::places_in;
 pub use meta::{meta, places, readyz};

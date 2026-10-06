@@ -551,6 +551,10 @@ test("Pages and Median date list places beside the map, and the lists can be hid
   await page.getByRole("button", { name: "Median date" }).click();
   const when = page.getByRole("complementary", { name: "Places with the earliest and latest median dates" });
   await expect(when.getByRole("heading", { level: 3, name: "Earliest median date" })).toBeVisible();
+  // The search is by month; the listed places' medians come back to the day (/v1/days).
+  await expect(when.locator(".skew-list__value").first()).toHaveText(/^[A-Z][a-z]{2} \d{1,2}, \d{4} · \d/, {
+    timeout: 15_000,
+  });
 
   // Hidden in one measure stays hidden in the others and after a reload.
   await when.getByRole("button", { name: "Hide" }).click();

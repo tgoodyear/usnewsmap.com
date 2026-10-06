@@ -11,6 +11,7 @@ cargo test --workspace                 # unit + API integration tests against th
 cargo run -p usnm-api                  # serves the synthetic fixture corpus on :8080
 curl 'localhost:8080/v1/aggregate?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31'
 curl 'localhost:8080/v1/hits?q=%22cross+of+gold%22&place=P00001&limit=5'
+curl 'localhost:8080/v1/days?q=%22cross+of+gold%22&place=P00001,P00006'
 ```
 
 With the API running, `cd web && npm ci && npm run dev` serves the site on `http://localhost:5173` (see [`web/README.md`](../web/README.md)).

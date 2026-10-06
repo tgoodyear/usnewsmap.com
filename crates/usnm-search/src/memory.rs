@@ -144,23 +144,26 @@ impl SearchBackend for MemoryBackend {
         spec: &BucketSpec,
         shards: &[u8],
     ) -> Result<Vec<CubeCell>, SearchError> {
-        let mut cells: BTreeMap<(&str, u32), u32> = BTreeMap::new();
-        for d in self
-            .matching(indexes, query, filters)?
-            .filter(|d| shards.contains(&d.doc.place_shard))
-        {
-            *cells
-                .entry((&d.doc.place_id, spec.index_of_day(d.doc.day) as u32))
-                .or_default() += 1;
-        }
-        Ok(cells
-            .into_iter()
-            .map(|((place, bucket), hits)| CubeCell {
-                place_id: place.to_owned(),
-                bucket,
-                hits,
-            })
-            .collect())
+        Ok(cells(
+            self.matching(indexes, query, filters)?
+                .filter(|d| shards.contains(&d.doc.place_shard)),
+            spec,
+        ))
+    }
+
+    async fn place_cube(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+        spec: &BucketSpec,
+        places: &[String],
+    ) -> Result<Vec<CubeCell>, SearchError> {
+        Ok(cells(
+            self.matching(indexes, query, filters)?
+                .filter(|d| places.contains(&d.doc.place_id)),
+            spec,
+        ))
     }
 
     async fn hits(
@@ -219,6 +222,24 @@ impl SearchBackend for MemoryBackend {
     async fn health(&self) -> Result<(), SearchError> {
         Ok(())
     }
+}
+
+/// Matching pages per place and bucket, by place then bucket.
+fn cells<'a>(docs: impl Iterator<Item = &'a Indexed>, spec: &BucketSpec) -> Vec<CubeCell> {
+    let mut cells: BTreeMap<(&str, u32), u32> = BTreeMap::new();
+    for d in docs {
+        *cells
+            .entry((&d.doc.place_id, spec.index_of_day(d.doc.day) as u32))
+            .or_default() += 1;
+    }
+    cells
+        .into_iter()
+        .map(|((place, bucket), hits)| CubeCell {
+            place_id: place.to_owned(),
+            bucket,
+            hits,
+        })
+        .collect()
 }
 
 /// Evaluate the AST against a document's token stream.
