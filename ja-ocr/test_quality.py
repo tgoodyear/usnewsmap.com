@@ -734,3 +734,17 @@ class Run2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PageFile(unittest.TestCase):
+    def test_streamed_gzip_and_row_cap(self):
+        import gzip
+        titles = quality.title_infos([{"lccn": "e1", "languages": ["eng"]}])
+        pages = [{"lccn": "e1", "status": "empty", "decade": 1880, "doc_id": f"d{i}"} for i in range(5)]
+        t = quality.Tally2(titles, max_page_rows=100)
+        t.add("b1_ver01", pages)
+        rows = gzip.decompress(t.pages_csv_gz()).decode().splitlines()
+        self.assertEqual(len(rows), 1 + 5)
+        capped = quality.Tally2(titles, max_page_rows=3)
+        capped.add("b1_ver01", pages)
+        self.assertIsNone(capped.pages_csv_gz())

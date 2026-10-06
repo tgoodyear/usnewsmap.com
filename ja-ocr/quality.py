@@ -61,7 +61,7 @@ of the job out; a rerun overwrites the output.
 from __future__ import annotations
 
 import csv
-import gzip
+import zlib
 import hashlib
 import io
 import json
@@ -959,10 +959,15 @@ class Agreement:
                 "mixed_share": share(self.mixed), "mixed_with_first_share": share(self.mixed_with_first)}
 
 
+# The per-page file is gzipped as pages come in, so memory holds only the compressed file; past this many
+# rows (a sample of over about 12% of the corpus) the file is dropped, since the tables cover such a sample.
+MAX_PAGE_ROWS = 3_000_000
+
+
 class Tally2:
     """The v2 tables, from the sampled pages, one part at a time."""
 
-    def __init__(self, titles: dict[str, TitleInfo]):
+    def __init__(self, titles: dict[str, TitleInfo], max_page_rows: int = MAX_PAGE_ROWS):
         self.titles = titles
         self.by_lang_decade: dict[tuple[str, int], Stats2] = {}
         self.by_title: dict[str, Stats2] = {}
@@ -973,7 +978,11 @@ class Tally2:
         self.agreement: dict[str, Agreement] = {}
         self.japanese = Stats2()
         self.untitled = 0
-        self.page_rows: list[str] = []  # CSV lines, one per sampled page (not Japanese)
+        # Every sampled page (not Japanese) as CSV, gzipped as it comes in (MAX_PAGE_ROWS).
+        self.max_page_rows = max_page_rows
+        self.page_count = 0
+        self._gz = zlib.compressobj(6, zlib.DEFLATED, 31)
+        self.pages_gz: list[bytes] = [self._gz.compress((",".join(PAGE_COLUMNS) + "\n").encode())]
 
     def add(self, batch: str, pages: list[dict]) -> None:
         buf = io.StringIO()
@@ -1001,20 +1010,33 @@ class Tally2:
                 m[b] = m.get(b, 0) + 1
             label = agreement_label(p)
             if buf.tell() > 1 << 16:
-                self.page_rows.append(buf.getvalue())
-                buf.seek(0)
-                buf.truncate()
+                self._flush_pages(buf)
             self.crosstab[(first, label)] = self.crosstab.get((first, label), 0) + 1
             kind = "untitled_pages" if t is None else "multilingual_titles" if multi else "single_language_titles"
             for scope in ("all", kind, f"title_language:{first}"):
                 self.agreement.setdefault(scope, Agreement()).add(p, first)
         if buf.tell():
-            self.page_rows.append(buf.getvalue())
+            self._flush_pages(buf)
 
-    def pages_csv_gz(self) -> bytes:
-        """Every sampled page (but Japanese titles'): its language, the decision and its scores."""
-        header = ",".join(PAGE_COLUMNS) + "\n"
-        return gzip.compress((header + "".join(self.page_rows)).encode(), compresslevel=6)
+    def _flush_pages(self, buf: io.StringIO) -> None:
+        if self._gz is not None:
+            self.page_count += buf.getvalue().count("\n")
+            if self.page_count > self.max_page_rows:
+                # Too large to keep: drop the file and stop collecting it.
+                self._gz = None
+                self.pages_gz = []
+                jaocr.log("ocr quality pages file dropped", max_rows=self.max_page_rows)
+            else:
+                self.pages_gz.append(self._gz.compress(buf.getvalue().encode()))
+        buf.seek(0)
+        buf.truncate()
+
+    def pages_csv_gz(self) -> bytes | None:
+        """Every sampled page (but Japanese titles'): its language, the decision and its scores, gzipped;
+        None when the sample was too large to export."""
+        if self._gz is None:
+            return None
+        return b"".join(self.pages_gz) + self._gz.flush()
 
     def tables(self, catalog: dict[str, dict], min_pages: int) -> dict[str, list[dict]]:
         by_lang: dict[str, Stats2] = {}
@@ -1260,8 +1282,12 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
         curated.write(path, write_csv(rows))
         paths.append(path)
     if metric == "v2":
-        curated.write(f"{base}-pages.csv.gz", tally.pages_csv_gz())
-        paths.append(f"{base}-pages.csv.gz")
+        pages_gz = tally.pages_csv_gz()
+        if pages_gz is None:
+            jaocr.log("ocr quality pages file skipped", max_rows=MAX_PAGE_ROWS)
+        else:
+            curated.write(f"{base}-pages.csv.gz", pages_gz)
+            paths.append(f"{base}-pages.csv.gz")
 
     first = ("by_language", "by_decade", "by_language_decade")
     for name in first:
