@@ -165,6 +165,20 @@ input, select {
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; }
 .summary { margin: 0 auto 0 0; }
+.toolbar__options { display: flex; align-items: center; gap: 8px; }
+.toolbar__options:empty { display: none; }
+/* Wide enough for "Link copied", so copying the link doesn't shift the buttons beside it. */
+.toolbar__share { min-width: 7em; }
+@media (max-width: 640px) {
+  /* Phones: the counts on their own line, then View with Share pinned right, then the
+     measures, then a row kept for the measure's options even when it has none, so nothing
+     moves when they come and go. */
+  .toolbar .summary { flex-basis: 100%; }
+  .toolbar__view { order: 1; }
+  .toolbar__share { order: 2; margin-left: auto; }
+  .toolbar .measure { order: 3; flex-basis: 100%; }
+  .toolbar__options, .toolbar__options:empty { display: flex; order: 4; flex-basis: 100%; min-height: 36px; }
+}
 .mentions { margin: 0; padding: 0 16px 8px; color: var(--muted); }
 .mentions a { text-decoration: underline; }
 .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }

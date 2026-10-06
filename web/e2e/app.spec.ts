@@ -572,6 +572,29 @@ test("Pages and Median date list places beside the map, and the lists can be hid
   expect(errors).toEqual([]);
 });
 
+test("the toolbar's buttons stay put whichever measure is chosen", async ({ page }) => {
+  await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&bucket=month");
+  const measure = page.getByRole("group", { name: "Measure" });
+  await expect(measure).toBeVisible();
+  const where = async () =>
+    JSON.stringify(
+      await Promise.all(
+        [page.getByRole("button", { name: "Map", exact: true }), measure.getByRole("button", { name: "Pages" }), page.getByRole("button", { name: "Share" })].map(
+          async (b) => {
+            const box = (await b.boundingBox())!;
+            return [Math.round(box.x), Math.round(box.y)];
+          },
+        ),
+      ),
+    );
+  const first = await where();
+  for (const m of ["Relative rate", "Median date", "Pages"]) {
+    await measure.getByRole("button", { name: m }).click();
+    await expect(measure.getByRole("button", { name: m })).toHaveAttribute("aria-pressed", "true");
+    expect(await where(), m).toBe(first);
+  }
+});
+
 test("the median-date measure colours places by when they mentioned it", async ({ page }) => {
   await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&bucket=month");
   await expect(page.locator(".mix")).toContainText(/^Matching pages on \d+ days\./);
