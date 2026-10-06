@@ -123,6 +123,14 @@ describe("formatting", () => {
       "Oct 4 at 11:17 PM EDT",
     );
     expect(localDate("2026-09-29T14:23:36Z")).toBe("Sep 29 at 10:23 AM EDT");
+    // "Today" is the visitor's: two UTC dates, one New York day...
+    const evening = Date.parse("2026-10-03T03:00:00Z"); // Oct 2, 11 PM EDT
+    expect(localTime("2026-10-02T13:00:00Z", evening)).toBe("9:00 AM EDT");
+    // ...and one UTC date, two New York days.
+    const late = Date.parse("2026-10-02T23:00:00Z"); // Oct 2, 7 PM EDT
+    expect(localTime("2026-10-02T02:00:00Z", late)).toBe(
+      "Oct 1 at 10:00 PM EDT",
+    );
     expect(longDate("1751-05-09")).toBe("May 9, 1751");
   });
 
