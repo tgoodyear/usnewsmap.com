@@ -146,10 +146,11 @@ fn main() -> anyhow::Result<()> {
     println!("places before: {}", live.len());
     println!("places after:  {}", after.len());
     println!(
-        "coordinates: override {}, LoC single-city {}, gazetteer {}, LoC multi-city {}, state centroid {}",
+        "coordinates: override {}, LoC single-city {}, gazetteer {}, gazetteer over a LoC point > 100 km off {}, LoC multi-city {}, state centroid {}",
         report.from_override,
         report.from_loc,
         report.from_gazetteer,
+        report.gazetteer_over_loc,
         report.from_loc_multi_city,
         report.state_centroid
     );
@@ -218,6 +219,14 @@ fn main() -> anyhow::Result<()> {
             "{:>6.0} km  {} {}, {} ({},{}) → {} {} ({:.4},{:.4})",
             km, l.id, l.name, l.state, l.lat, l.lon, p.id, p.name, p.lat, p.lon
         );
+    }
+
+    println!(
+        "\n== LoC points replaced by the gazetteer (> 100 km from the state's only town of the name): {} ==",
+        report.gazetteer_over_loc
+    );
+    for d in &report.gazetteer_over_loc_places {
+        println!("{d}");
     }
 
     println!(

@@ -19,11 +19,13 @@
 //!   record for the title instead.
 //! - **geocode** builds the catalog from that cache alone, so it is
 //!   deterministic and needs no network. A title's place is the city in its
-//!   LoC title, e.g. "(North Platte, Neb.)"; spellings of one town share a
+//!   LoC title, e.g. "(North Platte, Neb.)", in the state LoC lists at the
+//!   city's position (or `catalog/overrides/title-places.json`); spellings of one town share a
 //!   place ([`crate::places`]: generic variants, `catalog/overrides/place-aliases.json`,
 //!   and "X City" next to "X"). Coordinates are, in order: a manual override
 //!   (`catalog/overrides/places.json` in git); the median of LoC's
-//!   `latlong` on records that list only this city; the US gazetteer; the
+//!   `latlong` on records that list only this city (unless it is more than
+//!   100 km from the state's only gazetteer town of the name); the US gazetteer; the
 //!   median of LoC's `latlong` on records that list several cities (one
 //!   point for all of them, so a last resort); else the state's centroid
 //!   (precision `state`).
@@ -435,6 +437,10 @@ pub const DISAGREE_KM: f64 = 25.0;
 /// "X City" and "X" in one state are one place when their points are
 /// within this.
 pub const CITY_SUFFIX_KM: f64 = 10.0;
+/// A LoC point (from single-city records) further than this from the
+/// gazetteer's only town of the name in the state gives way to the
+/// gazetteer's.
+pub const FAR_KM: f64 = 100.0;
 /// The report lists at most this many disagreements.
 const MAX_LISTED: usize = 50;
 
@@ -449,6 +455,10 @@ pub struct GeocodeReport {
     /// LoC's `latlong` on records that list only this city.
     pub from_loc: usize,
     pub from_gazetteer: usize,
+    /// The gazetteer's point over LoC's single-city point, more than
+    /// [`FAR_KM`] away (the name has one town in the state), and which.
+    pub gazetteer_over_loc: usize,
+    pub gazetteer_over_loc_places: Vec<String>,
     /// LoC's `latlong` on records that list several cities: one point for
     /// all of them, so only a last resort.
     pub from_loc_multi_city: usize,
@@ -515,6 +525,9 @@ enum Source {
     Override,
     Loc,
     Gazetteer,
+    /// The gazetteer's only town of the name, over a LoC point more than
+    /// [`FAR_KM`] from it.
+    GazetteerOverLoc,
     LocMultiCity,
     StateCentroid,
 }
@@ -600,13 +613,29 @@ impl Places<'_> {
                 multi.push((lat, lon));
             }
         }
-        let gaz = &self.geo.gazetteer;
-        let gaz = keys
-            .iter()
-            .find_map(|k| gaz.get(code, k))
-            .or_else(|| keys.iter().find_map(|k| gaz.near(code, k)))
-            .map(|g| (g.lat, g.lon));
+        let gazetteer = &self.geo.gazetteer;
+        // The town with this key, and whether it is the state's only one.
+        let exact = keys.iter().find_map(|k| {
+            gazetteer
+                .get(code, k)
+                .map(|g| ((g.lat, g.lon), gazetteer.count(code, k) == 1))
+        });
+        let gaz = exact.map(|(g, _)| g).or_else(|| {
+            keys.iter()
+                .find_map(|k| gazetteer.near(code, k))
+                .map(|g| (g.lat, g.lon))
+        });
         if let Some((lat, lon)) = median(&single) {
+            // LoC's point far from the state's only town of the name is
+            // LoC's mistake (a state's or another town's point).
+            if let Some((g, true)) = exact {
+                if places::distance_km((lat, lon), g) > FAR_KM {
+                    return Point {
+                        check: Some(((lat, lon), g)),
+                        ..point(g.0, g.1, "city", Source::GazetteerOverLoc)
+                    };
+                }
+            }
             return Point {
                 check: gaz.map(|g| ((lat, lon), g)),
                 ..point(lat, lon, "city", Source::Loc)
@@ -621,6 +650,10 @@ impl Places<'_> {
         centroid
     }
 }
+
+/// A place whose LoC and gazetteer points are apart: km, name, state, LoC's
+/// point, the gazetteer's.
+type Gap<'a> = (f64, String, &'a str, (f64, f64), (f64, f64));
 
 /// The median latitude and longitude, each on its own.
 fn median(points: &[(f64, f64)]) -> Option<(f64, f64)> {
@@ -654,7 +687,7 @@ pub fn build(
     let derived: Vec<Derived> = raw
         .values()
         .filter_map(|r| {
-            let d = derive(r);
+            let d = derive(r, geo);
             if d.is_none() {
                 report.unresolved.push(r.lccn.clone());
             }
@@ -808,6 +841,13 @@ pub fn build(
             chosen[gi] = Some(pi);
         }
     }
+    // The places a group took but didn't keep (folded into its place).
+    let mut folded: Vec<Vec<usize>> = vec![Vec::new(); groups.len()];
+    for (&pi, &(_, gi)) in &claims {
+        if chosen[gi] != Some(pi) {
+            folded[gi].push(pi);
+        }
+    }
 
     let referenced_before: BTreeSet<String> = titles.iter().map(|t| t.place_id.clone()).collect();
     let mut next_place = places.iter().map(|p| p.ordinal).max().unwrap_or(0);
@@ -816,12 +856,14 @@ pub fn build(
     let mut kept = Vec::new();
     let mut place_of: HashMap<usize, String> = HashMap::new();
     let mut disagreements = Vec::new();
+    let mut over_loc = Vec::new();
     for (gi, g) in groups.iter().enumerate() {
         let point = ctx.resolve(&g.variants, &g.members, g.code);
         match point.source {
             Source::Override => report.from_override += 1,
             Source::Loc => report.from_loc += 1,
             Source::Gazetteer => report.from_gazetteer += 1,
+            Source::GazetteerOverLoc => report.gazetteer_over_loc += 1,
             Source::LocMultiCity => report.from_loc_multi_city += 1,
             Source::StateCentroid => report.state_centroid += 1,
         }
@@ -855,8 +897,20 @@ pub fn build(
         };
         if let Some((loc, gaz)) = point.check {
             let km = places::distance_km(loc, gaz);
-            if km > DISAGREE_KM {
+            if point.source == Source::GazetteerOverLoc {
+                over_loc.push((km, name.clone(), g.code, loc, gaz));
+            } else if km > DISAGREE_KM {
                 disagreements.push((km, name.clone(), g.code, loc, gaz));
+            }
+        }
+        // A folded place shows the same town until a full release moves
+        // its published titles (an incremental release keeps them there).
+        for &pi in &folded[gi] {
+            if let Some(p) = slots[pi].as_mut() {
+                p.name = name.clone();
+                p.lat = point.lat;
+                p.lon = point.lon;
+                p.precision = point.precision.clone();
             }
         }
         let place = match chosen[gi].and_then(|pi| slots[pi].take()) {
@@ -895,18 +949,21 @@ pub fn build(
     // Places no group took (hand-written ones, and places folded into
     // another) are kept as they are: ids are never reused.
     kept.extend(slots.into_iter().flatten());
-    disagreements.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let listed = |mut v: Vec<Gap>| {
+        v.sort_by(|a, b| b.0.total_cmp(&a.0));
+        v.iter()
+            .take(MAX_LISTED)
+            .map(|(km, name, code, loc, gaz)| {
+                format!(
+                    "{name}, {code}: LoC {:.4},{:.4}, gazetteer {:.4},{:.4} ({km:.0} km)",
+                    loc.0, loc.1, gaz.0, gaz.1
+                )
+            })
+            .collect::<Vec<_>>()
+    };
     report.disagreements = disagreements.len();
-    report.disagreement_examples = disagreements
-        .iter()
-        .take(MAX_LISTED)
-        .map(|(km, name, code, loc, gaz)| {
-            format!(
-                "{name}, {code}: LoC {:.4},{:.4}, gazetteer {:.4},{:.4} ({km:.0} km)",
-                loc.0, loc.1, gaz.0, gaz.1
-            )
-        })
-        .collect();
+    report.disagreement_examples = listed(disagreements);
+    report.gazetteer_over_loc_places = listed(over_loc);
 
     // Titles.
     let mut by_lccn: BTreeMap<String, Title> =
@@ -999,9 +1056,18 @@ const DERIVED_KEYS: &[&str] = &[
     "last_year",
 ];
 
-fn derive(r: &RawTitle) -> Option<Derived<'_>> {
+fn derive<'a>(r: &'a RawTitle, geo: &Geo) -> Option<Derived<'a>> {
     let (name, place_label) = split_title(&r.title);
-    let state = choose_state(&r.states, place_label.as_deref())?;
+    // A title placed by hand (catalog/overrides/title-places.json).
+    if let Some((city, state)) = geo.title_place(&r.lccn) {
+        return Some(Derived {
+            raw: r,
+            name,
+            place_label,
+            city: Some(city.to_owned()),
+            state,
+        });
+    }
     // The city the title names, else LoC's first listed city. A label that
     // names only a state ("(Nebraska)") has no city.
     let city = place_label
@@ -1009,6 +1075,33 @@ fn derive(r: &RawTitle) -> Option<Derived<'_>> {
         .and_then(city_from_label)
         .filter(|c| !names_a_state(c))
         .or_else(|| r.cities.first().map(|c| title_case(c)));
+    // LoC lists a record's cities and states by position: when the lists
+    // line up, the city's state is the one at its position (the first, if
+    // it is listed twice).
+    let aligned = (r.cities.len() == r.states.len() && r.states.len() > 1)
+        .then_some(city.as_deref())
+        .flatten()
+        .and_then(|c| {
+            r.cities.iter().zip(&r.states).find_map(|(lc, ls)| {
+                let s = state_by_name(ls)?;
+                (geo.city(&title_case(lc), s).key == geo.city(c, s).key).then_some(s)
+            })
+        });
+    let mut state = aligned.or_else(|| choose_state(&r.states, place_label.as_deref()))?;
+    // Never a city in a state the gazetteer lacks it in, when another
+    // listed state has it ("Salt Lake City" with Illinois and Utah listed).
+    if let Some(c) = city.as_deref() {
+        if !geo.has(c, state) {
+            if let Some(other) = r
+                .states
+                .iter()
+                .filter_map(|s| state_by_name(s))
+                .find(|s| geo.has(c, s))
+            {
+                state = other;
+            }
+        }
+    }
     Some(Derived {
         raw: r,
         name,
@@ -1774,7 +1867,7 @@ mod tests {
             &["ohio"],
             None,
         );
-        assert_eq!(derive(&r).unwrap().city.as_deref(), Some("Canton"));
+        assert_eq!(derive(&r, geo()).unwrap().city.as_deref(), Some("Canton"));
         // A label naming only the state has no city: the state's place.
         let r = raw(
             "sn2",
@@ -1783,10 +1876,13 @@ mod tests {
             &["nebraska"],
             None,
         );
-        assert_eq!(derive(&r).unwrap().city, None);
+        assert_eq!(derive(&r, geo()).unwrap().city, None);
         // No label: LoC's first city.
         let r = raw("sn3", "Plain Name", &["north platte"], &["nebraska"], None);
-        assert_eq!(derive(&r).unwrap().city.as_deref(), Some("North Platte"));
+        assert_eq!(
+            derive(&r, geo()).unwrap().city.as_deref(),
+            Some("North Platte")
+        );
     }
 
     #[test]
@@ -1938,27 +2034,120 @@ mod tests {
     }
 
     #[test]
-    fn far_from_the_gazetteer_is_reported() {
-        let gaz = Gazetteer::parse("state,name,lat,lon\nTN,Memphis,35.1,-89.97\n").unwrap();
-        let geo = Geo::new(gaz, &[]).unwrap();
-        let (c, rep) = catalog_of(
+    fn far_from_the_gazetteer() {
+        let memphis = |ll| {
             vec![raw(
                 "sn1",
                 "Paper (Memphis, Tenn.) 1900-1901",
                 &["memphis"],
                 &["tennessee"],
-                Some(SELMA),
-            )],
-            &geo,
-        );
-        // LoC's single-city point is kept, and listed for review.
-        assert!(near(place_of(&c, "sn1"), SELMA));
-        assert_eq!(rep.disagreements, 1);
+                Some(ll),
+            )]
+        };
+        // The state's only Memphis, 400 km from LoC's point: the gazetteer's.
+        let gaz = Gazetteer::parse("state,name,lat,lon\nTN,Memphis,35.1,-89.97\n").unwrap();
+        let geo = Geo::new(gaz, &[]).unwrap();
+        let (c, rep) = catalog_of(memphis(SELMA), &geo);
+        let p = place_of(&c, "sn1");
+        assert_eq!((p.lat, p.lon, p.precision.as_str()), (35.1, -89.97, "city"));
+        assert_eq!((rep.gazetteer_over_loc, rep.disagreements), (1, 0));
         assert!(
-            rep.disagreement_examples[0].starts_with("Memphis, TN: "),
+            rep.gazetteer_over_loc_places[0].starts_with("Memphis, TN: LoC 32.4074,-87.0211"),
             "{:?}",
-            rep.disagreement_examples
+            rep.gazetteer_over_loc_places
         );
+
+        // 50 km off: LoC's point is kept, and listed for review.
+        let (c, rep) = catalog_of(memphis([35.1, -89.42]), &geo);
+        assert!(near(place_of(&c, "sn1"), [35.1, -89.42]));
+        assert_eq!((rep.gazetteer_over_loc, rep.disagreements), (0, 1));
+        assert!(rep.disagreement_examples[0].starts_with("Memphis, TN: "));
+
+        // Two towns of the name in the state: LoC's point, for review.
+        let gaz =
+            Gazetteer::parse("state,name,lat,lon\nTN,Memphis,35.1,-89.97\nTN,Memphis,36.0,-84.0\n")
+                .unwrap();
+        let geo = Geo::new(gaz, &[]).unwrap();
+        let (c, rep) = catalog_of(memphis(SELMA), &geo);
+        assert!(near(place_of(&c, "sn1"), SELMA));
+        assert_eq!((rep.gazetteer_over_loc, rep.disagreements), (0, 1));
+    }
+
+    #[test]
+    fn multi_city_records_pair_cities_and_states_by_position() {
+        let gaz = Gazetteer::parse(
+            "state,name,lat,lon\nIL,Chicago,41.88,-87.63\nUT,Salt Lake City,40.76,-111.89\n",
+        )
+        .unwrap();
+        let geo = Geo::new(gaz, &[]).unwrap();
+        let state = |r: &RawTitle| derive(r, &geo).unwrap().state.code;
+        // The label names Salt Lake City and both states: the position pairs it with Utah.
+        let r = raw(
+            "sn1",
+            "The Broad Ax (Salt Lake City, Utah ; Chicago, Ill.) 1895-19??",
+            &["chicago", "salt lake city"],
+            &["illinois", "utah"],
+            None,
+        );
+        assert_eq!(state(&r), "UT");
+        // No label: the record's first city, in its own state.
+        let r = raw(
+            "sn2",
+            "The Broad Ax",
+            &["salt lake city", "chicago"],
+            &["utah", "illinois"],
+            None,
+        );
+        let d = derive(&r, &geo).unwrap();
+        assert_eq!(
+            (d.city.as_deref(), d.state.code),
+            (Some("Salt Lake City"), "UT")
+        );
+        // Lists that don't line up: never a state the gazetteer lacks the
+        // city in, when another listed state has it.
+        let r = raw(
+            "sn3",
+            "Intermountain Catholic (Salt Lake City, Colo.) 1899-1926",
+            &["salt lake city"],
+            &["colorado", "utah"],
+            None,
+        );
+        assert_eq!(state(&r), "UT");
+        // A city no gazetteer lists keeps the state its label names.
+        let r = raw(
+            "sn4",
+            "Paper (Nowhere, Colo.) 1899-1926",
+            &["nowhere"],
+            &["colorado", "utah"],
+            None,
+        );
+        assert_eq!(state(&r), "CO");
+    }
+
+    #[test]
+    fn a_title_place_overrides_the_record() {
+        let geo = Geo::default()
+            .with_title_places(&[places::TitlePlace {
+                city: "Chicago".into(),
+                lccn: "sn84024055".into(),
+                note: None,
+                state: "IL".into(),
+            }])
+            .unwrap();
+        let r = raw(
+            "sn84024055",
+            "The Broad Ax (Salt Lake City, Utah) 1895-19??",
+            &["chicago", "salt lake city"],
+            &["illinois", "utah"],
+            Some([40.76, -111.89]),
+        );
+        let d = derive(&r, &geo).unwrap();
+        assert_eq!((d.city.as_deref(), d.state.code), (Some("Chicago"), "IL"));
+        assert_eq!(d.place_label.as_deref(), Some("Salt Lake City, Utah"));
+        // Its record lists two cities, so its latlong doesn't place Chicago.
+        let (c, rep) = catalog_of(vec![r], &geo);
+        assert_eq!(place_of(&c, "sn84024055").name, "Chicago");
+        assert_eq!(rep.from_loc_multi_city, 1);
     }
 
     #[test]
@@ -2192,7 +2381,12 @@ mod tests {
             assert_eq!(c.title(lccn).unwrap().place_id, "P00002");
         }
         assert_eq!(rep.retired, ["P00001"]);
-        assert_eq!(c.place("P00001").unwrap().name, "Saint Paul");
+        // It shows the same town as the place it was folded into.
+        let (kept, folded) = (c.place("P00002").unwrap(), c.place("P00001").unwrap());
+        assert_eq!(
+            (&folded.name, folded.lat, folded.lon),
+            (&kept.name, kept.lat, kept.lon)
+        );
         assert_eq!(c.title("sn5").unwrap().place_id, "P00004");
         assert_eq!(c.title("sn4").unwrap().place_id, "P00003");
         // A second build changes nothing.

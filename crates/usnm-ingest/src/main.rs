@@ -288,6 +288,20 @@ async fn geocode(reference: &dyn usnm_store::ObjectStore) -> anyhow::Result<()> 
     if !report.unresolved.is_empty() {
         tracing::warn!(unresolved = ?report.unresolved, "titles with no state were left out");
     }
+    if report.gazetteer_over_loc > 0 {
+        tracing::info!(
+            places = report.gazetteer_over_loc,
+            list = ?report.gazetteer_over_loc_places,
+            "LoC points more than 100 km from the state's only town of the name; the gazetteer's used"
+        );
+    }
+    if report.disagreements > 0 {
+        tracing::warn!(
+            places = report.disagreements,
+            furthest = ?report.disagreement_examples,
+            "LoC points more than 25 km from the gazetteer, kept; review them (catalog/overrides/places.json)"
+        );
+    }
     tracing::info!(?report, "catalog");
     Ok(())
 }

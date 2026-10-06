@@ -113,21 +113,47 @@ impl Catalog {
 
     /// For an incremental release: titles already published keep their
     /// published record, so their pages stay with the place the published
-    /// indexes give them (changes wait for the next full rebuild, 04 §4.7).
-    /// A published place keeps its id, ordinal and state but takes its
-    /// name, coordinates and precision from the current catalog: index
-    /// documents carry only the place's id and shard, so a corrected point
-    /// needs no reindex (04 §4.6). New titles and places come from the
-    /// current catalog.
+    /// indexes give them (changes, a move to another place included, wait
+    /// for the next full rebuild, 04 §4.7). A new title whose place took in
+    /// published titles from another place (a merge) goes where those are
+    /// published, so the version doesn't gain a second id for the town. A
+    /// published place keeps its id, ordinal and state but takes its name,
+    /// coordinates and precision from the current catalog: index documents
+    /// carry only the place's id and shard, so a corrected point needs no
+    /// reindex (04 §4.6). New places come from the current catalog.
     pub fn carried_forward(published: &Catalog, current: &Catalog) -> anyhow::Result<Self> {
+        // For each current place, the published places of its published
+        // titles, with how many.
+        let mut published_as: HashMap<&str, BTreeMap<&str, usize>> = HashMap::new();
+        for t in &published.titles {
+            if let Some(now) = current.title(&t.lccn) {
+                *published_as
+                    .entry(now.place_id.as_str())
+                    .or_default()
+                    .entry(t.place_id.as_str())
+                    .or_default() += 1;
+            }
+        }
         let mut titles = published.titles.clone();
-        titles.extend(
-            current
-                .titles
-                .iter()
-                .filter(|t| published.title(&t.lccn).is_none())
-                .cloned(),
-        );
+        for t in &current.titles {
+            if published.title(&t.lccn).is_some() {
+                continue;
+            }
+            let mut t = t.clone();
+            if let Some(ids) = published_as.get(t.place_id.as_str()) {
+                if !ids.contains_key(t.place_id.as_str()) {
+                    // The published place with most of them, then the lowest ordinal.
+                    let ordinal = |id: &str| published.place(id).map_or(u32::MAX, |p| p.ordinal);
+                    if let Some((id, _)) = ids
+                        .iter()
+                        .max_by_key(|(id, n)| (**n, std::cmp::Reverse(ordinal(id))))
+                    {
+                        t.place_id = (*id).to_owned();
+                    }
+                }
+            }
+            titles.push(t);
+        }
         let mut places: Vec<Place> = published
             .places
             .iter()
@@ -153,9 +179,8 @@ impl Catalog {
     }
 
     /// The published titles the current catalog puts in another place (a
-    /// merge, an alias, a corrected city), in LCCN order. A delta would
-    /// keep their pages where they were published, so the release builds
-    /// a full base instead (04 §4.6).
+    /// merge, an alias, a corrected city), in LCCN order: an incremental
+    /// release keeps them where they were published (04 §4.6).
     pub fn regrouped(published: &Catalog, current: &Catalog) -> Vec<String> {
         published
             .titles
@@ -224,10 +249,63 @@ mod tests {
         .unwrap();
         let c = Catalog::carried_forward(&published, &current).unwrap();
         assert_eq!(c.title("sn1").unwrap().place_id, "P1");
-        assert_eq!(c.title("sn2").unwrap().place_id, "P2");
+        // sn2 is new in P2, which took in sn1 (published in P1): it joins sn1.
+        assert_eq!(c.title("sn2").unwrap().place_id, "P1");
         assert_eq!(c.places.len(), 2);
         assert_eq!(Catalog::regrouped(&published, &current), ["sn1"]);
         assert!(Catalog::regrouped(&published, &published).is_empty());
+    }
+
+    #[test]
+    fn new_titles_of_a_merged_place_go_where_its_titles_are_published() {
+        // Published: sn1 in P1, sn2 in P2 (two spellings of one town).
+        let published = Catalog::new(
+            vec![title("sn1", 1, "P1"), title("sn2", 2, "P2")],
+            vec![place("P1", 1), place("P2", 2)],
+        )
+        .unwrap();
+        // Now merged into P3; sn3 is new; sn4 is new in a town of its own.
+        let current = Catalog::new(
+            vec![
+                title("sn1", 1, "P3"),
+                title("sn2", 2, "P3"),
+                title("sn3", 3, "P3"),
+                title("sn4", 4, "P4"),
+            ],
+            vec![
+                place("P1", 1),
+                place("P2", 2),
+                place("P3", 3),
+                place("P4", 4),
+            ],
+        )
+        .unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        let place_of = |l| c.title(l).unwrap().place_id.as_str();
+        assert_eq!(
+            (
+                place_of("sn1"),
+                place_of("sn2"),
+                place_of("sn3"),
+                place_of("sn4")
+            ),
+            ("P1", "P2", "P1", "P4"),
+            "a tie goes to the lower ordinal"
+        );
+        // Merged into one of the published places: new titles go there.
+        let current = Catalog::new(
+            vec![
+                title("sn1", 1, "P2"),
+                title("sn2", 2, "P2"),
+                title("sn3", 3, "P2"),
+            ],
+            vec![place("P1", 1), place("P2", 2)],
+        )
+        .unwrap();
+        let c = Catalog::carried_forward(&published, &current).unwrap();
+        assert_eq!(c.title("sn3").unwrap().place_id, "P2");
+        assert_eq!(c.title("sn1").unwrap().place_id, "P1");
+        assert_eq!(Catalog::regrouped(&published, &current), ["sn1"]);
     }
 
     #[test]

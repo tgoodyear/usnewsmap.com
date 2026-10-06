@@ -31,6 +31,10 @@ pub const GAZETTEER: &str = include_str!("../../../catalog/gazetteer/us-places.c
 /// overrides.
 pub const PLACE_ALIASES: &str = include_str!("../../../catalog/overrides/place-aliases.json");
 
+/// `[{city, lccn, note, state}]`: the place of a title whose LoC record
+/// lists several, kept in git and compiled in.
+pub const TITLE_PLACES: &str = include_str!("../../../catalog/overrides/title-places.json");
+
 /// Real place names with a hyphen between capitalized words, which the
 /// display rule would otherwise turn into a space (most come from the
 /// gazetteer's spelling anyway; these are for when it has none).
@@ -55,12 +59,14 @@ pub struct GazPlace {
 /// The gazetteer, by (state code, key).
 #[derive(Debug, Default)]
 pub struct Gazetteer {
-    places: HashMap<(&'static str, String), GazPlace>,
+    /// The first place of each key, and how many places have it.
+    places: HashMap<(&'static str, String), (GazPlace, usize)>,
 }
 
 impl Gazetteer {
-    /// Parse `state,name,lat,lon` lines after a header. Of two names with
-    /// one key in a state, the first is kept.
+    /// Parse `state,name,lat,lon` lines after a header. Of two places with
+    /// one key in a state (the file lists the preferred one first), the
+    /// first is kept and the key counts as ambiguous.
     pub fn parse(csv: &str) -> anyhow::Result<Self> {
         let mut places = HashMap::new();
         let mut lines = csv.lines();
@@ -89,11 +95,17 @@ impl Gazetteer {
             if key.is_empty() {
                 bail!("{}: an empty name", at());
             }
-            places.entry((state.code, key)).or_insert(GazPlace {
-                name: (*name).to_owned(),
-                lat,
-                lon,
-            });
+            places
+                .entry((state.code, key))
+                .or_insert((
+                    GazPlace {
+                        name: (*name).to_owned(),
+                        lat,
+                        lon,
+                    },
+                    0,
+                ))
+                .1 += 1;
         }
         Ok(Self { places })
     }
@@ -106,8 +118,17 @@ impl Gazetteer {
         self.places.is_empty()
     }
 
-    /// The town with exactly this key.
+    /// The town with exactly this key (the preferred one, if several).
     pub fn get(&self, state: &str, key: &str) -> Option<&GazPlace> {
+        self.entry(state, key).map(|(p, _)| p)
+    }
+
+    /// How many towns of the state have this key.
+    pub fn count(&self, state: &str, key: &str) -> usize {
+        self.entry(state, key).map_or(0, |(_, n)| *n)
+    }
+
+    fn entry(&self, state: &str, key: &str) -> Option<&(GazPlace, usize)> {
         let code = STATES.iter().find(|s| s.code == state)?.code;
         self.places.get(&(code, key.to_owned()))
     }
@@ -140,11 +161,28 @@ pub struct PlaceAlias {
     pub to: String,
 }
 
-/// The gazetteer and the aliases: what `geocode` uses to key and name places.
+/// One entry of [`TITLE_PLACES`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitlePlace {
+    /// The city, as a title's place label would name it.
+    pub city: String,
+    pub lccn: String,
+    /// Why: where the paper was published, and when.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Postal code, e.g. `IL`.
+    pub state: String,
+}
+
+/// The gazetteer, the aliases and the per-title places: what `geocode`
+/// uses to place, key and name places.
 #[derive(Debug, Default)]
 pub struct Geo {
     pub gazetteer: Gazetteer,
     aliases: HashMap<(&'static str, String), String>,
+    /// LCCN → (city, state code).
+    titles: HashMap<String, (String, &'static str)>,
 }
 
 /// A title's city, cleaned and keyed.
@@ -169,7 +207,12 @@ impl Geo {
             let gazetteer = Gazetteer::parse(GAZETTEER)
                 .context("catalog/gazetteer/us-places.csv")
                 .map_err(|e| format!("{e:#}"))?;
-            Geo::new(gazetteer, &aliases).map_err(|e| format!("{e:#}"))
+            let titles: Vec<TitlePlace> = serde_json::from_str(TITLE_PLACES)
+                .context("catalog/overrides/title-places.json")
+                .map_err(|e| format!("{e:#}"))?;
+            Geo::new(gazetteer, &aliases)
+                .and_then(|g| g.with_title_places(&titles))
+                .map_err(|e| format!("{e:#}"))
         })
         .as_ref()
         .map_err(|e| anyhow::anyhow!("{e}"))
@@ -180,7 +223,7 @@ impl Geo {
     pub fn new(gazetteer: Gazetteer, aliases: &[PlaceAlias]) -> anyhow::Result<Self> {
         let mut geo = Self {
             gazetteer,
-            aliases: HashMap::new(),
+            ..Self::default()
         };
         let mut targets = Vec::new();
         for a in aliases {
@@ -213,6 +256,41 @@ impl Geo {
             }
         }
         Ok(geo)
+    }
+
+    /// Place these titles in the city and state given, whatever their LoC
+    /// record lists. Each LCCN once, in a known state.
+    pub fn with_title_places(mut self, entries: &[TitlePlace]) -> anyhow::Result<Self> {
+        for t in entries {
+            let state = STATES.iter().find(|s| s.code == t.state).with_context(|| {
+                format!("title place `{}`: unknown state `{}`", t.lccn, t.state)
+            })?;
+            if t.city.trim().is_empty()
+                || usnm_core::ids::PageKey::new(&t.lccn, chrono::NaiveDate::MIN, 1, 1).is_err()
+            {
+                bail!("title place `{}`: an invalid LCCN or no city", t.lccn);
+            }
+            if self
+                .titles
+                .insert(t.lccn.clone(), (t.city.trim().to_owned(), state.code))
+                .is_some()
+            {
+                bail!("title place `{}` is listed twice", t.lccn);
+            }
+        }
+        Ok(self)
+    }
+
+    /// The city and state a title is placed in by [`TITLE_PLACES`].
+    pub fn title_place(&self, lccn: &str) -> Option<(&str, &'static State)> {
+        let (city, code) = self.titles.get(lccn)?;
+        Some((city.as_str(), STATES.iter().find(|s| s.code == *code)?))
+    }
+
+    /// Whether the gazetteer has `city` in `state` (as "X" or "X City").
+    pub fn has(&self, city: &str, state: &State) -> bool {
+        let key = self.city(city, state).key;
+        !key.is_empty() && self.gazetteer.near(state.code, &key).is_some()
     }
 
     /// `city` (in `state`) cleaned up, renamed by an alias, and keyed.
@@ -540,6 +618,11 @@ mod tests {
         .unwrap();
         assert_eq!(g.len(), 3, "one entry per key");
         assert_eq!(g.get("MN", "saintpaul").unwrap().name, "St. Paul");
+        assert_eq!(
+            (g.count("MN", "saintpaul"), g.count("OR", "dalles")),
+            (2, 1)
+        );
+        assert_eq!(g.count("OR", "nowhere"), 0);
         assert_eq!(g.get("OR", "dalles").unwrap().lat, 45.6);
         assert_eq!(g.near("OK", "langstoncity").unwrap().name, "Langston");
         assert!(g.get("XX", "x").is_none());
@@ -616,6 +699,32 @@ mod tests {
             .into_iter()
             .map(|k| k.0)
             .collect()
+    }
+
+    #[test]
+    fn the_title_places_in_git_are_sorted_and_valid() {
+        let entries: Vec<TitlePlace> = serde_json::from_str(TITLE_PLACES).unwrap();
+        let lccns: Vec<&str> = entries.iter().map(|t| t.lccn.as_str()).collect();
+        let mut sorted = lccns.clone();
+        sorted.sort();
+        assert_eq!(lccns, sorted, "entries out of order (by lccn)");
+        for keys in object_keys_in_order(TITLE_PLACES) {
+            let mut s = keys.clone();
+            s.sort();
+            assert_eq!(keys, s, "keys out of order");
+        }
+        let geo = Geo::compiled().unwrap();
+        let (city, state) = geo.title_place("sn84024055").unwrap();
+        assert_eq!((city, state.code), ("Chicago", "IL"));
+        let bad = |json: &str| {
+            let t: Vec<TitlePlace> = serde_json::from_str(json).unwrap();
+            Geo::default().with_title_places(&t).is_err()
+        };
+        assert!(bad(r#"[{"city": "X", "lccn": "sn1", "state": "XX"}]"#));
+        assert!(bad(r#"[{"city": "X", "lccn": "BAD/1", "state": "IL"}]"#));
+        assert!(bad(
+            r#"[{"city": "X", "lccn": "sn1", "state": "IL"}, {"city": "Y", "lccn": "sn1", "state": "IL"}]"#
+        ));
     }
 
     #[test]

@@ -24,8 +24,10 @@ name, with a header row:
 - A name with another in parentheses ("San Buenaventura (Ventura)") is
   listed under both, the second only where the state has no place of that
   name already.
-- When a state has two places with the same name (a city and a CDP, say),
-  an incorporated place wins over a CDP, then the larger land area.
+- Every place is listed, so a name a state has twice (a city and a CDP,
+  or two villages) has two rows: `geocode` treats such a name as
+  ambiguous. Rows of one name are in order of preference: an incorporated
+  place before a CDP, then the larger land area.
 - Coordinates are rounded to 5 decimals (about a metre).
 
 Run it again for a newer year and commit the CSV; nothing else changes.
@@ -109,7 +111,7 @@ def main():
         text = z.read(member).decode("utf-8")
     first = text.splitlines()[0]
     delimiter = "|" if "|" in first else "\t"
-    best = {}
+    rows = {}
     for row in csv.DictReader(io.StringIO(text), delimiter=delimiter):
         row = {k.strip(): v.strip() for k, v in row.items()}
         state = row["USPS"]
@@ -119,29 +121,28 @@ def main():
         rank = (row["LSAD"] != "57", int(row["ALAND"] or 0))
         lat = round(float(row["INTPTLAT"]), 5)
         lon = round(float(row["INTPTLONG"]), 5)
-        names = [name]
+        names = [(name, rank)]
         if name.endswith(")") and " (" in name:
             main, alt = name[:-1].split(" (", 1)
-            names = [main, alt]
             # An alternative name ranks below any place called that.
-            alt_rank = (False, -1)
-        for i, n in enumerate(names):
+            names = [(main, rank), (alt, (False, -1))]
+        for n, r in names:
             if "," in n or '"' in n:
                 sys.exit(f"{state} {n!r}: a comma or quote in a name; add it to SPECIAL")
-            r = rank if i == 0 else alt_rank
-            key = (state, n)
-            if key not in best or r > best[key][0]:
-                best[key] = (r, lat, lon)
+            key = (state, n, lat, lon)
+            if key not in rows or r > rows[key]:
+                rows[key] = r
 
+    # By state and name, then the preferred place of a name first.
+    ordered = sorted(rows.items(), key=lambda kv: (kv[0][0], kv[0][1], (not kv[1][0], -kv[1][1])))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f, lineterminator="\n")
         w.writerow(["state", "name", "lat", "lon"])
-        for (state, name), (_, lat, lon) in sorted(best.items()):
+        for (state, name, lat, lon), _ in ordered:
             w.writerow([state, name, f"{lat:.5f}", f"{lon:.5f}"])
-    print(f"{out}: {len(best)} places", file=sys.stderr)
-
+    print(f"{out}: {len(rows)} rows", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

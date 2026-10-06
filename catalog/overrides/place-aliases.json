@@ -2,6 +2,7 @@
   {"from": "Chilkoot Barracks", "note": "the same Army post at Haines, called Chilkoot Barracks from 1922", "state": "AK", "to": "Fort William H. Seward"},
   {"from": "Fort Seward", "note": "short name of the same post", "state": "AK", "to": "Fort William H. Seward"},
   {"from": "Skaguay", "note": "old spelling", "state": "AK", "to": "Skagway"},
+  {"from": "St. Charles", "note": "the St. Charles Republican Intelligencer (sn88059487) is the same paper as the St. Charles City Republican Intelligencer (sn82014141)", "state": "IA", "to": "Charles City"},
   {"from": "St. Charles City", "note": "old name of Charles City", "state": "IA", "to": "Charles City"},
   {"from": "Bannock City", "note": "old name, until 1863", "state": "ID", "to": "Idaho City"},
   {"from": "Middlesboro", "note": "spelling: the Census Bureau's name for the city is Middlesborough", "state": "KY", "to": "Middlesborough"},

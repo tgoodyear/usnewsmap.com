@@ -26,6 +26,7 @@ alphabetical order:
 
 Current entries:
 
+- **Anacostia, DC:** for The Weekly News (`sn82016441`). Anacostia is a part of Washington, so the gazetteer has no point for it; it stays its own place, at Anacostia rather than central Washington.
 - **Vancouver, WA:** for The Vancouver Independent (pages `sn87093109`, record `sn84022797`, #120). Neither of its LoC records has coordinates, so without this it would sit at Washington's centroid. The coordinates are the city's, from public gazetteers, not from LoC.
 
 ## Place aliases
@@ -50,6 +51,18 @@ first.
 The gazetteer `geocode` uses is `../gazetteer/us-places.csv`, built by
 `scripts/build-gazetteer.py` from the Census Bureau's national places
 file (public domain).
+
+## Title places
+
+`title-places.json` places a title whose LoC record lists several places
+(a paper that moved) in one city and state, whatever its record says.
+Entries are sorted by `lccn`, with keys in alphabetical order:
+
+```json
+[
+  { "city": "Chicago", "lccn": "sn84024055", "note": "Why.", "state": "IL" }
+]
+```
 
 ## Title overrides
 

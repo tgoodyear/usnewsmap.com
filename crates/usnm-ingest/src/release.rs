@@ -6,10 +6,10 @@
 //!   new delta index; the version lists base + deltas + the new delta.
 //! - **Full** (compaction): every curated batch goes into a new base index.
 //!   Also forced when there is no published version or it already has 8
-//!   deltas, or when the catalog puts a published title in another place
-//!   (04 §4.6). Replacements (new batch versions) and other catalog changes
-//!   to published titles take effect only here (04 §4.7); a published
-//!   place's corrected name or point rides the next delta.
+//!   deltas. Replacements (new batch versions) and catalog changes to
+//!   published titles, a move to another place included, take effect only
+//!   here (04 §4.7); a published place's corrected name or point rides the
+//!   next delta (04 §4.6).
 //!
 //! A Quickwit index is merged into a few large splits and closed before it
 //! is published (`crate::merges`); the version's manifest records the
@@ -327,41 +327,12 @@ impl Release {
                 "common-word pairs changed; building a full base"
             );
         }
-        let forced = self.full
+        let full = self.full
             || switching
             || regramming
             || previous
                 .as_ref()
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
-        // Published titles the catalog now puts in another place (a merge,
-        // an alias, 04 §4.6): a delta keeps their pages where they were
-        // published, so the old and new places would both show the city.
-        // Rebuild in full, unless titles-sync left titles unfetched (a full
-        // release would leave their batches out): then the delta goes ahead
-        // and the move waits for the next full release.
-        let published_catalog = match &previous {
-            Some(prev) if !forced => Some(self.load_snapshot_catalog(&prev.index_version).await?),
-            _ => None,
-        };
-        let regrouped = published_catalog
-            .as_ref()
-            .map(|published| Catalog::regrouped(published, &current))
-            .unwrap_or_default();
-        let regrouping = !regrouped.is_empty() && self.titles_left.is_none();
-        if regrouping {
-            tracing::info!(
-                titles = regrouped.len(),
-                first = ?regrouped.iter().take(10).collect::<Vec<_>>(),
-                "published titles moved to another place; building a full base"
-            );
-        } else if !regrouped.is_empty() {
-            tracing::warn!(
-                titles = regrouped.len(),
-                "published titles moved to another place, but titles-sync left titles unfetched; \
-                 they move at the next full release"
-            );
-        }
-        let full = forced || regrouping;
         if let Some(why) = &self.titles_left {
             if full {
                 return Err(TitlesLeft(format!(
@@ -405,10 +376,21 @@ impl Release {
                     Some(_) => {}
                 }
             }
-            let published_catalog = match published_catalog {
-                Some(c) => c,
-                None => self.load_snapshot_catalog(&prev.index_version).await?,
-            };
+            let published_catalog = self.load_snapshot_catalog(&prev.index_version).await?;
+            // Published titles the catalog now puts in another place (a
+            // merge, an alias, 04 §4.6) stay where they were published: a
+            // full release on the E4 profile moves them, since one on the
+            // Consumption profile runs out of memory (#172).
+            let moved = Catalog::regrouped(&published_catalog, &current);
+            if !moved.is_empty() {
+                let n = moved.len();
+                tracing::warn!(
+                    titles = n,
+                    first = ?moved.iter().take(10).collect::<Vec<_>>(),
+                    "{n} published titles' place changes wait for the next full release \
+                     (USNM_INGEST_FULL, run on the E4 profile: docs/operations.md, Full rebuild)"
+                );
+            }
             let catalog = Catalog::carried_forward(&published_catalog, &current)?;
             let new = catalogued(new, &catalog);
             nothing_new = new.is_empty();
