@@ -110,6 +110,20 @@ var scratchDir = '/scratch/usnm'
 // memory at 7.5 GiB (#172).
 var consumptionResources = scratch ? { cpu: json('3.75'), memory: '7.5Gi' } : { cpu: json('4.0'), memory: '8Gi' }
 var ingestResources = empty(ingestProfile) ? consumptionResources : { cpu: json('3.0'), memory: '25Gi' }
+// The writer's tuning on the E4 profile (#172, crates/usnm-ingest/src/sink.rs
+// `WriterTuning`): a 6 GiB indexing heap holds a whole 60,000-page split
+// (about 2.4 GB of index), and a 600 s commit timeout outlasts indexing one,
+// so the indexer writes splits at the target size and merges little; the
+// ingest queue gets 4 GiB. About 16 to 18 GiB at most with an upload and a
+// merge, of the container's 25 GiB. Unset on Consumption: the template's
+// 1 GiB and 30 s, and a 1 GiB queue.
+var writerTuningEnv = empty(ingestProfile)
+  ? []
+  : [
+      { name: 'USNM_WRITER_HEAP', value: '6GiB' }
+      { name: 'USNM_WRITER_COMMIT_SECS', value: '600' }
+      { name: 'USNM_WRITER_QUEUE', value: '4GiB' }
+    ]
 var scratchEnv = scratch
   ? [
       { name: 'USNM_WORK_DIR', value: scratchDir }
@@ -184,7 +198,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             full ? ['--full'] : []
           )
           resources: ingestResources
-          env: concat(env, scratchEnv, [
+          env: concat(env, scratchEnv, writerTuningEnv, [
             { name: 'QW_AZURE_STORAGE_ACCOUNT', value: storageAccountName }
             { name: 'USNM_MERGE_TIMEOUT_SECS', value: string(mergeTimeoutSecs) }
           ])
