@@ -470,6 +470,7 @@ impl Release {
             main_index: !overlay_only,
             ja_index: overlay.pages.iter().any(|p| p.indexable()),
             engine: sink.engine().await,
+            writer: crate::sink::WriterTuning::from_env()?,
         };
         let mut run = IndexRun {
             id: version.clone(),

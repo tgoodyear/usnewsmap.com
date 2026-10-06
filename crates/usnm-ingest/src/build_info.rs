@@ -29,16 +29,25 @@ pub struct Built {
     pub ja_index: bool,
     /// The engine, from the sink (`IndexSink::engine`).
     pub engine: Option<String>,
+    /// The writer's tuning for this run (#172): its main index template is
+    /// the tuned one, and the record says so.
+    pub writer: crate::sink::WriterTuning,
 }
 
 /// The index templates the run applies, by name.
-fn templates(b: &Built) -> Vec<(&'static str, &'static str)> {
+fn templates(b: &Built) -> Vec<(&'static str, String)> {
     let mut t = Vec::new();
     if b.main_index {
-        t.push(("pages", crate::sink::INDEX_TEMPLATE));
+        // As the writer applies it: the run's tuning in place of the
+        // template's heap and commit timeout.
+        let pages = b
+            .writer
+            .apply(crate::sink::INDEX_TEMPLATE)
+            .unwrap_or_else(|_| crate::sink::INDEX_TEMPLATE.to_owned());
+        t.push(("pages", pages));
     }
     if b.ja_index {
-        t.push(("pages-ja", crate::ocr_ja::JA_TEMPLATE));
+        t.push(("pages-ja", crate::ocr_ja::JA_TEMPLATE.to_owned()));
     }
     t
 }
@@ -58,6 +67,14 @@ pub fn summary(b: &Built) -> Value {
     for (name, yaml) in templates(b) {
         templates_v[name] = json!({ "sha256": hex(&Sha256::digest(yaml.as_bytes())) });
     }
+    // What the writer was given (#172). The queue is the node's; the heap
+    // and commit timeout are only the main index's (the Japanese template
+    // keeps its own), so an overlay-only run doesn't record them.
+    let mut writer = json!({ "queue": b.writer.queue });
+    if b.main_index {
+        writer["heap"] = Value::from(b.writer.heap.clone());
+        writer["commit_timeout_secs"] = Value::from(b.writer.commit_timeout_secs);
+    }
     json!({
         "commit": std::env::var(COMMIT_ENV).ok().filter(|s| !s.is_empty()),
         "ingest": env!("CARGO_PKG_VERSION"),
@@ -68,6 +85,7 @@ pub fn summary(b: &Built) -> Value {
             "ja_fold": usnm_core::ja::FOLD_VERSION,
         },
         "templates": templates_v,
+        "writer": writer,
     })
 }
 
@@ -81,7 +99,39 @@ mod tests {
             main_index,
             ja_index,
             engine: Some("Quickwit 0.9.1".into()),
+            writer: crate::sink::WriterTuning::default(),
         }
+    }
+
+    #[test]
+    fn records_the_tuned_template_and_the_tuning() {
+        let mut b = built(true, false);
+        b.writer = crate::sink::WriterTuning {
+            heap: "6GiB".into(),
+            commit_timeout_secs: 600,
+            queue: "4GiB".into(),
+        };
+        let v = record(&b);
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("heap_size: 6GiB") && yaml.contains("commit_timeout_secs: 600"));
+        assert_ne!(
+            v["templates"]["pages"]["sha256"],
+            record(&built(true, false))["templates"]["pages"]["sha256"]
+        );
+        assert_eq!(v["writer"]["heap"], "6GiB");
+        assert_eq!(v["writer"]["commit_timeout_secs"], 600);
+    }
+
+    #[test]
+    fn an_overlay_only_run_records_only_the_queue() {
+        let mut b = built(false, true);
+        b.writer = crate::sink::WriterTuning {
+            heap: "6GiB".into(),
+            commit_timeout_secs: 600,
+            queue: "4GiB".into(),
+        };
+        let v = summary(&b);
+        assert_eq!(v["writer"], json!({ "queue": "4GiB" }));
     }
 
     #[test]
