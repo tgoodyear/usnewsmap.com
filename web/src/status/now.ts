@@ -542,9 +542,22 @@ export function ocrAudit(s: Status, now: number): AuditLine | null {
   const progress = total > 0 ? { done, total, label: `${count(done)} of ${count(total)} batches checked` } : undefined;
   if (q.finished_at && q.summary) {
     const a = q.summary.agreement;
+    const text = `Checked ${count(q.pages_sampled)} pages, a ${q.sample_pct}% sample of every batch, on ${localDate(q.finished_at)}.`;
+    // Each share is null when no page of its kind had text: leave its clause out.
+    if (a.differs_share === null) return { text };
+    const multi =
+      a.multilingual_differs_share === null
+        ? ""
+        : ` (${share(a.multilingual_differs_share)} for newspapers whose record lists more than one)`;
+    const parts = [
+      a.mixed_share === null ? null : `${share(a.mixed_share)} that mix two languages`,
+      a.und_share === null
+        ? null
+        : `${share(a.und_share)} we could not place: too short, too garbled, or in a language we have no word list for`,
+    ].filter((p): p is string => p !== null);
     return {
-      text: `Checked ${count(q.pages_sampled)} pages, a ${q.sample_pct}% sample of every batch, on ${localDate(q.finished_at)}.`,
-      agreement: `On ${share(a.differs_share)} of pages with text, the language we detected is not the first language in the newspaper's catalog record (${share(a.multilingual_differs_share)} for newspapers whose record lists more than one). That includes ${share(a.mixed_share)} that mix two languages and ${share(a.und_share)} we could not place: too short, too garbled, or in a language we have no word list for.`,
+      text,
+      agreement: `On ${share(a.differs_share)} of pages with text, the language we detected is not the first language in the newspaper's catalog record${multi}.${parts.length ? ` That includes ${parts.join(" and ")}.` : ""}`,
     };
   }
   if (q.running) {

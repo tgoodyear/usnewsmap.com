@@ -721,6 +721,26 @@ describe("ocrAudit", () => {
   });
 });
 
+describe("ocrAudit without data", () => {
+  it("leaves out the clauses whose shares are null", () => {
+    const s = status({});
+    const summary = {
+      agreement: { differs_share: 0.02, mixed_share: null, multilingual_differs_share: null, und_share: 0.01 },
+      languages: [],
+    };
+    s.ocr_quality = ocrQuality({ running: false, finished_at: "2026-10-02T15:00:00Z", summary });
+    expect(ocrAudit(s, NOW)!.agreement).toBe(
+      "On 2.0% of pages with text, the language we detected is not the first language in the newspaper's catalog record. That includes 1.0% we could not place: too short, too garbled, or in a language we have no word list for.",
+    );
+    s.ocr_quality = ocrQuality({
+      running: false,
+      finished_at: "2026-10-02T15:00:00Z",
+      summary: { agreement: { differs_share: null, mixed_share: null, multilingual_differs_share: null, und_share: null }, languages: [] },
+    });
+    expect(ocrAudit(s, NOW)!.agreement).toBeUndefined();
+  });
+});
+
 describe("auditRate", () => {
   it("never shows an observed rate as zero", () => {
     expect([auditRate(null), auditRate(0), auditRate(0.0004), auditRate(0.001), auditRate(0.0423)]).toEqual([
