@@ -391,6 +391,41 @@ export interface OcrJa {
   eta: string | null;
 }
 
+/** The OCR quality audit (`jaocr.py quality`): progress, then a summary. */
+export interface OcrQuality {
+  /** Unfinished and reported recently. */
+  running: boolean;
+  /** Unfinished and silent for longer than a run reports. */
+  stopped: boolean;
+  metric: string;
+  /** The published version it sampled. */
+  version: string;
+  sample_pct: number;
+  batches: { done: number; total: number };
+  /** Of the batches, to one decimal, never rounded up to 100. */
+  percent: number;
+  pages_sampled: number;
+  started_at: string;
+  updated_at: string;
+  finished_at: string | null;
+  /** Only once finished. */
+  summary: {
+    agreement: {
+      differs_share: number;
+      mixed_share: number;
+      multilingual_differs_share: number;
+      und_share: number;
+    };
+    languages: {
+      language: string;
+      pages: number;
+      function_share_median: number | null;
+      damage_rate_median: number | null;
+      damaged_share: number | null;
+    }[];
+  } | null;
+}
+
 export interface Status {
   schema: number;
   generated_at: string;
@@ -427,6 +462,8 @@ export interface Status {
   indexing: Section<Indexing>;
   /** The Japanese OCR job's progress. Absent from older APIs. */
   ocr_ja?: Section<OcrJa>;
+  /** The OCR quality audit. Absent from older APIs. */
+  ocr_quality?: Section<OcrQuality>;
   titles: {
     catalog: Section<{ titles: number; places: number }>;
     published_titles: number;

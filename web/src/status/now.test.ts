@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Activity, IndexRun, OcrJa, Status } from "../api/types";
+import type { Activity, IndexRun, OcrJa, OcrQuality, Status } from "../api/types";
 import {
   big,
   headline,
@@ -7,6 +7,7 @@ import {
   localDate,
   localTime,
   longDate,
+  ocrAudit,
   ocrExperiment,
   pct,
   rightNow,
@@ -658,5 +659,63 @@ describe("headline", () => {
     const s = status({});
     s.backfill = { available: false, reason: "none" };
     expect(headline(s).text).toBe("Searchable now: 6,557,925 pages");
+  });
+});
+
+function ocrQuality(o: Partial<OcrQuality>): Status["ocr_quality"] {
+  return {
+    available: true,
+    running: true,
+    stopped: false,
+    metric: "v2",
+    version: "pages-v20261003-1",
+    sample_pct: 2,
+    batches: { done: 1200, total: 2989 },
+    percent: 40.1,
+    pages_sampled: 190_000,
+    started_at: ago(40),
+    updated_at: ago(1),
+    finished_at: null,
+    summary: null,
+    ...o,
+  };
+}
+
+describe("ocrAudit", () => {
+  it("says nothing before the audit has run", () => {
+    expect(ocrAudit(status({}), NOW)).toBeNull();
+  });
+
+  it("shows progress while it runs, and where it stopped", () => {
+    const s = status({});
+    s.ocr_quality = ocrQuality({});
+    expect(ocrAudit(s, NOW)).toEqual({
+      text: "Checking a 2% sample of pages: 1,200 of 2,989 batches (40%), 190,000 pages so far.",
+      progress: { done: 1200, total: 2989, label: "1,200 of 2,989 batches checked" },
+    });
+    s.ocr_quality = ocrQuality({ running: false, stopped: true, updated_at: ago(120) });
+    expect(ocrAudit(s, NOW)!.text).toBe("The audit stopped at 1,200 of 2,989 batches. It last reported 2 h ago.");
+  });
+
+  it("summarizes a finished run", () => {
+    const s = status({});
+    s.ocr_quality = ocrQuality({
+      running: false,
+      batches: { done: 2989, total: 2989 },
+      percent: 100,
+      pages_sampled: 474_541,
+      finished_at: "2026-10-02T15:00:00Z",
+      summary: {
+        agreement: { differs_share: 0.031, mixed_share: 0.004, multilingual_differs_share: 0.41, und_share: 0.0004 },
+        languages: [
+          { language: "eng", pages: 430_000, function_share_median: 0.46, damage_rate_median: 0.02, damaged_share: 0.04 },
+        ],
+      },
+    });
+    expect(ocrAudit(s, NOW)).toEqual({
+      text: `Checked 474,541 pages, a 2% sample of every batch, on ${localDate("2026-10-02T15:00:00Z")}.`,
+      agreement:
+        "On 3.1% of pages the language differs from the newspaper's first listed language (41.0% for newspapers that list more than one). 0.4% mix two languages, and under 0.1% were too short or garbled to tell.",
+    });
   });
 });
