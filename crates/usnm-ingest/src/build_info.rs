@@ -29,16 +29,25 @@ pub struct Built {
     pub ja_index: bool,
     /// The engine, from the sink (`IndexSink::engine`).
     pub engine: Option<String>,
+    /// The writer's tuning for this run (#172): its main index template is
+    /// the tuned one, and the record says so.
+    pub writer: crate::sink::WriterTuning,
 }
 
 /// The index templates the run applies, by name.
-fn templates(b: &Built) -> Vec<(&'static str, &'static str)> {
+fn templates(b: &Built) -> Vec<(&'static str, String)> {
     let mut t = Vec::new();
     if b.main_index {
-        t.push(("pages", crate::sink::INDEX_TEMPLATE));
+        // As the writer applies it: the run's tuning in place of the
+        // template's heap and commit timeout.
+        let pages = b
+            .writer
+            .apply(crate::sink::INDEX_TEMPLATE)
+            .unwrap_or_else(|_| crate::sink::INDEX_TEMPLATE.to_owned());
+        t.push(("pages", pages));
     }
     if b.ja_index {
-        t.push(("pages-ja", crate::ocr_ja::JA_TEMPLATE));
+        t.push(("pages-ja", crate::ocr_ja::JA_TEMPLATE.to_owned()));
     }
     t
 }
@@ -68,6 +77,12 @@ pub fn summary(b: &Built) -> Value {
             "ja_fold": usnm_core::ja::FOLD_VERSION,
         },
         "templates": templates_v,
+        // What the writer was given (#172); the main template above has it.
+        "writer": {
+            "heap": b.writer.heap,
+            "commit_timeout_secs": b.writer.commit_timeout_secs,
+            "queue": b.writer.queue,
+        },
     })
 }
 
@@ -81,7 +96,27 @@ mod tests {
             main_index,
             ja_index,
             engine: Some("Quickwit 0.9.1".into()),
+            writer: crate::sink::WriterTuning::default(),
         }
+    }
+
+    #[test]
+    fn records_the_tuned_template_and_the_tuning() {
+        let mut b = built(true, false);
+        b.writer = crate::sink::WriterTuning {
+            heap: "6GiB".into(),
+            commit_timeout_secs: 600,
+            queue: "4GiB".into(),
+        };
+        let v = record(&b);
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("heap_size: 6GiB") && yaml.contains("commit_timeout_secs: 600"));
+        assert_ne!(
+            v["templates"]["pages"]["sha256"],
+            record(&built(true, false))["templates"]["pages"]["sha256"]
+        );
+        assert_eq!(v["writer"]["heap"], "6GiB");
+        assert_eq!(v["writer"]["commit_timeout_secs"], 600);
     }
 
     #[test]

@@ -72,21 +72,20 @@ impl WriterTuning {
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let d = WriterTuning::default();
+        // A whole number of MiB or GiB above zero, with exactly one unit.
         let size = |key: &str, default: String| -> anyhow::Result<String> {
-            match get(key) {
-                None => Ok(default),
-                Some(v) => {
-                    let digits = v.trim_end_matches("MiB").trim_end_matches("GiB");
-                    if (v.ends_with("MiB") || v.ends_with("GiB"))
-                        && !digits.is_empty()
-                        && digits.bytes().all(|b| b.is_ascii_digit())
-                        && digits != "0"
-                    {
-                        Ok(v)
-                    } else {
-                        bail!("{key} must be a size like 6GiB or 512MiB, not `{v}`")
-                    }
+            let Some(v) = get(key) else {
+                return Ok(default);
+            };
+            let amount = v.strip_suffix("GiB").or_else(|| v.strip_suffix("MiB"));
+            match amount {
+                Some(n)
+                    if n.bytes().all(|b| b.is_ascii_digit())
+                        && n.parse::<u64>().is_ok_and(|n| n > 0) =>
+                {
+                    Ok(v)
                 }
+                _ => bail!("{key} must be a size like 6GiB or 512MiB, not `{v}`"),
             }
         };
         let commit_timeout_secs = match get("USNM_WRITER_COMMIT_SECS") {
@@ -103,20 +102,40 @@ impl WriterTuning {
         })
     }
 
-    /// `template` with this run's heap and commit timeout. Both lines must be
-    /// there, so a template change can't silently drop the tuning.
+    /// `template` with this run's heap and commit timeout. Each must be an
+    /// active setting line (not a comment) and there must be exactly one of
+    /// each, so a template change can't silently drop the tuning.
     pub fn apply(&self, template: &str) -> anyhow::Result<String> {
-        if !template.contains(TEMPLATE_HEAP) || !template.contains(TEMPLATE_COMMIT) {
+        let mut found = (0, 0);
+        let lines: Vec<String> = template
+            .lines()
+            .map(|line| {
+                let indent = &line[..line.len() - line.trim_start().len()];
+                match line.trim() {
+                    TEMPLATE_HEAP => {
+                        found.0 += 1;
+                        format!("{indent}heap_size: {}", self.heap)
+                    }
+                    TEMPLATE_COMMIT => {
+                        found.1 += 1;
+                        format!("{indent}commit_timeout_secs: {}", self.commit_timeout_secs)
+                    }
+                    _ => line.to_owned(),
+                }
+            })
+            .collect();
+        if found != (1, 1) {
             bail!(
-                "the index template has no `{TEMPLATE_HEAP}` or `{TEMPLATE_COMMIT}` line to tune"
+                "the index template needs exactly one `{TEMPLATE_HEAP}` and one `{TEMPLATE_COMMIT}` setting to tune, not {} and {}",
+                found.0,
+                found.1
             );
         }
-        Ok(template
-            .replace(TEMPLATE_HEAP, &format!("heap_size: {}", self.heap))
-            .replace(
-                TEMPLATE_COMMIT,
-                &format!("commit_timeout_secs: {}", self.commit_timeout_secs),
-            ))
+        let mut out = lines.join("\n");
+        if template.ends_with('\n') {
+            out.push('\n');
+        }
+        Ok(out)
     }
 }
 /// The writer's local cache of uploaded splits (Quickwit's default is 100 GiB).
@@ -1238,6 +1257,11 @@ mod tests {
             ("USNM_WRITER_HEAP", "6"),
             ("USNM_WRITER_HEAP", "6GB"),
             ("USNM_WRITER_HEAP", "0GiB"),
+            ("USNM_WRITER_HEAP", "00GiB"),
+            ("USNM_WRITER_HEAP", "6GiBGiB"),
+            ("USNM_WRITER_HEAP", "6GiBMiB"),
+            ("USNM_WRITER_HEAP", "GiB"),
+            ("USNM_WRITER_HEAP", "-6GiB"),
             ("USNM_WRITER_QUEUE", "lots"),
             ("USNM_WRITER_COMMIT_SECS", "0"),
             ("USNM_WRITER_COMMIT_SECS", "7200"),
@@ -1247,6 +1271,11 @@ mod tests {
             assert!(got.is_err(), "{k}={v}");
         }
         assert!(WriterTuning::default().apply("version: 0.9").is_err());
+        // A commented-out setting doesn't count, and neither do two.
+        let commented = INDEX_TEMPLATE.replace("heap_size: 1GiB", "# heap_size: 1GiB");
+        assert!(WriterTuning::default().apply(&commented).is_err());
+        let twice = format!("{INDEX_TEMPLATE}\n  commit_timeout_secs: 30\n");
+        assert!(WriterTuning::default().apply(&twice).is_err());
     }
 
     /// A fake ingest endpoint that answers with `statuses` in turn (then 200)
