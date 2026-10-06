@@ -54,7 +54,7 @@ Poll LoC weekly for new batches: `scripts/settings.sh <env> USNM_INGEST_CRON "17
 
 ## Check a release's splits
 
-Before it publishes, a release waits for the writer's merges: `release merges` lines (every 30 s: step `settle` then `finalize`, splits, merges running and queued, free disk), then `merges settled; closing the index for its final merges`, then `merged; the index is closed to further writes` with the new index's split count. It then logs one `index layout` line per index of the new version and records the same under `indexes` in `reference/<version>/manifest.json`. `scripts/logs.sh prod index-layout 2d` lists them. A merged index has at most `pages / 60,000` (rounded down) `+ 7` splits (`split_num_docs_target` in `infra/quickwit/pages-index.yaml`); the release fails rather than publish more, or if merges don't finish within `USNM_MERGE_TIMEOUT_SECS` (default 14400, 4 hours; a setting, `scripts/settings.sh <env> USNM_MERGE_TIMEOUT_SECS <secs>` then `scripts/provision.sh <env>`, budgeted under the job's 24-hour limit in `infra/modules/ingestjobs.bicep`), or if the writer reports a full disk or a failed merge, or exits. A writer the kernel killed for memory shows as `the Quickwit writer was killed by signal 9 (SIGKILL): it ran out of memory (…)` in the `command failed` line; `quickwit_rss_mb` in `release progress` is its memory (08 §8.4).
+Before it publishes, a release waits for the writer's merges: `release merges` lines (every 30 s: step `settle` then `finalize`, splits, merges running and queued, free disk), then `merges settled; closing the index for its final merges`, then `merged; the index is closed to further writes` with the new index's split count. It then logs one `index layout` line per index of the new version and records the same under `indexes` in `reference/<version>/manifest.json`. `scripts/logs.sh prod index-layout 2d` lists them. A merged index has at most `pages / 60,000` (rounded down) `+ 7` splits (`split_num_docs_target` in `infra/quickwit/pages-index.yaml`); the release fails rather than publish more, or if merges don't finish within `USNM_MERGE_TIMEOUT_SECS` (default 14400, 4 hours; a setting, `scripts/settings.sh <env> USNM_MERGE_TIMEOUT_SECS <secs>` then `scripts/provision.sh <env>`, budgeted under the ingest job's 48-hour replica timeout (the backfill and Japanese OCR jobs keep 24 hours) in `infra/modules/ingestjobs.bicep`), or if the writer reports a full disk or a failed merge, or exits. A writer the kernel killed for memory shows as `the Quickwit writer was killed by signal 9 (SIGKILL): it ran out of memory (…)` in the `command failed` line; `quickwit_rss_mb` in `release progress` is its memory (08 §8.4).
 
 ## Full rebuild
 
@@ -65,6 +65,8 @@ RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
 JOB=$(scripts/settings.sh prod INGEST_JOB)
 scripts/settings.sh prod USNM_INGEST_FULL true
 scripts/settings.sh prod USNM_MERGE_TIMEOUT_SECS 14400   # the default; set it only to change it
+scripts/settings.sh prod USNM_DEDICATED_PROFILE true     # the E4 profile (#172)
+scripts/settings.sh prod USNM_INGEST_ON_DEDICATED true   # and the ingest job on it
 scripts/provision.sh prod
 curl -s https://api.usnewsmap.com/v1/status | jq .titles.pipeline   # awaiting_sync: titles to fetch first
 az containerapp job start -n "$JOB" -g "$RG"
@@ -78,18 +80,23 @@ az containerapp job execution list -n "$JOB" -g "$RG" -o table
 ```
 
 - `title records` lines every 100 titles, and a `title records` report at the end (`left: 0` and no `throttled` or `out_of_time` when done).
-- `release progress` every 30 s: about 750 pages a second before the common-word pairs (#154), so 23.8M pages took about 9 h; the pairs make each page's index about 1.6× larger, so expect longer. `quickwit_rss_mb` should stay under about 5,500 (the ingest container has 7,680 MiB).
+- `release progress` every 30 s: about 750 pages a second before the common-word pairs (#154), so 23.8M pages took about 9 h; with the pairs (each page's index about 1.6× larger) the 2026-10-05 rebuild sent 230 to 460 pages a second, about 15 to 29 h for 23.7M pages (#172). `quickwit_rss_mb` should stay under about 5,500 on the Consumption profile (7,680 MiB container), or about 20,000 on the E4 profile (25 GiB).
 - `release merges`: step `settle`, then `finalize`; `splits` falls by 9 every minute or two after ingest ends. About 1.7 h for 23.8M pages in October 2026; with the 60,000-page splits and the common-word pairs, expect about 2.7 h (#156), and at most `USNM_MERGE_TIMEOUT_SECS`.
-- `merged; the index is closed to further writes`, `index layout` (about 400 splits for 23.8M pages at the 60,000-page target) and `released`. About 11 h from the start when the catalog was complete, in the October 2026 rebuild before #154; with the pairs, expect about 18–21 h (#156), and at most about 22 h 45 min.
+- `merged; the index is closed to further writes`, `index layout` (about 400 splits for 23.8M pages at the 60,000-page target) and `released`. About 11 h from the start when the catalog was complete, in the October 2026 rebuild before #154. With the pairs, the 2026-10-05 rebuild sent only 230 to 460 pages a second, so plan for up to about 29 h of sending and about 41 h in all (up to 8 h of titles-sync, sending, up to 4 h of merges), inside the ingest job's 48 h replica timeout (#172, #173).
 
-Then turn the full rebuild off:
+Then turn the full rebuild off, and the E4 profile with it, in two provisions: the job has to leave the profile before the profile can go.
 
 ```sh
 scripts/settings.sh prod USNM_INGEST_FULL ""
+scripts/settings.sh prod USNM_INGEST_ON_DEDICATED ""
+scripts/provision.sh prod
+scripts/settings.sh prod USNM_DEDICATED_PROFILE ""
 scripts/provision.sh prod
 ```
 
-Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would rebuild the whole corpus. Benchmark afterwards with `scripts/bench-cold-searches.py`.
+Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would rebuild the whole corpus. Don't leave `USNM_DEDICATED_PROFILE` set either: while the environment has the E4 profile it pays the Dedicated plan management fee every hour (about $0.10 an hour in East US 2 in October 2026), whether or not a node runs. An E4 node itself (4 vCPU, 32 GiB) costs about $0.39 an hour while the job runs.
+
+**Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why the ingest job's replica timeout is 48 h (#173). Benchmark afterwards with `scripts/bench-cold-searches.py`.
 
 ## Search log
 

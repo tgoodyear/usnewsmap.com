@@ -54,6 +54,12 @@ param backfillWorkers int = 4
 @description('Make every ingest run a full release (a new, merged base). For a one-off rebuild; clear it afterwards.')
 param ingestFull bool = false
 
+@description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations.md, "Full rebuild").')
+param dedicatedProfile bool = false
+
+@description('Run the ingest job on the E4 profile (needs dedicatedProfile). Turn this off and provision before turning dedicatedProfile off: a profile in use can\'t be removed.')
+param ingestOnDedicated bool = false
+
 @description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
 param backfillCron string = ''
 
@@ -290,6 +296,7 @@ module containerEnv 'modules/containerapps-env.bicep' = {
     tags: tags
     name: 'cae-usnm-${env}'
     subnetId: network.outputs.caeSubnetId
+    dedicatedProfile: dedicatedProfile
   }
 }
 
@@ -392,6 +399,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''
     scratchGiB: ingestScratch ? ingestScratchGiB : 0
     mergeTimeoutSecs: ingestMergeTimeoutSecs
+    ingestProfile: ingestOnDedicated ? containerEnv.outputs.dedicatedProfileName : ''
     jaOcrImage: jaOcrJob ? '${registry.outputs.loginServer}/usnewsmap-ja-ocr:${imageTag}' : ''
     jaOcrReplicas: jaOcrReplicas
     rootImage: '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
