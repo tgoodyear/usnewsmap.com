@@ -48,7 +48,7 @@ cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost
 | `scripts/` | Stand an environment up, deploy and tear it down; read its logs; local Azure stand-ins; load tests |
 | `fixtures/` | A small synthetic corpus for development and tests ([README](fixtures/README.md)) |
 | `ops/` | Saved log queries and the history of published index versions |
-| `docs/` | Guides and the design documents ([index](docs/README.md)) |
+| `docs/` | Guides, the design documents and the technical notes ([index](docs/README.md)) |
 
 ## Documentation
 
@@ -57,6 +57,7 @@ cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost
 - [Operations](docs/operations.md): running the ingest pipeline in Azure.
 - [Infrastructure](infra/README.md): what the Bicep deploys and how to stand an environment up.
 - [Design documents](docs/design/README.md) and [architecture decision records](docs/design/adr/README.md): what was built and why.
+- [Technical notes](docs/notes/README.md): dated write-ups of work on the index, the OCR and the corpus's coverage, with the measurements behind each change.
 
 ## Contributing and security
 
