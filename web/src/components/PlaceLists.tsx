@@ -10,7 +10,7 @@ export interface ListRow {
   id: string;
   name: string;
   state: string;
-  /** Matching pages up to the current date. */
+  /** Matching pages in the playback window: up to the current date, or the trailing window ending there. */
   value: number;
   /** The median date's position, 0..1 across the search; NaN when none. */
   when?: number;
@@ -52,11 +52,17 @@ export function statePages(rows: ListRow[]): StateRow[] {
 export function medianExtremes<R extends ListRow>(rows: R[]): { earliest: R[]; latest: R[]; eligible: number } {
   const usable = rows.filter((r) => r.value >= MIN_MEDIAN_PAGES && r.when !== undefined && !Number.isNaN(r.when));
   const by = (dir: 1 | -1) => (a: R, b: R) => dir * (a.when! - b.when!) || b.value - a.value || a.name.localeCompare(b.name);
-  // With fewer than two lists' worth, split them so no place is in both.
+  // With fewer than two lists' worth, split them so no place is in both,
+  // even when places share a median.
   const n = Math.min(LIST_LENGTH, Math.ceil(usable.length / 2));
+  const earliest = [...usable].sort(by(1)).slice(0, n);
+  const taken = new Set(earliest.map((r) => r.id));
   return {
-    earliest: [...usable].sort(by(1)).slice(0, n),
-    latest: [...usable].sort(by(-1)).slice(0, Math.min(LIST_LENGTH, usable.length - n)),
+    earliest,
+    latest: usable
+      .filter((r) => !taken.has(r.id))
+      .sort(by(-1))
+      .slice(0, LIST_LENGTH),
     eligible: usable.length,
   };
 }
@@ -172,15 +178,25 @@ function PlaceButton({ row, onSelect }: { row: ListRow; onSelect: (id: string) =
   );
 }
 
+/** Where the counts come from: everything up to the scrubber's date, or a trailing window ending there. */
+const scope = (trailing: boolean) => (trailing ? "in the playback window" : "up to the current date");
+
+interface ListsProps {
+  rows: ListRow[];
+  onSelect: (id: string) => void;
+  /** A "Last N" window rather than everything up to the current date. */
+  trailing: boolean;
+}
+
 /** Pages: where the matching pages are, by place and by state. */
-export function PagesLists({ rows, onSelect }: { rows: ListRow[]; onSelect: (id: string) => void }) {
+export function PagesLists({ rows, onSelect, trailing }: ListsProps) {
   const total = rows.reduce((a, r) => a + Math.max(r.value, 0), 0);
   return (
     <ListsPanel title="Most pages" label="Places and states with the most pages">
       <List
         heading="Places"
         items={mostPages(rows)}
-        empty="No matching pages up to the current date."
+        empty={`No matching pages ${scope(trailing)}.`}
         render={(r) => (
           <li key={r.id}>
             <PlaceButton row={r} onSelect={onSelect} />{" "}
@@ -193,7 +209,7 @@ export function PagesLists({ rows, onSelect }: { rows: ListRow[]; onSelect: (id:
       <List
         heading="States"
         items={statePages(rows)}
-        empty="No matching pages up to the current date."
+        empty={`No matching pages ${scope(trailing)}.`}
         render={(s) => (
           <li key={s.state}>
             {s.state}{" "}
@@ -204,18 +220,18 @@ export function PagesLists({ rows, onSelect }: { rows: ListRow[]; onSelect: (id:
           </li>
         )}
       />
-      <p className="skew-list__note">Matching pages up to the current date; shares are of all of them.</p>
+      <p className="skew-list__note">Matching pages {scope(trailing)}; shares are of all of them.</p>
     </ListsPanel>
   );
 }
 
 /** Median date: the places whose matching pages fall earliest and latest. */
-export function WhenLists({ rows, onSelect }: { rows: ListRow[]; onSelect: (id: string) => void }) {
+export function WhenLists({ rows, onSelect, trailing }: ListsProps) {
   const { earliest, latest, eligible } = medianExtremes(rows);
   const empty =
     eligible === 1
-      ? `Only one place has ${MIN_MEDIAN_PAGES} or more matching pages up to the current date.`
-      : `No place has ${MIN_MEDIAN_PAGES} or more matching pages up to the current date.`;
+      ? `Only one place has ${MIN_MEDIAN_PAGES} or more matching pages ${scope(trailing)}.`
+      : `No place has ${MIN_MEDIAN_PAGES} or more matching pages ${scope(trailing)}.`;
   const item = (r: ListRow) => (
     <li key={r.id}>
       <PlaceButton row={r} onSelect={onSelect} />{" "}
@@ -229,7 +245,7 @@ export function WhenLists({ rows, onSelect }: { rows: ListRow[]; onSelect: (id: 
       <List heading="Earliest median date" items={earliest} empty={empty} render={item} />
       <List heading="Latest median date" items={latest} empty={empty} render={item} />
       <p className="skew-list__note">
-        A place&apos;s median date is when half of its matching pages up to the current date had been printed. Only
+        A place&apos;s median date is when half of its matching pages {scope(trailing)} had been printed. Only
         places with at least {MIN_MEDIAN_PAGES} matching pages are listed.
       </p>
     </ListsPanel>

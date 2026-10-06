@@ -361,8 +361,8 @@ export function App() {
   const sidePanel = !data ? null : (
     <>
       {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
-      {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} />}
-      {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} />}
+      {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} trailing={view.win !== null} />}
+      {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} trailing={view.win !== null} />}
       {view.place && (
         <PlacePanel
           params={params}

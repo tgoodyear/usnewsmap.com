@@ -44,10 +44,28 @@ describe("the lists", () => {
   });
 });
 
+describe("ties and windows", () => {
+  it("never lists a place in both lists, even when every median is the same", () => {
+    const same = ["A", "B", "C", "D", "E", "F"].map((id, i) => row(id, "IL", 10 + i, 0.5, "Jun 1896"));
+    const { earliest, latest } = medianExtremes(same);
+    expect(earliest).toHaveLength(3);
+    expect(latest).toHaveLength(3);
+    expect(earliest.filter((r) => latest.includes(r))).toEqual([]);
+  });
+
+  it("says when the counts are a trailing window", () => {
+    render(<PagesLists rows={[]} onSelect={() => {}} trailing={true} />);
+    expect(screen.getAllByText("No matching pages in the playback window.")).toHaveLength(2);
+    cleanup();
+    render(<WhenLists rows={ROWS} onSelect={() => {}} trailing={true} />);
+    expect(screen.getByText(/half of its matching pages in the playback window had been printed/)).toBeTruthy();
+  });
+});
+
 describe("PagesLists", () => {
   it("names each place's pages and share, and selects a place", () => {
     const onSelect = vi.fn();
-    render(<PagesLists rows={ROWS} onSelect={onSelect} />);
+    render(<PagesLists rows={ROWS} onSelect={onSelect} trailing={false} />);
     const panel = screen.getByRole("complementary", { name: "Places and states with the most pages" });
     expect(within(panel).getByRole("heading", { level: 2, name: "Most pages" })).toBeTruthy();
     expect(panel.textContent).toContain("500 pages (42.6%)");
@@ -59,17 +77,17 @@ describe("PagesLists", () => {
 
 describe("WhenLists", () => {
   it("shows each place's median date and says when none qualify", () => {
-    render(<WhenLists rows={ROWS} onSelect={() => {}} />);
+    render(<WhenLists rows={ROWS} onSelect={() => {}} trailing={false} />);
     expect(screen.getByText("Jan 1875 · 300 pages")).toBeTruthy();
     cleanup();
-    render(<WhenLists rows={[row("Reno", "NV", 4, 0, "Jan 1870")]} onSelect={() => {}} />);
+    render(<WhenLists rows={[row("Reno", "NV", 4, 0, "Jan 1870")]} onSelect={() => {}} trailing={false} />);
     expect(screen.getAllByText("No place has 5 or more matching pages up to the current date.")).toHaveLength(2);
   });
 });
 
 describe("hiding the lists", () => {
   it("hides and shows the panel, and remembers it for the next visit", () => {
-    render(<PagesLists rows={ROWS} onSelect={() => {}} />);
+    render(<PagesLists rows={ROWS} onSelect={() => {}} trailing={false} />);
     const hide = screen.getByRole("button", { name: "Hide" });
     expect(hide.getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(hide);
@@ -80,7 +98,7 @@ describe("hiding the lists", () => {
 
     // Hidden in one measure, hidden in the others too, and after a reload.
     cleanup();
-    render(<WhenLists rows={ROWS} onSelect={() => {}} />);
+    render(<WhenLists rows={ROWS} onSelect={() => {}} trailing={false} />);
     expect(screen.getByRole("button", { name: "Show earliest and latest" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Show earliest and latest" }));
     expect(screen.getByRole("heading", { name: "Earliest and latest" })).toBeTruthy();
