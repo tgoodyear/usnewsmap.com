@@ -660,10 +660,15 @@ impl Places<'_> {
         let lookup = |near: bool| {
             keys.iter()
                 .map(|k| {
-                    let s = self
-                        .spelling(members, k)
-                        .map(|s| s.lookup())
-                        .unwrap_or_default();
+                    // A key that names its town is looked up by that name.
+                    let s = match places::town_of(k) {
+                        Some(town) => town.to_owned(),
+                        None => self
+                            .spelling(members, k)
+                            .map(|s| s.lookup())
+                            .unwrap_or_default(),
+                    };
+                    let k = places::plain_key(k);
                     if near {
                         gazetteer.find_near(code, k, &s)
                     } else {
@@ -683,7 +688,7 @@ impl Places<'_> {
         // For the review list, an ambiguous name is compared with its first town.
         let review = gaz.or_else(|| {
             keys.iter()
-                .find_map(|k| gazetteer.near(code, k))
+                .find_map(|k| gazetteer.near(code, places::plain_key(k)))
                 .map(|g| (g.lat, g.lon))
         });
         if let Some((lat, lon)) = median(&single) {
@@ -794,13 +799,34 @@ pub fn build(
     // agree, under the name with more titles (on a tie, "X").
     let mut joins: HashMap<(String, &'static str), (String, &'static str)> = HashMap::new();
     for ((key, code), members) in &variants {
-        let Some(base) = key.strip_suffix("city").filter(|b| !b.is_empty()) else {
+        let Some(base) = places::plain_key(key)
+            .strip_suffix("city")
+            .filter(|b| !b.is_empty())
+        else {
             continue;
         };
-        let base_key = (base.to_owned(), *code);
-        let Some(base_members) = variants.get(&base_key) else {
+        // The "X": the town named like this one without "City" when "X"
+        // keys several towns, else the plain "X".
+        let spelling = ctx
+            .spelling(members, key)
+            .map(|s| s.lookup())
+            .unwrap_or_default();
+        let bases: Vec<&(String, &'static str)> = variants
+            .keys()
+            .filter(|(k, c)| c == code && places::plain_key(k) == base)
+            .collect();
+        let Some(base_key) = bases
+            .iter()
+            .find(|(k, _)| {
+                places::town_of(k)
+                    .is_some_and(|t| places::same_words(&format!("{t} City"), &spelling))
+            })
+            .or_else(|| bases.iter().find(|(k, _)| places::town_of(k).is_none()))
+            .map(|k| (*k).clone())
+        else {
             continue;
         };
+        let base_members = &variants[&base_key];
         let a = ctx.resolve(std::slice::from_ref(key), members, code);
         let b = ctx.resolve(std::slice::from_ref(&base_key.0), base_members, code);
         let placed = |p: &Point| p.source != Source::StateCentroid;
@@ -947,9 +973,11 @@ pub fn build(
                     .clone()
                     .or_else(|| own.alias.clone())
                     .or_else(|| {
-                        let found = match geo.gazetteer.find(g.code, &g.key, loc) {
+                        let plain = places::plain_key(&g.key);
+                        let spelled = places::town_of(&g.key).unwrap_or(loc);
+                        let found = match geo.gazetteer.find(g.code, plain, spelled) {
                             Found::One(p) => Some(p),
-                            Found::Ambiguous => geo.gazetteer.get(g.code, &g.key),
+                            Found::Ambiguous => geo.gazetteer.get(g.code, plain),
                             Found::None => None,
                         };
                         found
@@ -2665,5 +2693,110 @@ mod tests {
             &Geo::default(),
         );
         assert_eq!(place_of(&c, "sn2").name, "Mc Gregor");
+    }
+
+    #[test]
+    fn towns_that_key_alike_are_separate_places() {
+        let gaz = Gazetteer::parse(
+            "state,name,lat,lon\nAL,Lake View,33.28,-87.14\nAL,Lakeview,34.39,-85.98\nNY,New York,40.71,-74.0\n",
+        )
+        .unwrap();
+        let geo = Geo::new(gaz, &[]).unwrap();
+        let titles = vec![
+            raw(
+                "sn1",
+                "A (Lake View, Ala.) 1900-1901",
+                &["lake view"],
+                &["alabama"],
+                None,
+            ),
+            raw(
+                "sn2",
+                "B (Lakeview, Ala.) 1900-1901",
+                &["lakeview"],
+                &["alabama"],
+                None,
+            ),
+            raw(
+                "sn3",
+                "C (Lake View, Ala.) 1900-1901",
+                &["lake view"],
+                &["alabama"],
+                None,
+            ),
+            // "Lake View City" is the Lake View next to it.
+            raw(
+                "sn4",
+                "D (Lake View City, Ala.) 1900-1901",
+                &["lake view city"],
+                &["alabama"],
+                Some([33.285, -87.14]),
+            ),
+            raw(
+                "sn5",
+                "E (New-York, N.Y.) 1800-1801",
+                &["new york"],
+                &["new york"],
+                None,
+            ),
+            raw(
+                "sn6",
+                "F (New York, N.Y.) 1900-1901",
+                &["new york"],
+                &["new york"],
+                None,
+            ),
+        ];
+        let (c, _) = catalog_of(titles.clone(), &geo);
+        let (a, b) = (place_of(&c, "sn1"), place_of(&c, "sn2"));
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.name, "Lake View");
+        assert!(near(a, [33.28, -87.14]), "{a:?}");
+        assert_eq!((b.name.as_str(), b.lat), ("Lakeview", 34.39));
+        assert_eq!(place_of(&c, "sn3").id, a.id);
+        assert_eq!(place_of(&c, "sn4").id, a.id, "the X City rule");
+        // Spelling variants of one town still merge.
+        let ny = place_of(&c, "sn5");
+        assert_eq!(place_of(&c, "sn6").id, ny.id);
+        assert_eq!(ny.name, "New York");
+
+        // A catalog that had both in one place: Lake View, whose name the
+        // place has, keeps the id; Lakeview gets a new one.
+        let place = Place {
+            id: "P00001".into(),
+            ordinal: 1,
+            name: "Lake View".into(),
+            state: "AL".into(),
+            lat: 33.28,
+            lon: -87.14,
+            precision: "city".into(),
+        };
+        let title = |lccn: &str, ordinal| Title {
+            lccn: lccn.into(),
+            name: "Paper".into(),
+            ordinal,
+            place_id: "P00001".into(),
+            state: "AL".into(),
+            languages: vec![],
+            extra: BTreeMap::new(),
+        };
+        let r: BTreeMap<String, RawTitle> = titles[..2]
+            .iter()
+            .map(|t| (t.lccn.clone(), t.clone()))
+            .collect();
+        let (c, rep) = build(
+            &r,
+            vec![title("sn1", 1), title("sn2", 2)],
+            vec![place],
+            &[],
+            &geo,
+        )
+        .unwrap();
+        assert_eq!(c.title("sn1").unwrap().place_id, "P00001");
+        assert_eq!(c.title("sn2").unwrap().place_id, "P00002");
+        assert_eq!((rep.new_places, rep.retired.len()), (1, 0));
+        // And a rebuild changes nothing.
+        let (c2, _) = build(&r, c.titles.clone(), c.places.clone(), &[], &geo).unwrap();
+        assert_eq!((c2.titles, c2.places), (c.titles.clone(), c.places.clone()));
     }
 }

@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::Value;
 use usnm_core::names::STATES;
 use usnm_ingest::catalog::{Place, Title};
-use usnm_ingest::places::{distance_km, Geo};
+use usnm_ingest::places::{self, distance_km, Geo};
 use usnm_ingest::titles::{build, PlaceOverride, RawTitle, PLACE_OVERRIDES};
 
 struct Live {
@@ -241,7 +241,7 @@ fn main() -> anyhow::Result<()> {
     println!("\n== Every live place: gazetteer point and distance ==");
     println!("id\tstate\tname\ttitles\tlive\tgazetteer\tkm\tshared point");
     for l in &live {
-        let gaz = geo.gazetteer.near(&l.state, &key_of(l));
+        let gaz = geo.gazetteer.near(&l.state, places::plain_key(&key_of(l)));
         let (g, km) = match gaz {
             Some(g) => (
                 format!("{} ({:.4},{:.4})", g.name, g.lat, g.lon),

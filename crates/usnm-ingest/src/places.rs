@@ -251,7 +251,10 @@ pub struct Geo {
 /// A title's city, cleaned and keyed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CityName {
-    /// Equal for every spelling of one town.
+    /// Equal for every spelling of one town: the plain key ("lakeview"),
+    /// or, when the gazetteer has several towns of that key in the state
+    /// and the spelling names exactly one of them, the key and that town
+    /// ("lakeview#Lake View", see [`plain_key`] and [`town_of`]).
     pub key: String,
     /// The alias's name for the town, when one renamed it.
     pub alias: Option<String>,
@@ -353,25 +356,27 @@ impl Geo {
     /// Whether the gazetteer has `city` in `state` (as "X" or "X City").
     pub fn has(&self, city: &str, state: &State) -> bool {
         let key = self.city(city, state).key;
-        !key.is_empty() && self.gazetteer.near(state.code, &key).is_some()
+        let key = plain_key(&key);
+        !key.is_empty() && self.gazetteer.near(state.code, key).is_some()
     }
 
     /// `city` (in `state`) cleaned up, renamed by an alias, and keyed.
     pub fn city(&self, city: &str, state: &State) -> CityName {
         let clean = clean_city(city, state);
         let key = self.key(&clean, state);
-        match self.aliases.get(&(state.code, key.clone())) {
-            Some(to) => CityName {
-                key: self.key(&clean_city(to, state), state),
-                alias: Some(to.clone()),
-                clean,
-            },
-            None => CityName {
-                key,
-                alias: None,
-                clean,
-            },
-        }
+        let (key, alias) = match self.aliases.get(&(state.code, key.clone())) {
+            Some(to) => (self.key(&clean_city(to, state), state), Some(to.clone())),
+            None => (key, None),
+        };
+        // Towns that key alike (Alabama's Lake View and Lakeview) stay
+        // apart when the spelling names one of them.
+        let rows = self.gazetteer.rows(state.code, &key);
+        let spelling = alias.as_deref().unwrap_or(&clean);
+        let key = match pick(rows, &key_words(&clean_city(spelling, state))) {
+            Found::One(town) if rows.len() > 1 => format!("{key}#{}", town.name),
+            _ => key,
+        };
+        CityName { key, alias, clean }
     }
 
     /// The key of a cleaned name; "Court House" is dropped unless the
@@ -407,6 +412,23 @@ fn words(s: &str) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+/// Whether two names have the same words (case, accents, "St."/"Saint" and
+/// a leading "The" aside; spacing counts).
+pub fn same_words(a: &str, b: &str) -> bool {
+    key_words(a) == key_words(b)
+}
+
+/// The plain key of a place's key: "lakeview" for "lakeview#Lake View".
+pub fn plain_key(key: &str) -> &str {
+    key.split_once('#').map_or(key, |(k, _)| k)
+}
+
+/// The gazetteer town a key names, if it names one: "Lake View" for
+/// "lakeview#Lake View".
+pub fn town_of(key: &str) -> Option<&str> {
+    key.split_once('#').map(|(_, t)| t)
 }
 
 /// The words that make a key: no leading "The", and "St.", "Ste.", "Mt.",
@@ -686,6 +708,27 @@ mod tests {
             "Langston"
         );
         assert_eq!(g.count("AL", "lakeview"), 2);
+    }
+
+    #[test]
+    fn towns_that_key_alike_get_their_own_keys() {
+        let g = Gazetteer::parse(
+            "state,name,lat,lon\nAL,Lake View,33.28,-87.14\nAL,Lakeview,34.39,-85.98\nNY,New York,40.7,-74.0\nOH,Oakwood,39.72,-84.17\nOH,Oakwood,41.37,-81.5\n",
+        )
+        .unwrap();
+        let geo = Geo::new(g, &[]).unwrap();
+        let key = |c: &str, code: &str| geo.city(c, st(code)).key;
+        assert_eq!(key("Lake View", "AL"), "lakeview#Lake View");
+        assert_eq!(key("Lakeview", "AL"), "lakeview#Lakeview");
+        assert_eq!(key("Lake-View", "AL"), "lakeview#Lake View");
+        // Neither spelled alike, or no towns to tell apart: the plain key.
+        assert_eq!(key("La Keview", "AL"), "lakeview");
+        assert_eq!(key("Oakwood", "OH"), "oakwood");
+        assert_eq!(key("New-York", "NY"), key("New York", "NY"));
+        assert_eq!(key("New-York", "NY"), "newyork");
+        assert_eq!(plain_key("lakeview#Lake View"), "lakeview");
+        assert_eq!(town_of("lakeview#Lake View"), Some("Lake View"));
+        assert_eq!(town_of("newyork"), None);
     }
 
     #[test]
