@@ -31,6 +31,94 @@ const SHARD_THROUGHPUT_LIMIT: &str = "20MB";
 /// The node's in-memory ingest queue (Quickwit's default is 2 GiB). The first
 /// prod release ran out of memory at 4 GiB with the defaults.
 const INGEST_QUEUE_MEMORY: &str = "1GiB";
+
+/// How hard the writer may work for one run (#172): Quickwit's indexing heap
+/// and commit timeout for the new index, and the node's in-memory ingest
+/// queue. The defaults are the index template's and [`INGEST_QUEUE_MEMORY`],
+/// sized for the Consumption profile's 7.5 GiB container. On the E4 profile
+/// (26 GiB, a full rebuild) the ingest job sets more through
+/// `USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS` and `USNM_WRITER_QUEUE`: with
+/// a heap that holds a whole 60,000-page split and a commit timeout longer than
+/// it takes to index one, the indexer writes splits at the target size, so
+/// they need little merging. At 30 s, a full rebuild's indexer cut splits of
+/// about 7,000 pages, and merging them cost the writer its memory and much of
+/// its CPU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriterTuning {
+    pub heap: String,
+    pub commit_timeout_secs: u32,
+    pub queue: String,
+}
+
+/// The template lines [`WriterTuning`] replaces.
+const TEMPLATE_HEAP: &str = "heap_size: 1GiB";
+const TEMPLATE_COMMIT: &str = "commit_timeout_secs: 30";
+
+impl Default for WriterTuning {
+    fn default() -> Self {
+        WriterTuning {
+            heap: "1GiB".into(),
+            commit_timeout_secs: 30,
+            queue: INGEST_QUEUE_MEMORY.into(),
+        }
+    }
+}
+
+impl WriterTuning {
+    /// From the environment, the defaults for what isn't set.
+    pub fn from_env() -> anyhow::Result<Self> {
+        Self::from_lookup(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+    }
+
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        let d = WriterTuning::default();
+        let size = |key: &str, default: String| -> anyhow::Result<String> {
+            match get(key) {
+                None => Ok(default),
+                Some(v) => {
+                    let digits = v.trim_end_matches("MiB").trim_end_matches("GiB");
+                    if (v.ends_with("MiB") || v.ends_with("GiB"))
+                        && !digits.is_empty()
+                        && digits.bytes().all(|b| b.is_ascii_digit())
+                        && digits != "0"
+                    {
+                        Ok(v)
+                    } else {
+                        bail!("{key} must be a size like 6GiB or 512MiB, not `{v}`")
+                    }
+                }
+            }
+        };
+        let commit_timeout_secs = match get("USNM_WRITER_COMMIT_SECS") {
+            None => d.commit_timeout_secs,
+            Some(v) => match v.parse::<u32>() {
+                Ok(n) if (1..=3600).contains(&n) => n,
+                _ => bail!("USNM_WRITER_COMMIT_SECS must be 1 to 3600 seconds, not `{v}`"),
+            },
+        };
+        Ok(WriterTuning {
+            heap: size("USNM_WRITER_HEAP", d.heap)?,
+            commit_timeout_secs,
+            queue: size("USNM_WRITER_QUEUE", d.queue)?,
+        })
+    }
+
+    /// `template` with this run's heap and commit timeout. Both lines must be
+    /// there, so a template change can't silently drop the tuning.
+    pub fn apply(&self, template: &str) -> anyhow::Result<String> {
+        if !template.contains(TEMPLATE_HEAP) || !template.contains(TEMPLATE_COMMIT) {
+            bail!(
+                "the index template has no `{TEMPLATE_HEAP}` or `{TEMPLATE_COMMIT}` line to tune"
+            );
+        }
+        Ok(template
+            .replace(TEMPLATE_HEAP, &format!("heap_size: {}", self.heap))
+            .replace(
+                TEMPLATE_COMMIT,
+                &format!("commit_timeout_secs: {}", self.commit_timeout_secs),
+            ))
+    }
+}
 /// The writer's local cache of uploaded splits (Quickwit's default is 100 GiB).
 /// A job replica has ~19.5 GiB of disk: the first prod release filled it,
 /// the ingester closed its shards, and every request got 503 "no shards
@@ -351,7 +439,14 @@ impl QuickwitSink {
 #[async_trait]
 impl IndexSink for QuickwitSink {
     async fn create(&mut self, index_id: &str) -> anyhow::Result<()> {
-        self.create_with(index_id, INDEX_TEMPLATE).await
+        // The main index takes this run's writer tuning; the Japanese index
+        // (about 11k pages) keeps its template's.
+        let tuning = WriterTuning::from_env()?;
+        if tuning != WriterTuning::default() {
+            tracing::info!(heap = %tuning.heap, commit_timeout_secs = tuning.commit_timeout_secs, queue = %tuning.queue, "writer tuning");
+        }
+        let template = tuning.apply(INDEX_TEMPLATE)?;
+        self.create_with(index_id, &template).await
     }
 
     async fn create_with(&mut self, index_id: &str, template: &str) -> anyhow::Result<()> {
@@ -721,12 +816,13 @@ impl QuickwitNode {
                 .with_context(|| format!("removing {}", data.display()))?;
         }
         std::fs::create_dir_all(&data)?;
+        let queue = WriterTuning::from_env()?.queue;
         let mut config = format!(
             "version: 0.8\ncluster_id: usnm-writer\nnode_id: writer\nlisten_address: 127.0.0.1\n\
              rest:\n  listen_port: {port}\ngrpc_listen_port: {}\ndata_dir: {}\n\
              metastore_uri: {metastore}\ndefault_index_root_uri: {index_root}\n\
              ingest_api:\n  shard_throughput_limit: {SHARD_THROUGHPUT_LIMIT}\n  \
-             max_queue_memory_usage: {INGEST_QUEUE_MEMORY}\n  \
+             max_queue_memory_usage: {queue}\n  \
              max_queue_disk_usage: {WAL_DISK_BYTES}\n\
              indexer:\n  split_store_max_num_bytes: {SPLIT_STORE_BYTES}\n  \
              merge_concurrency: {MERGE_CONCURRENCY}\n",
@@ -1104,6 +1200,53 @@ mod tests {
         // Nothing listening: unknown, not an error.
         let mut gone = QuickwitSink::new("http://127.0.0.1:9", "file:///tmp/x").unwrap();
         assert_eq!(gone.engine().await, None);
+    }
+
+    #[test]
+    fn writer_tuning_defaults_and_overrides() {
+        let none = |_: &str| None;
+        assert_eq!(
+            WriterTuning::from_lookup(none).unwrap(),
+            WriterTuning::default()
+        );
+        // The defaults leave the template as it is.
+        assert_eq!(
+            WriterTuning::default().apply(INDEX_TEMPLATE).unwrap(),
+            INDEX_TEMPLATE
+        );
+        let e4 = |k: &str| match k {
+            "USNM_WRITER_HEAP" => Some("6GiB".to_string()),
+            "USNM_WRITER_COMMIT_SECS" => Some("600".to_string()),
+            "USNM_WRITER_QUEUE" => Some("4GiB".to_string()),
+            _ => None,
+        };
+        let t = WriterTuning::from_lookup(e4).unwrap();
+        assert_eq!(
+            (t.heap.as_str(), t.commit_timeout_secs, t.queue.as_str()),
+            ("6GiB", 600, "4GiB")
+        );
+        let yaml = t.apply(INDEX_TEMPLATE).unwrap();
+        assert!(yaml.contains("heap_size: 6GiB") && yaml.contains("commit_timeout_secs: 600"));
+        assert!(!yaml.contains("heap_size: 1GiB") && !yaml.contains("commit_timeout_secs: 30"));
+        // Everything else is the template's.
+        assert_eq!(yaml.lines().count(), INDEX_TEMPLATE.lines().count());
+    }
+
+    #[test]
+    fn writer_tuning_refuses_bad_values_and_untunable_templates() {
+        for (k, v) in [
+            ("USNM_WRITER_HEAP", "6"),
+            ("USNM_WRITER_HEAP", "6GB"),
+            ("USNM_WRITER_HEAP", "0GiB"),
+            ("USNM_WRITER_QUEUE", "lots"),
+            ("USNM_WRITER_COMMIT_SECS", "0"),
+            ("USNM_WRITER_COMMIT_SECS", "7200"),
+            ("USNM_WRITER_COMMIT_SECS", "ten"),
+        ] {
+            let got = WriterTuning::from_lookup(|key| (key == k).then(|| v.to_string()));
+            assert!(got.is_err(), "{k}={v}");
+        }
+        assert!(WriterTuning::default().apply("version: 0.9").is_err());
     }
 
     /// A fake ingest endpoint that answers with `statuses` in turn (then 200)
