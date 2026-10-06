@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { Activity, IndexRun, OcrJa, Status } from "../api/types";
-import { big, headline, lastUpdate, longDate, ocrExperiment, pct, rightNow, steps, utc, utcDate } from "./now";
+import {
+  big,
+  headline,
+  lastUpdate,
+  localDate,
+  localTime,
+  longDate,
+  ocrExperiment,
+  pct,
+  rightNow,
+  steps,
+} from "./now";
 
 const NOW = Date.parse("2026-10-02T19:30:00Z");
 const ago = (min: number) => new Date(NOW - min * 60_000).toISOString();
@@ -25,7 +36,10 @@ const idle: Activity = {
 };
 
 /** The production numbers on 2 October 2026, with `activity` as given. */
-function status(activity: Partial<Activity> | null, backfill: Partial<Status["backfill"]> = {}): Status {
+function status(
+  activity: Partial<Activity> | null,
+  backfill: Partial<Status["backfill"]> = {},
+): Status {
   return {
     schema: 1,
     generated_at: new Date(NOW).toISOString(),
@@ -46,7 +60,8 @@ function status(activity: Partial<Activity> | null, backfill: Partial<Status["ba
       next_release_full: false,
       batches: 882,
     },
-    activity: activity === null ? undefined : { available: true, ...idle, ...activity },
+    activity:
+      activity === null ? undefined : { available: true, ...idle, ...activity },
     backfill: {
       available: true,
       total: 2997,
@@ -59,7 +74,13 @@ function status(activity: Partial<Activity> | null, backfill: Partial<Status["ba
       ok_pages: 23_768_831,
       versions: {},
       newer_versions_pending: 0,
-      throughput: { hours: [], rate_window_hours: 12, rate_per_hour: 0, remaining: 0, eta: null },
+      throughput: {
+        hours: [],
+        rate_window_hours: 12,
+        rate_per_hour: 0,
+        remaining: 0,
+        eta: null,
+      },
       loc: { next_slot: null, blocked_until: null, throttled: false },
       in_progress_batches: [],
       recent: [],
@@ -95,10 +116,21 @@ function status(activity: Partial<Activity> | null, backfill: Partial<Status["ba
 }
 
 describe("formatting", () => {
-  it("writes times in UTC, with the day when it isn't today", () => {
-    expect(utc("2026-10-02T20:15:00Z", NOW)).toBe("20:15 UTC");
-    expect(utc("2026-10-05T03:17:00Z", NOW)).toBe("Oct 5 at 03:17 UTC");
-    expect(utcDate("2026-09-29T14:23:36Z")).toBe("Sep 29 at 14:23 UTC");
+  it("writes times in the visitor's zone, with the day when it isn't their today", () => {
+    expect(localTime("2026-10-02T20:15:00Z", NOW)).toBe("4:15 PM EDT");
+    // Oct 5 in UTC, but still Oct 4 in New York.
+    expect(localTime("2026-10-05T03:17:00Z", NOW)).toBe(
+      "Oct 4 at 11:17 PM EDT",
+    );
+    expect(localDate("2026-09-29T14:23:36Z")).toBe("Sep 29 at 10:23 AM EDT");
+    // "Today" is the visitor's: two UTC dates, one New York day...
+    const evening = Date.parse("2026-10-03T03:00:00Z"); // Oct 2, 11 PM EDT
+    expect(localTime("2026-10-02T13:00:00Z", evening)).toBe("9:00 AM EDT");
+    // ...and one UTC date, two New York days.
+    const late = Date.parse("2026-10-02T23:00:00Z"); // Oct 2, 7 PM EDT
+    expect(localTime("2026-10-02T02:00:00Z", late)).toBe(
+      "Oct 1 at 10:00 PM EDT",
+    );
     expect(longDate("1751-05-09")).toBe("May 9, 1751");
   });
 
@@ -116,14 +148,25 @@ describe("formatting", () => {
 describe("rightNow", () => {
   it("titles-sync running, with an estimate", () => {
     const line = rightNow(
-      status({ now: "titles", source: "job", since: ago(65), done: 342, total: 3464, eta: later(240) }),
+      status({
+        now: "titles",
+        source: "job",
+        since: ago(65),
+        done: 342,
+        total: 3464,
+        eta: later(240),
+      }),
       NOW,
     );
     expect(line.text).toBe(
       "Looking up newspaper details from the Library of Congress: 342 of 3,464 done (9.9%). At this pace, about 4 h left.",
     );
     expect(line.notes[0]).toBe("This step started 1 h 5 min ago.");
-    expect(line.progress).toEqual({ done: 342, total: 3464, label: "342 of 3,464 newspapers looked up" });
+    expect(line.progress).toEqual({
+      done: 342,
+      total: 3464,
+      label: "342 of 3,464 newspapers looked up",
+    });
   });
 
   it("titles-sync paused by loc.gov", () => {
@@ -140,22 +183,35 @@ describe("rightNow", () => {
       NOW,
     );
     expect(line.text).toBe(
-      "Looking up newspaper details from the Library of Congress: 342 of 3,464 done (9.9%). Paused until 20:15 UTC because loc.gov asked us to slow down.",
+      "Looking up newspaper details from the Library of Congress: 342 of 3,464 done (9.9%). Paused until 4:15 PM EDT because loc.gov asked us to slow down.",
     );
   });
 
   it("titles-sync inferred from its cache says when the progress is from", () => {
     const line = rightNow(
-      status({ now: "titles", source: "inferred", done: 342, total: 3122, reported_at: "2026-10-02T19:21:00Z" }),
+      status({
+        now: "titles",
+        source: "inferred",
+        done: 342,
+        total: 3122,
+        reported_at: "2026-10-02T19:21:00Z",
+      }),
       NOW,
     );
     expect(line.text).toContain("342 of 3,122 done (11%).");
-    expect(line.notes).toContain("Progress as of 19:21 UTC.");
+    expect(line.notes).toContain("Progress as of 3:21 PM EDT.");
   });
 
   it("indexing", () => {
     const line = rightNow(
-      status({ now: "indexing", source: "job", since: ago(180), done: 4_100_000, total: 7_800_000, eta: later(80) }),
+      status({
+        now: "indexing",
+        source: "job",
+        since: ago(180),
+        done: 4_100_000,
+        total: 7_800_000,
+        eta: later(80),
+      }),
       NOW,
     );
     expect(line.text).toBe(
@@ -165,7 +221,10 @@ describe("rightNow", () => {
   });
 
   it("merging", () => {
-    const line = rightNow(status({ now: "merging", source: "job", since: ago(20) }), NOW);
+    const line = rightNow(
+      status({ now: "merging", source: "job", since: ago(20) }),
+      NOW,
+    );
     expect(line.text).toBe(
       "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live.",
     );
@@ -173,12 +232,24 @@ describe("rightNow", () => {
   });
 
   it("merging: where the merge is", () => {
-    const merge = { step: "settle", splits: 227, merges_running: 1, merges_queued: 20 };
+    const merge = {
+      step: "settle",
+      splits: 227,
+      merges_running: 1,
+      merges_queued: 20,
+    };
     expect(rightNow(status({ now: "merging", merge }), NOW).text).toBe(
       "Merging the index (step 3 of 4): every page is in, and its pieces are being combined before it goes live. Index still open: 227 pieces, 1 merge running, 20 waiting.",
     );
-    const final = { step: "finalize", splits: 9, merges_running: 2, merges_queued: 0 };
-    expect(rightNow(status({ now: "merging", merge: final }), NOW).text).toMatch(
+    const final = {
+      step: "finalize",
+      splits: 9,
+      merges_running: 2,
+      merges_queued: 0,
+    };
+    expect(
+      rightNow(status({ now: "merging", merge: final }), NOW).text,
+    ).toMatch(
       / Index closed for its final merges: 9 pieces, 2 merges running, 0 waiting\.$/,
     );
     expect(steps(status({ now: "merging", merge }), NOW)[2]!.detail).toBe(
@@ -187,30 +258,38 @@ describe("rightNow", () => {
   });
 
   it("publishing", () => {
-    expect(rightNow(status({ now: "publishing", source: "job" }), NOW).text).toBe(
-      "Publishing: the new index is going live (step 4 of 4).",
-    );
+    expect(
+      rightNow(status({ now: "publishing", source: "job" }), NOW).text,
+    ).toBe("Publishing: the new index is going live (step 4 of 4).");
   });
 
   it("downloading, paused by loc.gov", () => {
     const line = rightNow(
       status(
         { now: "downloading", source: "inferred", done: 2990, total: 2997 },
-        { loc: { next_slot: null, blocked_until: "2026-10-02T20:31:00Z", throttled: true } },
+        {
+          loc: {
+            next_slot: null,
+            blocked_until: "2026-10-02T20:31:00Z",
+            throttled: true,
+          },
+        },
       ),
       NOW,
     );
     expect(line.text).toBe(
-      "Downloading and processing batches from the Library of Congress: 2,990 of 2,997 done. Downloads are paused until 20:31 UTC because loc.gov asked us to slow down.",
+      "Downloading and processing batches from the Library of Congress: 2,990 of 2,997 done. Downloads are paused until 4:31 PM EDT because loc.gov asked us to slow down.",
     );
   });
 
   it("idle, with and without a schedule", () => {
     expect(rightNow(status({}), NOW).text).toBe(
-      "Idle: the last update went live on Sep 29 at 14:23 UTC. No run is scheduled.",
+      "Idle: the last update went live on Sep 29 at 10:23 AM EDT. No run is scheduled.",
     );
-    expect(rightNow(status({ next_run: "2026-10-05T03:17:00Z" }), NOW).text).toBe(
-      "Idle: the last update went live on Sep 29 at 14:23 UTC. The next scheduled run is Oct 5 at 03:17 UTC.",
+    expect(
+      rightNow(status({ next_run: "2026-10-05T03:17:00Z" }), NOW).text,
+    ).toBe(
+      "Idle: the last update went live on Sep 29 at 10:23 AM EDT. The next scheduled run is Oct 4 at 11:17 PM EDT.",
     );
   });
 
@@ -224,25 +303,49 @@ describe("rightNow", () => {
     };
     const line = rightNow(status({ last: failed }), NOW);
     expect(line.notes).toContain(
-      "The last run stopped at 14:09 UTC because of an error while building the search index; nothing changed on the site.",
+      "The last run stopped at 10:09 AM EDT because of an error while building the search index; nothing changed on the site.",
     );
     // While a new run is going, it's the previous one.
-    const running = rightNow(status({ now: "titles", source: "inferred", done: 1, total: 2, last: failed }), NOW);
-    expect(running.notes.some((n) => n.startsWith("The previous run stopped at 14:09 UTC"))).toBe(true);
+    const running = rightNow(
+      status({
+        now: "titles",
+        source: "inferred",
+        done: 1,
+        total: 2,
+        last: failed,
+      }),
+      NOW,
+    );
+    expect(
+      running.notes.some((n) =>
+        n.startsWith("The previous run stopped at 10:09 AM EDT"),
+      ),
+    ).toBe(true);
     // A failure from before the update the site shows is history.
-    const old = rightNow(status({ last: { ...failed, ended_at: "2026-09-28T22:49:05Z" } }), NOW);
+    const old = rightNow(
+      status({ last: { ...failed, ended_at: "2026-09-28T22:49:05Z" } }),
+      NOW,
+    );
     expect(old.notes.some((n) => n.includes("stopped"))).toBe(false);
   });
 
   it("says the last run ran out of time or stopped", () => {
     const last = { ended_at: ago(30), error: null, index_version: null };
     expect(
-      rightNow(status({ last: { ...last, outcome: "titles_left", step: "indexing" } }), NOW).notes[0],
+      rightNow(
+        status({ last: { ...last, outcome: "titles_left", step: "indexing" } }),
+        NOW,
+      ).notes[0],
     ).toBe(
-      "The last run ran out of time at 19:00 UTC while looking up newspaper details, because loc.gov limits how fast we can ask; nothing changed on the site. The next run continues where it stopped.",
+      "The last run ran out of time at 3:00 PM EDT while looking up newspaper details, because loc.gov limits how fast we can ask; nothing changed on the site. The next run continues where it stopped.",
     );
-    expect(rightNow(status({ last: { ...last, outcome: "stopped", step: "merging" } }), NOW).notes[0]).toBe(
-      "The last run stopped without finishing at 19:00 UTC, while merging the index; nothing changed on the site.",
+    expect(
+      rightNow(
+        status({ last: { ...last, outcome: "stopped", step: "merging" } }),
+        NOW,
+      ).notes[0],
+    ).toBe(
+      "The last run stopped without finishing at 3:00 PM EDT, while merging the index; nothing changed on the site.",
     );
   });
 
@@ -254,7 +357,11 @@ describe("rightNow", () => {
 });
 
 /** A published run, as `/v1/status` lists it. */
-function run(index_version: string, started_at: string, published_at: string): IndexRun {
+function run(
+  index_version: string,
+  started_at: string,
+  published_at: string,
+): IndexRun {
   return {
     index_version,
     full: true,
@@ -277,7 +384,8 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
   // served pages-v20260929-4 until it had found and warmed up the new one.
   function switching(): Status {
     const s = status({});
-    if (!s.indexing.available) throw new Error("the fixture has the indexing section");
+    if (!s.indexing.available)
+      throw new Error("the fixture has the indexing section");
     s.indexing.current_version = "pages-v20261003-1";
     s.indexing.last_published_at = "2026-10-04T00:46:12Z";
     s.indexing.runs = [
@@ -291,14 +399,16 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
     const s = switching();
     expect(lastUpdate(s)).toBe("2026-09-29T14:23:36Z");
     expect(rightNow(s, NOW).text).toBe(
-      "Idle: the last update went live on Sep 29 at 14:23 UTC. No run is scheduled.",
+      "Idle: the last update went live on Sep 29 at 10:23 AM EDT. No run is scheduled.",
     );
-    expect(steps(s, NOW)[3]!.detail).toBe("6,557,925 pages from 1,217 newspapers, live since Sep 29 at 14:23 UTC");
+    expect(steps(s, NOW)[3]!.detail).toBe(
+      "6,557,925 pages from 1,217 newspapers, live since Sep 29 at 10:23 AM EDT",
+    );
   });
 
   it("says a new update is on its way and the numbers are the old one's", () => {
     const note =
-      "A new update was published on Oct 4 at 00:46 UTC, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.";
+      "A new update was published on Oct 3 at 8:46 PM EDT, and the site switches to it in a few minutes. Until then, the numbers on this page are from the update it still searches.";
     expect(rightNow(switching(), NOW).notes[0]).toBe(note);
     const noActivity = switching();
     noActivity.activity = undefined;
@@ -310,33 +420,52 @@ describe("a newer version the API doesn't serve yet (#119)", () => {
   it("ignores the new run's time while ops/current still names the served version", () => {
     // The release marks the new run published just before ops/current names it.
     const s = switching();
-    if (!s.indexing.available) throw new Error("the fixture has the indexing section");
+    if (!s.indexing.available)
+      throw new Error("the fixture has the indexing section");
     s.indexing.current_version = "pages-v20260929-4";
     expect(lastUpdate(s)).toBe("2026-09-29T14:23:36Z");
     // Without the served version's run, the new run's time is still not taken.
-    s.indexing.runs = s.indexing.runs.filter((r) => r.index_version !== "pages-v20260929-4");
+    s.indexing.runs = s.indexing.runs.filter(
+      (r) => r.index_version !== "pages-v20260929-4",
+    );
     expect(lastUpdate(s)).toBe("2026-09-29T13:48:53Z");
-    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+    expect(
+      rightNow(s, NOW).notes.some((n) => n.startsWith("A new update")),
+    ).toBe(false);
   });
 
   it("doesn't call an older pipeline reading a new update", () => {
     // The API already serves the new version; the pipeline reading is from before.
     const s = status({});
-    s.published = { ...s.published, index_version: "pages-v20261003-1", published_at: "2026-10-04T00:46:12Z" };
-    if (!s.indexing.available) throw new Error("the fixture has the indexing section");
-    s.indexing.runs = [run("pages-v20260929-4", "2026-09-29T13:48:53Z", "2026-09-29T14:23:36Z")];
+    s.published = {
+      ...s.published,
+      index_version: "pages-v20261003-1",
+      published_at: "2026-10-04T00:46:12Z",
+    };
+    if (!s.indexing.available)
+      throw new Error("the fixture has the indexing section");
+    s.indexing.runs = [
+      run("pages-v20260929-4", "2026-09-29T13:48:53Z", "2026-09-29T14:23:36Z"),
+    ];
     expect(lastUpdate(s)).toBe("2026-10-04T00:46:12Z");
-    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+    expect(
+      rightNow(s, NOW).notes.some((n) => n.startsWith("A new update")),
+    ).toBe(false);
   });
 
   it("without the served version's run, falls back to the version's own date", () => {
     const s = switching();
     s.indexing = { ...s.indexing, runs: [] } as Status["indexing"];
     expect(lastUpdate(s)).toBe("2026-09-29T13:48:53Z");
-    s.indexing = { available: false, reason: "not configured" } as Status["indexing"];
+    s.indexing = {
+      available: false,
+      reason: "not configured",
+    } as Status["indexing"];
     expect(lastUpdate(status({}))).toBe("2026-09-29T14:23:36Z");
     expect(lastUpdate(s)).toBe("2026-09-29T13:48:53Z");
-    expect(rightNow(s, NOW).notes.some((n) => n.startsWith("A new update"))).toBe(false);
+    expect(
+      rightNow(s, NOW).notes.some((n) => n.startsWith("A new update")),
+    ).toBe(false);
   });
 });
 
@@ -348,9 +477,15 @@ describe("steps", () => {
     expect(states(s)).toEqual(["done", "active", "waiting", "waiting"]);
     const [download, titles, index, live] = steps(s, NOW);
     expect(download!.detail).toBe("2,997 of 2,997 batches, 23,794,152 pages");
-    expect(titles!.detail).toBe("1,559 of 4,681 newspapers; 1,955 batches wait for their newspapers' details");
-    expect(index!.detail).toBe("2,115 batches aren't searchable yet; 160 are ready to index");
-    expect(live!.detail).toBe("6,557,925 pages from 1,217 newspapers, live since Sep 29 at 14:23 UTC");
+    expect(titles!.detail).toBe(
+      "1,559 of 4,681 newspapers; 1,955 batches wait for their newspapers' details",
+    );
+    expect(index!.detail).toBe(
+      "2,115 batches aren't searchable yet; 160 are ready to index",
+    );
+    expect(live!.detail).toBe(
+      "6,557,925 pages from 1,217 newspapers, live since Sep 29 at 10:23 AM EDT",
+    );
   });
 
   it("titles-sync paused", () => {
@@ -378,7 +513,10 @@ describe("steps", () => {
   it("downloading", () => {
     const s = status(
       { now: "downloading" },
-      { by_status: { queued: 5, downloading: 2, curated: 2990, failed: 0 }, in_progress: 2 },
+      {
+        by_status: { queued: 5, downloading: 2, curated: 2990, failed: 0 },
+        in_progress: 2,
+      },
     );
     expect(states(s)[0]).toBe("active");
   });
@@ -400,8 +538,15 @@ describe("steps", () => {
   it("the Japanese OCR is not a step", () => {
     const s = status({ now: "titles", source: "job" });
     s.ocr_ja = ocrJa({});
-    expect(steps(s, NOW).map((st) => st.key)).toEqual(["download", "titles", "index", "live"]);
-    expect(rightNow(s, NOW).notes.some((n) => n.includes("Japanese"))).toBe(false);
+    expect(steps(s, NOW).map((st) => st.key)).toEqual([
+      "download",
+      "titles",
+      "index",
+      "live",
+    ]);
+    expect(rightNow(s, NOW).notes.some((n) => n.includes("Japanese"))).toBe(
+      false,
+    );
   });
 });
 
@@ -411,11 +556,17 @@ describe("ocrExperiment", () => {
     s.ocr_ja = ocrJa({});
     expect(ocrExperiment(s, NOW)).toEqual({
       text: "Reading Japanese pages: 3,300 of 11,000 done (30%), about 5 h left.",
-      progress: { done: 3300, total: 11_000, label: "3,300 of 11,000 Japanese pages read" },
+      progress: {
+        done: 3300,
+        total: 11_000,
+        label: "3,300 of 11,000 Japanese pages read",
+      },
       searchable: "They become searchable with the next update.",
     });
     s.published.ja = { indexes: ["pages-ja-20261006-1"], fold: 1, pages: 3200 };
-    expect(ocrExperiment(s, NOW)!.searchable).toBe("3,200 pages are searchable now.");
+    expect(ocrExperiment(s, NOW)!.searchable).toBe(
+      "3,200 pages are searchable now.",
+    );
   });
 
   it("stopped and finished", () => {
@@ -424,10 +575,19 @@ describe("ocrExperiment", () => {
     expect(ocrExperiment(s, NOW)!.text).toBe(
       "Stopped at 3,300 of 11,000 Japanese pages (30%). The job last reported 2 h ago.",
     );
-    s.ocr_ja = ocrJa({ running: false, eta: null, done: { pages: 11_000, issues: 1500 } });
+    s.ocr_ja = ocrJa({
+      running: false,
+      eta: null,
+      done: { pages: 11_000, issues: 1500 },
+    });
     expect(ocrExperiment(s, NOW)!.text).toBe("All 11,000 Japanese pages read.");
     // Nothing to read: done, and no zero-length bar.
-    s.ocr_ja = ocrJa({ running: false, eta: null, targets: { pages: 0, issues: 0 }, done: { pages: 0, issues: 0 } });
+    s.ocr_ja = ocrJa({
+      running: false,
+      eta: null,
+      targets: { pages: 0, issues: 0 },
+      done: { pages: 0, issues: 0 },
+    });
     expect(ocrExperiment(s, NOW)).toEqual({
       text: "There are no Japanese pages to read.",
       searchable: "They become searchable with the next update.",
@@ -437,9 +597,16 @@ describe("ocrExperiment", () => {
   it("nothing to show without a report or a Japanese index", () => {
     const s = status({});
     expect(ocrExperiment(s, NOW)).toBeNull();
-    s.ocr_ja = { available: false, reason: "The Japanese OCR job has not reported any progress." };
+    s.ocr_ja = {
+      available: false,
+      reason: "The Japanese OCR job has not reported any progress.",
+    };
     expect(ocrExperiment(s, NOW)).toBeNull();
-    s.published.ja = { indexes: ["pages-ja-20261006-1"], fold: 1, pages: 11_000 };
+    s.published.ja = {
+      indexes: ["pages-ja-20261006-1"],
+      fold: 1,
+      pages: 11_000,
+    };
     expect(ocrExperiment(s, NOW)).toEqual({
       text: "Japanese pages we read ourselves are in the search.",
       searchable: "11,000 pages are searchable now.",
@@ -465,7 +632,9 @@ function ocrJa(o: Partial<OcrJa>): Status["ocr_ja"] {
 describe("headline", () => {
   it("compares searchable pages with every processed page", () => {
     const h = headline(status({}));
-    expect(h.text).toBe("Searchable now: 6,557,925 of 23,794,152 downloaded pages (28%)");
+    expect(h.text).toBe(
+      "Searchable now: 6,557,925 of 23,794,152 downloaded pages (28%)",
+    );
     expect(h.sub).toBe("From 1,217 newspapers, dated 1751 to 1963.");
   });
 

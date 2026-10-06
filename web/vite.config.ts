@@ -23,5 +23,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
+    // The status page writes times in the visitor's zone; tests pin one.
+    env: { TZ: "America/New_York" },
   },
 });

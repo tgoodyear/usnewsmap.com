@@ -18,7 +18,7 @@ import {
   ocrExperiment,
   rightNow,
   steps,
-  utcDate,
+  localDate,
 } from "./now";
 import { TERMS } from "./terms";
 import { Brand } from "../components/Brand";
@@ -77,7 +77,11 @@ export default function StatusPage() {
           Chronicling America
         </a>{" "}
         (
-        <a href="https://www.loc.gov/ndnp/" target="_blank" rel="noopener noreferrer">
+        <a
+          href="https://www.loc.gov/ndnp/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           NEH and Library of Congress
         </a>
         ). <a href="/privacy">Privacy</a>
@@ -133,7 +137,10 @@ function RightNow({ s, now }: { s: Status; now: number }) {
 function Headline({ s }: { s: Status }) {
   const h = headline(s);
   return (
-    <section aria-labelledby="searchable-now" className="status-section status-headline">
+    <section
+      aria-labelledby="searchable-now"
+      className="status-section status-headline"
+    >
       <h2 id="searchable-now" className="status-headline__text">
         {h.text}
       </h2>
@@ -201,7 +208,7 @@ function Searchable({ s }: { s: Status }) {
     <section aria-labelledby="whats-searchable" className="status-section">
       <h2 id="whats-searchable">What&apos;s searchable now</h2>
       <p>
-        The site searches the update that went live {utcDate(lastUpdate(s))}:{" "}
+        The site searches the update that went live {localDate(lastUpdate(s))}:{" "}
         {count(p.pages)} pages from {count(p.titles)} newspapers in{" "}
         {count(p.places)} places, dated {longDate(p.bounds.from)} to{" "}
         {longDate(p.bounds.to)}
@@ -223,19 +230,25 @@ function OcrExperiments({ s, now }: { s: Status; now: number }) {
       <h2 id="ocr-experiments">OCR experiments</h2>
       <p>
         The Library of Congress has no searchable text for its Japanese-language
-        pages. We read those page images ourselves with
-        NDLOCR-Lite, text-recognition software from Japan&apos;s National Diet
-        Library. This runs apart from the steps above.
+        pages. We read those page images ourselves with NDLOCR-Lite,
+        text-recognition software from Japan&apos;s National Diet Library. This
+        runs apart from the steps above.
       </p>
       <p className="status-ocr__line">{line.text}</p>
       {line.progress && (
-        <Bar value={line.progress.done} max={line.progress.total} label={line.progress.label} />
+        <Bar
+          value={line.progress.done}
+          max={line.progress.total}
+          label={line.progress.label}
+        />
       )}
       <p>{line.searchable}</p>
       {o && (
         <p className="status-meta">
           Last report <Time iso={o.updated_at} now={now} />
-          {o.engine && <> · {o.engine.replace(/^(\S+ [0-9a-f]{7})[0-9a-f]+$/, "$1")}</>}
+          {o.engine && (
+            <> · {o.engine.replace(/^(\S+ [0-9a-f]{7})[0-9a-f]+$/, "$1")}</>
+          )}
         </p>
       )}
     </section>
@@ -274,9 +287,9 @@ function Technical({ s, now }: { s: Status; now: number }) {
         <TitlesSection s={s} />
         <h3>Raw response</h3>
         <p>
-          The page reads <a href={`${API_BASE}/v1/status`}>/v1/status</a>{" "}
-          (JSON, schema {s.schema}). The API reads the pipeline state at most
-          once a minute.
+          The page reads <a href={`${API_BASE}/v1/status`}>/v1/status</a> (JSON,
+          schema {s.schema}). The API reads the pipeline state at most once a
+          minute.
         </p>
         <details>
           <summary>Raw response</summary>
@@ -316,7 +329,10 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
                     : "nothing running",
               ],
               ["Execution", a.run ?? "–"],
-              ["Execution started", <Time key="r" iso={a.run_started_at} now={now} />],
+              [
+                "Execution started",
+                <Time key="r" iso={a.run_started_at} now={now} />,
+              ],
               ["Step started", <Time key="s" iso={a.since} now={now} />],
               ["Last report", <Time key="p" iso={a.reported_at} now={now} />],
               [
@@ -333,7 +349,10 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
                   ? `${a.merge.step}: ${count(a.merge.splits)} splits, ${a.merge.merges_running} running, ${a.merge.merges_queued} queued`
                   : "–",
               ],
-              ["Next scheduled run", a.next_run ? utcDate(a.next_run) : "none"],
+              [
+                "Next scheduled run",
+                a.next_run ? localDate(a.next_run) : "none",
+              ],
             ]}
           />
           {a.last && (
