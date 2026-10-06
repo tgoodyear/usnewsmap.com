@@ -103,12 +103,13 @@ var scratch = !empty(scratchStorageName)
 // belongs to root.
 var scratchDir = '/scratch/usnm'
 // The init container's 0.25 vCPU / 0.5 GiB count toward the replica's
-// 4 vCPU / 8 GiB on the Consumption profile. On the E4 profile (4 vCPU /
-// 32 GiB a node, less what the platform keeps) the writer gets 26 GiB: the
-// full rebuild with common-word pairs was killed for memory at 7.5 GiB
-// (#172).
+// 4 vCPU / 8 GiB on the Consumption profile. On the E4 profile a replica can
+// have at most 3.25 vCPU / 26 GiB of the node's 4 vCPU / 32 GiB (the rest is
+// the platform's), init container included, so the ingest container gets
+// 3.0 vCPU / 25 GiB: the full rebuild with common-word pairs was killed for
+// memory at 7.5 GiB (#172).
 var consumptionResources = scratch ? { cpu: json('3.75'), memory: '7.5Gi' } : { cpu: json('4.0'), memory: '8Gi' }
-var ingestResources = empty(ingestProfile) ? consumptionResources : { cpu: json('3.25'), memory: '26Gi' }
+var ingestResources = empty(ingestProfile) ? consumptionResources : { cpu: json('3.0'), memory: '25Gi' }
 var scratchEnv = scratch
   ? [
       { name: 'USNM_WORK_DIR', value: scratchDir }
