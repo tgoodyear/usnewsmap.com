@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { PagesLists, WhenLists, medianExtremes, mostPages, statePages, type ListRow } from "./PlaceLists";
+import {
+  PagesLists,
+  WhenLists,
+  exactMedian,
+  medianCandidates,
+  medianExtremes,
+  mostPages,
+  statePages,
+  type ListRow,
+} from "./PlaceLists";
+import { dayNumber } from "../lib/time";
 
 beforeEach(() => window.localStorage.clear());
 afterEach(cleanup);
@@ -103,5 +113,39 @@ describe("hiding the lists", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show earliest and latest" }));
     expect(screen.getByRole("heading", { name: "Earliest and latest" })).toBeTruthy();
     expect(window.localStorage.getItem("usnm.lists")).toBeNull();
+  });
+});
+
+describe("exact median days", () => {
+  it("asks for the places that could make either list, ties at the fifth included", () => {
+    // Six eligible places: all of them could be in one list or the other.
+    expect(medianCandidates(ROWS)).toEqual(["Albany", "Boise", "Buffalo", "Chicago", "Peoria", "Tucson"]);
+    // Twelve places in one month: the ten with the most pages.
+    const same = Array.from({ length: 12 }, (_, i) => row(`P${String(i).padStart(2, "0")}`, "IL", 10 + i, 0.5, "Jun 1896"));
+    const c = medianCandidates(same);
+    expect(c).toHaveLength(10);
+    expect(c).not.toContain("P00");
+    expect(c).not.toContain("P01");
+  });
+
+  it("finds the first day by which half the window's pages had been printed", () => {
+    const days = [100, 105, 110, 120];
+    const hits = [1, 1, 2, 4];
+    expect(exactMedian(days, hits, -Infinity, Infinity)).toBe(110); // 8 pages: the 4th is on day 110
+    expect(exactMedian(days, hits, 105, 115)).toBe(110); // 3 pages in the window: half (1.5) by day 110
+    expect(exactMedian(days, hits, 106, 109)).toBeNaN();
+  });
+
+  it("ranks and labels by the exact day once it is known", () => {
+    const rows = [row("Early", "IL", 10, 0.1, "Jan 1895"), row("Later", "IL", 10, 0.1, "Jan 1895")];
+    const exact = new Map([
+      ["Early", dayNumber("1895-01-03")],
+      ["Later", dayNumber("1895-01-28")],
+    ]);
+    render(<WhenLists rows={rows} onSelect={() => {}} trailing={false} exact={exact} />);
+    const earliest = screen.getByRole("heading", { name: "Earliest median date" }).parentElement!;
+    expect(earliest.textContent).toContain("Early, IL Jan 3, 1895 · 10 pages");
+    const latest = screen.getByRole("heading", { name: "Latest median date" }).parentElement!;
+    expect(latest.textContent).toContain("Later, IL Jan 28, 1895 · 10 pages");
   });
 });

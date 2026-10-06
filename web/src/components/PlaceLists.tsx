@@ -1,4 +1,5 @@
 import { useId, useState, type ReactNode } from "react";
+import { dateFromDay, formatDate } from "../lib/time";
 
 const LIST_LENGTH = 5;
 /** The Median date lists leave out places with fewer matching pages than this: one page has a date, not a median. */
@@ -65,6 +66,43 @@ export function medianExtremes<R extends ListRow>(rows: R[]): { earliest: R[]; l
       .slice(0, LIST_LENGTH),
     eligible: usable.length,
   };
+}
+
+/** At most this many places per end are asked for their exact median day (the API takes 20). */
+const MAX_CANDIDATES = 10;
+
+/**
+ * The places that could be among the five earliest or latest once medians
+ * are known to the day: those ranked by bucket up to the fifth, and any that
+ * share the fifth's bucket, at most MAX_CANDIDATES per end (more pages first).
+ */
+export function medianCandidates(rows: ListRow[]): string[] {
+  const usable = rows.filter((r) => r.value >= MIN_MEDIAN_PAGES && r.when !== undefined && !Number.isNaN(r.when));
+  const end = (dir: 1 | -1) => {
+    const sorted = [...usable].sort((a, b) => dir * (a.when! - b.when!) || b.value - a.value || a.name.localeCompare(b.name));
+    const edge = sorted[Math.min(LIST_LENGTH, sorted.length) - 1];
+    if (!edge) return [];
+    return sorted.filter((r) => dir * (r.when! - edge.when!) <= 0).slice(0, MAX_CANDIDATES);
+  };
+  return [...new Set([...end(1), ...end(-1)].map((r) => r.id))].sort();
+}
+
+/**
+ * The exact median day of a place's matching pages from day `lo` to day `hi`
+ * (inclusive): the first day by which at least half had been printed, as the
+ * bucket median is (`windowQuantile`). NaN with none.
+ */
+export function exactMedian(days: number[], hits: number[], lo: number, hi: number): number {
+  let total = 0;
+  for (let i = 0; i < days.length; i++) if (days[i]! >= lo && days[i]! <= hi) total += hits[i]!;
+  if (total <= 0) return Number.NaN;
+  let seen = 0;
+  for (let i = 0; i < days.length; i++) {
+    if (days[i]! < lo || days[i]! > hi) continue;
+    seen += hits[i]!;
+    if (seen >= total / 2) return days[i]!;
+  }
+  return Number.NaN;
 }
 
 function readOpen(): boolean {
@@ -226,8 +264,25 @@ export function PagesLists({ rows, onSelect, trailing }: ListsProps) {
 }
 
 /** Median date: the places whose matching pages fall earliest and latest. */
-export function WhenLists({ rows, onSelect, trailing }: ListsProps) {
-  const { earliest, latest, eligible } = medianExtremes(rows);
+export function WhenLists({
+  rows,
+  onSelect,
+  trailing,
+  exact,
+}: ListsProps & {
+  /**
+   * Exact median day numbers for every `medianCandidates` place, once
+   * fetched; until then the lists rank and label by bucket.
+   */
+  exact?: Map<string, number> | null;
+}) {
+  const { eligible } = medianExtremes(rows);
+  const ranked = exact
+    ? rows
+        .filter((r) => exact.has(r.id) && !Number.isNaN(exact.get(r.id)!))
+        .map((r) => ({ ...r, when: exact.get(r.id)!, whenLabel: formatDate(dateFromDay(exact.get(r.id)!)) }))
+    : rows;
+  const { earliest, latest } = medianExtremes(ranked);
   const empty =
     eligible === 1
       ? `Only one place has ${MIN_MEDIAN_PAGES} or more matching pages ${scope(trailing)}.`
