@@ -60,16 +60,36 @@ pub struct GazPlace {
 /// The gazetteer, by (state code, key).
 #[derive(Debug, Default)]
 pub struct Gazetteer {
-    /// The first place of each key, and how many places have it.
-    places: HashMap<(&'static str, String), (GazPlace, usize)>,
+    /// The places of each key, the preferred one first.
+    places: HashMap<(&'static str, String), Vec<GazPlace>>,
+}
+
+/// What the gazetteer has for a name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Found<'a> {
+    None,
+    /// One town: the only one of the key, or the only one spelled alike.
+    One(&'a GazPlace),
+    /// Several towns of the key, and not exactly one spelled alike
+    /// (Oakwood, Ohio has three).
+    Ambiguous,
+}
+
+impl<'a> Found<'a> {
+    pub fn one(self) -> Option<&'a GazPlace> {
+        match self {
+            Found::One(p) => Some(p),
+            _ => None,
+        }
+    }
 }
 
 impl Gazetteer {
-    /// Parse `state,name,lat,lon` lines after a header. Of two places with
-    /// one key in a state (the file lists the preferred one first), the
-    /// first is kept and the key counts as ambiguous.
+    /// Parse `state,name,lat,lon` lines after a header. Places whose names
+    /// key alike in a state are kept in file order (the file lists the
+    /// preferred place of a name first).
     pub fn parse(csv: &str) -> anyhow::Result<Self> {
-        let mut places = HashMap::new();
+        let mut places: HashMap<_, Vec<GazPlace>> = HashMap::new();
         let mut lines = csv.lines();
         if lines.next().map(str::trim) != Some("state,name,lat,lon") {
             bail!("the gazetteer's header isn't `state,name,lat,lon`");
@@ -96,21 +116,16 @@ impl Gazetteer {
             if key.is_empty() {
                 bail!("{}: an empty name", at());
             }
-            places
-                .entry((state.code, key))
-                .or_insert((
-                    GazPlace {
-                        name: (*name).to_owned(),
-                        lat,
-                        lon,
-                    },
-                    0,
-                ))
-                .1 += 1;
+            places.entry((state.code, key)).or_default().push(GazPlace {
+                name: (*name).to_owned(),
+                lat,
+                lon,
+            });
         }
         Ok(Self { places })
     }
 
+    /// How many keys it has.
     pub fn len(&self) -> usize {
         self.places.len()
     }
@@ -119,23 +134,56 @@ impl Gazetteer {
         self.places.is_empty()
     }
 
-    /// The town with exactly this key (the preferred one, if several).
+    fn rows(&self, state: &str, key: &str) -> &[GazPlace] {
+        STATES
+            .iter()
+            .find(|s| s.code == state)
+            .and_then(|s| self.places.get(&(s.code, key.to_owned())))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The first (preferred) town with this key, however many there are.
     pub fn get(&self, state: &str, key: &str) -> Option<&GazPlace> {
-        self.entry(state, key).map(|(p, _)| p)
+        self.rows(state, key).first()
     }
 
     /// How many towns of the state have this key.
     pub fn count(&self, state: &str, key: &str) -> usize {
-        self.entry(state, key).map_or(0, |(_, n)| *n)
+        self.rows(state, key).len()
     }
 
-    fn entry(&self, state: &str, key: &str) -> Option<&(GazPlace, usize)> {
-        let code = STATES.iter().find(|s| s.code == state)?.code;
-        self.places.get(&(code, key.to_owned()))
+    /// The town with this key, for a place LoC spells `spelling`: the
+    /// key's only town, else the only one whose name has the same words
+    /// (case, accents and "St."/"Saint" aside, spacing counts: AL's
+    /// "Lake View" isn't its "Lakeview"), else ambiguous.
+    pub fn find(&self, state: &str, key: &str, spelling: &str) -> Found<'_> {
+        pick(self.rows(state, key), &key_words(spelling))
     }
 
-    /// The town with this key, else "X" for "X City" or "X City" for "X"
-    /// (LoC's "Langston City" is the gazetteer's Langston).
+    /// [`Self::find`], else "X" for "X City" or "X City" for "X" (LoC's
+    /// "Langston City" is the gazetteer's Langston).
+    pub fn find_near(&self, state: &str, key: &str, spelling: &str) -> Found<'_> {
+        match self.find(state, key, spelling) {
+            Found::None => {}
+            f => return f,
+        }
+        let mut words = key_words(spelling);
+        if let Some(base) = key.strip_suffix("city").filter(|b| !b.is_empty()) {
+            let mut w = words.clone();
+            if w.last().is_some_and(|l| l == "city") {
+                w.pop();
+            }
+            match pick(self.rows(state, base), &w) {
+                Found::None => {}
+                f => return f,
+            }
+        }
+        words.push("city".into());
+        pick(self.rows(state, &format!("{key}city")), &words)
+    }
+
+    /// The first town with this key or its "X City" variant, however many
+    /// there are (for review lists and dry runs, not for coordinates).
     pub fn near(&self, state: &str, key: &str) -> Option<&GazPlace> {
         self.get(state, key)
             .or_else(|| {
@@ -144,6 +192,20 @@ impl Gazetteer {
                     .and_then(|b| self.get(state, b))
             })
             .or_else(|| self.get(state, &format!("{key}city")))
+    }
+}
+
+fn pick<'a>(rows: &'a [GazPlace], words: &[String]) -> Found<'a> {
+    match rows {
+        [] => Found::None,
+        [one] => Found::One(one),
+        many => {
+            let mut alike = many.iter().filter(|r| key_words(&r.name) == words);
+            match (alike.next(), alike.next()) {
+                (Some(one), None) => Found::One(one),
+                _ => Found::Ambiguous,
+            }
+        }
     }
 }
 
@@ -588,6 +650,42 @@ mod tests {
         assert!(bad(&[alias("A", "B", "XX")]));
         assert!(bad(&[alias("St. Paul", "Saint Paul", "MN")]));
         assert!(!bad(&[alias("A", "B", "AK"), alias("B", "C", "AL")]));
+    }
+
+    #[test]
+    fn a_spelling_picks_among_towns_that_key_alike() {
+        let g = Gazetteer::parse(
+            "state,name,lat,lon\nAL,Lake View,33.28,-87.14\nAL,Lakeview,34.39,-85.98\nOH,Oakwood,39.72,-84.17\nOH,Oakwood,41.37,-81.5\nOK,Langston,35.94,-97.26\n",
+        )
+        .unwrap();
+        assert_eq!(
+            g.find("AL", "lakeview", "Lake View").one().unwrap().lat,
+            33.28
+        );
+        assert_eq!(
+            g.find("AL", "lakeview", "Lakeview").one().unwrap().lat,
+            34.39
+        );
+        assert_eq!(
+            g.find("AL", "lakeview", "Lake-View").one().unwrap().lat,
+            33.28
+        );
+        assert_eq!(g.find("AL", "lakeview", "Lake Vue"), Found::Ambiguous);
+        assert_eq!(g.find("OH", "oakwood", "Oakwood"), Found::Ambiguous);
+        assert_eq!(g.find("OH", "elsewhere", "Elsewhere"), Found::None);
+        // The key's only town, whatever the spelling.
+        assert_eq!(
+            g.find("OK", "langston", "Langstown").one().unwrap().name,
+            "Langston"
+        );
+        assert_eq!(
+            g.find_near("OK", "langstoncity", "Langston City")
+                .one()
+                .unwrap()
+                .name,
+            "Langston"
+        );
+        assert_eq!(g.count("AL", "lakeview"), 2);
     }
 
     #[test]

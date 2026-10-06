@@ -46,7 +46,7 @@ use usnm_store::ObjectStore;
 
 use crate::activity::Reporter;
 use crate::catalog::{Catalog, Place, Title, PLACES, TITLES};
-use crate::places::{self, CityName, Geo};
+use crate::places::{self, CityName, Found, Geo};
 use crate::source;
 
 /// LoC's item endpoint; a title record is `{base}/{lccn}/?fo=json`.
@@ -438,8 +438,8 @@ pub const DISAGREE_KM: f64 = 25.0;
 /// within this.
 pub const CITY_SUFFIX_KM: f64 = 10.0;
 /// A LoC point (from single-city records) further than this from the
-/// gazetteer's only town of the name in the state gives way to the
-/// gazetteer's.
+/// gazetteer's town of the name (when the name isn't ambiguous there,
+/// [`Found::One`]) gives way to the gazetteer's.
 pub const FAR_KM: f64 = 100.0;
 /// The report lists at most this many disagreements.
 const MAX_LISTED: usize = 50;
@@ -525,8 +525,8 @@ enum Source {
     Override,
     Loc,
     Gazetteer,
-    /// The gazetteer's only town of the name, over a LoC point more than
-    /// [`FAR_KM`] from it.
+    /// The gazetteer's town of the name (not ambiguous), over a LoC point
+    /// more than [`FAR_KM`] from it.
     GazetteerOverLoc,
     LocMultiCity,
     StateCentroid,
@@ -565,7 +565,48 @@ struct Places<'a> {
     geo: &'a Geo,
 }
 
+/// How the titles of one spelling variant name their town.
+struct Spelling {
+    /// An alias's name for it.
+    alias: Option<String>,
+    /// LoC's most frequent spelling among them, cleaned (the lowest
+    /// LCCN's on a tie).
+    loc: String,
+}
+
+impl Spelling {
+    /// The spelling to look up in the gazetteer.
+    fn lookup(&self) -> String {
+        self.alias.clone().unwrap_or_else(|| self.loc.clone())
+    }
+}
+
 impl Places<'_> {
+    /// How the titles of `members` keyed `key` spell their town.
+    fn spelling(&self, members: &[usize], key: &str) -> Option<Spelling> {
+        // Spelling → (titles, first position); members are in LCCN order.
+        let mut seen: HashMap<&str, (usize, usize)> = HashMap::new();
+        let mut alias = None;
+        for (pos, n) in members
+            .iter()
+            .filter_map(|&m| self.names[m].as_ref())
+            .filter(|n| n.key == key)
+            .enumerate()
+        {
+            seen.entry(n.clean.as_str()).or_insert((0, pos)).0 += 1;
+            if alias.is_none() {
+                alias = n.alias.clone();
+            }
+        }
+        let (loc, _) = seen
+            .into_iter()
+            .max_by_key(|(_, (n, first))| (*n, std::cmp::Reverse(*first)))?;
+        Some(Spelling {
+            alias,
+            loc: loc.to_owned(),
+        })
+    }
+
     /// Coordinates for the titles `members` of a place known by `keys`
     /// (04 §4.6): an override; else the median of LoC's points on records
     /// that list only this city; else the gazetteer; else the median of
@@ -614,21 +655,42 @@ impl Places<'_> {
             }
         }
         let gazetteer = &self.geo.gazetteer;
-        // The town with this key, and whether it is the state's only one.
-        let exact = keys.iter().find_map(|k| {
-            gazetteer
-                .get(code, k)
-                .map(|g| ((g.lat, g.lon), gazetteer.count(code, k) == 1))
-        });
-        let gaz = exact.map(|(g, _)| g).or_else(|| {
+        // The gazetteer's town for the place's keys, spelled as its titles
+        // (or an alias) spell them; an ambiguous name gives none.
+        let lookup = |near: bool| {
+            keys.iter()
+                .map(|k| {
+                    let s = self
+                        .spelling(members, k)
+                        .map(|s| s.lookup())
+                        .unwrap_or_default();
+                    if near {
+                        gazetteer.find_near(code, k, &s)
+                    } else {
+                        gazetteer.find(code, k, &s)
+                    }
+                })
+                .find(|f| *f != Found::None)
+                .unwrap_or(Found::None)
+        };
+        let exact = lookup(false);
+        let found = if exact == Found::None {
+            lookup(true)
+        } else {
+            exact
+        };
+        let gaz = found.one().map(|g| (g.lat, g.lon));
+        // For the review list, an ambiguous name is compared with its first town.
+        let review = gaz.or_else(|| {
             keys.iter()
                 .find_map(|k| gazetteer.near(code, k))
                 .map(|g| (g.lat, g.lon))
         });
         if let Some((lat, lon)) = median(&single) {
-            // LoC's point far from the state's only town of the name is
+            // LoC's point far from the state's one town of the name is
             // LoC's mistake (a state's or another town's point).
-            if let Some((g, true)) = exact {
+            if let Found::One(g) = exact {
+                let g = (g.lat, g.lon);
                 if places::distance_km((lat, lon), g) > FAR_KM {
                     return Point {
                         check: Some(((lat, lon), g)),
@@ -637,7 +699,7 @@ impl Places<'_> {
                 }
             }
             return Point {
-                check: gaz.map(|g| ((lat, lon), g)),
+                check: review.map(|g| ((lat, lon), g)),
                 ..point(lat, lon, "city", Source::Loc)
             };
         }
@@ -873,22 +935,24 @@ pub fn build(
             None => format!("{} (state)", state.name),
             Some(_) => {
                 // The name: an override's, else an alias's, else the
-                // gazetteer's spelling of LoC's, else LoC's (from the first
-                // title of the variant with most titles), tidied.
-                let own: Vec<&CityName> = g
-                    .members
-                    .iter()
-                    .filter_map(|&m| names[m].as_ref())
-                    .filter(|n| n.key == g.key)
-                    .collect();
-                let loc = &own.first().expect("the group's own key has a title").clean;
+                // gazetteer's spelling of LoC's, else LoC's (its most
+                // frequent spelling among the titles of the variant with
+                // most titles, the lowest LCCN's on a tie), tidied.
+                let own = ctx
+                    .spelling(&g.members, &g.key)
+                    .expect("the group's own key has a title");
+                let loc = &own.loc;
                 point
                     .name
                     .clone()
-                    .or_else(|| own.iter().find_map(|n| n.alias.clone()))
+                    .or_else(|| own.alias.clone())
                     .or_else(|| {
-                        geo.gazetteer
-                            .get(g.code, &g.key)
+                        let found = match geo.gazetteer.find(g.code, &g.key, loc) {
+                            Found::One(p) => Some(p),
+                            Found::Ambiguous => geo.gazetteer.get(g.code, &g.key),
+                            Found::None => None,
+                        };
+                        found
                             .filter(|p| places::respelling(loc, &p.name))
                             .map(|p| p.name.clone())
                     })
@@ -2486,5 +2550,120 @@ mod tests {
             (p.name.as_str(), p.lat, rep.from_override),
             ("Saint Paul", 44.9, 1)
         );
+    }
+
+    #[test]
+    fn towns_that_key_alike_are_told_apart_by_spelling() {
+        let gaz = Gazetteer::parse(
+            "state,name,lat,lon\nAL,Lake View,33.28,-87.14\nAL,Lakeview,34.39,-85.98\nOH,Oakwood,39.72,-84.17\nOH,Oakwood,41.37,-81.5\n",
+        )
+        .unwrap();
+        let geo = Geo::new(gaz, &[]).unwrap();
+        // No LoC point: the town spelled alike.
+        let (c, rep) = catalog_of(
+            vec![raw(
+                "sn1",
+                "A (Lake View, Ala.) 1900-1901",
+                &["lake view"],
+                &["alabama"],
+                None,
+            )],
+            &geo,
+        );
+        let p = place_of(&c, "sn1");
+        assert_eq!((p.name.as_str(), p.lat), ("Lake View", 33.28));
+        assert_eq!(rep.from_gazetteer, 1);
+        let (c, _) = catalog_of(
+            vec![raw(
+                "sn1",
+                "A (Lakeview, Ala.) 1900-1901",
+                &["lakeview"],
+                &["alabama"],
+                None,
+            )],
+            &geo,
+        );
+        assert_eq!(place_of(&c, "sn1").lat, 34.39);
+        // A LoC point 130 km from the town spelled alike gives way to it.
+        let (c, rep) = catalog_of(
+            vec![raw(
+                "sn1",
+                "A (Lake View, Ala.) 1900-1901",
+                &["lake view"],
+                &["alabama"],
+                Some([34.39, -85.98]),
+            )],
+            &geo,
+        );
+        assert_eq!(
+            (place_of(&c, "sn1").lat, rep.gazetteer_over_loc),
+            (33.28, 1)
+        );
+
+        // Ambiguous (two Oakwoods): no gazetteer point, and no replacement.
+        let (c, rep) = catalog_of(
+            vec![raw(
+                "sn1",
+                "A (Oakwood, Ohio) 1900-1901",
+                &["oakwood"],
+                &["ohio"],
+                None,
+            )],
+            &geo,
+        );
+        assert_eq!(place_of(&c, "sn1").precision, "state");
+        assert_eq!((rep.from_gazetteer, rep.state_centroid), (0, 1));
+        let moved = raw(
+            "sn1",
+            "A (Oakwood, Ohio) 1900-1901",
+            &["oakwood", "dayton"],
+            &["ohio"],
+            Some([39.76, -84.19]),
+        );
+        let (c, rep) = catalog_of(vec![moved], &geo);
+        assert_eq!(
+            (place_of(&c, "sn1").lat, rep.from_loc_multi_city),
+            (39.76, 1)
+        );
+        let (c, rep) = catalog_of(
+            vec![raw(
+                "sn1",
+                "A (Oakwood, Ohio) 1900-1901",
+                &["oakwood"],
+                &["ohio"],
+                Some([40.5, -84.5]),
+            )],
+            &geo,
+        );
+        assert_eq!((place_of(&c, "sn1").lat, rep.gazetteer_over_loc), (40.5, 0));
+        assert_eq!(rep.disagreements, 1, "still listed for review");
+    }
+
+    #[test]
+    fn a_place_is_named_by_its_most_frequent_spelling() {
+        let title = |lccn: &str, city: &str| {
+            raw(
+                lccn,
+                &format!("Paper ({city}, Iowa) 1900-1901"),
+                &[&city.to_lowercase()],
+                &["iowa"],
+                Some([43.0, -91.18]),
+            )
+        };
+        let (c, _) = catalog_of(
+            vec![
+                title("sn1", "Mc Gregor"),
+                title("sn2", "McGregor"),
+                title("sn3", "McGregor"),
+            ],
+            &Geo::default(),
+        );
+        assert_eq!(place_of(&c, "sn1").name, "McGregor");
+        // A tie: the lowest LCCN's.
+        let (c, _) = catalog_of(
+            vec![title("sn1", "Mc Gregor"), title("sn2", "McGregor")],
+            &Geo::default(),
+        );
+        assert_eq!(place_of(&c, "sn2").name, "Mc Gregor");
     }
 }

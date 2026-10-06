@@ -222,7 +222,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!(
-        "\n== LoC points replaced by the gazetteer (> 100 km from the state's only town of the name): {} ==",
+        "\n== LoC points replaced by the gazetteer (> 100 km from the gazetteer's town, name not ambiguous): {} ==",
         report.gazetteer_over_loc
     );
     for d in &report.gazetteer_over_loc_places {

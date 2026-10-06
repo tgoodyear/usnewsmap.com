@@ -292,7 +292,7 @@ async fn geocode(reference: &dyn usnm_store::ObjectStore) -> anyhow::Result<()> 
         tracing::info!(
             places = report.gazetteer_over_loc,
             list = ?report.gazetteer_over_loc_places,
-            "LoC points more than 100 km from the state's only town of the name; the gazetteer's used"
+            "LoC points more than 100 km from the gazetteer's town of the name (not ambiguous); the gazetteer's used"
         );
     }
     if report.disagreements > 0 {
