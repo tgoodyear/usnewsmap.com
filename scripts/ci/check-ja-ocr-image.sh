@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 # The Japanese OCR image ($1) runs NDLOCR-Lite as its non-root user and reads
-# a known headline (Rocky Shimpo, 1945-01-01, page 4) correctly, as text and as ALTO.
+# a known headline (Rocky Shimpo, 1945-01-01, page 4) correctly, as text and as ALTO,
+# and has the word lists the OCR quality audit (quality.py) reads.
 set -euo pipefail
 docker run --rm --entrypoint python3 "$1" -c \
-  'import onnxruntime, cv2, pyarrow, azure.identity, azure.storage.blob; print("imports ok")'
+  'import onnxruntime, cv2, pyarrow, azure.identity, azure.storage.blob, wordfreq; print("imports ok")'
+# Every language the audit maps has its own wordfreq list in the image (no
+# fallback to a "nearest" language, no download at run time).
+docker run --rm -w /opt/jaocr --entrypoint python3 "$1" -c '
+import quality
+for lang, code in sorted(quality.WORDFREQ.items()):
+    words = quality.wordfreq_words(code)
+    assert words and len(words) > 20000, (lang, code, words and len(words))
+s = quality.score("The council met on Tuesday and voted for the new school", quality.wordfreq_words("en"), "eng")
+assert s.dict_share == 1.0, s
+print("word lists ok")'
 work=$(mktemp -d)
 mkdir -p "$work/img" "$work/out"
 chmod 777 "$work/out"

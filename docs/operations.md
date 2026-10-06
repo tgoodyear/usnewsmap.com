@@ -108,6 +108,45 @@ scripts/check-ja-search.py --expect <issue> … --late <issue> …
 
 Issues are named as the OCR job logs them (`ocr issue done`, `<lccn>_<date>_ed-<n>`): `--expect` ones the job finished before the release's `Japanese OCR overlay` line, `--late` ones after it. The script checks that `/v1/meta` names a Japanese index and its pages, that common words (日本, 戦争, 米国, 真珠湾, 収容所) return pages (a version without the index answers 422), that hits are marked as our OCR with the engine, that each `--expect` issue has pages of our OCR (the paper's hits on that day for any of の, に, は, を, in the issue's edition), and that each `--late` issue has none yet. Every request is pinned to the version `/v1/meta` named and doesn't follow redirects, so a release that publishes mid-check fails it rather than mixing versions. It sends Do Not Track, so its searches stay out of the search log, and exits 1 if a check fails.
 
+## OCR quality audit
+
+`jaocr.py quality` (`ja-ocr/quality.py`) measures how good LoC's OCR text is, by language and decade, to show where reading pages again would pay off. It runs in the Japanese OCR job's image because the curated store is reachable only from the VNet. It reads every curated part of every batch in the published version once, keeps a fixed sample of pages (2% by default; a page is in it when a hash of its `doc_id` falls under the cut, so a rerun takes the same pages) and scores each sampled page's stored text:
+
+- `dict_share`: the share of its word tokens (letters only, at least 2, case-folded) found in wordfreq's top 200,000 words for the page's language. Languages wordfreq has no list for (Hawaiian, Yiddish, Dakota, Cherokee, Latin and others) get none.
+- `garbage_share`: the share of its tokens that rmgarbage-style rules flag: over 40 characters, mostly punctuation, the same letter 3 times in a row, 4 or more Latin letters with no vowel or only vowels, or a capital inside a lower-case word ("tHe").
+
+Start it as one execution of the job with `quality` as the argument. `az containerapp job start --args quality` alone doesn't work: when any container flag is given, the CLI sends a container override named after the job, with no image, settings or resources. Send the job's own container with new arguments instead:
+
+```sh
+RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
+JOB=$(scripts/settings.sh prod JA_OCR_JOB)       # caj-usnm-jaocr-prod
+az containerapp job show -n "$JOB" -g "$RG" --query properties.template.containers[0] -o json |
+  jq '{containers: [{name, image, env, resources: {cpu: .resources.cpu, memory: .resources.memory},
+       args: ["quality", "--sample-pct", "2", "--min-pages", "50"]}]}' > /tmp/quality-start.json
+az rest --method post --body @/tmp/quality-start.json \
+  --url "https://management.azure.com$(az containerapp job show -n "$JOB" -g "$RG" --query id -o tsv)/start?api-version=2025-01-01"
+```
+
+The job starts all its replicas (`USNM_JA_OCR_REPLICAS`, 2). The first takes the lock `audit/ocr-quality-<version>-<pct>pct.lock` in the curated container and does the work; the others log `ocr quality running in another replica` and exit. A rerun within an hour of the last run's last lock renewal exits the same way (`JAOCR_AUDIT_LOCK_MINUTES`, 60). It scores parts in 4 worker processes (`JAOCR_QUALITY_WORKERS`) and needs well under the job's 8 GiB; the job's 24-hour replica timeout is its limit.
+
+Output, in the curated container (the data account is reachable only through its private endpoint, like the search log below):
+
+- `audit/ocr-quality-<version>-<pct>pct.json`: every table, the summary and the word lists used.
+- `audit/ocr-quality-<version>-<pct>pct-<table>.csv`, one per table: `by-language-decade`, `by-language`, `by-decade` (pages sampled, shares empty and short, mean and median `dict_share`, shares of pages under 0.5 ("poor") and 0.7 ("fair"), mean `garbage_share`), `worst-titles` (the 100 titles with the lowest median `dict_share`) and `worst-batches` (50).
+
+Titles and batches enter the worst lists with at least `--min-pages` scored pages. The same rows are in Log Analytics, one `ocr quality` line each with a `table` field, then `ocr quality finished` with the totals; `ocr quality progress` lines come every 50 batches:
+
+```sh
+scripts/logs.sh prod ocr-quality 2d
+```
+
+Read the numbers with these limits in mind:
+
+- It is a sample. At 2% a small title or a single decade of a rare language has few pages; check `scored_pages` before trusting a row.
+- The word lists are modern. Old spellings (German "Sclaverei") and rare names count as misses, so text that was read correctly can still score below 1. List sizes also differ by language (Danish about 29,000 words, English 200,000), so compare decades within a language more than languages with each other.
+- The page's language is its title's first catalog language. A title that lists several (`multilingual`, counted in `multilingual_pages`) is scored against the first one only, so its pages in the other languages score low.
+- Pages of titles that list Japanese are left out (our own OCR covers them) and counted in the `japanese_skipped` row. Empty and short pages have no text to score: they count in the empty and short shares only.
+
 ## Search log
 
 The API keeps every search from the site, with only its filters, page count and UTC day, in the `searches` container ([ADR-0012](design/adr/0012-anonymous-search-log.md), 06 §6.8). Nothing expires `searches/days/` and `searches/import/`; staged batches are deleted after 7 days and stay in soft delete for 14 more. To read it:

@@ -1,0 +1,39 @@
+// OCR quality audit (jaocr.py quality): the "ocr quality" rows (by language,
+// by decade, by language and decade, Japanese pages skipped, worst titles and
+// batches), its progress lines, failed parts and the summary.
+// Lines that could carry the managed identity endpoint's secret are dropped.
+ContainerAppConsoleLogs
+| where ContainerName == "jaocr"
+| where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+| where Log has "ocr quality"
+| extend j = parse_json(Log)
+| extend Message = tostring(j.message)
+| where Message startswith "ocr quality"
+| project
+    TimeGenerated,
+    Message,
+    Version = tostring(j.version),
+    Table = tostring(j.table),
+    Rank = tolong(j.rank),
+    Language = tostring(j.language),
+    Decade = tostring(j.decade),
+    Lccn = tostring(j.lccn),
+    Name = tostring(j.name),
+    State = tostring(j.state),
+    Batch = tostring(j.batch),
+    Pages = tolong(j.pages),
+    ScoredPages = tolong(j.scored_pages),
+    EmptyShare = todouble(j.empty_share),
+    ShortShare = todouble(j.short_share),
+    DictMedian = todouble(j.dict_share_median),
+    DictMean = todouble(j.dict_share_mean),
+    PoorShare = todouble(j.poor_share),
+    FairShare = todouble(j.fair_share),
+    GarbageMean = todouble(j.garbage_share_mean),
+    BatchesDone = tolong(j.batches_done),
+    PagesRead = tolong(j.pages_read),
+    PagesSampled = tolong(j.pages_sampled),
+    PartsFailed = tolong(j.parts_failed),
+    ElapsedS = tolong(j.elapsed_s),
+    Error = tostring(j.error)
+| order by TimeGenerated asc, Table asc, Rank asc

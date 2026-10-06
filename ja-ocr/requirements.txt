@@ -3,3 +3,5 @@
 azure-identity==1.26.0
 azure-storage-blob==12.31.0
 pyarrow==25.0.1
+# OCR quality audit (quality.py): word lists, data in the wheel.
+wordfreq==3.1.1
