@@ -84,7 +84,7 @@
     "blurb": "Sucre, French for sugar, in Louisiana's French and bilingual papers.",
     "era": "1828-1860",
     "id": "sucre-louisiana-french",
-    "title": "Sucre in Louisiana French papers",
+    "title": "Sucre in French papers",
     "view": { "bucket": "month", "from": "1840-01-01", "lang": ["fre"], "q": "sucre", "to": "1860-12-31" }
   },
   {
@@ -209,7 +209,7 @@
   },
   {
     "aggregate": "q=copperhead%2A&from=1862-06-01&to=1865-06-30&bucket=month",
-    "blurb": "The label for antiwar Northern Democrats, most used around the 1864 election.",
+    "blurb": "The label for antiwar Northern Democrats, used most in 1863 and 1864.",
     "era": "1860-1865",
     "id": "copperheads",
     "title": "Copperheads",
@@ -305,7 +305,7 @@
   },
   {
     "aggregate": "q=%22Chicago+fire%22&from=1871-09-01&to=1872-06-30&bucket=week",
-    "blurb": "The October 1871 fire that burned much of Chicago, and the relief and rebuilding after.",
+    "blurb": "The October 1871 fire that burned much of Chicago, and the relief and rebuilding.",
     "era": "1865-1877",
     "id": "chicago-fire",
     "title": "Chicago fire, 1871",
@@ -329,7 +329,7 @@
   },
   {
     "aggregate": "q=%22Centennial+Exhibition%22&from=1875-01-01&to=1877-06-30&bucket=week",
-    "blurb": "The Philadelphia world's fair marking 100 years of independence, opened May 1876.",
+    "blurb": "The Philadelphia world's fair that opened in May 1876 to mark 100 years of independence.",
     "era": "1865-1877",
     "id": "centennial-exhibition",
     "title": "Centennial Exhibition, 1876",
@@ -417,10 +417,10 @@
   },
   {
     "aggregate": "q=Guiteau&mode=phrase&from=1881-06-01&to=1882-08-31&bucket=week",
-    "blurb": "Charles Guiteau, who shot President Garfield in July 1881, through his trial and hanging.",
+    "blurb": "Charles Guiteau, who shot President Garfield in July 1881, from his trial to his hanging.",
     "era": "1877-1900",
     "id": "guiteau-trial",
-    "title": "Guiteau trial, 1881",
+    "title": "Guiteau trial, 1881-1882",
     "view": { "bucket": "week", "from": "1881-06-01", "q": "Guiteau", "to": "1882-08-31" }
   },
   {
@@ -537,7 +537,7 @@
   },
   {
     "aggregate": "q=Carranza&mode=phrase&from=1911-01-01&to=1921-12-31&bucket=month&lang=spa",
-    "blurb": "Venustiano Carranza in Spanish and bilingual papers, from his 1913 revolt to his death.",
+    "blurb": "Mexico's Venustiano Carranza in Spanish papers, from his 1913 revolt to his 1920 death.",
     "era": "1900-1929",
     "id": "carranza-spanish-press",
     "title": "Carranza in Spanish papers",
@@ -545,7 +545,7 @@
   },
   {
     "aggregate": "q=Titanic&mode=phrase&from=1912-01-01&to=1912-12-31&bucket=week",
-    "blurb": "The White Star liner sinks on its maiden voyage in April 1912.",
+    "blurb": "The White Star liner that sank on its maiden voyage in April 1912.",
     "era": "1900-1929",
     "id": "titanic-1912",
     "title": "Titanic, 1912",
@@ -649,7 +649,7 @@
   },
   {
     "aggregate": "q=repatriados&mode=phrase&from=1929-01-01&to=1939-12-31&bucket=month&lang=spa",
-    "blurb": "Repatriados, Spanish for repatriates, as Mexican families left the US in the 1930s.",
+    "blurb": "Repatriados, Spanish for repatriates, in Spanish papers as families left for Mexico.",
     "era": "1929-1945",
     "id": "repatriados",
     "title": "Repatriados in Spanish papers",
@@ -753,7 +753,7 @@
   },
   {
     "aggregate": "q=statehood&mode=phrase&from=1945-01-01&to=1963-12-31&bucket=month",
-    "blurb": "Peaks as Congress voted to admit Alaska in July 1958 and Hawaii in March 1959.",
+    "blurb": "Mentions of statehood, peaking as the Alaska and Hawaii bills became law in 1958 and 1959.",
     "era": "1945-1963",
     "id": "alaska-hawaii-statehood",
     "title": "Alaska and Hawaii statehood",
@@ -769,7 +769,7 @@
   },
   {
     "aggregate": "q=television&mode=phrase&from=1945-01-01&to=1963-12-31&bucket=month",
-    "blurb": "Mentions of television, which grew quickly after 1945 and leveled off in the mid-1950s.",
+    "blurb": "Mentions of television, which rose fast from 1948, peaked around 1953, then slowly fell.",
     "era": "1945-1963",
     "id": "television",
     "title": "Television",
