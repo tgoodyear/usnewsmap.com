@@ -247,9 +247,10 @@ function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>
     <section aria-labelledby="ocr-audit" className="status-subsection">
       <h3 id="ocr-audit">OCR quality audit</h3>
       <p>
-        How readable LoC&apos;s text is: for a sample of pages, which language each page is in, and how
-        often its most common words are misread (&quot;tbe&quot; for &quot;the&quot;, &quot;ift&quot;
-        for &quot;ist&quot;).
+        We check how readable the Library of Congress&apos;s text is. For a sample of pages, we detect
+        each page&apos;s language and count how often that language&apos;s 20 most common words are misread
+        by one letter (&quot;tbe&quot; for &quot;the&quot;, &quot;ift&quot; for German &quot;ist&quot;)
+        instead of read correctly. The table calls this the misread rate.
       </p>
       <p className="status-ocr__line">{audit.text}</p>
       {audit.progress && (
@@ -258,8 +259,8 @@ function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>
       {audit.agreement && <p>{audit.agreement}</p>}
       {rows.length > 0 && (
         <Table
-          caption="OCR damage by page language"
-          head={["Language", "Pages sampled", "Common words misread (median)", "Pages with over 10% misread"]}
+          caption="Misread rate by page language"
+          head={["Language", "Pages sampled", "Misread rate, median page", "Pages with misread rate over 10%"]}
           empty="No languages."
           rows={rows.map((r) => [
             languageName(r.language),
@@ -268,6 +269,9 @@ function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>
             fmt(r.damaged_share),
           ])}
         />
+      )}
+      {rows.some((r) => r.damage_rate_median === null) && (
+        <p className="status-note">– means we have no word list for that language.</p>
       )}
     </section>
   );

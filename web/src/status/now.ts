@@ -539,7 +539,7 @@ export function ocrAudit(s: Status, now: number): AuditLine | null {
     const a = q.summary.agreement;
     return {
       text: `Checked ${count(q.pages_sampled)} pages, a ${q.sample_pct}% sample of every batch, on ${localDate(q.finished_at)}.`,
-      agreement: `On ${share(a.differs_share)} of pages the language differs from the newspaper's first listed language (${share(a.multilingual_differs_share)} for newspapers that list more than one). ${share(a.mixed_share)} mix two languages, and ${share(a.und_share)} were too short or garbled to tell.`,
+      agreement: `On ${share(a.differs_share)} of pages with text, the language we detected is not the first language in the newspaper's catalog record (${share(a.multilingual_differs_share)} for newspapers whose record lists more than one). That includes ${share(a.mixed_share)} that mix two languages and ${share(a.und_share)} we could not place: too short, too garbled, or in a language we have no word list for.`,
     };
   }
   if (q.running) {

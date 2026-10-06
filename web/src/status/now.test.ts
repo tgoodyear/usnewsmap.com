@@ -715,7 +715,7 @@ describe("ocrAudit", () => {
     expect(ocrAudit(s, NOW)).toEqual({
       text: `Checked 474,541 pages, a 2% sample of every batch, on ${localDate("2026-10-02T15:00:00Z")}.`,
       agreement:
-        "On 3.1% of pages the language differs from the newspaper's first listed language (41.0% for newspapers that list more than one). 0.4% mix two languages, and under 0.1% were too short or garbled to tell.",
+        "On 3.1% of pages with text, the language we detected is not the first language in the newspaper's catalog record (41.0% for newspapers whose record lists more than one). That includes 0.4% that mix two languages and under 0.1% we could not place: too short, too garbled, or in a language we have no word list for.",
     });
   });
 });
