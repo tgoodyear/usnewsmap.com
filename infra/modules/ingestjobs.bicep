@@ -112,16 +112,19 @@ var consumptionResources = scratch ? { cpu: json('3.75'), memory: '7.5Gi' } : { 
 var ingestResources = empty(ingestProfile) ? consumptionResources : { cpu: json('3.0'), memory: '25Gi' }
 // The writer's tuning on the E4 profile (#172, crates/usnm-ingest/src/sink.rs
 // `WriterTuning`): a 6 GiB indexing heap holds a whole 60,000-page split
-// (about 2.4 GB of index), and a 600 s commit timeout outlasts indexing one,
-// so the indexer writes splits at the target size and merges little; the
-// ingest queue gets 4 GiB. About 16 to 18 GiB at most with an upload and a
-// merge, of the container's 25 GiB. Unset on Consumption: the template's
-// 1 GiB and 30 s, and a 1 GiB queue.
+// (about 2.4 GB of index), so the indexer writes splits near the target size
+// and merges little; the ingest queue gets 4 GiB. The commit timeout is
+// 120 s: the queue's write-ahead log is only truncated when a commit is
+// published, and at 600 s it filled in about 4 minutes (15 to 18 MB/s of
+// pages), so Quickwit answered "no shards available" for the rest of each
+// 10 minutes and the October 6 rebuild averaged 132 pages/s. About 16 to
+// 18 GiB at most with an upload and a merge, of the container's 25 GiB.
+// Unset on Consumption: the template's 1 GiB and 30 s, and a 1 GiB queue.
 var writerTuningEnv = empty(ingestProfile)
   ? []
   : [
       { name: 'USNM_WRITER_HEAP', value: '6GiB' }
-      { name: 'USNM_WRITER_COMMIT_SECS', value: '600' }
+      { name: 'USNM_WRITER_COMMIT_SECS', value: '120' }
       { name: 'USNM_WRITER_QUEUE', value: '4GiB' }
     ]
 var scratchEnv = scratch
