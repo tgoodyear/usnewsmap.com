@@ -498,7 +498,27 @@ export function App() {
                   <strong>{visible.reduce((a, p) => a + p.value, 0).toLocaleString()}</strong> pages
                   {data.coarsened && " · buckets coarsened to fit"}
                 </p>
-                <div className="segmented" role="group" aria-label="View">
+                {/* Options for one measure sit left of the controls every measure has, which keep
+                    their place against the right edge whichever measure is chosen. */}
+                <div className="toolbar__options">
+                  {/* The relative-rate view draws points only (doc 11, 11.6). */}
+                  {view.norm === "raw" && (
+                    <label>
+                      <span className="visually-hidden">Map layer</span>
+                      <select value={view.layer} onChange={(e) => setView({ layer: e.target.value as ViewState["layer"] })}>
+                        <option value="points">Points</option>
+                        <option value="heat">Heat</option>
+                      </select>
+                    </label>
+                  )}
+                  {norm === "skew" && data && (
+                    <DownloadCsv
+                      rows={skewListed}
+                      filename={`usnewsmap-relative-rate-${version}-${bucketStart(data.bucket.unit, data.bucket.from, t)}.csv`}
+                    />
+                  )}
+                </div>
+                <div className="segmented toolbar__view" role="group" aria-label="View">
                   {(["map", "table"] as const).map((tab) => (
                     <button
                       key={tab}
@@ -519,22 +539,6 @@ export function App() {
                       : undefined
                   }
                 />
-                {/* The relative-rate view draws points only (doc 11, 11.6). */}
-                {view.norm === "raw" && (
-                  <label>
-                    <span className="visually-hidden">Map layer</span>
-                    <select value={view.layer} onChange={(e) => setView({ layer: e.target.value as ViewState["layer"] })}>
-                      <option value="points">Points</option>
-                      <option value="heat">Heat</option>
-                    </select>
-                  </label>
-                )}
-                {norm === "skew" && data && (
-                  <DownloadCsv
-                    rows={skewListed}
-                    filename={`usnewsmap-relative-rate-${version}-${bucketStart(data.bucket.unit, data.bucket.from, t)}.csv`}
-                  />
-                )}
                 <ShareButton />
               </div>
 
@@ -755,7 +759,7 @@ function ShareButton() {
   return (
     <button
       type="button"
-      className="button"
+      className="button toolbar__share"
       onClick={(e) => {
         const btn = e.currentTarget;
         void navigator.clipboard?.writeText(window.location.href).then(

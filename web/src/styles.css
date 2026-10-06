@@ -165,6 +165,25 @@ input, select {
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; }
 .summary { margin: 0 auto 0 0; }
+.toolbar__options { display: flex; align-items: center; gap: 8px; }
+.toolbar__options:empty { display: none; }
+/* Wide enough for "Link copied", so copying the link doesn't shift the buttons beside it. */
+.toolbar__share { min-width: 7em; }
+/* Wide screens: one row that never wraps, so no control moves when a measure's options come
+   and go; a long summary is cut short instead. */
+@media (min-width: 1100px) {
+  .toolbar { flex-wrap: nowrap; }
+  .toolbar > * { flex: none; }
+  .toolbar .summary { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+/* Narrower: rows in the same order as the markup (and so as Tab goes): the counts, then a row
+   kept for the measure's options even when it has none, then View, the measures and Share,
+   which wrap the same way whatever the measure. */
+@media (max-width: 1099px) {
+  .toolbar .summary { flex-basis: 100%; }
+  .toolbar__options, .toolbar__options:empty { display: flex; flex-basis: 100%; min-height: 36px; }
+  .toolbar__share { margin-left: auto; }
+}
 .mentions { margin: 0; padding: 0 16px 8px; color: var(--muted); }
 .mentions a { text-decoration: underline; }
 .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }

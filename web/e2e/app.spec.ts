@@ -572,6 +572,44 @@ test("Pages and Median date list places beside the map, and the lists can be hid
   expect(errors).toEqual([]);
 });
 
+test("the toolbar's buttons stay put whichever measure is chosen", async ({ page }) => {
+  await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&bucket=month");
+  const measure = page.getByRole("group", { name: "Measure" });
+  await expect(measure).toBeVisible();
+  const where = async () =>
+    JSON.stringify(
+      await Promise.all(
+        [page.getByRole("button", { name: "Map", exact: true }), measure.getByRole("button", { name: "Pages" }), page.getByRole("button", { name: "Share" })].map(
+          async (b) => {
+            const box = (await b.boundingBox())!;
+            return [Math.round(box.x), Math.round(box.y)];
+          },
+        ),
+      ),
+    );
+  // Both sides of the 1100 px switch between the one-row and stacked toolbars, and between.
+  for (const width of [1440, 1100, 1099, 900, 641]) {
+    await page.setViewportSize({ width, height: 900 });
+    await measure.getByRole("button", { name: "Pages" }).click();
+    const first = await where();
+    for (const m of ["Relative rate", "Median date", "Pages"]) {
+      await measure.getByRole("button", { name: m }).click();
+      await expect(measure.getByRole("button", { name: m })).toHaveAttribute("aria-pressed", "true");
+      expect(await where(), `${width} px, ${m}`).toBe(first);
+    }
+    // Tab goes through the toolbar in the order it reads: top to bottom, then left to right.
+    const order = await page.locator(".toolbar button, .toolbar select").evaluateAll((els) =>
+      els.map((e) => {
+        const r = e.getBoundingClientRect();
+        // Rows by their middle: the small info button sits lower than its neighbours' tops.
+        return [Math.round((r.top + r.height / 2) / 12), Math.round(r.left)];
+      }),
+    );
+    const sorted = [...order].sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!);
+    expect(order, `${width} px reading order`).toEqual(sorted);
+  }
+});
+
 test("the median-date measure colours places by when they mentioned it", async ({ page }) => {
   await page.goto("/?q=gold&from=1895-01-01&to=1897-12-31&bucket=month");
   await expect(page.locator(".mix")).toContainText(/^Matching pages on \d+ days\./);
