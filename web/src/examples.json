@@ -66,15 +66,39 @@
   {
     "aggregate": "q=secession&mode=phrase&from=1860-07-01&to=1861-06-30&bucket=week",
     "blurb": "Southern states left the Union between December 1860 and June 1861.",
-    "era": "1860-1877",
+    "era": "1860-1865",
     "id": "secession",
     "title": "Secession, 1860-1861",
     "view": { "bucket": "week", "from": "1860-07-01", "q": "secession", "to": "1861-06-30" }
   },
   {
+    "aggregate": "q=%22Fort+Sumter%22&from=1860-12-01&to=1861-06-30&bucket=week",
+    "blurb": "The siege and bombardment of the Charleston fort that opened the Civil War.",
+    "era": "1860-1865",
+    "id": "fort-sumter",
+    "title": "Fort Sumter, 1861",
+    "view": { "bucket": "week", "from": "1860-12-01", "q": "\"Fort Sumter\"", "to": "1861-06-30" }
+  },
+  {
+    "aggregate": "q=%22Bull+Run%22&from=1861-07-01&to=1862-12-31&bucket=week",
+    "blurb": "Both Union defeats near Manassas, Virginia, in July 1861 and August 1862.",
+    "era": "1860-1865",
+    "id": "bull-run",
+    "title": "Bull Run, 1861-1862",
+    "view": { "bucket": "week", "from": "1861-07-01", "q": "\"Bull Run\"", "to": "1862-12-31" }
+  },
+  {
+    "aggregate": "q=Antietam&mode=phrase&from=1862-09-01&to=1863-03-31&bucket=week",
+    "blurb": "September 17, 1862, in Maryland: the bloodiest single day of the war.",
+    "era": "1860-1865",
+    "id": "antietam",
+    "title": "Antietam, 1862",
+    "view": { "bucket": "week", "from": "1862-09-01", "q": "Antietam", "to": "1863-03-31" }
+  },
+  {
     "aggregate": "q=Gettysburg&mode=phrase&from=1863-01-01&to=1863-12-31&bucket=week",
     "blurb": "The battle in July 1863, and Lincoln's address at the cemetery in November.",
-    "era": "1860-1877",
+    "era": "1860-1865",
     "id": "gettysburg",
     "title": "Gettysburg, 1863",
     "view": { "bucket": "week", "from": "1863-01-01", "q": "Gettysburg", "to": "1863-12-31" }
@@ -82,15 +106,31 @@
   {
     "aggregate": "q=%22emancipation+proclamation%22&from=1862-09-01&to=1863-12-31&bucket=week",
     "blurb": "Announced in September 1862, Lincoln's order took effect on January 1, 1863.",
-    "era": "1860-1877",
+    "era": "1860-1865",
     "id": "emancipation",
     "title": "Emancipation Proclamation",
     "view": { "bucket": "week", "from": "1862-09-01", "q": "\"emancipation proclamation\"", "to": "1863-12-31" }
   },
   {
+    "aggregate": "q=Andersonville&mode=phrase&from=1864-01-01&to=1866-06-30&bucket=month",
+    "blurb": "The Confederate prison camp in Georgia, and its commandant's trial in 1865.",
+    "era": "1860-1865",
+    "id": "andersonville",
+    "title": "Andersonville prison",
+    "view": { "bucket": "month", "from": "1864-01-01", "q": "Andersonville", "to": "1866-06-30" }
+  },
+  {
+    "aggregate": "q=%22Wilkes+Booth%22&from=1865-04-01&to=1865-12-31&bucket=week",
+    "blurb": "John Wilkes Booth shot Lincoln on April 14, 1865, and was caught 12 days later.",
+    "era": "1860-1865",
+    "id": "wilkes-booth",
+    "title": "Lincoln assassinated, 1865",
+    "view": { "bucket": "week", "from": "1865-04-01", "q": "\"Wilkes Booth\"", "to": "1865-12-31" }
+  },
+  {
     "aggregate": "q=%22pacific+railroad%22&from=1860-01-01&to=1872-12-31&bucket=month",
     "blurb": "The first transcontinental line, joined at Promontory Summit in May 1869.",
-    "era": "1860-1877",
+    "era": "1865-1877",
     "id": "pacific-railroad",
     "title": "Pacific Railroad",
     "view": { "bucket": "month", "from": "1860-01-01", "q": "\"pacific railroad\"", "to": "1872-12-31" }
@@ -98,7 +138,7 @@
   {
     "aggregate": "q=greenback&mode=phrase&from=1862-01-01&to=1890-12-31&bucket=month",
     "blurb": "Civil War paper money, and the Greenback Party of the 1870s and 1880s.",
-    "era": "1860-1877",
+    "era": "1865-1877",
     "id": "greenback",
     "title": "Greenbacks",
     "view": { "bucket": "month", "from": "1862-01-01", "q": "greenback", "to": "1890-12-31" }
@@ -106,15 +146,23 @@
   {
     "aggregate": "q=%22Ku+Klux%22&from=1868-01-01&to=1872-12-31&bucket=month",
     "blurb": "Reports of Klan violence in the South, and the federal law against it in April 1871.",
-    "era": "1860-1877",
+    "era": "1865-1877",
     "id": "ku-klux-1870s",
     "title": "Ku Klux Klan Act, 1871",
     "view": { "bucket": "month", "from": "1868-01-01", "q": "\"Ku Klux\"", "to": "1872-12-31" }
   },
   {
+    "aggregate": "q=scalawag%2A&from=1866-01-01&to=1880-12-31&bucket=month",
+    "blurb": "The insult for white Southerners who sided with Reconstruction's Republicans.",
+    "era": "1865-1877",
+    "id": "scalawag",
+    "title": "Scalawags",
+    "view": { "bucket": "month", "from": "1866-01-01", "q": "scalawag*", "to": "1880-12-31" }
+  },
+  {
     "aggregate": "q=Custer&mode=phrase&from=1876-01-01&to=1877-06-30&bucket=week",
     "blurb": "The defeat of Custer's cavalry by Lakota, Cheyenne and Arapaho warriors in June 1876.",
-    "era": "1860-1877",
+    "era": "1865-1877",
     "id": "custer",
     "title": "Little Bighorn, 1876",
     "view": { "bucket": "week", "from": "1876-01-01", "q": "Custer", "to": "1877-06-30" }
@@ -122,7 +170,7 @@
   {
     "aggregate": "q=%22electoral+commission%22&from=1876-11-01&to=1877-04-30&bucket=week",
     "blurb": "Congress set up a commission to settle the Hayes-Tilden contest in early 1877.",
-    "era": "1860-1877",
+    "era": "1865-1877",
     "id": "election-1876",
     "title": "Disputed election, 1876",
     "view": { "bucket": "week", "from": "1876-11-01", "q": "\"electoral commission\"", "to": "1877-04-30" }
