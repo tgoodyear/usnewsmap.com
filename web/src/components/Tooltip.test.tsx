@@ -28,4 +28,29 @@ describe("Tooltip", () => {
     fireEvent.mouseLeave(text);
     expect(note.hidden).toBe(true);
   });
+
+  it("follows its text when the page scrolls or the window changes size, inside the window", () => {
+    render(
+      <p>
+        <Tooltip note="A note.">
+          <strong>395</strong> pages
+        </Tooltip>
+      </p>,
+    );
+    const note = screen.getByRole("tooltip", { hidden: true });
+    const text = note.parentElement!;
+    let rect = { left: 100, bottom: 50 };
+    text.getBoundingClientRect = () => ({ ...rect, top: rect.bottom - 20, right: rect.left + 80, width: 80, height: 20, x: rect.left, y: rect.bottom - 20, toJSON: () => ({}) });
+    window.innerWidth = 1024;
+    fireEvent.focus(text);
+    expect([note.style.left, note.style.top]).toEqual(["100px", "56px"]);
+    // Scrolled: lower down and further right.
+    rect = { left: 300, bottom: 200 };
+    fireEvent.scroll(window);
+    expect([note.style.left, note.style.top]).toEqual(["300px", "206px"]);
+    // A narrow window: the note stays inside it (320 px wide, 8 px from the edge).
+    window.innerWidth = 400;
+    fireEvent(window, new Event("resize"));
+    expect([note.style.left, note.style.top]).toEqual(["72px", "206px"]);
+  });
 });

@@ -31,14 +31,19 @@ describe("americanStoriesNote", () => {
 
 describe("americanStoriesOnlyNote", () => {
   it("counts the pages only American Stories' text matched, out of every matching page", () => {
-    expect(americanStoriesOnlyNote(1234, 20000)).toBe(
+    expect(americanStoriesOnlyNote(1234, 20000, 20000)).toBe(
       "1,234 of the 20,000 pages in this search match only in American Stories' text (Dell et al. 2023), not in the Library of Congress text.",
     );
-    expect(americanStoriesOnlyNote(1, 3)).toMatch(/^1 of the 3 pages in this search matches only/);
+    expect(americanStoriesOnlyNote(1, 3, 3)).toMatch(/^1 of the 3 pages in this search matches only/);
   });
 
   it("says nothing when no page or no count", () => {
-    expect(americanStoriesOnlyNote(0, 20)).toBeNull();
-    expect(americanStoriesOnlyNote(undefined, 20)).toBeNull();
+    expect(americanStoriesOnlyNote(0, 20, 20)).toBeNull();
+    expect(americanStoriesOnlyNote(undefined, 20, 20)).toBeNull();
+  });
+
+  it("says nothing while the count shown is only part of the search (playback, a trailing window)", () => {
+    expect(americanStoriesOnlyNote(5, 20, 12)).toBeNull();
+    expect(americanStoriesOnlyNote(5, 20, 0)).toBeNull();
   });
 });

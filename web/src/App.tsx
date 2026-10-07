@@ -336,9 +336,13 @@ export function App() {
   const filteredPaper = view.lccn.length > 0 ? (papers.find((p) => view.lccn.includes(p.lccn))?.title ?? view.lccn.join(", ")) : null;
 
   const visible = points.filter((p) => p.value > 0);
-  const pageCount = visible.reduce((a, p) => a + p.value, 0).toLocaleString();
-  // Pages only American Stories' text matched (#218), when the API says.
-  const asOnlyNote = data ? americanStoriesOnlyNote(data.total.american_stories_only, data.total.hits) : null;
+  const pagesShown = visible.reduce((a, p) => a + p.value, 0);
+  const pageCount = pagesShown.toLocaleString();
+  // Pages only American Stories' text matched (#218), when the API says. Its
+  // count is for the whole search, so only while the count shown is too.
+  const asOnlyNote = data
+    ? americanStoriesOnlyNote(data.total.american_stories_only, data.total.hits, pagesShown)
+    : null;
 
   // Median date lists: the bucket only gives a month (or year), so the
   // places that could be listed get their pages per day (/v1/days) and their

@@ -665,6 +665,7 @@ test("a page found only in American Stories' text is marked, and the page count 
   // The page count describes itself, and its note shows on keyboard focus.
   const count = page.locator(".summary .tooltip");
   const note = page.getByRole("tooltip");
+  const full = Number((await count.locator("strong").textContent())?.replace(/,/g, ""));
   await expect(note).toBeHidden();
   await count.focus();
   await expect(note).toBeVisible();
@@ -673,4 +674,14 @@ test("a page found only in American Stories' text is marked, and the page count 
   await expectAccessible(page);
   await page.keyboard.press("Escape");
   await expect(note).toBeHidden();
+
+  // Played back to early September, the count is only part of the search,
+  // so the whole search's number isn't offered as a note on it.
+  await page.goto("/?q=gold&from=1896-08-25&to=1896-09-30&place=P00001&tab=table&t=1896-09-05");
+  await expect(page.locator(".dock__label")).toContainText("1896");
+  const shown = Number((await page.locator(".summary strong").nth(1).textContent())?.replace(/,/g, ""));
+  expect(shown).toBeGreaterThan(0);
+  expect(shown).toBeLessThan(full);
+  await expect(page.locator(".summary .tooltip")).toHaveCount(0);
+  await expect(page.getByRole("tooltip", { includeHidden: true })).toHaveCount(0);
 });

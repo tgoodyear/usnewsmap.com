@@ -28,10 +28,11 @@ export function americanStoriesNote(h: Pick<HitItem, "matched_in" | "snippet_sou
 /**
  * The note on the search's page count: how many of the matching pages
  * matched only in American Stories' text. Null when the API doesn't say, or
- * none did.
+ * none did, or the count shown isn't every matching page (playback stopped
+ * short of the end, or a trailing window): the number is for the whole search.
  */
-export function americanStoriesOnlyNote(only: number | undefined, total: number): string | null {
-  if (only === undefined || only <= 0) return null;
+export function americanStoriesOnlyNote(only: number | undefined, total: number, shown: number): string | null {
+  if (only === undefined || only <= 0 || shown !== total) return null;
   const n = only.toLocaleString("en-US");
   return `${n} of the ${total.toLocaleString("en-US")} pages in this search ${only === 1 ? "matches" : "match"} only in American Stories' text (Dell et al. 2023), not in the Library of Congress text.`;
 }

@@ -17,12 +17,12 @@ export function Tooltip({ note, children }: { note: string; children: ReactNode 
   const ref = useRef<HTMLSpanElement>(null);
   const [at, setAt] = useState<{ left: number; top: number } | null>(null);
   // Under the text, kept inside the window.
-  const show = () => {
+  const place = () => {
     const r = ref.current?.getBoundingClientRect();
-    if (!r) return;
-    const left = Math.max(EDGE, Math.min(r.left, window.innerWidth - EDGE - WIDTH));
-    setAt({ left, top: r.bottom + 6 });
+    if (!r) return null;
+    return { left: Math.max(EDGE, Math.min(r.left, window.innerWidth - EDGE - WIDTH)), top: r.bottom + 6 };
   };
+  const show = () => setAt(place());
   const hide = () => setAt(null);
   const open = at !== null;
   useEffect(() => {
@@ -30,10 +30,10 @@ export function Tooltip({ note, children }: { note: string; children: ReactNode 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setAt(null);
     };
-    // The page or a panel scrolled: follow the text.
+    // The page or a panel scrolled, or the window changed size: follow the text.
     const onMove = () => {
-      const r = ref.current?.getBoundingClientRect();
-      if (r) setAt((a) => (a && a.top !== r.bottom + 6 ? { ...a, top: r.bottom + 6 } : a));
+      const p = place();
+      if (p) setAt((a) => (a && (a.top !== p.top || a.left !== p.left) ? p : a));
     };
     document.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onMove, true);
