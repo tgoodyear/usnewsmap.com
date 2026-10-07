@@ -149,3 +149,31 @@ describe("exact median days", () => {
     expect(latest.textContent).toContain("Later, IL Jan 28, 1895 · 10 pages");
   });
 });
+
+describe("WhenLists while the exact days load", () => {
+  const rows = [row("Early", "IL", 10, 0.1, "Jan 1895"), row("Later", "IL", 10, 0.1, "Jan 1895")];
+
+  it("says it is loading and lists nothing (no month-level list first)", () => {
+    render(<WhenLists rows={rows} onSelect={() => {}} trailing={false} status="loading" />);
+    expect(screen.getByRole("status").textContent).toBe("Finding each place's median day…");
+    expect(screen.queryByRole("heading", { name: "Earliest median date" })).toBeNull();
+    expect(screen.queryByText(/Jan 1895/)).toBeNull();
+  });
+
+  it("keeps the last exact lists, marked as updating", () => {
+    const exact = new Map([
+      ["Early", dayNumber("1895-01-03")],
+      ["Later", dayNumber("1895-01-28")],
+    ]);
+    render(<WhenLists rows={rows} onSelect={() => {}} trailing={false} exact={exact} status="updating" />);
+    expect(screen.getByText("Jan 3, 1895 · 10 pages")).toBeTruthy();
+    expect(screen.getByText("Updating for the new date…")).toBeTruthy();
+    expect(screen.queryByText(/Jan 1895/)).toBeNull();
+  });
+
+  it("ranks by bucket only when that is final", () => {
+    render(<WhenLists rows={rows} onSelect={() => {}} trailing={false} status="bucket" />);
+    expect(screen.getAllByText("Jan 1895 · 10 pages")).toHaveLength(2);
+    expect(screen.queryByText("Updating for the new date…")).toBeNull();
+  });
+});

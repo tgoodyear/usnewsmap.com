@@ -266,18 +266,35 @@ export function PagesLists({ rows, onSelect, trailing }: ListsProps) {
 }
 
 /** Median date: the places whose matching pages fall earliest and latest. */
+/**
+ * Where the Median date lists stand: `exact` (ranked by day), `updating`
+ * (the last exact lists while the next set loads), `loading` (no exact
+ * answer for this search yet: nothing is listed), or `bucket` (ranked by the
+ * search's bucket for good: a search by day, more ties than one request
+ * takes, or the day counts failed).
+ */
+export type MedianStatus = "exact" | "updating" | "loading" | "bucket";
+
 export function WhenLists({
   rows,
   onSelect,
   trailing,
   exact,
+  status = exact ? "exact" : "bucket",
 }: ListsProps & {
-  /**
-   * Exact median day numbers for every `medianCandidates` place, once
-   * fetched; until then the lists rank and label by bucket.
-   */
+  /** Exact median day numbers for the places that could be listed (`exact` and `updating`). */
   exact?: Map<string, number> | null;
+  status?: MedianStatus;
 }) {
+  if (status === "loading") {
+    return (
+      <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
+        <p className="lists__loading" role="status" aria-busy="true">
+          Finding each place&apos;s median day…
+        </p>
+      </ListsPanel>
+    );
+  }
   const { eligible } = medianExtremes(rows);
   const ranked = exact
     ? rows
@@ -299,8 +316,13 @@ export function WhenLists({
   );
   return (
     <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
-      <List heading="Earliest median date" items={earliest} empty={empty} render={item} />
-      <List heading="Latest median date" items={latest} empty={empty} render={item} />
+      <div className={status === "updating" ? "lists--updating" : undefined} aria-busy={status === "updating"}>
+        <List heading="Earliest median date" items={earliest} empty={empty} render={item} />
+        <List heading="Latest median date" items={latest} empty={empty} render={item} />
+      </div>
+      <p className="skew-list__note" role="status">
+        {status === "updating" ? "Updating for the new date…" : ""}
+      </p>
       <p className="skew-list__note">
         A place&apos;s median date is when half of its matching pages {scope(trailing)} had been printed. Only
         places with at least {MIN_MEDIAN_PAGES} matching pages are listed.
