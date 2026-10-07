@@ -71,6 +71,18 @@ class AmericanStories(unittest.TestCase):
                  scan("sn1", "1865-02-01", 1, CLEAN), scan("sn9", "1865-03-01", 1, CLEAN)]
         return ref, cur, tarball(scans)
 
+    def test_a_scan_with_no_page_joins_by_its_image(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur, _ = self.fixture(d)
+            name, body = scan("sn1", "1865-02-01", 2, CLEAN)
+            name = name.replace("_p2_", "_pNone_")
+            first, body1 = scan("sn1", "1865-02-01", 1, CLEAN)
+            tgz = tarball([(first, body1), (name, body)])
+            got = ams.american_stories(ref, cur, [1865], sample_pct=100, run="exec-2",
+                                       opener=lambda req: contextlib.closing(io.BytesIO(tgz)))
+            s = got["summary"][0]
+            self.assertEqual((s["with_american_stories"], s["scans_page_from_image"]), (2, 1))
+
     def test_compare(self):
         with tempfile.TemporaryDirectory() as d:
             ref, cur, tgz = self.fixture(d)
@@ -81,7 +93,7 @@ class AmericanStories(unittest.TestCase):
                 return contextlib.closing(io.BytesIO(tgz))
 
             got = ams.american_stories(ref, cur, [1865], sample_pct=100, run="exec-1", opener=opener)
-            self.assertEqual(asked, [(ams.URL.format(year=1865), "1")])
+            self.assertEqual(asked, [(ams.URL.format(year=1865), "1")] * 2)  # names, then text
             s = got["summary"][0]
             # 4 English pages of ours; 3 have a scan; the scan of sn9 has no page of ours.
             self.assertEqual((s["our_sampled_english_pages"], s["with_american_stories"], s["join_share"]),
@@ -104,11 +116,42 @@ class AmericanStories(unittest.TestCase):
             # A replica of the finished execution does nothing.
             self.assertIsNone(ams.american_stories(ref, cur, [1865], sample_pct=100, run="exec-1", opener=opener))
 
-    def test_doc_id_and_years(self):
-        self.assertEqual(ams.doc_id("faro_1793/1793-09-09_p4_sn84038410_01000424529_1793090901_0024.json", "ed-01"),
-                         "sn84038410_1793-09-09_ed-1_seq-4")
-        self.assertIsNone(ams.doc_id("faro_1793/notes.json", "ed-01"))
-        self.assertIsNone(ams.doc_id("faro_1793/1793-09-09_p4_sn84038410_x.json", "edition one"))
+    def test_names_place_scans_by_page_or_by_image(self):
+        self.assertEqual(ams.parse("faro_1793/1793-09-09_p4_sn84038410_01000424529_1793090901_0024.json"),
+                         ("sn84038410", "1793-09-09", 1, 24, 4))
+        self.assertEqual(ams.parse("faro_1865/1865-07-31_pNone_sn82014064_no_reel_1865073101_0003.json"),
+                         ("sn82014064", "1865-07-31", 1, 3, None))
+        self.assertIsNone(ams.parse("faro_1793/notes.json"))
+        self.assertIsNone(ams.parse("faro_1865/1865-07-31_p1_sn1_x_1865080101_0001.json"))  # dates disagree
+        names = [
+            # An issue on a reel, all pages named: image 17 is p1.
+            "1793-07-01_p1_sn1_0100_1793070101_0017.json", "1793-07-01_p2_sn1_0100_1793070101_0018.json",
+            "1793-07-01_p3_sn1_0100_1793070101_0019.json",
+            # No pages named: the issue's first image is p1.
+            "1865-07-31_pNone_sn2_no_reel_1865073101_0001.json", "1865-07-31_pNone_sn2_no_reel_1865073101_0002.json",
+            # Some named: they set the offset for the rest (p2 is image 41, so image 43 is p4).
+            "1865-08-01_p2_sn2_0200_1865080101_0041.json", "1865-08-01_pNone_sn2_0200_1865080101_0043.json",
+            # A second edition is its own issue.
+            "1865-08-01_pNone_sn2_0200_1865080102_0050.json",
+            # A second copy of the reel issue's p2 (the same page in another batch): skipped.
+            "1793-07-01_p2_sn1_0300_1793070101_0018.json",
+            "junk.json",
+        ]
+        ids, stats = ams.place(names)
+        self.assertEqual(ids["1793-07-01_p3_sn1_0100_1793070101_0019.json"], "sn1_1793-07-01_ed-1_seq-3")
+        self.assertEqual(ids["1865-07-31_pNone_sn2_no_reel_1865073101_0002.json"], "sn2_1865-07-31_ed-1_seq-2")
+        self.assertEqual(ids["1865-08-01_pNone_sn2_0200_1865080101_0043.json"], "sn2_1865-08-01_ed-1_seq-4")
+        self.assertEqual(ids["1865-08-01_pNone_sn2_0200_1865080102_0050.json"], "sn2_1865-08-01_ed-2_seq-1")
+        self.assertEqual((stats["unparsed"], stats["page_named"], stats["page_from_image"], stats["duplicates"]),
+                         (1, 5, 4, 1))
+        self.assertEqual(ids["1793-07-01_p2_sn1_0100_1793070101_0018.json"], "sn1_1793-07-01_ed-1_seq-2")
+        self.assertNotIn("1793-07-01_p2_sn1_0300_1793070101_0018.json", ids)
+        self.assertEqual(len(ids), 8)  # 9 names parse, one is a second copy
+        # The image rule on the named pages: right for the reel issue's 4 (the copy too), wrong for p2 at
+        # image 41 (the issue's first image), so 4 of 5.
+        self.assertEqual((stats["image_rule_checked"], stats["image_rule_agrees"]), (5, 4))
+
+    def test_years_and_sample_are_checked(self):
         with tempfile.TemporaryDirectory() as d:
             ref, cur, _ = self.fixture(d)
             for years, pct in (([1990], 10), ([1773], 10), ([], 10), ([1865], 0), ([1865], -1), ([1865], 101),
