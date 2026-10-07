@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Which parts of CI a change needs, as step outputs rust/web/image/fixtures/
-# code=true|false (code: anything but documentation changed, so the
+# ops/code=true|false (code: anything but documentation changed, so the
 # infrastructure checks and the shared-key scan run), and provision=true|false:
 # whether it changes the Azure stack beyond what a deploy applies (the API
 # image and infra/quickwit/searcher.yaml, which scripts/ci/roll-api.sh
@@ -15,7 +15,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 # Known only once the changed files are; "run everything" keeps it.
 provision=false
 all() {
-  printf 'rust=true\nweb=true\nimage=true\nfixtures=true\ncode=true\nprovision=%s\n' "$provision" >> "$out"
+  printf 'rust=true\nweb=true\nimage=true\nfixtures=true\nops=true\ncode=true\nprovision=%s\n' "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -52,7 +52,9 @@ web='^(web/|fixtures/|scripts/ci/)'
 image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$)"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
-for part in rust web image fixtures; do
+# The index version snapshots must match their schema (and what writes them).
+ops='^(ops/version-snapshots/|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions)\.py$|scripts/ci/requirements-ops\.txt$)'
+for part in rust web image fixtures ops; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 if [ -n "$files" ]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi

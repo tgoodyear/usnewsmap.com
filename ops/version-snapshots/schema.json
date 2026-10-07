@@ -1,0 +1,75 @@
+{
+ "$schema": "http://json-schema.org/draft-07/schema#",
+ "$id": "https://github.com/tgoodyear/usnewsmap.com/ops/version-snapshots/schema.json",
+ "title": "Index version snapshot",
+ "description": "What a fixed set of searches returned on one live index version: scripts/compare-versions.py capture (06 §6.5). Checked in CI by scripts/check-version-snapshots.py, which also checks what a schema can't (the file name, series lengths and sums).",
+ "type": "object",
+ "additionalProperties": false,
+ "required": ["base", "captured_at", "index_version", "searches"],
+ "properties": {
+  "base": {"description": "The site the capture asked.", "type": "string", "pattern": "^https?://[^/]+$"},
+  "captured_at": {"description": "When the capture started, UTC.", "type": "string", "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$"},
+  "index_version": {"description": "The version /v1/meta named; every search was pinned to it.", "type": "string", "pattern": "^pages-v\\d{8}-\\d+$"},
+  "searches": {
+   "description": "By search name: \"bench: ...\" (scripts/load-cold-searches.py), \"example: <id>\" (web/src/examples.json) or \"ja: ...\".",
+   "type": "object",
+   "minProperties": 1,
+   "propertyNames": {"pattern": "^(bench|example|ja): \\S"},
+   "additionalProperties": {"$ref": "#/definitions/search"}
+  }
+ },
+ "definitions": {
+  "count": {"type": "integer", "minimum": 0},
+  "search": {
+   "type": "object",
+   "required": ["query", "status", "wall_s"],
+   "properties": {
+    "query": {"description": "The /v1/aggregate query string, without the version.", "type": "string", "minLength": 1},
+    "status": {"description": "The final HTTP status, or \"gave up\" when 202s, 503 busy or 429 outlasted the wait.",
+               "oneOf": [{"type": "integer", "minimum": 100, "maximum": 599}, {"const": "gave up"}]},
+    "wall_s": {"description": "Seconds to the answer, waits included.", "type": "number", "minimum": 0},
+    "retried": {"description": "Asked again after a dropped connection; recorded by an earlier version of the capture.", "type": "boolean"},
+    "total": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": ["hits", "places", "papers", "days"],
+     "properties": {
+      "hits": {"$ref": "#/definitions/count"},
+      "places": {"$ref": "#/definitions/count"},
+      "papers": {"$ref": "#/definitions/count"},
+      "days": {"$ref": "#/definitions/count"},
+      "baseline_pages": {"$ref": "#/definitions/count"},
+      "first_day": {"description": "Days since 1700-01-01, as the API counts them; absent with no hits.", "$ref": "#/definitions/count"},
+      "last_day": {"$ref": "#/definitions/count"}
+     }
+    },
+    "bucket": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": ["count", "from", "to", "unit"],
+     "properties": {
+      "count": {"type": "integer", "minimum": 1},
+      "from": {"type": "string", "pattern": "^\\d{4}-\\d\\d-\\d\\d$"},
+      "to": {"type": "string", "pattern": "^\\d{4}-\\d\\d-\\d\\d$"},
+      "unit": {"enum": ["day", "week", "month", "year"]}
+     }
+    },
+    "series_hits": {"description": "Hits per bucket.", "type": "array", "items": {"$ref": "#/definitions/count"}},
+    "languages": {"description": "Hits by the titles' catalog language (MARC codes, as the catalog has them).",
+                  "type": "object", "propertyNames": {"pattern": "^[a-z]{3,8}$"},
+                  "additionalProperties": {"$ref": "#/definitions/count"}},
+    "timing_ms": {"description": "The API's timing for the computation that produced the body (it may predate the capture).",
+                  "type": "object", "required": ["backend", "total"],
+                  "additionalProperties": {"$ref": "#/definitions/count"}},
+    "error": {"description": "The problem document's type, title and detail, for a status other than 200.",
+              "type": "object", "additionalProperties": false, "minProperties": 1,
+              "properties": {"type": {"type": "string"}, "title": {"type": "string"}, "detail": {"type": "string"}}}
+   },
+   "additionalProperties": false,
+   "if": {"properties": {"status": {"const": 200}}},
+   "then": {"required": ["total", "bucket", "series_hits", "languages", "timing_ms"], "not": {"required": ["error"]}},
+   "else": {"not": {"anyOf": [{"required": ["total"]}, {"required": ["bucket"]}, {"required": ["series_hits"]},
+                              {"required": ["languages"]}, {"required": ["timing_ms"]}]}}
+  }
+ }
+}

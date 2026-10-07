@@ -297,7 +297,7 @@ Error text (`last_error`) isn't included; `/v1/status` shows it sanitized.
 **Comparing versions.** The API answers only for the version it serves, so search results are compared through captures.
 - `scripts/compare-versions.py capture` runs a fixed set of 113 searches against the live version and records what each returns. The set is the ten benchmark searches of 05 §5.8, the 100 home page examples, and three Japanese searches.
 - Each record holds: the status, the totals, the per-bucket hits, hits by language, the backend's `timing_ms` and the wall time.
-- Keep a capture of each version in `ops/version-snapshots/{version}.json`, taken while it is live (before a release replaces it).
+- Keep a capture of each version in `ops/version-snapshots/{version}.json`, taken while it is live (before a release replaces it). Captures follow `ops/version-snapshots/schema.json`; CI checks every one with `scripts/check-version-snapshots.py` (the schema, the file named after its version, and each answered search's per-bucket hits adding up to its total).
 - `scripts/compare-versions.py diff A B` puts two captures' hits and timings side by side, and flags searches whose hits changed by more than 1% or whose status changed. A search that kept its name but changed its query (an edited example) is flagged and not compared.
 
 ### 6.3.9 `GET /v1/days` response

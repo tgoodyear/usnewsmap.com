@@ -5,6 +5,9 @@ and compare two captures (#161).
     scripts/compare-versions.py capture [base-url] > ops/version-snapshots/<version>.json
     scripts/compare-versions.py diff A.json B.json
 
+A capture's format is ops/version-snapshots/schema.json; CI checks committed
+captures against it (scripts/check-version-snapshots.py).
+
 The API serves one index version at a time, so versions are compared through
 captures: run `capture` while a version is live (before a release replaces
 it), keep the file, and `diff` it with a capture of the next version.
