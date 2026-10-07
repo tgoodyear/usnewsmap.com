@@ -224,6 +224,16 @@ class BlobStore:
             return False
 
 
+def read_all(store, paths: list[str], workers: int = 16):
+    """Each path's bytes, in order, read `workers` at a time: at most that many are in memory at once
+    (a plain executor map reads them all ahead and held a whole year's parts, killing the job)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(workers) as ex:
+        for i in range(0, len(paths), workers):
+            yield from ex.map(store.read, paths[i:i + workers])
+
+
 def store(url: str):
     return BlobStore(url) if url.startswith("https://") else LocalStore(url)
 

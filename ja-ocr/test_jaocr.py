@@ -337,5 +337,32 @@ class Parquet(unittest.TestCase):
             self.assertEqual(str(t.schema.field("date").type), "date32[day]")
 
 
+
+
+class ReadAll(unittest.TestCase):
+    def test_reads_in_order_with_at_most_workers_in_flight(self):
+        import threading
+        import time
+
+        lock, state = threading.Lock(), {"now": 0, "most": 0}
+
+        class Store:
+            def read(self, path):
+                with lock:
+                    state["now"] += 1
+                    state["most"] = max(state["most"], state["now"])
+                time.sleep(0.002)
+                with lock:
+                    state["now"] -= 1
+                return path.encode()
+
+        paths = [f"p{i}" for i in range(50)]
+        got = []
+        for data in jaocr.read_all(Store(), paths, workers=4):
+            got.append(data.decode())
+            self.assertLessEqual(state["most"], 4)
+        self.assertEqual(got, paths)
+
+
 if __name__ == "__main__":
     unittest.main()
