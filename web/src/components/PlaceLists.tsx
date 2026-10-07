@@ -266,6 +266,27 @@ export function PagesLists({ rows, onSelect, trailing }: ListsProps) {
 }
 
 /** Median date: the places whose matching pages fall earliest and latest. */
+interface Ranked {
+  earliest: ListRow[];
+  latest: ListRow[];
+  eligible: number;
+  /** What the lists show, to tell one ranking from the next. */
+  key: string;
+}
+
+/** The two lists, by exact day when `exact` is given, else by bucket. */
+function rank(rows: ListRow[], exact: Map<string, number> | null | undefined): Ranked {
+  const { eligible } = medianExtremes(rows);
+  const ranked = exact
+    ? rows
+        .filter((r) => exact.has(r.id) && !Number.isNaN(exact.get(r.id)!))
+        .map((r) => ({ ...r, when: exact.get(r.id)!, whenLabel: formatDate(dateFromDay(exact.get(r.id)!)) }))
+    : rows;
+  const { earliest, latest } = medianExtremes(ranked);
+  const key = JSON.stringify([eligible, ...[...earliest, ...latest].map((r) => [r.id, r.whenLabel, r.value])]);
+  return { earliest, latest, eligible, key };
+}
+
 /**
  * Where the Median date lists stand: `exact` (ranked by day), `updating`
  * (the last exact lists while the next set loads), `loading` (no exact
@@ -286,22 +307,22 @@ export function WhenLists({
   exact?: Map<string, number> | null;
   status?: MedianStatus;
 }) {
+  // The lists last shown from exact days. While the next set loads
+  // ("updating") they stay exactly as they were, not recomputed against the
+  // new window from the old answer, until the fresh answer replaces them.
+  const [shown, setShown] = useState<Ranked | null>(null);
+  const current = status === "updating" && shown ? null : rank(rows, status === "bucket" ? null : exact);
+  if (status === "exact" && current && current.key !== shown?.key) setShown(current);
   if (status === "loading") {
     return (
       <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
-        <p className="lists__loading" role="status" aria-busy="true">
+        <p className="lists__loading" role="status">
           Finding each place&apos;s median day…
         </p>
       </ListsPanel>
     );
   }
-  const { eligible } = medianExtremes(rows);
-  const ranked = exact
-    ? rows
-        .filter((r) => exact.has(r.id) && !Number.isNaN(exact.get(r.id)!))
-        .map((r) => ({ ...r, when: exact.get(r.id)!, whenLabel: formatDate(dateFromDay(exact.get(r.id)!)) }))
-    : rows;
-  const { earliest, latest } = medianExtremes(ranked);
+  const { earliest, latest, eligible } = (status === "updating" && shown) || current!;
   const empty =
     eligible === 1
       ? `Only one place has ${MIN_MEDIAN_PAGES} or more matching pages ${scope(trailing)}.`

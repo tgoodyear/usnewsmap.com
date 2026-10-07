@@ -160,6 +160,29 @@ describe("WhenLists while the exact days load", () => {
     expect(screen.queryByText(/Jan 1895/)).toBeNull();
   });
 
+  it("keeps showing exactly the last exact lists while updating, then the fresh ones", () => {
+    const first = new Map([
+      ["Early", dayNumber("1895-01-03")],
+      ["Later", dayNumber("1895-01-28")],
+    ]);
+    const { rerender } = render(<WhenLists rows={rows} onSelect={() => {}} trailing={false} exact={first} status="exact" />);
+    expect(screen.getByText("Jan 3, 1895 · 10 pages")).toBeTruthy();
+    // The window moved: new rows and the old answer recomputed differently, but nothing changes yet.
+    const moved = [row("Early", "IL", 30, 0.1, "Jan 1895"), row("Later", "IL", 30, 0.1, "Jan 1895")];
+    const recomputed = new Map([["Early", dayNumber("1895-01-20")]]);
+    rerender(<WhenLists rows={moved} onSelect={() => {}} trailing={false} exact={recomputed} status="updating" />);
+    expect(screen.getByText("Jan 3, 1895 · 10 pages")).toBeTruthy();
+    expect(screen.getByText("Jan 28, 1895 · 10 pages")).toBeTruthy();
+    // The fresh answer replaces them.
+    const fresh = new Map([
+      ["Early", dayNumber("1895-01-05")],
+      ["Later", dayNumber("1895-01-29")],
+    ]);
+    rerender(<WhenLists rows={moved} onSelect={() => {}} trailing={false} exact={fresh} status="exact" />);
+    expect(screen.getByText("Jan 5, 1895 · 30 pages")).toBeTruthy();
+    expect(screen.queryByText("Updating for the new date…")).toBeNull();
+  });
+
   it("keeps the last exact lists, marked as updating", () => {
     const exact = new Map([
       ["Early", dayNumber("1895-01-03")],

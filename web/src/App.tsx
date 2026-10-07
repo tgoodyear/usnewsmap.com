@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, VersionChangedError, type SearchParams } from "./api/client";
-import type { DaysResponse, Problem } from "./api/types";
+import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./engine/cube";
 import { EXAMPLE_ORDER, EXAMPLES_SHOWN, examplesAt } from "./examples";
@@ -335,15 +335,18 @@ export function App() {
   const wantsDays = norm === "when" && !view.place && !!data && !byDay;
   const candidatesKey = wantsDays && !agg.isPlaceholderData ? medianCandidates(visible).join(",") : "";
   const queryClient = useQueryClient();
-  const haveDays = queryClient
-    .getQueriesData<DaysResponse>({ queryKey: ["days", version, params] })
-    .some(([, d]) => d !== undefined);
+  // The first request for a search goes out at once; once one has started
+  // (pending or answered), later sets wait for the set to settle.
+  const startedDays = queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ["days", version, params] })
+    .some((q) => q.state.fetchStatus !== "idle" || q.state.data !== undefined || q.state.error !== null);
   const [settledKey, setSettledKey] = useState("");
   useEffect(() => {
     const id = setTimeout(() => setSettledKey(candidatesKey), 1000);
     return () => clearTimeout(id);
   }, [candidatesKey]);
-  const requestKey = haveDays ? settledKey : candidatesKey;
+  const requestKey = startedDays ? settledKey : candidatesKey;
   const dayCounts = useQuery({
     queryKey: ["days", version, params, requestKey],
     queryFn: ({ signal }) => api.days(params, version, requestKey.split(","), signal),
