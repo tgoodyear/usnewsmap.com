@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 import jaocr
 import mixed
@@ -71,7 +72,7 @@ class Mixed(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ref, cur = self.fixture(d)
             got = mixed.mixed(ref, cur, top=TOP, run="exec-1")
-            # Another replica of the same execution leaves the work to the first.
+            # A replica of a finished execution (another, or this one retried) does nothing.
             self.assertIsNone(mixed.mixed(ref, cur, top=TOP, run="exec-1"))
             bands = {r["group"]: r for r in got["loc_text_bands"]}
             jp, control = bands["japanese"], bands["control"]
@@ -90,10 +91,25 @@ class Mixed(unittest.TestCase):
             self.assertEqual(ours["missing"]["pages"], 2)
             self.assertEqual((ours["missing"]["0"], ours["missing"]["10-49"]), (1, 1))  # "the camp news" x5: 15
             self.assertEqual((ours["garbled"]["pages"], ours["garbled"]["0"]), (1, 1))  # the newer reading
+            # Latin shares: 0 for the Japanese-only page, 55/57 for the page with English.
+            self.assertEqual(ours["missing"]["latin_share_over_half"], 0.5)
+            self.assertEqual(ours["garbled"]["latin_share_median"], 0.0)
             self.assertEqual(got["our_parts"], 4)
             for name in ("loc-text-bands", "loc-text-by-title", "our-ocr-english", "our-ocr-samples"):
                 self.assertTrue(cur.exists(f"audit/mixed-pages-v1-{name}.csv"), name)
             self.assertEqual(json.loads(cur.read("audit/mixed-pages-v1.json"))["version"], "v1")
+
+    def test_a_retried_owner_takes_its_lock_back_and_a_dead_owners_lock_is_taken_over(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            lock = "audit/mixed-pages-v1.run/exec-2.lock"
+            with unittest.mock.patch.dict(os.environ, {"CONTAINER_APP_REPLICA_NAME": "exec-2-aaaaa"}):
+                cur.write(lock, json.dumps({"owner": "exec-2-aaaaa"}).encode())  # our own, before a crash
+                self.assertIsNotNone(mixed.mixed(ref, cur, top=TOP))
+            cur.write("audit/mixed-pages-v1.run/exec-3.lock", b'{"owner": "exec-3-dead1"}')
+            with unittest.mock.patch.dict(os.environ, {"CONTAINER_APP_REPLICA_NAME": "exec-3-bbbbb",
+                                                       "JAOCR_AUDIT_LOCK_MINUTES": "-1"}):
+                self.assertIsNotNone(mixed.mixed(ref, cur, top=TOP))
 
     def test_helpers(self):
         self.assertEqual(mixed.band(0.2), "lt_0.35")

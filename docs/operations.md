@@ -181,7 +181,7 @@ scripts/ja-ocr/start-quality.sh prod mixed          # prints the execution's nam
 scripts/ja-ocr/quality-rows.sh prod <execution>     # its "mixed pages" rows, once it has finished
 ```
 
-It writes `audit/mixed-pages-<version>.json` and a CSV per table in the curated container: `loc-text-bands` (Japanese titles against the control), `loc-text-by-title`, `loc-text-samples` (15 page ids per band, with their loc.gov links, for looking at the scans), `our-ocr-english` (by why LoC's text wasn't used), `our-ocr-by-title` and `our-ocr-samples`. One replica of the execution does the work; the other logs `mixed pages running in another replica` and exits.
+It writes `audit/mixed-pages-<version>.json` and a CSV per table in the curated container: `loc-text-bands` (Japanese titles against the control), `loc-text-by-title`, `loc-text-samples` (15 page ids per band, with their loc.gov links, for looking at the scans), `our-ocr-english` (by why LoC's text wasn't used), `our-ocr-by-title` and `our-ocr-samples`. One replica of the execution does the work, renewing a lock; the other waits for its finished marker (`mixed pages written by another replica`) and takes over if the lock goes stale, and a retried replica of a finished execution exits at once. `our-ocr-english` and `our-ocr-by-title` also give the median Latin share of our OCR's letters and the share of pages over half Latin.
 
 ## Search log
 

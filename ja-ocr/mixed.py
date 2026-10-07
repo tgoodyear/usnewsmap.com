@@ -18,11 +18,14 @@ can fall through:
    reads of an English column sits only in the Japanese index, which English
    queries don't search. For every page of our OCR (ocr-ja/pages), this counts
    the tokens of 3 letters or more that are among English's 5,000 most
-   frequent words, and the Latin share of its letters.
+   frequent words, and the Latin share of its letters (median, and the share
+   of pages over half Latin).
 
 Writes audit/mixed-pages-<version>.json (every table) and a CSV per table in
 the curated store, and logs each row as a "mixed pages" line. One replica of
-an execution does the work (a lock per execution); the others exit.
+an execution does the work, holding a lock it renews; the others wait for its
+finished marker and take over if the lock goes stale (JAOCR_AUDIT_LOCK_MINUTES,
+60), and a retried replica of a finished execution exits at once.
 """
 
 from __future__ import annotations
@@ -33,7 +36,10 @@ import io
 import json
 import os
 import re
+import statistics
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import jaocr
 import quality
@@ -47,6 +53,8 @@ WORD_BAND_NAMES = ("0", "1-9", "10-49", "50-199", "ge_200")
 SAMPLES = 15  # page ids kept per band and group, for looking at the scans
 READERS = 16  # parallel blob reads
 LATIN_WORD = re.compile(r"[A-Za-z]{3,}")
+RENEW_SECONDS = 300  # how often the working replica renews its lock
+POLL_SECONDS = 30  # how often a waiting replica checks on it
 OURS = f"{jaocr.PREFIX}/pages"
 
 
@@ -104,7 +112,7 @@ class Samples:
         return out
 
 
-def loc_pages(curated, batches: list[dict], jpn: set[str], names: dict[str, str]):
+def loc_pages(curated, batches: list[dict], jpn: set[str], names: dict[str, str], keep=lambda: None):
     """(1) LoC's text on pages of titles that list Japanese, and on the other titles in their batches."""
     import pyarrow.parquet as pq
 
@@ -113,6 +121,7 @@ def loc_pages(curated, batches: list[dict], jpn: set[str], names: dict[str, str]
     parts = [p for b in batches for p in b["curated"]["parts"]]
     with ThreadPoolExecutor(READERS) as ex:
         for data in ex.map(curated.read, parts):
+            keep()
             t = pq.read_table(io.BytesIO(data), columns=["doc_id", "lccn", "text_status", "text"])
             for r in t.to_pylist():
                 if r["text_status"] != "ok":
@@ -140,7 +149,7 @@ def loc_pages(curated, batches: list[dict], jpn: set[str], names: dict[str, str]
     return summary, by_title, samples.rows(("band",))
 
 
-def our_pages(curated, jpn_names: dict[str, str], top: frozenset):
+def our_pages(curated, jpn_names: dict[str, str], top: frozenset, keep=lambda: None):
     """(2) The English our OCR read on the pages it read."""
     import pyarrow.parquet as pq
 
@@ -148,6 +157,7 @@ def our_pages(curated, jpn_names: dict[str, str], top: frozenset):
     parts = sorted(p for p in curated.list(OURS) if p.endswith(".parquet"))
     with ThreadPoolExecutor(READERS) as ex:
         for data in ex.map(curated.read, parts):
+            keep()
             t = pq.read_table(io.BytesIO(data), columns=["doc_id", "lccn", "loc_text", "text", "ocred_at"])
             for r in t.to_pylist():
                 at = r["ocred_at"]
@@ -157,15 +167,26 @@ def our_pages(curated, jpn_names: dict[str, str], top: frozenset):
                 newest[r["doc_id"]] = (at, r["lccn"], r["loc_text"], english_words(text, top), latin_share(text))
     by_loc_text: dict[str, dict[str, int]] = {}
     by_title: dict[str, dict[str, int]] = {}
+    latin: dict[tuple[str, str], list[float]] = {}  # ("loc_text" | "title", key) -> Latin shares
     samples = Samples()
-    for doc_id, (_, lccn, loc_text, words, _) in newest.items():
+    for doc_id, (_, lccn, loc_text, words, share) in newest.items():
         b = band(words, WORD_BANDS, WORD_BAND_NAMES)
         by_loc_text.setdefault(loc_text, dict.fromkeys(WORD_BAND_NAMES, 0))[b] += 1
         by_title.setdefault(lccn, dict.fromkeys(WORD_BAND_NAMES, 0))[b] += 1
+        if share is not None:
+            latin.setdefault(("loc_text", loc_text), []).append(share)
+            latin.setdefault(("title", lccn), []).append(share)
         if b in WORD_BAND_NAMES[2:]:
             samples.add((b,), doc_id)
-    rows = [{"loc_text": k, "pages": sum(v.values()), **v} for k, v in sorted(by_loc_text.items())]
-    titles = [{"lccn": k, "name": jpn_names.get(k, ""), "pages": sum(v.values()), **v}
+
+    def shares(kind: str, key: str) -> dict:
+        xs = latin.get((kind, key)) or []
+        return {"latin_share_median": round(statistics.median(xs), 4) if xs else None,
+                "latin_share_over_half": round(sum(1 for x in xs if x > 0.5) / len(xs), 4) if xs else None}
+
+    rows = [{"loc_text": k, "pages": sum(v.values()), **v, **shares("loc_text", k)}
+            for k, v in sorted(by_loc_text.items())]
+    titles = [{"lccn": k, "name": jpn_names.get(k, ""), "pages": sum(v.values()), **v, **shares("title", k)}
               for k, v in sorted(by_title.items())]
     return rows, titles, samples.rows(("english_words",)), len(parts)
 
@@ -187,9 +208,30 @@ def mixed(reference, curated, top: frozenset | None = None, run: str | None = No
     run = run or quality.run_name(owner)
     if not jaocr.SAFE_SEGMENT.match(run):
         raise ValueError(f"unsafe run name: {run!r}")
-    if not curated.create(f"audit/mixed-pages-{version}.run/{run}.lock", json.dumps({"owner": owner}).encode()):
-        jaocr.log("mixed pages running in another replica", run=run)
+    lock, finished = f"audit/mixed-pages-{version}.run/{run}.lock", f"audit/mixed-pages-{version}.run/{run}.finished"
+    stale = timedelta(minutes=float(os.environ.get("JAOCR_AUDIT_LOCK_MINUTES", "60")))
+
+    def lease() -> bytes:
+        return json.dumps({"owner": owner, "at": datetime.now(timezone.utc).isoformat()}).encode()
+
+    # The lock's owner works; a replica retried under the same name takes its own lock back; the others
+    # wait for the finished marker, taking over a lock that goes stale (its owner died).
+    while not (curated.create(lock, lease()) or curated.renew(lock, lease(), owner)
+               or curated.take_over(lock, lease(), stale)):
+        if curated.exists(finished):
+            jaocr.log("mixed pages written by another replica", run=run)
+            return None
+        time.sleep(POLL_SECONDS)
+    if curated.exists(finished):  # a retried replica of an execution that finished
+        jaocr.log("mixed pages already finished", run=run)
         return None
+    last = [time.time()]
+
+    def keep() -> None:
+        if time.time() - last[0] >= RENEW_SECONDS:
+            if not curated.renew(lock, lease(), owner):
+                raise RuntimeError("mixed pages: another replica took over")
+            last[0] = time.time()
     titles = json.loads(reference.read(f"{version}/titles.json"))
     if reference.exists("catalog/titles.json"):
         titles = titles + json.loads(reference.read("catalog/titles.json"))
@@ -198,9 +240,9 @@ def mixed(reference, curated, top: frozenset | None = None, run: str | None = No
     batches = [b for b in json.loads(reference.read(f"{version}/batches.json"))
                if jpn & set((b.get("curated") or {}).get("lccns") or [])]
     jaocr.log("mixed pages starting", version=version, japanese_titles=len(jpn), batches=len(batches))
-    loc_summary, loc_titles, loc_samples = loc_pages(curated, batches, jpn, names)
+    loc_summary, loc_titles, loc_samples = loc_pages(curated, batches, jpn, names, keep)
     ours, ours_titles, ours_samples, ours_parts = our_pages(curated, {k: names[k] for k in jpn if k in names},
-                                                            top if top is not None else english_top())
+                                                            top if top is not None else english_top(), keep)
     tables = {"loc_text_bands": loc_summary, "loc_text_by_title": loc_titles, "loc_text_samples": loc_samples,
               "our_ocr_english": ours, "our_ocr_by_title": ours_titles, "our_ocr_samples": ours_samples}
     base = f"audit/mixed-pages-{version}"
@@ -211,6 +253,7 @@ def mixed(reference, curated, top: frozenset | None = None, run: str | None = No
         curated.write(f"{base}-{name.replace('_', '-')}.csv", write_csv(rows))
         for r in rows:
             jaocr.log("mixed pages", table=name, version=version, **r)
+    curated.write(finished, lease())
     jaocr.log("mixed pages finished", version=version, batches=len(batches), our_parts=ours_parts,
               outputs=[f"{base}.json"])
     return report
