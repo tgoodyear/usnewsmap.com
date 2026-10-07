@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { searchQuery } from "./api/client";
-import { EXAMPLE_ORDER, EXAMPLES, EXAMPLES_SHOWN, examplesAt, mixByEra, shuffle } from "./examples";
+import {
+  EXAMPLE_ORDER,
+  EXAMPLES,
+  EXAMPLES_MORE,
+  EXAMPLES_SHOWN,
+  examplesShown,
+  mixByEra,
+  setsOf,
+  shuffle,
+} from "./examples";
 import { DEFAULTS, isIsoDate, parseView, searchParams, serializeView } from "./state/url";
 
 /** Sorted `key=value` pairs, so parameter order doesn't matter. */
@@ -97,19 +106,18 @@ describe("example rotation", () => {
     expect(new Set(EXAMPLE_ORDER)).toEqual(new Set(EXAMPLES));
   });
 
-  it("mixes eras, so every set in a pass spans three", () => {
+  it("mixes eras, so the first three and every row of three after them span three", () => {
     for (let start = 1; start <= 50; start++) {
       let seed = start;
       const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
       const order = mixByEra(EXAMPLES, random);
       expect(order).toHaveLength(EXAMPLES.length);
       expect(new Set(order)).toEqual(new Set(EXAMPLES));
-      // One pass: every set until each example has shown, including the one
-      // that wraps around to the start.
-      for (let page = 0; page < Math.ceil(order.length / EXAMPLES_SHOWN); page++) {
-        const eras = examplesAt(order, page).map((e) => e.era);
-        expect(new Set(eras).size, `seed ${start}, set ${page}: ${eras.join(", ")}`).toBe(EXAMPLES_SHOWN);
-      }
+      setsOf(order).forEach((set, i) => {
+        const eras = set.map((e) => e.era);
+        expect(new Set(eras).size, `seed ${start}, set ${i}: ${eras.join(", ")}`).toBe(set.length);
+      });
+      expect(new Set(order.slice(0, EXAMPLES_SHOWN).map((e) => e.era)).size).toBe(EXAMPLES_SHOWN);
     }
   });
 
@@ -122,10 +130,10 @@ describe("example rotation", () => {
         const random = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
         const order = mixByEra(items, random);
         expect(new Set(order).size, `${count} examples`).toBe(count);
-        for (let page = 0; page < Math.ceil(count / EXAMPLES_SHOWN); page++) {
-          const eras = examplesAt(order, page).map((e) => e.era);
-          expect(new Set(eras).size, `${count} examples, seed ${start}, set ${page}`).toBe(EXAMPLES_SHOWN);
-        }
+        setsOf(order).forEach((set, i) => {
+          const eras = set.map((e) => e.era);
+          expect(new Set(eras).size, `${count} examples, seed ${start}, set ${i}`).toBe(set.length);
+        });
       }
     }
   });
@@ -140,23 +148,41 @@ describe("example rotation", () => {
     for (const [era, n] of sizes) expect(n, era).toBeGreaterThanOrEqual(5);
   });
 
-  it("shows full sets that reach every example", () => {
-    const seen = new Set<string>();
-    const pages = Math.ceil(EXAMPLE_ORDER.length / EXAMPLES_SHOWN);
-    for (let page = 0; page < pages; page++) {
-      const shown = examplesAt(EXAMPLE_ORDER, page);
-      expect(shown).toHaveLength(EXAMPLES_SHOWN);
-      expect(new Set(shown).size).toBe(EXAMPLES_SHOWN);
-      for (const ex of shown) seen.add(ex.id);
+  it("cuts an order into sets from the start", () => {
+    expect(setsOf(["a", "b", "c", "d"], 3)).toEqual([["a", "b", "c"], ["d"]]);
+    expect(setsOf(["a", "b", "c"], 3)).toEqual([["a", "b", "c"]]);
+    expect(setsOf([], 3)).toEqual([]);
+  });
+});
+
+describe("examples shown", () => {
+  it("starts with the first three, then adds ten at a time until all have shown", () => {
+    expect(examplesShown(EXAMPLE_ORDER, 0)).toEqual(EXAMPLE_ORDER.slice(0, EXAMPLES_SHOWN));
+    let before: readonly unknown[] = [];
+    let clicks = 0;
+    for (; ; clicks++) {
+      const shown = examplesShown(EXAMPLE_ORDER, clicks);
+      // Adds to what was shown, never replaces it.
+      expect(shown.slice(0, before.length)).toEqual(before);
+      // Ten more each time, until the last press shows what remains.
+      const want = Math.min(EXAMPLES_SHOWN + clicks * EXAMPLES_MORE, EXAMPLE_ORDER.length);
+      expect(shown, `after ${clicks} presses`).toHaveLength(want);
+      expect(new Set(shown).size).toBe(shown.length);
+      before = shown;
+      if (shown.length === EXAMPLE_ORDER.length) break;
     }
-    expect(seen.size).toBe(EXAMPLES.length);
-    // Paging on past a pass starts it again: the same, checked, sets.
-    for (let page = 0; page < pages; page++) {
-      expect(examplesAt(EXAMPLE_ORDER, page + pages)).toEqual(examplesAt(EXAMPLE_ORDER, page));
-      expect(examplesAt(EXAMPLE_ORDER, page + 3 * pages)).toEqual(examplesAt(EXAMPLE_ORDER, page));
-    }
-    expect(examplesAt(["a", "b"], 5)).toEqual(["a", "b"]);
-    expect(examplesAt(["a", "b", "c", "d"], 1, 3)).toEqual(["d", "a", "b"]);
-    expect(examplesAt(["a", "b", "c", "d"], 2, 3)).toEqual(["a", "b", "c"]);
+    // 100 examples: 3, then 13, 23, ... 93, then the last 7.
+    expect(clicks).toBe(Math.ceil((EXAMPLES.length - EXAMPLES_SHOWN) / EXAMPLES_MORE));
+    expect(new Set(before)).toEqual(new Set(EXAMPLES));
+    // Pressing on past the end changes nothing.
+    expect(examplesShown(EXAMPLE_ORDER, clicks + 5)).toEqual(before);
+  });
+
+  it("handles short lists and custom steps", () => {
+    expect(examplesShown(["a", "b"], 0)).toEqual(["a", "b"]);
+    expect(examplesShown(["a", "b", "c", "d", "e"], 0, 2, 2)).toEqual(["a", "b"]);
+    expect(examplesShown(["a", "b", "c", "d", "e"], 1, 2, 2)).toEqual(["a", "b", "c", "d"]);
+    expect(examplesShown(["a", "b", "c", "d", "e"], 2, 2, 2)).toEqual(["a", "b", "c", "d", "e"]);
+    expect(examplesShown(["a", "b", "c"], -1, 2, 2)).toEqual(["a", "b"]);
   });
 });

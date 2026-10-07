@@ -56,28 +56,33 @@ async function expectAccessible(page: Page) {
 /** The home page's example cards. */
 const exampleCards = (page: Page) => page.locator("ul.examples button.example");
 
-/** Page through "Show other examples" until the card named `name` shows. */
+/** The button under the examples that adds more of them. */
+const showMore = (page: Page) => page.getByRole("button", { name: /^Show \d+ more examples?$/ });
+
+/** Show more examples until the card named `name` shows. */
 async function findExample(page: Page, name: RegExp) {
   const card = exampleCards(page).filter({ hasText: name });
-  // 34 sets of 3 cover 100 examples; allow for a longer list.
-  for (let i = 0; i < 60 && (await card.count()) === 0; i++) {
-    await page.getByRole("button", { name: "Show other examples" }).click();
+  // 3, then 10 more at a time, cover 100 examples in 10 presses; allow for a longer list.
+  for (let i = 0; i < 30 && (await card.count()) === 0 && (await showMore(page).count()) > 0; i++) {
+    await showMore(page).click();
   }
   return card;
 }
 
-test("the home page shows three examples, and others on request", async ({ page }) => {
+test("the home page shows three examples, and adds more on request", async ({ page }) => {
   await page.goto("/");
   const cards = exampleCards(page);
   await expect(cards).toHaveCount(3);
   const first = await cards.allTextContents();
 
-  const more = page.getByRole("button", { name: "Show other examples" });
+  const more = showMore(page);
+  await expect(more).toHaveText("Show 10 more examples");
   await more.focus();
   await page.keyboard.press("Enter");
-  await expect(cards).toHaveCount(3);
-  await expect.poll(() => cards.allTextContents()).not.toEqual(first);
-  await expect(more).toBeFocused();
+  // Ten more below the first three, which stay; focus moves to the first new card.
+  await expect(cards).toHaveCount(13);
+  expect((await cards.allTextContents()).slice(0, 3)).toEqual(first);
+  await expect(cards.nth(3)).toBeFocused();
   await expectAccessible(page);
 
   // A card runs its search.
@@ -88,6 +93,7 @@ test("the home page shows three examples, and others on request", async ({ page 
   await expect(page.locator(".summary")).toContainText("pages");
   // Back returns to the same cards.
   await page.goBack();
+  await expect(cards).toHaveCount(13);
   await expect(cards.first()).toContainText(title);
 });
 

@@ -4,7 +4,8 @@ import { api, ApiError, sameSearch, VersionChangedError, type SearchParams } fro
 import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./engine/cube";
-import { EXAMPLE_ORDER, EXAMPLES_SHOWN, examplesAt } from "./examples";
+import { EXAMPLE_ORDER } from "./examples";
+import { Examples } from "./components/Examples";
 import { bucketIndex, bucketLabel, bucketStart, dayNumber } from "./lib/time";
 import { cssColor, cssTimeColor } from "./lib/scale";
 import { searchParams, serializeView, useView, type ViewState } from "./state/url";
@@ -37,9 +38,9 @@ const webgl = typeof document !== "undefined" && hasWebGL2();
 
 export function App() {
   const [view, setView] = useView();
-  // Which set of examples the home page shows; kept across searches so Back
-  // returns to the same cards.
-  const [examplePage, setExamplePage] = useState(0);
+  // How many times "Show more" was pressed under the home page's examples;
+  // kept across searches so Back returns to the same cards.
+  const [exampleClicks, setExampleClicks] = useState(0);
   const about = useRef<HTMLDialogElement>(null);
   // showModal() focuses the first link, which then shows a focus ring before anyone has tabbed.
   // Start on the heading instead: screen readers announce the dialog by it, and Tab goes on to
@@ -479,28 +480,12 @@ export function App() {
             Type a word or phrase to map every matching page from Chronicling America, then play it
             through time.
           </p>
-          <ul className="examples" id="examples" aria-live="polite">
-            {examplesAt(EXAMPLE_ORDER, examplePage).map((ex) => (
-              <li key={ex.id}>
-                <button type="button" className="example" onClick={() => search({ ...ex.view })}>
-                  <strong>{ex.title}</strong>
-                  <span>{ex.blurb}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-          {EXAMPLE_ORDER.length > EXAMPLES_SHOWN && (
-            <p className="examples__more">
-              <button
-                type="button"
-                className="link-button"
-                aria-controls="examples"
-                onClick={() => setExamplePage((p) => p + 1)}
-              >
-                Show other examples
-              </button>
-            </p>
-          )}
+          <Examples
+            order={EXAMPLE_ORDER}
+            clicks={exampleClicks}
+            onMore={() => setExampleClicks((c) => c + 1)}
+            onPick={(ex) => search({ ...ex.view })}
+          />
         </main>
       ) : (
         <main className={agg.isFetching ? "results results--loading" : "results"}>
