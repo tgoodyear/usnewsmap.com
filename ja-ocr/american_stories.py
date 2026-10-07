@@ -48,7 +48,9 @@ from solo import Solo
 URL = "https://huggingface.co/datasets/dell-research-harvard/AmericanStories/resolve/main/faro_{year}.tar.gz"
 NAME = re.compile(r"^(\d{4}-\d\d-\d\d)_p(\d+|None|na)_([a-z]+\d+)_(.+?)_(\d{8})(\d{2})_(\d+)\.json$")
 BATCH = re.compile(r"/batches/([a-z0-9_]+?)(?:_ver\d+)?/")
-TEXT_CLASSES = {"article", "headline", "byline", "caption"}
+# Text regions: the dataset labels bylines "author" and captions "image_caption" (the paper says byline and
+# caption); both spellings count.
+TEXT_CLASSES = {"article", "headline", "author", "byline", "image_caption", "caption"}
 TERMS = ("lincoln", "railroad", "president", "election", "cotton", "gold", "fever", "telegraph", "slavery",
          "steamboat", "church", "automobile", "radio", "prohibition", "farmers")
 DAMAGE_BANDS = (0.1, 0.25)  # quality.DAMAGED, quality.BADLY_DAMAGED
@@ -173,6 +175,7 @@ def loc_pages(curated, batches: list[dict], years: set[int], cut: int, keep=lamb
 
 def context(text: str, term: str, around: int = 80) -> str:
     """The text around the first whole-word match of `term`, on one line."""
+    text = quality.DEHYPHENATE.sub(r"\1", text)  # as quality.text_words reads it: "rail-\nroad" is railroad
     m = re.search(rf"(?i)\b{re.escape(term)}\b", text)
     if not m:
         return ""

@@ -38,8 +38,11 @@ elif [ "${1:-}" = american-stories ] || [ "${1:-}" = american-stories-write ]; t
   command=$1
   job="caj-usnm-jaone-$ENV_NAME"
   shift
+  # The writer reads every page of each year it's given: only --year narrows it.
+  allowed='^(--year|--sample-pct|[0-9]+(\.[0-9]+)?)$'
+  [ "$command" = american-stories-write ] && allowed='^(--year|[0-9]{4})$'
   for a in "$@"; do
-    [[ $a =~ ^(--year|--sample-pct|[0-9]+(\.[0-9]+)?)$ ]] || die "unexpected argument \"$a\""
+    [[ $a =~ $allowed ]] || die "unexpected argument \"$a\" for $command"
   done
 else
   for a in "$@"; do

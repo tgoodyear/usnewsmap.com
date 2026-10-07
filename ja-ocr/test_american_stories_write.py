@@ -30,6 +30,7 @@ def scan(lccn, day, page, articles, legibility=None):
         full.append({"headline": headline, "byline": "", "article": body, "object_ids": [i],
                      "bbox_list": [{"x0": i, "y0": 0, "x1": i + 10, "y1": 20}]})
     boxes.append({"id": 99, "class": "ad", "legibility": "Illegible"})
+    boxes.append({"id": 98, "class": "author", "legibility": "Questionable"})  # a byline, as the dataset names it
     return name, {"scan": {"width": 4000, "height": 6000}, "bboxes": boxes, "full articles": full}
 
 
@@ -95,7 +96,7 @@ class Write(unittest.TestCase):
         self.assertEqual([first["text"][a["start"]:a["end"]] for a in arts], ["WAR NEWS\nThe army moved.", "Cotton is up."])
         self.assertEqual((arts[0]["headline"], arts[0]["bboxes"], arts[1]["legibility"]),
                          ("WAR NEWS", [[0, 0, 10, 20]], ["illegible"]))
-        self.assertEqual(json.loads(first["legibility"]), {"illegible": 1, "legible": 1})  # the ad isn't text
+        self.assertEqual(json.loads(first["legibility"]), {"illegible": 1, "legible": 1, "questionable": 1})  # not the ad
         self.assertEqual((first["width"], first["height"], str(first["date"])), (4000, 6000, "1865-01-02"))
         self.assertEqual(rows["sn1_1865-01-02_ed-1_seq-2"]["text"], "LOCAL\nA fire on Main street.")  # not the copy
         self.assertEqual(rows["sn1_1865-01-02_ed-1_seq-3"]["text"], "MORE\nPage three, named by its image.")
