@@ -57,7 +57,7 @@ async function expectAccessible(page: Page) {
 const exampleCards = (page: Page) => page.locator("ul.examples button.example");
 
 /** The button under the examples that adds more of them. */
-const showMore = (page: Page) => page.getByRole("button", { name: /^Show \d+ more examples?$/ });
+const showMore = (page: Page) => page.getByRole("button", { name: "Show more examples" });
 
 /** Show more examples until the card named `name` shows. */
 async function findExample(page: Page, name: RegExp) {
@@ -76,7 +76,7 @@ test("the home page shows three examples, and adds more on request", async ({ pa
   const first = await cards.allTextContents();
 
   const more = showMore(page);
-  await expect(more).toHaveText("Show 10 more examples");
+  await expect(more).toHaveText("Show more examples");
   await more.focus();
   await page.keyboard.press("Enter");
   // Ten more below the first three, which stay; focus moves to the first new card.
