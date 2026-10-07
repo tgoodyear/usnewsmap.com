@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
@@ -334,19 +334,19 @@ export function App() {
   const byDay = data?.bucket.unit === "day";
   const wantsDays = norm === "when" && !view.place && !!data && !byDay;
   const candidatesKey = wantsDays && !agg.isPlaceholderData ? medianCandidates(visible).join(",") : "";
-  const queryClient = useQueryClient();
-  // The first request for a search goes out at once; once one has started
-  // (pending or answered), later sets wait for the set to settle.
-  const startedDays = queryClient
-    .getQueryCache()
-    .findAll({ queryKey: ["days", version, params] })
-    .some((q) => q.state.fetchStatus !== "idle" || q.state.data !== undefined || q.state.error !== null);
+  // The first set for a search is asked for at once; any other set waits
+  // until it has held still for a second. Kept per search during render, so
+  // the first answer shows as soon as it arrives.
+  const searchId = JSON.stringify([version, params]);
+  const [firstSet, setFirstSet] = useState({ searchId: "", key: "" });
+  if (candidatesKey !== "" && firstSet.searchId !== searchId) setFirstSet({ searchId, key: candidatesKey });
+  const isFirstSet = firstSet.searchId === searchId ? firstSet.key === candidatesKey : candidatesKey !== "";
   const [settledKey, setSettledKey] = useState("");
   useEffect(() => {
     const id = setTimeout(() => setSettledKey(candidatesKey), 1000);
     return () => clearTimeout(id);
   }, [candidatesKey]);
-  const requestKey = startedDays ? settledKey : candidatesKey;
+  const requestKey = isFirstSet ? candidatesKey : settledKey;
   const dayCounts = useQuery({
     queryKey: ["days", version, params, requestKey],
     queryFn: ({ signal }) => api.days(params, version, requestKey.split(","), signal),
