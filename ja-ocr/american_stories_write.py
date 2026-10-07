@@ -152,7 +152,7 @@ def write_year(curated, year: int, opener=None, keep=lambda: None) -> dict:
     unnumbered: list[tuple[str, dict]] = []  # placed once every name of the year is known
     parts = Parts(curated, year)
     counts = {"scans": 0, "unparsed": 0, "duplicates": 0, "page_from_image": 0}
-    with ams._open(year, opener) as resp, tarfile.open(fileobj=resp, mode="r|gz") as tar:
+    with ams.tar_stream(year, opener) as tar:
         for member in tar:
             keep()
             if not (member.isfile() and member.name.endswith(".json")):

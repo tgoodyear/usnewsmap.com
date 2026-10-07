@@ -162,13 +162,47 @@ class Write(unittest.TestCase):
         self.assertEqual(len(rows), 4)
         self.assertEqual(sum(pq.read_table(io.BytesIO(self.cur.read(p))).num_rows for p in self.cur.list(asw.PAGES)), 4)
 
+    def test_a_download_cut_at_a_member_boundary_is_retried(self):
+        # Every member arrives, but the gzip trailer doesn't: tar alone would read this as a whole archive.
+        tries = {"n": 0}
+
+        def no_trailer(req):
+            if req.full_url == asw.TREE:
+                return self.opener(req)
+            tries["n"] += 1
+            return contextlib.closing(io.BytesIO(self.tgz[:-8] if tries["n"] == 1 else self.tgz))
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0):
+            got = asw.write(self.ref, self.cur, run="exec-8", opener=no_trailer)
+        self.assertEqual((tries["n"], got["pages"]), (2, 4))
+
+    def test_a_body_shorter_than_its_content_length_is_retried(self):
+        tries = {"n": 0}
+
+        class Response(io.BytesIO):
+            def __init__(self, body, length):
+                super().__init__(body)
+                self.headers = {"Content-Length": str(length)}
+
+        def short(req):
+            if req.full_url == asw.TREE:
+                return self.opener(req)
+            tries["n"] += 1
+            return Response(self.tgz, len(self.tgz) + (100 if tries["n"] == 1 else 0))
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw.jaocr, "log") as log:
+            got = asw.write(self.ref, self.cur, run="exec-9", opener=short)
+        self.assertEqual((tries["n"], got["pages"]), (2, 4))
+        errors = [c.kwargs.get("error", "") for c in log.call_args_list if c.args[0].endswith("retrying")]
+        self.assertTrue(errors and errors[0].startswith("IncompleteDownload"), errors)
+
     def test_a_year_that_keeps_failing_gets_no_marker(self):
         def broken(req):
             if req.full_url == asw.TREE:
                 return self.opener(req)
-            raise ConnectionResetError("reset")
+            return contextlib.closing(io.BytesIO(self.tgz[:-8]))  # never complete
 
-        with mock.patch.object(asw, "RETRY_SECONDS", 0), self.assertRaises(ConnectionResetError):
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), self.assertRaises(EOFError):
             asw.write(self.ref, self.cur, run="exec-7", opener=broken)
         self.assertFalse(self.cur.exists(f"{asw.YEARS}/1865.json"))
 
