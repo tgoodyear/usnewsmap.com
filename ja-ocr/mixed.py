@@ -21,8 +21,8 @@ can fall through:
    frequent words, and the Latin share of its letters (median, and the share
    of pages over half Latin).
 
-Writes audit/mixed-pages-<version>.json (every table) and a CSV per table in
-the curated store, and logs each row as a "mixed pages" line. One replica of
+Writes audit/mixed-pages-<version>-<execution>.json (every table) and a CSV
+per table in the curated store (named by execution, so two runs never mix), and logs each row as a "mixed pages" line. One replica of
 an execution does the work, holding a lock it renews; the others wait for its
 finished marker and take over if the lock goes stale (JAOCR_AUDIT_LOCK_MINUTES,
 60), and a retried replica of a finished execution exits at once.
@@ -245,7 +245,7 @@ def mixed(reference, curated, top: frozenset | None = None, run: str | None = No
                                                             top if top is not None else english_top(), keep)
     tables = {"loc_text_bands": loc_summary, "loc_text_by_title": loc_titles, "loc_text_samples": loc_samples,
               "our_ocr_english": ours, "our_ocr_by_title": ours_titles, "our_ocr_samples": ours_samples}
-    base = f"audit/mixed-pages-{version}"
+    base = f"audit/mixed-pages-{version}-{run}"
     report = {"version": version, "batches": len(batches), "our_parts": ours_parts,
               "bands": dict(zip(BAND_NAMES, (0,) + BANDS)), "word_bands": WORD_BAND_NAMES, **tables}
     curated.write(f"{base}.json", json.dumps(report, ensure_ascii=False, indent=1).encode())

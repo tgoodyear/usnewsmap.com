@@ -96,8 +96,8 @@ class Mixed(unittest.TestCase):
             self.assertEqual(ours["garbled"]["latin_share_median"], 0.0)
             self.assertEqual(got["our_parts"], 4)
             for name in ("loc-text-bands", "loc-text-by-title", "our-ocr-english", "our-ocr-samples"):
-                self.assertTrue(cur.exists(f"audit/mixed-pages-v1-{name}.csv"), name)
-            self.assertEqual(json.loads(cur.read("audit/mixed-pages-v1.json"))["version"], "v1")
+                self.assertTrue(cur.exists(f"audit/mixed-pages-v1-exec-1-{name}.csv"), name)
+            self.assertEqual(json.loads(cur.read("audit/mixed-pages-v1-exec-1.json"))["version"], "v1")
 
     def test_a_retried_owner_takes_its_lock_back_and_a_dead_owners_lock_is_taken_over(self):
         with tempfile.TemporaryDirectory() as d:
