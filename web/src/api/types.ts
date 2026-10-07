@@ -410,11 +410,12 @@ export interface OcrQuality {
   finished_at: string | null;
   /** Only once finished. */
   summary: {
+    /** Each null when no sampled page (of that kind) has text. */
     agreement: {
-      differs_share: number;
-      mixed_share: number;
-      multilingual_differs_share: number;
-      und_share: number;
+      differs_share: number | null;
+      mixed_share: number | null;
+      multilingual_differs_share: number | null;
+      und_share: number | null;
     };
     languages: {
       language: string;

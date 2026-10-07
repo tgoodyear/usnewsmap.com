@@ -24,12 +24,14 @@ pub struct Batches {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Agreement {
-    /// Sampled pages whose detected language isn't their title's first catalog language.
-    pub differs_share: f64,
-    pub mixed_share: f64,
-    /// The same, among pages of titles that list more than one language.
-    pub multilingual_differs_share: f64,
-    pub und_share: f64,
+    /// Pages with text whose detected language isn't their title's first
+    /// catalog language. Null (like the others) when no sampled page has text.
+    pub differs_share: Option<f64>,
+    pub mixed_share: Option<f64>,
+    /// The same, among pages of titles that list more than one language;
+    /// null when no such page has text.
+    pub multilingual_differs_share: Option<f64>,
+    pub und_share: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -171,6 +173,24 @@ mod tests {
         assert_eq!(s.percent, 100.0);
         let sum = s.summary.unwrap();
         assert_eq!(sum.languages[0].language, "eng");
-        assert_eq!(sum.agreement.multilingual_differs_share, 0.41);
+        assert_eq!(sum.agreement.multilingual_differs_share, Some(0.41));
+    }
+
+    #[test]
+    fn a_summary_without_data_reads_as_nulls() {
+        let now = Utc::now();
+        let mut p = progress(2989, 1, true, now);
+        p.summary = Some(
+            serde_json::from_value(json!({
+                "agreement": {"differs_share": 0.02, "mixed_share": 0.0,
+                              "multilingual_differs_share": null, "und_share": 0.01},
+                "languages": [{"damage_rate_median": null, "damaged_share": null,
+                               "function_share_median": null, "language": "yid", "pages": 300}]
+            }))
+            .unwrap(),
+        );
+        let sum = section(p, now).summary.unwrap();
+        assert_eq!(sum.agreement.multilingual_differs_share, None);
+        assert_eq!(sum.languages[0].damage_rate_median, None);
     }
 }
