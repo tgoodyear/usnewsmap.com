@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { EXAMPLES_MORE, examplesShown, type Example } from "../examples";
+import { examplesShown, type Example } from "../examples";
 
 interface Props {
   /** Every example, in the order to show them. */
@@ -16,7 +16,7 @@ interface Props {
  */
 export function Examples({ order, clicks, onMore, onPick }: Props) {
   const shown = examplesShown(order, clicks);
-  const next = Math.min(EXAMPLES_MORE, order.length - shown.length);
+  const left = order.length - shown.length;
   const list = useRef<HTMLUListElement>(null);
   // After "Show more", the index of the first card it added, to move focus
   // there: keyboard and screen reader users land on the new cards, and focus
@@ -42,7 +42,7 @@ export function Examples({ order, clicks, onMore, onPick }: Props) {
           </li>
         ))}
       </ul>
-      {next > 0 && (
+      {left > 0 && (
         <p className="examples__more">
           <button
             type="button"
@@ -53,7 +53,7 @@ export function Examples({ order, clicks, onMore, onPick }: Props) {
               onMore();
             }}
           >
-            Show {next} more {next === 1 ? "example" : "examples"}
+            Show more examples
           </button>
         </p>
       )}

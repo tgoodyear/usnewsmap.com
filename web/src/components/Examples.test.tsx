@@ -12,7 +12,7 @@ function Home({ onPick = () => undefined }: { onPick?: (ex: Example) => void }) 
 
 const titles = () =>
   Array.from(document.querySelectorAll("#examples button.example strong")).map((el) => el.textContent ?? "");
-const more = () => screen.queryByRole("button", { name: /^Show \d+ more examples?$/ });
+const more = () => screen.queryByRole("button", { name: "Show more examples" });
 
 describe("Examples", () => {
   afterEach(cleanup);
@@ -21,7 +21,7 @@ describe("Examples", () => {
     render(<Home />);
     const first = titles();
     expect(first).toEqual(EXAMPLE_ORDER.slice(0, 3).map((e) => e.title));
-    expect(more()?.textContent).toBe("Show 10 more examples");
+    expect(more()?.textContent).toBe("Show more examples");
     expect(more()?.getAttribute("aria-controls")).toBe("examples");
 
     fireEvent.click(more()!);
@@ -31,12 +31,11 @@ describe("Examples", () => {
     let presses = 1;
     while (more()) {
       const before = titles();
-      const label = more()!.textContent;
       fireEvent.click(more()!);
       presses++;
       const after = titles();
       expect(after.slice(0, before.length)).toEqual(before);
-      expect(label).toBe(`Show ${after.length - before.length} more examples`);
+      expect(after.length - before.length).toBe(Math.min(10, EXAMPLES.length - before.length));
     }
     expect(presses).toBe(10);
     const all = titles();
@@ -53,13 +52,13 @@ describe("Examples", () => {
     expect(document.activeElement?.querySelector("strong")?.textContent).toBe(EXAMPLE_ORDER[13]!.title);
   });
 
-  it("names a last press of one example in the singular", () => {
+  it("keeps the same label for a last, short press", () => {
     const order = EXAMPLE_ORDER.slice(0, 14);
     render(<Examples order={order} clicks={0} onMore={() => undefined} onPick={() => undefined} />);
-    expect(more()?.textContent).toBe("Show 10 more examples");
+    expect(more()?.textContent).toBe("Show more examples");
     cleanup();
     render(<Examples order={order} clicks={1} onMore={() => undefined} onPick={() => undefined} />);
-    expect(more()?.textContent).toBe("Show 1 more example");
+    expect(more()?.textContent).toBe("Show more examples");
     cleanup();
     render(<Examples order={order} clicks={2} onMore={() => undefined} onPick={() => undefined} />);
     expect(more()).toBeNull();
