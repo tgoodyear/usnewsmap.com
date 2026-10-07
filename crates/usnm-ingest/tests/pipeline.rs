@@ -41,6 +41,22 @@ fn by_id(docs: Vec<Value>) -> BTreeMap<String, Value> {
         .collect()
 }
 
+/// A fixture index as the release builds it from LoC's text alone: without
+/// American Stories' text (`text_as`) and the pages only it has text for,
+/// which the release doesn't load yet (#218, 05 §5.5.4).
+fn loc_fixture(index_id: &str) -> BTreeMap<String, Value> {
+    let docs = read_jsonl(&fixtures().join(format!("indexes/{index_id}.jsonl")));
+    by_id(
+        docs.into_iter()
+            .filter(|d| d["text"].as_str() != Some(""))
+            .map(|mut d| {
+                d.as_object_mut().unwrap().remove("text_as");
+                d
+            })
+            .collect(),
+    )
+}
+
 struct Page {
     lccn: String,
     date: NaiveDate,
@@ -312,9 +328,7 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     assert!(p1.full, "the first release is a base");
     assert_eq!(p1.indexes, ["pages-base-20261001-1"]);
 
-    let want_base = by_id(read_jsonl(
-        &fixtures().join("indexes/pages-base-fixture.jsonl"),
-    ));
+    let want_base = loc_fixture("pages-base-fixture");
     assert_eq!(e.index("pages-base-20261001-1"), want_base);
     assert_eq!(p1.docs, want_base.len() as u64);
 
@@ -335,9 +349,7 @@ async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
         p2.indexes,
         ["pages-base-20261001-1", "pages-delta-20261008-1"]
     );
-    let want_delta = by_id(read_jsonl(
-        &fixtures().join("indexes/pages-delta-fixture-1.jsonl"),
-    ));
+    let want_delta = loc_fixture("pages-delta-fixture-1");
     assert_eq!(e.index("pages-delta-20261008-1"), want_delta);
 
     // The reference snapshot matches the fixture's, file for file.
@@ -615,7 +627,7 @@ async fn releases_into_a_quickwit_writer_node() {
     };
     let fixture_docs: Vec<Value> = ["pages-base-fixture", "pages-delta-fixture-1"]
         .iter()
-        .flat_map(|f| read_jsonl(&fixtures().join(format!("indexes/{f}.jsonl"))))
+        .flat_map(|f| loc_fixture(f).into_values())
         .collect();
     assert_eq!(count("*").await, fixture_docs.len() as u64);
     assert_eq!(docs, fixture_docs.len() as u64);
@@ -1477,9 +1489,7 @@ async fn an_incremental_release_builds_on_a_run_with_an_inline_batch_list() {
     e.worker("w").run(None).await.unwrap();
     let p2 = e.release(8, false).await.unwrap();
     assert!(!p2.full);
-    let want_delta = by_id(read_jsonl(
-        &fixtures().join("indexes/pages-delta-fixture-1.jsonl"),
-    ));
+    let want_delta = loc_fixture("pages-delta-fixture-1");
     assert_eq!(e.index(&p2.indexes[1]), want_delta);
     let item = raw_run(&e, &p2.index_version).await;
     assert!(item.get("batches").is_none());
@@ -1644,9 +1654,7 @@ async fn pages_in_two_batches_are_kept_once() {
     );
     let p1 = e.release(1, false).await.unwrap();
     assert!(p1.full);
-    let want_base = by_id(read_jsonl(
-        &fixtures().join("indexes/pages-base-fixture.jsonl"),
-    ));
+    let want_base = loc_fixture("pages-base-fixture");
     let base = e.index(&p1.indexes[0]);
     assert_eq!(base, want_base, "each page once");
     assert_eq!(p1.docs, want_base.len() as u64);
@@ -1684,9 +1692,7 @@ async fn pages_in_two_batches_are_kept_once() {
     assert_eq!(raw_run(&e, v2).await["duplicate_pages"], 25 + 10 + 10);
     // The delta has every late page once, plus batch_aa's copies of the 10
     // early pages: they win, and the base's copies are hidden.
-    let want_delta = by_id(read_jsonl(
-        &fixtures().join("indexes/pages-delta-fixture-1.jsonl"),
-    ));
+    let want_delta = loc_fixture("pages-delta-fixture-1");
     let delta = e.index(p2.indexes.last().unwrap());
     let early_ids: Vec<String> = again_early
         .iter()

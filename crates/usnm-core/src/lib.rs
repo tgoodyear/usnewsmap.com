@@ -1,6 +1,7 @@
 //! Domain types shared by the US News Map API and ingest pipeline.
 //!
 //! See `docs/design/` for the design these modules implement:
+//! - [`american_stories`]: American Stories' second text of a page (05 §5.5.4, #218)
 //! - [`ids`]: page keys and collision-free document ids (04 §4.2)
 //! - [`time`]: day numbers and time buckets (05 §5.5, §5.7)
 //! - [`text`]: text normalization shared by ingest and query parsing (04 §4.5)
@@ -12,6 +13,7 @@
 //! - [`names`]: LoC's language and state names (04 §4.6)
 //! - [`skew`]: where a term is printed more or less than corpus volume predicts (11)
 
+pub mod american_stories;
 pub mod common_grams;
 pub mod cube;
 pub mod ids;

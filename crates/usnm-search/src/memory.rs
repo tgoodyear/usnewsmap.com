@@ -10,7 +10,7 @@ use usnm_core::query::{Node, Term};
 use usnm_core::text::tokenize;
 use usnm_core::time::BucketSpec;
 
-use crate::snippet::text_snippets;
+use crate::snippet::page_snippets;
 use crate::{
     ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
     KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
@@ -19,6 +19,20 @@ use crate::{
 struct Indexed {
     doc: PageDoc,
     tokens: Vec<String>,
+    /// American Stories' text's tokens (05 §5.5.4), when the page has it.
+    as_tokens: Option<Vec<String>>,
+}
+
+impl Indexed {
+    /// The token streams a search reads: LoC's text, and American Stories'
+    /// when the index set searches it.
+    fn texts(&self, american_stories: bool) -> Vec<&[String]> {
+        let mut out = vec![self.tokens.as_slice()];
+        if american_stories {
+            out.extend(self.as_tokens.as_deref());
+        }
+        out
+    }
 }
 
 /// Documents grouped by index id, so explicit index sets behave like the real engine.
@@ -43,6 +57,7 @@ impl MemoryBackend {
             } else {
                 tokenize(&doc.text)
             },
+            as_tokens: doc.text_as.as_deref().map(tokenize),
             doc,
         }));
     }
@@ -72,7 +87,7 @@ impl MemoryBackend {
                     || doc.language.iter().any(|l| filters.langs.contains(l)))
                 && (!filters.front_only || doc.front_page)
                 && !indexes.hides(&doc.doc_id, &doc.batch)
-                && eval(query, &d.tokens)
+                && eval_texts(query, &d.texts(indexes.american_stories()))
         }))
     }
 }
@@ -177,7 +192,14 @@ impl SearchBackend for MemoryBackend {
             .matching(indexes, query, filters)?
             .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.doc.place_id == p))
             .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.doc.lccn == l))
-            .map(|d| (mentions(query, &d.tokens), &d.doc))
+            .map(|d| {
+                let mentions: usize = d
+                    .texts(indexes.american_stories())
+                    .into_iter()
+                    .map(|t| mentions(query, t))
+                    .sum();
+                (mentions, &d.doc)
+            })
             .collect();
         docs.sort_by(|(ma, a), (mb, b)| {
             let order = (a.day, a.sort_key, &a.doc_id).cmp(&(b.day, b.sort_key, &b.doc_id));
@@ -200,20 +222,29 @@ impl SearchBackend for MemoryBackend {
                 .into_iter()
                 .skip(page.offset)
                 .take(page.limit)
-                .map(|(_, d)| Hit {
-                    doc_id: d.doc_id.clone(),
-                    day: d.day,
-                    lccn: d.lccn.clone(),
-                    place_id: d.place_id.clone(),
-                    edition: d.edition,
-                    seq: d.seq,
-                    front_page: d.front_page,
-                    snippets: match &d.printed {
-                        Some(printed) => ja_snippets(printed, query),
-                        None => text_snippets(&d.text, query),
-                    },
-                    ocr_source: d.ocr_source.clone(),
-                    ocr_engine: d.ocr_engine.clone(),
+                .map(|(_, d)| {
+                    let (snippets, snippet_source) = match &d.printed {
+                        Some(printed) => (ja_snippets(printed, query), None),
+                        None => page_snippets(
+                            &d.text,
+                            d.text_as.as_deref(),
+                            query,
+                            indexes.american_stories(),
+                        ),
+                    };
+                    Hit {
+                        doc_id: d.doc_id.clone(),
+                        day: d.day,
+                        lccn: d.lccn.clone(),
+                        place_id: d.place_id.clone(),
+                        edition: d.edition,
+                        seq: d.seq,
+                        front_page: d.front_page,
+                        snippets,
+                        snippet_source,
+                        ocr_source: d.ocr_source.clone(),
+                        ocr_engine: d.ocr_engine.clone(),
+                    }
                 })
                 .collect(),
         })
@@ -244,12 +275,24 @@ fn cells<'a>(docs: impl Iterator<Item = &'a Indexed>, spec: &BucketSpec) -> Vec<
 
 /// Evaluate the AST against a document's token stream.
 pub fn eval(node: &Node, tokens: &[String]) -> bool {
+    eval_texts(node, &[tokens])
+}
+
+/// Evaluate the AST against a document's texts (05 §5.5.4): a term or
+/// phrase matches when it matches in any one of them (a phrase within one
+/// text), and the operators combine those as usual, so `NOT x` excludes a
+/// page with `x` in any text.
+pub fn eval_texts(node: &Node, texts: &[&[String]]) -> bool {
     match node {
-        Node::Term(t) => tokens.iter().any(|tok| term_matches(t, tok)),
-        Node::Phrase { terms, slop } => phrase_matches(terms, *slop, tokens),
-        Node::And(c) => c.iter().all(|n| eval(n, tokens)),
-        Node::Or(c) => c.iter().any(|n| eval(n, tokens)),
-        Node::Not(n) => !eval(n, tokens),
+        Node::Term(t) => texts
+            .iter()
+            .any(|tokens| tokens.iter().any(|tok| term_matches(t, tok))),
+        Node::Phrase { terms, slop } => texts
+            .iter()
+            .any(|tokens| phrase_matches(terms, *slop, tokens)),
+        Node::And(c) => c.iter().all(|n| eval_texts(n, texts)),
+        Node::Or(c) => c.iter().any(|n| eval_texts(n, texts)),
+        Node::Not(n) => !eval_texts(n, texts),
     }
 }
 
@@ -393,6 +436,7 @@ mod shard_tests {
             printed: None,
             ocr_source: None,
             ocr_engine: None,
+            text_as: None,
             doc_id: format!("sn99{i:06}_1896-07-10_ed-1_seq-1"),
             day: 71_000 + i,
             ym: 1896 * 12 + 6,
@@ -445,6 +489,68 @@ mod shard_tests {
             assert_eq!(merged, all, "n = {n}");
         }
         let _ = NaiveDate::MIN;
+    }
+
+    /// A page matches when the query matches in either text, once (05 §5.5.4),
+    /// and only when the index set searches American Stories' text.
+    #[tokio::test]
+    async fn american_stories_text_matches_a_page_once_when_searched() {
+        let mut both = doc(1, 1);
+        both.text = "a cross of goid".into();
+        both.text_as = Some("BRYAN SPEAKS a cross of gold".into());
+        let mut b = MemoryBackend::new();
+        b.add_index("i", [both, doc(2, 1)]);
+        let off = IndexSet::new(vec!["i".into()]);
+        let on = off.clone().with_american_stories(true);
+        let (from, to) = (
+            usnm_core::time::date_from_day(71_000),
+            usnm_core::time::date_from_day(71_300),
+        );
+        let f = Filters {
+            from,
+            to,
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+        };
+        let spec = BucketSpec::new(BucketUnit::Year, from, to);
+        let total = |set: &IndexSet, q: &str| {
+            let (b, f, spec, set) = (&b, &f, &spec, set.clone());
+            let q = usnm_core::query::parse(q).unwrap();
+            async move { b.summary(&set, &q, f, spec).await.unwrap().total_hits }
+        };
+        // Doc 1 has the word in American Stories' text only; doc 2 in LoC's.
+        assert_eq!(total(&off, "gold").await, 1);
+        assert_eq!(total(&on, "gold").await, 2);
+        assert_eq!(total(&on, r#""cross of gold""#).await, 2);
+        assert_eq!(total(&on, "bryan").await, 1);
+        assert_eq!(total(&off, "bryan").await, 0);
+        // A term in each text, both in one page: still one page.
+        assert_eq!(total(&on, "bryan goid").await, 1);
+        // A phrase can't span the two texts.
+        assert_eq!(total(&on, r#""speaks a cross of goid""#).await, 0);
+        // NOT excludes a page with the word in either text.
+        assert_eq!(total(&on, "cross -bryan").await, 1);
+        assert_eq!(total(&off, "cross -bryan").await, 2);
+        let page = HitsQuery {
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        let q = usnm_core::query::parse("bryan").unwrap();
+        let hits = b.hits(&on, &q, &f, &page).await.unwrap();
+        assert_eq!(hits.hits.len(), 1);
+        assert_eq!(
+            hits.hits[0].snippets,
+            ["<mark>BRYAN</mark> SPEAKS a cross of gold"]
+        );
+        assert_eq!(
+            hits.hits[0].snippet_source,
+            Some(crate::SNIPPETS_FROM_AMERICAN_STORIES)
+        );
+        let q = usnm_core::query::parse("cross").unwrap();
+        let hits = b.hits(&on, &q, &f, &page).await.unwrap();
+        assert!(hits.hits.iter().all(|h| h.snippet_source.is_none()));
     }
 
     #[tokio::test]

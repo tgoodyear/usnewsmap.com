@@ -104,6 +104,46 @@ fn oracle_count(q: &str, from: &str, to: &str, indexes: &[&str]) -> u64 {
         .count() as u64
 }
 
+/// American Stories' text (05 §5.5.4) is searched only for a version built
+/// with it, and a hit says when its snippets come from it.
+#[tokio::test]
+async fn american_stories_text_is_searched_only_for_a_version_built_with_it() {
+    let off = state_with(None).await;
+    let mut rd = refdata().await;
+    rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+    let on = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+    let hits = |s: &Arc<AppState>, q: &'static str| {
+        let s = s.clone();
+        async move {
+            let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["total"]["hits"].as_u64().unwrap()
+        }
+    };
+    assert_eq!(hits(&off, "bimetallism").await, 0);
+    assert!(hits(&on, "bimetallism").await > 0);
+    assert!(hits(&on, "gold").await > hits(&off, "gold").await);
+
+    let (status, _, body) = get(&on, "/v1/hits?q=bimetallism&place=P00001").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    for item in items {
+        assert_eq!(item["snippet_source"], "american_stories", "{item}");
+        assert!(item["snippets"][0].as_str().unwrap().contains("<mark>"));
+    }
+    // Snippets from LoC's text say nothing about their source, and without
+    // the flag no snippet comes from American Stories' text.
+    for s in [&on, &off] {
+        let (_, _, body) = get(s, "/v1/hits?q=council&place=P00001&limit=50").await;
+        let items = body["items"].as_array().unwrap();
+        assert!(items.iter().any(|i| i.get("snippet_source").is_none()));
+    }
+    let (_, _, body) = get(&off, "/v1/hits?q=council&place=P00001&limit=50").await;
+    let items = body["items"].as_array().unwrap();
+    assert!(items.iter().all(|i| i.get("snippet_source").is_none()));
+}
+
 #[tokio::test]
 async fn health_and_meta() {
     let s = state_with(None).await;
@@ -1048,7 +1088,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f4")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f5")) else {
         return Vec::new();
     };
     entries
@@ -1079,7 +1119,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f4/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f5/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),

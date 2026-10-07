@@ -73,7 +73,8 @@ for index in pages-base-fixture pages-delta-fixture-1 pages-ja-fixture; do
     "$root/infra/quickwit/$template" |
     curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
       "$url/api/v1/indexes" > /dev/null
-  # The main pages get `text_cg` (05 §5.5.3) from the same code as a release.
+  # The main pages get `text_cg` (05 §5.5.3), and `text_as_cg` where they have
+  # American Stories' `text_as` (05 §5.5.4), from the same code as a release.
   docs="$root/fixtures/data/indexes/${index}.jsonl"
   if [ "$template" = pages-index.yaml ]; then
     cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-core --example add_text_cg \

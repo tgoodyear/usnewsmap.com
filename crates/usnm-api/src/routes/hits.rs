@@ -70,6 +70,11 @@ pub(crate) struct Item {
     seq: u16,
     front_page: bool,
     snippets: Vec<String>,
+    /// Where the snippets come from when it isn't LoC's text:
+    /// `american_stories` when the query matched only in American Stories'
+    /// text (05 §5.5.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snippet_source: Option<&'static str>,
     /// When the text is our own OCR, not LoC's (#139).
     #[serde(skip_serializing_if = "Option::is_none")]
     ocr: Option<Ocr>,
@@ -112,6 +117,7 @@ impl Item {
             seq: h.seq,
             front_page: h.front_page,
             snippets: h.snippets,
+            snippet_source: h.snippet_source,
         }
     }
 }

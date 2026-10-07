@@ -81,7 +81,32 @@ fn queries() -> Vec<(&'static str, Node)> {
             build("speaker convention", Some(Mode::Near), 3, 0).unwrap(),
         ),
         ("no match", parse("zyzzyva").unwrap()),
+        // American Stories' text (05 §5.5.4): words only in its headlines,
+        // words each OCR misread where the other didn't, and a query whose
+        // words are in different texts of one page.
+        ("only in american stories", parse("bimetallism").unwrap()),
+        (
+            "phrase only in american stories",
+            parse(r#""boy orator""#).unwrap(),
+        ),
+        (
+            "near only in american stories",
+            build("bryan chicago", Some(Mode::Near), 2, 0).unwrap(),
+        ),
+        ("not in american stories", parse("gold -bryan").unwrap()),
+        ("misread by loc", parse("goid").unwrap()),
+        ("misread by american stories", parse("golcl").unwrap()),
+        ("prefix in american stories", parse("bimet*").unwrap()),
+        ("across texts", parse("bryan speaker").unwrap()),
     ]
+}
+
+/// The main indexes searched in LoC's text alone, and in both texts
+/// (05 §5.5.4).
+fn sets() -> Vec<(&'static str, IndexSet)> {
+    let loc = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
+    let both = loc.clone().with_american_stories(true);
+    vec![("loc", loc), ("both texts", both)]
 }
 
 fn filter_cases() -> Vec<(&'static str, Filters)> {
@@ -136,29 +161,32 @@ async fn summaries_and_cubes_match_the_reference_backend() {
         return;
     };
     let mem = memory();
-    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     let mut checked = 0;
-    for (qname, q) in queries() {
+    for ((sname, set), (qname, q)) in sets()
+        .into_iter()
+        .flat_map(|s| queries().into_iter().map(move |q| (s.clone(), q)))
+    {
+        let set = &set;
         for (fname, f) in filter_cases() {
             for spec in specs(&f) {
                 let mut f = f.clone();
                 // Day specs use their own window.
                 f.from = spec.from;
                 f.to = spec.to;
-                let ctx = format!("{qname} / {fname} / {:?}", spec.unit);
-                let want = sorted(mem.summary(&set, &q, &f, &spec).await.unwrap());
-                let got = sorted(qw.summary(&set, &q, &f, &spec).await.expect(&ctx));
+                let ctx = format!("{sname} / {qname} / {fname} / {:?}", spec.unit);
+                let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
+                let got = sorted(qw.summary(set, &q, &f, &spec).await.expect(&ctx));
                 assert_eq!(got, want, "summary: {ctx}");
 
                 let all: Vec<u8> = (0..8).collect();
-                let want = sorted_cells(mem.cube(&set, &q, &f, &spec, &all).await.unwrap());
-                let got = sorted_cells(qw.cube(&set, &q, &f, &spec, &all).await.expect(&ctx));
+                let want = sorted_cells(mem.cube(set, &q, &f, &spec, &all).await.unwrap());
+                let got = sorted_cells(qw.cube(set, &q, &f, &spec, &all).await.expect(&ctx));
                 assert_eq!(got, want, "cube: {ctx}");
 
                 // Sharded cubes must partition the full cube exactly.
                 let mut parts = Vec::new();
                 for shards in [vec![0u8, 2, 4, 6], vec![1, 3, 5, 7]] {
-                    parts.extend(qw.cube(&set, &q, &f, &spec, &shards).await.expect(&ctx));
+                    parts.extend(qw.cube(set, &q, &f, &spec, &shards).await.expect(&ctx));
                 }
                 assert_eq!(sorted_cells(parts), want, "sharded cube: {ctx}");
 
@@ -175,17 +203,50 @@ async fn summaries_and_cubes_match_the_reference_backend() {
                     .cloned()
                     .collect();
                 let got = qw
-                    .place_cube(&set, &q, &f, &spec, &places)
+                    .place_cube(set, &q, &f, &spec, &places)
                     .await
                     .expect(&ctx);
                 assert_eq!(sorted_cells(got), want, "place cube: {ctx}");
-                let mem_got = mem.place_cube(&set, &q, &f, &spec, &places).await.unwrap();
+                let mem_got = mem.place_cube(set, &q, &f, &spec, &places).await.unwrap();
                 assert_eq!(sorted_cells(mem_got), want, "memory place cube: {ctx}");
                 checked += 1;
             }
         }
     }
     assert!(checked > 100, "only {checked} cases ran");
+}
+
+/// The fixtures exercise American Stories' text: some pages match only
+/// there, and only when the index set searches it.
+#[tokio::test]
+async fn american_stories_text_adds_pages_only_when_searched() {
+    let mem = memory();
+    let f = filters("1895-01-01", "1897-12-31");
+    let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+    let total = |set: IndexSet, q: &str| {
+        let (mem, f, spec, q) = (&mem, &f, &spec, parse(q).unwrap());
+        async move { mem.summary(&set, &q, f, spec).await.unwrap().total_hits }
+    };
+    let [(_, loc), (_, both)] = <[_; 2]>::try_from(sets()).ok().unwrap();
+    // Only American Stories has these: its headlines, its misreading.
+    for q in ["bimetallism", r#""boy orator""#, "bryan", "golcl"] {
+        assert_eq!(total(loc.clone(), q).await, 0, "{q}");
+        assert!(total(both.clone(), q).await > 0, "{q}");
+    }
+    // It reads some words LoC misread.
+    for q in ["gold", "silver"] {
+        assert!(
+            total(both.clone(), q).await > total(loc.clone(), q).await,
+            "{q}"
+        );
+    }
+    // LoC's misreading: no more pages.
+    assert!(total(loc.clone(), "goid").await > 0);
+    assert_eq!(
+        total(both.clone(), "goid").await,
+        total(loc.clone(), "goid").await
+    );
+    assert!(total(both.clone(), "gold -bryan").await < total(both.clone(), "gold").await);
 }
 
 #[tokio::test]
@@ -195,9 +256,13 @@ async fn hits_pages_match_the_reference_backend() {
         return;
     };
     let mem = memory();
-    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     let f = filters("1895-01-01", "1897-12-31");
-    for (qname, q) in queries() {
+    let mut from_american_stories = 0;
+    for ((sname, set), (qname, q)) in sets()
+        .into_iter()
+        .flat_map(|s| queries().into_iter().map(move |q| (s.clone(), q)))
+    {
+        let set = &set;
         for selector in [
             HitsQuery {
                 place_id: Some("P00001".into()),
@@ -226,9 +291,9 @@ async fn hits_pages_match_the_reference_backend() {
                     days: offset == 0,
                     ..selector.clone()
                 };
-                let ctx = format!("{qname} / {selector:?} / offset {offset}");
-                let want = mem.hits(&set, &q, &f, &page).await.unwrap();
-                let got = qw.hits(&set, &q, &f, &page).await.expect(&ctx);
+                let ctx = format!("{sname} / {qname} / {selector:?} / offset {offset}");
+                let want = mem.hits(set, &q, &f, &page).await.unwrap();
+                let got = qw.hits(set, &q, &f, &page).await.expect(&ctx);
                 assert_eq!(got.total, want.total, "total: {ctx}");
                 // Distinct days (#127), on the first page only. Quickwit's is a
                 // HyperLogLog estimate, exact at the fixtures' size.
@@ -243,8 +308,10 @@ async fn hits_pages_match_the_reference_backend() {
                         h.edition,
                         h.seq,
                         h.front_page,
-                        // Both build snippets from the page text (#126).
+                        // Both build snippets from the page text (#126),
+                        // or American Stories' when only it matches.
                         h.snippets.clone(),
+                        h.snippet_source,
                     )
                 };
                 assert_eq!(
@@ -262,6 +329,11 @@ async fn hits_pages_match_the_reference_backend() {
                         );
                     }
                 }
+                from_american_stories += got
+                    .hits
+                    .iter()
+                    .filter(|h| h.snippet_source.is_some())
+                    .count();
                 if qname == "phrase" && !got.hits.is_empty() {
                     assert!(got
                         .hits
@@ -271,6 +343,10 @@ async fn hits_pages_match_the_reference_backend() {
             }
         }
     }
+    assert!(
+        from_american_stories > 0,
+        "no snippets from American Stories' text"
+    );
 }
 
 /// "Most mentions first" (#126): Quickwit's score weighs rare words per
@@ -282,9 +358,12 @@ async fn relevant_hits_list_the_same_pages() {
         return;
     };
     let mem = memory();
-    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     let f = filters("1895-01-01", "1897-12-31");
-    for (qname, q) in queries() {
+    for ((sname, set), (qname, q)) in sets()
+        .into_iter()
+        .flat_map(|s| queries().into_iter().map(move |q| (s.clone(), q)))
+    {
+        let set = &set;
         let mut pages = Vec::new();
         for backend in [&mem as &dyn SearchBackend, &qw] {
             let mut all = Vec::new();
@@ -296,7 +375,7 @@ async fn relevant_hits_list_the_same_pages() {
                     limit: 500,
                     ..Default::default()
                 };
-                let got = backend.hits(&set, &q, &f, &page).await.expect(qname);
+                let got = backend.hits(set, &q, &f, &page).await.expect(qname);
                 let n = got.hits.len();
                 all.extend(got.hits.into_iter().map(|h| (h.doc_id, h.snippets)));
                 offset += n;
@@ -307,7 +386,7 @@ async fn relevant_hits_list_the_same_pages() {
             all.sort();
             pages.push(all);
         }
-        assert_eq!(pages[1], pages[0], "relevant: {qname}");
+        assert_eq!(pages[1], pages[0], "relevant: {sname} / {qname}");
     }
 }
 
@@ -442,8 +521,24 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
     };
     let mem = memory();
     let ids: Vec<String> = INDEXES.iter().map(|s| (*s).to_owned()).collect();
-    let set = IndexSet::new(ids.clone());
-    let grams = IndexSet::new(ids).with_common_grams(true);
+    let mut matched = 0;
+    // LoC's text alone, then both texts through both texts' pairs (05 §5.5.4).
+    for american_stories in [false, true] {
+        let set = IndexSet::new(ids.clone()).with_american_stories(american_stories);
+        let grams = set.clone().with_common_grams(true);
+        matched += common_word_phrases(&qw, &mem, &set, &grams).await;
+    }
+    assert!(matched >= 10, "only {matched} phrases matched the fixtures");
+}
+
+/// How many of the phrases matched: Quickwit through the pairs (`grams`)
+/// against the memory backend on the same texts (`set`).
+async fn common_word_phrases(
+    qw: &QuickwitBackend,
+    mem: &MemoryBackend,
+    set: &IndexSet,
+    grams: &IndexSet,
+) -> usize {
     let phrases = [
         r#""cross of gold""#,
         r#""the friends of free""#,
@@ -455,6 +550,10 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
         r#""cross of the gold""#,
         r#""cross of gold" -silver"#,
         r#""cross of gold" OR "the friends of free""#,
+        // In American Stories' headlines only.
+        r#""orator of the platte""#,
+        r#""the boy orator""#,
+        r#""quarantine at the port""#,
     ];
     let f = filters("1895-01-01", "1897-12-31");
     let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
@@ -462,15 +561,15 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
     let mut matched = 0;
     for p in phrases {
         let q = parse(p).unwrap();
-        let ctx = p.to_owned();
-        let want = sorted(mem.summary(&set, &q, &f, &spec).await.unwrap());
-        let got = sorted(qw.summary(&grams, &q, &f, &spec).await.expect(&ctx));
+        let ctx = format!("{p} / american stories {}", set.american_stories());
+        let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
+        let got = sorted(qw.summary(grams, &q, &f, &spec).await.expect(&ctx));
         assert_eq!(got, want, "summary: {ctx}");
         if want.total_hits > 0 {
             matched += 1;
         }
-        let want = sorted_cells(mem.cube(&set, &q, &f, &spec, &all).await.unwrap());
-        let got = sorted_cells(qw.cube(&grams, &q, &f, &spec, &all).await.expect(&ctx));
+        let want = sorted_cells(mem.cube(set, &q, &f, &spec, &all).await.unwrap());
+        let got = sorted_cells(qw.cube(grams, &q, &f, &spec, &all).await.expect(&ctx));
         assert_eq!(got, want, "cube: {ctx}");
         for sort in [HitSort::Oldest, HitSort::Newest] {
             let page = HitsQuery {
@@ -478,14 +577,20 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
                 limit: 20,
                 ..HitsQuery::default()
             };
-            let want = mem.hits(&set, &q, &f, &page).await.unwrap();
-            let got = qw.hits(&grams, &q, &f, &page).await.expect(&ctx);
+            let want = mem.hits(set, &q, &f, &page).await.unwrap();
+            let got = qw.hits(grams, &q, &f, &page).await.expect(&ctx);
             assert_eq!(got.total, want.total, "hits total: {ctx}");
             let ids = |h: &usnm_search::HitsPage| -> Vec<String> {
                 h.hits.iter().map(|h| h.doc_id.clone()).collect()
             };
             assert_eq!(ids(&got), ids(&want), "hits: {ctx}");
-            // The snippets still mark the phrase's words in `text`.
+            // The snippets still mark the phrase's words in `text`, or in
+            // `text_as` when only it has the phrase.
+            assert_eq!(
+                got.hits.iter().map(|h| &h.snippets).collect::<Vec<_>>(),
+                want.hits.iter().map(|h| &h.snippets).collect::<Vec<_>>(),
+                "snippets: {ctx}"
+            );
             if want.total > 0 {
                 assert!(
                     got.hits
@@ -496,5 +601,5 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
             }
         }
     }
-    assert!(matched >= 4, "only {matched} phrases matched the fixtures");
+    matched
 }
