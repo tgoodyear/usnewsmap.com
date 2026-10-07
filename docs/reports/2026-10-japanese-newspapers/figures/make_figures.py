@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Draw the report's figures as SVG. Every number comes from issues #128 and #135,
 docs/notes/2026-10-05-japanese-ocr.md, and the OCR quality audit's tables in
-data/ocr-quality-v2.jsonl; run from this directory."""
+data/ocr-quality-v2-10pct.jsonl; run from this directory."""
 
 import json
 from datetime import date
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-AUDIT = [json.loads(line) for line in (HERE.parent / "data" / "ocr-quality-v2.jsonl").open()]
+AUDIT = [json.loads(line) for line in (HERE.parent / "data" / "ocr-quality-v2-10pct.jsonl").open()]
 
 
 def audit(table):
@@ -149,7 +149,7 @@ def pipeline():
 
 NAMES = {"eng": "English", "ger": "German", "spa": "Spanish", "fre": "French", "pol": "Polish",
          "ita": "Italian", "dan": "Danish", "cze": "Czech", "nor": "Norwegian", "yid": "Yiddish",
-         "fin": "Finnish", "swe": "Swedish", "hun": "Hungarian"}
+         "fin": "Finnish", "swe": "Swedish", "hun": "Hungarian", "slv": "Slovenian"}
 
 
 def agreement():
@@ -157,7 +157,7 @@ def agreement():
     summ = {r["scope"]: r for r in audit("agreement_summary")}
     rows = [("Single-language titles", summ["single_language_titles"]),
             ("Multilingual titles", summ["multilingual_titles"]), None]
-    langs = sorted((r for k, r in summ.items() if k.startswith("title_language:") and r["text_pages"] >= 400),
+    langs = sorted((r for k, r in summ.items() if k.startswith("title_language:") and r["text_pages"] >= 1500),
                    key=lambda r: -r["text_pages"])
     rows += [(f"{NAMES.get(r['scope'][15:], r['scope'][15:])} titles", r) for r in langs]
     parts = [("same_share", LOC, "same language"), ("other_language_share", OURS, "another language"),
