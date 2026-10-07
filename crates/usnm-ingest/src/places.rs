@@ -6,7 +6,7 @@
 //!   Census Bureau's national places file reduced to `state,name,lat,lon`
 //!   by `scripts/build-gazetteer.py` (public domain, a US government work).
 //! - **Aliases** (`catalog/overrides/place-aliases.json`, compiled in):
-//!   misspellings and renamed towns, `[{from, note, state, to}]`, applied to
+//!   misspellings and renamed towns, `[{added, from, reason, ref, source, state, to}]`, applied to
 //!   a city before it is keyed.
 //! - **Keys** ignore case, accents, punctuation and spacing, and fold the
 //!   generic variants LoC's records use: "St."/"Saint", "Ste."/"Sainte",
@@ -21,6 +21,8 @@ use std::sync::OnceLock;
 
 use anyhow::{bail, Context};
 use serde::Deserialize;
+
+use crate::audit::{Audit, Earlier};
 use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
 use usnm_core::names::{State, STATES};
@@ -28,12 +30,14 @@ use usnm_core::names::{State, STATES};
 /// `state,name,lat,lon`, from `scripts/build-gazetteer.py`.
 pub const GAZETTEER: &str = include_str!("../../../catalog/gazetteer/us-places.csv");
 
-/// `[{from, note, state, to}]`, kept in git and compiled in like the place
+/// `[{added, from, reason, ref, source, state, to}]` (with the audit fields
+/// of [`crate::audit`]), kept in git and compiled in like the place
 /// overrides.
 pub const PLACE_ALIASES: &str = include_str!("../../../catalog/overrides/place-aliases.json");
 
-/// `[{city, lccn, note, state}]`: the place of a title whose LoC record
-/// lists several, kept in git and compiled in.
+/// `[{added, city, lccn, reason, ref, source, state}]` (with the audit
+/// fields of [`crate::audit`]): the place of a title whose LoC record lists
+/// several, kept in git and compiled in.
 pub const TITLE_PLACES: &str = include_str!("../../../catalog/overrides/title-places.json");
 
 /// Real place names with a hyphen between capitalized words, which the
@@ -213,29 +217,79 @@ fn pick<'a>(rows: &'a [GazPlace], words: &[String]) -> Found<'a> {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlaceAlias {
+    /// When it was decided (`YYYY-MM-DD`).
+    pub added: String,
+    /// Its earlier versions, oldest first (with `updated`).
+    #[serde(default)]
+    pub history: Vec<Earlier>,
     /// The city as LoC spells it (any spelling with the same key matches).
     pub from: String,
     /// Why: "misspelling", "renamed 1884", …
-    #[serde(default)]
-    pub note: Option<String>,
+    pub reason: String,
+    /// The issue or pull request where it was decided.
+    #[serde(rename = "ref")]
+    pub reference: u32,
+    /// What shows the two names are one town.
+    pub source: String,
     /// Postal code, e.g. `AK`.
     pub state: String,
     /// The town's name, used as the place's name.
     pub to: String,
+    /// When it last changed (`YYYY-MM-DD`), with `history`.
+    #[serde(default)]
+    pub updated: Option<String>,
+}
+
+impl PlaceAlias {
+    pub fn audit(&self) -> Audit<'_> {
+        Audit {
+            added: &self.added,
+            history: &self.history,
+            reason: &self.reason,
+            reference: self.reference,
+            source: &self.source,
+            updated: self.updated.as_deref(),
+        }
+    }
 }
 
 /// One entry of [`TITLE_PLACES`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TitlePlace {
+    /// When it was decided (`YYYY-MM-DD`).
+    pub added: String,
+    /// Its earlier versions, oldest first (with `updated`).
+    #[serde(default)]
+    pub history: Vec<Earlier>,
     /// The city, as a title's place label would name it.
     pub city: String,
     pub lccn: String,
     /// Why: where the paper was published, and when.
-    #[serde(default)]
-    pub note: Option<String>,
+    pub reason: String,
+    /// The issue or pull request where it was decided.
+    #[serde(rename = "ref")]
+    pub reference: u32,
+    /// Where that comes from.
+    pub source: String,
     /// Postal code, e.g. `IL`.
     pub state: String,
+    /// When it last changed (`YYYY-MM-DD`), with `history`.
+    #[serde(default)]
+    pub updated: Option<String>,
+}
+
+impl TitlePlace {
+    pub fn audit(&self) -> Audit<'_> {
+        Audit {
+            added: &self.added,
+            history: &self.history,
+            reason: &self.reason,
+            reference: self.reference,
+            source: &self.source,
+            updated: self.updated.as_deref(),
+        }
+    }
 }
 
 /// The gazetteer, the aliases and the per-title places: what `geocode`
@@ -284,8 +338,9 @@ impl Geo {
         .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
-    /// Check the aliases: known states, each `from` once per state, `to` a
-    /// different town, and no chains (a `to` that is another alias's `from`).
+    /// Check the aliases: an audit trail ([`crate::audit`]), known states,
+    /// each `from` once per state, `to` a different town, and no chains (a
+    /// `to` that is another alias's `from`).
     pub fn new(gazetteer: Gazetteer, aliases: &[PlaceAlias]) -> anyhow::Result<Self> {
         let mut geo = Self {
             gazetteer,
@@ -293,6 +348,9 @@ impl Geo {
         };
         let mut targets = Vec::new();
         for a in aliases {
+            a.audit()
+                .check(&["to"])
+                .with_context(|| format!("alias `{}` ({})", a.from, a.state))?;
             let state = STATES
                 .iter()
                 .find(|s| s.code == a.state)
@@ -325,9 +383,12 @@ impl Geo {
     }
 
     /// Place these titles in the city and state given, whatever their LoC
-    /// record lists. Each LCCN once, in a known state.
+    /// record lists. Each LCCN once, in a known state, with an audit trail.
     pub fn with_title_places(mut self, entries: &[TitlePlace]) -> anyhow::Result<Self> {
         for t in entries {
+            t.audit()
+                .check(&["city", "state"])
+                .with_context(|| format!("title place `{}`", t.lccn))?;
             let state = STATES.iter().find(|s| s.code == t.state).with_context(|| {
                 format!("title place `{}`: unknown state `{}`", t.lccn, t.state)
             })?;
@@ -643,7 +704,12 @@ mod tests {
     fn aliases_rename_before_keying() {
         let alias = |from: &str, to: &str, state: &str| PlaceAlias {
             from: from.into(),
-            note: None,
+            added: "2026-10-06".into(),
+            history: vec![],
+            reason: "test".into(),
+            reference: 1,
+            source: "test".into(),
+            updated: None,
             state: state.into(),
             to: to.into(),
         };
@@ -672,6 +738,17 @@ mod tests {
         assert!(bad(&[alias("A", "B", "XX")]));
         assert!(bad(&[alias("St. Paul", "Saint Paul", "MN")]));
         assert!(!bad(&[alias("A", "B", "AK"), alias("B", "C", "AL")]));
+        // So is one without an audit trail.
+        let unsourced = PlaceAlias {
+            source: " ".into(),
+            ..alias("A", "B", "AK")
+        };
+        assert!(bad(&[unsourced]));
+        let undated = PlaceAlias {
+            added: "2026-13-01".into(),
+            ..alias("A", "B", "AK")
+        };
+        assert!(bad(&[undated]));
     }
 
     #[test]
@@ -802,45 +879,7 @@ mod tests {
         sorted.sort();
         assert_eq!(order, sorted, "entries out of order (by state, then from)");
         // Each object's keys in ascending order, as written.
-        for keys in object_keys_in_order(PLACE_ALIASES) {
-            let mut s = keys.clone();
-            s.sort();
-            assert_eq!(keys, s, "keys out of order");
-        }
-    }
-
-    /// The keys of each object of a JSON array, in the order the text has
-    /// them (a parsed map would sort them).
-    pub(crate) fn object_keys_in_order(json: &str) -> Vec<Vec<String>> {
-        struct Keys(Vec<String>);
-        impl<'de> serde::Deserialize<'de> for Keys {
-            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                struct V;
-                impl<'de> serde::de::Visitor<'de> for V {
-                    type Value = Keys;
-                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                        f.write_str("a JSON object")
-                    }
-                    fn visit_map<A: serde::de::MapAccess<'de>>(
-                        self,
-                        mut m: A,
-                    ) -> Result<Keys, A::Error> {
-                        let mut keys = Vec::new();
-                        while let Some(k) = m.next_key::<String>()? {
-                            m.next_value::<serde::de::IgnoredAny>()?;
-                            keys.push(k);
-                        }
-                        Ok(Keys(keys))
-                    }
-                }
-                d.deserialize_map(V)
-            }
-        }
-        serde_json::from_str::<Vec<Keys>>(json)
-            .unwrap()
-            .into_iter()
-            .map(|k| k.0)
-            .collect()
+        crate::audit::assert_keys_sorted(PLACE_ALIASES);
     }
 
     #[test]
@@ -850,11 +889,8 @@ mod tests {
         let mut sorted = lccns.clone();
         sorted.sort();
         assert_eq!(lccns, sorted, "entries out of order (by lccn)");
-        for keys in object_keys_in_order(TITLE_PLACES) {
-            let mut s = keys.clone();
-            s.sort();
-            assert_eq!(keys, s, "keys out of order");
-        }
+        // Each object's keys in ascending order, as written.
+        crate::audit::assert_keys_sorted(TITLE_PLACES);
         let geo = Geo::compiled().unwrap();
         let (city, state) = geo.title_place("sn84024055").unwrap();
         assert_eq!((city, state.code), ("Chicago", "IL"));
@@ -862,20 +898,52 @@ mod tests {
             let t: Vec<TitlePlace> = serde_json::from_str(json).unwrap();
             Geo::default().with_title_places(&t).is_err()
         };
-        assert!(bad(r#"[{"city": "X", "lccn": "sn1", "state": "XX"}]"#));
-        assert!(bad(r#"[{"city": "X", "lccn": "BAD/1", "state": "IL"}]"#));
-        assert!(bad(
-            r#"[{"city": "X", "lccn": "sn1", "state": "IL"}, {"city": "Y", "lccn": "sn1", "state": "IL"}]"#
-        ));
+        let entry = |city: &str, lccn: &str, state: &str| {
+            format!(
+                r#"{{"added": "2026-10-06", "city": "{city}", "lccn": "{lccn}", "reason": "Why.", "ref": 190, "source": "Where from.", "state": "{state}"}}"#
+            )
+        };
+        assert!(!bad(&format!("[{}]", entry("X", "sn1", "IL"))));
+        assert!(bad(&format!("[{}]", entry("X", "sn1", "XX"))));
+        assert!(bad(&format!("[{}]", entry("X", "BAD/1", "IL"))));
+        assert!(bad(&format!(
+            "[{}, {}]",
+            entry("X", "sn1", "IL"),
+            entry("Y", "sn1", "IL")
+        )));
+        // The audit trail is checked.
+        assert!(bad(&format!(
+            "[{}]",
+            entry("X", "sn1", "IL").replace("2026-10-06", "Oct 6")
+        )));
+        assert!(bad(&format!(
+            "[{}]",
+            entry("X", "sn1", "IL").replace("\"ref\": 190", "\"ref\": 0")
+        )));
+        assert!(bad(&format!(
+            "[{}]",
+            entry("X", "sn1", "IL").replace("Where from.", "")
+        )));
+        // A note in place of the audit fields doesn't parse.
+        assert!(serde_json::from_str::<Vec<TitlePlace>>(
+            r#"[{"city": "X", "lccn": "sn1", "note": "Why.", "state": "IL"}]"#
+        )
+        .is_err());
     }
 
     #[test]
-    fn the_place_overrides_in_git_have_sorted_keys() {
-        for keys in object_keys_in_order(crate::titles::PLACE_OVERRIDES) {
-            let mut s = keys.clone();
-            s.sort();
-            assert_eq!(keys, s, "keys out of order");
-        }
+    fn the_place_overrides_in_git_are_sorted_and_have_notes() {
+        // Every entry has a note (place_overrides refuses one without).
+        let entries = crate::titles::place_overrides(crate::titles::PLACE_OVERRIDES).unwrap();
+        let order: Vec<(String, String)> = entries
+            .iter()
+            .map(|e| (e.state.clone(), e.city.to_lowercase()))
+            .collect();
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(order, sorted, "entries out of order (by state, then city)");
+        // Each object's keys in ascending order, as written.
+        crate::audit::assert_keys_sorted(crate::titles::PLACE_OVERRIDES);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use serde_json::Value;
 use usnm_core::names::STATES;
 use usnm_ingest::catalog::{Place, Title};
 use usnm_ingest::places::{self, distance_km, Geo};
-use usnm_ingest::titles::{build, PlaceOverride, RawTitle, PLACE_OVERRIDES};
+use usnm_ingest::titles::{build, place_overrides, RawTitle, PLACE_OVERRIDES};
 
 struct Live {
     id: String,
@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "/tmp/places.json".into());
     let json: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
     let geo = Geo::compiled()?;
-    let overrides: Vec<PlaceOverride> = serde_json::from_str(PLACE_OVERRIDES)?;
+    let overrides = place_overrides(PLACE_OVERRIDES)?;
     let mut live = Vec::new();
     for f in json["features"].as_array().into_iter().flatten() {
         let p = &f["properties"];
@@ -97,6 +97,8 @@ fn main() -> anyhow::Result<()> {
             lat: l.lat,
             lon: l.lon,
             precision: l.precision.clone(),
+            coordinates_from: None,
+            variants: vec![],
         });
         let multi = shared(l);
         for k in 0..l.titles {
@@ -234,6 +236,15 @@ fn main() -> anyhow::Result<()> {
         report.disagreement_examples.len()
     );
     for d in &report.disagreement_examples {
+        println!("{d}");
+    }
+
+    println!(
+        "\n== Places at the median of LoC points more than 25 km apart (furthest {} of {}) ==",
+        report.loc_apart_examples.len(),
+        report.loc_apart
+    );
+    for d in &report.loc_apart_examples {
         println!("{d}");
     }
 
