@@ -27,3 +27,7 @@ updates:
     groups:
       npm-minor:
         update-types: [minor, patch]
+  - package-ecosystem: pip
+    directory: /scripts/ci
+    schedule:
+      interval: weekly

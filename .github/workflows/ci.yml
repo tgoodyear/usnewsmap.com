@@ -31,6 +31,7 @@ jobs:
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
       fixtures: ${{ steps.f.outputs.fixtures }}
+      ops: ${{ steps.f.outputs.ops }}
       code: ${{ steps.f.outputs.code }}
       provision: ${{ steps.f.outputs.provision }}
     steps:
@@ -104,6 +105,24 @@ jobs:
           persist-credentials: false
       - run: python3 fixtures/generate.py
       - run: git diff --exit-code fixtures/data
+
+  ops:
+    name: ops data (version snapshots)
+    needs: changes
+    if: needs.changes.outputs.ops == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the checker (hash-pinned)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ops"
+          "$RUNNER_TEMP/ops/bin/pip" install --require-hashes --no-deps -r scripts/ci/requirements-ops.txt
+      - name: Every snapshot matches ops/version-snapshots/schema.json
+        run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-version-snapshots.py'
+      - name: The checker's tests pass
+        run: '"$RUNNER_TEMP/ops/bin/python" -m unittest -v scripts/test_check_version_snapshots.py'
 
   image:
     name: container image builds
@@ -292,7 +311,7 @@ jobs:
     # commit. Environments are listed in the repository variable
     # USNM_DEPLOY_ENVIRONMENTS (a JSON array, e.g. ["prod"]); each GitHub
     # Environment holds its own variables, written by scripts/bootstrap.sh.
-    needs: [changes, rust, quickwit, fixtures, image, infra, web, web-e2e]
+    needs: [changes, rust, quickwit, fixtures, ops, image, infra, web, web-e2e]
     # Only when the images changed, and every check that ran passed: a job
     # skipped as irrelevant must not block the deploy, and a failed one must.
     if: >-
