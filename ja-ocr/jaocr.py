@@ -53,6 +53,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -88,6 +89,9 @@ def log(msg: str, **fields) -> None:
 # ---------------------------------------------------------------- stores
 
 
+TMP_PREFIX = ".tmp-"  # LocalStore's files being written
+
+
 class LocalStore:
     def __init__(self, root: str):
         self.root = Path(root)
@@ -95,27 +99,35 @@ class LocalStore:
     def read(self, path: str) -> bytes:
         return (self.root / path).read_bytes()
 
+    def _staged(self, p: Path, data: bytes) -> Path:
+        """`data` in a temporary file beside `p`, so readers never see a partly written file."""
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.parent / f"{TMP_PREFIX}{p.name}.{os.getpid()}.{threading.get_ident()}"
+        tmp.write_bytes(data)
+        return tmp
+
     def write(self, path: str, data: bytes) -> None:
         p = self.root / path
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(data)
+        os.replace(self._staged(p, data), p)
 
     def create(self, path: str, data: bytes) -> bool:
-        """Write only if absent; False if it exists."""
+        """Write only if absent; False if it exists. Atomic: the file appears whole or not at all."""
         p = self.root / path
-        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._staged(p, data)
         try:
-            with p.open("xb") as f:
-                f.write(data)
+            os.link(tmp, p)
             return True
         except FileExistsError:
             return False
+        finally:
+            tmp.unlink()
 
     def list(self, prefix: str) -> list[str]:
         base = self.root / prefix
         if not base.exists():
             return []
-        return [str(p.relative_to(self.root)) for p in base.rglob("*") if p.is_file()]
+        return [str(p.relative_to(self.root)) for p in base.rglob("*")
+                if p.is_file() and not p.name.startswith(TMP_PREFIX)]
 
     def modified(self, path: str) -> datetime:
         return datetime.fromtimestamp((self.root / path).stat().st_mtime, timezone.utc)

@@ -18,7 +18,9 @@ the page against it:
   MIN_SHARE with PAGE_TYPES different function words, and have LEAD times
   the runner-up's tokens among the function words only one of the two has;
   otherwise the page is `und` (too short, garbled, or in a language with no
-  word list: Hawaiian, Dakota, Choctaw, Latin, Welsh...). A page whose words
+  word list: Dakota, Choctaw, Navajo, Latin, Welsh...). wordfreq supplies
+  the lists; Hawaiian's and Yiddish's are our own (wordlists/). Serbian in
+  Cyrillic is scored in Latin letters. A page whose words
   are mostly in another script (Hebrew, Cyrillic, Greek, ...) takes the
   title's language in that script (`yid` or `heb` for Hebrew script; the
   best-fitting one if it lists several with word lists), or `und` if it
@@ -107,6 +109,19 @@ WORDFREQ = {
     "rus": "ru", "slo": "sk", "slv": "sl", "spa": "es", "srp": "sh", "swe": "sv", "tgl": "fil",
     "ukr": "uk",
 }
+# v2 only: languages wordfreq has no list for, with a top-5,000 list of our
+# own in wordlists/<code>.txt, built from open corpora (wordlists/README.md).
+LOCAL_WORDLISTS = {"haw": "haw", "yid": "yi"}
+WORDLIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wordlists")
+# Serbian pages in Cyrillic are scored by the Latin-script list, letter for
+# letter (Vuk's Cyrillic and Gaj's Latin match one to one).
+SERBIAN_LATIN = str.maketrans({
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "ђ": "đ", "е": "e", "ж": "ž", "з": "z", "и": "i",
+    "ј": "j", "к": "k", "л": "l", "љ": "lj", "м": "m", "н": "n", "њ": "nj", "о": "o", "п": "p", "р": "r",
+    "с": "s", "т": "t", "ћ": "ć", "у": "u", "ф": "f", "х": "h", "ц": "c", "ч": "č", "џ": "dž", "ш": "š",
+})
+# Yiddish ligatures, as their two letters: OCR and typesetting use either.
+LIGATURES = str.maketrans({"\u05f0": "\u05d5\u05d5", "\u05f1": "\u05d5\u05d9", "\u05f2": "\u05d9\u05d9"})
 # Languages with words of no vowel (Czech "smrt", Croatian "prst"): the
 # no-vowel rule would flag real words.
 SYLLABIC_CONSONANTS = {"cze", "slo", "hrv", "srp", "slv"}
@@ -538,9 +553,13 @@ def build_model(code: str, ranked: list[str], also_real=()) -> LangModel:
 
 
 def wordfreq_ranked(code: str) -> list[str] | None:
-    """wordfreq's top 5,000 words for a language, most frequent first, or None if it has no list of its own."""
+    """wordfreq's top 5,000 words for a language, most frequent first, or None if it has no list of its own;
+    for LOCAL_WORDLISTS, ours."""
     import wordfreq
 
+    if code in LOCAL_WORDLISTS.values():
+        with open(os.path.join(WORDLIST_DIR, f"{code}.txt"), encoding="utf-8") as f:
+            return [w for w in f.read().split("\n") if w][:TOP_REAL]
     if code not in wordfreq.available_languages("best"):
         return None
     words = wordfreq.top_n_list(code, TOP_REAL)
@@ -557,7 +576,7 @@ class Models:
         self.by_code: dict[str, LangModel | None] = {}
 
     def get(self, lang: str) -> LangModel | None:
-        code = WORDFREQ.get(lang)
+        code = WORDFREQ.get(lang) or LOCAL_WORDLISTS.get(lang)
         if code is None:
             return None
         if code not in self.by_code:
@@ -768,8 +787,16 @@ def other_script_language(s: str, words: list[str], languages: tuple, models: Mo
     langs = [lang for lang in languages if s in scripts_of(lang)]
     if not langs or not words:
         return Language(UNKNOWN, UNKNOWN, script=s)
-    modelled = [(lang, m) for lang in langs if (m := models.get(lang)) is not None and m.script == s]
+    # Serbian in Cyrillic is scored by its Latin-script list on the words transliterated; the transliterated
+    # words join the counts beside the Cyrillic ones (the two never share a word), so Serbian competes with
+    # the title's other Cyrillic languages on equal terms.
+    serbian = [w.translate(SERBIAN_LATIN) for w in words] if s == "cyrillic" and "srp" in langs else None
+    modelled = [(lang, m) for lang in langs if (m := models.get(lang)) is not None
+                and (m.script == s or (serbian is not None and lang == "srp"))]
     counts = counted(words)
+    if serbian is not None:
+        for w, c in counted(serbian).items():
+            counts[w] = counts.get(w, 0) + c
     fs = fits(modelled, counts, len(words))
     best = winner(fs, counts, min_types)
     if best is None:
@@ -783,9 +810,10 @@ def other_script_language(s: str, words: list[str], languages: tuple, models: Mo
     share = next((f.share for f in fs if f.lang == best), None)
     rest = [f for f in fs if f.lang != best]
     m = dict(modelled).get(best)
+    scored = serbian if best == "srp" and serbian is not None else words
     return Language(best, DETECTED, share=_r(share), runner_up=rest[0].lang if rest else None,
                     runner_up_share=_r(rest[0].share) if rest else None, script=s,
-                    damage=damage(m, words, tuple(f.model for f in rest)) if m else None)
+                    damage=damage(m, scored, tuple(f.model for f in rest)) if m else None)
 
 
 DEHYPHENATE = re.compile(r"(\w)-\n\s*(?=\w)")
@@ -814,9 +842,10 @@ def token_info(tok: str) -> tuple[str | None, bool, bool]:
     g = garbage(tok, core, ENGLISH)
     g_syllabic = g and garbage(tok, core, "cze")
     word = None
-    if core and len(core) >= 2:
+    if core:
         if not core.isalpha():  # points and accents as combining marks: "פֿאר", "e\u0301"
             core = "".join(c for c in unicodedata.normalize("NFC", core) if not unicodedata.combining(c))
+        core = core.translate(LIGATURES)  # before the length check: "װ" is a two-letter word
         if len(core) >= 2 and core.isalpha():
             word = core.casefold()
     return word, g, g_syllabic
@@ -1068,7 +1097,8 @@ class Tally2:
             by_decade.setdefault(decade, Stats2()).merge(s)
 
         def lrow(lang, decade, s):
-            return {"metric": "v2", "language": lang, "wordlist": WORDFREQ.get(lang), "decade": decade, **s.row()}
+            return {"metric": "v2", "language": lang, "wordlist": WORDFREQ.get(lang) or LOCAL_WORDLISTS.get(lang),
+                    "decade": decade, **s.row()}
 
         lang_decade = [lrow(lang, dec, s) for (lang, dec), s in
                        sorted(self.by_lang_decade.items(), key=lambda kv: (-by_lang[kv[0][0]].pages, kv[0]))]
@@ -1427,7 +1457,8 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
             a = agree.get(scope) or {}
             for k in ("differs_share", "und_share", "mixed_share"):
                 summary[f"{k}_{scope}"] = a.get(k)
-        wordlists = {"source": "wordfreq top_n_list", "function_words": TOP_FUNCTION, "damage_words": TOP_HEAD,
+        wordlists = {"source": "wordfreq top_n_list; for local_codes, ja-ocr/wordlists/<code>.txt (README.md there)",
+                     "local_codes": LOCAL_WORDLISTS, "function_words": TOP_FUNCTION, "damage_words": TOP_HEAD,
                      "real_words": TOP_REAL, "codes": WORDFREQ, "version": _wordfreq_version()}
         method = {"min_words": MIN_WORDS, "min_share": MIN_SHARE, "page_types": PAGE_TYPES,
                   "window_types": WINDOW_TYPES, "lead": LEAD, "window": WINDOW,
@@ -1516,7 +1547,7 @@ def status_summary(tables: dict[str, list[dict]]) -> dict:
     Every field is present; these are null when there is nothing to measure: agreement.differs_share,
     mixed_share and und_share (no sampled page with text), agreement.multilingual_differs_share (no page
     of a multilingual title with text), and a language's function_share_median, damage_rate_median and
-    damaged_share (no page of it scored: a language with no word list, such as Yiddish)."""
+    damaged_share (no page of it scored: a language with no word list, such as Cherokee)."""
     agree = {r["scope"]: r for r in tables["agreement_summary"]}
     a, m = agree.get("all") or {}, agree.get("multilingual_titles") or {}
     languages = [{"damage_rate_median": r["damage_rate_median"], "damaged_share": r["damaged_share"],
