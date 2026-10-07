@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Draw the report's figures as SVG. Every number comes from issues #128 and #135
-and docs/notes/2026-10-05-japanese-ocr.md; run from this directory."""
+"""Draw the report's figures as SVG. Every number comes from issues #128 and #135,
+docs/notes/2026-10-05-japanese-ocr.md, and the OCR quality audit's tables in
+data/ocr-quality-v2.jsonl; run from this directory."""
 
+import json
 from datetime import date
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+AUDIT = [json.loads(line) for line in (HERE.parent / "data" / "ocr-quality-v2.jsonl").open()]
+
+
+def audit(table):
+    return [r for r in AUDIT if r.get("table") == table]
 FONT = "font-family='Helvetica Neue, Helvetica, Arial, Hiragino Sans, sans-serif'"
 INK, MUTED, LINE = "#222", "#666", "#ccc"
 LOC, OURS, HOJI, CHNC, NONE = "#5b7fb4", "#d9822b", "#4f7a35", "#6b4c94", "#bbbbbb"
@@ -140,7 +147,83 @@ def pipeline():
     return svg(w, h, "".join(b))
 
 
+NAMES = {"eng": "English", "ger": "German", "spa": "Spanish", "fre": "French", "pol": "Polish",
+         "ita": "Italian", "dan": "Danish", "cze": "Czech", "nor": "Norwegian", "yid": "Yiddish",
+         "fin": "Finnish", "swe": "Swedish", "hun": "Hungarian"}
+
+
+def agreement():
+    """Sampled pages' detected language against the title's first catalog language."""
+    summ = {r["scope"]: r for r in audit("agreement_summary")}
+    rows = [("Single-language titles", summ["single_language_titles"]),
+            ("Multilingual titles", summ["multilingual_titles"]), None]
+    langs = sorted((r for k, r in summ.items() if k.startswith("title_language:") and r["text_pages"] >= 400),
+                   key=lambda r: -r["text_pages"])
+    rows += [(f"{NAMES.get(r['scope'][15:], r['scope'][15:])} titles", r) for r in langs]
+    parts = [("same_share", LOC, "same language"), ("other_language_share", OURS, "another language"),
+             ("mixed_share", CHNC, "mixed"), ("und_share", NONE, "undetermined")]
+    w, x0, x1, top = 760, 190, 570, 10
+    h = top + 24 * len(rows) + 40
+    b, y = [], top
+    for row in rows:
+        if row is None:
+            y += 10
+            continue
+        label, r = row
+        b.append(text(x0 - 8, y + 13, label, 12, "end"))
+        x = x0
+        for key, color, _ in parts:
+            wd = (r[key] or 0) * (x1 - x0)
+            b.append(f"<rect x='{x:.1f}' y='{y}' width='{wd:.1f}' height='18' fill='{color}'/>")
+            x += wd
+        b.append(text(x1 + 6, y + 13, f"{r['same_share']:.0%} same, {r['text_pages']:,} pages", 11, color=MUTED))
+        y += 24
+    y += 16
+    x = x0
+    for _, color, name in parts:
+        b.append(f"<rect x='{x}' y='{y - 10}' width='12' height='12' fill='{color}'/>")
+        b.append(text(x + 18, y, name, 11, color=MUTED))
+        x += 26 + 6.5 * len(name)
+    return svg(w, h, "".join(b))
+
+
+def decades():
+    """Median damage rate and share badly damaged, by decade, for English, German, Spanish and French."""
+    series = [("eng", LOC), ("ger", OURS), ("spa", HOJI), ("fre", CHNC)]
+    lo, hi = 1800, 1960
+    w, h = 760, 270
+    panels = [("damage_rate_median", "Median damage rate", 0.25, 70, 360),
+              ("badly_damaged_share", "Pages badly damaged (rate over 0.25)", 0.35, 430, 720)]
+    top, bottom = 30, 210
+    b = []
+    for key, title, ymax, x0, x1 in panels:
+        def px(d):
+            return x0 + (x1 - x0) * (d - lo) / (hi - lo)
+
+        def py(v):
+            return bottom - (bottom - top) * v / ymax
+        b.append(text(x0, 16, title, 12, weight="bold"))
+        for v in [i * 0.05 for i in range(int(ymax / 0.05) + 1)]:
+            b.append(f"<line x1='{x0}' y1='{py(v):.1f}' x2='{x1}' y2='{py(v):.1f}' stroke='{LINE}' stroke-width='0.6'/>")
+            b.append(text(x0 - 6, py(v) + 4, f"{v:.2f}", 10, "end", MUTED))
+        for d in range(lo, hi + 1, 40):
+            b.append(text(px(d), bottom + 16, f"{d}s", 10, "middle", MUTED))
+        for lang, color in series:
+            pts = sorted((r["decade"], r[key]) for r in audit("by_language_decade")
+                         if r["language"] == lang and r["scored_pages"] >= 100 and lo <= r["decade"] <= hi)
+            path = " ".join(f"{'M' if i == 0 else 'L'}{px(d):.1f} {py(v):.1f}" for i, (d, v) in enumerate(pts))
+            b.append(f"<path d='{path}' fill='none' stroke='{color}' stroke-width='2'/>")
+            b.extend(f"<circle cx='{px(d):.1f}' cy='{py(v):.1f}' r='2.2' fill='{color}'/>" for d, v in pts)
+    x = 70
+    for lang, color in series:
+        b.append(f"<rect x='{x}' y='{h - 22}' width='12' height='12' fill='{color}'/>")
+        b.append(text(x + 18, h - 12, NAMES[lang], 11, color=MUTED))
+        x += 90
+    b.append(text(x + 10, h - 12, "Decades with at least 100 scored pages in the sample.", 11, color=MUTED))
+    return svg(w, h, "".join(b))
+
+
 for name, fn in [("coverage-timeline", timeline), ("missing-text", missing), ("engines", engines),
-                 ("pipeline", pipeline)]:
+                 ("pipeline", pipeline), ("language-agreement", agreement), ("damage-by-decade", decades)]:
     (HERE / f"{name}.svg").write_text(fn())
     print(f"wrote {name}.svg")

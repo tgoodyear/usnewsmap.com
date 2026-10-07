@@ -1,6 +1,6 @@
 ---
-title: "Japanese-language newspapers in Chronicling America"
-subtitle: "The missing text, our OCR of it, and what other collections hold"
+title: "Japanese-language newspapers and OCR quality in Chronicling America"
+subtitle: "The missing Japanese text, our OCR of it, what other collections hold, and a sample audit of LoC's OCR in other languages"
 date: "October 2026"
 ---
 
@@ -12,6 +12,7 @@ date: "October 2026"
   - *Rocky Shimpo*: Hoji Shinbun (Hoover Institution) has Japanese OCR for April 1943 to April 1944. Colorado Historic Newspapers has Japanese OCR for 1943 and part of 1944; where its run ends is not yet checked. LoC's run, and so ours, covers June 1944 to December 1945, so ours is new unless CHNC's run goes past June 1944.
   - *Colorado Times*: Colorado Historic Newspapers already has Japanese OCR, including 1945, so ours is a second reading, useful for comparison.
   - *Camp newspapers*: no Japanese OCR in any collection we could check. The sites most likely to have them (Densho, Utah Digital Newspapers, Wyoming Newspapers and others in the table) could not be searched automatically and are still to be checked by hand.
+- **LoC's OCR in the other languages, from a 2% sample.** We sampled 474,541 of 23.7 million pages. Among English, German, Spanish and French, damage is highest in English pages from the 1840s to the 1880s, German pages before 1920 and French pages from the 1900s and 1910s, and lower from the 1920s on. In titles with several catalog languages, only 46.5% of pages are in the first-listed one.
 
 # The gap at LoC
 
@@ -66,11 +67,91 @@ By paper:
 - **Not read:** the other 40 pages. 14 of them have no image at LoC. The job writes an issue only when every page in it is read, so pages that share an issue with them are held back too.
 - **Search:** the index version being built now includes the 10,414 pages read before it started; the other 604 follow with the next release. A search in Japanese script searches only these pages, with old character forms matched to modern ones (戰 finds 戦).
 
+# LoC's OCR in other languages
+
+**How we measured.** On 6 October 2026 we took a fixed 2% sample of the pages in our published index (version `pages-v20261003-1`): 474,541 of 23.7 million pages, from all 2,989 batches. The 485 sampled pages of titles that list Japanese were counted but not scored. For each page the audit does two things.
+
+- **It finds the page's own language.** The candidates are the title's catalog languages plus English. The page's language is the one whose 100 most frequent words make up the largest share of the page's words. A page is *undetermined* when it has too few of those words or two languages come out too close. It is *mixed* when stretches of it fall clearly to two different languages.
+- **It measures damage in that language.** Of all occurrences of the language's 20 most common words, the damage rate is the share that come out one OCR edit wrong, such as "tbe", "tlie" or "aud" for "the" and "and". Misreadings that are real words don't count. We call a page *damaged* above 0.1 and *badly damaged* above 0.25. Even good text scores above zero: the lowest median for a large language and decade is 0.043 (English, 1930s).
+
+**Page language against catalog language.** Chronicling America catalogs languages per title, so every page of a title gets the same language. On the sample:
+
+- **Single-language titles:** 99.2% of pages are in the title's language. Almost all the rest are undetermined (0.7%), and only 0.03% are in another language. For these titles English is the only other candidate (none for English-only titles), so this mainly counts pages that are not undetermined.
+- **Multilingual titles:** 46.5% of pages are in the first-listed language. Another 48.8% are in a different listed language or English.
+
+Some of the largest groups of pages in a language other than the title's first:
+
+- English pages in titles that list Spanish first: 2,421 sampled pages, 27% of those titles' pages.
+- English pages in titles that list Danish first: 1,153, 67% of their pages.
+- English pages in titles that list German first: 1,058, 8%.
+- Spanish pages in titles that list Italian first: 795, 35%.
+- Pages of titles that list English first and another language as well: 1,742 in Yiddish, 1,235 in German, 1,033 in Polish and 900 in Serbian.
+
+Hawaiian, Choctaw, Dakota, Navajo and Cherokee titles show as English or undetermined (3 of 6 Cherokee pages come out mixed Cherokee and English). The audit has no word lists for those languages, so it cannot detect them, and these results show that gap. Overall, 3.8% of sampled pages with text are not clearly in their title's first language: 2.8% are in another language, 0.8% are undetermined and 0.15% are mixed. If the sample holds, that is roughly 900,000 pages, about 700,000 of them in another language or mixed.
+
+![Detected page language against the title's first catalog language, for sampled pages. Below the gap, titles grouped by first catalog language, for languages with at least 400 sampled pages.](figures/language-agreement.svg)
+
+**Damage by language and decade.** Detected languages with 1,000 or more scored pages:
+
+| Detected language | Scored pages | Median damage | Damaged (over 0.1) | Badly damaged (over 0.25) |
+|---|---|---|---|---|
+| English | 433,278 | 0.071 | 35% | 8.1% |
+| German | 12,736 | 0.104 | 53% | 7.1% |
+| Spanish | 7,607 | 0.084 | 35% | 4.0% |
+| Polish | 3,305 | 0.176 | 87% | 16.2% |
+| French | 2,639 | 0.075 | 36% | 10.3% |
+| Italian | 1,706 | 0.115 | 60% | 3.8% |
+| Czech | 1,090 | 0.213 | 96% | 39.7% |
+| Norwegian | 1,002 | 0.085 | 32% | 3.2% |
+
+Polish and Czech score high in every decade, as do Finnish (0.193), Lithuanian (0.172), Slovak (0.187) and Russian (0.242). Our unchecked explanation: in these heavily inflected languages many real word forms one edit from a common word are outside the 5,000 most frequent words the audit treats as real, so they count as damage. Compare them only with themselves over time.
+
+By decade:
+
+- **English:** damage peaks in the 1860s (median 0.149; 70% of pages damaged, 23% badly) and falls steadily to 0.043 in the 1930s.
+- **German:** damage stays at 0.09 to 0.16 from the 1850s through the 1910s, with 47% to 83% of pages damaged. It then drops to 0.073 in the 1920s and 0.056 in the 1930s. That timing fits German-language papers moving from Fraktur to roman type around the First World War, but we have not checked the typefaces.
+- **French:** damage is high in the 1900s and 1910s (about 0.15, with 21% to 32% badly damaged).
+
+![Median damage rate (left) and share of pages badly damaged (right) by decade, for English, German, Spanish and French.](figures/damage-by-decade.svg)
+
+**Most damaged titles and batches.** These are the titles with the highest median damage, among titles with at least 50 scored pages:
+
+| Title | Place | Language | Scored pages | Median damage |
+|---|---|---|---|---|
+| *Nebraska Staats-Zeitung* | Nebraska City and Lincoln, Neb. | German | 56 | 0.61 |
+| *Corpus Christi Caller and Daily Herald* | Corpus Christi, Tex. | English | 152 | 0.54 |
+| *The Corpus Christi Caller* | Corpus Christi, Tex. | English | 168 | 0.46 |
+| *The Texas Republican* | Marshall, Tex. | English | 71 | 0.46 |
+| *The Waco Daily Examiner* | Waco, Tex. | English | 179 | 0.45 |
+| *Virginia Gazette* | Williamsburg, Va. | English | 118 | 0.43 |
+| *Richmonder Anzeiger* | Richmond, Va. | German | 83 | 0.42 |
+| *The Evening Herald* | Albuquerque, N.M. | English | 448 | 0.39 |
+| *Telegram-Herald* | Grand Rapids, Mich. | English | 266 | 0.38 |
+| *Amarillo Daily News* | Amarillo, Tex. | English | 294 | 0.38 |
+
+The five batches with the highest median damage are `nn_kant_ver01`, `txdn_japan_ver01`, `nn_carson_ver02`, `txdn_kilo_ver02` and `nn_bentham_ver01`. Each has a median damage of 0.47 to 0.52, and 84% to 100% of their scored pages are badly damaged. All 230 scored pages of `txdn_japan_ver01` are English; the name is LoC's batch name, not a language.
+
+The titles with the most undetermined pages are:
+
+- *America* (Cleveland; English and Romanian): 86%
+- *Skaffaren* (Swedish): 79%
+- *Amerikai Magyar Hirlap* (Hungarian and English): 72%
+- *Minnesota Stats Tidning* (English and Swedish): 67%
+
+Across all titles that list Swedish or Hungarian first, 41% and 36% of pages with text are undetermined. We have not checked why. Damaged text, short pages, or text split between the listed languages can each leave a page undetermined.
+
+**What it suggests for usnewsmap.com.**
+
+- **Tag page language only where it differs from the title's first language.** That is about 3% of pages, those in another language or mixed. As far as the audit can tell, the title's language stays right for 99% of pages in single-language titles. Languages the audit has no word list for keep their title language.
+- **Pilot a German re-OCR with a Fraktur model.** German pages from the 1850s to the 1910s are an estimated 580,000 pages at full scale. Score a sample the same way before and after.
+- **Re-OCR the worst batches whole.** The five batches above are the starting point.
+
 # Caveats
 
 - **The accuracy figures are agreement with a machine reference.** The reference transcriptions were machine-made and one was checked against its scan. The ranking between engines is better established than any one percentage. A Japanese reader should review a sample of the crops and of NDLOCR-Lite's output.
 - **Camp papers are harder for every engine.** They are mostly hand-lettered mimeograph, and NDLOCR-Lite scores 72% on them against 83% on typeset pages.
 - **Other collections were checked only by searching their public websites,** and the coverage table reflects what those sites showed on 4 and 5 October 2026. Absence of a search hit is not proof of absence.
+- **The OCR audit is a 2% sample.** Per-title figures need at least 50 scored pages. The damage rule catches only one-edit misreadings of common words, so it undercounts heavier errors, and even good text scores above zero. The audit only considers a title's catalog languages plus English, so it cannot find pages in a language the catalog leaves out. Yiddish pages and Serbian pages (all in Cyrillic) were not scored for damage, because the audit has no word list for Yiddish or for Serbian in Cyrillic. Hawaiian, Choctaw, Dakota, Navajo and Cherokee have no word lists either, so their pages come out as English, scored against English, or undetermined.
 
 # Open questions
 
@@ -78,6 +159,7 @@ By paper:
 2. **Densho, Utah Digital Newspapers, Wyoming Newspapers and the other sites in the table,** checked by hand: search 日本 within each camp title.
 3. **A quality comparison with CHNC** on the same *Colorado Times* 1945 pages.
 4. **A Japanese reader's review** of the reference crops and a sample of our OCR.
+5. **Typefaces of the damaged German pages:** how many of the German pages from the 1850s to the 1910s are Fraktur, and how much a Fraktur model recovers.
 
 # Sources
 
@@ -86,3 +168,4 @@ By paper:
 - Library of Congress, [Japanese-American Internment Camp Newspapers](https://www.loc.gov/collections/japanese-american-internment-camp-newspapers/about-this-collection/); NDNP Technical Guidelines [2025–27](https://loc.gov/ndnp/guidelines/NDNP_202527TechNotes.pdf) and [2016–18](https://loc.gov/ndnp/guidelines/archive/NDNP_201618TechNotes.pdf); [NDNP-Open-OCR](https://github.com/LibraryOfCongress/ndnp-open-ocr).
 - [Hoji Shinbun Digital Collection](https://hojishinbun.hoover.org/), Hoover Institution; [Colorado Historic Newspapers](https://www.coloradohistoricnewspapers.org/).
 - [NDLOCR-Lite](https://github.com/ndl-lab/ndlocr-lite), National Diet Library.
+- OCR quality audit: `ja-ocr/quality.py` (metric v2) in the usnewsmap.com repository, run 6 October 2026 on index version `pages-v20261003-1`. Its table rows are in `data/ocr-quality-v2.jsonl` next to this report.

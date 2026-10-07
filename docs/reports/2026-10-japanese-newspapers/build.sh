@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 python3 figures/make_figures.py
-pandoc report.md --standalone --embed-resources --css style.css --metadata pagetitle="Japanese-language newspapers" -o report.html
+pandoc report.md --standalone --embed-resources --css style.css --metadata pagetitle="Japanese-language newspapers and OCR quality" -o report.html
 WEB="$(git rev-parse --show-toplevel)/web"
 NODE_PATH="$WEB/node_modules" node --input-type=module -e "
 import { chromium } from '$WEB/node_modules/playwright/index.mjs';
