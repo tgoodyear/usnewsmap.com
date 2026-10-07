@@ -45,7 +45,7 @@ use usnm_core::names::{language_code, state_by_name, State, STATES};
 use usnm_store::ObjectStore;
 
 use crate::activity::Reporter;
-use crate::audit::{Audit, Earlier};
+use crate::audit::{self, Audit, Earlier};
 use crate::catalog::{Catalog, Place, Title, Variant, PLACES, TITLES};
 use crate::places::{self, CityName, Found, Geo};
 use crate::source;
@@ -110,7 +110,7 @@ pub fn record_lccns(json: &str) -> anyhow::Result<BTreeMap<String, String>> {
     let mut records = BTreeMap::new();
     for (lccn, o) in entries {
         o.audit()
-            .check(&["record"])
+            .check(&[("record", |v| v.as_str().is_some_and(valid_lccn))])
             .with_context(|| format!("catalog/overrides/titles.json: `{lccn}`"))?;
         anyhow::ensure!(
             valid_lccn(&lccn) && valid_lccn(&o.record) && o.record != lccn,
@@ -504,7 +504,12 @@ pub fn place_overrides(json: &str) -> anyhow::Result<Vec<PlaceOverride>> {
         let at = || format!("catalog/overrides/places.json: `{}, {}`", o.city, o.state);
         anyhow::ensure!(!o.city.trim().is_empty(), "{}: no city", at());
         o.audit()
-            .check(&["lat", "lon", "name", "precision"])
+            .check(&[
+                ("lat", audit::latitude),
+                ("lon", audit::longitude),
+                ("name", audit::text),
+                ("precision", audit::precision),
+            ])
             .with_context(at)?;
         anyhow::ensure!(
             STATES.iter().any(|s| s.code == o.state),
@@ -2134,6 +2139,15 @@ mod tests {
         assert!(record_lccns(&entry("sn2", "").replace("Where.", "")).is_err());
         assert!(record_lccns(&entry("sn2", "").replace("166", "-1")).is_err());
         assert!(record_lccns(r#"{"sn1": {"note": "why", "record": "sn2"}}"#).is_err());
+        // An earlier version's record is an LCCN too.
+        let changed = |earlier: &str| {
+            format!(
+                r#"{{"sn1": {{"added": "2026-10-05", "history": [{{"reason": "Old.", "record": {earlier}, "ref": 120, "source": "Old.", "updated": "2026-10-05"}}], "reason": "Why.", "record": "sn2", "ref": 166, "source": "Where.", "updated": "2026-10-06"}}}}"#
+            )
+        };
+        assert!(record_lccns(&changed(r#""sn3""#)).is_ok());
+        assert!(record_lccns(&changed("123")).is_err());
+        assert!(record_lccns(&changed(r#""BAD/x""#)).is_err());
     }
 
     #[test]
@@ -2269,6 +2283,20 @@ mod tests {
         assert!(ok(&entry(
             r#", "history": [{"lat": 0.5, "reason": "Old.", "ref": 1, "source": "Old.", "updated": "2026-10-07"}], "updated": "2026-10-08""#
         )));
+        // An earlier version's values have the entry's types.
+        for bad in [
+            r#""lat": "north""#,
+            r#""lon": 200"#,
+            r#""precision": "town""#,
+            r#""name": 5"#,
+        ] {
+            assert!(
+                !ok(&entry(&format!(
+                    r#", "history": [{{{bad}, "reason": "Old.", "ref": 1, "source": "Old.", "updated": "2026-10-07"}}], "updated": "2026-10-08""#
+                ))),
+                "{bad}"
+            );
+        }
         // Unknown fields, states, precisions and far-off coordinates too.
         assert!(!ok(&entry(r#", "note": "Why.""#)));
         assert!(!ok(&entry("").replace(r#""IL""#, r#""XX""#)));

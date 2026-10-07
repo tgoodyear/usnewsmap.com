@@ -10,7 +10,8 @@
 //! latlong for every city its record lists) counts as coming from
 //! multi-city records, and any other as LoC's own point for the city. The
 //! report lists the merges, renamed places, places that move, and every
-//! place's distance from the gazetteer.
+//! place's distance from the gazetteer. It can't list places whose LoC
+//! points are far apart (`loc_apart`): that needs the records.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -239,14 +240,14 @@ fn main() -> anyhow::Result<()> {
         println!("{d}");
     }
 
+    // The stand-in titles all sit at their place's live point, under
+    // made-up LCCNs, so `loc_apart` would be empty or list points that
+    // aren't LoC's: it needs LoC's title records (`geocode` logs it).
     println!(
-        "\n== Places at the median of LoC points more than 25 km apart (furthest {} of {}) ==",
-        report.loc_apart_examples.len(),
-        report.loc_apart
+        "\n== Places at the median of LoC points more than 25 km apart ==\n\
+         Not available from /v1/places: it needs LoC's title records (raw/titles.json). \
+         The geocode log lists them (loc_apart_examples)."
     );
-    for d in &report.loc_apart_examples {
-        println!("{d}");
-    }
 
     // Every live place against the gazetteer.
     println!("\n== Every live place: gazetteer point and distance ==");

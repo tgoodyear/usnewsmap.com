@@ -32,7 +32,9 @@ that version was made; for the first one, the entry's `added`):
 ```
 
 `geocode` and `titles-sync` refuse an entry without these fields, with a
-date that isn't `YYYY-MM-DD`, or with a `ref` that isn't a positive number,
+date that isn't `YYYY-MM-DD`, with a `ref` that isn't a positive number, or
+with a `history` value that the entry's field couldn't hold (a latitude
+that isn't a number, an unknown state),
 and the ingest tests also refuse entries or keys out of order (in every
 object, `history` items included).
 

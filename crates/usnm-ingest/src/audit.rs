@@ -49,10 +49,40 @@ pub fn date(s: &str) -> anyhow::Result<NaiveDate> {
     Ok(d)
 }
 
+/// A field an earlier version may hold, and whether a value is valid for
+/// it (the owning entry's type for that field).
+pub type Field = (&'static str, fn(&Value) -> bool);
+
+/// A string with something in it.
+pub fn text(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| !s.trim().is_empty())
+}
+
+/// A latitude.
+pub fn latitude(v: &Value) -> bool {
+    v.as_f64().is_some_and(|x| (-90.0..=90.0).contains(&x))
+}
+
+/// A longitude.
+pub fn longitude(v: &Value) -> bool {
+    v.as_f64().is_some_and(|x| (-180.0..=180.0).contains(&x))
+}
+
+/// `city`, `county` or `state`.
+pub fn precision(v: &Value) -> bool {
+    matches!(v.as_str(), Some("city" | "county" | "state"))
+}
+
+/// A state's postal code, e.g. `GA`.
+pub fn state(v: &Value) -> bool {
+    v.as_str()
+        .is_some_and(|s| usnm_core::names::STATES.iter().any(|st| st.code == s))
+}
+
 impl Audit<'_> {
     /// Check the trail; `fields` are the entry's fields an earlier version
-    /// may hold.
-    pub fn check(&self, fields: &[&str]) -> anyhow::Result<()> {
+    /// may hold, each with its check.
+    pub fn check(&self, fields: &[Field]) -> anyhow::Result<()> {
         let text = |name: &str, v: &str| {
             ensure!(!v.trim().is_empty(), "no `{name}`");
             Ok(())
@@ -85,8 +115,11 @@ impl Audit<'_> {
                         "{}: `ref` isn't an issue or PR number",
                         at()
                     );
-                    if let Some(k) = e.values.keys().find(|k| !fields.contains(&k.as_str())) {
-                        bail!("{}: `{k}` isn't a field it can change", at());
+                    for (k, v) in &e.values {
+                        let Some((_, valid)) = fields.iter().find(|(f, _)| f == k) else {
+                            bail!("{}: `{k}` isn't a field it can change", at());
+                        };
+                        ensure!(valid(v), "{}: `{k}` is {v}, not a valid value", at());
                     }
                 }
                 ensure!(updated >= last, "`updated` is before its history");
@@ -165,6 +198,8 @@ pub(crate) fn assert_keys_sorted(json: &str) {
 mod tests {
     use super::*;
 
+    const LAT_LON: &[Field] = &[("lat", latitude), ("lon", longitude)];
+
     fn audit<'a>(history: &'a [Earlier], updated: Option<&'a str>) -> Audit<'a> {
         Audit {
             added: "2026-10-06",
@@ -226,32 +261,33 @@ mod tests {
             r#"{"lat": 1.0, "lon": 2.0, "reason": "Old why.", "ref": 190, "source": "Old source.", "updated": "2026-10-06"}"#,
         );
         let h = [first.clone()];
-        assert!(audit(&h, Some("2026-10-07")).check(&["lat", "lon"]).is_ok());
+        assert!(audit(&h, Some("2026-10-07")).check(LAT_LON).is_ok());
         // History needs `updated`, and the other way round.
-        assert!(audit(&h, None).check(&["lat", "lon"]).is_err());
+        assert!(audit(&h, None).check(LAT_LON).is_err());
         // Only the entry's fields.
-        assert!(audit(&h, Some("2026-10-07")).check(&["lat"]).is_err());
+        assert!(audit(&h, Some("2026-10-07")).check(&LAT_LON[..1]).is_err());
         // The first version is the one added, and dates run forward.
-        assert!(audit(&h, Some("2026-10-05"))
-            .check(&["lat", "lon"])
-            .is_err());
+        assert!(audit(&h, Some("2026-10-05")).check(LAT_LON).is_err());
         let late = Earlier {
             updated: "2026-10-08".into(),
             ..first.clone()
         };
-        assert!(audit(&[late], Some("2026-10-09"))
-            .check(&["lat", "lon"])
-            .is_err());
+        assert!(audit(&[late], Some("2026-10-09")).check(LAT_LON).is_err());
         let second = Earlier {
             updated: "2026-10-08".into(),
             ..first.clone()
         };
         assert!(audit(&[first.clone(), second.clone()], Some("2026-10-09"))
-            .check(&["lat", "lon"])
+            .check(LAT_LON)
             .is_ok());
         assert!(audit(&[second, first], Some("2026-10-09"))
-            .check(&["lat", "lon"])
+            .check(LAT_LON)
             .is_err());
+        // Each value has the field's type.
+        let north = earlier(
+            r#"{"lat": "north", "reason": "Old why.", "ref": 190, "source": "Old source.", "updated": "2026-10-06"}"#,
+        );
+        assert!(audit(&[north], Some("2026-10-07")).check(LAT_LON).is_err());
     }
 
     #[test]

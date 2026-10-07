@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 use anyhow::{bail, Context};
 use serde::Deserialize;
 
-use crate::audit::{Audit, Earlier};
+use crate::audit::{self, Audit, Earlier};
 use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
 use usnm_core::names::{State, STATES};
@@ -349,7 +349,7 @@ impl Geo {
         let mut targets = Vec::new();
         for a in aliases {
             a.audit()
-                .check(&["to"])
+                .check(&[("to", audit::text)])
                 .with_context(|| format!("alias `{}` ({})", a.from, a.state))?;
             let state = STATES
                 .iter()
@@ -387,7 +387,7 @@ impl Geo {
     pub fn with_title_places(mut self, entries: &[TitlePlace]) -> anyhow::Result<Self> {
         for t in entries {
             t.audit()
-                .check(&["city", "state"])
+                .check(&[("city", audit::text), ("state", audit::state)])
                 .with_context(|| format!("title place `{}`", t.lccn))?;
             let state = STATES.iter().find(|s| s.code == t.state).with_context(|| {
                 format!("title place `{}`: unknown state `{}`", t.lccn, t.state)
@@ -749,6 +749,21 @@ mod tests {
             ..alias("A", "B", "AK")
         };
         assert!(bad(&[undated]));
+        // An earlier version's `to` is a name.
+        let earlier = |to: serde_json::Value| -> crate::audit::Earlier {
+            serde_json::from_value(serde_json::json!({
+                "reason": "Old.", "ref": 1, "source": "Old.", "to": to, "updated": "2026-10-06"
+            }))
+            .unwrap()
+        };
+        let changed = |to| PlaceAlias {
+            history: vec![earlier(to)],
+            updated: Some("2026-10-07".into()),
+            ..alias("A", "B", "AK")
+        };
+        assert!(!bad(&[changed(serde_json::json!("C"))]));
+        assert!(bad(&[changed(serde_json::json!(1))]));
+        assert!(bad(&[changed(serde_json::json!(""))]));
     }
 
     #[test]
@@ -924,6 +939,21 @@ mod tests {
             "[{}]",
             entry("X", "sn1", "IL").replace("Where from.", "")
         )));
+        // An earlier version's city and state have their types.
+        let changed = |earlier: &str| {
+            format!(
+                "[{}]",
+                entry("X", "sn1", "IL").replace(
+                    r#""ref": 190"#,
+                    &format!(
+                        r#""history": [{{{earlier}, "reason": "Old.", "ref": 1, "source": "Old.", "updated": "2026-10-06"}}], "ref": 190, "updated": "2026-10-07""#
+                    )
+                )
+            )
+        };
+        assert!(!bad(&changed(r#""city": "Y", "state": "IA""#)));
+        assert!(bad(&changed(r#""city": 5"#)));
+        assert!(bad(&changed(r#""state": "XX""#)));
         // A note in place of the audit fields doesn't parse.
         assert!(serde_json::from_str::<Vec<TitlePlace>>(
             r#"[{"city": "X", "lccn": "sn1", "note": "Why.", "state": "IL"}]"#
