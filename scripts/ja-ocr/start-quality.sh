@@ -10,7 +10,7 @@
 #
 # The quality audit runs on the ja-ocr job, whose replicas share its work
 # (quality.py); mixed and american-stories, which one replica does, run on the
-# one-replica audit job (caj-usnm-jaaudit-<env>), so a second replica can't
+# one-replica audit job (caj-usnm-jaone-<env>), so a second replica can't
 # fail the execution. `az containerapp job start
 # --args` sends a container without the image or settings, so this copies the
 # job's template and swaps only the arguments. Needs az signed in to the
@@ -30,12 +30,12 @@ job="caj-usnm-jaocr-$ENV_NAME"
 command=quality
 if [ "${1:-}" = mixed ]; then
   command=mixed
-  job="caj-usnm-jaaudit-$ENV_NAME"
+  job="caj-usnm-jaone-$ENV_NAME"
   shift
   [ $# -eq 0 ] || die "mixed takes no options"
 elif [ "${1:-}" = american-stories ]; then
   command=american-stories
-  job="caj-usnm-jaaudit-$ENV_NAME"
+  job="caj-usnm-jaone-$ENV_NAME"
   shift
   for a in "$@"; do
     [[ $a =~ ^(--year|--sample-pct|[0-9]+(\.[0-9]+)?)$ ]] || die "unexpected argument \"$a\""

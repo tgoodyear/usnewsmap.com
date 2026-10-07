@@ -84,7 +84,7 @@ union (lines | where not(Expected)), replicaEvents, jobEvents
 | project TimeGenerated, Execution, Reason
 '''
 
-// The Japanese OCR jobs (caj-usnm-jaocr-*, and caj-usnm-jaaudit-* for its
+// The Japanese OCR jobs (caj-usnm-jaocr-*, and caj-usnm-jaone-* for its
 // one-off measurements) are watched apart, at severity 3: a failed OCR or
 // audit run is retried by starting it again and touches no published index,
 // so it mustn't read as an ingest failure. A replica that died (non-zero
@@ -94,8 +94,8 @@ union (lines | where not(Expected)), replicaEvents, jobEvents
 // field are reported, not failures); split by Execution and Reason as above.
 var jaOcrJobFailed = '''
 let platform = ContainerAppSystemLogs
-    | where JobName startswith "caj-usnm-jaocr-" or JobName startswith "caj-usnm-jaaudit-"
-        or ContainerAppName startswith "caj-usnm-jaocr-" or ContainerAppName startswith "caj-usnm-jaaudit-"
+    | where JobName startswith "caj-usnm-jaocr-" or JobName startswith "caj-usnm-jaone-"
+        or ContainerAppName startswith "caj-usnm-jaocr-" or ContainerAppName startswith "caj-usnm-jaone-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Reason in ("BackoffLimitExceeded", "DeadlineExceeded")
         or (Log contains "terminated with exit code" and Log !contains "exit code '0'" and Log !contains "ManuallyStopped")
@@ -286,7 +286,7 @@ var rules = [
   {
     name: 'jaocr-job-failed'
     displayName: 'Japanese OCR or audit job failed'
-    description: 'A replica of the Japanese OCR job (caj-usnm-jaocr) or its one-off audit job (caj-usnm-jaaudit) died or printed a traceback in the last 15 minutes; Execution and Reason say which and why. It touches no published index. Next: scripts/ja-ocr/quality-rows.sh <env> <execution> or the job\'s console logs for its last lines; fix the cause and start the run again (OCR resumes from its claims; audits rerun).'
+    description: 'A replica of the Japanese OCR job (caj-usnm-jaocr) or its one-off audit job (caj-usnm-jaone) died or printed a traceback in the last 15 minutes; Execution and Reason say which and why. It touches no published index. Next: scripts/ja-ocr/quality-rows.sh <env> <execution> or the job\'s console logs for its last lines; fix the cause and start the run again (OCR resumes from its claims; audits rerun).'
     severity: 3
     frequency: 'PT5M'
     window: 'PT30M'

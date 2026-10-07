@@ -90,7 +90,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `ocr` | `USNM_OCR` | `false`. Deploys Azure AI Document Intelligence (`di-usnm-<env>-<suffix>`, Entra only) for OCR of Japanese pages (#128); its endpoint is saved as `OCR_ENDPOINT` |
 | `ocrSku` | `USNM_OCR_SKU` | `F0` (500 pages a month free, 4 MB per image; one F0 account per subscription) or `S0` |
 | `ocrUsers` | `USNM_OCR_USERS` | empty. Comma-separated Entra object ids given Cognitive Services User on it; the ingest identity always has it |
-| `jaOcrJob` | `USNM_JA_OCR_JOB` | `false`. Deploys `caj-usnm-jaocr-<env>`, the manual Japanese OCR job (04 §4.8), and `caj-usnm-jaaudit-<env>`, the same image on one replica for one-off measurements (`mixed`, `american-stories`). Turn on once CI has published `usnewsmap-ja-ocr` |
+| `jaOcrJob` | `USNM_JA_OCR_JOB` | `false`. Deploys `caj-usnm-jaocr-<env>`, the manual Japanese OCR job (04 §4.8), and `caj-usnm-jaone-<env>`, the same image on one replica for one-off measurements (`mixed`, `american-stories`). Turn on once CI has published `usnewsmap-ja-ocr` |
 | `jaOcrReplicas` | `USNM_JA_OCR_REPLICAS` | `2`. Its parallel replicas (4 vCPU, 8 GiB each); they share loc.gov's request budget |
 | `budgetStartDate` | `USNM_BUDGET_START` | empty. The first day of a month; the budget is created only with alert emails and this set. Azure can't change a budget's start date, so keep it fixed |
 | `dnsZoneName` | `USNM_DNS_ZONE` | empty (no zone). The site's domain, e.g. `usnewsmap.com` |

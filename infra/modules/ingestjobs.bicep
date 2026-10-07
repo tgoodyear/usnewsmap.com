@@ -21,7 +21,7 @@
 //   for with NDLOCR-Lite (04 §4.8, #128). Replicas claim issues through
 //   create-only blobs, and pace loc.gov together. Started again until every
 //   target issue has a part.
-// - `caj-usnm-jaaudit-{env}` (with the jaocr job): manual, one replica, the
+// - `caj-usnm-jaone-{env}` (with the jaocr job): manual, one replica, the
 //   same image and settings, for jaocr.py's one-off measurements (`mixed`,
 //   `american-stories`) that one replica does anyway; a second replica only
 //   added a way for the execution to fail. scripts/ja-ocr/start-quality.sh
@@ -299,7 +299,7 @@ resource jaOcr 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
 }
 
 resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
-  name: 'caj-usnm-jaaudit-${jobNameSuffix}'
+  name: 'caj-usnm-jaone-${jobNameSuffix}'
   location: location
   tags: tags
   identity: {
