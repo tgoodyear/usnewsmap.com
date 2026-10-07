@@ -503,7 +503,7 @@ export function App() {
           )}
         </main>
       ) : (
-        <main className={agg.isFetching ? "results results--loading" : "results"} aria-busy={agg.isFetching}>
+        <main className={agg.isFetching ? "results results--loading" : "results"}>
           {agg.isFetching && <div className="search-progress" role="progressbar" aria-label="Search running" />}
           {updating && (
             <p className="notice" role="status">
@@ -617,7 +617,9 @@ export function App() {
                   dates, or remove {view.lang.length > 0 ? "language or state filters" : "state filters"}.
                 </div>
               ) : (
-                <div className="stage">
+                // Busy is scoped to the stale map or table, not <main>: the status
+                // messages above stay live while a search runs.
+                <div className="stage" aria-busy={agg.isFetching}>
                   {view.tab === "table" || !webgl ? (
                     <>
                       {!webgl && view.tab === "map" && (

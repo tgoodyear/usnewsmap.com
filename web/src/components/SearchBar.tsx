@@ -128,6 +128,8 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
       <button
         type="submit"
         className={busy ? "button button--primary search__go search__go--busy" : "button button--primary search__go"}
+        // The visible label is hidden behind the spinner while busy: a fixed name keeps the button named.
+        aria-label="Search"
         aria-busy={busy}
       >
         <span className="search__go-label">Search</span>
