@@ -21,6 +21,14 @@ doc_mapping:
     # release (usnm_core::common_grams::index_text). Phrases holding a common
     # word search here, so they never read the common word's positions.
     - { name: text_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }
+    # American Stories' text of the page (05 §5.5.4, #218): a second OCR,
+    # analyzed as `text` is, and stored for snippets when a query matches
+    # only here. Empty on pages it doesn't cover. Searched only when
+    # current.json's `american_stories` is the API's
+    # usnm_core::american_stories::VERSION.
+    - { name: text_as, type: text, tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }
+    # Its common-word pairs, as `text_cg` is for `text`.
+    - { name: text_as_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }
     - { name: date, type: datetime, input_formats: ["%Y-%m-%d"], output_format: "%Y-%m-%d", fast: true, stored: true }
     - { name: day, type: u64, fast: true, indexed: true, stored: true }
     - { name: ym, type: u64, fast: true, indexed: true }

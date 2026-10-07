@@ -7,8 +7,8 @@
 use usnm_core::query::{Node, Term};
 use usnm_core::text::{fold, MAX_TOKEN_CHARS};
 
-use crate::mark_html;
 use crate::memory::levenshtein_within;
+use crate::{mark_html, SNIPPETS_FROM_AMERICAN_STORIES};
 
 /// Fragments per page.
 pub const MAX_FRAGMENTS: usize = 3;
@@ -199,6 +199,30 @@ pub fn text_snippets(text: &str, query: &Node) -> Vec<String> {
     out
 }
 
+/// A page's snippets and, when they aren't from LoC's text, where they come
+/// from (05 §5.5.4): LoC's `text` first; when the query marks nothing there
+/// and the search covers American Stories' text (`american_stories`), that
+/// text's, from [`SNIPPETS_FROM_AMERICAN_STORIES`]. Both backends use it.
+pub fn page_snippets(
+    text: &str,
+    text_as: Option<&str>,
+    query: &Node,
+    american_stories: bool,
+) -> (Vec<String>, Option<&'static str>) {
+    let loc = text_snippets(text, query);
+    match text_as {
+        Some(text_as) if loc.is_empty() && american_stories => {
+            let other = text_snippets(text_as, query);
+            if other.is_empty() {
+                (loc, None)
+            } else {
+                (other, Some(SNIPPETS_FROM_AMERICAN_STORIES))
+            }
+        }
+        _ => (loc, None),
+    }
+}
+
 fn collapse_spaces(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut space = false;
@@ -310,5 +334,37 @@ mod tests {
     fn no_match_no_fragment() {
         assert!(snip("nothing here", "gold").is_empty());
         assert!(snip("gold", "silver -gold").is_empty());
+    }
+
+    #[test]
+    fn american_stories_text_only_when_loc_text_marks_nothing() {
+        let q = parse("bryan").unwrap();
+        let loc = "the boy orator spoke";
+        let american = "BRYAN AT CHICAGO the boy orator spoke";
+        // Off: LoC's text only.
+        assert_eq!(
+            page_snippets(loc, Some(american), &q, false),
+            (Vec::new(), None)
+        );
+        assert_eq!(
+            page_snippets(loc, Some(american), &q, true),
+            (
+                vec!["<mark>BRYAN</mark> AT CHICAGO the boy orator spoke".to_owned()],
+                Some(SNIPPETS_FROM_AMERICAN_STORIES)
+            )
+        );
+        // A match in LoC's text keeps its snippets.
+        let q = parse("orator").unwrap();
+        assert_eq!(
+            page_snippets(loc, Some(american), &q, true),
+            (vec!["the boy <mark>orator</mark> spoke".to_owned()], None)
+        );
+        // Nothing in either text, or no second text.
+        let q = parse("silver").unwrap();
+        assert_eq!(
+            page_snippets(loc, Some(american), &q, true),
+            (Vec::new(), None)
+        );
+        assert_eq!(page_snippets(loc, None, &q, true), (Vec::new(), None));
     }
 }

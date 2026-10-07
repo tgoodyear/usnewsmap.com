@@ -67,7 +67,8 @@ impl Ctx {
 /// 3: Japanese queries search the Japanese pages, and hits carry `ocr` (#139).
 /// 4: snippets built from the page text, up to three per page (#126);
 /// the aggregate lists newspapers and languages (#121).
-pub(crate) const RESPONSE_FORMAT: u32 = 4;
+/// 5: hits say when their snippets come from American Stories' text (#218).
+pub(crate) const RESPONSE_FORMAT: u32 = 5;
 
 /// A persistent-cache read slower than this is abandoned and the response computed.
 const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);

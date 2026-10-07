@@ -15,7 +15,7 @@ use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
-use crate::snippet::text_snippets;
+use crate::snippet::page_snippets;
 use crate::{
     ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
     KeyCount, PlaceSummary, SearchBackend, SearchError, Summary,
@@ -241,7 +241,55 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 /// page with the phrase has the words) and gives the snippets on `text`
 /// their highlights. A word that folds to several (`ﷺ`) is left out of those:
 /// unquoted it would be several terms, and the pairs already require it.
-pub fn query_string(node: &Node, grams: bool) -> Result<String, SearchError> {
+///
+/// With `american_stories` (the indexes have `text_as` and `text_as_cg`,
+/// 05 §5.5.4), each term or phrase matches in either text: `(text:… OR
+/// text_as:…)`. A phrase stays within one text, and `NOT x` excludes a page
+/// with `x` in either. Without it, the string is exactly LoC's text alone.
+pub fn query_string(
+    node: &Node,
+    grams: bool,
+    american_stories: bool,
+) -> Result<String, SearchError> {
+    Ok(match node {
+        Node::And(c) => format!("({})", join(c, " AND ", grams, american_stories)?),
+        Node::Or(c) => format!("({})", join(c, " OR ", grams, american_stories)?),
+        Node::Not(n) => format!("NOT {}", query_string(n, grams, american_stories)?),
+        leaf => {
+            let loc = leaf_string(leaf, grams, &LOC)?;
+            if american_stories {
+                format!(
+                    "({loc} OR {})",
+                    leaf_string(leaf, grams, &AMERICAN_STORIES)?
+                )
+            } else {
+                loc
+            }
+        }
+    })
+}
+
+/// A page's text field and its common-word pairs.
+struct TextFields {
+    text: &'static str,
+    pairs: &'static str,
+}
+
+/// LoC's OCR (05 §5.5).
+const LOC: TextFields = TextFields {
+    text: "text",
+    pairs: "text_cg",
+};
+
+/// American Stories' (05 §5.5.4).
+const AMERICAN_STORIES: TextFields = TextFields {
+    text: "text_as",
+    pairs: "text_as_cg",
+};
+
+/// A term or phrase in one text's fields.
+fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, SearchError> {
+    let text = f.text;
     Ok(match node {
         Node::Term(t) if t.fuzzy > 0 => {
             // S-2: Quickwit 0.9's query language has no fuzzy terms (`~n` on a
@@ -250,37 +298,44 @@ pub fn query_string(node: &Node, grams: bool) -> Result<String, SearchError> {
                 "fuzzy (OCR-tolerant) matching".into(),
             ));
         }
-        Node::Term(t) if t.prefix => format!("text:{}*", t.text),
-        Node::Term(t) => format!("text:{}", t.text),
-        Node::Phrase { terms, slop } if *slop > 0 => format!("text:\"{}\"~{slop}", terms.join(" ")),
+        Node::Term(t) if t.prefix => format!("{text}:{}*", t.text),
+        Node::Term(t) => format!("{text}:{}", t.text),
+        Node::Phrase { terms, slop } if *slop > 0 => {
+            format!("{text}:\"{}\"~{slop}", terms.join(" "))
+        }
         Node::Phrase { terms, .. } => match grams
             .then(|| usnm_core::common_grams::query_terms(terms))
             .flatten()
         {
             Some(pairs) => {
-                let mut parts = vec![format!("text_cg:\"{}\"", pairs.join(" "))];
+                let mut parts = vec![format!("{}:\"{}\"", f.pairs, pairs.join(" "))];
                 let mut seen = std::collections::BTreeSet::new();
                 parts.extend(
                     terms
                         .iter()
                         .filter(|t| !usnm_core::common_grams::is_common(t))
                         .filter(|t| !t.contains(char::is_whitespace) && seen.insert(*t))
-                        .map(|w| format!("text:{w}")),
+                        .map(|w| format!("{text}:{w}")),
                 );
                 format!("({})", parts.join(" AND "))
             }
-            None => format!("text:\"{}\"", terms.join(" ")),
+            None => format!("{text}:\"{}\"", terms.join(" ")),
         },
-        Node::And(c) => format!("({})", join(c, " AND ", grams)?),
-        Node::Or(c) => format!("({})", join(c, " OR ", grams)?),
-        Node::Not(n) => format!("NOT {}", query_string(n, grams)?),
+        Node::And(_) | Node::Or(_) | Node::Not(_) => {
+            unreachable!("query_string renders operators")
+        }
     })
 }
 
-fn join(children: &[Node], sep: &str, grams: bool) -> Result<String, SearchError> {
+fn join(
+    children: &[Node],
+    sep: &str,
+    grams: bool,
+    american_stories: bool,
+) -> Result<String, SearchError> {
     Ok(children
         .iter()
-        .map(|c| query_string(c, grams))
+        .map(|c| query_string(c, grams, american_stories))
         .collect::<Result<Vec<_>, _>>()?
         .join(sep))
 }
@@ -328,7 +383,11 @@ fn full_query(
     indexes: &IndexSet,
     extra: Vec<String>,
 ) -> Result<String, SearchError> {
-    let mut parts = vec![query_string(node, indexes.common_grams())?];
+    let mut parts = vec![query_string(
+        node,
+        indexes.common_grams(),
+        indexes.american_stories(),
+    )?];
     parts.extend(filter_clauses(filters));
     parts.extend(hidden_clauses(indexes));
     parts.extend(extra);
@@ -506,6 +565,10 @@ pub struct StoredHit {
     /// A Japanese page's printed text (pages-ja-index.yaml), for its snippets.
     #[serde(default)]
     pub printed: Option<String>,
+    /// American Stories' text (05 §5.5.4), for snippets when the query
+    /// matched only there.
+    #[serde(default)]
+    pub text_as: Option<String>,
     #[serde(default)]
     pub ocr_source: Option<String>,
     #[serde(default)]
@@ -691,7 +754,13 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
     Ok(cells)
 }
 
-pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, SearchError> {
+/// `american_stories`: whether the search covered American Stories' text,
+/// whose snippets stand in when LoC's text has no match (05 §5.5.4).
+pub fn parse_hits(
+    resp: SearchResponse,
+    query: &Node,
+    american_stories: bool,
+) -> Result<HitsPage, SearchError> {
     let days = distinct(&resp)?;
     let mut hits = Vec::with_capacity(resp.hits.len());
     for d in resp.hits {
@@ -701,13 +770,18 @@ pub fn parse_hits(resp: SearchResponse, query: &Node) -> Result<HitsPage, Search
         // Built here from the stored text, as the memory backend does (#126).
         // A Japanese page's come from its printed text: its indexed text is
         // folded tokens with spaces between them.
-        let snippets = match (&d.printed, &d.text) {
-            (Some(printed), _) => ja_snippets(printed, query),
-            (None, Some(text)) => text_snippets(text, query),
-            (None, None) => Vec::new(),
+        let (snippets, snippet_source) = match &d.printed {
+            Some(printed) => (ja_snippets(printed, query), None),
+            None => page_snippets(
+                d.text.as_deref().unwrap_or_default(),
+                d.text_as.as_deref(),
+                query,
+                american_stories,
+            ),
         };
         hits.push(Hit {
             snippets,
+            snippet_source,
             ocr_source: d.ocr_source,
             ocr_engine: d.ocr_engine,
             front_page: d.seq == 1,
@@ -793,7 +867,7 @@ impl SearchBackend for QuickwitBackend {
         let resp = self
             .search(indexes, &hits_request(query, filters, indexes, page)?)
             .await?;
-        parse_hits(resp, query)
+        parse_hits(resp, query, indexes.american_stories())
     }
 
     /// A read-only searcher reads the metastore manifest once at start, so it
@@ -903,11 +977,11 @@ mod tests {
     fn translates_ast_to_query_language() {
         let q = parse(r#""cross of gold" -bryan (silver OR free*) "gold silver"~3"#).unwrap();
         assert_eq!(
-            query_string(&q, false).unwrap(),
+            query_string(&q, false, false).unwrap(),
             r#"(text:"cross of gold" AND text:"gold silver"~3 AND NOT text:bryan AND (text:free* OR text:silver))"#
         );
         assert!(matches!(
-            query_string(&parse("gold~1").unwrap(), false),
+            query_string(&parse("gold~1").unwrap(), false, false),
             Err(SearchError::Unsupported(_))
         ));
     }
@@ -916,28 +990,28 @@ mod tests {
     fn phrases_with_common_words_search_the_pairs_field() {
         let q = parse(r#""cross of gold" -bryan "gold silver"~3 "yellow fever""#).unwrap();
         assert_eq!(
-            query_string(&q, true).unwrap(),
+            query_string(&q, true, false).unwrap(),
             "((text_cg:\"cross of_gold gold\" AND text:cross AND text:gold) \
              AND text:\"gold silver\"~3 AND text:\"yellow fever\" AND NOT text:bryan)"
         );
         // A repeated word is required once.
         assert_eq!(
-            query_string(&parse(r#""the gold of the cross""#).unwrap(), true).unwrap(),
+            query_string(&parse(r#""the gold of the cross""#).unwrap(), true, false).unwrap(),
             "(text_cg:\"the_gold gold of_the the_cross cross\" AND text:gold AND text:cross)"
         );
         // A word that folds to several is only required through the pairs.
         let q = parse("\"of \u{fdfa} gold\"").unwrap();
-        let s = query_string(&q, true).unwrap();
+        let s = query_string(&q, true, false).unwrap();
         assert!(s.starts_with("(text_cg:\"of_"), "{s}");
         assert!(s.ends_with(" AND text:gold)"), "{s}");
         assert_eq!(s.matches(" AND ").count(), 1, "{s}");
         // Without the field, or for a phrase ending in a common word: `text`.
         assert_eq!(
-            query_string(&parse(r#""cross of gold""#).unwrap(), false).unwrap(),
+            query_string(&parse(r#""cross of gold""#).unwrap(), false, false).unwrap(),
             r#"text:"cross of gold""#
         );
         assert_eq!(
-            query_string(&parse(r#""remember the""#).unwrap(), true).unwrap(),
+            query_string(&parse(r#""remember the""#).unwrap(), true, false).unwrap(),
             r#"text:"remember the""#
         );
         let set = IndexSet::new(vec!["i".into()]).with_common_grams(true);
@@ -949,6 +1023,57 @@ mod tests {
         )
         .unwrap();
         assert!(r["query"].as_str().unwrap().starts_with("(text_cg:"), "{r}");
+    }
+
+    #[test]
+    fn american_stories_text_is_searched_leaf_by_leaf() {
+        let qs = |q: &str, grams| query_string(&parse(q).unwrap(), grams, true).unwrap();
+        assert_eq!(qs("gold", false), "(text:gold OR text_as:gold)");
+        assert_eq!(qs("silv*", false), "(text:silv* OR text_as:silv*)");
+        assert_eq!(
+            qs(r#""gold silver"~3"#, true),
+            r#"(text:"gold silver"~3 OR text_as:"gold silver"~3)"#
+        );
+        assert_eq!(
+            qs(r#""cross of gold""#, false),
+            r#"(text:"cross of gold" OR text_as:"cross of gold")"#
+        );
+        assert_eq!(
+            qs(r#""yellow fever""#, true),
+            r#"(text:"yellow fever" OR text_as:"yellow fever")"#
+        );
+        // An exact phrase through the pairs stays within one text.
+        assert_eq!(
+            qs(r#""cross of gold""#, true),
+            "((text_cg:\"cross of_gold gold\" AND text:cross AND text:gold) \
+             OR (text_as_cg:\"cross of_gold gold\" AND text_as:cross AND text_as:gold))"
+        );
+        // Operators are unchanged; NOT excludes a page with the word in either text.
+        assert_eq!(
+            qs("bryan -silver (free OR orator)", false),
+            "(NOT (text:silver OR text_as:silver) AND (text:bryan OR text_as:bryan) \
+             AND ((text:free OR text_as:free) OR (text:orator OR text_as:orator)))"
+        );
+        assert!(matches!(
+            query_string(&parse("gold~1").unwrap(), false, true),
+            Err(SearchError::Unsupported(_))
+        ));
+        // Every request takes the flag from the index set.
+        let set = IndexSet::new(vec!["i".into()]).with_american_stories(true);
+        let r = summary_request(
+            &parse("gold").unwrap(),
+            &filters(),
+            &set,
+            &BucketSpec::new(BucketUnit::Year, d("1896-01-01"), d("1896-12-31")),
+        )
+        .unwrap();
+        assert!(
+            r["query"]
+                .as_str()
+                .unwrap()
+                .starts_with("(text:gold OR text_as:gold) AND "),
+            "{r}"
+        );
     }
 
     #[test]
@@ -1090,7 +1215,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let page = parse_hits(resp, &usnm_core::query::parse("gold").unwrap()).unwrap();
+        let page = parse_hits(resp, &usnm_core::query::parse("gold").unwrap(), false).unwrap();
         assert_eq!(
             page.hits[0].day,
             usnm_core::time::day_number(d("1896-07-10"))
@@ -1106,7 +1231,7 @@ mod tests {
         }))
         .unwrap();
         let q = usnm_core::query::parse("gold").unwrap();
-        assert_eq!(parse_hits(first, &q).unwrap().days, Some(2));
+        assert_eq!(parse_hits(first, &q, false).unwrap().days, Some(2));
     }
 
     #[test]

@@ -133,6 +133,61 @@ def page_text(rng, topics):
     return " ".join(words).capitalize() + "."
 
 
+# American Stories' second OCR of a page (05 §5.5.4, #218), from its own
+# random stream so LoC's text above doesn't change with it. It covers some
+# pages; on those it reads headlines LoC's text lacks (so their words match
+# only there), fixes some of LoC's misread words, and misreads others itself.
+AS_HEADLINES = {
+    "gold": ["BRYAN AT CHICAGO", "THE BOY ORATOR OF THE PLATTE"],
+    "silver": ["BIMETALLISM DEBATED"],
+    "standard": ["BIMETALLISM DEBATED"],
+    "fever": ["QUARANTINE AT THE PORT"],
+    None: ["LOCAL NEWS"],
+}
+# Words LoC's OCR misread on a covered page, which American Stories reads right.
+LOC_MISREAD = {"gold": "goid", "silver": "sllver", "convention": "conventlon",
+               "orator": "orat0r", "fever": "fevcr", "standard": "standarcl"}
+# Words American Stories misread where LoC's text has them right.
+AS_MISREAD = {"gold": "golcl", "silver": "silvcr", "convention": "convent1on",
+              "orator": "oratar", "fever": "faver", "cotton": "cottan"}
+
+
+def misread(text, table, rng):
+    """`text` with one word in `table` replaced by its misreading, if it has one."""
+    words = text.split(" ")
+    spots = [i for i, w in enumerate(words) if w.lower().rstrip(".") in table]
+    if not spots:
+        return text
+    i = rng.choice(spots)
+    w = words[i]
+    bare = w.rstrip(".")
+    wrong = table[bare.lower()]
+    words[i] = (wrong.capitalize() if bare[0].isupper() else wrong) + w[len(bare):]
+    return " ".join(words)
+
+
+def american_stories(rng, text, topics):
+    """(LoC's text, American Stories' text or None) for a page with LoC's `text`
+    (empty when LoC has none) and the topics it was written from."""
+    if not text:
+        # A page LoC has no text for: American Stories has some for half of them.
+        if rng.random() < 0.5:
+            return text, page_text(rng, list(topics))
+        return text, None
+    if rng.random() >= 0.4:
+        return text, None
+    text_as = text
+    if rng.random() < 0.5:
+        heads = AS_HEADLINES[topics[0] if topics else None]
+        text_as = rng.choice(heads) + "\n" + text_as
+    roll = rng.random()
+    if roll < 0.25:
+        text = misread(text, LOC_MISREAD, rng)
+    elif roll < 0.45:
+        text_as = misread(text_as, AS_MISREAD, rng)
+    return text, text_as
+
+
 def sort_key(title_ordinal, edition, seq):
     """Numeric same-day tiebreak: Quickwit 0.9 can't sort on text fields."""
     return (title_ordinal << 32) | (edition << 16) | seq
@@ -140,6 +195,7 @@ def sort_key(title_ordinal, edition, seq):
 
 def main():
     rng = random.Random(1896)
+    as_rng = random.Random(1865)
     OUT.mkdir(parents=True, exist_ok=True)
     titles, docs_base, docs_delta, baselines, title_pages, by_language = [], [], [], {}, {}, {}
     for pid, ordinal, name, state, *_ in PLACES:
@@ -162,11 +218,13 @@ def main():
                     topics.append("standard")
                 if state in ("GA", "SC") and date(1897, 8, 1) <= d <= date(1897, 10, 31) and rng.random() < 0.6:
                     topics.append("fever")
+                written = list(topics)
                 text = "" if rng.random() < 0.02 else page_text(rng, topics)
+                text, text_as = american_stories(as_rng, text, written)
                 dn = day_number(d)
                 counts[dn] = counts.get(dn, 0) + 1
-                if not text:
-                    continue  # empty OCR: counted in baselines, excluded from the index
+                if not text and not text_as:
+                    continue  # no text at all: counted in baselines, excluded from the index
                 doc = {
                     "doc_id": f"{lccn}_{d.isoformat()}_ed-1_seq-{seq}",
                     "day": dn, "ym": d.year * 12 + d.month - 1, "year": d.year,
@@ -179,6 +237,8 @@ def main():
                     "date": d.isoformat(),
                     "text": text,
                 }
+                if text_as is not None:
+                    doc["text_as"] = text_as
                 (docs_delta if d >= date(1897, 7, 1) else docs_base).append(doc)
             d += timedelta(days=7)
         baselines[pid] = sorted(counts.items())

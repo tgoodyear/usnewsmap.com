@@ -150,6 +150,11 @@ export interface HitItem {
    * the page, so its viewer shows the image only. Absent from older APIs.
    */
   ocr?: { source: string; engine: string | null };
+  /**
+   * `american_stories` when the query matched only in American Stories' text
+   * of the page, so the snippets come from it (#218). Absent otherwise.
+   */
+  snippet_source?: "american_stories";
   links: { viewer: string | null };
 }
 

@@ -55,6 +55,11 @@ pub struct PageDoc {
     /// The engine and version that made it (`ndlocr-lite 636d1cf`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr_engine: Option<String>,
+    /// American Stories' text of the page (05 §5.5.4), when it has one.
+    /// Searched only when the index set says so
+    /// ([`IndexSet::american_stories`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_as: Option<String>,
 }
 
 /// The sealed indexes a published `index_version` names (08 §8.4.1), and
@@ -67,6 +72,9 @@ pub struct IndexSet {
     /// Every index has the `text_cg` field at the API's
     /// `usnm_core::common_grams::VERSION` (05 §5.5.3).
     common_grams: bool,
+    /// Every index has American Stories' text, `text_as` and `text_as_cg`,
+    /// at the API's `usnm_core::american_stories::VERSION` (05 §5.5.4).
+    american_stories: bool,
     /// Batch → ids of its documents to hide.
     hidden: Arc<BTreeMap<String, BTreeSet<String>>>,
 }
@@ -76,6 +84,7 @@ impl IndexSet {
         Self {
             ids,
             common_grams: false,
+            american_stories: false,
             hidden: Arc::default(),
         }
     }
@@ -88,6 +97,16 @@ impl IndexSet {
 
     pub fn common_grams(&self) -> bool {
         self.common_grams
+    }
+
+    /// Whether queries also search American Stories' text (05 §5.5.4).
+    pub fn with_american_stories(mut self, on: bool) -> Self {
+        self.american_stories = on;
+        self
+    }
+
+    pub fn american_stories(&self) -> bool {
+        self.american_stories
     }
 
     /// Hide each `(doc_id, batch)`: that batch's copy of the page.
@@ -229,7 +248,15 @@ pub struct Hit {
     /// The engine and version that made it (`ndlocr-lite 636d1cf`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ocr_engine: Option<String>,
+    /// Which text the snippets come from when it isn't LoC's:
+    /// [`SNIPPETS_FROM_AMERICAN_STORIES`] when the query matched only in
+    /// American Stories' text (05 §5.5.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_source: Option<&'static str>,
 }
+
+/// [`Hit::snippet_source`] for snippets from American Stories' text.
+pub const SNIPPETS_FROM_AMERICAN_STORIES: &str = "american_stories";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HitsPage {

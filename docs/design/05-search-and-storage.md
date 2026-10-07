@@ -130,6 +130,8 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 | `doc_id` | keyword | key | ✅ | ✅ | Identity |
 | `text` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | Search |
 | `text_cg` | text (positions) | ✅ tokenizer `whitespace` | – | – | Phrases holding common words (§5.5.3) |
+| `text_as` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | American Stories' text of the page, searched with `text` (§5.5.4) |
+| `text_as_cg` | text (positions) | ✅ tokenizer `whitespace` | – | – | `text_as`'s common-word pairs (§5.5.3, §5.5.4) |
 | `date` | date | ✅ | ✅ | ✅ | Quickwit timestamp field (pre-1970 confirmed in S-2) |
 | `day` | u32 | ✅ | ✅ sort | ✅ | Days since 1700-01-01; day/week buckets; range filter; hit order |
 | `sort_key` | u64 | – | ✅ sort | – | `title ordinal << 32 \| edition << 16 \| seq`: stable hit order within a day (Quickwit can't sort on text, §5.5.1) |
@@ -159,6 +161,8 @@ doc_mapping:
   field_mappings:
     - { name: doc_id,     type: text,     tokenizer: raw, fast: true, stored: true }
     - { name: text,       type: text,     tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }
+    - { name: text_as,    type: text,     tokenizer: usnm_text, record: position, stored: true, fieldnorms: false }   # §5.5.4
+    # text_cg and text_as_cg: tokenizer whitespace, positions, not stored (§5.5.3)
     - { name: date,       type: datetime, input_formats: ["%Y-%m-%d"], output_format: "%Y-%m-%d", fast: true, stored: true }
     - { name: day,        type: u64,      fast: true, indexed: true, stored: true }
     - { name: sort_key,   type: u64,      fast: true, indexed: false }   # hit order within a day
@@ -250,6 +254,17 @@ A phrase reads the positions of every word in it, and the commonest words are on
 - **Rollout.** `current.json` names the `common_grams` version its indexes were built with. The API searches `text_cg` only when that is its own version, so a new API on older indexes keeps phrases in `text`. A release whose previous version has another version (or none) builds a full base, so the indexes in a version never mix.
 - **Cost.** `text_cg` holds a position for every word, like `text`. On 90,745 real pages (11 LoC batches, October 2026) it made the index 1.6× as big (4.8 GB against 3.0 GB) and indexing 1.9× as long; over the corpus that is about +0.35 TB on Blob Hot, about +$7 a month. Japanese pages (#139) have their own index and no pairs.
 - **Measured gain.** On the same pages, cold (OS cache dropped) on 2 CPUs, the searcher read 11–31× fewer bytes for phrases with a common word ("cross of gold" 17.3 MB → 0.6 MB) and took 2–6.5× less time, with the same hits.
+
+### 5.5.4 American Stories' text (`text_as`, #218)
+
+American Stories (Dell et al., CC BY 4.0) re-OCRed many of the same scans with a layout model. Matching a term in either text finds more pages: +10% to +26% per term in 1865 and +2% to +12% in 1925 (#205). So a page in the main index carries a second text.
+
+- **One document per page, two texts.** `text_as` holds American Stories' text for the page (headlines, bylines and articles, in reading order), analyzed as `text` is, with positions, and stored. `text_as_cg` holds its common-word pairs, made as `text_cg` is (§5.5.3). LoC's `text` and `text_cg` don't change. Japanese pages (#139) have their own index and no second text.
+- **Either text, counted once.** Each term or phrase of a query becomes `(text:… OR text_as:…)`; an exact phrase through the pairs becomes `((text_cg:… AND text:…) OR (text_as_cg:… AND text_as:…))`. A phrase has to sit within one text, so it can't span the two. `AND`, `OR` and `NOT` combine the leaves as before, so `NOT x` leaves out a page with `x` in either text, and `a b` matches a page with `a` in one text and `b` in the other. A page is one document, so it counts once however many texts it matches in: hits, cubes, medians and first and last pages count documents. The memory backend, the reference for the parity tests, evaluates each leaf against both token streams the same way.
+- **Behind a flag.** `current.json` records `american_stories: <version>`, and the API searches `text_as` only when that is `usnm_core::american_stories::VERSION` (`IndexSet::american_stories`). Without it, every query is exactly LoC's, so versions built without the fields (which a strict Quickwit mapping would refuse to query) behave as before, and dropping the key from `current.json` switches the fields off without a rebuild.
+- **Snippets.** LoC's text first. When the query marks nothing there and the search covers American Stories' text, the snippets come from `text_as`, and the hit says so (`snippet_source: "american_stories"` on `/v1/hits` items, response format 5).
+- **Sizing.** With its pairs, `text_as` roughly doubles a covered page's index, to about 74 KB, so `split_num_docs_target` (§5.5.1) will drop to about 30,000 with step 3 of #218, when pages actually carry `text_as`.
+- **Not yet.** The release doesn't write `text_as` or `american_stories` yet: the overlay loader, pages with only American Stories' text, and the full rebuild are later steps of #218.
 
 ## 5.6 Query semantics
 

@@ -44,6 +44,10 @@ pub struct Current {
     /// (05 §5.5.3); absent for versions without `text_cg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub common_grams: Option<u32>,
+    /// The `usnm_core::american_stories::VERSION` every index was built
+    /// with (05 §5.5.4); absent for versions without `text_as`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub american_stories: Option<u32>,
 }
 
 /// `current.json`'s `ja`: the index of the Japanese pages we OCR ourselves.
@@ -277,8 +281,12 @@ impl RefData {
         // API's version: an older version, or one built with another word
         // list, keeps them in `text` (05 §5.5.3).
         let grams = self.current.common_grams == Some(usnm_core::common_grams::VERSION);
+        // American Stories' text likewise: only a version built with it at
+        // this API's version has `text_as` (05 §5.5.4).
+        let american = self.current.american_stories == Some(usnm_core::american_stories::VERSION);
         IndexSet::new(self.current.indexes.clone())
             .with_common_grams(grams)
+            .with_american_stories(american)
             .hiding(
                 self.hidden
                     .iter()
