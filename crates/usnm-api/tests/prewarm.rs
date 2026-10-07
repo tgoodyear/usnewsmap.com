@@ -169,6 +169,15 @@ impl SearchBackend for Counting {
         self.enter().await?;
         self.inner.hits(i, q, f, p).await
     }
+    async fn american_stories_only(
+        &self,
+        i: &IndexSet,
+        q: &Node,
+        f: &Filters,
+    ) -> Result<u64, SearchError> {
+        self.enter().await?;
+        self.inner.american_stories_only(i, q, f).await
+    }
     async fn health(&self) -> Result<(), SearchError> {
         Ok(())
     }
@@ -286,7 +295,7 @@ async fn visit_examples(state: &Arc<AppState>, backend: &Counting, version: &str
 }
 
 fn persisted(dir: &Path, version: &str) -> usize {
-    std::fs::read_dir(dir.join(version).join("f5"))
+    std::fs::read_dir(dir.join(version).join("f6"))
         .map(|d| d.count())
         .unwrap_or(0)
 }
@@ -331,6 +340,41 @@ async fn a_new_version_is_warmed_before_it_is_swapped_in() {
     }
     assert_eq!(persisted(&cache, "fixture-v2"), distinct);
     assert_eq!(persisted(&cache, "fixture-v1"), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// With American Stories' text searched, the aggregate's extra count is
+/// part of the response the warm-up caches: visitors cost no backend call.
+#[tokio::test]
+async fn the_american_stories_only_count_is_warmed_with_the_aggregate() {
+    let dir = temp_reference("american-stories");
+    let backend = Counting::new(Duration::ZERO, false);
+    let state = Arc::new(reloading_state(&dir, config(), backend.clone()).await);
+    publish_v2(&dir);
+    let path = dir.join("current.json");
+    let mut current: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    current["american_stories"] = usnm_core::american_stories::VERSION.into();
+    std::fs::write(&path, current.to_string()).unwrap();
+    assert!(reload_if_changed(&state).await.unwrap());
+
+    let (calls, _) = load_examples(&state, &backend, "fixture-v2").await;
+    assert_eq!(calls, 0);
+    let mut counted = 0;
+    for ex in prewarm::examples() {
+        let (_, body) = get(
+            &state,
+            &format!("/v1/aggregate?{}&v=fixture-v2", ex.aggregate),
+        )
+        .await;
+        let only = body["total"]["american_stories_only"].as_u64();
+        assert!(only.is_some(), "{}: {body}", ex.id);
+        counted += only.unwrap();
+    }
+    assert!(
+        counted > 0,
+        "no example matches only in American Stories' text"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

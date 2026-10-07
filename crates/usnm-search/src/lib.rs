@@ -253,10 +253,20 @@ pub struct Hit {
     /// American Stories' text (05 §5.5.4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet_source: Option<&'static str>,
+    /// Which of the page's texts the query matches (05 §5.5.4):
+    /// [`MATCHED_IN_LOC`], [`SNIPPETS_FROM_AMERICAN_STORIES`] or both, from
+    /// [`snippet::matched_in`]. Only when the search covers American
+    /// Stories' text, and not on Japanese pages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_in: Option<Vec<&'static str>>,
 }
 
-/// [`Hit::snippet_source`] for snippets from American Stories' text.
+/// [`Hit::snippet_source`] for snippets from American Stories' text, and
+/// that text in [`Hit::matched_in`].
 pub const SNIPPETS_FROM_AMERICAN_STORIES: &str = "american_stories";
+
+/// LoC's text (`text`) in [`Hit::matched_in`].
+pub const MATCHED_IN_LOC: &str = "loc";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HitsPage {
@@ -335,6 +345,21 @@ pub trait SearchBackend: Send + Sync {
         filters: &Filters,
         page: &HitsQuery,
     ) -> Result<HitsPage, SearchError>;
+
+    /// How many of the pages a search of both texts finds match the query
+    /// in American Stories' text but not in LoC's (05 §5.5.4): the hits
+    /// whose [`Hit::matched_in`] is American Stories' text alone. One
+    /// count-only request. A backend without it refuses.
+    async fn american_stories_only(
+        &self,
+        _indexes: &IndexSet,
+        _query: &Node,
+        _filters: &Filters,
+    ) -> Result<u64, SearchError> {
+        Err(SearchError::Unsupported(
+            "counting the pages only American Stories' text matches".into(),
+        ))
+    }
 
     async fn health(&self) -> Result<(), SearchError>;
 

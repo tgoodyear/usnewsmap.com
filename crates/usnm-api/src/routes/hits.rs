@@ -75,6 +75,11 @@ pub(crate) struct Item {
     /// text (05 §5.5.4).
     #[serde(skip_serializing_if = "Option::is_none")]
     snippet_source: Option<&'static str>,
+    /// Which of the page's texts the query matches: `["loc"]`,
+    /// `["american_stories"]` or both (05 §5.5.4). Only when the version
+    /// searches American Stories' text, and not on Japanese pages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched_in: Option<Vec<&'static str>>,
     /// When the text is our own OCR, not LoC's (#139).
     #[serde(skip_serializing_if = "Option::is_none")]
     ocr: Option<Ocr>,
@@ -118,6 +123,7 @@ impl Item {
             front_page: h.front_page,
             snippets: h.snippets,
             snippet_source: h.snippet_source,
+            matched_in: h.matched_in,
         }
     }
 }

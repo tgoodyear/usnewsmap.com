@@ -101,6 +101,12 @@ export interface AggregateResponse {
     papers?: number;
     /** Days with at least one matching page (#127); an estimate on the full index. Absent from older APIs. */
     days?: number;
+    /**
+     * Matching pages that match in American Stories' text but not in LoC's
+     * (#218): the pages whose `matched_in` is `["american_stories"]`. Only
+     * when the version searches American Stories' text.
+     */
+    american_stories_only?: number;
   };
   series: { hits: number[]; baseline: number[] | null };
   places: {
@@ -155,8 +161,17 @@ export interface HitItem {
    * of the page, so the snippets come from it (#218). Absent otherwise.
    */
   snippet_source?: "american_stories";
+  /**
+   * Which of the page's texts the whole query matches (#218): LoC's OCR,
+   * American Stories', or both (also a page found with a word from each).
+   * Only when the version searches American Stories' text.
+   */
+  matched_in?: MatchedText[];
   links: { viewer: string | null };
 }
+
+/** A page's text: LoC's OCR, or American Stories' (Dell et al. 2023). */
+export type MatchedText = "loc" | "american_stories";
 
 export interface HitsResponse {
   index_version: string;

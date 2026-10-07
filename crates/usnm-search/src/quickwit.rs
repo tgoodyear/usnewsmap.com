@@ -15,7 +15,7 @@ use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
-use crate::snippet::page_snippets;
+use crate::snippet::{matched_in, page_snippets};
 use crate::{
     ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
     KeyCount, PlaceSummary, SearchBackend, SearchError, Summary,
@@ -251,22 +251,43 @@ pub fn query_string(
     grams: bool,
     american_stories: bool,
 ) -> Result<String, SearchError> {
+    if american_stories {
+        render(node, grams, &[&LOC, &AMERICAN_STORIES])
+    } else {
+        render(node, grams, &[&LOC])
+    }
+}
+
+/// The query with each term or phrase in any of `texts`.
+fn render(node: &Node, grams: bool, texts: &[&TextFields]) -> Result<String, SearchError> {
     Ok(match node {
-        Node::And(c) => format!("({})", join(c, " AND ", grams, american_stories)?),
-        Node::Or(c) => format!("({})", join(c, " OR ", grams, american_stories)?),
-        Node::Not(n) => format!("NOT {}", query_string(n, grams, american_stories)?),
+        Node::And(c) => format!("({})", join(c, " AND ", grams, texts)?),
+        Node::Or(c) => format!("({})", join(c, " OR ", grams, texts)?),
+        Node::Not(n) => format!("NOT {}", render(n, grams, texts)?),
         leaf => {
-            let loc = leaf_string(leaf, grams, &LOC)?;
-            if american_stories {
-                format!(
-                    "({loc} OR {})",
-                    leaf_string(leaf, grams, &AMERICAN_STORIES)?
-                )
-            } else {
-                loc
+            let leaves = texts
+                .iter()
+                .map(|f| leaf_string(leaf, grams, f))
+                .collect::<Result<Vec<_>, _>>()?;
+            match leaves.as_slice() {
+                [one] => one.clone(),
+                _ => format!("({})", leaves.join(" OR ")),
             }
         }
     })
+}
+
+/// The pages a search of both texts finds that match the query in American
+/// Stories' text but not in LoC's (05 §5.5.4): the search in both texts,
+/// `AND NOT` the same in LoC's text alone, `AND` the same in American
+/// Stories' text alone. All three, because with `NOT` in the query a page
+/// can match in one text and still be left out by a word in the other.
+/// The hits these are list `matched_in: ["american_stories"]`.
+pub fn american_stories_only_string(node: &Node, grams: bool) -> Result<String, SearchError> {
+    let both = render(node, grams, &[&LOC, &AMERICAN_STORIES])?;
+    let loc = render(node, grams, &[&LOC])?;
+    let american = render(node, grams, &[&AMERICAN_STORIES])?;
+    Ok(format!("({both}) AND NOT ({loc}) AND ({american})"))
 }
 
 /// A page's text field and its common-word pairs.
@@ -331,11 +352,11 @@ fn join(
     children: &[Node],
     sep: &str,
     grams: bool,
-    american_stories: bool,
+    texts: &[&TextFields],
 ) -> Result<String, SearchError> {
     Ok(children
         .iter()
-        .map(|c| query_string(c, grams, american_stories))
+        .map(|c| render(c, grams, texts))
         .collect::<Result<Vec<_>, _>>()?
         .join(sep))
 }
@@ -383,15 +404,17 @@ fn full_query(
     indexes: &IndexSet,
     extra: Vec<String>,
 ) -> Result<String, SearchError> {
-    let mut parts = vec![query_string(
-        node,
-        indexes.common_grams(),
-        indexes.american_stories(),
-    )?];
+    let query = query_string(node, indexes.common_grams(), indexes.american_stories())?;
+    Ok(scoped(query, filters, indexes, extra))
+}
+
+/// `query` with the filters and the hidden copies' clauses.
+fn scoped(query: String, filters: &Filters, indexes: &IndexSet, extra: Vec<String>) -> String {
+    let mut parts = vec![query];
     parts.extend(filter_clauses(filters));
     parts.extend(hidden_clauses(indexes));
     parts.extend(extra);
-    Ok(parts.join(" AND "))
+    parts.join(" AND ")
 }
 
 fn histogram(spec: &BucketSpec, min_doc_count: u64) -> Value {
@@ -518,6 +541,21 @@ pub fn hits_request(
         req["aggs"] = json!({ "days": { "cardinality": { "field": "day" } } });
     }
     Ok(req)
+}
+
+/// How many pages only American Stories' text finds
+/// ([`american_stories_only_string`]): no hits, no aggregations, no sort.
+/// Quickwit still counts every match (`num_hits`).
+pub fn american_stories_only_request(
+    node: &Node,
+    filters: &Filters,
+    indexes: &IndexSet,
+) -> Result<Value, SearchError> {
+    let query = american_stories_only_string(node, indexes.common_grams())?;
+    Ok(json!({
+        "query": scoped(query, filters, indexes, Vec::new()),
+        "max_hits": 0
+    }))
 }
 
 /// By day, then title, edition and page (`sort_key`). Quickwit 0.9 can't sort
@@ -770,18 +808,18 @@ pub fn parse_hits(
         // Built here from the stored text, as the memory backend does (#126).
         // A Japanese page's come from its printed text: its indexed text is
         // folded tokens with spaces between them.
+        let text = d.text.as_deref().unwrap_or_default();
         let (snippets, snippet_source) = match &d.printed {
             Some(printed) => (ja_snippets(printed, query), None),
-            None => page_snippets(
-                d.text.as_deref().unwrap_or_default(),
-                d.text_as.as_deref(),
-                query,
-                american_stories,
-            ),
+            None => page_snippets(text, d.text_as.as_deref(), query, american_stories),
         };
+        // Which texts match, from the same stored texts: no extra query.
+        let matched_in = (american_stories && d.printed.is_none())
+            .then(|| matched_in(text, d.text_as.as_deref(), query));
         hits.push(Hit {
             snippets,
             snippet_source,
+            matched_in,
             ocr_source: d.ocr_source,
             ocr_engine: d.ocr_engine,
             front_page: d.seq == 1,
@@ -868,6 +906,21 @@ impl SearchBackend for QuickwitBackend {
             .search(indexes, &hits_request(query, filters, indexes, page)?)
             .await?;
         parse_hits(resp, query, indexes.american_stories())
+    }
+
+    async fn american_stories_only(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+    ) -> Result<u64, SearchError> {
+        let resp = self
+            .search(
+                indexes,
+                &american_stories_only_request(query, filters, indexes)?,
+            )
+            .await?;
+        Ok(resp.num_hits)
     }
 
     /// A read-only searcher reads the metastore manifest once at start, so it
@@ -1232,6 +1285,65 @@ mod tests {
         .unwrap();
         let q = usnm_core::query::parse("gold").unwrap();
         assert_eq!(parse_hits(first, &q, false).unwrap().days, Some(2));
+    }
+
+    /// A hit says which texts the query matches only when the search covers
+    /// American Stories' text (05 §5.5.4), from the texts it already has.
+    #[test]
+    fn hits_say_which_texts_match_when_both_are_searched() {
+        let resp = || -> SearchResponse {
+            serde_json::from_value(json!({
+                "num_hits": 3,
+                "hits": [
+                    {"doc_id": "sn99000001_1896-07-10_ed-1_seq-1", "date": "1896-07-10T00:00:00Z",
+                     "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 1,
+                     "text": "a cross of goid", "text_as": "a cross of gold"},
+                    {"doc_id": "sn99000001_1896-07-10_ed-1_seq-2", "date": "1896-07-10T00:00:00Z",
+                     "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 2,
+                     "text": "gold", "text_as": "gold"},
+                    {"doc_id": "sn99000001_1896-07-10_ed-1_seq-3", "date": "1896-07-10T00:00:00Z",
+                     "place_id": "P00001", "lccn": "sn99000001", "edition": 1, "seq": 3,
+                     "text": "gold"}
+                ]
+            }))
+            .unwrap()
+        };
+        let q = usnm_core::query::parse("gold").unwrap();
+        let on = parse_hits(resp(), &q, true).unwrap();
+        let matched: Vec<_> = on.hits.iter().map(|h| h.matched_in.clone()).collect();
+        assert_eq!(
+            matched,
+            [
+                Some(vec!["american_stories"]),
+                Some(vec!["loc", "american_stories"]),
+                Some(vec!["loc"]),
+            ]
+        );
+        let off = parse_hits(resp(), &q, false).unwrap();
+        assert!(off.hits.iter().all(|h| h.matched_in.is_none()));
+    }
+
+    #[test]
+    fn american_stories_only_asks_for_a_count_of_one_text_but_not_the_other() {
+        let q = parse("gold -bryan").unwrap();
+        let both = none().with_american_stories(true);
+        let r = american_stories_only_request(&q, &filters(), &both).unwrap();
+        assert_eq!(r["max_hits"], 0);
+        assert!(r.get("aggs").is_none() && r.get("sort_by").is_none());
+        assert!(r["query"].as_str().unwrap().starts_with(
+            "((NOT (text:bryan OR text_as:bryan) AND (text:gold OR text_as:gold))) \
+             AND NOT ((NOT text:bryan AND text:gold)) \
+             AND ((NOT text_as:bryan AND text_as:gold)) AND day:["
+        ));
+        // Exact phrases through the pairs, one text at a time.
+        let phrase = parse(r#""cross of gold""#).unwrap();
+        assert_eq!(
+            american_stories_only_string(&phrase, true).unwrap(),
+            "(((text_cg:\"cross of_gold gold\" AND text:cross AND text:gold) \
+             OR (text_as_cg:\"cross of_gold gold\" AND text_as:cross AND text_as:gold))) \
+             AND NOT ((text_cg:\"cross of_gold gold\" AND text:cross AND text:gold)) \
+             AND ((text_as_cg:\"cross of_gold gold\" AND text_as:cross AND text_as:gold))"
+        );
     }
 
     #[test]

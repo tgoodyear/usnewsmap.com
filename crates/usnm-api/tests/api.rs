@@ -144,6 +144,73 @@ async fn american_stories_text_is_searched_only_for_a_version_built_with_it() {
     assert!(items.iter().all(|i| i.get("snippet_source").is_none()));
 }
 
+/// With American Stories' text searched, each hit says which texts the
+/// query matches, and the aggregate counts the pages only that text
+/// matches; without it, neither key is there (05 §5.5.4).
+#[tokio::test]
+async fn hits_say_which_texts_match_and_the_aggregate_counts_american_stories_only() {
+    let off = state_with(None).await;
+    let mut rd = refdata().await;
+    rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+    let on = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+
+    // Every page of a place, and the aggregate's count for the same search.
+    let (status, _, agg) = get(&on, "/v1/aggregate?q=gold").await;
+    assert_eq!(status, StatusCode::OK, "{agg}");
+    let only = agg["total"]["american_stories_only"].as_u64().unwrap();
+    let total = agg["total"]["hits"].as_u64().unwrap();
+    assert!(0 < only && only < total, "{only} of {total}");
+    for edge in ["first", "last"] {
+        assert!(agg["total"][edge]["matched_in"].is_array(), "{edge}");
+    }
+    let mut counted = BTreeMap::<String, u64>::new();
+    for place in agg["places"]["id"].as_array().unwrap() {
+        let mut cursor = String::new();
+        loop {
+            let uri = format!(
+                "/v1/hits?q=gold&place={}&limit=50{cursor}",
+                place.as_str().unwrap()
+            );
+            let (status, _, body) = get(&on, &uri).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            for item in body["items"].as_array().unwrap() {
+                let texts: Vec<&str> = item["matched_in"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{item}"))
+                    .iter()
+                    .map(|t| t.as_str().unwrap())
+                    .collect();
+                *counted.entry(texts.join("+")).or_default() += 1;
+                // Snippets from American Stories' text only when LoC's has no match.
+                if item["snippet_source"] == "american_stories" {
+                    assert_eq!(texts, ["american_stories"], "{item}");
+                }
+            }
+            match body["next_cursor"].as_str() {
+                Some(c) => cursor = format!("&cursor={c}"),
+                None => break,
+            }
+        }
+    }
+    assert_eq!(counted.values().sum::<u64>(), total);
+    assert_eq!(counted.get("american_stories"), Some(&only));
+    assert!(counted.get("loc").is_some_and(|n| *n > 0));
+    assert!(counted.get("loc+american_stories").is_some_and(|n| *n > 0));
+
+    // A word only American Stories' text has: every page.
+    let (_, _, agg) = get(&on, "/v1/aggregate?q=bimetallism").await;
+    assert_eq!(agg["total"]["american_stories_only"], agg["total"]["hits"]);
+
+    // Off: the keys aren't there.
+    let (_, _, agg) = get(&off, "/v1/aggregate?q=gold").await;
+    assert!(agg["total"].get("american_stories_only").is_none());
+    assert!(agg["total"]["first"].get("matched_in").is_none());
+    let (_, _, body) = get(&off, "/v1/hits?q=gold&place=P00001&limit=50").await;
+    let items = body["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    assert!(items.iter().all(|i| i.get("matched_in").is_none()));
+}
+
 #[tokio::test]
 async fn health_and_meta() {
     let s = state_with(None).await;
@@ -1088,7 +1155,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f5")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f6")) else {
         return Vec::new();
     };
     entries
@@ -1119,7 +1186,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f5/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f6/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),
