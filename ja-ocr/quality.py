@@ -93,6 +93,7 @@ WORST_TITLES, WORST_BATCHES = 100, 50
 PROGRESS_EVERY = 60  # seconds between progress lines and status updates
 CHUNK_PARTS = 40  # parts per chunk of work a replica claims (whole batches, so a chunk can run over)
 POLL_SECONDS = 30  # how often a replica with nothing left to claim checks whether the others are done
+RENEW_SECONDS = 300  # how often a replica renews its claims (and the reducer its lock)
 
 # The catalog's MARC codes to wordfreq's (ISO 639-1, "sh" for Serbo-Croatian).
 # Only languages wordfreq 3.1 has a list for: it would otherwise fall back to
@@ -1227,11 +1228,12 @@ class Chunks:
     def done(self) -> set[int]:
         return {int(p.rsplit("/", 1)[1].split(".")[0]) for p in self.curated.list(f"{self.root}/done/")}
 
-    def claim(self) -> int | None:
-        """A chunk no replica has finished or is scanning (or one whose claim went stale), now ours."""
+    def claim(self, active=()) -> int | None:
+        """A chunk no replica has finished or is scanning (or one whose claim went stale), now ours. `active`:
+        the chunks this replica is scanning, which it mustn't claim again."""
         done = self.done()
         for k in self.order:
-            if k in done:
+            if k in done or k in active:
                 continue
             claim = self.path("claims", k)
             if self.curated.create(claim, self.lease()) or self.curated.take_over(claim, self.lease(), self.stale):
@@ -1239,6 +1241,10 @@ class Chunks:
                     continue
                 return k
         return None
+
+    def renew(self, k: int, owner: str) -> bool:
+        """Keep our claim on chunk k fresh; False if another replica has taken it over."""
+        return self.curated.renew(self.path("claims", k), self.lease(), owner)
 
 
 def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
@@ -1305,11 +1311,18 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
         status["started_at"] = _iso(datetime.fromisoformat(json.loads(curated.read(f"{root}/started.json"))["at"]))
 
     work = Chunks(curated, root, len(chunks), lease, stale, owner)
-    last_progress = time.time()
+    finished = f"{root}/finished.json"
+    reduce_lock = f"{root}/reduce.lock"
+    if curated.exists(finished):  # a retried replica of a run that is over
+        jaocr.log("ocr quality run already finished", run=run)
+        return None
+    last_progress = last_renew = time.time()
 
     def progress() -> None:
         totals = {"pages_read": 0, "pages_sampled": 0, "parts_failed": 0}
         done = work.done()
+        if len(done) == len(chunks):
+            return  # the final status is the reducing replica's to write
         for k in done:
             d = json.loads(curated.read(work.path("done", k)))
             for key in totals:
@@ -1317,7 +1330,7 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
         batches_done = empty_batches + sum(chunk_batches[k] for k in done)
         jaocr.log("ocr quality progress", metric=metric, batches_done=batches_done, batches=len(batches),
                   chunks_done=len(done), chunks=len(chunks), elapsed_s=round(time.time() - started), **totals)
-        if metric == "v2":
+        if metric == "v2" and not curated.exists(reduce_lock):
             status["batches"]["done"], status["pages_sampled"] = batches_done, totals["pages_sampled"]
             status["updated_at"] = _iso(datetime.now(timezone.utc))
             write_status(reference, status)
@@ -1326,7 +1339,7 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
     parts_out: dict[int, list[dict]] = {}
 
     def claimed():
-        while (k := work.claim()) is not None:
+        while (k := work.claim(active=left)) is not None:
             left[k], parts_out[k] = len(chunks[k]), []
             for batch, part in chunks[k]:
                 yield k, batch, part
@@ -1335,11 +1348,22 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
         for (k, batch, part), res in results(claimed(), workers, (curated, titles, cut, loader, metric)):
             parts_out[k].append({"batch": batch, "part": part, **res})
             left[k] -= 1
+            if time.time() - last_renew >= RENEW_SECONDS:
+                for j in list(left):
+                    if not work.renew(j, owner):
+                        jaocr.log("ocr quality chunk taken over", run=run, chunk=j)
+                last_renew = time.time()
             if left[k]:
                 continue
+            del left[k]
             recs = parts_out.pop(k)
-            body = "".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n" for r in recs)
-            curated.write(work.path("pages", k, "jsonl.gz"), gzip.compress(body.encode(), 6))
+            # Publish only while the claim is ours. A chunk's pages are the same whoever scans it (the sample
+            # and the scores are deterministic), so a replica that loses this race writes what the winner did.
+            if not work.renew(k, owner):
+                jaocr.log("ocr quality chunk taken over; dropping our copy", run=run, chunk=k)
+                continue
+            text = "".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n" for r in recs)
+            curated.write(work.path("pages", k, "jsonl.gz"), gzip.compress(text.encode(), 6))
             curated.write(work.path("done", k), json.dumps({
                 "owner": owner, "parts": len(recs),
                 "pages_read": sum(r.get("pages_read", 0) for r in recs),
@@ -1352,14 +1376,28 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
             break
         time.sleep(POLL_SECONDS)  # other replicas still scanning; take over any claim that goes stale
 
-    reduce_lock = f"{root}/reduce.lock"
-    if not (curated.create(reduce_lock, lease()) or curated.take_over(reduce_lock, lease(), stale)):
-        jaocr.log("ocr quality results written by another replica", run=run)
-        return None
+    # One replica tallies and publishes; the others wait for its finished
+    # marker, and take over if its lock goes stale (it died or was retried).
+    while not (curated.create(reduce_lock, lease()) or curated.take_over(reduce_lock, lease(), stale)):
+        if curated.exists(finished):
+            done_status = json.loads(curated.read(finished)).get("status")
+            if metric == "v2" and done_status and not _status_finished(reference):
+                write_status(reference, done_status)  # a late progress write replaced the final status
+            jaocr.log("ocr quality results written by another replica", run=run)
+            return None
+        time.sleep(POLL_SECONDS)
+
+    def keep_reduce_lock() -> None:
+        if not curated.renew(reduce_lock, lease(), owner):
+            raise RuntimeError("ocr quality: another replica took over writing the results")
 
     tally = Tally2(titles) if metric == "v2" else Tally(titles)
     pages_read = pages_sampled = parts_failed = 0
+    last_renew = time.time()
     for k in range(len(chunks)):
+        if time.time() - last_renew >= RENEW_SECONDS:
+            keep_reduce_lock()
+            last_renew = time.time()
         for line in gzip.decompress(curated.read(work.path("pages", k, "jsonl.gz"))).splitlines():
             r = json.loads(line)
             if "error" in r:
@@ -1369,6 +1407,7 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
             pages_read += r["pages_read"]
             pages_sampled += len(r["pages"])
             tally.add(r["batch"], r["pages"])
+    keep_reduce_lock()
     batches_done = len(batches)
 
     tables = tally.tables(catalog, min_pages)
@@ -1429,6 +1468,8 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
         status.update(batches={"done": batches_done, "total": len(batches)}, pages_sampled=pages_sampled,
                       updated_at=now, finished_at=now, summary=status_summary(tables))
         write_status(reference, status)
+    curated.write(finished, json.dumps({"owner": owner, "at": _iso(datetime.now(timezone.utc)), "outputs": paths,
+                                        "status": status if metric == "v2" else None}).encode())
     return report
 
 
@@ -1437,6 +1478,13 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
 # replica with each progress line, and by the one that writes the results at the end. A run that fails leaves its last progress, no finished_at.
 STATUS = "status/ocr-quality.json"
 STATUS_MIN_PAGES = 200  # a detected language needs this many sampled pages to be listed
+
+
+def _status_finished(reference) -> bool:
+    try:
+        return json.loads(reference.read(STATUS)).get("finished_at") is not None
+    except Exception:  # noqa: BLE001 - missing or unreadable: rewrite it
+        return False
 
 
 def _iso(t: datetime) -> str:

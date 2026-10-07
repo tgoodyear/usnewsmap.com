@@ -28,8 +28,9 @@ done
 
 template=$(az containerapp job show -n "$job" -g "$rg" --subscription "$sub" --query properties.template -o json) ||
   die "can't read $job (is az signed in to the environment's tenant?)"
-body=$(jq -c --args '{containers: [.containers[0] | .args = (["quality"] + $ARGS.positional)],
-  initContainers: (.initContainers // [])}' "$@" <<< "$template")
+# `--args --`: the audit's options are positional strings, not jq options.
+body=$(jq -c '{containers: [.containers[0] | .args = (["quality"] + $ARGS.positional)],
+  initContainers: (.initContainers // [])}' --args -- "$@" <<< "$template")
 az rest --method post \
   --url "https://management.azure.com/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.App/jobs/$job/start?api-version=2025-01-01" \
   --body "$body" --query name -o tsv

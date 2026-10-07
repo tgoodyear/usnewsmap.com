@@ -288,6 +288,40 @@ class Run(unittest.TestCase):
                                       run="r")
             self.assertEqual(got["summary"]["pages_read"], 140)
 
+    def test_a_chunk_taken_over_mid_scan_is_not_published_by_the_loser(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            alone = quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                    run="alone")
+            real_renew, lost = cur.renew, []
+
+            def renew(path, data, owner):  # the first claim we try to publish was taken over meanwhile
+                if "/claims/" in path and not lost:
+                    lost.append(path)
+                    return False
+                return real_renew(path, data, owner)
+
+            with mock.patch.object(cur, "renew", renew), mock.patch.object(quality, "POLL_SECONDS", 0.01), \
+                    mock.patch.dict(os.environ, {"JAOCR_AUDIT_LOCK_MINUTES": "-1"}):
+                got = quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                      run="r")
+            self.assertEqual(len(lost), 1)
+            self.assertEqual(got["summary"]["pages_read"], alone["summary"]["pages_read"])
+            self.assertEqual(got["by_language_decade"], alone["by_language_decade"])
+            self.assertTrue(cur.exists("audit/ocr-quality-v1-100pct.run/r/finished.json"))
+            # A retried replica of the finished run does nothing.
+            self.assertIsNone(quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader,
+                                              metric="v1", run="r"))
+
+    def test_a_replica_does_not_reclaim_its_own_chunks(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, cur = self.fixture(d)
+            work = quality.Chunks(cur, "run", 2, lambda: b'{"owner": "me"}', dt.timedelta(minutes=-1), "me")
+            first = work.claim()
+            second = work.claim(active={first})
+            self.assertEqual({first, second}, {0, 1})
+            self.assertIsNone(work.claim(active={0, 1}))
+
     def test_chunks_keep_batches_whole(self):
         tasks = [("a", "a0"), ("a", "a1"), ("a", "a2"), ("b", "b0"), ("c", "c0"), ("c", "c1")]
         self.assertEqual(quality.chunk_tasks(tasks, 2),
