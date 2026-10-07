@@ -133,6 +133,8 @@ class AmericanStories(unittest.TestCase):
             "1865-08-01_p2_sn2_0200_1865080101_0041.json", "1865-08-01_pNone_sn2_0200_1865080101_0043.json",
             # A second edition is its own issue.
             "1865-08-01_pNone_sn2_0200_1865080102_0050.json",
+            # A second copy of the reel issue's p2 (the same page in another batch): skipped.
+            "1793-07-01_p2_sn1_0300_1793070101_0018.json",
             "junk.json",
         ]
         ids, stats = ams.place(names)
@@ -141,10 +143,13 @@ class AmericanStories(unittest.TestCase):
         self.assertEqual(ids["1865-08-01_pNone_sn2_0200_1865080101_0043.json"], "sn2_1865-08-01_ed-1_seq-4")
         self.assertEqual(ids["1865-08-01_pNone_sn2_0200_1865080102_0050.json"], "sn2_1865-08-01_ed-2_seq-1")
         self.assertEqual((stats["unparsed"], stats["page_named"], stats["page_from_image"], stats["duplicates"]),
-                         (1, 4, 4, 0))
-        # The image rule on the named pages: right for the reel issue (3), wrong for p2 at image 41 (the
-        # issue's first image), so 3 of 4.
-        self.assertEqual((stats["image_rule_checked"], stats["image_rule_agrees"]), (4, 3))
+                         (1, 5, 4, 1))
+        self.assertEqual(ids["1793-07-01_p2_sn1_0100_1793070101_0018.json"], "sn1_1793-07-01_ed-1_seq-2")
+        self.assertNotIn("1793-07-01_p2_sn1_0300_1793070101_0018.json", ids)
+        self.assertEqual(len(ids), 8)  # 9 names parse, one is a second copy
+        # The image rule on the named pages: right for the reel issue's 4 (the copy too), wrong for p2 at
+        # image 41 (the issue's first image), so 4 of 5.
+        self.assertEqual((stats["image_rule_checked"], stats["image_rule_agrees"]), (5, 4))
 
     def test_years_and_sample_are_checked(self):
         with tempfile.TemporaryDirectory() as d:

@@ -126,17 +126,21 @@ def _open(year: int, opener):
 
 def stream_year(year: int, cut: int, opener=None, keep=lambda: None) -> tuple[dict, dict]:
     """(sampled scans by doc_id: {batch, text, legibility}, totals) for one year's tarball, read twice."""
+    names = []
     with _open(year, opener) as resp, tarfile.open(fileobj=resp, mode="r|gz") as tar:
-        names = [m.name for m in tar if m.isfile() and m.name.endswith(".json")]
+        for member in tar:
+            keep()  # each pass reads the whole tarball: renew the lock throughout
+            if member.isfile() and member.name.endswith(".json"):
+                names.append(member.name)
     ids, stats = place(names)
     wanted = {n: d for n, d in ids.items() if quality.sampled(d, cut)}
     out: dict[str, dict] = {}
     with _open(year, opener) as resp, tarfile.open(fileobj=resp, mode="r|gz") as tar:
         for member in tar:
+            keep()
             d = wanted.get(member.name)
             if d is None:
                 continue
-            keep()
             scan = json.load(tar.extractfile(member))
             m = BATCH.search((scan.get("scan") or {}).get("raw_data_loc") or "")
             text, legibility = scan_text(scan)
