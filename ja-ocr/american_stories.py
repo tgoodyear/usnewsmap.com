@@ -40,7 +40,6 @@ import re
 import statistics
 import tarfile
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 
 import jaocr
 import quality
@@ -159,14 +158,15 @@ def loc_pages(curated, batches: list[dict], years: set[int], cut: int, keep=lamb
                       for y in years)]
     parts = [p for b in picked for p in b["curated"]["parts"]]
     out: dict[str, dict] = {}
-    with ThreadPoolExecutor(READERS) as ex:
-        for data in ex.map(curated.read, parts):
-            keep()
-            t = pq.read_table(io.BytesIO(data), columns=["doc_id", "lccn", "date", "batch", "text_status", "text"])
-            for r in t.to_pylist():
-                if r["date"].year in years and quality.sampled(r["doc_id"], cut):
-                    out[r["doc_id"]] = {"lccn": r["lccn"], "year": r["date"].year, "batch": r["batch"],
-                                        "text": r["text"] if r["text_status"] == "ok" else ""}
+    for data in jaocr.read_all(curated, parts, READERS):
+        keep()
+        t = pq.read_table(io.BytesIO(data), columns=["doc_id", "lccn", "date", "batch", "text_status", "text"])
+        # Only the sampled pages of the years become Python objects, not every page's text.
+        rows = [i for i, (d, day) in enumerate(zip(t.column("doc_id").to_pylist(), t.column("date").to_pylist()))
+                if day.year in years and quality.sampled(d, cut)]
+        for r in t.take(rows).to_pylist() if rows else ():
+            out[r["doc_id"]] = {"lccn": r["lccn"], "year": r["date"].year, "batch": r["batch"],
+                                "text": r["text"] if r["text_status"] == "ok" else ""}
     return out
 
 

@@ -337,5 +337,48 @@ class Parquet(unittest.TestCase):
             self.assertEqual(str(t.schema.field("date").type), "date32[day]")
 
 
+
+
+class ReadAll(unittest.TestCase):
+    def test_reads_in_order_and_never_runs_far_ahead_of_its_reader(self):
+        import threading
+        import time
+
+        lock, state = threading.Lock(), {"done": 0, "ahead": 0}
+
+        class Store:
+            def read(self, path):
+                with lock:
+                    state["done"] += 1
+                return path.encode()
+
+        paths = [f"p{i}" for i in range(50)]
+        got = []
+        for data in jaocr.read_all(Store(), paths, workers=4):
+            time.sleep(0.005)  # a slow reader: an eager map would read everything meanwhile
+            with lock:
+                # Reads finished but not yet handed over: at most a window's worth.
+                state["ahead"] = max(state["ahead"], state["done"] - len(got) - 1)
+            got.append(data.decode())
+        self.assertEqual(got, paths)
+        self.assertLessEqual(state["ahead"], 4)
+
+    def test_an_eager_map_would_fail_this_check(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import time
+
+        done = [0]
+
+        def read(path):
+            done[0] += 1
+            return path
+
+        with ThreadPoolExecutor(4) as ex:
+            it = ex.map(read, [f"p{i}" for i in range(50)])
+            next(it)
+            time.sleep(0.05)
+            self.assertGreater(done[0] - 1, 4)  # the old way: far more than a window read ahead
+
+
 if __name__ == "__main__":
     unittest.main()

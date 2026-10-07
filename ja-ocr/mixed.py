@@ -36,7 +36,6 @@ import io
 import json
 import re
 import statistics
-from concurrent.futures import ThreadPoolExecutor
 
 import jaocr
 from solo import Solo
@@ -114,19 +113,18 @@ def loc_pages(curated, batches: list[dict], jpn: set[str], names: dict[str, str]
     counts: dict[tuple[str, str], dict[str, int]] = {}  # (group, lccn) -> band -> pages
     samples = Samples()
     parts = [p for b in batches for p in b["curated"]["parts"]]
-    with ThreadPoolExecutor(READERS) as ex:
-        for data in ex.map(curated.read, parts):
-            keep()
-            t = pq.read_table(io.BytesIO(data), columns=["doc_id", "lccn", "text_status", "text"])
-            for r in t.to_pylist():
-                if r["text_status"] != "ok":
-                    continue
-                group = "japanese" if r["lccn"] in jpn else "control"
-                b = band(jaocr.wordlike_share(r["text"] or ""))
-                row = counts.setdefault((group, r["lccn"]), dict.fromkeys(BAND_NAMES, 0))
-                row[b] += 1
-                if group == "japanese" and b != BAND_NAMES[0]:
-                    samples.add((b,), r["doc_id"])
+    for data in jaocr.read_all(curated, parts, READERS):
+        keep()
+        t = pq.read_table(io.BytesIO(data), columns=["doc_id", "lccn", "text_status", "text"])
+        for r in t.to_pylist():
+            if r["text_status"] != "ok":
+                continue
+            group = "japanese" if r["lccn"] in jpn else "control"
+            b = band(jaocr.wordlike_share(r["text"] or ""))
+            row = counts.setdefault((group, r["lccn"]), dict.fromkeys(BAND_NAMES, 0))
+            row[b] += 1
+            if group == "japanese" and b != BAND_NAMES[0]:
+                samples.add((b,), r["doc_id"])
     by_title, totals = [], {}
     for (group, lccn), row in sorted(counts.items()):
         pages = sum(row.values())
@@ -150,16 +148,15 @@ def our_pages(curated, jpn_names: dict[str, str], top: frozenset, keep=lambda: N
 
     newest: dict[str, tuple] = {}  # doc_id -> (ocred_at, lccn, loc_text, words, latin)
     parts = sorted(p for p in curated.list(OURS) if p.endswith(".parquet"))
-    with ThreadPoolExecutor(READERS) as ex:
-        for data in ex.map(curated.read, parts):
-            keep()
-            t = pq.read_table(io.BytesIO(data), columns=["doc_id", "lccn", "loc_text", "text", "ocred_at"])
-            for r in t.to_pylist():
-                at = r["ocred_at"]
-                if r["doc_id"] in newest and newest[r["doc_id"]][0] >= at:
-                    continue
-                text = r["text"] or ""
-                newest[r["doc_id"]] = (at, r["lccn"], r["loc_text"], english_words(text, top), latin_share(text))
+    for data in jaocr.read_all(curated, parts, READERS):
+        keep()
+        t = pq.read_table(io.BytesIO(data), columns=["doc_id", "lccn", "loc_text", "text", "ocred_at"])
+        for r in t.to_pylist():
+            at = r["ocred_at"]
+            if r["doc_id"] in newest and newest[r["doc_id"]][0] >= at:
+                continue
+            text = r["text"] or ""
+            newest[r["doc_id"]] = (at, r["lccn"], r["loc_text"], english_words(text, top), latin_share(text))
     by_loc_text: dict[str, dict[str, int]] = {}
     by_title: dict[str, dict[str, int]] = {}
     latin: dict[tuple[str, str], list[float]] = {}  # ("loc_text" | "title", key) -> Latin shares
