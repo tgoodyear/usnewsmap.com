@@ -9,13 +9,16 @@
 # runs no other job of this workflow.
 # Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
-# the changed files can't be worked out.
+# the changed files can't be worked out; everything but ops, which runs only
+# when its own files change (the snapshots, their schema and checker,
+# compare-versions.py, its requirements, or ci.yml, which defines the job).
 set -euo pipefail
 out=${GITHUB_OUTPUT:-/dev/stdout}
-# Known only once the changed files are; "run everything" keeps it.
+# Known only once the changed files are; "run everything" keeps them.
 provision=false
+ops=false
 all() {
-  printf 'rust=true\nweb=true\nimage=true\nfixtures=true\nops=true\ncode=true\nprovision=%s\n' "$provision" >> "$out"
+  printf 'rust=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nprovision=%s\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -43,6 +46,8 @@ matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
 if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwit/'; then
   provision=true
 fi
+# The index version snapshots must match their schema (and what writes them).
+matches '^(ops/version-snapshots/|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions)\.py$|scripts/ci/requirements-ops\.txt$|\.github/workflows/ci\.yml$)' && ops=true
 matches '^\.github/' && all "workflow changed"
 # The Rust build and tests: the crates, the files compiled into binaries
 # (index config, place overrides, the example searches the API warms, the
@@ -52,10 +57,9 @@ web='^(web/|fixtures/|scripts/ci/)'
 image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$)"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
-# The index version snapshots must match their schema (and what writes them).
-ops='^(ops/version-snapshots/|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions)\.py$|scripts/ci/requirements-ops\.txt$)'
-for part in rust web image fixtures ops; do
+for part in rust web image fixtures; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
+echo "ops=$ops" >> "$out"
 if [ -n "$files" ]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
 echo "provision=$provision" >> "$out"
