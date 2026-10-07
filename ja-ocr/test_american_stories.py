@@ -91,6 +91,7 @@ class AmericanStories(unittest.TestCase):
             self.assertEqual(s["damage_median_american_stories"], 0.0)
             self.assertGreater(s["damage_median_loc"], 0.25)
             self.assertEqual((s["badly_damaged_share_loc"], s["badly_damaged_share_american_stories"]), (1.0, 0.0))
+            self.assertEqual((s["scored_pages_loc"], s["scored_pages_american_stories"]), (3, 3))
             recall = {r["term"]: r for r in got["recall"]}
             # "railr0ad" in LoC's text: only American Stories finds railroad.
             self.assertEqual((recall["railroad"]["loc"], recall["railroad"]["american_stories"],
@@ -110,8 +111,26 @@ class AmericanStories(unittest.TestCase):
         self.assertIsNone(ams.doc_id("faro_1793/1793-09-09_p4_sn84038410_x.json", "edition one"))
         with tempfile.TemporaryDirectory() as d:
             ref, cur, _ = self.fixture(d)
-            with self.assertRaises(ValueError):
-                ams.american_stories(ref, cur, [1990], run="r")
+            for years, pct in (([1990], 10), ([1773], 10), ([], 10), ([1865], 0), ([1865], -1), ([1865], 101),
+                               ([1865], 0.001)):
+                with self.assertRaises(ValueError, msg=(years, pct)):
+                    ams.american_stories(ref, cur, years, sample_pct=pct, run="r")
+
+    def test_the_cli_default_sample_is_per_command(self):
+        from unittest import mock
+
+        import quality
+
+        env = {"USNM_REFERENCE_URL": "/r", "USNM_CURATED_URL": "/c"}
+        with mock.patch.dict(os.environ, env), mock.patch.object(jaocr, "store", lambda url: url), \
+                mock.patch.object(ams, "american_stories") as a, mock.patch.object(quality, "quality") as q:
+            for argv in (["jaocr.py", "american-stories", "--year", "1865", "--year", "1925"],
+                         ["jaocr.py", "american-stories", "--year", "1865", "--sample-pct", "2"],
+                         ["jaocr.py", "quality"], ["jaocr.py", "quality", "--sample-pct", "10"]):
+                with mock.patch("sys.argv", argv):
+                    jaocr.main()
+        self.assertEqual([c.args[2:] for c in a.call_args_list], [([1865, 1925], 10.0), ([1865], 2.0)])
+        self.assertEqual([c.args[2] for c in q.call_args_list], [2.0, 10.0])
 
     def test_scan_text_and_legibility(self):
         name, body = scan("sn1", "1865-01-01", 1, "Body.", ("Illegible", "Legible", "Questionable"))

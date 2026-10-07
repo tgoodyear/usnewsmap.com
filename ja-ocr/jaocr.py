@@ -698,7 +698,8 @@ def main() -> None:
     ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
     ap.add_argument("--all-languages", action="store_true", help="audit: every title, not just non-English ones")
-    ap.add_argument("--sample-pct", type=float, default=2.0, help="quality: percent of pages to score (default 2)")
+    ap.add_argument("--sample-pct", type=float,
+                    help="quality: percent of pages to score (default 2); american-stories: to compare (default 10)")
     ap.add_argument("--min-pages", type=int, default=50,
                     help="quality: scored pages a title or batch needs for the worst lists (default 50)")
     ap.add_argument("--year", type=int, action="append", help="american-stories: a year to compare (repeatable)")
@@ -714,7 +715,7 @@ def main() -> None:
     elif a.command == "american-stories":
         import american_stories
 
-        american_stories.american_stories(reference, curated, a.year or [], a.sample_pct)
+        american_stories.american_stories(reference, curated, a.year or [], 10.0 if a.sample_pct is None else a.sample_pct)
     elif a.command == "mixed":
         import mixed
 
@@ -722,7 +723,7 @@ def main() -> None:
     elif a.command == "quality":
         import quality
 
-        quality.quality(reference, curated, a.sample_pct, a.min_pages, metric=a.metric)
+        quality.quality(reference, curated, 2.0 if a.sample_pct is None else a.sample_pct, a.min_pages, metric=a.metric)
     elif a.command == "targets":
         rows = targets(reference, curated)
         curated.write(f"{PREFIX}/{TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())

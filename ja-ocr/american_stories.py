@@ -49,6 +49,7 @@ TERMS = ("lincoln", "railroad", "president", "election", "cotton", "gold", "feve
 DAMAGE_BANDS = (0.1, 0.25)  # quality.DAMAGED, quality.BADLY_DAMAGED
 LEGIBLE_BANDS = (0.25, 0.5, 0.75)  # share of text regions Illegible
 READERS = 16
+FIRST_YEAR, LAST_YEAR = 1774, 1963  # the dataset's years
 
 
 def doc_id(name: str, edition: str) -> str | None:
@@ -144,7 +145,7 @@ def compare(year: int, ours: dict[str, dict], theirs: dict[str, dict], english: 
     mine = {d: p for d, p in ours.items() if p["year"] == year and p["lccn"] in english}
     both = [d for d in mine if d in theirs]
     loc_damage, as_damage, loc_fs, as_fs, loc_words, as_words = [], [], [], [], [], []
-    loc_bad = as_bad = 0
+    loc_bad = as_bad = 0  # of the pages with a damage rate (the audit leaves out the rest too)
     hits = {t: {"loc": 0, "american_stories": 0, "either": 0, "only_american_stories": 0} for t in TERMS}
     by_legibility: dict[str, list[float]] = {}
     for d in both:
@@ -182,8 +183,9 @@ def compare(year: int, ours: dict[str, dict], theirs: dict[str, dict], english: 
         "words_median_loc": median(loc_words), "words_median_american_stories": median(as_words),
         "words_total_ratio": share(sum(as_words), sum(loc_words)),
         "damage_median_loc": median(loc_damage), "damage_median_american_stories": median(as_damage),
-        "badly_damaged_share_loc": share(loc_bad, len(both)),
-        "badly_damaged_share_american_stories": share(as_bad, len(both)),
+        "scored_pages_loc": len(loc_damage), "scored_pages_american_stories": len(as_damage),
+        "badly_damaged_share_loc": share(loc_bad, len(loc_damage)),
+        "badly_damaged_share_american_stories": share(as_bad, len(as_damage)),
         "function_share_median_loc": median(loc_fs), "function_share_median_american_stories": median(as_fs),
     }
     recall = [{"year": year, "term": t, **h,
@@ -199,9 +201,13 @@ def american_stories(reference, curated, years: list[int], sample_pct: float = 1
     version = current["reference"]
     if not jaocr.SAFE_SEGMENT.match(version):
         raise ValueError(f"current.json names an unsafe reference version: {version!r}")
-    if not years or any(not 1700 <= y <= 1963 for y in years):
-        raise ValueError(f"years must be 1700 to 1963, not {years}")
+    if not years or any(not FIRST_YEAR <= y <= LAST_YEAR for y in years):
+        raise ValueError(f"years must be {FIRST_YEAR} to {LAST_YEAR} (American Stories' range), not {years}")
+    if not 0 < sample_pct <= 100:
+        raise ValueError(f"--sample-pct must be above 0 and at most 100, not {sample_pct}")
     cut = round(sample_pct * 100)
+    if cut < 1:
+        raise ValueError(f"--sample-pct {sample_pct} samples nothing: use at least 0.01")
     solo = Solo(curated, f"audit/american-stories-{version}", "american stories", run)
     if not solo.start():
         return None
