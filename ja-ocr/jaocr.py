@@ -9,6 +9,8 @@
     python3 jaocr.py mixed            text on the Japanese titles' pages search can't reach yet (mixed.py)
     python3 jaocr.py american-stories --year 1865 [--year ...] [--sample-pct 10]
                                       American Stories' text against LoC's on our pages (american_stories.py)
+    python3 jaocr.py american-stories-write [--year ...]
+                                      write American Stories' text for our pages (american_stories_write.py)
 
 Stores are blob container URLs (Entra auth via the managed identity) or local
 directories, so the job runs the same way against a copy on disk:
@@ -705,7 +707,7 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories"])
+    ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories", "american-stories-write"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
     ap.add_argument("--all-languages", action="store_true", help="audit: every title, not just non-English ones")
     ap.add_argument("--sample-pct", type=float,
@@ -722,6 +724,10 @@ def main() -> None:
         import audit
 
         audit.audit(reference, curated, a.all_languages)
+    elif a.command == "american-stories-write":
+        import american_stories_write
+
+        american_stories_write.write(reference, curated, a.year or None)
     elif a.command == "american-stories":
         import american_stories
 

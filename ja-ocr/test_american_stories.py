@@ -110,6 +110,10 @@ class AmericanStories(unittest.TestCase):
                               recall["railroad"]["only_american_stories"]), (0, 3, 3))
             self.assertEqual((recall["cotton"]["loc"], recall["cotton"]["either"], recall["cotton"]["gain_share"]),
                              (3, 3, 0.0))
+            only = [o for o in got["only_american_stories"] if o["term"] == "railroad"]
+            self.assertEqual(len(only), 3)
+            self.assertIn("The railroad company met", only[0]["context"])
+            self.assertTrue(only[0]["url"].startswith("https://www.loc.gov/resource/sn1/1865-0"))
             bands = {r["illegible_regions"]: r["pages"] for r in got["legibility"]}
             self.assertEqual(bands, {"lt_0.25": 2, "0.5-0.75": 1})
             self.assertTrue(cur.exists("audit/american-stories-v1-exec-1.json"))

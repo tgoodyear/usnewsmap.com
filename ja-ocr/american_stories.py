@@ -54,6 +54,7 @@ TERMS = ("lincoln", "railroad", "president", "election", "cotton", "gold", "feve
 DAMAGE_BANDS = (0.1, 0.25)  # quality.DAMAGED, quality.BADLY_DAMAGED
 LEGIBLE_BANDS = (0.25, 0.5, 0.75)  # share of text regions Illegible
 READERS = 16
+ONLY_SAMPLES = 8  # pages per term and year that match only in American Stories' text, kept for a hand check
 FIRST_YEAR, LAST_YEAR = 1774, 1963  # the dataset's years
 
 
@@ -170,6 +171,19 @@ def loc_pages(curated, batches: list[dict], years: set[int], cut: int, keep=lamb
     return out
 
 
+def context(text: str, term: str, around: int = 80) -> str:
+    """The text around the first whole-word match of `term`, on one line."""
+    m = re.search(rf"(?i)\b{re.escape(term)}\b", text)
+    if not m:
+        return ""
+    return " ".join(text[max(0, m.start() - around):m.end() + around].split())
+
+
+def loc_url(doc_id: str) -> str:
+    lccn, day, ed, seq = doc_id.split("_")
+    return f"https://www.loc.gov/resource/{lccn}/{day}/{ed}/?sp={seq.removeprefix('seq-')}"
+
+
 def terms_in(words: list[str]) -> set[str]:
     return set(words) & set(TERMS)
 
@@ -198,6 +212,7 @@ def compare(year: int, ours: dict[str, dict], theirs: dict[str, dict], english: 
     loc_damage, as_damage, loc_fs, as_fs, loc_words, as_words = [], [], [], [], [], []
     loc_bad = as_bad = 0  # of the pages with a damage rate (the audit leaves out the rest too)
     hits = {t: {"loc": 0, "american_stories": 0, "either": 0, "only_american_stories": 0} for t in TERMS}
+    only: list[dict] = []  # pages a term matches only in American Stories' text, for a hand check
     by_legibility: dict[str, list[float]] = {}
     for d in both:
         lt, at = mine[d]["text"] or "", theirs[d]["text"] or ""
@@ -218,6 +233,8 @@ def compare(year: int, ours: dict[str, dict], theirs: dict[str, dict], english: 
             h["american_stories"] += t in aw
             h["either"] += t in lw or t in aw
             h["only_american_stories"] += t in aw and t not in lw
+            if t in aw and t not in lw and sum(1 for o in only if o["term"] == t) < ONLY_SAMPLES:
+                only.append({"year": year, "term": t, "doc_id": d, "url": loc_url(d), "context": context(at, t)})
         leg = theirs[d]["legibility"]
         regions = sum(leg.values())
         if ls["damage_rate"] is not None:
@@ -243,7 +260,7 @@ def compare(year: int, ours: dict[str, dict], theirs: dict[str, dict], english: 
                "gain_share": share(h["only_american_stories"], h["loc"])} for t, h in hits.items()]
     legibility = [{"year": year, "illegible_regions": b, "pages": len(v), "loc_damage_median": median(v)}
                   for b, v in sorted(by_legibility.items())]
-    return {"summary": summary, "recall": recall, "legibility": legibility}
+    return {"summary": summary, "recall": recall, "legibility": legibility, "only_american_stories": only}
 
 
 def american_stories(reference, curated, years: list[int], sample_pct: float = 10.0, run: str | None = None,
@@ -272,12 +289,13 @@ def american_stories(reference, curated, years: list[int], sample_pct: float = 1
         jaocr.log("american stories year read", year=y, **totals[y])
     ours = loc_pages(curated, json.loads(reference.read(f"{version}/batches.json")), set(years), cut, solo.keep)
     models = quality.Models(loader)
-    tables: dict[str, list] = {"summary": [], "recall": [], "legibility": []}
+    tables: dict[str, list] = {"summary": [], "recall": [], "legibility": [], "only_american_stories": []}
     for y in years:
         rows = compare(y, ours, theirs, english, models)
         tables["summary"].append({**rows["summary"], **{f"scans_{k}": v for k, v in totals[y].items()}})
         tables["recall"] += rows["recall"]
         tables["legibility"] += rows["legibility"]
+        tables["only_american_stories"] += rows["only_american_stories"]
     report = {"version": version, "years": years, "sample_pct": sample_pct, "terms": TERMS, **tables,
               "source": URL.format(year="<year>"), "license": "CC BY 4.0 (Dell et al. 2023)"}
     base = f"audit/american-stories-{version}-{solo.run}"

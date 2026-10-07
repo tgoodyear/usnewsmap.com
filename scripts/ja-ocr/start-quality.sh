@@ -7,16 +7,17 @@
 #   scripts/ja-ocr/start-quality.sh prod --sample-pct 2 --min-pages 50
 #   scripts/ja-ocr/start-quality.sh prod mixed     # jaocr.py mixed instead (mixed.py)
 #   scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925   (american_stories.py)
+#   scripts/ja-ocr/start-quality.sh prod american-stories-write [--year 1865 ...]  (american_stories_write.py)
 #
 # The quality audit runs on the ja-ocr job, whose replicas share its work
-# (quality.py); mixed and american-stories, which one replica does, run on the
+# (quality.py); mixed and the american-stories commands, which one replica does, run on the
 # one-replica audit job (caj-usnm-jaone-<env>), so a second replica can't
 # fail the execution. `az containerapp job start
 # --args` sends a container without the image or settings, so this copies the
 # job's template and swaps only the arguments. Needs az signed in to the
 # environment's subscription and jq. Results: scripts/ja-ocr/quality-rows.sh.
 set -euo pipefail
-[ $# -ge 1 ] || { sed -n '2,15s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,19s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 shift
 die() { echo "error: $*" >&2; exit 1; }
@@ -33,8 +34,8 @@ if [ "${1:-}" = mixed ]; then
   job="caj-usnm-jaone-$ENV_NAME"
   shift
   [ $# -eq 0 ] || die "mixed takes no options"
-elif [ "${1:-}" = american-stories ]; then
-  command=american-stories
+elif [ "${1:-}" = american-stories ] || [ "${1:-}" = american-stories-write ]; then
+  command=$1
   job="caj-usnm-jaone-$ENV_NAME"
   shift
   for a in "$@"; do
