@@ -34,15 +34,12 @@ import csv
 import hashlib
 import io
 import json
-import os
 import re
 import statistics
-import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 
 import jaocr
-import quality
+from solo import Solo
 
 # Word-like share bands, low to high: under 0.35 is a target of our OCR already.
 BANDS = (0.35, 0.5, 0.65, 0.8, 0.9)
@@ -53,8 +50,6 @@ WORD_BAND_NAMES = ("0", "1-9", "10-49", "50-199", "ge_200")
 SAMPLES = 15  # page ids kept per band and group, for looking at the scans
 READERS = 16  # parallel blob reads
 LATIN_WORD = re.compile(r"[A-Za-z]{3,}")
-RENEW_SECONDS = 300  # how often the working replica renews its lock
-POLL_SECONDS = 30  # how often a waiting replica checks on it
 OURS = f"{jaocr.PREFIX}/pages"
 
 
@@ -204,34 +199,10 @@ def mixed(reference, curated, top: frozenset | None = None, run: str | None = No
     version = current["reference"]
     if not jaocr.SAFE_SEGMENT.match(version):
         raise ValueError(f"current.json names an unsafe reference version: {version!r}")
-    owner = os.environ.get("CONTAINER_APP_REPLICA_NAME") or os.environ.get("HOSTNAME") or "local"
-    run = run or quality.run_name(owner)
-    if not jaocr.SAFE_SEGMENT.match(run):
-        raise ValueError(f"unsafe run name: {run!r}")
-    lock, finished = f"audit/mixed-pages-{version}.run/{run}.lock", f"audit/mixed-pages-{version}.run/{run}.finished"
-    stale = timedelta(minutes=float(os.environ.get("JAOCR_AUDIT_LOCK_MINUTES", "60")))
-
-    def lease() -> bytes:
-        return json.dumps({"owner": owner, "at": datetime.now(timezone.utc).isoformat()}).encode()
-
-    # The lock's owner works; a replica retried under the same name takes its own lock back; the others
-    # wait for the finished marker, taking over a lock that goes stale (its owner died).
-    while not (curated.create(lock, lease()) or curated.renew(lock, lease(), owner)
-               or curated.take_over(lock, lease(), stale)):
-        if curated.exists(finished):
-            jaocr.log("mixed pages written by another replica", run=run)
-            return None
-        time.sleep(POLL_SECONDS)
-    if curated.exists(finished):  # a retried replica of an execution that finished
-        jaocr.log("mixed pages already finished", run=run)
+    solo = Solo(curated, f"audit/mixed-pages-{version}", "mixed pages", run)
+    if not solo.start():
         return None
-    last = [time.time()]
-
-    def keep() -> None:
-        if time.time() - last[0] >= RENEW_SECONDS:
-            if not curated.renew(lock, lease(), owner):
-                raise RuntimeError("mixed pages: another replica took over")
-            last[0] = time.time()
+    run, keep = solo.run, solo.keep
     titles = json.loads(reference.read(f"{version}/titles.json"))
     if reference.exists("catalog/titles.json"):
         titles = titles + json.loads(reference.read("catalog/titles.json"))
@@ -253,7 +224,7 @@ def mixed(reference, curated, top: frozenset | None = None, run: str | None = No
         curated.write(f"{base}-{name.replace('_', '-')}.csv", write_csv(rows))
         for r in rows:
             jaocr.log("mixed pages", table=name, version=version, **r)
-    curated.write(finished, lease())
+    solo.finish()
     jaocr.log("mixed pages finished", version=version, batches=len(batches), our_parts=ours_parts,
               outputs=[f"{base}.json"])
     return report
