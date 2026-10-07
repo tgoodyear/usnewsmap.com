@@ -49,6 +49,8 @@ param jobNameSuffix string
 param cron string = ''
 @description('Make every ingest run a full release: a new base from every curated batch, merged (04 §4.7). For a one-off rebuild; turn it off afterwards.')
 param full bool = false
+@description('Index American Stories\' text with LoC\'s (04 §4.9, #218). The first run with it builds a full base; keep it on afterwards.')
+param americanStories bool = false
 @minValue(1)
 @maxValue(32)
 param workers int = 8
@@ -116,7 +118,7 @@ var scratchDir = '/scratch/usnm'
 var consumptionResources = scratch ? { cpu: json('3.75'), memory: '7.5Gi' } : { cpu: json('4.0'), memory: '8Gi' }
 var ingestResources = empty(ingestProfile) ? consumptionResources : { cpu: json('3.0'), memory: '25Gi' }
 // The writer's tuning on the E4 profile (#172, crates/usnm-ingest/src/sink.rs
-// `WriterTuning`): a 6 GiB indexing heap holds a whole 60,000-page split
+// `WriterTuning`): a 6 GiB indexing heap holds a whole 30,000-page split
 // (about 2.4 GB of index), so the indexer writes splits near the target size
 // and merges little; the ingest queue gets 4 GiB. The commit timeout is
 // 120 s: the queue's write-ahead log is only truncated when a commit is
@@ -203,7 +205,8 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
               '--quickwit-index-root'
               'azure://qw-index'
             ],
-            full ? ['--full'] : []
+            full ? ['--full'] : [],
+            americanStories ? ['--american-stories'] : []
           )
           resources: ingestResources
           env: concat(env, scratchEnv, writerTuningEnv, [

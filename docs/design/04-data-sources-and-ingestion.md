@@ -69,6 +69,12 @@ curated/                               (Cool; the system of record; versioned + 
                                         targets after the issue's first part)
   ocr-ja/alto/{doc_id}.xml              the page's ALTO v3 from our OCR (§4.8, #151)
   ocr-ja/claims/{targets}/{issue}.json  which replica took the issue (create-only)
+  american-stories/pages/{lccn}/{year}-{nnn}.parquet
+                                        American Stories' text of our pages (§4.9), one row per page:
+                                        doc_id, lccn, date, text, articles (JSON: headline, byline,
+                                        offsets in text, boxes, legibility), legibility, width, height
+  american-stories/years/{year}.json    the writer finished the year (written last): the release
+                                        reads only the parts of years with one
 reference/                             (Hot; small; loaded by API; IMMUTABLE per index version)
   catalog/titles.json, places.json      the working catalog (titles-sync + geocode; hand-written
                                         until those land). Titles and places carry stable ordinals
@@ -94,18 +100,23 @@ reference/                             (Hot; small; loaded by API; IMMUTABLE per
     ocr_ja.json                         our Japanese OCR in this version (§4.8), when the overlay has
                                         parts: {fold, index, indexed, pages, added_to_baselines,
                                         skipped, parts: [{path, sha256, bytes}]}
-    manifest.json                       { index_version, files: [{path, sha256, bytes}], built_from: {batches, ocr_ja?},
+    american_stories.json               American Stories' text in the main index this version built
+                                        (§4.9), when it was built with it: {version, years, unfinished_parts,
+                                        loaded, docs, only_american_stories, parts: [{path, sha256, bytes}]}
+    manifest.json                       { index_version, files: [{path, sha256, bytes}], built_from: {batches, ocr_ja?,
+                                          american_stories?: {version, years, parts, bytes, docs,
+                                          only_american_stories}},
                                           indexes (split layout), build }. build (#161) is what this run
                                           built: commit (USNM_GIT_SHA, from CI), ingest crate version, the
                                           engine (the writer's /api/v1/version), full or delta, feature
-                                          versions (common_grams, ja_fold) and the template of each index it
+                                          versions (common_grams, ja_fold, and american_stories for a version with it) and the template of each index it
                                           wrote (pages, unless overlay-only; pages-ja, if it built one), in
                                           full with its sha256. The Cosmos index_runs item keeps the same
                                           without the templates' text. Indexes it kept (a delta's base, an
                                           overlay-only release's main indexes) were built by earlier
                                           versions: follow previous_version
   raw/titles.json                       the fields titles-sync keeps from each LoC title record
-  current.json                          { index_version, backend, indexes: [base, delta…] (sealed), reference: "{index_version}", bounds, previous_version, published_at, synthetic, ja?: {indexes: [pages-ja-…], fold, pages} }
+  current.json                          { index_version, backend, indexes: [base, delta…] (sealed), reference: "{index_version}", bounds, previous_version, published_at, synthetic, common_grams, american_stories?, ja?: {indexes: [pages-ja-…], fold, pages} }
 (document state, meaning per-title, per-batch, per-issue and per-index-run status, lives in Cosmos DB, not here; see 05 §5.9.1)
 cache/{index_version}/                 (Hot) persistent API response cache, zstd JSON keyed by canonical-query hash
 qw-index/                              (Hot; Quickwit splits + file-backed metastore)
@@ -228,3 +239,19 @@ The text keeps NDLOCR-Lite's line breaks (one per column or line). Old character
 **Audit of pages without text** (`jaocr.py audit`, #135). LoC's per-title "Pages (Full Text)" count on loc.gov includes pages with no OCR text; our count (`title_pages.json`) has only the pages with an `ocr.txt`. The audit compares the two for every title whose languages include anything but English (`--all-languages`: every title), one paced loc.gov request per title, and writes `curated/audit/loc-pages-{version}-{non-english,all}.csv` sorted by the gap, flagging titles with batches not yet in the published version. Run it as a one-off execution of `caj-usnm-jaocr-{env}` with `audit` as the argument.
 
 **OCR quality audit** (`jaocr.py quality`, `ja-ocr/quality.py`). The same job measures LoC's OCR for every language, to find where reading pages again would pay off, and whether a page's language can be told from its text. From a fixed sample of the published version's curated pages (2% by default, chosen by a hash of `doc_id`), the default metric (v2) first finds each page's own language: among its title's catalog languages plus English, the one whose 100 most frequent words (wordfreq's function words) make up the largest share of the page, if it clearly beats the runner-up; `mixed` when two of them each win at least 20% of the page's decided 50-word windows; `und` when the page is too short, garbled or in a language without a word list (Hawaiian, Dakota, Choctaw). Hebrew-script pages take the title's Yiddish or Hebrew. It then scores the page against that language: `function_share` (the share of its words that are function words) and `damage_rate` (of the language's 20 most frequent words, the share of occurrences misread one edit away into a non-word: "tbe", "aud", "bie", "ift"), and the share of tokens rmgarbage-style rules flag. The first version (`--metric v1`) scored the share of words in wordfreq's top 200,000 for the title's first language; it was too lenient to rank pages, because those lists hold common OCR errors, and it scored multilingual titles' pages against the wrong language. It writes `curated/audit/ocr-quality-v2-{version}-{pct}pct.json` and a CSV per table: by detected language and decade, by language, by decade, a crosstab of title language against detected page language with summary shares, and the worst titles and batches by median `damage_rate`, plus every sampled page's language and scores (`-pages.csv.gz`); and `reference/status/ocr-quality.json` for the status page. Titles that list Japanese are left out. Modern word lists miss historical spellings, so some real words count as damage and the scores are for comparing like with like. How to run it and read it: [operations](../operations.md#ocr-quality-audit).
+
+## 4.9 American Stories' text
+
+American Stories (Dell et al. 2023, arXiv:2308.12477, CC BY 4.0) re-OCRed most of Chronicling America's scans with a layout-aware model. Searching its text beside LoC's finds 10% to 26% more pages per term in 1865 and 2% to 12% in 1925 (#205), so the main index carries it in its own fields, `text_as` and `text_as_cg` (05 §5.5.4, #218).
+
+**Writer.** `jaocr.py american-stories-write` (`ja-ocr/american_stories_write.py`), a one-off on the one-replica job `caj-usnm-jaone-{env}`, streams American Stories' year files from Hugging Face, places each scan on our page by its file name (#213), and writes `curated/american-stories/pages/{lccn}/{year}-{nnn}.parquet`: per page the `doc_id`, `lccn`, `date`, its text (each article's headline, byline and text in American Stories' order, separated by blank lines), the article structure and the legibility counts. A page's second copy is skipped. `american-stories/years/{year}.json` is written last for each finished year; a rerun skips those years.
+
+**Release** (`crates/usnm-ingest/src/american_stories.rs`), only with `--american-stories` (`USNM_AMERICAN_STORIES` in the deployment, off by default):
+
+1. The release lists the finished years and their parts once. With the setting on and no finished year, it stops before building anything (the ingest job's `run` checks at its start, before curation and titles-sync): a version without the text mustn't say it has it. Parts of years not finished yet are left out (their count is logged and recorded).
+2. For each batch it indexes, it reads the parts of the batch's titles for the years the batch has pages in, and keeps the rows on the title-days the batch's `counts.json` lists, so it holds about one batch's pages in memory (logged per batch as `American Stories' text for the batch`, with the text's size). Texts are normalized like LoC's (§4.5); a text that is then empty is left out.
+3. A page with such a text gets `text_as` and `text_as_cg` (its common-word pairs, 05 §5.5.3). A page LoC has no usable text for (`empty` or `short`, §4.5) is indexed when American Stories has text for it, with an empty `text`. The baselines already count it. Pages LoC ships without `ocr.txt` never reach curation (§4.8), so their American Stories text isn't indexed. Of a page's copies in two batches the release keeps one as before (§4.7); with the text on, a published copy without LoC's text may be a document, so it is hidden like one with text when another copy wins.
+4. `current.json` gets `american_stories: usnm_core::american_stories::VERSION`, and the build record the same feature, only when every index in the version has the text. So the first release with the setting, or with a new `VERSION`, builds a full base, as a change of the common-word pairs does. Deltas on top of it keep writing the text. A release of new Japanese OCR alone keeps the published main indexes and the flag.
+5. `american_stories.json` in the snapshot records every part read for the new main index, with checksums; the manifest has a summary under `built_from.american_stories`.
+
+Without the setting nothing is read, the documents are byte for byte what they were, and `current.json` has no `american_stories`, so the API searches LoC's text alone. Turning it off after a version with the text therefore switches the text off in searches at the next release, without a rebuild; turning it on again rebuilds in full. The text is a snapshot: years the writer finishes after the full base reach the base's pages only at the next full release, and only the pages of later batches pick them up before then. How to turn it on: [operations](../operations.md#american-stories-text).

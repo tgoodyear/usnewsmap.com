@@ -32,6 +32,9 @@ pub struct Built {
     /// The writer's tuning for this run (#172): its main index template is
     /// the tuned one, and the record says so.
     pub writer: crate::sink::WriterTuning,
+    /// The version has American Stories' text (`--american-stories`): the
+    /// main index this run writes has it, and so do the ones it keeps.
+    pub american_stories: bool,
 }
 
 /// The index templates the run applies, by name.
@@ -75,15 +78,20 @@ pub fn summary(b: &Built) -> Value {
         writer["heap"] = Value::from(b.writer.heap.clone());
         writer["commit_timeout_secs"] = Value::from(b.writer.commit_timeout_secs);
     }
+    let mut features = json!({
+        "common_grams": usnm_core::common_grams::VERSION,
+        "ja_fold": usnm_core::ja::FOLD_VERSION,
+    });
+    // Only for a version with it, as in its `current.json`.
+    if b.american_stories {
+        features["american_stories"] = json!(usnm_core::american_stories::VERSION);
+    }
     json!({
         "commit": std::env::var(COMMIT_ENV).ok().filter(|s| !s.is_empty()),
         "ingest": env!("CARGO_PKG_VERSION"),
         "engine": b.engine,
         "full": b.full,
-        "features": {
-            "common_grams": usnm_core::common_grams::VERSION,
-            "ja_fold": usnm_core::ja::FOLD_VERSION,
-        },
+        "features": features,
         "templates": templates_v,
         "writer": writer,
     })
@@ -100,7 +108,25 @@ mod tests {
             ja_index,
             engine: Some("Quickwit 0.9.1".into()),
             writer: crate::sink::WriterTuning::default(),
+            american_stories: false,
         }
+    }
+
+    #[test]
+    fn records_american_stories_only_for_a_version_with_it() {
+        let v = summary(&built(true, false));
+        assert!(v["features"].get("american_stories").is_none(), "{v}");
+        let mut b = built(true, false);
+        b.american_stories = true;
+        let v = record(&b);
+        assert_eq!(
+            v["features"]["american_stories"],
+            usnm_core::american_stories::VERSION
+        );
+        assert_eq!(
+            v["features"]["common_grams"],
+            usnm_core::common_grams::VERSION
+        );
     }
 
     #[test]

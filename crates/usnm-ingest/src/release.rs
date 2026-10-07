@@ -39,6 +39,7 @@ use usnm_core::time::{date_from_day, day_number, ym_number};
 use usnm_store::ObjectStore;
 
 use crate::activity::Reporter;
+use crate::american_stories;
 use crate::build_info;
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
@@ -72,6 +73,12 @@ pub struct Release {
     /// (asked for, or forced) doesn't, since it would replace the published
     /// one without them.
     pub titles_left: Option<String>,
+    /// Index American Stories' text with LoC's (#218, 04 §4.9): `text_as` on
+    /// the pages it covers, and the pages only it has text for. The version
+    /// then says so in `current.json` (`american_stories`), and a published
+    /// version built without it is rebuilt in full first. Off: nothing is
+    /// read, and the documents and `current.json` are as before.
+    pub american_stories: bool,
 }
 
 /// A full release refused to start because titles-sync left titles unfetched
@@ -140,10 +147,14 @@ pub struct Published {
     pub pages: u64,
 }
 
-/// One engine document for a curated page (05 §5.5).
-pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place) -> Value {
+/// One engine document for a curated page (05 §5.5), with American
+/// Stories' text when it has some (05 §5.5.4). A page LoC has no usable
+/// text for is a document only with American Stories' text; its `text` is
+/// then empty.
+pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place, text_as: Option<&str>) -> Value {
     let k = &row.key;
-    json!({
+    let text = row.text.as_deref().unwrap_or_default();
+    let mut doc = json!({
         "doc_id": k.doc_id(),
         "day": day_number(k.date),
         "ym": ym_number(k.date),
@@ -160,9 +171,23 @@ pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place) -> Value {
         "sort_key": (u64::from(title.ordinal) << 32) | (u64::from(k.edition) << 16) | u64::from(k.seq),
         "date": k.date.to_string(),
         "batch": row.batch,
-        "text_cg": row.text.as_deref().map(usnm_core::common_grams::index_text),
-        "text": row.text,
-    })
+        "text_cg": usnm_core::common_grams::index_text(text),
+        "text": text,
+    });
+    if let Some(t) = text_as {
+        doc["text_as_cg"] = usnm_core::common_grams::index_text(t).into();
+        doc["text_as"] = t.into();
+    }
+    doc
+}
+
+/// What the published `current.json` says about the version's indexes.
+struct PublishedPointer {
+    backend: String,
+    /// `common_grams`: the pairs every index of the version has.
+    grams: Option<u32>,
+    /// `american_stories`: every index of the version has American Stories' text.
+    american_stories: Option<u32>,
 }
 
 /// How long the writer lock lasts without renewal, and how often it's renewed.
@@ -292,10 +317,13 @@ impl Release {
     ) -> anyhow::Result<Option<Published>> {
         self.confirm(lease).await?;
         let current = Catalog::load(self.reference.as_ref()).await?;
-        let (previous, previous_backend, previous_grams) = match self.published_run().await? {
-            Some((run, backend, grams)) => (Some(run), Some(backend), grams),
-            None => (None, None, None),
+        let (previous, pointer) = match self.published_run().await? {
+            Some((run, pointer)) => (Some(run), Some(pointer)),
+            None => (None, None),
         };
+        let previous_backend = pointer.as_ref().map(|p| p.backend.as_str());
+        let previous_grams = pointer.as_ref().and_then(|p| p.grams);
+        let previous_as = pointer.as_ref().and_then(|p| p.american_stories);
         // Every batch's last committed curation, whatever its current status.
         let curated: BTreeMap<String, Curated> = self
             .state
@@ -306,9 +334,7 @@ impl Release {
             .collect();
 
         // A delta only makes sense on top of indexes in the same engine.
-        let switching = previous_backend
-            .as_deref()
-            .is_some_and(|b| b != sink.backend());
+        let switching = previous_backend.is_some_and(|b| b != sink.backend());
         if switching {
             tracing::info!(
                 to = sink.backend(),
@@ -327,9 +353,25 @@ impl Release {
                 "common-word pairs changed; building a full base"
             );
         }
+        // The same for American Stories' text (05 §5.5.4): a version says it
+        // has the text only when every index in it does, so the first
+        // release with it, or with another version of it, rebuilds them all.
+        // Without the setting the text is neither written nor searched,
+        // whatever the indexes hold.
+        let adding_stories = self.american_stories
+            && previous.is_some()
+            && previous_as != Some(usnm_core::american_stories::VERSION);
+        if adding_stories {
+            tracing::info!(
+                from = ?previous_as,
+                to = usnm_core::american_stories::VERSION,
+                "American Stories' text is new to the published version; building a full base"
+            );
+        }
         let full = self.full
             || switching
             || regramming
+            || adding_stories
             || previous
                 .as_ref()
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
@@ -459,6 +501,7 @@ impl Release {
             &version_batches,
             &indexed,
             &previously_hidden,
+            self.american_stories,
         )
         .await?;
         if dedup.duplicate_pages > 0 {
@@ -470,6 +513,25 @@ impl Release {
                 "pages ship in more than one batch; keeping one copy of each"
             );
         }
+
+        // American Stories' text, listed once: the parts of the years the
+        // writer has finished. With the setting on and nothing written yet,
+        // nothing is built: a version without the text mustn't say it has it.
+        let stories = if self.american_stories && !overlay_only {
+            american_stories::check_written(self.curated.as_ref()).await?;
+            let source = american_stories::Source::list(self.curated.as_ref()).await?;
+            tracing::info!(
+                years = source.years.len(),
+                first = source.years.first(),
+                last = source.years.last(),
+                parts = source.parts(),
+                unfinished_parts = source.unfinished_parts,
+                "American Stories' text"
+            );
+            Some(source)
+        } else {
+            None
+        };
 
         let (version, index_id) = self.next_names(full).await?;
         // An overlay-only release adds no main index: the run's new index is the Japanese one.
@@ -487,6 +549,7 @@ impl Release {
             ja_index: overlay.pages.iter().any(|p| p.indexable()),
             engine: sink.engine().await,
             writer: crate::sink::WriterTuning::from_env()?,
+            american_stories: self.american_stories,
         };
         let mut run = IndexRun {
             id: version.clone(),
@@ -521,14 +584,23 @@ impl Release {
         report.version(&version);
         report.step(Step::Indexing).await;
         let outcome = async {
-            let docs = if overlay_only {
-                0
+            let (docs, stories_record) = if overlay_only {
+                (0, None)
             } else {
                 self.build_index(
-                    lease, sink, &version, &index_id, &scope, &catalog, &dedup, report,
+                    lease,
+                    sink,
+                    &version,
+                    &index_id,
+                    &scope,
+                    &catalog,
+                    &dedup,
+                    stories.as_ref(),
+                    report,
                 )
                 .await?
             };
+            let stories_record = stories.as_ref().zip(stories_record.as_ref());
             let ja = self
                 .build_ja_index(lease, sink, &version, &overlay, &catalog)
                 .await?;
@@ -552,6 +624,7 @@ impl Release {
                     &layout,
                     &overlay,
                     ja.as_ref(),
+                    stories_record,
                     &build_info::record(&built),
                 )
                 .await?;
@@ -594,6 +667,13 @@ impl Release {
             // (a release that would mix them builds a full base, above).
             "common_grams": usnm_core::common_grams::VERSION,
         });
+        // Every index in the version has American Stories' text: this one was
+        // built with it, and so was the published version it adds to (or the
+        // release built a full base, above). An overlay-only release keeps
+        // the published main indexes, which have it for the same reason.
+        if self.american_stories {
+            pointer["american_stories"] = json!(usnm_core::american_stories::VERSION);
+        }
         // The Japanese pages' index (#139). An API without Japanese search
         // ignores the field; one with it checks the fold version matches.
         if let Some((id, pages)) = &ja {
@@ -638,7 +718,7 @@ impl Release {
     /// The published version's run. `current.json` is the source of truth:
     /// if a previous release crashed after writing it but before recording
     /// the publish in Cosmos, the run and `ops/current` are repaired here.
-    async fn published_run(&self) -> anyhow::Result<Option<(IndexRun, String, Option<u32>)>> {
+    async fn published_run(&self) -> anyhow::Result<Option<(IndexRun, PublishedPointer)>> {
         let Some(bytes) = self.reference.get("current.json").await? else {
             return Ok(None);
         };
@@ -664,11 +744,13 @@ impl Release {
         if self.state.current_version().await?.as_deref() != Some(version) {
             self.state.set_current_version(version).await?;
         }
-        let backend = pointer["backend"].as_str().unwrap_or("memory").to_owned();
-        let grams = pointer["common_grams"]
-            .as_u64()
-            .and_then(|g| u32::try_from(g).ok());
-        Ok(Some((run, backend, grams)))
+        let feature = |key: &str| pointer[key].as_u64().and_then(|v| u32::try_from(v).ok());
+        let published = PublishedPointer {
+            backend: pointer["backend"].as_str().unwrap_or("memory").to_owned(),
+            grams: feature("common_grams"),
+            american_stories: feature("american_stories"),
+        };
+        Ok(Some((run, published)))
     }
 
     /// `pages-v{date}-{n}` and its new index, `pages-{base|delta}-{date}-{n}`.
@@ -777,8 +859,9 @@ impl Release {
         scope: &[RunBatch],
         catalog: &Catalog,
         dedup: &Plan,
+        stories: Option<&american_stories::Source>,
         report: &Reporter,
-    ) -> anyhow::Result<u64> {
+    ) -> anyhow::Result<(u64, Option<american_stories::Record>)> {
         // Every title must resolve before anything is written.
         let mut missing = BTreeSet::new();
         for b in scope {
@@ -793,7 +876,9 @@ impl Release {
         }
         sink.create(index_id).await?;
         // A line every 30 s and after each batch (the saved query
-        // `release-progress` and the stall alert read them).
+        // `release-progress` and the stall alert read them). Pages with
+        // only American Stories' text join the expected count as they're
+        // found: only their batch's parts say which pages LoC has no text for.
         let expected = scope
             .iter()
             .map(|b| {
@@ -811,7 +896,29 @@ impl Release {
         let _reporter =
             progress.report_every(progress::INTERVAL, self.state.clone(), version.to_owned());
         let mut docs = 0u64;
+        let mut record = stories.map(|_| american_stories::Record::default());
         for b in scope {
+            // This batch's American Stories texts, dropped after the batch.
+            let texts = match stories {
+                Some(source) => {
+                    lease.check()?;
+                    let counts = dedup::load_counts(self.curated.as_ref(), b).await?;
+                    let loaded = source.load(self.curated.as_ref(), &counts).await?;
+                    tracing::info!(
+                        batch = %b.batch,
+                        pages = loaded.texts.len(),
+                        text_mb = loaded.text_bytes / (1024 * 1024),
+                        parts = loaded.parts.len(),
+                        empty = loaded.empty,
+                        "American Stories' text for the batch"
+                    );
+                    if let Some(r) = record.as_mut() {
+                        r.add(&loaded);
+                    }
+                    loaded.texts
+                }
+                None => HashMap::new(),
+            };
             for path in &b.curated.parts {
                 lease.check()?;
                 let bytes = self
@@ -820,21 +927,46 @@ impl Release {
                     .await?
                     .with_context(|| format!("curated part `{path}` is missing"))?;
                 let mut part_docs = Vec::new();
+                let (mut with_as, mut only_as) = (0u64, 0u64);
                 read_part(bytes.into(), true, |row| {
-                    if row.status == TextStatus::Ok && dedup.keeps(&row.key, &b.batch) {
-                        let title = catalog.title(&row.key.lccn).context("title")?;
-                        let place = catalog.place(&title.place_id).context("place")?;
-                        part_docs.push(page_doc(&row, title, place));
+                    if !dedup.keeps(&row.key, &b.batch) {
+                        return Ok(());
                     }
+                    let text_as = if texts.is_empty() {
+                        None
+                    } else {
+                        texts.get(&row.key.doc_id()).map(String::as_str)
+                    };
+                    let ok = row.status == TextStatus::Ok;
+                    if !ok && text_as.is_none() {
+                        return Ok(());
+                    }
+                    with_as += u64::from(text_as.is_some());
+                    only_as += u64::from(!ok);
+                    let title = catalog.title(&row.key.lccn).context("title")?;
+                    let place = catalog.place(&title.place_id).context("place")?;
+                    part_docs.push(page_doc(&row, title, place, text_as));
                     Ok(())
                 })
                 .with_context(|| path.clone())?;
+                progress.add_expected(only_as);
+                if let Some(r) = record.as_mut() {
+                    r.docs += with_as;
+                    r.only += only_as;
+                }
                 for d in &part_docs {
                     sink.add(d).await?;
                 }
                 docs += part_docs.len() as u64;
             }
             progress.snapshot().log(Some(&b.batch));
+        }
+        if let Some(r) = &record {
+            tracing::info!(
+                docs_with_text = r.docs,
+                only_american_stories = r.only,
+                "American Stories' text indexed"
+            );
         }
         // The last commit and the merge wait, given up as soon as the lock is.
         report.step(Step::Merging).await;
@@ -844,7 +976,7 @@ impl Release {
         }
         progress.snapshot().log(None);
         progress::report(&self.state, version, &progress.snapshot()).await;
-        Ok(docs)
+        Ok((docs, record))
     }
 
     /// Whether the overlay's parts differ from the ones `version` was built
@@ -914,6 +1046,7 @@ impl Release {
         layout: &[IndexLayout],
         overlay: &ocr_ja::Overlay,
         ja: Option<&(String, u64)>,
+        stories: Option<(&american_stories::Source, &american_stories::Record)>,
         build: &Value,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
@@ -1061,6 +1194,15 @@ impl Release {
             });
             snapshot_files.push((ocr_ja::OCR_JA_FILE, serde_json::to_vec(&record)?));
         }
+        // Which American Stories parts the new main index was built from
+        // (only when it was built with them). The list can be long, so the
+        // manifest, which the API reads, has only its summary.
+        if let Some((source, record)) = stories {
+            snapshot_files.push((
+                american_stories::FILE,
+                serde_json::to_vec(&record.file(source))?,
+            ));
+        }
         let mut files = Vec::new();
         for (name, body) in snapshot_files {
             files.push(json!({
@@ -1085,6 +1227,9 @@ impl Release {
         }
         if !overlay.parts.is_empty() {
             manifest["built_from"]["ocr_ja"] = serde_json::to_value(&overlay.parts)?;
+        }
+        if let Some((source, record)) = stories {
+            manifest["built_from"]["american_stories"] = record.summary(source);
         }
         // What built it (#161), with the index templates in full.
         manifest["build"] = build.clone();

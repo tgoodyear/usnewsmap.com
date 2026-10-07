@@ -5,6 +5,7 @@
 //! (`ops/release-progress`) for the public status page.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -155,7 +156,9 @@ fn round1(x: f64) -> f64 {
 #[derive(Clone)]
 pub struct Progress {
     stats: Arc<SinkStats>,
-    docs_expected: u64,
+    /// Grows while the build finds documents it couldn't count up front
+    /// (pages with only American Stories' text).
+    docs_expected: Arc<AtomicU64>,
     started: Instant,
     /// The sink's counts when this build started (a sink may be reused).
     base: (u64, u64),
@@ -166,9 +169,14 @@ impl Progress {
         Self {
             base: (stats.docs_sent(), stats.bytes_sent()),
             stats,
-            docs_expected,
+            docs_expected: Arc::new(AtomicU64::new(docs_expected)),
             started: Instant::now(),
         }
+    }
+
+    /// Expect `n` more documents.
+    pub fn add_expected(&self, n: u64) {
+        self.docs_expected.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -176,7 +184,7 @@ impl Progress {
         let work_dir: Option<&PathBuf> = s.work_dir.as_ref();
         Snapshot {
             docs_sent: s.docs_sent().saturating_sub(self.base.0),
-            docs_expected: self.docs_expected,
+            docs_expected: self.docs_expected.load(Ordering::Relaxed),
             bytes_sent: s.bytes_sent().saturating_sub(self.base.1),
             retries_429: s.retries_429(),
             retries_503: s.retries_503(),
@@ -380,6 +388,14 @@ mod tests {
         ) -> anyhow::Result<Vec<crate::docs::Versioned>> {
             Ok(vec![])
         }
+    }
+
+    #[test]
+    fn documents_found_later_join_the_expected_count() {
+        let p = Progress::new(Arc::new(SinkStats::default()), 10);
+        let ticker_copy = p.clone();
+        p.add_expected(3);
+        assert_eq!(ticker_copy.snapshot().docs_expected, 13);
     }
 
     #[tokio::test]
