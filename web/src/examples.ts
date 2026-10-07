@@ -25,8 +25,11 @@ export interface Example {
 // the same file at build time.
 export const EXAMPLES: Example[] = examples as Example[];
 
-/** How many examples the home page shows at a time. */
+/** How many examples the home page shows at first. */
 export const EXAMPLES_SHOWN = 3;
+
+/** How many more examples each "Show more" adds. */
+export const EXAMPLES_MORE = 10;
 
 /** A copy of `items` in random order (Fisher–Yates), drawing from `random`. */
 export function shuffle<T>(items: readonly T[], random: () => number): T[] {
@@ -39,25 +42,31 @@ export function shuffle<T>(items: readonly T[], random: () => number): T[] {
 }
 
 /**
- * The `page`th set of `n` examples from `order`. A pass is every set until
- * each example has shown; the last set of a pass wraps around to the start, so
- * every set is full, and the next page begins the pass again, so paging on
- * shows the same sets `mixByEra` checked.
+ * The examples shown after `clicks` presses of "Show more": the first `first`
+ * of `order`, then `more` after them for each press, until all have shown.
+ * Each press adds to the list; none repeats.
  */
-export function examplesAt<T>(order: readonly T[], page: number, n = EXAMPLES_SHOWN): T[] {
-  const count = Math.min(n, order.length);
-  const sets = Math.max(Math.ceil(order.length / n), 1);
-  const start = (((page % sets) + sets) % sets) * n;
-  return Array.from({ length: count }, (_, i) => order[(start + i) % order.length]!);
+export function examplesShown<T>(
+  order: readonly T[],
+  clicks: number,
+  first = EXAMPLES_SHOWN,
+  more = EXAMPLES_MORE,
+): T[] {
+  return order.slice(0, first + Math.max(clicks, 0) * more);
+}
+
+/** `order` cut into sets of `n` from the start; the last may be shorter. */
+export function setsOf<T>(order: readonly T[], n = EXAMPLES_SHOWN): T[][] {
+  return Array.from({ length: Math.ceil(order.length / n) }, (_, i) => order.slice(i * n, (i + 1) * n));
 }
 
 /**
- * A random order in which every set of `n` (as `examplesAt` shows them, the
- * last wrapping around to the start) spans `n` eras. The eras take turns,
- * the biggest first (ties in random order, each era's examples shuffled), so
- * any `n` in a row come from different eras while there are at least `n`;
- * then the whole order starts at a random point where the set that wraps
- * around to the start does too.
+ * A random order in which every set of `n` from the start (the first `n`
+ * shown, then each row of `n` cards as the list grows) spans `n` eras, or as
+ * many as it holds. The eras take turns, the biggest first (ties in random
+ * order, each era's examples shuffled), so any `n` in a row come from
+ * different eras while there are at least `n`; then the whole order starts at
+ * a random point where the sets still do.
  */
 export function mixByEra<T extends { era: string }>(
   items: readonly T[],
@@ -76,10 +85,7 @@ export function mixByEra<T extends { era: string }>(
       if (next) turns.push(next);
     }
   }
-  const spans = (order: T[]) =>
-    Array.from({ length: Math.ceil(order.length / n) }, (_, page) => examplesAt(order, page, n)).every(
-      (set) => new Set(set.map((e) => e.era)).size === set.length,
-    );
+  const spans = (order: T[]) => setsOf(order, n).every((set) => new Set(set.map((e) => e.era)).size === set.length);
   for (const k of shuffle([...turns.keys()], random)) {
     const order = [...turns.slice(k), ...turns.slice(0, k)];
     if (spans(order)) return order;
