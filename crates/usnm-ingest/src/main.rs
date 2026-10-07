@@ -312,6 +312,13 @@ async fn geocode(reference: &dyn usnm_store::ObjectStore) -> anyhow::Result<()> 
             "LoC points more than 25 km from the gazetteer, kept; review them (catalog/overrides/places.json)"
         );
     }
+    if report.loc_apart > 0 {
+        tracing::warn!(
+            places = report.loc_apart,
+            furthest = ?report.loc_apart_examples,
+            "places at the median of LoC points more than 25 km apart; review them (catalog/overrides/places.json)"
+        );
+    }
     tracing::info!(?report, "catalog");
     Ok(())
 }

@@ -8,6 +8,7 @@
 pub mod activity;
 pub mod american_stories;
 pub mod archive;
+pub mod audit;
 pub mod build_info;
 pub mod catalog;
 pub mod curated;
