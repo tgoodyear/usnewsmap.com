@@ -828,15 +828,15 @@ mod tests {
 
     #[test]
     fn the_template_sets_the_merge_policy_the_checks_assume() {
-        assert_eq!(template_setting("split_num_docs_target"), Some(30_000));
+        assert_eq!(template_setting("split_num_docs_target"), Some(60_000));
         assert_eq!(template_setting("max_finalize_merge_operations"), Some(5));
         assert!(INDEX_TEMPLATE.contains("type: limit_merge"));
         assert_eq!(template_setting("no_such_setting"), None);
-        // 274,480 documents: nine full splits, up to five final merges, two left over.
-        assert_eq!(max_splits(274_480), 9 + 5 + 2);
-        assert_eq!(max_splits(51_764), 1 + 7);
-        // The whole corpus: about 800 splits.
-        assert_eq!(max_splits(23_800_000), 793 + 7);
+        // 274,480 documents: four full splits, up to five final merges, two left over.
+        assert_eq!(max_splits(274_480), 4 + 5 + 2);
+        assert_eq!(max_splits(51_764), 7);
+        // The whole corpus: about 400 splits.
+        assert_eq!(max_splits(23_800_000), 396 + 7);
     }
 
     #[test]
@@ -1025,7 +1025,7 @@ mod tests {
             })
             .collect();
         let err = check("idx", 140_000, &many).unwrap_err().to_string();
-        assert!(err.contains("at most 11"), "{err}");
+        assert!(err.contains("at most 9"), "{err}");
         assert_eq!(IndexLayout::of("empty", &[]).splits, 0);
     }
 

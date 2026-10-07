@@ -63,13 +63,11 @@ indexing_settings:
   # memory while it uploads, and the ingest container has 7.5 GiB. A
   # million-page split (about 23 GB) killed the writer in October 2026.
   # A merge stops taking splits once it holds this many pages, so merged
-  # splits hold a little over 30,000 pages and never 60,000. The
+  # splits hold a little over 60,000 pages and never 120,000. The
   # common-word pairs (05 §5.5.3) make a page about 37 KB of index, not 23,
-  # and American Stories' text with its own pairs (05 §5.5.4) about 74 KB
-  # on the pages that have it, so that is at most about 2.4 GB and 4.4 GB:
-  # no more than the 60,000-page splits of before it, or the 100,000-page
-  # splits before the pairs (about 2.6 GB, at most 4.6 GB; 08 §8.4).
-  split_num_docs_target: 30000
+  # so that is about 2.4 GB and at most 4.4 GB: no more than the 100,000-page
+  # splits of before them (about 2.6 GB, at most 4.6 GB; 08 §8.4).
+  split_num_docs_target: 60000
   merge_policy:
     type: limit_merge
     merge_factor: 10
