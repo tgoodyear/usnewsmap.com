@@ -49,6 +49,14 @@ TEXT_CLASSES = ams.TEXT_CLASSES
 SEPARATOR = "\n\n"
 
 
+def box(b) -> list:
+    """An article's bounding box as [x0, y0, x1, y1]: the files we've read (1793, 1925) give mappings; a
+    positional list is taken as it is."""
+    if isinstance(b, dict):
+        return [b.get("x0"), b.get("y0"), b.get("x1"), b.get("y1")]
+    return list(b)[:4]
+
+
 def page_row(scan: dict) -> dict:
     """A scan's text, article structure, regions by legibility and size."""
     legibility_of = {b.get("id"): (b.get("legibility") or "unknown").lower() for b in scan.get("bboxes") or []}
@@ -64,7 +72,7 @@ def page_row(scan: dict) -> dict:
         text += segment
         articles.append({
             "headline": headline, "byline": byline, "start": start, "end": len(text),
-            "bboxes": [[b.get("x0"), b.get("y0"), b.get("x1"), b.get("y1")] for b in a.get("bbox_list") or []],
+            "bboxes": [box(b) for b in a.get("bbox_list") or []],
             "legibility": sorted({legibility_of.get(i, "unknown") for i in a.get("object_ids") or []}),
         })
     regions: dict[str, int] = {}

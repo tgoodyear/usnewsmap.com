@@ -105,6 +105,12 @@ class Write(unittest.TestCase):
         self.assertEqual({k: marker[k] for k in ("scans", "unparsed", "duplicates", "page_from_image", "pages")},
                          {"scans": 6, "unparsed": 1, "duplicates": 1, "page_from_image": 1, "pages": 4})
 
+    def test_boxes_as_mappings_or_lists(self):
+        self.assertEqual(asw.box({"x0": 1, "y0": 2, "x1": 3, "y1": 4}), [1, 2, 3, 4])
+        self.assertEqual(asw.box([1, 2, 3, 4]), [1, 2, 3, 4])
+        row = asw.page_row({"full articles": [{"article": "x", "bbox_list": [[5, 6, 7, 8]], "object_ids": []}]})
+        self.assertEqual(json.loads(row["articles"])[0]["bboxes"], [[5, 6, 7, 8]])
+
     def test_a_rerun_skips_written_years(self):
         asw.write(self.ref, self.cur, run="exec-1", opener=self.opener)
         self.asked.clear()
