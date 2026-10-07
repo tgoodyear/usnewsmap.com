@@ -21,7 +21,11 @@
 //! (a delta can't change a published index). Either way the page counts once
 //! in the snapshot. An earlier index holds a losing copy if the previous
 //! version kept that copy or hid it; versions released before this existed
-//! indexed every copy.
+//! indexed every copy. A copy without text of LoC's is a document too when
+//! the version has American Stories' text (04 §4.9): it may have been
+//! indexed with that text alone, so it is hidden like the others. One that
+//! wasn't is hidden for nothing, which costs a clause in queries but
+//! changes no count.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -107,7 +111,14 @@ pub async fn report(state: &State, curated: &dyn ObjectStore) -> anyhow::Result<
         })
         .collect();
     let pages: u64 = batches.iter().map(|b| b.curated.pages).sum();
-    let p = plan(curated, &batches, &BTreeSet::new(), &Some(BTreeSet::new())).await?;
+    let p = plan(
+        curated,
+        &batches,
+        &BTreeSet::new(),
+        &Some(BTreeSet::new()),
+        false,
+    )
+    .await?;
     Ok(serde_json::json!({
         "batches": batches.len(),
         "pages": pages,
@@ -128,11 +139,14 @@ pub type PreviouslyHidden = Option<BTreeSet<Hidden>>;
 /// `indexed` names the batches whose pages are already in an index the
 /// version keeps (the previous version's batches); the others are about to
 /// be indexed. `previously_hidden` is the previous version's hidden list.
+/// `american_stories`: the version indexes pages with only American
+/// Stories' text, so a published copy without LoC's text may be a document.
 pub async fn plan(
     curated: &dyn ObjectStore,
     batches: &[RunBatch],
     indexed: &BTreeSet<&str>,
     previously_hidden: &PreviouslyHidden,
+    american_stories: bool,
 ) -> anyhow::Result<Plan> {
     // Title-days by the first batch with pages on them, and the ones another
     // batch has too. Titles and batches are numbered to keep this small: a
@@ -222,11 +236,12 @@ pub async fn plan(
             *out.pairs
                 .entry((name(kept).to_owned(), name(b).to_owned()))
                 .or_default() += 1;
-            // Only copies with text are documents.
-            if !ok {
-                continue;
-            }
             if indexed.contains(name(b)) {
+                // Only copies with text are documents: LoC's, or American
+                // Stories' when the version has it.
+                if !ok && !american_stories {
+                    continue;
+                }
                 let copy = Hidden {
                     doc_id: key.doc_id(),
                     batch: name(b).to_owned(),
@@ -239,7 +254,9 @@ pub async fn plan(
                 if in_index {
                     out.hidden.push(copy);
                 }
-            } else {
+            } else if ok {
+                // Counted in the batch's `ok_pages`. A copy without LoC's
+                // text isn't, so the release doesn't expect it.
                 *out.skipped_docs.entry(name(b).to_owned()).or_default() += 1;
             }
         }

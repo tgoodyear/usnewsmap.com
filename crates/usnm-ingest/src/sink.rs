@@ -38,7 +38,7 @@ const INGEST_QUEUE_MEMORY: &str = "1GiB";
 /// sized for the Consumption profile's 7.5 GiB container. On the E4 profile
 /// (26 GiB, a full rebuild) the ingest job sets more through
 /// `USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS` and `USNM_WRITER_QUEUE`: with
-/// a heap that holds a whole 60,000-page split and a commit timeout longer than
+/// a heap that holds a whole 30,000-page split and a commit timeout longer than
 /// it takes to index one, the indexer writes splits at the target size, so
 /// they need little merging. At 30 s, a full rebuild's indexer cut splits of
 /// about 7,000 pages, and merging them cost the writer its memory and much of

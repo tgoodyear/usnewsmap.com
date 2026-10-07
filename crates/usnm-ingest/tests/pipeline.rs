@@ -41,9 +41,16 @@ fn by_id(docs: Vec<Value>) -> BTreeMap<String, Value> {
         .collect()
 }
 
-/// A fixture index as the release builds it from LoC's text alone: without
-/// American Stories' text (`text_as`) and the pages only it has text for,
-/// which the release doesn't load yet (#218, 05 §5.5.4).
+/// A fixture index as it is, American Stories' text included (05 §5.5.4).
+fn fixture(index_id: &str) -> BTreeMap<String, Value> {
+    by_id(read_jsonl(
+        &fixtures().join(format!("indexes/{index_id}.jsonl")),
+    ))
+}
+
+/// A fixture index as the release builds it from LoC's text alone, without
+/// `--american-stories`: without American Stories' text (`text_as`) and
+/// the pages only it has text for (#218, 05 §5.5.4).
 fn loc_fixture(index_id: &str) -> BTreeMap<String, Value> {
     let docs = read_jsonl(&fixtures().join(format!("indexes/{index_id}.jsonl")));
     by_id(
@@ -193,6 +200,16 @@ impl Env {
     }
 
     async fn release(&self, day: u32, full: bool) -> Option<Published> {
+        self.release_with(day, full, false).await.unwrap()
+    }
+
+    /// A release with or without American Stories' text (`--american-stories`).
+    async fn release_with(
+        &self,
+        day: u32,
+        full: bool,
+        american_stories: bool,
+    ) -> anyhow::Result<Option<Published>> {
         let r = Release {
             state: self.state.clone(),
             curated: self.curated.clone(),
@@ -202,14 +219,16 @@ impl Env {
             synthetic: true,
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
             titles_left: None,
+            american_stories,
         };
         let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
-        r.run(&mut sink).await.unwrap()
+        r.run(&mut sink).await
     }
 
     /// An index's documents. A main index's are each checked for their
-    /// common-word pairs (`text_cg`, 05 §5.5.3) and returned without them,
-    /// as the fixtures hold; the Japanese pages' index has none.
+    /// common-word pairs (`text_cg`, 05 §5.5.3, and `text_as_cg` for
+    /// American Stories' text, 05 §5.5.4) and returned without them, as the
+    /// fixtures hold; the Japanese pages' index has none.
     fn index(&self, id: &str) -> BTreeMap<String, Value> {
         let mut docs = by_id(read_jsonl(
             &self.root.join(format!("reference/indexes/{id}.jsonl")),
@@ -228,6 +247,15 @@ impl Env {
                 .as_str()
                 .map(usnm_core::common_grams::index_text);
             assert_eq!(pairs.as_str().map(str::to_owned), want, "{doc_id}");
+            let as_pairs = doc.as_object_mut().unwrap().remove("text_as_cg");
+            let want = doc["text_as"]
+                .as_str()
+                .map(usnm_core::common_grams::index_text);
+            assert_eq!(
+                as_pairs.as_ref().and_then(Value::as_str).map(str::to_owned),
+                want,
+                "{doc_id}"
+            );
         }
         docs
     }
@@ -511,6 +539,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         synthetic: true,
         now: Utc::now(),
         titles_left: None,
+        american_stories: false,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     assert!(r.run(&mut sink).await.is_err());
@@ -561,6 +590,7 @@ async fn releases_into_a_quickwit_writer_node() {
             synthetic: true,
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
             titles_left: None,
+            american_stories: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -1004,6 +1034,7 @@ async fn a_backend_switch_forces_a_full_release() {
         synthetic: true,
         now: Utc.with_ymd_and_hms(2026, 10, 8, 3, 0, 0).unwrap(),
         titles_left: None,
+        american_stories: false,
     };
     let mut sink = OtherBackend(0);
     let p = r.run(&mut sink).await.unwrap().unwrap();
@@ -1040,6 +1071,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         synthetic: true,
         now: Utc::now(),
         titles_left: None,
+        american_stories: false,
     };
     let lease = r.lock().await.unwrap();
     // Another writer takes the lock over (e.g. after this one stalled).
@@ -1120,6 +1152,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         synthetic: true,
         now: Utc.with_ymd_and_hms(2026, 10, 1, 3, 0, 0).unwrap(),
         titles_left,
+        american_stories: false,
     };
     let why = Some("LoC rate limited titles-sync with 5 of 9 titles left".to_owned());
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -1540,6 +1573,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         synthetic: true,
         now: Utc.with_ymd_and_hms(2026, 10, 8, 3, 0, 0).unwrap(),
         titles_left: None,
+        american_stories: false,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     let err = format!("{:#}", r.run(&mut sink).await.unwrap_err());
@@ -1590,6 +1624,7 @@ async fn a_failed_release_records_when_it_failed() {
         synthetic: true,
         now,
         titles_left: None,
+        american_stories: false,
     };
     let before = Utc::now();
     let err = r.run(&mut FailingSink).await.unwrap_err();
@@ -1856,6 +1891,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             synthetic: true,
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
             titles_left: None,
+            american_stories: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -2288,4 +2324,488 @@ async fn japanese_ocr_with_nothing_to_index_waits() {
     )
     .await;
     assert!(e.release(6, false).await.is_none());
+}
+
+/// American Stories' text for the fixture pages that have some (their
+/// `text_as`), as `american_stories_write.py` writes it: a part per title
+/// and year, then each year's marker. Plus a page no batch has, and a
+/// blank text for a page with no text of LoC's either: neither is indexed.
+/// The number of parts.
+async fn put_american_stories(e: &Env) -> usize {
+    use chrono::Datelike;
+    type Rows = Vec<(String, String, NaiveDate, String)>;
+    let mut parts: BTreeMap<(String, i32), Rows> = BTreeMap::new();
+    let mut indexed = std::collections::BTreeSet::new();
+    for f in ["pages-base-fixture", "pages-delta-fixture-1"] {
+        for d in read_jsonl(&fixtures().join(format!("indexes/{f}.jsonl"))) {
+            let id = d["doc_id"].as_str().unwrap().to_owned();
+            indexed.insert(id.clone());
+            let Some(text) = d["text_as"].as_str() else {
+                continue;
+            };
+            let lccn = d["lccn"].as_str().unwrap().to_owned();
+            let date = NaiveDate::parse_from_str(d["date"].as_str().unwrap(), "%Y-%m-%d").unwrap();
+            parts.entry((lccn.clone(), date.year())).or_default().push((
+                id,
+                lccn,
+                date,
+                text.to_owned(),
+            ));
+        }
+    }
+    let blank = fixture_pages()
+        .into_iter()
+        .find(|p| !indexed.contains(&format!("{}_{}_ed-1_seq-{}", p.lccn, p.date, p.seq)))
+        .expect("a page with no text at all");
+    let rows = parts
+        .entry((blank.lccn.clone(), blank.date.year()))
+        .or_default();
+    rows.push((
+        format!("{}_{}_ed-1_seq-{}", blank.lccn, blank.date, blank.seq),
+        blank.lccn.clone(),
+        blank.date,
+        " \n ".into(),
+    ));
+    rows.push((
+        format!("{}_{}_ed-1_seq-9", blank.lccn, blank.date),
+        blank.lccn.clone(),
+        blank.date,
+        "A page no batch has".into(),
+    ));
+    let mut years = std::collections::BTreeSet::new();
+    for ((lccn, year), rows) in &parts {
+        let rows: Vec<(&str, &str, NaiveDate, &str)> = rows
+            .iter()
+            .map(|(id, l, d, t)| (id.as_str(), l.as_str(), *d, t.as_str()))
+            .collect();
+        e.curated
+            .put(
+                &format!("american-stories/pages/{lccn}/{year}-000.parquet"),
+                usnm_ingest::american_stories::encode_part(&rows).unwrap(),
+                "application/octet-stream",
+            )
+            .await
+            .unwrap();
+        years.insert(*year);
+    }
+    for year in years {
+        e.curated
+            .put(
+                &format!("american-stories/years/{year}.json"),
+                b"{}".to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+    }
+    parts.len()
+}
+
+/// Curate the fixture pages as two batches: early (before July 1897) and late.
+async fn curate_early_and_late(e: &Env) -> (Vec<ListedBatch>, Vec<ListedBatch>, usize, usize) {
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let a = e.root.join("batch_fx_early_ver01.tar.gz");
+    let b = e.root.join("batch_fx_late_ver01.tar.gz");
+    write_archive(&a, &early, true, true);
+    write_archive(&b, &late, false, true);
+    (
+        vec![listed("batch_fx_early_ver01", &a, None)],
+        vec![listed("batch_fx_late_ver01", &b, None)],
+        early.len(),
+        late.len(),
+    )
+}
+
+/// With `--american-stories` (#218, 05 §5.5.4) the release reproduces the
+/// fixtures in full: `text_as` and its pairs exactly on the pages American
+/// Stories covers, and the pages only it has text for indexed with an empty
+/// `text`. The version says so in `current.json` and its build record, and
+/// records the parts it read. Without the setting, the next release is as
+/// before.
+#[tokio::test]
+async fn american_stories_text_is_indexed_beside_locs() {
+    let e = env().await;
+    let (early, late, early_pages, late_pages) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    curate(&e, early).await;
+    let p1 = e.release_with(1, false, true).await.unwrap().unwrap();
+    assert!(p1.full);
+    let want_base = fixture("pages-base-fixture");
+    assert_eq!(e.index(&p1.indexes[0]), want_base);
+    assert_eq!(p1.docs, want_base.len() as u64);
+    assert_eq!(
+        p1.pages, early_pages as u64,
+        "the baselines count every page already"
+    );
+    let only = want_base.values().filter(|d| d["text"] == "").count();
+    let with_as = want_base
+        .values()
+        .filter(|d| d.get("text_as").is_some())
+        .count();
+    assert!(only > 0 && with_as > only, "{only} {with_as}");
+    assert_eq!(
+        loc_fixture("pages-base-fixture").len() + only,
+        want_base.len()
+    );
+
+    let v1 = &p1.index_version;
+    let current = e.reference_json("current.json").await;
+    assert_eq!(
+        current["american_stories"],
+        usnm_core::american_stories::VERSION
+    );
+    let manifest = e.reference_json(&format!("{v1}/manifest.json")).await;
+    let built = &manifest["built_from"]["american_stories"];
+    assert_eq!(built["docs"], with_as);
+    assert_eq!(built["only_american_stories"], only);
+    assert_eq!(built["version"], usnm_core::american_stories::VERSION);
+    assert_eq!(
+        manifest["build"]["features"]["american_stories"],
+        usnm_core::american_stories::VERSION
+    );
+    assert!(manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["path"] == "american_stories.json"));
+    let record = e
+        .reference_json(&format!("{v1}/american_stories.json"))
+        .await;
+    let parts = record["parts"].as_array().unwrap();
+    assert_eq!(built["parts"], parts.len());
+    assert!(!parts.is_empty());
+    assert!(parts
+        .iter()
+        .all(|p| p["sha256"].as_str().unwrap().len() == 64 && p["bytes"].as_u64() > Some(0)));
+    assert_eq!(record["docs"], with_as);
+
+    // A delta keeps writing the text.
+    curate(&e, late).await;
+    let p2 = e.release_with(8, false, true).await.unwrap().unwrap();
+    assert!(!p2.full);
+    assert_eq!(
+        e.index(p2.indexes.last().unwrap()),
+        fixture("pages-delta-fixture-1")
+    );
+    assert_eq!(p2.pages, (early_pages + late_pages) as u64);
+    let v2 = &p2.index_version;
+    let current = e.reference_json("current.json").await;
+    assert_eq!(
+        current["american_stories"],
+        usnm_core::american_stories::VERSION
+    );
+    // The snapshot is the fixture's: no page counts twice.
+    for f in [
+        "baselines.json",
+        "title_pages.json",
+        "language_baselines.json",
+    ] {
+        let want: Value =
+            serde_json::from_slice(&std::fs::read(fixtures().join("fixture-v1").join(f)).unwrap())
+                .unwrap();
+        assert_eq!(e.reference_json(&format!("{v2}/{f}")).await, want, "{f}");
+    }
+    // The API searches the text.
+    let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert!(refdata.index_set().american_stories());
+
+    // Without the setting, a full release is LoC's text alone again, and
+    // the version doesn't claim the text.
+    let p3 = e.release_with(15, true, false).await.unwrap().unwrap();
+    let mut both = loc_fixture("pages-base-fixture");
+    both.extend(loc_fixture("pages-delta-fixture-1"));
+    assert_eq!(e.index(&p3.indexes[0]), both);
+    let current = e.reference_json("current.json").await;
+    assert!(current.get("american_stories").is_none(), "{current}");
+    let v3 = &p3.index_version;
+    let manifest = e.reference_json(&format!("{v3}/manifest.json")).await;
+    assert!(manifest["built_from"].get("american_stories").is_none());
+    assert!(manifest["build"]["features"]
+        .get("american_stories")
+        .is_none());
+    assert!(e
+        .reference
+        .get(&format!("{v3}/american_stories.json"))
+        .await
+        .unwrap()
+        .is_none());
+    let refdata = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert!(!refdata.index_set().american_stories());
+}
+
+/// Turning the setting on for a version built without it rebuilds every
+/// index, so the version can say all of them have the text. Until then,
+/// text in the curated store changes nothing: the documents are LoC's.
+#[tokio::test]
+async fn a_version_without_american_stories_is_rebuilt_in_full_when_it_is_turned_on() {
+    let e = env().await;
+    let (early, late, ..) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    curate(&e, early).await;
+    let p1 = e.release(1, false).await.unwrap();
+    assert_eq!(
+        e.index(&p1.indexes[0]),
+        loc_fixture("pages-base-fixture"),
+        "off: the text in the store is not read"
+    );
+    let current = e.reference_json("current.json").await;
+    assert!(current.get("american_stories").is_none(), "{current}");
+
+    curate(&e, late).await;
+    let p2 = e.release_with(8, false, true).await.unwrap().unwrap();
+    assert!(
+        p2.full,
+        "a delta would mix indexes with and without the text"
+    );
+    assert_eq!(p2.indexes.len(), 1);
+    let mut both = fixture("pages-base-fixture");
+    both.extend(fixture("pages-delta-fixture-1"));
+    assert_eq!(e.index(&p2.indexes[0]), both);
+    let current = e.reference_json("current.json").await;
+    assert_eq!(
+        current["american_stories"],
+        usnm_core::american_stories::VERSION
+    );
+
+    // A published version with another version of the text is rebuilt too.
+    let mut pointer = current;
+    pointer["american_stories"] = serde_json::json!(usnm_core::american_stories::VERSION + 1);
+    e.reference
+        .put(
+            "current.json",
+            serde_json::to_vec(&pointer).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let pages = fixture_pages();
+    let extra: Vec<&Page> = pages.iter().take(3).collect();
+    let path = e.root.join("batch_zz_ver01.tar.gz");
+    write_archive(&path, &extra, false, true);
+    curate(&e, vec![listed("batch_zz_ver01", &path, None)]).await;
+    let p3 = e.release_with(9, false, true).await.unwrap().unwrap();
+    assert!(p3.full);
+}
+
+/// With the setting on and no American Stories text written yet (no
+/// finished year), nothing is released: the version would claim text it
+/// doesn't have.
+#[tokio::test]
+async fn the_setting_needs_american_stories_text_in_the_store() {
+    let e = env().await;
+    let (early, ..) = curate_early_and_late(&e).await;
+    curate(&e, early).await;
+    // A part of a year the writer hasn't finished doesn't count.
+    e.curated
+        .put(
+            "american-stories/pages/sn99000001/1895-000.parquet",
+            usnm_ingest::american_stories::encode_part(&[]).unwrap(),
+            "application/octet-stream",
+        )
+        .await
+        .unwrap();
+    let err = e.release_with(1, false, true).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("american-stories-write"),
+        "{err:#}"
+    );
+    assert!(e.reference.get("current.json").await.unwrap().is_none());
+    // Without the setting the same release goes ahead.
+    assert!(e.release(1, false).await.unwrap().full);
+}
+
+/// A page only American Stories has text for is a document, so a copy of
+/// it in a later batch that wins (its name sorts first) hides the published
+/// one, as a copy with LoC's text would (04 §4.7).
+#[tokio::test]
+async fn a_page_with_only_american_stories_text_is_kept_once() {
+    let e = env().await;
+    let (early, ..) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    curate(&e, early).await;
+    let p1 = e.release_with(1, false, true).await.unwrap().unwrap();
+    let want_base = fixture("pages-base-fixture");
+    let pages = fixture_pages();
+    let id = |p: &Page| format!("{}_{}_ed-1_seq-{}", p.lccn, p.date, p.seq);
+    let only: Vec<&Page> = pages
+        .iter()
+        .filter(|p| want_base.get(&id(p)).is_some_and(|d| d["text"] == ""))
+        .take(2)
+        .collect();
+    assert_eq!(only.len(), 2);
+
+    let path = e.root.join("batch_aa_ver01.tar.gz");
+    write_archive(&path, &only, false, true);
+    curate(&e, vec![listed("batch_aa_ver01", &path, None)]).await;
+    let p2 = e.release_with(8, false, true).await.unwrap().unwrap();
+    assert!(!p2.full);
+    assert_eq!(p2.pages, p1.pages, "each page counts once");
+    let delta = e.index(p2.indexes.last().unwrap());
+    let want: BTreeMap<String, Value> = only
+        .iter()
+        .map(|p| (id(p), want_base[&id(p)].clone()))
+        .collect();
+    assert_eq!(delta, want);
+    let v2 = &p2.index_version;
+    let mut hidden: Vec<Value> = e
+        .reference_json(&format!("{v2}/duplicates.json"))
+        .await
+        .as_array()
+        .unwrap()
+        .clone();
+    hidden.sort_by_key(|h| h["doc_id"].as_str().unwrap().to_owned());
+    let mut want_hidden: Vec<Value> = only
+        .iter()
+        .map(|p| serde_json::json!({"doc_id": id(p), "batch": "batch_fx_early"}))
+        .collect();
+    want_hidden.sort_by_key(|h| h["doc_id"].as_str().unwrap().to_owned());
+    assert_eq!(hidden, want_hidden);
+
+    // A full release keeps batch_aa's copies and hides nothing.
+    let p3 = e.release_with(15, true, true).await.unwrap().unwrap();
+    assert_eq!(e.index(&p3.indexes[0]), want_base);
+    assert_eq!(
+        e.reference_json(&format!("{}/duplicates.json", p3.index_version))
+            .await,
+        serde_json::json!([])
+    );
+}
+
+/// A release of new Japanese OCR alone keeps the published main indexes,
+/// and with them their American Stories text: `current.json` still says so.
+#[tokio::test]
+async fn a_japanese_ocr_release_keeps_american_stories() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let path = e.root.join("batch_fx_ja_ver01.tar.gz");
+    let all: Vec<&Page> = pages.iter().collect();
+    write_archive(&path, &all, false, true);
+    curate(
+        &e,
+        vec![listed("batch_fx_ja_ver01", &path, Some(sha256_file(&path)))],
+    )
+    .await;
+    put_american_stories(&e).await;
+    let p0 = pages.iter().find(|p| !p.text.is_empty()).unwrap();
+    let row = |seq, text| JaRow {
+        lccn: &p0.lccn,
+        date: p0.date,
+        seq,
+        batch: "batch_fx_ja",
+        loc_text: "missing",
+        text,
+        ocred_at: 1,
+    };
+    put_overlay_part(&e, "ocr-ja/pages/a.parquet", &[row(90, "米國と日本の戰爭")]).await;
+    let v1 = e.release_with(5, true, true).await.unwrap().unwrap();
+    put_overlay_part(&e, "ocr-ja/pages/b.parquet", &[row(91, "東京の新聞")]).await;
+    let v2 = e.release_with(6, false, true).await.unwrap().unwrap();
+    assert!(!v2.full);
+    assert_eq!(v2.indexes, v1.indexes, "no new main index");
+    let current = e.reference_json("current.json").await;
+    assert_eq!(current["index_version"], v2.index_version.as_str());
+    assert_eq!(
+        current["american_stories"],
+        usnm_core::american_stories::VERSION
+    );
+    // It built no main index, so it read no American Stories text.
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", v2.index_version))
+        .await;
+    assert!(manifest["built_from"].get("american_stories").is_none());
+}
+
+/// The documents with American Stories' text go into a real Quickwit
+/// writer under the strict mapping, and both texts are searchable. Runs
+/// when `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn releases_american_stories_into_a_quickwit_writer_node() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_ingest::sink::{QuickwitNode, QuickwitSink};
+    let e = env().await;
+    let (early, late, ..) = curate_early_and_late(&e).await;
+    put_american_stories(&e).await;
+    let qw = e.root.join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7401, &meta, &root)
+        .await
+        .unwrap();
+    let mut published = Vec::new();
+    for (day, list) in [(1, early), (8, late)] {
+        curate(&e, list).await;
+        let r = Release {
+            state: e.state.clone(),
+            curated: e.curated.clone(),
+            reference: e.reference.clone(),
+            owner: "releaser".into(),
+            full: false,
+            synthetic: true,
+            now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
+            titles_left: None,
+            american_stories: true,
+        };
+        let mut sink = QuickwitSink::new(&node.url, &root)
+            .unwrap()
+            .watching(&node)
+            .merges(quick_merges());
+        published.push(r.run(&mut sink).await.unwrap().unwrap());
+    }
+    let p = published.last().unwrap();
+    assert_eq!(p.indexes.len(), 2);
+    let current = e.reference_json("current.json").await;
+    assert_eq!(
+        current["american_stories"],
+        usnm_core::american_stories::VERSION
+    );
+    let http = reqwest::Client::new();
+    let count = |q: String| {
+        let url = format!("{}/api/v1/{}/search", node.url, p.indexes.join(","));
+        let http = http.clone();
+        async move {
+            let v: Value = http
+                .post(url)
+                .json(&serde_json::json!({"query": q, "max_hits": 0}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["num_hits"].as_u64().unwrap_or_else(|| panic!("{v}"))
+        }
+    };
+    let docs: Vec<Value> = ["pages-base-fixture", "pages-delta-fixture-1"]
+        .iter()
+        .flat_map(|f| fixture(f).into_values())
+        .collect();
+    assert_eq!(count("*".into()).await, docs.len() as u64);
+    let has = |field: &str, phrase: &str| {
+        docs.iter()
+            .filter(|d| d[field].as_str().is_some_and(|t| t.contains(phrase)))
+            .count() as u64
+    };
+    let want = has("text_as", "cross of gold");
+    assert!(want > 0);
+    assert_eq!(count("text_as:\"cross of gold\"".into()).await, want);
+    // The pairs field, as the API queries a phrase with a common word.
+    let pairs = usnm_core::common_grams::index_text("cross of gold");
+    assert_eq!(
+        count(format!(
+            "text_as_cg:\"{pairs}\" AND text_as:\"cross of gold\""
+        ))
+        .await,
+        want
+    );
+    node.stop().await.unwrap();
 }

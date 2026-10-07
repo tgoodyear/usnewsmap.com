@@ -117,6 +117,13 @@ enum Command {
         /// Label the version as synthetic demo data (the fixture batches).
         #[arg(long)]
         synthetic: bool,
+        /// Index American Stories' text with LoC's (#218, 04 §4.9): what
+        /// `jaocr.py american-stories-write` wrote for the finished years.
+        /// The first release with it builds a full base. Keep it on once a
+        /// version has the text: a release without it publishes a version
+        /// whose searches leave the text out.
+        #[arg(long)]
+        american_stories: bool,
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -160,6 +167,9 @@ enum Command {
         full: bool,
         #[arg(long)]
         synthetic: bool,
+        /// As for `release`.
+        #[arg(long)]
+        american_stories: bool,
         /// As `curate --max-runtime-secs`, counted from the start of `run`:
         /// batches still queued then wait for the next run, and what was
         /// curated is released. Leave room for titles-sync and the release
@@ -328,11 +338,14 @@ async fn curate(
     Ok(())
 }
 
+// The command's options, passed through.
+#[allow(clippy::too_many_arguments)]
 async fn release(
     cli: &Stores,
     state: &State,
     full: bool,
     synthetic: bool,
+    american_stories: bool,
     titles_left: Option<String>,
     t: &IndexTarget,
     report: &Reporter,
@@ -346,6 +359,7 @@ async fn release(
         synthetic,
         now: chrono::Utc::now(),
         titles_left,
+        american_stories,
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
@@ -631,17 +645,36 @@ async fn command(
         Command::Release {
             full,
             synthetic,
+            american_stories,
             target,
-        } => release(&cli.stores, &state, *full, *synthetic, None, target, report).await,
+        } => {
+            release(
+                &cli.stores,
+                &state,
+                *full,
+                *synthetic,
+                *american_stories,
+                None,
+                target,
+                report,
+            )
+            .await
+        }
         Command::Run {
             list,
             batches,
             full,
             synthetic,
+            american_stories,
             curate_max_runtime_secs,
             titles_max_runtime_secs,
             target,
         } => {
+            // Before hours of curation and titles-sync: the release would refuse.
+            if *american_stories {
+                let curated = usnm_store::open(&cli.stores.curated)?;
+                usnm_ingest::american_stories::check_written(curated.as_ref()).await?;
+            }
             let listed = enqueue(&state, list, batches).await?;
             report.step(Step::Downloading).await;
             curate(
@@ -674,6 +707,7 @@ async fn command(
                 &state,
                 *full,
                 *synthetic,
+                *american_stories,
                 titles_left,
                 target,
                 report,
@@ -778,6 +812,7 @@ mod tests {
             "r",
             "run",
             "--full",
+            "--american-stories",
             "--titles-max-runtime-secs",
             "28800",
             "--index-dir",
@@ -787,12 +822,16 @@ mod tests {
         let Command::Run {
             titles_max_runtime_secs,
             full,
+            american_stories,
             ..
         } = cli.command
         else {
             panic!("not a run");
         };
-        assert_eq!((titles_max_runtime_secs, full), (Some(28800), true));
+        assert_eq!(
+            (titles_max_runtime_secs, full, american_stories),
+            (Some(28800), true, true)
+        );
     }
 
     #[test]
@@ -831,9 +870,15 @@ mod tests {
             "x",
         ])
         .unwrap();
-        let Command::Release { target, .. } = cli.command else {
+        let Command::Release {
+            target,
+            american_stories,
+            ..
+        } = cli.command
+        else {
             panic!("not a release");
         };
+        assert!(!american_stories, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
         assert_eq!(target.min_free_gib, 0);
     }

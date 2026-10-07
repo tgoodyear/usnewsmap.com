@@ -6,6 +6,7 @@
 //! queue and document state; Blob holds everything else.
 
 pub mod activity;
+pub mod american_stories;
 pub mod archive;
 pub mod build_info;
 pub mod catalog;

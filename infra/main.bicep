@@ -54,6 +54,9 @@ param backfillWorkers int = 4
 @description('Make every ingest run a full release (a new, merged base). For a one-off rebuild; clear it afterwards.')
 param ingestFull bool = false
 
+@description('Index American Stories\' text with LoC\'s (#218): the first ingest run with it builds a full base. Keep it on afterwards; turning it off makes the next release publish a version whose searches leave the text out (docs/operations.md, "American Stories\' text").')
+param americanStories bool = false
+
 @description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations.md, "Full rebuild").')
 param dedicatedProfile bool = false
 
@@ -394,6 +397,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     jobNameSuffix: env
     cron: ingestCron
     full: ingestFull
+    americanStories: americanStories
     workers: backfillWorkers
     backfillCron: backfillCron
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''
