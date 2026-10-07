@@ -133,19 +133,15 @@ Then it scores the page against its language:
 
 `--metric v1` runs the first version: `dict_share`, the share of word tokens in wordfreq's top 200,000 words for the title's first catalog language. It is too lenient to rank pages: those lists hold common OCR errors ("tbe", "aud", "ift", "bie") and no frequency cut separates them from rare real words, so medians were about 0.95 for English and 0.86 for German. It also scored pages of multilingual titles against the first language listed, so Yiddish, Serbian and Polish papers catalogued as English first came out worst.
 
-Start it as one execution of the job with `quality` as the argument. `az containerapp job start --args quality` alone doesn't work: when any container flag is given, the CLI sends a container override named after the job, with no image, settings or resources. Send the job's own container with new arguments instead:
+Start it as one execution of the job with `quality` and its options as the arguments; the script prints the execution's name:
 
 ```sh
-RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
-JOB=$(scripts/settings.sh prod JA_OCR_JOB)       # caj-usnm-jaocr-prod
-az containerapp job show -n "$JOB" -g "$RG" --query properties.template.containers[0] -o json |
-  jq '{containers: [{name, image, env, resources: {cpu: .resources.cpu, memory: .resources.memory},
-       args: ["quality", "--sample-pct", "2", "--min-pages", "50"]}]}' > /tmp/quality-start.json
-az rest --method post --body @/tmp/quality-start.json \
-  --url "https://management.azure.com$(az containerapp job show -n "$JOB" -g "$RG" --query id -o tsv)/start?api-version=2025-01-01"
+scripts/ja-ocr/start-quality.sh prod --sample-pct 10 --min-pages 50
 ```
 
-The job starts all its replicas (`USNM_JA_OCR_REPLICAS`, 2). The first takes the lock `audit/ocr-quality-v2-<version>-<pct>pct.lock` (v1: `audit/ocr-quality-<version>-<pct>pct.lock`) in the curated container and does the work; the others log `ocr quality running in another replica` and exit. A rerun within an hour of the last run's last lock renewal exits the same way (`JAOCR_AUDIT_LOCK_MINUTES`, 60). It scores parts in 4 worker processes (`JAOCR_QUALITY_WORKERS`) and needs well under the job's 8 GiB: each worker holds a few small word lists (the top 5,000 words and a few thousand near-misses per language). The job's 24-hour replica timeout is its limit.
+`az containerapp job start --args quality` alone doesn't work: when any container flag is given, the CLI sends a container override named after the job, with no image, settings or resources. The script sends the job's own template with only the arguments changed.
+
+The job's replicas (`USNM_JA_OCR_REPLICAS`, 2) share the work. The parts are cut into chunks of whole batches (about 40 parts each); a replica claims a chunk under `audit/ocr-quality-v2-<version>-<pct>pct.run/<execution>/claims/`, scans it, and writes its sampled pages to `pages/<chunk>.jsonl.gz` and a `done/<chunk>.json` marker. A replica renews its claims every 5 minutes; a claim not renewed for `JAOCR_AUDIT_LOCK_MINUTES` (60) is taken over, and the replica that lost it drops its copy (a chunk's pages are the same whoever scans it). So a replica that dies costs only its chunks' time. When every chunk is done, the replica that creates `reduce.lock` tallies all the chunks, writes the outputs and the final status, renewing the lock as it goes, and then writes `finished.json`. The other waits for `finished.json` (taking over a reduce lock that goes stale), logs `ocr quality results written by another replica` and exits; a retried replica of a finished run exits at once. Progress writes stop once every chunk is done, and a waiting replica restores the final status if a late one replaced it. A new execution starts a new run directory, so a rerun redoes the work and overwrites the outputs. The outputs are shared by every execution with the same version and sample size, so the reducer publishes under `audit/ocr-quality-v2-<version>-<pct>pct.publish.lock` (released after, taken over when stale): two overlapping runs publish one after the other, and the later one's files win. Each replica scores parts in 6 worker processes (`JAOCR_QUALITY_WORKERS`; reading the parts is partly I/O, so more workers than the 4 vCPUs pays) and needs well under the job's 8 GiB: each worker holds a few small word lists and a cache of the last 262,144 distinct tokens' scores. The 2% run took 69 minutes on one replica before the work was shared and the token cache added (October 2026). The job's 24-hour replica timeout is its limit. `ja-ocr/bench_quality.py` times the per-page scoring on synthetic pages.
 
 Output, in the curated container (the data account is reachable only through its private endpoint, like the search log below):
 
@@ -157,7 +153,7 @@ Output, in the curated container (the data account is reachable only through its
   - `worst-titles` (100) and `worst-batches` (50) by median `damage_rate`, with the detected-language mix (`ger:40 eng:3 und:2`); `undetermined-titles` (100), the titles with the highest `und` share.
 - `audit/ocr-quality-v2-<version>-<pct>pct-pages.csv.gz`: every sampled page but Japanese titles', one row each: `doc_id`, title, date, batch, the title's languages, the detected language and decision, the winner's and runner-up's function-word shares, the script, `function_share`, `damage_rate`, `garbage_share` and word count. About 475,000 rows at 2%, for spot checks and for deciding how to tag page languages. It is compressed as the run goes; a sample of more than 3,000,000 pages (over about 12%) gets no page file (`ocr quality pages file dropped`), only the tables.
 
-Titles and batches enter the worst lists with at least `--min-pages` pages with a `damage_rate`, and `undetermined-titles` with that many pages with text. The same rows are in Log Analytics, one `ocr quality` line each with `metric` and `table` fields, then `ocr quality finished` with the totals; `ocr quality progress` lines come every 50 batches:
+Titles and batches enter the worst lists with at least `--min-pages` pages with a `damage_rate`, and `undetermined-titles` with that many pages with text. The same rows are in Log Analytics, one `ocr quality` line each with `metric` and `table` fields, then `ocr quality finished` with the totals; `ocr quality progress` lines come about once a minute from each replica, with the chunks and batches done so far across the run. `scripts/ja-ocr/quality-rows.sh prod <execution>` prints a run's rows as JSON lines:
 
 ```sh
 scripts/logs.sh prod ocr-quality 2d

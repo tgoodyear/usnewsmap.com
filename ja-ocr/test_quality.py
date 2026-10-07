@@ -8,7 +8,9 @@ import json
 import os
 import re
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 import jaocr
 import quality
@@ -239,22 +241,134 @@ class Run(unittest.TestCase):
             for name in ("by-language", "by-decade", "worst-titles", "worst-batches"):
                 self.assertTrue(cur.exists(f"audit/ocr-quality-v1-100pct-{name}.csv"), name)
 
-    def test_sample_is_stable_and_a_second_replica_waits(self):
+    def test_sample_is_stable_and_a_finished_run_is_not_redone(self):
         with tempfile.TemporaryDirectory() as d:
             ref, cur = self.fixture(d)
-            first = quality.quality(ref, cur, sample_pct=30, min_pages=1, workers=1, loader=loader, metric="v1")
+            first = quality.quality(ref, cur, sample_pct=30, min_pages=1, workers=1, loader=loader, metric="v1",
+                                    run="exec-1")
             self.assertTrue(0 < first["summary"]["pages_sampled"] < 140)
-            # The lock is fresh: another replica leaves the work to the first.
+            # A replica of the same execution finds every chunk done and the results being written.
             self.assertIsNone(quality.quality(ref, cur, sample_pct=30, min_pages=1, workers=1, loader=loader,
-                                              metric="v1"))
-            os.environ["JAOCR_AUDIT_LOCK_MINUTES"] = "-1"
-            try:
-                again = quality.quality(ref, cur, sample_pct=30, min_pages=1, workers=2, loader=loader, metric="v1")
-            finally:
-                del os.environ["JAOCR_AUDIT_LOCK_MINUTES"]
+                                              metric="v1", run="exec-1"))
+            # A new execution starts afresh and samples the same pages.
+            again = quality.quality(ref, cur, sample_pct=30, min_pages=1, workers=2, loader=loader, metric="v1",
+                                    run="exec-2")
             self.assertEqual(again["summary"]["pages_sampled"], first["summary"]["pages_sampled"])
             self.assertEqual([r["pages"] for r in again["by_language_decade"]],
                              [r["pages"] for r in first["by_language_decade"]])
+
+    def test_replicas_share_the_chunks_and_one_writes_the_results(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            alone = quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                    run="alone")
+            got: list = []
+            with mock.patch.object(quality, "CHUNK_PARTS", 1), mock.patch.object(quality, "POLL_SECONDS", 0.01):
+                threads = [threading.Thread(target=lambda: got.append(quality.quality(
+                    ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1", run="shared")))
+                    for _ in range(2)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+            reports = [g for g in got if g is not None]
+            self.assertEqual((len(got), len(reports)), (2, 1))
+            self.assertEqual(len(cur.list("audit/ocr-quality-v1-100pct.run/shared/done/")), 2)  # b1 and b2
+            for key in ("pages_read", "pages_sampled", "parts_failed", "japanese_pages_skipped"):
+                self.assertEqual(reports[0]["summary"][key], alone["summary"][key], key)
+            self.assertEqual(reports[0]["by_language_decade"], alone["by_language_decade"])
+
+    def test_a_stale_claim_is_taken_over(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            # A replica that died holding chunk 0's claim.
+            cur.write("audit/ocr-quality-v1-100pct.run/r/claims/00000.json", b'{"owner": "gone"}')
+            with mock.patch.dict(os.environ, {"JAOCR_AUDIT_LOCK_MINUTES": "-1"}):
+                got = quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                      run="r")
+            self.assertEqual(got["summary"]["pages_read"], 140)
+
+    def test_a_chunk_taken_over_mid_scan_is_not_published_by_the_loser(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            alone = quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                    run="alone")
+            real_renew, lost = cur.renew, []
+
+            def renew(path, data, owner):  # the first claim we try to publish was taken over meanwhile
+                if "/claims/" in path and not lost:
+                    lost.append(path)
+                    return False
+                return real_renew(path, data, owner)
+
+            with mock.patch.object(cur, "renew", renew), mock.patch.object(quality, "POLL_SECONDS", 0.01), \
+                    mock.patch.dict(os.environ, {"JAOCR_AUDIT_LOCK_MINUTES": "-1"}):
+                got = quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                      run="r")
+            self.assertEqual(len(lost), 1)
+            self.assertEqual(got["summary"]["pages_read"], alone["summary"]["pages_read"])
+            self.assertEqual(got["by_language_decade"], alone["by_language_decade"])
+            self.assertTrue(cur.exists("audit/ocr-quality-v1-100pct.run/r/finished.json"))
+            # A retried replica of the finished run does nothing.
+            self.assertIsNone(quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader,
+                                              metric="v1", run="r"))
+
+    def test_overlapping_runs_publish_one_at_a_time(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            lock = "audit/ocr-quality-v1-100pct.publish.lock"
+            cur.write(lock, b'{"owner": "another-run"}')  # another execution is publishing
+            slept = []
+
+            def sleep(_):  # that run finishes and releases the lock while we wait
+                slept.append(1)
+                cur.write(lock, b'{"owner": ""}')
+
+            with mock.patch.object(quality.time, "sleep", sleep):
+                got = quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                      run="r")
+            self.assertEqual((len(slept), got["summary"]["pages_read"]), (1, 140))
+            self.assertEqual(json.loads(cur.read(lock))["owner"], "")  # released again
+
+    def test_a_reducer_that_loses_the_publish_lock_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            lock = "audit/ocr-quality-v1-100pct.publish.lock"
+            real_write = cur.write
+
+            def write(path, data):  # another run takes the lock over just after our first output
+                real_write(path, data)
+                if path == "audit/ocr-quality-v1-100pct.json":
+                    real_write(lock, b'{"owner": "another-run"}')
+
+            with mock.patch.object(cur, "write", write), self.assertRaisesRegex(RuntimeError, "took over"):
+                quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                run="r")
+            self.assertFalse(cur.exists("audit/ocr-quality-v1-100pct-by-language.csv"))
+            self.assertFalse(cur.exists("audit/ocr-quality-v1-100pct.run/r/finished.json"))
+
+    def test_a_replica_does_not_reclaim_its_own_chunks(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, cur = self.fixture(d)
+            work = quality.Chunks(cur, "run", 2, lambda: b'{"owner": "me"}', dt.timedelta(minutes=-1), "me")
+            first = work.claim()
+            second = work.claim(active={first})
+            self.assertEqual({first, second}, {0, 1})
+            self.assertIsNone(work.claim(active={0, 1}))
+
+    def test_chunks_keep_batches_whole(self):
+        tasks = [("a", "a0"), ("a", "a1"), ("a", "a2"), ("b", "b0"), ("c", "c0"), ("c", "c1")]
+        self.assertEqual(quality.chunk_tasks(tasks, 2),
+                         [tasks[:3], tasks[3:]])
+        self.assertEqual(quality.chunk_tasks(tasks, 1), [tasks[:3], tasks[3:4], tasks[4:]])
+        self.assertEqual(quality.chunk_tasks([], 5), [])
+
+    def test_run_name_is_the_job_execution(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(quality.run_name("caj-usnm-jaocr-prod-a6wvy42-98lbx"), "caj-usnm-jaocr-prod-a6wvy42")
+            self.assertEqual(quality.run_name("laptop"), "laptop")
+        with mock.patch.dict(os.environ, {"CONTAINER_APP_JOB_EXECUTION_NAME": "caj-x-1"}):
+            self.assertEqual(quality.run_name("anything-abcde"), "caj-x-1")
 
     def test_a_bad_part_is_counted_not_fatal(self):
         with tempfile.TemporaryDirectory() as d:
@@ -650,12 +764,8 @@ class Run2(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ref, cur = Run.fixture(None, d, english=ENGLISH_TEXT, german=GERMAN_TEXT)
             ref = Recording(os.path.join(d, "ref"))
-            old = (quality.PROGRESS_BATCHES, quality.STATUS_MIN_PAGES)
-            quality.PROGRESS_BATCHES, quality.STATUS_MIN_PAGES = 1, 40
-            try:
-                quality.quality(ref, cur, sample_pct=100, min_pages=5, workers=1)
-            finally:
-                quality.PROGRESS_BATCHES, quality.STATUS_MIN_PAGES = old
+            with mock.patch.multiple(quality, PROGRESS_EVERY=0, STATUS_MIN_PAGES=40, CHUNK_PARTS=1):
+                quality.quality(ref, cur, sample_pct=100, min_pages=5, workers=1, run="r")
             bodies = [json.loads(w) for w in writes]
             self.assertGreaterEqual(len(bodies), 3)  # the start, progress, the end
             for raw, b in zip(writes, bodies):
