@@ -8,7 +8,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 FONT = "font-family='Helvetica Neue, Helvetica, Arial, Hiragino Sans, sans-serif'"
 INK, MUTED, LINE = "#222", "#666", "#ccc"
-LOC, OURS, HOJI, CHNC, NONE = "#5b7fb4", "#d9822b", "#7a9e5a", "#8a6bb0", "#bbbbbb"
+LOC, OURS, HOJI, CHNC, NONE = "#5b7fb4", "#d9822b", "#4f7a35", "#6b4c94", "#bbbbbb"
 
 
 def svg(w, h, body):
