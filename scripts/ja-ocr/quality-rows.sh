@@ -31,7 +31,7 @@ query="ContainerAppConsoleLogs
 | where ContainerName == \"jaocr\" and ContainerGroupName startswith \"$EXECUTION-\"
 | where (Log has \"ocr quality\" or Log has \"mixed pages\" or Log has \"american stories\") and Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"
 | extend j = parse_json(Log)
-| where tostring(j.message) in (\"ocr quality\", \"ocr quality finished\", \"mixed pages\", \"mixed pages finished\", \"american stories\", \"american stories finished\")
+| where tostring(j.message) in (\"ocr quality\", \"ocr quality finished\", \"mixed pages\", \"mixed pages finished\", \"american stories\", \"american stories finished\", \"american stories year written\", \"american stories write finished\")
 | project TimeGenerated, Log
 | order by TimeGenerated asc"
 body=$(mktemp)

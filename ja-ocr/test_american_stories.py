@@ -110,6 +110,10 @@ class AmericanStories(unittest.TestCase):
                               recall["railroad"]["only_american_stories"]), (0, 3, 3))
             self.assertEqual((recall["cotton"]["loc"], recall["cotton"]["either"], recall["cotton"]["gain_share"]),
                              (3, 3, 0.0))
+            only = [o for o in got["only_american_stories"] if o["term"] == "railroad"]
+            self.assertEqual(len(only), 3)
+            self.assertIn("The railroad company met", only[0]["context"])
+            self.assertTrue(only[0]["url"].startswith("https://www.loc.gov/resource/sn1/1865-0"))
             bands = {r["illegible_regions"]: r["pages"] for r in got["legibility"]}
             self.assertEqual(bands, {"lt_0.25": 2, "0.5-0.75": 1})
             self.assertTrue(cur.exists("audit/american-stories-v1-exec-1.json"))
@@ -175,12 +179,16 @@ class AmericanStories(unittest.TestCase):
         self.assertEqual([c.args[2:] for c in a.call_args_list], [([1865, 1925], 10.0), ([1865], 2.0)])
         self.assertEqual([c.args[2] for c in q.call_args_list], [2.0, 10.0])
 
+    def test_context_reads_hyphenated_words_as_terms_do(self):
+        self.assertEqual(ams.context("The rail-\nroad company met.", "railroad", 4), "The railroad com")
+
     def test_scan_text_and_legibility(self):
         name, body = scan("sn1", "1865-01-01", 1, "Body.", ("Illegible", "Legible", "Questionable"))
         body["bboxes"].append({"class": "ad", "legibility": "Illegible"})
+        body["bboxes"].append({"class": "author", "legibility": "Legible"})  # the dataset's name for a byline
         text, leg = ams.scan_text(body)
         self.assertEqual(text, "NEWS\nBody.")
-        self.assertEqual(leg, {"illegible": 1, "legible": 1, "questionable": 1})  # ads aren't text regions
+        self.assertEqual(leg, {"illegible": 1, "legible": 2, "questionable": 1})  # ads aren't text regions
 
 
 if __name__ == "__main__":
