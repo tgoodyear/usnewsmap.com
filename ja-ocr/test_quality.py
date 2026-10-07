@@ -566,6 +566,22 @@ class Detection(unittest.TestCase):
 
     def test_yiddish_ligatures_read_as_their_letters(self):
         self.assertEqual(quality.text_words("\u05f0אס \u05d5\u05d5אס")[1], ["וואס", "וואס"])
+        # A ligature alone is a two-letter word, as its spelled-out pair is.
+        for lig, pair in (("\u05f0", "וו"), ("\u05f1", "וי"), ("\u05f2", "יי")):
+            self.assertEqual(quality.text_words(f"{lig} {pair}")[1], [pair, pair])
+
+    def test_serbian_competes_with_another_cyrillic_language(self):
+        serbian = ("Општински одбор састао се у уторак увече у судници и после дуге расправе решено је да се "
+                   "нова школа сагради на плацу који је управа купила прошле године. Председник општине рекао је "
+                   "да неће потписати закон ако трошкови не буду плаћени из општег фонда.")
+        russian = ("Городской совет собрался во вторник вечером в здании суда и после долгого спора было решено, "
+                   "что новая школа будет построена на участке, который управление купило в прошлом году. "
+                   "Председатель сказал, что он не подпишет закон, если расходы не будут оплачены из общего фонда.")
+        got = self.detect(serbian, ("rus", "srp"))
+        self.assertEqual((got["lang"], got["runner_up"], got["damage_rate"]), ("srp", "rus", 0.0))
+        self.assertGreater(got["function_share"], 0.2)
+        got = self.detect(russian, ("srp", "rus"))
+        self.assertEqual((got["lang"], got["runner_up"]), ("rus", "srp"))
 
     def test_hyphenated_line_breaks_are_joined(self):
         self.assertEqual(quality.text_words("turn-\ning the well-known")[1], ["turning", "the"])
@@ -688,6 +704,7 @@ class Aggregation2(unittest.TestCase):
         self.assertEqual((g["function_share_p10"], g["function_share_p90"], g["wordlist"]), (0.4, 0.4, "de"))
         self.assertEqual((lang["und"]["und_share"], lang["mixed"]["mixed_share"]), (1.0, 1.0))
         self.assertEqual((lang["yid"]["scored_pages"], lang["yid"]["damage_rate_median"]), (0, None))
+        self.assertEqual(lang["yid"]["wordlist"], "yi")  # our own list (wordlists/yi.txt)
         self.assertEqual((lang["no_text"]["pages"], lang["no_text"]["empty_share"]), (1, 1.0))
         self.assertEqual((t.japanese.pages, t.untitled), (1, 1))
 

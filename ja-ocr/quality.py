@@ -787,13 +787,16 @@ def other_script_language(s: str, words: list[str], languages: tuple, models: Mo
     langs = [lang for lang in languages if s in scripts_of(lang)]
     if not langs or not words:
         return Language(UNKNOWN, UNKNOWN, script=s)
-    if s == "cyrillic" and langs == ["srp"] and (m := models.get("srp")) is not None:
-        latin_words = [w.translate(SERBIAN_LATIN) for w in words]
-        fs = fits([("srp", m)], counted(latin_words), len(latin_words))
-        return Language("srp", DETECTED, share=_r(fs[0].share) if fs else None, script=s,
-                        damage=damage(m, latin_words))
-    modelled = [(lang, m) for lang in langs if (m := models.get(lang)) is not None and m.script == s]
+    # Serbian in Cyrillic is scored by its Latin-script list on the words transliterated; the transliterated
+    # words join the counts beside the Cyrillic ones (the two never share a word), so Serbian competes with
+    # the title's other Cyrillic languages on equal terms.
+    serbian = [w.translate(SERBIAN_LATIN) for w in words] if s == "cyrillic" and "srp" in langs else None
+    modelled = [(lang, m) for lang in langs if (m := models.get(lang)) is not None
+                and (m.script == s or (serbian is not None and lang == "srp"))]
     counts = counted(words)
+    if serbian is not None:
+        for w, c in counted(serbian).items():
+            counts[w] = counts.get(w, 0) + c
     fs = fits(modelled, counts, len(words))
     best = winner(fs, counts, min_types)
     if best is None:
@@ -807,9 +810,10 @@ def other_script_language(s: str, words: list[str], languages: tuple, models: Mo
     share = next((f.share for f in fs if f.lang == best), None)
     rest = [f for f in fs if f.lang != best]
     m = dict(modelled).get(best)
+    scored = serbian if best == "srp" and serbian is not None else words
     return Language(best, DETECTED, share=_r(share), runner_up=rest[0].lang if rest else None,
                     runner_up_share=_r(rest[0].share) if rest else None, script=s,
-                    damage=damage(m, words, tuple(f.model for f in rest)) if m else None)
+                    damage=damage(m, scored, tuple(f.model for f in rest)) if m else None)
 
 
 DEHYPHENATE = re.compile(r"(\w)-\n\s*(?=\w)")
@@ -838,11 +842,12 @@ def token_info(tok: str) -> tuple[str | None, bool, bool]:
     g = garbage(tok, core, ENGLISH)
     g_syllabic = g and garbage(tok, core, "cze")
     word = None
-    if core and len(core) >= 2:
+    if core:
         if not core.isalpha():  # points and accents as combining marks: "פֿאר", "e\u0301"
             core = "".join(c for c in unicodedata.normalize("NFC", core) if not unicodedata.combining(c))
+        core = core.translate(LIGATURES)  # before the length check: "װ" is a two-letter word
         if len(core) >= 2 and core.isalpha():
-            word = core.casefold().translate(LIGATURES)
+            word = core.casefold()
     return word, g, g_syllabic
 
 
@@ -1092,7 +1097,8 @@ class Tally2:
             by_decade.setdefault(decade, Stats2()).merge(s)
 
         def lrow(lang, decade, s):
-            return {"metric": "v2", "language": lang, "wordlist": WORDFREQ.get(lang), "decade": decade, **s.row()}
+            return {"metric": "v2", "language": lang, "wordlist": WORDFREQ.get(lang) or LOCAL_WORDLISTS.get(lang),
+                    "decade": decade, **s.row()}
 
         lang_decade = [lrow(lang, dec, s) for (lang, dec), s in
                        sorted(self.by_lang_decade.items(), key=lambda kv: (-by_lang[kv[0][0]].pages, kv[0]))]
@@ -1451,7 +1457,8 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
             a = agree.get(scope) or {}
             for k in ("differs_share", "und_share", "mixed_share"):
                 summary[f"{k}_{scope}"] = a.get(k)
-        wordlists = {"source": "wordfreq top_n_list", "function_words": TOP_FUNCTION, "damage_words": TOP_HEAD,
+        wordlists = {"source": "wordfreq top_n_list; for local_codes, ja-ocr/wordlists/<code>.txt (README.md there)",
+                     "local_codes": LOCAL_WORDLISTS, "function_words": TOP_FUNCTION, "damage_words": TOP_HEAD,
                      "real_words": TOP_REAL, "codes": WORDFREQ, "version": _wordfreq_version()}
         method = {"min_words": MIN_WORDS, "min_share": MIN_SHARE, "page_types": PAGE_TYPES,
                   "window_types": WINDOW_TYPES, "lead": LEAD, "window": WINDOW,
