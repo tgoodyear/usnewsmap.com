@@ -27,11 +27,14 @@ replica of the execution works (solo.py); start it on the one-replica job
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import re
 import tarfile
+import time
 import urllib.request
+import zlib
 from datetime import date
 
 import american_stories as ams
@@ -47,6 +50,11 @@ FLUSH_ROWS = 2000  # a title's buffered pages written as one part (about 50 MB o
 FLUSH_TOTAL = 20000  # every buffer written once this many pages are held
 TEXT_CLASSES = ams.TEXT_CLASSES
 SEPARATOR = "\n\n"
+ATTEMPTS = 3  # tries per year: a download that stalls (ams.READ_TIMEOUT) or breaks off is started again
+RETRY_SECONDS = 60
+# What a broken or stalled download raises: timeouts and connection errors are OSError; a body cut
+# short is IncompleteRead (http.client) or a truncated gzip or tar stream.
+RETRYABLE = (OSError, EOFError, http.client.HTTPException, tarfile.TarError, zlib.error)
 
 
 def box(b) -> list:
@@ -89,7 +97,7 @@ def page_row(scan: dict) -> dict:
 def years_available(opener=None) -> list[int]:
     """The years Hugging Face has a tarball for."""
     req = urllib.request.Request(TREE, headers={"User-Agent": jaocr.UA, "DNT": "1"})
-    with (opener or urllib.request.urlopen)(req) as resp:
+    with (opener(req) if opener else urllib.request.urlopen(req, timeout=ams.READ_TIMEOUT)) as resp:
         files = json.load(resp)
     return sorted(int(m.group(1)) for f in files if (m := YEAR_FILE.match(f.get("path", ""))))
 
@@ -179,6 +187,22 @@ def write_year(curated, year: int, opener=None, keep=lambda: None) -> dict:
     return {**counts, **parts.written}
 
 
+def write_year_retrying(curated, year: int, opener=None, keep=lambda: None) -> dict:
+    """write_year, started again from the top (up to ATTEMPTS times) when the download fails. A retry
+    writes the same parts under the same names (the tarball is read in the same order), so a part
+    from the failed try is overwritten, not doubled."""
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            return write_year(curated, year, opener, keep)
+        except RETRYABLE as e:
+            if attempt == ATTEMPTS:
+                raise
+            jaocr.log("american stories year failed; retrying", year=year, attempt=attempt,
+                      error=f"{type(e).__name__}: {e}"[:300])
+            time.sleep(RETRY_SECONDS)
+    raise AssertionError("unreachable")
+
+
 def write(reference, curated, years: list[int] | None = None, run: str | None = None, opener=None) -> dict | None:
     current = json.loads(reference.read("current.json"))
     version = current["reference"]
@@ -200,7 +224,7 @@ def write(reference, curated, years: list[int] | None = None, run: str | None = 
         if curated.exists(marker):
             totals["years_skipped"] += 1
             continue
-        got = write_year(curated, year, opener, solo.keep)
+        got = write_year_retrying(curated, year, opener, solo.keep)
         curated.write(marker, json.dumps({"year": year, **got}, sort_keys=True).encode())
         jaocr.log("american stories year written", year=year, **got)
         totals["years_written"] += 1

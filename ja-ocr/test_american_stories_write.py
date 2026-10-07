@@ -129,6 +129,57 @@ class Write(unittest.TestCase):
         self.assertEqual(names, ["1865-000.parquet", "1865-001.parquet"])
         self.assertEqual(len(self.rows()), 4)
 
+    def test_a_stalled_download_is_started_again(self):
+        calls = {"n": 0}
+
+        def flaky(req):
+            if req.full_url != asw.TREE:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise TimeoutError("The read operation timed out")
+            return self.opener(req)
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw.jaocr, "log") as log:
+            got = asw.write(self.ref, self.cur, run="exec-5", opener=flaky)
+        self.assertEqual((got["years_written"], got["pages"]), (1, 4))
+        self.assertEqual(len(self.rows()), 4)
+        self.assertIn("american stories year failed; retrying", [c.args[0] for c in log.call_args_list])
+
+    def test_a_download_cut_short_rewrites_the_same_parts(self):
+        tries = {"n": 0}
+
+        def cut(req):
+            if req.full_url == asw.TREE:
+                return self.opener(req)
+            tries["n"] += 1
+            body = self.tgz if tries["n"] > 1 else self.tgz[: len(self.tgz) * 2 // 3]
+            return contextlib.closing(io.BytesIO(body))
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw, "FLUSH_ROWS", 1):
+            got = asw.write(self.ref, self.cur, run="exec-6", opener=cut)
+        self.assertEqual((tries["n"], got["pages"]), (2, 4))
+        rows = self.rows()  # every part read: no page twice
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(sum(pq.read_table(io.BytesIO(self.cur.read(p))).num_rows for p in self.cur.list(asw.PAGES)), 4)
+
+    def test_a_year_that_keeps_failing_gets_no_marker(self):
+        def broken(req):
+            if req.full_url == asw.TREE:
+                return self.opener(req)
+            raise ConnectionResetError("reset")
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), self.assertRaises(ConnectionResetError):
+            asw.write(self.ref, self.cur, run="exec-7", opener=broken)
+        self.assertFalse(self.cur.exists(f"{asw.YEARS}/1865.json"))
+
+    def test_downloads_have_a_timeout(self):
+        with mock.patch.object(asw.ams.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value = contextlib.closing(io.BytesIO(b"[]"))
+            asw.years_available()
+            asw.ams._open(1865, None)
+        self.assertEqual([c.kwargs.get("timeout") for c in urlopen.call_args_list],
+                         [asw.ams.READ_TIMEOUT, asw.ams.READ_TIMEOUT])
+
 
 if __name__ == "__main__":
     unittest.main()

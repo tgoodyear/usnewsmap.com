@@ -121,9 +121,16 @@ def scan_text(scan: dict) -> tuple[str, dict[str, int]]:
     return "\n".join(parts), legibility
 
 
+# Seconds a download may go without data before it fails. Without one, a stalled connection to
+# Hugging Face blocked a writer run for hours with nothing logged (#218).
+READ_TIMEOUT = 300
+
+
 def _open(year: int, opener):
     req = urllib.request.Request(URL.format(year=year), headers={"User-Agent": jaocr.UA, "DNT": "1"})
-    return (opener or urllib.request.urlopen)(req)
+    if opener:
+        return opener(req)
+    return urllib.request.urlopen(req, timeout=READ_TIMEOUT)
 
 
 def stream_year(year: int, cut: int, opener=None, keep=lambda: None) -> tuple[dict, dict]:
