@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AggregateResponse, CoverageResponse, PlaceFeature } from "../api/types";
-import { prepareSkew } from "./skewInput";
+import { MIN_PLACES, prepareSkew } from "./skewInput";
 
 const feature = (id: string, state: string, languages?: string[], titles: Record<string, number> = {}): PlaceFeature => ({
   type: "Feature",
@@ -52,7 +52,7 @@ const features = new Map(
 
 describe("prepareSkew", () => {
   it("joins hits onto the coverage cells in the coverage's place order", () => {
-    const p = prepareSkew(agg, coverage, features);
+    const p = prepareSkew(agg, coverage, features, 5);
     if (typeof p === "string") throw new Error(p);
     expect(p.placeIds).toEqual(ids);
     expect(p.version).toBe("v");
@@ -79,7 +79,7 @@ describe("prepareSkew", () => {
 
   it("scores places the same way under a language filter, without naming their languages", () => {
     const filtered = { ...agg, query: { canonical: "lang=ger&q=x", ast: "x" } };
-    const p = prepareSkew(filtered, coverage, features);
+    const p = prepareSkew(filtered, coverage, features, 5);
     if (typeof p === "string") throw new Error(p);
     expect(Array.from(p.input.cells.pages)).toEqual([10, 20, 30, 40, 50, 60, 5]);
     expect(p.languages).toEqual([null, null, null, null, null, null]);
@@ -87,9 +87,20 @@ describe("prepareSkew", () => {
   });
 
   it("is unavailable when filters remove the baselines, buckets differ or places are few", () => {
-    expect(prepareSkew({ ...agg, series: { ...agg.series, baseline: null } }, coverage, features)).toBe("filters");
-    expect(prepareSkew(agg, { ...coverage, count: 3 }, features)).toBe("mismatch");
+    expect(prepareSkew({ ...agg, series: { ...agg.series, baseline: null } }, coverage, features, 5)).toBe("filters");
+    expect(prepareSkew(agg, { ...coverage, count: 3 }, features, 5)).toBe("mismatch");
     const few = { ...coverage, pages: { p: [0, 1, 2, 3], b: [0, 0, 0, 0], h: [1, 1, 1, 1] } };
-    expect(prepareSkew(agg, few, features)).toBe("few-places");
+    expect(prepareSkew(agg, few, features, 5)).toBe("few-places");
+  });
+
+  it("needs 10 places with pages by default", () => {
+    // The fixture's places with pages are enough for a threshold of 5, not for the site's 10.
+    expect(MIN_PLACES).toBe(10);
+    expect(prepareSkew(agg, coverage, features)).toBe("few-places");
+    const p = prepareSkew(agg, coverage, features, 5);
+    if (typeof p === "string") throw new Error(p);
+    expect(p.placesWithPages).toBeLessThan(10);
+    expect(typeof prepareSkew(agg, coverage, features, p.placesWithPages)).toBe("object");
+    expect(prepareSkew(agg, coverage, features, p.placesWithPages + 1)).toBe("few-places");
   });
 });

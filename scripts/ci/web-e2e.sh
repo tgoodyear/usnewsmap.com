@@ -25,7 +25,8 @@ if [ "$step" = build ] || [ "$step" = all ]; then
   # Always reap the installer, even when the site's build fails, so it
   # isn't still writing its log when the step ends.
   site=0
-  { npm run build && node scripts/precompress.mjs dist; } || site=$?
+  # The fixture corpus has 6 places: the relative rate's tests need it on with fewer than the site's 10.
+  { VITE_SKEW_MIN_PLACES=5 npm run build && node scripts/precompress.mjs dist; } || site=$?
   installed=0
   wait "$install" || installed=$?
   if [ "$installed" -ne 0 ]; then

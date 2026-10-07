@@ -7,8 +7,13 @@ import type { AggregateResponse, CoverageResponse, PlaceFeature } from "../api/t
 import type { SkewInput } from "./skewModel";
 import { languageCounts, languageLabel } from "../lib/languages";
 
-/** The view is off below this many places with pages in the window (doc 11, 11.4.2). */
-export const MIN_PLACES = 5;
+/**
+ * The view is off below this many places with pages in the window (doc 11, 11.4.2). With fewer, the
+ * typical place and the spread between places are fitted from a handful of points, and the rates mostly
+ * compare a few newspapers, not regions ("guerra civil" in Spanish, 1935-1940: 8 places, one paper with
+ * 71% of the matches). The end-to-end build sets VITE_SKEW_MIN_PLACES to 5: its fixture corpus has 6.
+ */
+export const MIN_PLACES = Number(import.meta.env.VITE_SKEW_MIN_PLACES) || 10;
 /** Credible level of the intervals. */
 export const LEVEL = 0.9;
 
@@ -42,6 +47,7 @@ export function prepareSkew(
   agg: AggregateResponse,
   coverage: CoverageResponse,
   features: Map<string, PlaceFeature>,
+  minPlaces: number = MIN_PLACES,
 ): Prepared | Unavailable {
   if (agg.series.baseline === null || agg.cube.baseline_ref === null) return "filters";
   const buckets = agg.bucket.count;
@@ -69,7 +75,7 @@ export function prepareSkew(
     if (coverage.pages.h[i]! > 0) withPages[p] = 1;
   }
   const placesWithPages = withPages.reduce((a, x) => a + x, 0);
-  if (placesWithPages < MIN_PLACES) return "few-places";
+  if (placesWithPages < minPlaces) return "few-places";
   const stateCodes: string[] = [];
   const stateIndex = new Map<string, number>();
   // Places without a known state are left out of the states (-1).
