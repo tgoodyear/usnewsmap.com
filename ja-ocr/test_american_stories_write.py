@@ -145,22 +145,36 @@ class Write(unittest.TestCase):
         self.assertEqual(len(self.rows()), 4)
         self.assertIn("american stories year failed; retrying", [c.args[0] for c in log.call_args_list])
 
-    def test_a_download_cut_short_rewrites_the_same_parts(self):
+    def test_a_retry_rewrites_the_parts_of_the_failed_try(self):
+        # The first try reads every member and writes its parts, then fails (no gzip trailer); the retry
+        # writes the same part names again, so each page is in one part.
         tries = {"n": 0}
 
         def cut(req):
             if req.full_url == asw.TREE:
                 return self.opener(req)
             tries["n"] += 1
-            body = self.tgz if tries["n"] > 1 else self.tgz[: len(self.tgz) * 2 // 3]
-            return contextlib.closing(io.BytesIO(body))
+            return contextlib.closing(io.BytesIO(self.tgz[:-8] if tries["n"] == 1 else self.tgz))
 
-        with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw, "FLUSH_ROWS", 1):
+        writes = []
+        write = self.cur.write
+
+        def counted(path, data):
+            if path.startswith(asw.PAGES):
+                writes.append((tries["n"], path))
+            return write(path, data)
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw, "FLUSH_ROWS", 1), \
+                mock.patch.object(self.cur, "write", counted):
             got = asw.write(self.ref, self.cur, run="exec-6", opener=cut)
+        first = sorted(p for t, p in writes if t == 1)
+        second = sorted(p for t, p in writes if t == 2)
         self.assertEqual((tries["n"], got["pages"]), (2, 4))
-        rows = self.rows()  # every part read: no page twice
-        self.assertEqual(len(rows), 4)
-        self.assertEqual(sum(pq.read_table(io.BytesIO(self.cur.read(p))).num_rows for p in self.cur.list(asw.PAGES)), 4)
+        self.assertEqual(len(first), 3)  # the failed try wrote parts (the "pNone" page is placed after the read)
+        self.assertLessEqual(set(first), set(second))  # and the retry wrote the same names again
+        self.assertEqual(sorted(self.cur.list(asw.PAGES)), second)
+        self.assertEqual(sum(pq.read_table(io.BytesIO(self.cur.read(p))).num_rows for p in second), 4)
+        self.assertEqual(len(self.rows()), 4)
 
     def test_a_download_cut_at_a_member_boundary_is_retried(self):
         # Every member arrives, but the gzip trailer doesn't: tar alone would read this as a whole archive.
