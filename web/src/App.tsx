@@ -27,7 +27,7 @@ import { useMediaQuery } from "./lib/useMediaQuery";
 import { PagesLists, WhenLists, exactMedian, medianCandidates, type MedianStatus } from "./components/PlaceLists";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
-import { prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
+import { MIN_PLACES, prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
 import { maxWindowExpected, scoreFrame } from "./engine/skewModel";
 import { useSkewModel } from "./engine/useSkew";
 import { skewInfo } from "./lib/skewText";
@@ -830,7 +830,7 @@ function skewStatus(
     };
   if (prepared === "few-places")
     return {
-      text: "The relative rate needs at least 5 places with pages between these dates. Showing page counts.",
+      text: `The relative rate needs at least ${MIN_PLACES} places with pages between these dates. Showing page counts.`,
       error: false,
     };
   if (status === "error")
