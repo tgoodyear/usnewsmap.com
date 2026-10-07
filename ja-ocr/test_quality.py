@@ -459,9 +459,18 @@ class Detection(unittest.TestCase):
         self.assertEqual(self.detect(GERMAN_TEXT, ("eng",))["decision"], "und")
 
     def test_languages_without_a_word_list_are_und(self):
-        got = self.detect(HAWAIIAN_TEXT, ("haw", "eng"))
+        # Choctaw has no word list: a page that isn't English comes out und.
+        got = self.detect(HAWAIIAN_TEXT, ("cho", "eng"))
         self.assertEqual((got["decision"], got["lang"], got["function_share"], got["damage_rate"]),
                          ("und", "und", None, None))
+
+    def test_hawaiian_has_our_own_word_list(self):
+        # wordlists/haw.txt, in the 19th-century spelling (no ʻokina or kahakō).
+        got = self.detect(HAWAIIAN_TEXT, ("haw", "eng"))
+        self.assertEqual((got["decision"], got["lang"], got["damage_rate"]), ("detected", "haw", 0.0))
+        self.assertGreater(got["function_share"], 0.3)
+        garbled = HAWAIIAN_TEXT.replace(" ka ", " kn ").replace(" na ", " nn ").replace(" ua ", " un ")
+        self.assertGreater(self.detect(garbled, ("haw", "eng"))["damage_rate"], 0.1)
 
     def test_too_short_is_und(self):
         got = self.detect("The council met on Tuesday and voted for the new school.", ("eng",))
@@ -483,11 +492,14 @@ class Detection(unittest.TestCase):
     def test_hebrew_script(self):
         yiddish = self.detect(YIDDISH_TEXT, ("eng", "yid"))
         self.assertEqual((yiddish["decision"], yiddish["lang"], yiddish["script"]), ("detected", "yid", "hebrew"))
-        self.assertIsNone(yiddish["damage_rate"])  # wordfreq has no Yiddish list
+        # wordlists/yi.txt (wordfreq has no Yiddish list): scored like any other language.
+        self.assertEqual(yiddish["damage_rate"], 0.0)
+        self.assertGreater(yiddish["function_share"], 0.3)
         # Hebrew script in a title that lists no language written in it.
         self.assertEqual(self.detect(YIDDISH_TEXT, ("eng",))["decision"], "und")
-        # Listing both: Hebrew's word list doesn't fit Yiddish, so the one without a list.
-        self.assertEqual(self.detect(YIDDISH_TEXT, ("heb", "yid"))["lang"], "yid")
+        # Listing both: Yiddish's word list fits Yiddish better than Hebrew's.
+        both = self.detect(YIDDISH_TEXT, ("heb", "yid"))
+        self.assertEqual((both["lang"], both["runner_up"]), ("yid", "heb"))
         hebrew = self.detect(YIDDISH_TEXT, ("heb",))
         self.assertEqual((hebrew["lang"], hebrew["script"]), ("heb", "hebrew"))
         # Pointed letters (combining marks) don't split or drop a word.
@@ -540,15 +552,20 @@ class Detection(unittest.TestCase):
         # A whole page under 20 words is und, whatever its script.
         self.assertEqual(self.detect(self.words(YIDDISH_TEXT, 15), ("yid",))["decision"], "und")
 
-    def test_cyrillic_serbian_has_no_word_list(self):
-        # wordfreq's Serbo-Croatian list is in Latin script: a Cyrillic page is Serbian, unscored.
+    def test_cyrillic_serbian_is_scored_in_latin_letters(self):
+        # wordfreq's Serbo-Croatian list is in Latin script: a Cyrillic page is transliterated to score it.
         text = ("Општински одбор састао се у уторак увече у судници и после дуге расправе решено је да се "
                 "нова школа сагради на плацу који је управа купила прошле године. Председник општине рекао је "
                 "да неће потписати закон ако трошкови не буду плаћени из општег фонда.")
         got = self.detect(text, ("srp", "eng"))
-        self.assertEqual((got["decision"], got["lang"], got["script"], got["function_share"]),
-                         ("detected", "srp", "cyrillic", None))
+        self.assertEqual((got["decision"], got["lang"], got["script"], got["damage_rate"]),
+                         ("detected", "srp", "cyrillic", 0.0))
+        self.assertGreater(got["function_share"], 0.2)
         self.assertEqual(self.models.get("srp").script, "latin")
+        self.assertEqual("љубав њега џеп ђак".translate(quality.SERBIAN_LATIN), "ljubav njega džep đak")
+
+    def test_yiddish_ligatures_read_as_their_letters(self):
+        self.assertEqual(quality.text_words("\u05f0אס \u05d5\u05d5אס")[1], ["וואס", "וואס"])
 
     def test_hyphenated_line_breaks_are_joined(self):
         self.assertEqual(quality.text_words("turn-\ning the well-known")[1], ["turning", "the"])
