@@ -240,6 +240,15 @@ export interface SearchParams {
 }
 
 /**
+ * Whether two requests are the same search: the same words and filters,
+ * differing at most in their time bucket. A new search clears the last one's
+ * results while it loads; the same search in another bucket keeps them (#210).
+ */
+export function sameSearch(a: SearchParams, b: SearchParams): boolean {
+  return JSON.stringify({ ...a, bucket: null }) === JSON.stringify({ ...b, bucket: null });
+}
+
+/**
  * Plain words, with no query syntax. Mirrors `is_plain` in
  * crates/usnm-core/src/query.rs: the API applies the phrase/any/near modes
  * only to plain input and parses anything else as query syntax.

@@ -8,6 +8,8 @@ interface Props {
   view: ViewState;
   meta: Meta | undefined;
   onSearch: (patch: Partial<ViewState>) => void;
+  /** A search is running: the button shows a spinner (its width doesn't change). */
+  busy?: boolean;
 }
 
 const MODES: { value: Mode; label: string }[] = [
@@ -54,7 +56,7 @@ export function searchKey(view: ViewState): string {
   ].join("|");
 }
 
-export function SearchBar({ view, meta, onSearch }: Props) {
+export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
   const id = useId();
   // The parent remounts this form (via `key`) when the search in the URL
   // changes, so back/forward and example cards replace the draft.
@@ -123,8 +125,15 @@ export function SearchBar({ view, meta, onSearch }: Props) {
         autoComplete="off"
         spellCheck={false}
       />
-      <button type="submit" className="button button--primary search__go">
-        Search
+      <button
+        type="submit"
+        className={busy ? "button button--primary search__go search__go--busy" : "button button--primary search__go"}
+        aria-busy={busy}
+      >
+        <span className="search__go-label">Search</span>
+        <span className="search__go-spinner" aria-hidden="true">
+          <span className="spinner" />
+        </span>
       </button>
       {jaHint && (
         <p id={`${id}-ja`} className="search__hint" role="note">

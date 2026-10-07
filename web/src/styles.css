@@ -162,6 +162,38 @@ input, select {
 .results { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .results > .notice { flex: none; }
 .results--loading .stage, .results--loading .timebar { opacity: 0.6; transition: opacity 150ms; }
+/* A search is running (#210): a bar across the top of the results, a spinner in
+   the Search button, and, before the first answer, a panel saying what is being
+   searched. With reduced motion they stand still but stay visible. */
+.results { position: relative; }
+.search-progress {
+  position: absolute; top: 0; left: 0; right: 0; height: 3px; z-index: 5; overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.search-progress::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 35%;
+  background: var(--accent); animation: search-progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes search-progress-slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+.spinner {
+  display: inline-block; width: 1em; height: 1em; border-radius: 50%; vertical-align: -0.15em;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor;
+  animation: spin 0.8s linear infinite;
+}
+.spinner--large { width: 2.25rem; height: 2.25rem; border-width: 3px; color: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* The label and the spinner share one cell, so the button keeps its width. */
+.search__go { display: inline-grid; place-items: center; }
+.search__go-label, .search__go-spinner { grid-area: 1 / 1; }
+.search__go-spinner { visibility: hidden; }
+.search__go--busy .search__go-label { visibility: hidden; }
+.search__go--busy .search__go-spinner { visibility: visible; }
+.searching {
+  display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center;
+  margin: 48px auto; padding: 24px 16px; max-width: 32rem;
+}
+.searching__title { margin: 0; font-size: 1.25rem; font-weight: 600; overflow-wrap: anywhere; }
+.searching__note { margin: 0; color: var(--muted); }
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; }
 .summary { margin: 0 auto 0 0; }
