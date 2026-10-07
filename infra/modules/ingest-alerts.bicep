@@ -1,7 +1,8 @@
-// Log search alerts on the ingest and backfill jobs (09 §9.2), evaluated on
+// Log search alerts on the ingest and backfill jobs (09 §9.2), and one on the
+// Japanese OCR jobs (jaocr-job-failed), evaluated on
 // the Log Analytics workspace against the resource-specific Container Apps
 // tables (ContainerAppConsoleLogs, ContainerAppSystemLogs). Severity 2
-// (the progress check 3), email through the environment's action group.
+// (the progress check and the Japanese OCR jobs 3), email through the environment's action group.
 // Stateful: one notification when a condition starts, resolved when it
 // clears.
 //
@@ -55,7 +56,8 @@ let lines = ContainerAppConsoleLogs
     | project TimeGenerated, Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName,
         Detail, Expected;
 let platform = ContainerAppSystemLogs
-    | where JobName startswith "caj-usnm-" or ContainerAppName startswith "caj-usnm-"
+    | where JobName startswith "caj-usnm-ingest-" or JobName startswith "caj-usnm-backfill-"
+        or ContainerAppName startswith "caj-usnm-ingest-" or ContainerAppName startswith "caj-usnm-backfill-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | where Reason in ("BackoffLimitExceeded", "DeadlineExceeded")
         or (Log contains "terminated with exit code" and Log !contains "exit code '0'")
@@ -73,6 +75,38 @@ let jobEvents = platform
         by TimeGenerated, Job, Replica, Detail, Backoff
     | where not(Backoff and Explained > 0);
 union (lines | where not(Expected)), replicaEvents, jobEvents
+| where TimeGenerated > ago(15m)
+| extend Execution = iff(isempty(Replica), Job, extract(@"^(.+)-[a-z0-9]+$", 1, Replica))
+| extend Reason = replace_regex(Detail, @"\?[^\s'\x22]+", "?…")
+| extend Reason = replace_regex(Reason, @"(?i)(sig|signature|token|secret|password|key|code)=[^\s&,;]+", @"\1=***")
+| extend Reason = replace_regex(Reason, @"[A-Za-z0-9+/_=-]{40,}", "***")
+| extend Reason = iff(strlen(Reason) > 180, strcat(substring(Reason, 0, 179), "…"), Reason)
+| project TimeGenerated, Execution, Reason
+'''
+
+// The Japanese OCR jobs (caj-usnm-jaocr-*, and caj-usnm-jaone-* for its
+// one-off measurements) are watched apart, at severity 3: a failed OCR or
+// audit run is retried by starting it again and touches no published index,
+// so it mustn't read as an ingest failure. A replica that died (non-zero
+// exit: out of memory, a crash; not one the platform stopped because another
+// replica failed), the job's backoff or deadline, and the first line of any
+// Python traceback the job printed (the job's own JSON lines with an "error"
+// field are reported, not failures); split by Execution and Reason as above.
+var jaOcrJobFailed = '''
+let platform = ContainerAppSystemLogs
+    | where JobName startswith "caj-usnm-jaocr-" or JobName startswith "caj-usnm-jaone-"
+        or ContainerAppName startswith "caj-usnm-jaocr-" or ContainerAppName startswith "caj-usnm-jaone-"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | where Reason in ("BackoffLimitExceeded", "DeadlineExceeded")
+        or (Log contains "terminated with exit code" and Log !contains "exit code '0'" and Log !contains "ManuallyStopped")
+    | project TimeGenerated, Job = coalesce(JobName, ContainerAppName), Replica = ReplicaName,
+        Detail = strcat(Reason, ": ", Log);
+let crashes = ContainerAppConsoleLogs
+    | where ContainerName == "jaocr"
+    | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+    | where Log startswith_cs "Traceback"
+    | project TimeGenerated, Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName, Detail = Log;
+union platform, crashes
 | where TimeGenerated > ago(15m)
 | extend Execution = iff(isempty(Replica), Job, extract(@"^(.+)-[a-z0-9]+$", 1, Replica))
 | extend Reason = replace_regex(Detail, @"\?[^\s'\x22]+", "?…")
@@ -247,6 +281,16 @@ var rules = [
     // and the extra lookback lets it see the 5 minutes before an event.
     window: 'PT30M'
     query: jobFailed
+    dimensions: ['Execution', 'Reason']
+  }
+  {
+    name: 'jaocr-job-failed'
+    displayName: 'Japanese OCR or audit job failed'
+    description: 'A replica of the Japanese OCR job (caj-usnm-jaocr) or its one-off audit job (caj-usnm-jaone) died or printed a traceback in the last 15 minutes; Execution and Reason say which and why. It touches no published index. Next: scripts/ja-ocr/quality-rows.sh <env> <execution> or the job\'s console logs for its last lines; fix the cause and start the run again (OCR resumes from its claims; audits rerun).'
+    severity: 3
+    frequency: 'PT5M'
+    window: 'PT30M'
+    query: jaOcrJobFailed
     dimensions: ['Execution', 'Reason']
   }
   {

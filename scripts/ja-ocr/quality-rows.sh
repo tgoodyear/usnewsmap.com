@@ -7,10 +7,11 @@
 #
 #   scripts/ja-ocr/quality-rows.sh prod caj-usnm-jaocr-prod-a6wvy42 > rows.jsonl
 #   scripts/ja-ocr/quality-rows.sh prod caj-usnm-jaocr-prod-a6wvy42 3d
+#   scripts/ja-ocr/quality-rows.sh prod caj-usnm-jaone-prod-x1y2z3a   # a mixed or american-stories run
 #
 # Needs az signed in with an account that can read the workspace and jq.
 set -euo pipefail
-[ $# -ge 2 ] && [ $# -le 3 ] || { sed -n '2,12s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 2 ] && [ $# -le 3 ] || { sed -n '2,13s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 EXECUTION=$2
 SPAN=${3:-2d}
@@ -18,7 +19,8 @@ die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/../.."
 . scripts/lib/env.sh
 command -v jq > /dev/null || die "jq is needed"
-[[ $EXECUTION =~ ^caj-usnm-jaocr-[a-z0-9]+-[a-z0-9]+$ ]] || die "\"$EXECUTION\" isn't a ja-ocr job execution name"
+[[ $EXECUTION =~ ^caj-usnm-ja(ocr|one)-[a-z0-9]+-[a-z0-9]+$ ]] ||
+  die "\"$EXECUTION\" isn't an execution of the ja-ocr job or its one-off job (caj-usnm-jaocr-… or caj-usnm-jaone-…)"
 [[ $SPAN =~ ^[0-9]+[hd]$ ]] || die "timespan \"$SPAN\": use e.g. 12h or 3d"
 case $SPAN in *h) iso="PT${SPAN%h}H" ;; *d) iso="P${SPAN%d}D" ;; esac
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"
