@@ -330,6 +330,23 @@ class Run(unittest.TestCase):
             self.assertEqual((len(slept), got["summary"]["pages_read"]), (1, 140))
             self.assertEqual(json.loads(cur.read(lock))["owner"], "")  # released again
 
+    def test_a_reducer_that_loses_the_publish_lock_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            lock = "audit/ocr-quality-v1-100pct.publish.lock"
+            real_write = cur.write
+
+            def write(path, data):  # another run takes the lock over just after our first output
+                real_write(path, data)
+                if path == "audit/ocr-quality-v1-100pct.json":
+                    real_write(lock, b'{"owner": "another-run"}')
+
+            with mock.patch.object(cur, "write", write), self.assertRaisesRegex(RuntimeError, "took over"):
+                quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                run="r")
+            self.assertFalse(cur.exists("audit/ocr-quality-v1-100pct-by-language.csv"))
+            self.assertFalse(cur.exists("audit/ocr-quality-v1-100pct.run/r/finished.json"))
+
     def test_a_replica_does_not_reclaim_its_own_chunks(self):
         with tempfile.TemporaryDirectory() as d:
             _, cur = self.fixture(d)

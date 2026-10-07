@@ -1446,18 +1446,26 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
                or curated.take_over(publish_lock, lease(), stale)):
         keep_reduce_lock()
         time.sleep(POLL_SECONDS)
-    curated.write(f"{base}.json", json.dumps(report, ensure_ascii=False, indent=1).encode())
+
+    def publish(path: str, data: bytes) -> None:
+        """Write one output while both locks are still ours; a reducer that lost either stops here."""
+        keep_reduce_lock()
+        if not curated.renew(publish_lock, lease(), owner):
+            raise RuntimeError("ocr quality: another run took over publishing the outputs")
+        curated.write(path, data)
+
+    publish(f"{base}.json", json.dumps(report, ensure_ascii=False, indent=1).encode())
     paths = [f"{base}.json"]
     for name, rows in tables.items():
         path = f"{base}-{name.replace('_', '-')}.csv"
-        curated.write(path, write_csv(rows))
+        publish(path, write_csv(rows))
         paths.append(path)
     if metric == "v2":
         pages_gz = tally.pages_csv_gz()
         if pages_gz is None:
             jaocr.log("ocr quality pages file skipped", max_rows=MAX_PAGE_ROWS)
         else:
-            curated.write(f"{base}-pages.csv.gz", pages_gz)
+            publish(f"{base}-pages.csv.gz", pages_gz)
             paths.append(f"{base}-pages.csv.gz")
 
     first = ("by_language", "by_decade", "by_language_decade")
@@ -1470,12 +1478,15 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
             for r in tables[name]:
                 jaocr.log("ocr quality", table=name, version=version, **{"metric": metric, **r})
     jaocr.log("ocr quality finished", **summary, outputs=paths)
+    keep_reduce_lock()
     if metric == "v2":
         now = _iso(datetime.now(timezone.utc))
         status.update(batches={"done": batches_done, "total": len(batches)}, pages_sampled=pages_sampled,
                       updated_at=now, finished_at=now, summary=status_summary(tables))
         write_status(reference, status)
-    curated.renew(publish_lock, json.dumps({"owner": "", "released_by": owner}).encode(), owner)
+    keep_reduce_lock()
+    if not curated.renew(publish_lock, json.dumps({"owner": "", "released_by": owner}).encode(), owner):
+        raise RuntimeError("ocr quality: another run took over publishing the outputs")
     curated.write(finished, json.dumps({"owner": owner, "at": _iso(datetime.now(timezone.utc)), "outputs": paths,
                                         "status": status if metric == "v2" else None}).encode())
     return report
