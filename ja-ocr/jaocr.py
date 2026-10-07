@@ -6,6 +6,7 @@
     python3 jaocr.py audit            titles LoC ships pages without text for (audit.py)
     python3 jaocr.py quality [--sample-pct 2] [--min-pages 50] [--metric v2]
                                       how good LoC's OCR is, by language and decade (quality.py)
+    python3 jaocr.py mixed            text on the Japanese titles' pages search can't reach yet (mixed.py)
 
 Stores are blob container URLs (Entra auth via the managed identity) or local
 directories, so the job runs the same way against a copy on disk:
@@ -692,7 +693,7 @@ def ocr_issue(curated, ndl_root: Path, issue: str, pages: list[dict], api: "Pace
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=["targets", "run", "audit", "quality"])
+    ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
     ap.add_argument("--all-languages", action="store_true", help="audit: every title, not just non-English ones")
     ap.add_argument("--sample-pct", type=float, default=2.0, help="quality: percent of pages to score (default 2)")
@@ -707,6 +708,10 @@ def main() -> None:
         import audit
 
         audit.audit(reference, curated, a.all_languages)
+    elif a.command == "mixed":
+        import mixed
+
+        mixed.mixed(reference, curated)
     elif a.command == "quality":
         import quality
 
