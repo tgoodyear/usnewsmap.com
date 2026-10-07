@@ -22,7 +22,7 @@ import { MeasureToggle } from "./components/MeasureToggle";
 import { InfoTip } from "./components/InfoTip";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
-import { PagesLists, WhenLists, exactMedian, medianCandidates } from "./components/PlaceLists";
+import { PagesLists, WhenLists, exactMedian, medianCandidates, type MedianStatus } from "./components/PlaceLists";
 import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
@@ -324,32 +324,63 @@ export function App() {
 
   // Median date lists: the bucket only gives a month (or year), so the
   // places that could be listed get their pages per day (/v1/days) and their
-  // exact median for the playback window. The set is asked for once it has
+  // exact median for the playback window. The lists never show the bucket's
+  // ranking first and swap it for the exact one: until the first answer for a
+  // search they say they are loading, and after it a changed set (playback,
+  // scrubbing) keeps the last exact lists, marked as updating, until the new
+  // answer. The first set is asked for at once; later ones once the set has
   // held still for a second, so playback doesn't send a request per step.
-  // Not while the previous search stands in for the next: its places would
-  // be asked about under the new search's parameters.
-  const candidatesKey =
-    norm === "when" && !view.place && data && !agg.isPlaceholderData ? medianCandidates(visible).join(",") : "";
+  // Searches by day need none: their buckets are days.
+  const byDay = data?.bucket.unit === "day";
+  const wantsDays = norm === "when" && !view.place && !!data && !byDay;
+  const candidatesKey = wantsDays && !agg.isPlaceholderData ? medianCandidates(visible).join(",") : "";
+  // The first set for a search is asked for at once; any other set waits
+  // until it has held still for a second. Kept per search during render, so
+  // the first answer shows as soon as it arrives.
+  const searchId = JSON.stringify([version, params]);
+  const [firstSet, setFirstSet] = useState({ searchId: "", key: "" });
+  if (candidatesKey !== "" && firstSet.searchId !== searchId) setFirstSet({ searchId, key: candidatesKey });
+  const isFirstSet = firstSet.searchId === searchId ? firstSet.key === candidatesKey : candidatesKey !== "";
   const [settledKey, setSettledKey] = useState("");
   useEffect(() => {
     const id = setTimeout(() => setSettledKey(candidatesKey), 1000);
     return () => clearTimeout(id);
   }, [candidatesKey]);
+  const requestKey = isFirstSet ? candidatesKey : settledKey;
   const dayCounts = useQuery({
-    queryKey: ["days", version, params, settledKey],
-    queryFn: ({ signal }) => api.days(params, version, settledKey.split(","), signal),
-    enabled: !!version && settledKey !== "" && settledKey === candidatesKey,
+    queryKey: ["days", version, params, requestKey],
+    queryFn: ({ signal }) => api.days(params, version, requestKey.split(","), signal),
+    enabled: !!version && requestKey !== "" && requestKey === candidatesKey,
     staleTime: Infinity,
     retry: false,
+    // While the next set loads, the last answer for this same search stays (marked as updating).
+    placeholderData: (prev, prevQuery) =>
+      prevQuery && JSON.stringify(prevQuery.queryKey.slice(1, 3)) === JSON.stringify([version, params]) ? prev : undefined,
   });
+  const fresh =
+    !!dayCounts.data && !dayCounts.isPlaceholderData && candidatesKey !== "" && requestKey === candidatesKey;
+  const medianStatus: MedianStatus = !wantsDays
+    ? "bucket"
+    : agg.isPlaceholderData
+      ? "loading"
+      : candidatesKey === ""
+        ? "bucket"
+        : fresh
+          ? "exact"
+          : dayCounts.isError && requestKey === candidatesKey
+            ? "bucket"
+            : dayCounts.data
+              ? "updating"
+              : "loading";
+  const daysSource = dayCounts.data ?? null;
   const exactMedians = useMemo(() => {
-    if (!data || !dayCounts.data || settledKey !== candidatesKey || candidatesKey === "") return null;
+    if (!data || !daysSource || (medianStatus !== "exact" && medianStatus !== "updating")) return null;
     const unit = data.bucket.unit;
     const from = data.bucket.from;
     const lo = view.win === null ? -Infinity : dayNumber(bucketStart(unit, from, Math.max(0, t - view.win + 1)));
     const hi = t + 1 >= count ? Infinity : dayNumber(bucketStart(unit, from, t + 1)) - 1;
-    return new Map(dayCounts.data.places.map((p) => [p.id, exactMedian(p.days, p.hits, lo, hi)]));
-  }, [data, dayCounts.data, settledKey, candidatesKey, view.win, t, count]);
+    return new Map(daysSource.places.map((p) => [p.id, exactMedian(p.days, p.hits, lo, hi)]));
+  }, [data, daysSource, medianStatus, view.win, t, count]);
   const selected = points.find((p) => p.id === view.place);
   const updating = [agg.error, places.error, coverage.error].some((e) => e instanceof VersionChangedError);
   const problem: Problem | null = updating || !agg.error
@@ -392,7 +423,7 @@ export function App() {
     <>
       {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
       {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} trailing={view.win !== null} />}
-      {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} trailing={view.win !== null} exact={exactMedians} />}
+      {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} trailing={view.win !== null} exact={exactMedians} status={medianStatus} />}
       {view.place && (
         <PlacePanel
           params={params}

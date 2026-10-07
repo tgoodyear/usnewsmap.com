@@ -266,18 +266,16 @@ export function PagesLists({ rows, onSelect, trailing }: ListsProps) {
 }
 
 /** Median date: the places whose matching pages fall earliest and latest. */
-export function WhenLists({
-  rows,
-  onSelect,
-  trailing,
-  exact,
-}: ListsProps & {
-  /**
-   * Exact median day numbers for every `medianCandidates` place, once
-   * fetched; until then the lists rank and label by bucket.
-   */
-  exact?: Map<string, number> | null;
-}) {
+interface Ranked {
+  earliest: ListRow[];
+  latest: ListRow[];
+  eligible: number;
+  /** What the lists show, to tell one ranking from the next. */
+  key: string;
+}
+
+/** The two lists, by exact day when `exact` is given, else by bucket. */
+function rank(rows: ListRow[], exact: Map<string, number> | null | undefined): Ranked {
   const { eligible } = medianExtremes(rows);
   const ranked = exact
     ? rows
@@ -285,6 +283,46 @@ export function WhenLists({
         .map((r) => ({ ...r, when: exact.get(r.id)!, whenLabel: formatDate(dateFromDay(exact.get(r.id)!)) }))
     : rows;
   const { earliest, latest } = medianExtremes(ranked);
+  const key = JSON.stringify([eligible, ...[...earliest, ...latest].map((r) => [r.id, r.whenLabel, r.value])]);
+  return { earliest, latest, eligible, key };
+}
+
+/**
+ * Where the Median date lists stand: `exact` (ranked by day), `updating`
+ * (the last exact lists while the next set loads), `loading` (no exact
+ * answer for this search yet: nothing is listed), or `bucket` (ranked by the
+ * search's bucket for good: a search by day, more ties than one request
+ * takes, or the day counts failed).
+ */
+export type MedianStatus = "exact" | "updating" | "loading" | "bucket";
+
+export function WhenLists({
+  rows,
+  onSelect,
+  trailing,
+  exact,
+  status = exact ? "exact" : "bucket",
+}: ListsProps & {
+  /** Exact median day numbers for the places that could be listed (`exact` and `updating`). */
+  exact?: Map<string, number> | null;
+  status?: MedianStatus;
+}) {
+  // The lists last shown from exact days. While the next set loads
+  // ("updating") they stay exactly as they were, not recomputed against the
+  // new window from the old answer, until the fresh answer replaces them.
+  const [shown, setShown] = useState<Ranked | null>(null);
+  const current = status === "updating" && shown ? null : rank(rows, status === "bucket" ? null : exact);
+  if (status === "exact" && current && current.key !== shown?.key) setShown(current);
+  if (status === "loading") {
+    return (
+      <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
+        <p className="lists__loading" role="status">
+          Finding each place&apos;s median day…
+        </p>
+      </ListsPanel>
+    );
+  }
+  const { earliest, latest, eligible } = (status === "updating" && shown) || current!;
   const empty =
     eligible === 1
       ? `Only one place has ${MIN_MEDIAN_PAGES} or more matching pages ${scope(trailing)}.`
@@ -299,8 +337,13 @@ export function WhenLists({
   );
   return (
     <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
-      <List heading="Earliest median date" items={earliest} empty={empty} render={item} />
-      <List heading="Latest median date" items={latest} empty={empty} render={item} />
+      <div className={status === "updating" ? "lists--updating" : undefined} aria-busy={status === "updating"}>
+        <List heading="Earliest median date" items={earliest} empty={empty} render={item} />
+        <List heading="Latest median date" items={latest} empty={empty} render={item} />
+      </div>
+      <p className="skew-list__note" role="status">
+        {status === "updating" ? "Updating for the new date…" : ""}
+      </p>
       <p className="skew-list__note">
         A place&apos;s median date is when half of its matching pages {scope(trailing)} had been printed. Only
         places with at least {MIN_MEDIAN_PAGES} matching pages are listed.
