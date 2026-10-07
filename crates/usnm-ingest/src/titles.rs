@@ -512,6 +512,11 @@ pub fn place_overrides(json: &str) -> anyhow::Result<Vec<PlaceOverride>> {
             ])
             .with_context(at)?;
         anyhow::ensure!(
+            o.name.as_deref().is_none_or(|n| !n.trim().is_empty()),
+            "{}: `name` is blank (leave it out to keep the place's name)",
+            at()
+        );
+        anyhow::ensure!(
             STATES.iter().any(|s| s.code == o.state),
             "{}: unknown state",
             at()
@@ -2304,6 +2309,8 @@ mod tests {
         }
         // Unknown fields, states, precisions and far-off coordinates too.
         assert!(!ok(&entry(r#", "note": "Why.""#)));
+        assert!(!ok(&entry(r#", "name": " ""#)));
+        assert!(ok(&entry(r#", "name": "Echota""#)));
         assert!(!ok(&entry("").replace(r#""IL""#, r#""XX""#)));
         assert!(!ok(&entry(r#", "precision": "town""#)));
         assert!(!ok(&entry("").replace(r#""lat": 1"#, r#""lat": 91"#)));
