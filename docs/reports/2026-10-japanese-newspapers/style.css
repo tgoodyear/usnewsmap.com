@@ -1,0 +1,16 @@
+body { font-family: "Helvetica Neue", Helvetica, Arial, "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif; font-size: 10.5pt; line-height: 1.45; color: #222; max-width: none; margin: 0; }
+header { margin-bottom: 1.2em; border-bottom: 2px solid #5b7fb4; padding-bottom: 0.6em; }
+h1.title { font-size: 20pt; margin: 0; }
+p.subtitle { font-size: 12pt; color: #555; margin: 0.2em 0 0; }
+p.date { color: #666; margin: 0.3em 0 0; }
+h1 { font-size: 14pt; margin: 1.3em 0 0.4em; color: #1f3a5f; }
+ul { padding-left: 1.2em; } li { margin: 0.2em 0; }
+table { border-collapse: collapse; width: 100%; font-size: 9pt; margin: 0.6em 0 1em; }
+th, td { border-top: 1px solid #ddd; padding: 4px 6px; vertical-align: top; text-align: left; }
+th { background: #f0f3f8; }
+figure { margin: 0.8em 0 1.2em; page-break-inside: avoid; }
+figure img { width: 100%; }
+figcaption { font-size: 9pt; color: #444; margin-top: 0.2em; }
+code { font-size: 9pt; }
+a { color: #1f4f8f; text-decoration: none; }
+h1 { page-break-after: avoid; }
