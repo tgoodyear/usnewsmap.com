@@ -6,13 +6,14 @@
 #   scripts/ja-ocr/start-quality.sh prod --sample-pct 10
 #   scripts/ja-ocr/start-quality.sh prod --sample-pct 2 --min-pages 50
 #   scripts/ja-ocr/start-quality.sh prod mixed     # jaocr.py mixed instead (mixed.py)
+#   scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925   (american_stories.py)
 #
 # The replicas share the work (quality.py). `az containerapp job start
 # --args` sends a container without the image or settings, so this copies the
 # job's template and swaps only the arguments. Needs az signed in to the
 # environment's subscription and jq. Results: scripts/ja-ocr/quality-rows.sh.
 set -euo pipefail
-[ $# -ge 1 ] || { sed -n '2,14s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,15s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 shift
 die() { echo "error: $*" >&2; exit 1; }
@@ -28,10 +29,17 @@ if [ "${1:-}" = mixed ]; then
   command=mixed
   shift
   [ $# -eq 0 ] || die "mixed takes no options"
+elif [ "${1:-}" = american-stories ]; then
+  command=american-stories
+  shift
+  for a in "$@"; do
+    [[ $a =~ ^(--year|--sample-pct|[0-9]+(\.[0-9]+)?)$ ]] || die "unexpected argument \"$a\""
+  done
+else
+  for a in "$@"; do
+    [[ $a =~ ^(--sample-pct|--min-pages|--metric|[0-9]+(\.[0-9]+)?|v[12])$ ]] || die "unexpected argument \"$a\""
+  done
 fi
-for a in "$@"; do
-  [[ $a =~ ^(--sample-pct|--min-pages|--metric|[0-9]+(\.[0-9]+)?|v[12])$ ]] || die "unexpected argument \"$a\""
-done
 
 template=$(az containerapp job show -n "$job" -g "$rg" --subscription "$sub" --query properties.template -o json) ||
   die "can't read $job (is az signed in to the environment's tenant?)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Print one OCR quality audit run's (or jaocr.py mixed run's) table rows and summary as JSON lines, from
+# Print one OCR quality audit run's (or jaocr.py mixed or american-stories run's) table rows and summary as JSON lines, from
 # the environment's Log Analytics workspace: the "ocr quality" rows the
 # reducing replica logs (every table) and the "ocr quality finished" line,
 # without timestamps. The audit's own outputs (audit/*.json, CSVs) are in the
@@ -27,9 +27,9 @@ workspace=$(aget LOG_ANALYTICS_WORKSPACE_ID)
 
 query="ContainerAppConsoleLogs
 | where ContainerName == \"jaocr\" and ContainerGroupName startswith \"$EXECUTION-\"
-| where (Log has \"ocr quality\" or Log has \"mixed pages\") and Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"
+| where (Log has \"ocr quality\" or Log has \"mixed pages\" or Log has \"american stories\") and Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"
 | extend j = parse_json(Log)
-| where tostring(j.message) in (\"ocr quality\", \"ocr quality finished\", \"mixed pages\", \"mixed pages finished\")
+| where tostring(j.message) in (\"ocr quality\", \"ocr quality finished\", \"mixed pages\", \"mixed pages finished\", \"american stories\", \"american stories finished\")
 | project TimeGenerated, Log
 | order by TimeGenerated asc"
 body=$(mktemp)
