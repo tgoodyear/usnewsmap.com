@@ -313,6 +313,23 @@ class Run(unittest.TestCase):
             self.assertIsNone(quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader,
                                               metric="v1", run="r"))
 
+    def test_overlapping_runs_publish_one_at_a_time(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur = self.fixture(d)
+            lock = "audit/ocr-quality-v1-100pct.publish.lock"
+            cur.write(lock, b'{"owner": "another-run"}')  # another execution is publishing
+            slept = []
+
+            def sleep(_):  # that run finishes and releases the lock while we wait
+                slept.append(1)
+                cur.write(lock, b'{"owner": ""}')
+
+            with mock.patch.object(quality.time, "sleep", sleep):
+                got = quality.quality(ref, cur, sample_pct=100, min_pages=1, workers=1, loader=loader, metric="v1",
+                                      run="r")
+            self.assertEqual((len(slept), got["summary"]["pages_read"]), (1, 140))
+            self.assertEqual(json.loads(cur.read(lock))["owner"], "")  # released again
+
     def test_a_replica_does_not_reclaim_its_own_chunks(self):
         with tempfile.TemporaryDirectory() as d:
             _, cur = self.fixture(d)

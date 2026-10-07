@@ -1439,6 +1439,13 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
         method = {"poor": POOR, "fair": FAIR}
     report = {"summary": summary, "generated_at": datetime.now(timezone.utc).isoformat(),
               "wordlists": wordlists, "method": method, "japanese_skipped": japanese, **tables}
+    # Outputs are per version and sample size, shared by every execution: one publishes at a time (an
+    # overlapping run waits; a lock not renewed for JAOCR_AUDIT_LOCK_MINUTES is taken over).
+    publish_lock = f"{base}.publish.lock"
+    while not (curated.create(publish_lock, lease()) or curated.renew(publish_lock, lease(), "")
+               or curated.take_over(publish_lock, lease(), stale)):
+        keep_reduce_lock()
+        time.sleep(POLL_SECONDS)
     curated.write(f"{base}.json", json.dumps(report, ensure_ascii=False, indent=1).encode())
     paths = [f"{base}.json"]
     for name, rows in tables.items():
@@ -1468,6 +1475,7 @@ def quality(reference, curated, sample_pct: float = 2.0, min_pages: int = 50,
         status.update(batches={"done": batches_done, "total": len(batches)}, pages_sampled=pages_sampled,
                       updated_at=now, finished_at=now, summary=status_summary(tables))
         write_status(reference, status)
+    curated.renew(publish_lock, json.dumps({"owner": "", "released_by": owner}).encode(), owner)
     curated.write(finished, json.dumps({"owner": owner, "at": _iso(datetime.now(timezone.utc)), "outputs": paths,
                                         "status": status if metric == "v2" else None}).encode())
     return report
