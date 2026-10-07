@@ -527,6 +527,7 @@ output COSMOS_ENDPOINT string = cosmos.outputs.endpoint
 output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName : ''
 output BACKFILL_JOB string = ingestJobs && useAcr ? ingest!.outputs.backfillJobName : ''
 output JA_OCR_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaOcrJobName : ''
+output JA_AUDIT_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaAuditJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
 // For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).

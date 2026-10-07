@@ -21,6 +21,11 @@
 //   for with NDLOCR-Lite (04 §4.8, #128). Replicas claim issues through
 //   create-only blobs, and pace loc.gov together. Started again until every
 //   target issue has a part.
+// - `caj-usnm-jaaudit-{env}` (with the jaocr job): manual, one replica, the
+//   same image and settings, for jaocr.py's one-off measurements (`mixed`,
+//   `american-stories`) that one replica does anyway; a second replica only
+//   added a way for the execution to fail. scripts/ja-ocr/start-quality.sh
+//   starts those here and `quality` (which shares its chunks) on the jaocr job.
 //
 // The ingest job's Quickwit writer keeps its data on an NFS share
 // (ingest-scratch.bicep) when `scratchStorageName` is set: indexing and
@@ -293,6 +298,45 @@ resource jaOcr 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
   }
 }
 
+resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
+  name: 'caj-usnm-jaaudit-${jobNameSuffix}'
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${ingestIdentityId}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      registries: [{ server: registryServer, identity: ingestIdentityId }]
+      triggerType: 'Manual'
+      manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
+      replicaTimeout: replicaTimeoutSecs
+      // A retried replica takes its run's lock back (ja-ocr/solo.py).
+      replicaRetryLimit: 1
+    }
+    template: {
+      containers: [
+        {
+          name: 'jaocr'
+          image: jaOcrImage
+          args: ['mixed']
+          // Started with its command's arguments (start-quality.sh); the same size as the OCR job.
+          resources: { cpu: json('4.0'), memory: '8Gi' }
+          env: [
+            { name: 'USNM_CURATED_URL', value: '${storageBlobEndpoint}curated' }
+            { name: 'USNM_REFERENCE_URL', value: '${storageBlobEndpoint}reference' }
+            { name: 'AZURE_CLIENT_ID', value: ingestClientId }
+            { name: 'JAOCR_REPLICAS', value: '1' }
+          ]
+        }
+      ]
+    }
+  }
+}
+
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 
@@ -321,3 +365,4 @@ resource writerIndexContributor 'Microsoft.Authorization/roleAssignments@2022-04
 output ingestJobName string = ingest.name
 output backfillJobName string = backfill.name
 output jaOcrJobName string = empty(jaOcrImage) ? '' : jaOcr.name
+output jaAuditJobName string = empty(jaOcrImage) ? '' : jaAudit.name

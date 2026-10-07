@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the OCR quality audit (ja-ocr/quality.py) as an execution of the
-# environment's ja-ocr job, with the job's own image, settings and replicas
+# environment's ja-ocr job (or its one-replica audit job, below), with the job's own image, settings and replicas
 # but the audit's command line, and print the execution's name.
 #
 #   scripts/ja-ocr/start-quality.sh prod --sample-pct 10
@@ -8,7 +8,10 @@
 #   scripts/ja-ocr/start-quality.sh prod mixed     # jaocr.py mixed instead (mixed.py)
 #   scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925   (american_stories.py)
 #
-# The replicas share the work (quality.py). `az containerapp job start
+# The quality audit runs on the ja-ocr job, whose replicas share its work
+# (quality.py); mixed and american-stories, which one replica does, run on the
+# one-replica audit job (caj-usnm-jaaudit-<env>), so a second replica can't
+# fail the execution. `az containerapp job start
 # --args` sends a container without the image or settings, so this copies the
 # job's template and swaps only the arguments. Needs az signed in to the
 # environment's subscription and jq. Results: scripts/ja-ocr/quality-rows.sh.
@@ -27,10 +30,12 @@ job="caj-usnm-jaocr-$ENV_NAME"
 command=quality
 if [ "${1:-}" = mixed ]; then
   command=mixed
+  job="caj-usnm-jaaudit-$ENV_NAME"
   shift
   [ $# -eq 0 ] || die "mixed takes no options"
 elif [ "${1:-}" = american-stories ]; then
   command=american-stories
+  job="caj-usnm-jaaudit-$ENV_NAME"
   shift
   for a in "$@"; do
     [[ $a =~ ^(--year|--sample-pct|[0-9]+(\.[0-9]+)?)$ ]] || die "unexpected argument \"$a\""
