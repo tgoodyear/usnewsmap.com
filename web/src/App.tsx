@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, ApiError, VersionChangedError, type SearchParams } from "./api/client";
+import { api, ApiError, sameSearch, VersionChangedError, type SearchParams } from "./api/client";
 import type { Problem } from "./api/types";
 import { indexSummary } from "./lib/indexSummary";
 import { alignCube, prefixSums, relative, windowQuantile, windowValues } from "./engine/cube";
@@ -9,6 +9,7 @@ import { bucketIndex, bucketLabel, bucketStart, dayNumber } from "./lib/time";
 import { cssColor, cssTimeColor } from "./lib/scale";
 import { searchParams, serializeView, useView, type ViewState } from "./state/url";
 import { SearchBar, searchKey } from "./components/SearchBar";
+import { Searching } from "./components/Searching";
 import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
@@ -72,10 +73,14 @@ export function App() {
       return api.aggregate(params, version, signal, (ahead) => setComputing({ key: aggKey, ahead }));
     },
     enabled: !!version && !!view.q,
-    // Keep showing the previous search while the next loads, but never a
-    // result from another index version (it would be drawn against this
-    // version's places).
-    placeholderData: (prev) => (prev?.index_version === version ? prev : undefined),
+    // Keep showing the previous answer while the next loads only for the same
+    // search in another bucket; a new search starts from a clear "searching"
+    // state (#210). Never a result from another index version (it would be
+    // drawn against this version's places).
+    placeholderData: (prev, prevQuery) =>
+      prev?.index_version === version && prevQuery && sameSearch(prevQuery.queryKey[2] as SearchParams, params)
+        ? prev
+        : undefined,
   });
   const baselineRef = agg.data?.cube.baseline_ref ?? null;
   const coverage = useQuery({
@@ -88,6 +93,13 @@ export function App() {
   const data = agg.data;
   const stillComputing = agg.isFetching && computing?.key === aggKey;
   const ahead = stillComputing ? computing.ahead : null;
+  const waitNote = !stillComputing
+    ? null
+    : ahead === null
+      ? "Large search, still working… This can take up to two minutes."
+      : ahead === 0
+        ? "Other searches are running. Yours is next in line…"
+        : `Other searches are running. Yours is in line behind ${ahead} more…`;
   const count = data?.bucket.count ?? 0;
   // Scrubbing and playback update the view at once but write the URL only
   // when movement pauses: browsers throttle the History API (Firefox allows
@@ -445,7 +457,7 @@ export function App() {
     <div className={view.q ? "app" : "app app--empty"}>
       <header className="topbar">
         <Brand />
-        <SearchBar key={searchKey(view)} view={view} meta={meta.data} onSearch={search} />
+        <SearchBar key={searchKey(view)} view={view} meta={meta.data} onSearch={search} busy={agg.isFetching} />
       </header>
       <About ref={about} />
 
@@ -491,19 +503,16 @@ export function App() {
           )}
         </main>
       ) : (
-        <main className={agg.isFetching ? "results results--loading" : "results"} aria-busy={agg.isFetching}>
+        <main className={agg.isFetching ? "results results--loading" : "results"}>
+          {agg.isFetching && <div className="search-progress" role="progressbar" aria-label="Search running" />}
           {updating && (
             <p className="notice" role="status">
               A newer index was just published. Updating to it…
             </p>
           )}
-          {stillComputing && (
+          {waitNote && data && (
             <p className="notice" role="status">
-              {ahead === null
-                ? "Large search, still working… This can take up to two minutes."
-                : ahead === 0
-                  ? "Other searches are running. Yours is next in line…"
-                  : `Other searches are running. Yours is in line behind ${ahead} more…`}
+              {waitNote}
             </p>
           )}
           {placesFailed && (
@@ -608,7 +617,9 @@ export function App() {
                   dates, or remove {view.lang.length > 0 ? "language or state filters" : "state filters"}.
                 </div>
               ) : (
-                <div className="stage">
+                // Busy is scoped to the stale map or table, not <main>: the status
+                // messages above stay live while a search runs.
+                <div className="stage" aria-busy={agg.isFetching}>
                   {view.tab === "table" || !webgl ? (
                     <>
                       {!webgl && view.tab === "map" && (
@@ -703,7 +714,7 @@ export function App() {
               )}
             </>
           )}
-          {!data && agg.isFetching && !stillComputing && <p className="notice" role="status">Searching…</p>}
+          {!data && agg.isFetching && <Searching q={view.q} note={waitNote} />}
         </main>
       )}
       <footer className="credits">
