@@ -6,8 +6,14 @@ American Stories (Dell et al. 2023, arXiv:2308.12477; CC BY 4.0) re-read
 Chronicling America with layout detection, a legibility classifier and
 EfficientOCR. Each year is one tarball on Hugging Face of one JSON file per
 scan, named <date>_p<page>_<lccn>_<reel>_<date><edition>_<image>.json, whose
-p<page> is our seq-<n>. This streams each year's tarball (nothing is kept on
-disk), keeps the scans in our usual fixed sample (quality.sampled: a hash of
+p<page> is our seq-<n>. Some have no page ("pNone", often with reel
+"no_reel"); their page is their image's place in the issue: an issue's images
+are numbered consecutively, so a page's seq is its image number less the
+issue's first, plus one, or set by the issue's named pages when it has any
+(the report says how often this rule agrees with the named pages). This
+streams each year's tarball twice (nothing is kept on disk): once for the
+names, to place every scan, and once for the text of the scans in our usual
+fixed sample (quality.sampled: a hash of
 the doc_id, so the same pages as the OCR quality audit), reads LoC's text for
 the sampled pages of those years from the curated store, and measures, for
 pages of titles whose first catalog language is English:
@@ -41,7 +47,7 @@ import quality
 from solo import Solo
 
 URL = "https://huggingface.co/datasets/dell-research-harvard/AmericanStories/resolve/main/faro_{year}.tar.gz"
-NAME = re.compile(r"^(\d{4}-\d\d-\d\d)_p(\d+)_([a-z]+\d+)_")
+NAME = re.compile(r"^(\d{4}-\d\d-\d\d)_p(\d+|None|na)_([a-z]+\d+)_(.+?)_(\d{8})(\d{2})_(\d+)\.json$")
 BATCH = re.compile(r"/batches/([a-z0-9_]+?)(?:_ver\d+)?/")
 TEXT_CLASSES = {"article", "headline", "byline", "caption"}
 TERMS = ("lincoln", "railroad", "president", "election", "cotton", "gold", "fever", "telegraph", "slavery",
@@ -52,14 +58,52 @@ READERS = 16
 FIRST_YEAR, LAST_YEAR = 1774, 1963  # the dataset's years
 
 
-def doc_id(name: str, edition: str) -> str | None:
-    """Our doc_id for a scan file, or None if its name doesn't parse."""
+def parse(name: str) -> tuple[str, str, int, int, int | None] | None:
+    """(lccn, date, edition, image, page or None) from a scan file's name, or None if it doesn't parse."""
     m = NAME.match(os.path.basename(name))
-    ed = re.fullmatch(r"ed-0*(\d+)", edition or "")
-    if not m or not ed:
+    if not m:
         return None
-    date, page, lccn = m.groups()
-    return f"{lccn}_{date}_ed-{int(ed.group(1))}_seq-{int(page)}"
+    date, page, lccn, _reel, ymd, ed, image = m.groups()
+    if ymd != date.replace("-", ""):
+        return None
+    return lccn, date, int(ed), int(image), int(page) if page.isdigit() else None
+
+
+def place(names: list[str]) -> tuple[dict[str, str], dict[str, int]]:
+    """Each scan's doc_id by file name, and counts: pages named, placed by image, unparsed, duplicates, and
+    the named pages the image rule (image less the issue's first, plus one) would have got right."""
+    issues: dict[tuple, list[tuple[int, int | None, str]]] = {}
+    stats = {"unparsed": 0, "page_named": 0, "page_from_image": 0, "duplicates": 0,
+             "image_rule_checked": 0, "image_rule_agrees": 0}
+    for name in names:
+        got = parse(name)
+        if got is None:
+            stats["unparsed"] += 1
+            continue
+        lccn, date, ed, image, page = got
+        issues.setdefault((lccn, date, ed), []).append((image, page, name))
+    out: dict[str, str] = {}
+    taken: set[str] = set()
+    for (lccn, date, ed), scans in issues.items():
+        first = min(image for image, _, _ in scans)
+        offsets = [page - image for image, page, _ in scans if page is not None]
+        # The named pages set the offset when there are any (the most common one), else the first image is p1.
+        offset = max(set(offsets), key=offsets.count) if offsets else 1 - first
+        for image, page, name in scans:
+            if page is not None:
+                stats["page_named"] += 1
+                stats["image_rule_checked"] += 1
+                stats["image_rule_agrees"] += image - first + 1 == page
+            else:
+                stats["page_from_image"] += 1
+            seq = page if page is not None else image + offset
+            d = f"{lccn}_{date}_ed-{ed}_seq-{seq}"
+            if d in taken:
+                stats["duplicates"] += 1
+                continue
+            taken.add(d)
+            out[name] = d
+    return out, stats
 
 
 def scan_text(scan: dict) -> tuple[str, dict[str, int]]:
@@ -75,27 +119,30 @@ def scan_text(scan: dict) -> tuple[str, dict[str, int]]:
     return "\n".join(parts), legibility
 
 
-def stream_year(year: int, cut: int, opener=None, keep=lambda: None) -> tuple[dict, dict]:
-    """(sampled scans by doc_id: {batch, text, legibility}, totals) for one year's tarball."""
+def _open(year: int, opener):
     req = urllib.request.Request(URL.format(year=year), headers={"User-Agent": jaocr.UA, "DNT": "1"})
-    out, totals = {}, {"scans": 0, "unparsed": 0, "sampled": 0}
-    with (opener or urllib.request.urlopen)(req) as resp, tarfile.open(fileobj=resp, mode="r|gz") as tar:
+    return (opener or urllib.request.urlopen)(req)
+
+
+def stream_year(year: int, cut: int, opener=None, keep=lambda: None) -> tuple[dict, dict]:
+    """(sampled scans by doc_id: {batch, text, legibility}, totals) for one year's tarball, read twice."""
+    with _open(year, opener) as resp, tarfile.open(fileobj=resp, mode="r|gz") as tar:
+        names = [m.name for m in tar if m.isfile() and m.name.endswith(".json")]
+    ids, stats = place(names)
+    wanted = {n: d for n, d in ids.items() if quality.sampled(d, cut)}
+    out: dict[str, dict] = {}
+    with _open(year, opener) as resp, tarfile.open(fileobj=resp, mode="r|gz") as tar:
         for member in tar:
-            if not (member.isfile() and member.name.endswith(".json")):
+            d = wanted.get(member.name)
+            if d is None:
                 continue
             keep()
             scan = json.load(tar.extractfile(member))
-            totals["scans"] += 1
-            d = doc_id(member.name, (scan.get("edition") or {}).get("edition", ""))
-            if d is None:
-                totals["unparsed"] += 1
-                continue
-            if not quality.sampled(d, cut):
-                continue
             m = BATCH.search((scan.get("scan") or {}).get("raw_data_loc") or "")
             text, legibility = scan_text(scan)
             out[d] = {"batch": m.group(1) if m else None, "text": text, "legibility": legibility}
-    totals["sampled"] = len(out)
+    totals = {"scans": len(names), **stats, "sampled": len(out),
+              "image_rule_agreement": share(stats["image_rule_agrees"], stats["image_rule_checked"])}
     return out, totals
 
 
