@@ -55,8 +55,8 @@
      }
     },
     "series_hits": {"description": "Hits per bucket.", "type": "array", "items": {"$ref": "#/definitions/count"}},
-    "languages": {"description": "Hits by the titles' catalog language (MARC codes, as the catalog has them).",
-                  "type": "object", "propertyNames": {"pattern": "^[a-z]{3,8}$"},
+    "languages": {"description": "Hits by the titles' catalog language: MARC codes, or LoC's name in lower case for a language with no code mapping (\"pennsylvania german\"; usnm_core::names::language_code).",
+                  "type": "object", "propertyNames": {"pattern": "^\\S(.*\\S)?$"},
                   "additionalProperties": {"$ref": "#/definitions/count"}},
     "timing_ms": {"description": "The API's timing for the computation that produced the body (it may predate the capture).",
                   "type": "object", "required": ["backend", "total"],

@@ -89,6 +89,12 @@ class Check(unittest.TestCase):
         got = self.broken(lambda d: d["searches"]["bench: lincoln"].update(series_hits=[1, 1, 4]))
         self.assertEqual(got, ["bench: lincoln: series adds up to 6, total says 5"])
 
+    def test_a_language_with_no_code_keeps_its_loc_name(self):
+        got = self.broken(lambda d: d["searches"]["bench: lincoln"]["languages"].update({"pennsylvania german": 1}))
+        self.assertEqual(got, [])
+        got = self.broken(lambda d: d["searches"]["bench: lincoln"]["languages"].update({" eng": 1}))
+        self.assertTrue(got and got[0].startswith("schema: "), got)
+
     def test_a_non_200_without_a_problem_document_passes(self):
         # A 502 with an HTML body: the capture records no error.
         self.assertEqual(self.broken(lambda d: d["searches"]["ja: 日本"].pop("error")), [])
