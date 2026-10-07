@@ -5,6 +5,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -73,6 +74,8 @@ class Check(unittest.TestCase):
             ("unknown bucket unit", lambda d: lincoln(d)["bucket"].update(unit="decade")),
             ("timing without backend", lambda d: lincoln(d)["timing_ms"].pop("backend")),
             ("unknown search field", lambda d: lincoln(d).update(note="x")),
+            ("gave up with an error", lambda d: d["searches"]["example: slow"].update(error={"title": "x"})),
+            ("gave up with results", lambda d: d["searches"]["example: slow"].update(total={"hits": 1})),
         ]:
             got = self.broken(change)
             self.assertEqual(len(got), 1, why)
@@ -85,6 +88,17 @@ class Check(unittest.TestCase):
         self.assertEqual(got, ["bench: lincoln: 2 series values for 3 buckets"])
         got = self.broken(lambda d: d["searches"]["bench: lincoln"].update(series_hits=[1, 1, 4]))
         self.assertEqual(got, ["bench: lincoln: series adds up to 6, total says 5"])
+
+    def test_a_non_200_without_a_problem_document_passes(self):
+        # A 502 with an HTML body: the capture records no error.
+        self.assertEqual(self.broken(lambda d: d["searches"]["ja: 日本"].pop("error")), [])
+
+    def test_every_json_file_is_checked_whatever_its_name(self):
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.object(check, "DIR", Path(d)):
+            Path(d, "schema.json").write_text((HERE.parent / "ops/version-snapshots/schema.json").read_text())
+            Path(d, "snapshot.json").write_text(json.dumps(GOOD))
+            with unittest.mock.patch.object(check.sys, "argv", ["check"]):
+                self.assertEqual(check.main(), 1)  # named snapshot.json, captures pages-v20261006-2
 
     def test_not_json(self):
         with tempfile.TemporaryDirectory() as d:

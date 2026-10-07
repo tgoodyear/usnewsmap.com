@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Check the index version snapshots (ops/version-snapshots/pages-*.json)
+"""Check the index version snapshots (every ops/version-snapshots/*.json but the schema)
 against their schema (ops/version-snapshots/schema.json), and what a schema
 can't say: the file is named after its index_version, and each answered
 search's per-bucket hits number the bucket count and add up to its total.
 
-    scripts/check-version-snapshots.py [file ...]    (default: every snapshot)
+    scripts/check-version-snapshots.py [file ...]    (default: every snapshot, whatever its name)
 
 Needs fastjsonschema (scripts/ci/requirements-ops.txt). CI runs it whenever a
 snapshot, the schema, this script or scripts/compare-versions.py changes.
@@ -46,7 +46,7 @@ def problems(path: Path, validate) -> list[str]:
 
 def main() -> int:
     validate = fastjsonschema.compile(json.loads((DIR / "schema.json").read_text(encoding="utf-8")))
-    paths = [Path(p) for p in sys.argv[1:]] or sorted(DIR.glob("pages-*.json"))
+    paths = [Path(p) for p in sys.argv[1:]] or sorted(p for p in DIR.glob("*.json") if p.name != "schema.json")
     if not paths:
         print("no snapshots to check", file=sys.stderr)
         return 1

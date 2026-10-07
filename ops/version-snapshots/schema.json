@@ -68,8 +68,13 @@
    "additionalProperties": false,
    "if": {"properties": {"status": {"const": 200}}},
    "then": {"required": ["total", "bucket", "series_hits", "languages", "timing_ms"], "not": {"required": ["error"]}},
-   "else": {"not": {"anyOf": [{"required": ["total"]}, {"required": ["bucket"]}, {"required": ["series_hits"]},
-                              {"required": ["languages"]}, {"required": ["timing_ms"]}]}}
+   "else": {
+    "not": {"anyOf": [{"required": ["total"]}, {"required": ["bucket"]}, {"required": ["series_hits"]},
+                      {"required": ["languages"]}, {"required": ["timing_ms"]}]},
+    "if": {"properties": {"status": {"const": "gave up"}}},
+    "then": {"not": {"required": ["error"]}},
+    "$comment": "A numeric non-200 status has `error` only when its body was a JSON problem document, so it isn't required."
+   }
   }
  }
 }
