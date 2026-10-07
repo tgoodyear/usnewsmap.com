@@ -507,7 +507,7 @@ pub fn place_overrides(json: &str) -> anyhow::Result<Vec<PlaceOverride>> {
             .check(&[
                 ("lat", audit::latitude),
                 ("lon", audit::longitude),
-                ("name", audit::text),
+                ("name", audit::optional_text),
                 ("precision", audit::precision),
             ])
             .with_context(at)?;
@@ -2283,12 +2283,17 @@ mod tests {
         assert!(ok(&entry(
             r#", "history": [{"lat": 0.5, "reason": "Old.", "ref": 1, "source": "Old.", "updated": "2026-10-07"}], "updated": "2026-10-08""#
         )));
+        // A name added later: the earlier version had none.
+        assert!(ok(&entry(
+            r#", "history": [{"name": null, "reason": "Old.", "ref": 1, "source": "Old.", "updated": "2026-10-07"}], "updated": "2026-10-08""#
+        )));
         // An earlier version's values have the entry's types.
         for bad in [
             r#""lat": "north""#,
             r#""lon": 200"#,
             r#""precision": "town""#,
             r#""name": 5"#,
+            r#""name": " ""#,
         ] {
             assert!(
                 !ok(&entry(&format!(

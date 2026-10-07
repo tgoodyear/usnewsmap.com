@@ -56,7 +56,7 @@ state, then city, with keys in alphabetical order:
 
 `name` replaces the place's name. `precision` is `city` (the default),
 `county` or `state`. `history` items can hold `lat`, `lon`, `name` and
-`precision`.
+`precision`; `"name": null` records that an earlier version had no name.
 
 ## Place aliases
 

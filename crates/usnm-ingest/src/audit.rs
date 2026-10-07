@@ -58,6 +58,12 @@ pub fn text(v: &Value) -> bool {
     v.as_str().is_some_and(|s| !s.trim().is_empty())
 }
 
+/// A string with something in it, or `null`: an earlier version of an
+/// optional field that wasn't set then (a place override without a `name`).
+pub fn optional_text(v: &Value) -> bool {
+    v.is_null() || text(v)
+}
+
 /// A latitude.
 pub fn latitude(v: &Value) -> bool {
     v.as_f64().is_some_and(|x| (-90.0..=90.0).contains(&x))
