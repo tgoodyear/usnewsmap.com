@@ -287,6 +287,62 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
+        "query": "let m = AppMetrics\n    | where AppRoleName == \"usnm-api\" and Name startswith \"api.searcher_cache_\"\n    | extend Cache = tostring(Properties.cache), Replica = AppRoleInstance;\nlet held = m\n    | where Name in (\"api.searcher_cache_bytes\", \"api.searcher_cache_items\")\n    | summarize arg_max(TimeGenerated, Sum) by Cache, Replica, Name\n    | summarize\n        Mb = round(sumif(Sum, Name == \"api.searcher_cache_bytes\") / 1e6, 1),\n        Items = tolong(sumif(Sum, Name == \"api.searcher_cache_items\")),\n        LastReported = max(TimeGenerated)\n        by Cache, Replica;\nm\n| where Name in (\"api.searcher_cache_hits\", \"api.searcher_cache_misses\", \"api.searcher_cache_evictions\")\n| summarize\n    Hits = tolong(sumif(Sum, Name == \"api.searcher_cache_hits\")),\n    Misses = tolong(sumif(Sum, Name == \"api.searcher_cache_misses\")),\n    Evictions = tolong(sumif(Sum, Name == \"api.searcher_cache_evictions\"))\n    by Cache, Replica\n| join kind=fullouter held on Cache, Replica\n| project\n    Cache = coalesce(Cache, Cache1),\n    Replica = coalesce(Replica, Replica1),\n    Mb,\n    Items,\n    Hits = coalesce(Hits, 0),\n    Misses = coalesce(Misses, 0),\n    Evictions = coalesce(Evictions, 0),\n    LastReported\n| extend HitRatePercent = iff(Hits + Misses > 0, round(100.0 * Hits / (Hits + Misses), 1), real(null))\n| project Cache, Replica, Mb, Items, Hits, Misses, Evictions, HitRatePercent, LastReported\n| order by Cache asc, Replica asc",
+        "size": 0,
+        "title": "Searcher caches (Quickwit sidecar): held at the last report, and hits, misses and evictions in the time range",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No searcher cache metrics in the time range (the API reports them with the Quickwit backend only)."
+      },
+      "name": "searcher-caches"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.searcher_cache_bytes\"\n| summarize Mb = round(max(Sum) / 1e6, 1) by bin(TimeGenerated, {TimeRange:grain}), Cache = tostring(Properties.cache)\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Searcher caches: MB held, by cache",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No searcher cache metrics in the time range."
+      },
+      "name": "searcher-cache-mb",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name in (\"api.searcher_cache_misses\", \"api.searcher_cache_evictions\")\n| summarize Count = sum(Sum) by bin(TimeGenerated, {TimeRange:grain}), Series = strcat(tostring(Properties.cache), \" \", iff(Name endswith \"misses\", \"misses\", \"evictions\"))\n| order by TimeGenerated asc",
+        "size": 0,
+        "title": "Searcher cache misses and evictions, by cache",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "timechart",
+        "timeContextFromParameter": "TimeRange",
+        "noDataMessage": "No searcher cache misses in the time range."
+      },
+      "name": "searcher-cache-misses",
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
         "query": "AppMetrics\n| where AppRoleName == \"usnm-api\" and Name == \"api.rejected_queries\"\n| summarize Rejected = sum(Sum) by bin(TimeGenerated, {TimeRange:grain}), Reason = tostring(Properties.reason)\n| order by TimeGenerated asc",
         "size": 0,
         "title": "Rejected queries by reason",

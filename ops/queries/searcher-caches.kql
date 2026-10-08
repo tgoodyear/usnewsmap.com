@@ -1,0 +1,38 @@
+// The Quickwit searcher sidecar's caches, per API replica (#125): what each
+// holds at its last report (MB of 1,000,000 bytes, as Quickwit reads
+// "256MB") and its hits, misses and evictions in the time span. The API reads
+// them from the sidecar every minute (api.searcher_cache_* in AppMetrics,
+// 08 §8.1.2). The split footer cache holds every split's footer when its
+// Evictions stay 0 and its Items reach the published version's split count
+// (the "index layout" lines, index-layout).
+let m = AppMetrics
+    | where AppRoleName == "usnm-api" and Name startswith "api.searcher_cache_"
+    | extend Cache = tostring(Properties.cache), Replica = AppRoleInstance;
+let held = m
+    | where Name in ("api.searcher_cache_bytes", "api.searcher_cache_items")
+    | summarize arg_max(TimeGenerated, Sum) by Cache, Replica, Name
+    | summarize
+        Mb = round(sumif(Sum, Name == "api.searcher_cache_bytes") / 1e6, 1),
+        Items = tolong(sumif(Sum, Name == "api.searcher_cache_items")),
+        LastReported = max(TimeGenerated)
+        by Cache, Replica;
+m
+| where Name in ("api.searcher_cache_hits", "api.searcher_cache_misses", "api.searcher_cache_evictions")
+| summarize
+    Hits = tolong(sumif(Sum, Name == "api.searcher_cache_hits")),
+    Misses = tolong(sumif(Sum, Name == "api.searcher_cache_misses")),
+    Evictions = tolong(sumif(Sum, Name == "api.searcher_cache_evictions"))
+    by Cache, Replica
+| join kind=fullouter held on Cache, Replica
+| project
+    Cache = coalesce(Cache, Cache1),
+    Replica = coalesce(Replica, Replica1),
+    Mb,
+    Items,
+    Hits = coalesce(Hits, 0),
+    Misses = coalesce(Misses, 0),
+    Evictions = coalesce(Evictions, 0),
+    LastReported
+| extend HitRatePercent = iff(Hits + Misses > 0, round(100.0 * Hits / (Hits + Misses), 1), real(null))
+| project Cache, Replica, Mb, Items, Hits, Misses, Evictions, HitRatePercent, LastReported
+| order by Cache asc, Replica asc

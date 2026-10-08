@@ -1,0 +1,143 @@
+# HELP quickwit_cache_cache_evict_bytes Number of cache entry evicted in bytes by component
+# TYPE quickwit_cache_cache_evict_bytes counter
+quickwit_cache_cache_evict_bytes{component_name="partial_request"} 0
+quickwit_cache_cache_evict_bytes{component_name="fastfields"} 0
+quickwit_cache_cache_evict_bytes 0
+quickwit_cache_cache_evict_bytes{component_name="shortlived"} 0
+quickwit_cache_cache_evict_bytes{component_name="splitfooter"} 0
+quickwit_cache_cache_evict_bytes{component_name="predicate"} 0
+# HELP quickwit_search_root_search_targeted_splits Number of splits targeted per root search GRPC request.
+# TYPE quickwit_search_root_search_targeted_splits histogram
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="0"} 0
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="10"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="20"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="30"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="40"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="50"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="60"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="70"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="80"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="90"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="100"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="200"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="300"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="400"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="500"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="600"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="700"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="800"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="900"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="1000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="2000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="3000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="4000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="5000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="6000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="7000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="8000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="9000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="10000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="20000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="30000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="40000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="50000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="60000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="70000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="80000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="90000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="100000"} 2
+quickwit_search_root_search_targeted_splits_bucket{status="success",le="+Inf"} 2
+quickwit_search_root_search_targeted_splits_sum{status="success"} 4
+quickwit_search_root_search_targeted_splits_count{status="success"} 2
+quickwit_search_root_search_targeted_splits_bucket{le="0"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="10"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="20"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="30"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="40"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="50"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="60"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="70"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="80"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="90"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="100"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="200"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="300"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="400"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="500"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="600"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="700"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="800"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="900"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="1000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="2000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="3000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="4000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="5000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="6000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="7000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="8000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="9000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="10000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="20000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="30000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="40000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="50000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="60000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="70000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="80000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="90000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="100000"} 0
+quickwit_search_root_search_targeted_splits_bucket{le="+Inf"} 0
+quickwit_search_root_search_targeted_splits_sum 0
+quickwit_search_root_search_targeted_splits_count 0
+# HELP quickwit_cache_cache_evict_total Number of cache entry evicted by component
+# TYPE quickwit_cache_cache_evict_total counter
+quickwit_cache_cache_evict_total{component_name="fastfields"} 0
+quickwit_cache_cache_evict_total{component_name="partial_request"} 0
+quickwit_cache_cache_evict_total 0
+quickwit_cache_cache_evict_total{component_name="predicate"} 0
+quickwit_cache_cache_evict_total{component_name="shortlived"} 0
+quickwit_cache_cache_evict_total{component_name="splitfooter"} 0
+# HELP quickwit_cache_cache_hits_bytes Number of cache hits in bytes by component
+# TYPE quickwit_cache_cache_hits_bytes counter
+quickwit_cache_cache_hits_bytes{component_name="shortlived"} 4412
+quickwit_cache_cache_hits_bytes{component_name="predicate"} 0
+quickwit_cache_cache_hits_bytes 0
+quickwit_cache_cache_hits_bytes{component_name="partial_request"} 0
+quickwit_cache_cache_hits_bytes{component_name="splitfooter"} 34138
+quickwit_cache_cache_hits_bytes{component_name="fastfields"} 0
+# HELP quickwit_cache_cache_hits_total Number of cache hits by component
+# TYPE quickwit_cache_cache_hits_total counter
+quickwit_cache_cache_hits_total 0
+quickwit_cache_cache_hits_total{component_name="fastfields"} 0
+quickwit_cache_cache_hits_total{component_name="shortlived"} 16
+quickwit_cache_cache_hits_total{component_name="splitfooter"} 4
+quickwit_cache_cache_hits_total{component_name="partial_request"} 0
+quickwit_cache_cache_hits_total{component_name="predicate"} 0
+# HELP quickwit_cache_cache_misses_total Number of cache misses by component
+# TYPE quickwit_cache_cache_misses_total counter
+quickwit_cache_cache_misses_total{component_name="fastfields"} 4
+quickwit_cache_cache_misses_total{component_name="shortlived"} 12
+quickwit_cache_cache_misses_total{component_name="partial_request"} 8
+quickwit_cache_cache_misses_total{component_name="splitfooter"} 2
+quickwit_cache_cache_misses_total{component_name="predicate"} 4
+quickwit_cache_cache_misses_total 0
+# HELP quickwit_storage_object_storage_get_slice_in_flight_count Number of GetObject for which the memory was allocated but the download is still in progress.
+# TYPE quickwit_storage_object_storage_get_slice_in_flight_count gauge
+quickwit_storage_object_storage_get_slice_in_flight_count 0
+# HELP quickwit_cache_in_cache_num_bytes Number of bytes in cache by component
+# TYPE quickwit_cache_in_cache_num_bytes gauge
+quickwit_cache_in_cache_num_bytes{component_name="shortlived"} 0
+quickwit_cache_in_cache_num_bytes{component_name="splitfooter"} 17220
+quickwit_cache_in_cache_num_bytes{component_name="partial_request"} 326
+quickwit_cache_in_cache_num_bytes{component_name="predicate"} 0
+quickwit_cache_in_cache_num_bytes 0
+quickwit_cache_in_cache_num_bytes{component_name="fastfields"} 663
+# HELP quickwit_cache_in_cache_count Count of in cache by component
+# TYPE quickwit_cache_in_cache_count gauge
+quickwit_cache_in_cache_count{component_name="partial_request"} 4
+quickwit_cache_in_cache_count{component_name="splitfooter"} 2
+quickwit_cache_in_cache_count{component_name="shortlived"} 0
+quickwit_cache_in_cache_count{component_name="predicate"} 0
+quickwit_cache_in_cache_count{component_name="fastfields"} 4
+quickwit_cache_in_cache_count 0

@@ -15,6 +15,7 @@ use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
+use crate::cache_metrics::{self, CacheReport};
 use crate::snippet::{matched_in, page_snippets};
 use crate::{
     ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
@@ -28,6 +29,8 @@ const MAX_PLACES: u32 = 5_000;
 pub const MAX_PAPERS: u32 = 10_000;
 /// Upper bound on title languages (about 50 in the catalog).
 const MAX_LANGUAGES: u32 = 200;
+/// Limit on reading the searcher's metrics, which it renders from memory.
+const METRICS_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct QuickwitBackend {
     base_url: String,
@@ -55,6 +58,25 @@ impl QuickwitBackend {
     pub fn with_search_timeout(mut self, timeout: Duration) -> Self {
         self.search_timeout = Some(timeout);
         self
+    }
+
+    /// The searcher's cache metrics, from its Prometheus endpoint
+    /// (`GET /metrics`). Never waits longer than `METRICS_TIMEOUT`.
+    pub async fn cache_metrics(&self) -> Result<CacheReport, SearchError> {
+        let resp = self
+            .client
+            .get(format!("{}/metrics", self.base_url))
+            .timeout(METRICS_TIMEOUT)
+            .send()
+            .await
+            .map_err(map_err)?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(SearchError::Backend(format!(
+                "quickwit /metrics returned {status}"
+            )));
+        }
+        Ok(cache_metrics::parse(&resp.text().await.map_err(map_err)?))
     }
 
     async fn search(

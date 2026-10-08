@@ -318,6 +318,10 @@ pub struct Split {
     pub id: String,
     pub docs: u64,
     pub bytes: u64,
+    /// The size of its footer (the hotcache and the file list), which a
+    /// searcher reads first and keeps in `split_footer_cache_capacity`;
+    /// `None` if the metastore doesn't say.
+    pub footer_bytes: Option<u64>,
 }
 
 /// An index's published splits, as the release log and manifest report them.
@@ -330,10 +334,19 @@ pub struct IndexLayout {
     pub bytes: u64,
     pub smallest_split_docs: u64,
     pub largest_split_docs: u64,
+    /// The splits' footers in all: what a searcher's split footer cache needs
+    /// to hold them all (#125). Absent when a split doesn't give its footer,
+    /// and in manifests written before releases recorded it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footer_bytes: Option<u64>,
+    /// The largest single footer; absent like `footer_bytes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub largest_footer_bytes: Option<u64>,
 }
 
 impl IndexLayout {
     pub fn of(index_id: &str, splits: &[Split]) -> Self {
+        let footers: Option<Vec<u64>> = splits.iter().map(|s| s.footer_bytes).collect();
         Self {
             index_id: index_id.to_owned(),
             splits: splits.len() as u64,
@@ -341,6 +354,10 @@ impl IndexLayout {
             bytes: splits.iter().map(|s| s.bytes).sum(),
             smallest_split_docs: splits.iter().map(|s| s.docs).min().unwrap_or(0),
             largest_split_docs: splits.iter().map(|s| s.docs).max().unwrap_or(0),
+            footer_bytes: footers.as_ref().map(|f| f.iter().sum()),
+            largest_footer_bytes: footers
+                .as_ref()
+                .map(|f| f.iter().copied().max().unwrap_or(0)),
         }
     }
 
@@ -353,6 +370,8 @@ impl IndexLayout {
             mb = (self.bytes as f64 / (1024.0 * 1024.0)).round() as u64,
             smallest_split_docs = self.smallest_split_docs,
             largest_split_docs = self.largest_split_docs,
+            footer_bytes = self.footer_bytes,
+            largest_footer_bytes = self.largest_footer_bytes,
             "index layout"
         );
     }
@@ -373,9 +392,18 @@ fn parse_splits(v: &Value) -> anyhow::Result<Vec<Split>> {
                 docs: s["num_docs"].as_u64().context("a split has no num_docs")?,
                 // The footer ends the split file.
                 bytes: s["footer_offsets"]["end"].as_u64().unwrap_or(0),
+                footer_bytes: footer_bytes(&s["footer_offsets"]),
             })
         })
         .collect()
+}
+
+/// A split's footer size from its `footer_offsets` (`{"start", "end"}`,
+/// byte offsets in the split file).
+fn footer_bytes(offsets: &Value) -> Option<u64> {
+    offsets["end"]
+        .as_u64()?
+        .checked_sub(offsets["start"].as_u64()?)
 }
 
 /// The writer node's REST API, for merges and splits.
@@ -995,11 +1023,13 @@ mod tests {
                 id: "a".into(),
                 docs: 1_000_000,
                 bytes: 23_000_000_000,
+                footer_bytes: Some(3_500_000),
             },
             Split {
                 id: "b".into(),
                 docs: 40_000,
                 bytes: 920_000_000,
+                footer_bytes: Some(92_377),
             },
         ];
         let l = check("idx", 1_040_000, &splits).unwrap();
@@ -1012,7 +1042,31 @@ mod tests {
                 bytes: 23_920_000_000,
                 smallest_split_docs: 40_000,
                 largest_split_docs: 1_000_000,
+                footer_bytes: Some(3_592_377),
+                largest_footer_bytes: Some(3_500_000),
             }
+        );
+        // In the log line and the manifest.
+        assert_eq!(
+            serde_json::to_value(&l).unwrap(),
+            serde_json::json!({
+                "index_id": "idx", "splits": 2, "docs": 1_040_000, "bytes": 23_920_000_000_u64,
+                "smallest_split_docs": 40_000, "largest_split_docs": 1_000_000,
+                "footer_bytes": 3_592_377, "largest_footer_bytes": 3_500_000,
+            })
+        );
+        // A split that doesn't give its footer: no footer total, rather than
+        // one too small. The manifest leaves the fields out.
+        let mut unknown = splits.clone();
+        unknown[1].footer_bytes = None;
+        let l = IndexLayout::of("idx", &unknown);
+        assert_eq!((l.footer_bytes, l.largest_footer_bytes), (None, None));
+        let v = serde_json::to_value(&l).unwrap();
+        assert!(v.get("footer_bytes").is_none() && v.get("largest_footer_bytes").is_none());
+        let empty = IndexLayout::of("empty", &[]);
+        assert_eq!(
+            (empty.footer_bytes, empty.largest_footer_bytes),
+            (Some(0), Some(0))
         );
         let err = check("idx", 1_040_001, &splits).unwrap_err().to_string();
         assert!(err.contains("expected 1040001"), "{err}");
@@ -1022,6 +1076,7 @@ mod tests {
                 id: format!("s{i:02}"),
                 docs: 7_000,
                 bytes: 1,
+                footer_bytes: None,
             })
             .collect();
         let err = check("idx", 140_000, &many).unwrap_err().to_string();
@@ -1040,10 +1095,21 @@ mod tests {
             vec![Split {
                 id: "01M3XPHH".into(),
                 docs: 40000,
-                bytes: 920_075_297
+                bytes: 920_075_297,
+                footer_bytes: Some(92_377),
             }]
         );
         assert!(parse_splits(&serde_json::json!({"message": "index `x` not found"})).is_err());
+        // Without offsets, or with ones that make no sense: no footer size.
+        let v = serde_json::json!({"splits": [
+            {"split_id": "a", "num_docs": 1},
+            {"split_id": "b", "num_docs": 1, "footer_offsets": {"end": 10}},
+            {"split_id": "c", "num_docs": 1, "footer_offsets": {"start": 11, "end": 10}},
+        ]});
+        assert!(parse_splits(&v)
+            .unwrap()
+            .iter()
+            .all(|s| s.footer_bytes.is_none()));
     }
 
     /// A fake writer node: merges run for a few polls, then the planner

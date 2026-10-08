@@ -674,3 +674,30 @@ async fn common_word_phrases(
     }
     matched
 }
+
+/// The searcher's cache metrics have the names and labels the API reads
+/// (#125): after a search over both indexes, each split's footer is cached.
+#[tokio::test]
+async fn cache_metrics_report_the_split_footers() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    use usnm_search::cache_metrics::Cache;
+    let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
+    let f = filters("1890-01-01", "1899-12-31");
+    let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+    qw.summary(&set, &parse("gold").unwrap(), &f, &spec)
+        .await
+        .unwrap();
+    let report = qw.cache_metrics().await.unwrap();
+    let footers = report[&Cache::SplitFooter];
+    // At least one split per index, each footer cached once.
+    assert!(footers.items >= 2, "{report:?}");
+    assert!(
+        footers.bytes > 0 && footers.misses >= footers.items,
+        "{report:?}"
+    );
+    assert_eq!(footers.evictions, 0, "{report:?}");
+    assert!(report.contains_key(&Cache::FastField), "{report:?}");
+}

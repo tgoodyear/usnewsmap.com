@@ -114,6 +114,10 @@ pub struct Config {
     pub search_log_url: Option<String>,
     /// How often the search log appends its batch.
     pub search_log_flush: Duration,
+    /// How often the Quickwit searcher's cache metrics are read and
+    /// reported (`crate::searcher_caches`); zero turns it off. Quickwit
+    /// backend only.
+    pub searcher_metrics_interval: Duration,
     /// End-to-end tests only, and only with the memory backend: an aggregate
     /// search whose query contains this term waits this long before it runs,
     /// to stand in for a cold search on the real corpus.
@@ -227,6 +231,7 @@ impl Config {
                 .transpose()?,
             search_log_url: var("USNM_SEARCH_LOG_URL"),
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
+            searcher_metrics_interval: Duration::from_secs(num("USNM_SEARCHER_METRICS_SECS", 60)?),
             fixture_slow,
         })
     }
@@ -257,6 +262,10 @@ mod tests {
         assert_eq!(c.prewarm_top_searches, 20);
         assert_eq!(c.prewarm_log_days, 28);
         assert!(c.fixture_slow.is_none());
+        assert_eq!(c.searcher_metrics_interval, Duration::from_secs(60));
+        let off = Config::from_lookup(|k| (k == "USNM_SEARCHER_METRICS_SECS").then(|| "0".into()))
+            .unwrap();
+        assert_eq!(off.searcher_metrics_interval, Duration::ZERO);
         let c = Config::from_lookup(|k| match k {
             "USNM_RATE_PER_MIN" => Some("0".into()),
             "USNM_REFERENCE_URL" => Some("https://a.blob.core.windows.net/reference".into()),
