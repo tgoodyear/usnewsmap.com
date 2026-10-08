@@ -47,7 +47,7 @@ def timeline():
     rows = [
         ("Rocky Shimpo", None),
         ("Hoji Shinbun", (date(1943, 4, 12), date(1944, 4, 12), HOJI, "Japanese OCR, 404 pages", False)),
-        ("CHNC", (date(1943, 1, 1), date(1944, 4, 1), CHNC, "1943 and part of 1944; dates not confirmed", True)),
+        ("CHNC", (date(1943, 4, 12), date(1944, 4, 12), CHNC, "Japanese OCR, 101 issues", False)),
         ("LoC / ours", (date(1944, 6, 2), date(1945, 12, 31), OURS, "756 of 1,012 pages lack text at LoC; our OCR", False)),
         ("Colorado Times", None),
         ("CHNC", (date(1943, 1, 1), date(1945, 12, 31), CHNC, "Japanese OCR, 1918–1969 (axis cut)", False)),
