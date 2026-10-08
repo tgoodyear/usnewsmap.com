@@ -49,10 +49,7 @@ case "$ACTION" in
       --parameters location="$LOCATION" \
       --action-on-unmanage detachAll \
       --deny-settings-mode denyDelete \
-      --deny-settings-excluded-actions \
-        Microsoft.Authorization/locks/delete \
-        Microsoft.Storage/storageAccounts/privateEndpointConnections/delete \
-        Microsoft.Storage/storageAccounts/privateEndpointConnectionProxies/delete \
+      --deny-settings-excluded-actions "Microsoft.Authorization/locks/delete Microsoft.Storage/storageAccounts/privateEndpointConnections/delete Microsoft.Storage/storageAccounts/privateEndpointConnectionProxies/delete" \
       --description "usnewsmap archival storage, shared by every environment (scripts/archive-store.sh)" \
       --yes --only-show-errors -o none
     # Stacks can return output names with their case changed (scripts/lib/env.sh).
