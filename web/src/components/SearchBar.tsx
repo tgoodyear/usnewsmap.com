@@ -1,7 +1,10 @@
 import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { flushSync } from "react-dom";
 import type { Meta, Mode } from "../api/types";
+import { parseDateEntry, showDate } from "../lib/dateEntry";
 import { hasJapanese } from "../lib/japanese";
 import { DEFAULTS, type ViewState } from "../state/url";
+import { DateField } from "./DateField";
 import { LanguageFilter, languageChoices } from "./LanguageFilter";
 
 interface Props {
@@ -62,6 +65,13 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
   // changes, so back/forward and example cards replace the draft.
   const [draft, setDraft] = useState(view);
   const [states, setStates] = useState(view.state.join(", "));
+  // The From and To boxes as typed; read into ISO dates on submit.
+  const [fromText, setFromText] = useState(showDate(view.from));
+  const [toText, setToText] = useState(showDate(view.to));
+  const [fromError, setFromError] = useState<string | null>(null);
+  const [toError, setToError] = useState<string | null>(null);
+  const fromRef = useRef<HTMLInputElement>(null);
+  const toRef = useRef<HTMLInputElement>(null);
   // Codes from the URL stay listed after they're unchecked, so they don't vanish.
   const languages = languageChoices(meta?.languages, [...new Set([...view.lang, ...draft.lang])]);
   // On phones the options (match mode, dates, states, languages) sit behind a toggle so
@@ -69,17 +79,47 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
   // uses one, so an active filter is never hidden. Wider screens always show
   // them (CSS hides the toggle).
   const [open, setOpen] = useState(() => activeOptions(view) > 0);
-  const active = activeOptions({ ...draft, state: states.split(/[\s,]+/).filter(Boolean) });
+  const active = activeOptions({
+    ...draft,
+    from: fromText.trim(),
+    to: toText.trim(),
+    state: states.split(/[\s,]+/).filter(Boolean),
+  });
+
+  const lo = meta?.bounds.from;
+  const hi = meta?.bounds.to;
+  const bounds = lo && hi ? { from: lo, to: hi } : undefined;
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    const from = parseDateEntry(fromText, "from", bounds);
+    const to = parseDateEntry(toText, "to", bounds);
+    if (!from.ok || !to.ok) {
+      // Show the options (phones hide them) so the box with the problem can take focus.
+      flushSync(() => {
+        setFromError(from.ok ? null : from.error);
+        setToError(to.ok ? null : to.error);
+        setOpen(true);
+      });
+      (from.ok ? toRef : fromRef).current?.focus();
+      return;
+    }
+    // Show the dates searched: 1827 in From reads 01/01/1827. Before
+    // /v1/meta has loaded, keep the entries as typed, so they are cut to the
+    // index's days once it has (see DateField).
+    if (bounds) {
+      setFromText(showDate(from.iso));
+      setToText(showDate(to.iso));
+    }
+    setFromError(null);
+    setToError(null);
     if (!draft.q.trim()) return;
     onSearch({
       q: draft.q.trim(),
       mode: draft.mode,
       near: draft.near,
-      from: draft.from,
-      to: draft.to,
+      from: from.iso,
+      to: to.iso,
       state: states
         .split(/[\s,]+/)
         .map((s) => s.toUpperCase())
@@ -88,8 +128,6 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
     });
   };
 
-  const lo = meta?.bounds.from;
-  const hi = meta?.bounds.to;
   const jaHint = japaneseHint(draft.q, meta);
   // An input method (IME) uses Enter to confirm a word: that Enter mustn't
   // submit the search. Safari ends the composition before the keydown, so
@@ -179,26 +217,30 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
             words
           </label>
         )}
-        <label className="search__date">
-          <span>From</span>
-          <input
-            type="date"
-            min={lo}
-            max={hi}
-            value={draft.from}
-            onChange={(e) => setDraft({ ...draft, from: e.target.value })}
-          />
-        </label>
-        <label className="search__date">
-          <span>To</span>
-          <input
-            type="date"
-            min={lo}
-            max={hi}
-            value={draft.to}
-            onChange={(e) => setDraft({ ...draft, to: e.target.value })}
-          />
-        </label>
+        <DateField
+          id={id}
+          label="From"
+          edge="from"
+          text={fromText}
+          onText={setFromText}
+          error={fromError}
+          errorId={`${id}-from-error`}
+          onError={setFromError}
+          bounds={bounds}
+          inputRef={fromRef}
+        />
+        <DateField
+          id={id}
+          label="To"
+          edge="to"
+          text={toText}
+          onText={setToText}
+          error={toError}
+          errorId={`${id}-to-error`}
+          onError={setToError}
+          bounds={bounds}
+          inputRef={toRef}
+        />
         <label className="search__state">
           <span>States</span>
           <input
@@ -216,6 +258,22 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
             value={draft.lang}
             onChange={(lang) => setDraft({ ...draft, lang })}
           />
+        )}
+      </div>
+      <span id={`${id}-date-hint`} className="visually-hidden">
+        A full date, a month and year, or just a year.
+      </span>
+      {/* Polite, so a problem found on leaving a box is read out after the next one's name. */}
+      <div className="search__errors" aria-live="polite">
+        {fromError && (
+          <p id={`${id}-from-error`} className="search__error">
+            From: {fromError}
+          </p>
+        )}
+        {toError && (
+          <p id={`${id}-to-error`} className="search__error">
+            To: {toError}
+          </p>
         )}
       </div>
     </form>
