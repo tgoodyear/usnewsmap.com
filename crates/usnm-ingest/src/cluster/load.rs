@@ -98,6 +98,8 @@ pub struct Spec {
     pub min_shards: Option<usize>,
     /// Ingest requests in flight at once.
     pub senders: usize,
+    /// Most bytes per request ([`CHUNK_BYTES`]; tests use less).
+    pub chunk_bytes: usize,
     /// Merges must settle and the index seal within this.
     pub merge_timeout: Duration,
     pub poll: Duration,
@@ -117,6 +119,7 @@ impl Spec {
             split_docs: 3_000,
             min_shards: None,
             senders: 4,
+            chunk_bytes: CHUNK_BYTES,
             merge_timeout: Duration::from_secs(4 * 3600),
             poll: Duration::from_secs(10),
             finalize_grace: Duration::from_secs(60),
@@ -500,7 +503,7 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
     let feed = async {
         for p in &manifest.parts {
             let ndjson = sample::part(store, &p.path).await?;
-            for c in chunks(&ndjson, CHUNK_BYTES)? {
+            for c in chunks(&ndjson, spec.chunk_bytes)? {
                 if tx.send(c).await.is_err() {
                     // A sender failed; its error comes from the join below.
                     return Ok::<_, anyhow::Error>(());
