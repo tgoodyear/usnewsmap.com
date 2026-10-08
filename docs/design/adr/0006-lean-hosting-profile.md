@@ -20,7 +20,7 @@ The maintainer set a target of **under $80/month**. The first design (Front Door
    - raw LoC archives are **not retained**, because LoC is the source of record and checksums are kept in the Cosmos batch state.
 5. **Free tiers:**
    - GitHub Container Registry instead of ACR;
-   - Log Analytics kept within the free 5 GB/month using a daily cap;
+   - Log Analytics kept within the free 5 GB/month using a daily cap (raised from 150 MB to 1 GB a day in October 2026, so a bulk job can't stop all logging; normal days still fit the free allowance);
    - no Key Vault until a secret exists;
    - the Container Apps free monthly grant covers the jobs.
 6. **Offline compute on Spot:**

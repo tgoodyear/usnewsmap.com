@@ -87,7 +87,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Blob: reference, response cache, tiles (Hot) + transactions | ~20–40 GB | $1 | $2 | $4 |
 | Container Apps Jobs (weekly incremental ingest, stats, pre-warm) | Mostly within the free grant | $0 | $1 | $3 |
 | Egress | The site, tiles and API responses via Azure egress (first 100 GB free) | $0 | $0 | $5 |
-| Log Analytics / App Insights | Daily cap keeps it within 5 GB/month free. Each API request adds a request row (~1 KB) and a console line (~0.2 KB) | $0 | $0 | $3 |
+| Log Analytics / App Insights | Normal days stay within the free 5 GB/month; the 1 GB daily cap bounds bursts from bulk jobs. Each API request adds a request row (~1 KB) and a console line (~0.2 KB) | $0 | $0 | $3 |
 | Availability tests | 1 standard test (the site home page) × 3 locations, every 15 minutes, $0.0005 per run | $4 | $4 | $4 |
 | Cosmos DB (document state) | Free tier: 1,000 RU/s + 25 GB (serverless ~$1–3 if the free tier is taken) | $0 | $0 | $3 |
 | **Private networking** ([ADR-0008](adr/0008-private-networking.md)) | 2 private endpoints (Blob, Cosmos) at ~$7.30/month each; 2 private DNS zones at ~$0.50; data processed through the endpoints at ~$0.01/GB (Quickwit split reads, cache, jobs: ~50–300 GB) | $16 | $17 | $19 |
