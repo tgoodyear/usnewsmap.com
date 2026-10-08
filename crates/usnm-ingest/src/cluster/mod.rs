@@ -31,3 +31,31 @@ pub mod set;
 pub fn log_report(kind: &str, report: &serde_json::Value) {
     tracing::info!(kind, report = %report, "qwcluster report");
 }
+
+/// Take `prefix` for one build of a sample or set before writing anything
+/// there: `{prefix}/building.json`, created only if absent. A finished build
+/// (its manifest exists) or another build under way (or one that failed)
+/// keeps the prefix, so two executions never write the same objects; build
+/// under another name instead.
+pub async fn claim(store: &dyn usnm_store::ObjectStore, prefix: &str) -> anyhow::Result<()> {
+    if store.exists(&format!("{prefix}/manifest.json")).await? {
+        anyhow::bail!("`{prefix}` already exists and is never replaced; build under another name");
+    }
+    let mark = serde_json::json!({
+        "started_at": chrono::Utc::now(),
+        "by": crate::owner_id(),
+    });
+    if !store
+        .put_new(
+            &format!("{prefix}/building.json"),
+            serde_json::to_vec(&mark)?,
+            "application/json",
+        )
+        .await?
+    {
+        anyhow::bail!(
+            "another build of `{prefix}` started (or one failed: see {prefix}/building.json); build under another name"
+        );
+    }
+    Ok(())
+}

@@ -122,6 +122,23 @@ pub async fn published(reference: &dyn ObjectStore) -> anyhow::Result<Published>
     })
 }
 
+/// The batch list of `version` (its `batches.json`), e.g. the version a
+/// sample was taken from, whatever is published now.
+pub async fn run_batches(
+    reference: &dyn ObjectStore,
+    version: &str,
+) -> anyhow::Result<Vec<RunBatch>> {
+    if !usnm_store::is_safe_segment(version) {
+        bail!("`{version}` isn't a version id");
+    }
+    let path = format!("{version}/{RUN_BATCHES_FILE}");
+    let bytes = reference
+        .get(&path)
+        .await?
+        .with_context(|| format!("`{path}` is missing"))?;
+    serde_json::from_slice(&bytes).context(path)
+}
+
 /// How to take a sample.
 #[derive(Debug, Clone)]
 pub struct Spec {
@@ -259,12 +276,9 @@ pub async fn build(
     spec: &Spec,
 ) -> anyhow::Result<Manifest> {
     usnm_store::validate_path(prefix)?;
-    // The manifest is written last, so one there means a finished sample
-    // that a load may read: never replace it. Parts without a manifest are a
-    // failed attempt's, and are overwritten.
-    if out.exists(&format!("{prefix}/manifest.json")).await? {
-        bail!("a sample already exists at `{prefix}`; give the new one another name");
-    }
+    // One build per prefix, and a finished sample is never replaced: a load
+    // may be reading it.
+    super::claim(out, prefix).await?;
     let started_at = Utc::now();
     let start = tokio::time::Instant::now();
     let mut batches = published.batches;

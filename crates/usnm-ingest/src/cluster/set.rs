@@ -197,9 +197,8 @@ pub async fn bundle(
     if !usnm_store::is_safe_segment(name) {
         bail!("`{name}` can't name a set");
     }
-    if sets.exists(&format!("{name}/manifest.json")).await? {
-        bail!("set `{name}` exists and is never replaced; build another version");
-    }
+    // One build per set, and a set is never replaced.
+    super::claim(sets.as_ref(), name).await?;
     let sm = sample::manifest(src.sample, src.sample_prefix).await?;
     if sm.pct < 100.0 {
         tracing::warn!(

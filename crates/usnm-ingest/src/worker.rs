@@ -574,7 +574,7 @@ impl Worker {
         if let (Some(u), Some(r)) = (upload, &self.raw) {
             let path = u.path().to_owned();
             let bytes = u.commit().await?;
-            raw::record(
+            raw::record_once(
                 r.as_ref(),
                 &raw::Manifest {
                     batch: name.to_owned(),

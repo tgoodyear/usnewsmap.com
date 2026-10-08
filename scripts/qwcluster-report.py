@@ -243,8 +243,9 @@ def summarize_metrics(v):
         rx, tx = value("RxBytes", "total", t), value("TxBytes", "total", t)
         if rx is not None and tx is not None:
             net[t] = (rx + tx) / 60
+    # Idle only with both network values in: a gap isn't quiet.
     idle = sum(1 for t, c in zip(minutes, cpu)
-               if c < IDLE_CPU_NANOCORES / 1e9 and net.get(t, 0) < IDLE_NETWORK_BYTES_PER_SEC)
+               if c < IDLE_CPU_NANOCORES / 1e9 and t in net and net[t] < IDLE_NETWORK_BYTES_PER_SEC)
     return {
         "minutes": len(cpu),
         "cpu_avg": statistics.mean(cpu) if cpu else None,

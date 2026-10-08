@@ -417,9 +417,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let store = usnm_store::open(&store)?;
             let reference = usnm_store::open(&reference)?;
-            let published = sample::published(reference.as_ref()).await?;
-            let batches = published
-                .batches
+            // The batches of the version the sample was taken from, not
+            // whatever is published now.
+            let sm = sample::manifest(store.as_ref(), &format!("sample/{sample}")).await?;
+            let batches = sample::run_batches(reference.as_ref(), &sm.version)
+                .await?
                 .iter()
                 .map(|b| format!("{}_ver{:02}", b.batch, b.curated.version))
                 .collect();

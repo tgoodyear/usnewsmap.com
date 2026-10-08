@@ -388,7 +388,7 @@ Then clear `USNM_RETAIN_RAW` and provision. That deletes the environment's own c
 
 ### Sample sets
 
-A set packages a sample for reuse in `sets/{name}/`, built once by the search cluster's bench job and never replaced (build `-v2` instead):
+A set packages a sample for reuse in `sets/{name}/`, built once by the search cluster's bench job and never replaced (build `-v2` instead). A build first claims the name with `building.json`, so two builds never write the same objects. A build that fails keeps its name, so the retry is the next version:
 
 - `raw.tar`: the set's LoC batch archives as kept in `raw/`, with their manifests. It's a plain tar, since the archives are bzip2 already. Curate it offline, or extract it into another raw store.
 - `docs.ndjson.zst`: the sample's documents exactly as the release builds them (`text`, `text_cg`, every field; `text_as` and `text_as_cg` only when the manifest says `american_stories`). It's one zstd stream, so it can be loaded into any Quickwit 0.9 index created from `infra/quickwit/pages-index.yaml`.

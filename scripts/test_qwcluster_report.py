@@ -71,6 +71,9 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(m["mem_max_mib"], 2048)
         # Minute 1 is busy; minute 3 is quiet on CPU but over 1,000 bytes/s.
         self.assertEqual(m["idle_minutes"], 1)
+        # Without network values a quiet minute isn't counted idle.
+        v["value"] = [x for x in v["value"] if x["name"]["value"] != "TxBytes"]
+        self.assertEqual(report.summarize_metrics(v)["idle_minutes"], 0)
 
     def test_tables_from_real_reports(self):
         load = json.loads(fixture("load.json")["Report"])

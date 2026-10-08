@@ -218,7 +218,7 @@ pub async fn copy(
         let (uploaded, fed) = tokio::join!(upload, feed);
         let n = fed?;
         uploaded.with_context(|| format!("copying `{}`", m.path))?;
-        record(to, &m).await?;
+        record_once(to, &m).await?;
         tracing::info!(batch = %b, mb = n / (1024 * 1024), "archive copied");
         out.archives += 1;
         out.bytes += n;
@@ -235,6 +235,31 @@ pub async fn copy(
         out.listings += 1;
     }
     Ok(out)
+}
+
+/// [`record`], unless another curation (another environment's, sharing
+/// the archival account) recorded the batch first: then its manifest must
+/// name the same archive, which the two uploads then both wrote.
+pub async fn record_once(raw: &dyn ObjectStore, m: &Manifest) -> anyhow::Result<()> {
+    let path = manifest_path(&m.batch);
+    if raw
+        .put_new(&path, serde_json::to_vec_pretty(m)?, "application/json")
+        .await?
+    {
+        return Ok(());
+    }
+    let theirs = find(raw, &m.batch, None)
+        .await?
+        .with_context(|| format!("`{path}` vanished"))?;
+    if theirs.sha256.eq_ignore_ascii_case(&m.sha256) && theirs.bytes == m.bytes {
+        tracing::info!(batch = %m.batch, "the archive was already retained, the same one");
+        return Ok(());
+    }
+    anyhow::bail!(
+        "`{path}` names another archive (sha256 {}) than this curation's ({}); the retained copy is ambiguous",
+        theirs.sha256,
+        m.sha256
+    )
 }
 
 #[cfg(test)]

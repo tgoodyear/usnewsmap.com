@@ -23,10 +23,25 @@ pub const BLOCK_BYTES: usize = 8 * 1024 * 1024;
 /// in one response.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
 
-/// The `n`th block's id: the same length for every block, base64.
-fn block_id(n: usize) -> String {
+/// A prefix for one upload's block ids: Azure stages blocks by blob and id,
+/// so two uploads to the same blob at once must not share ids, or a commit
+/// could mix their blocks.
+fn upload_tag() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let mix = nanos
+        ^ (u64::from(std::process::id()) << 32)
+        ^ SEQ.fetch_add(1, Ordering::Relaxed).rotate_left(17);
+    format!("{mix:016x}")
+}
+
+/// The `n`th block's id in upload `tag`: the same length for every block, base64.
+fn block_id(tag: &str, n: usize) -> String {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(format!("{n:08}"))
+    base64::engine::general_purpose::STANDARD.encode(format!("{tag}{n:08}"))
 }
 
 /// The Put Block List body committing `ids` in order.
@@ -230,6 +245,7 @@ impl ObjectStore for BlobStore {
         commit: tokio::sync::oneshot::Receiver<bool>,
     ) -> Result<u64, StoreError> {
         validate_path(path)?;
+        let tag = upload_tag();
         let mut ids = Vec::new();
         let mut buf: Vec<u8> = Vec::with_capacity(BLOCK_BYTES);
         let mut total = 0u64;
@@ -241,7 +257,7 @@ impl ObjectStore for BlobStore {
                 buf.extend_from_slice(&rest[..take]);
                 rest = &rest[take..];
                 if buf.len() == BLOCK_BYTES {
-                    let id = block_id(ids.len());
+                    let id = block_id(&tag, ids.len());
                     let body = std::mem::replace(&mut buf, Vec::with_capacity(BLOCK_BYTES));
                     self.put_block(path, &id, body).await?;
                     ids.push(id);
@@ -249,7 +265,7 @@ impl ObjectStore for BlobStore {
             }
         }
         if !buf.is_empty() {
-            let id = block_id(ids.len());
+            let id = block_id(&tag, ids.len());
             self.put_block(path, &id, buf).await?;
             ids.push(id);
         }
@@ -486,6 +502,15 @@ impl ObjectStore for BlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uploads_never_share_block_ids() {
+        let (a, b) = (upload_tag(), upload_tag());
+        assert_ne!(a, b);
+        assert_ne!(block_id(&a, 0), block_id(&b, 0));
+        // Every id of an upload has the same length, as Azure requires.
+        assert_eq!(block_id(&a, 0).len(), block_id(&a, 49_999).len());
+    }
     use crate::credential::StaticToken;
 
     fn cred() -> Arc<Credential> {
