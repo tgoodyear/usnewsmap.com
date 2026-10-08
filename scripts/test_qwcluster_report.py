@@ -57,7 +57,8 @@ class ReportTest(unittest.TestCase):
 
     def test_summarizes_metrics_per_minute(self):
         def series(name, agg, values):
-            return {"name": {"value": name}, "timeseries": [{"data": [{agg: x} for x in values]}]}
+            return {"name": {"value": name}, "timeseries": [{"data": [
+                {"timeStamp": f"2026-10-09T00:0{i}:00Z", agg: x} for i, x in enumerate(values)]}]}
         v = {"value": [
             series("UsageNanoCores", "average", [5e6, 1.5e9, 2e6]),
             series("WorkingSetBytes", "maximum", [2**30, 2 * 2**30, 2**30]),

@@ -222,29 +222,35 @@ def app_metrics(sub, rg, app, start, end):
 
 
 def summarize_metrics(v):
+    """Per-minute points of each metric, matched by their timestamps."""
     series = {}
     for m in v.get("value", []):
         name = m["name"]["value"]
-        points = [d for ts in m.get("timeseries", []) for d in ts.get("data", [])]
+        points = {d["timeStamp"]: d for ts in m.get("timeseries", []) for d in ts.get("data", [])
+                  if "timeStamp" in d}
         series[name] = points
 
-    def vals(name, agg):
-        return [p[agg] for p in series.get(name, []) if p.get(agg) is not None]
+    def value(name, agg, t):
+        return series.get(name, {}).get(t, {}).get(agg)
 
-    cpu = [x / 1e9 for x in vals("UsageNanoCores", "average")]
-    cpu_max = [x / 1e9 for x in vals("UsageNanoCores", "maximum")]
-    mem = [x / 2**20 for x in vals("WorkingSetBytes", "maximum")]
-    rx = vals("RxBytes", "total")
-    tx = vals("TxBytes", "total")
-    net = [(a + b) / 60 for a, b in zip(rx, tx)] if rx and tx else []
-    idle = sum(1 for i, c in enumerate(cpu)
-               if c < IDLE_CPU_NANOCORES / 1e9 and (i >= len(net) or net[i] < IDLE_NETWORK_BYTES_PER_SEC))
+    minutes = sorted(t for t, d in series.get("UsageNanoCores", {}).items() if d.get("average") is not None)
+    cpu = [value("UsageNanoCores", "average", t) / 1e9 for t in minutes]
+    cpu_max = [x / 1e9 for t in minutes if (x := value("UsageNanoCores", "maximum", t)) is not None]
+    mem = [x / 2**20 for t, d in series.get("WorkingSetBytes", {}).items()
+           if (x := d.get("maximum")) is not None]
+    net = {}
+    for t in minutes:
+        rx, tx = value("RxBytes", "total", t), value("TxBytes", "total", t)
+        if rx is not None and tx is not None:
+            net[t] = (rx + tx) / 60
+    idle = sum(1 for t, c in zip(minutes, cpu)
+               if c < IDLE_CPU_NANOCORES / 1e9 and net.get(t, 0) < IDLE_NETWORK_BYTES_PER_SEC)
     return {
         "minutes": len(cpu),
         "cpu_avg": statistics.mean(cpu) if cpu else None,
         "cpu_max": max(cpu_max) if cpu_max else None,
         "mem_max_mib": max(mem) if mem else None,
-        "net_avg_bps": statistics.mean(net) if net else None,
+        "net_avg_bps": statistics.mean(net.values()) if net else None,
         "idle_minutes": idle,
     }
 
@@ -426,7 +432,10 @@ def report(env, since, out, from_file=None):
            table(["setup", "replicas", "all idle", "10% active"], rows), ""]
     if loads:
         gb = loads[0]["splits"]["bytes"] / 1e9
-        pct = samples[-1]["pct"] if samples else 1.0
+        name = loads[0]["sample"].rsplit("/", 1)[-1]
+        sample = next((x for x in samples if x.get("name") == name), None)
+        # The sample's share of its version; dev's version is itself the 1%.
+        pct = sample["pct"] if sample else 1.0
         scale = 100 / pct if pct else 100
         md += [f"Storage: the sample index is {gb:.2f} GB (${gb * p['blob_gb_month']:.2f}/month); "
                f"scaled to 100% about {gb * scale:,.0f} GB (${gb * scale * p['blob_gb_month']:,.2f}/month) "

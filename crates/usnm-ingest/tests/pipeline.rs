@@ -3741,6 +3741,24 @@ async fn a_full_sample_is_the_release_s_documents() {
     );
     let read_back = sample::manifest(&out, "sample/half").await.unwrap();
     assert_eq!(read_back.docs, half.docs);
+    // A finished sample is never replaced.
+    let spec = sample::Spec {
+        cut: 100,
+        american_stories: true,
+        concurrency: 1,
+        part_bytes: 4096,
+        max_batches: None,
+    };
+    let published = sample::published(e.reference.as_ref()).await.unwrap();
+    let err = sample::build(e.curated.clone(), published, &out, "sample/half", &spec)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already exists"), "{err}");
+    assert_eq!(
+        sample::manifest(&out, "sample/half").await.unwrap(),
+        read_back
+    );
 }
 
 /// A two-node search cluster on localhost (#239): each node starts through
