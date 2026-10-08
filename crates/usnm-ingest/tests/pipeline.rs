@@ -218,6 +218,7 @@ impl Env {
             fetch_interval: None,
             batch_limit: usnm_ingest::worker::BATCH_LIMIT,
             deadline: None,
+            raw: None,
         }
     }
 
@@ -3933,4 +3934,58 @@ async fn a_two_node_cluster_indexes_and_searches_a_sample() {
     .await
     .unwrap();
     assert_eq!(again.passes[0].failed, 0);
+}
+
+/// With a raw store (`USNM_RETAIN_RAW`), curation keeps each archive byte for
+/// byte with a manifest, and a batch queued again (`enqueue --force`) is
+/// curated from that copy, the source gone, to the same pages.
+#[tokio::test]
+async fn retained_archives_are_kept_and_read_back() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let all: Vec<&Page> = pages.iter().collect();
+    let archive = e.root.join("batch_fx_raw_ver01.tar.bz2");
+    write_archive(&archive, &all, false, false);
+    let original = std::fs::read(&archive).unwrap();
+    let sha = sha256_file(&archive);
+    let raw: Arc<dyn ObjectStore> = Arc::new(LocalStore::new(e.root.join("raw")));
+    let worker = |owner: &str| usnm_ingest::worker::Worker {
+        raw: Some(raw.clone()),
+        ..e.worker(owner)
+    };
+    let list = [listed("batch_fx_raw_ver01", &archive, Some(sha.clone()))];
+    source::enqueue(&e.state, &list).await.unwrap();
+    assert_eq!(worker("w1").run(None).await.unwrap(), 1);
+    let first = e.state.batch("batch_fx_raw").await.unwrap().unwrap().0;
+    let kept = raw
+        .get("batch_fx_raw_ver01/batch_fx_raw_ver01.tar.bz2")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept, original, "byte for byte");
+    let m: Value = serde_json::from_slice(
+        &raw.get("batch_fx_raw_ver01/manifest.json")
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(m["sha256"], sha.as_str());
+    assert_eq!(m["bytes"], original.len() as u64);
+    assert_eq!(m["source_url"], archive.to_str().unwrap());
+
+    // Queued again and curated with the source gone: from the retained copy.
+    let report = source::requeue(&e.state, &list).await.unwrap();
+    assert_eq!(report.requeued, 1);
+    // Without --force the curated batch stays as it is.
+    assert_eq!(source::enqueue(&e.state, &list).await.unwrap().unchanged, 1);
+    std::fs::remove_file(&archive).unwrap();
+    assert_eq!(worker("w2").run(None).await.unwrap(), 1);
+    let second = e.state.batch("batch_fx_raw").await.unwrap().unwrap().0;
+    let (a, b) = (first.curated.unwrap(), second.curated.unwrap());
+    assert_ne!(a.parts, b.parts, "a new attempt");
+    assert_eq!(
+        (a.pages, a.ok_pages, a.source_sha256),
+        (b.pages, b.ok_pages, b.source_sha256)
+    );
 }

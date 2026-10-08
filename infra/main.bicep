@@ -86,6 +86,9 @@ param searchClusterIndexers int = 1
 @maxValue(4)
 param searchClusterNodeVcpu int = 2
 
+@description('Retain every batch archive curation downloads, byte for byte, in the `raw` container (Cold tier), and curate from it instead of LoC when it holds the listed archive. For benchmark sets in dev; production keeps none (ADR-0006). Turning it off deletes the container.')
+param retainRaw bool = false
+
 @description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
 param backfillCron string = ''
 
@@ -394,6 +397,15 @@ module deployer 'modules/deployer.bicep' = {
 
 var ingestScratch = ingestJobs && useAcr && ingestScratchGiB > 0
 
+module rawStore 'modules/raw-store.bicep' = if (retainRaw) {
+  scope: rg
+  name: 'raw-store'
+  params: {
+    storageAccountName: storage.outputs.name
+    ingestPrincipalId: identities.outputs.ingestPrincipalId
+  }
+}
+
 module scratch 'modules/ingest-scratch.bicep' = if (ingestScratch) {
   scope: rg
   name: 'ingest-scratch'
@@ -440,6 +452,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     jaOcrImage: jaOcrJob ? '${registry.outputs.loginServer}/usnewsmap-ja-ocr:${imageTag}' : ''
     jaOcrReplicas: jaOcrReplicas
     rootImage: '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
+    rawUrl: retainRaw ? '${storage.outputs.blobEndpoint}${rawStore!.outputs.container}' : ''
   }
 }
 

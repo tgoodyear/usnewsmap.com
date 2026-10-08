@@ -41,6 +41,11 @@ struct Stores {
     /// Reference store (catalog, snapshots, current.json): a Blob container URL or a directory.
     #[arg(long, env = "USNM_REFERENCE_URL")]
     reference: String,
+    /// Where curation retains each batch archive it downloads, and reads it
+    /// back instead of LoC (`USNM_RETAIN_RAW`: a Blob container URL or a
+    /// directory). Unset keeps nothing (ADR-0006).
+    #[arg(long, env = "USNM_RAW_URL")]
+    raw: Option<String>,
     /// Scratch space for the Quickwit writer node.
     #[arg(long, env = "USNM_WORK_DIR", default_value_os_t = std::env::temp_dir().join("usnm-ingest"))]
     work_dir: PathBuf,
@@ -87,6 +92,11 @@ enum Command {
         /// Only these batches (names with their version suffix), e.g. to try a few.
         #[arg(long, value_delimiter = ',')]
         batches: Vec<String>,
+        /// Queue the listed batches again even if they are curated (not one
+        /// being curated now), for a re-curation: e.g. to retain their
+        /// archives (`USNM_RAW_URL`). Needs `--batches`.
+        #[arg(long, requires = "batches")]
+        force: bool,
     },
     /// Claim and curate queued batches until none are left.
     Curate {
@@ -219,14 +229,34 @@ fn state(s: &Stores) -> anyhow::Result<State> {
     Ok(State::new(docs))
 }
 
-async fn read_list(list: &str) -> anyhow::Result<Vec<ListedBatch>> {
+/// Read a batch list. With a raw store (`USNM_RAW_URL`), a copy of a remote
+/// list as fetched is kept there too, under `listings/` by time.
+async fn read_list(list: &str, raw: Option<&str>) -> anyhow::Result<Vec<ListedBatch>> {
     let dest = tempfile::NamedTempFile::new()?;
-    source::fetch(list, dest.path()).await?;
-    source::parse_list(&std::fs::read(dest.path())?)
+    let sha = source::fetch(list, dest.path()).await?;
+    let bytes = std::fs::read(dest.path())?;
+    if let (Some(raw), true) = (raw, list.starts_with("https://")) {
+        let path = format!(
+            "listings/{}-{}.json",
+            chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
+            &sha[..12]
+        );
+        usnm_store::open(raw)?
+            .put(&path, bytes.clone(), "application/json")
+            .await?;
+        tracing::info!(list, path, "batch list retained");
+    }
+    source::parse_list(&bytes)
 }
 
-async fn enqueue(state: &State, list: &str, only: &[String]) -> anyhow::Result<Vec<ListedBatch>> {
-    let mut batches = read_list(list).await?;
+async fn enqueue(
+    state: &State,
+    list: &str,
+    only: &[String],
+    force: bool,
+    raw: Option<&str>,
+) -> anyhow::Result<Vec<ListedBatch>> {
+    let mut batches = read_list(list, raw).await?;
     if !only.is_empty() {
         batches.retain(|b| only.contains(&b.name));
         let found: Vec<&str> = batches.iter().map(|b| b.name.as_str()).collect();
@@ -238,7 +268,11 @@ async fn enqueue(state: &State, list: &str, only: &[String]) -> anyhow::Result<V
             bail!("not in the list: {missing:?}");
         }
     }
-    let report = source::enqueue(state, &batches).await?;
+    let report = if force {
+        source::requeue(state, &batches).await?
+    } else {
+        source::enqueue(state, &batches).await?
+    };
     tracing::info!(?report, "enqueued");
     Ok(batches)
 }
@@ -357,6 +391,7 @@ async fn curate(
             .then_some(chrono::Duration::seconds(i64::from(fetch_interval_secs))),
         batch_limit: worker::BATCH_LIMIT,
         deadline,
+        raw: cli.raw.as_deref().map(usnm_store::open).transpose()?,
     };
     let n = worker.run(max).await?;
     tracing::info!(curated = n, "curation finished");
@@ -623,7 +658,13 @@ async fn command(
 ) -> anyhow::Result<Option<Published>> {
     let state = state.clone();
     match &cli.command {
-        Command::Enqueue { list, batches } => enqueue(&state, list, batches).await.map(|_| None),
+        Command::Enqueue {
+            list,
+            batches,
+            force,
+        } => enqueue(&state, list, batches, *force, cli.stores.raw.as_deref())
+            .await
+            .map(|_| None),
         Command::TitlesSync {
             list,
             lccns,
@@ -632,7 +673,7 @@ async fn command(
             max_runtime_secs,
         } => {
             let listed = if lccns.is_empty() {
-                read_list(list)
+                read_list(list, cli.stores.raw.as_deref())
                     .await?
                     .into_iter()
                     .flat_map(|b| b.lccns)
@@ -673,7 +714,7 @@ async fn command(
             max_runtime_secs,
         } => {
             if *first {
-                enqueue(&state, list, &[]).await?;
+                enqueue(&state, list, &[], false, cli.stores.raw.as_deref()).await?;
             }
             curate(
                 &cli.stores,
@@ -724,7 +765,7 @@ async fn command(
                 let curated = usnm_store::open(&cli.stores.curated)?;
                 usnm_ingest::american_stories::check_written(curated.as_ref()).await?;
             }
-            let listed = enqueue(&state, list, batches).await?;
+            let listed = enqueue(&state, list, batches, false, cli.stores.raw.as_deref()).await?;
             report.step(Step::Downloading).await;
             curate(
                 &cli.stores,
