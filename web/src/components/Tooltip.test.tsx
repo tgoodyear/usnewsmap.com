@@ -23,6 +23,7 @@ describe("Tooltip", () => {
     expect(note.textContent).toBe("16 of the 395 pages match only in American Stories' text.");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(note.hidden).toBe(true);
+    fireEvent.blur(text);
     fireEvent.mouseEnter(text);
     expect(note.hidden).toBe(false);
     fireEvent.mouseLeave(text);
@@ -52,5 +53,44 @@ describe("Tooltip", () => {
     window.innerWidth = 400;
     fireEvent(window, new Event("resize"));
     expect([note.style.left, note.style.top]).toEqual(["72px", "206px"]);
+  });
+
+  it("stays while the pointer or the focus is still on its text", () => {
+    render(
+      <p>
+        <Tooltip note="A note.">
+          <strong>395</strong> pages
+        </Tooltip>
+      </p>,
+    );
+    const note = screen.getByRole("tooltip", { hidden: true });
+    const text = note.parentElement!;
+    // Focused, then hovered: leaving with the pointer keeps it for the focus.
+    fireEvent.focus(text);
+    fireEvent.mouseEnter(text);
+    fireEvent.mouseLeave(text);
+    expect(note.hidden).toBe(false);
+    fireEvent.blur(text);
+    expect(note.hidden).toBe(true);
+    // Hovered, then focused: losing the focus keeps it for the pointer.
+    fireEvent.mouseEnter(text);
+    fireEvent.focus(text);
+    fireEvent.blur(text);
+    expect(note.hidden).toBe(false);
+    fireEvent.mouseLeave(text);
+    expect(note.hidden).toBe(true);
+    // Scrolling and resizing move it, never hide it.
+    fireEvent.focus(text);
+    fireEvent.scroll(window);
+    fireEvent(window, new Event("resize"));
+    expect(note.hidden).toBe(false);
+    // Escape hides it while both hold, until the pointer or the focus comes back.
+    fireEvent.mouseEnter(text);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(note.hidden).toBe(true);
+    fireEvent.mouseLeave(text);
+    expect(note.hidden).toBe(true);
+    fireEvent.mouseEnter(text);
+    expect(note.hidden).toBe(false);
   });
 });
