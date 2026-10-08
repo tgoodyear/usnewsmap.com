@@ -68,6 +68,24 @@ param dedicatedProfile bool = false
 @description('Run the ingest job on the E4 profile (needs dedicatedProfile). Turn this off and provision before turning dedicatedProfile off: a profile in use can\'t be removed.')
 param ingestOnDedicated bool = false
 
+@description('Deploy the experimental Quickwit search cluster (#239): node apps ca-usnm-qw-{i}, the bench job caj-usnm-qwbench-{env} and their containers qw-cluster and qw-bench (docs/operations.md, "Search cluster experiment"). Needs useAcr. Turning it off deletes all of it, the two containers included.')
+param searchCluster bool = false
+
+@description('Search cluster members (0 to 4). 0 keeps the cluster\'s containers and bench job but runs no node.')
+@minValue(0)
+@maxValue(4)
+param searchClusterNodes int = 1
+
+@description('How many search cluster nodes, from node 0, also index (1 to 4); the others only search.')
+@minValue(1)
+@maxValue(4)
+param searchClusterIndexers int = 1
+
+@description('vCPU per search cluster node (1 to 4), with 2 GiB per vCPU. 2 matches the API\'s Quickwit sidecar.')
+@minValue(1)
+@maxValue(4)
+param searchClusterNodeVcpu int = 2
+
 @description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
 param backfillCron string = ''
 
@@ -422,6 +440,27 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
   }
 }
 
+// The experimental search cluster (#239), off unless asked for.
+module searchClusterModule 'modules/searchcluster.bicep' = if (searchCluster && useAcr) {
+  scope: rg
+  name: 'search-cluster'
+  dependsOn: [privateEndpoints]
+  params: {
+    location: location
+    tags: tags
+    nameSuffix: env
+    environmentId: containerEnv.outputs.id
+    image: '${registry.outputs.loginServer}/usnewsmap-ingest:${imageTag}'
+    registryServer: registry.outputs.loginServer
+    registryName: registry.outputs.name
+    storageAccountName: storage.outputs.name
+    storageBlobEndpoint: storage.outputs.blobEndpoint
+    nodes: searchClusterNodes
+    indexers: searchClusterIndexers
+    nodeVcpu: searchClusterNodeVcpu
+  }
+}
+
 module budget 'modules/budget.bicep' = if (!empty(emails) && !empty(budgetStartDate)) {
   scope: rg
   name: 'budget'
@@ -554,3 +593,7 @@ output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsi
 // The workspace's customer id, for the Log Analytics query API (scripts/logs.sh).
 output LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceCustomerId
 output OCR_ENDPOINT string = ocr ? ocrService!.outputs.endpoint : ''
+// The search cluster's apps, bench job and root URL (inside the environment); empty when off.
+output SEARCH_CLUSTER_APPS string = searchCluster && useAcr ? join(searchClusterModule!.outputs.nodeApps, ' ') : ''
+output SEARCH_CLUSTER_JOB string = searchCluster && useAcr ? searchClusterModule!.outputs.benchJobName : ''
+output SEARCH_CLUSTER_URL string = searchCluster && useAcr ? searchClusterModule!.outputs.rootUrl : ''

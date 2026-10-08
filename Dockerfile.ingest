@@ -27,6 +27,8 @@ RUN cargo build --release --locked -p usnm-ingest
 # Quickwit v0.9.1 (the version spike S-2 validated), pinned by digest.
 FROM quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
 COPY --from=build /src/target/release/usnm-ingest /usr/local/bin/usnm-ingest
+# The experimental search cluster's nodes and bench job (#239).
+COPY --from=build /src/target/release/usnm-qwcluster /usr/local/bin/usnm-qwcluster
 # The commit the image was built from, for each version's build record (#161).
 # Set here, after the build, so a new commit doesn't rebuild the binary.
 ARG USNM_GIT_SHA=
