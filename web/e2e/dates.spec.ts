@@ -77,7 +77,7 @@ test("a day and a year without a month is refused next to the box", async ({ pag
   await to.fill("1700");
   await expect(to).not.toHaveAttribute("aria-invalid");
   await to.press("Enter");
-  await expect(page.getByText("To: Enter a date from 01/01/1895 to 12/31/1897.")).toBeVisible();
+  await expect(page.getByText("To: Enter a date between 01/01/1895 and 12/31/1897.")).toBeVisible();
 });
 
 test("the calendar button opens the browser's date picker", async ({ page }) => {

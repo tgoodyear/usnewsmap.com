@@ -122,7 +122,7 @@ describe("parseDateEntry", () => {
     expect(ok("10/31/1963", "to", bounds)).toBe("1963-10-31");
     expect(error("03/04/1736", "from", bounds)).toBe(rangeError(bounds));
     expect(error("11/01/1963", "to", bounds)).toBe(rangeError(bounds));
-    expect(rangeError(bounds)).toBe("Enter a date from 03/05/1736 to 10/31/1963.");
+    expect(rangeError(bounds)).toBe("Enter a date between 03/05/1736 and 10/31/1963.");
   });
 
   it("cuts a year or month that overlaps the index to its first or last day", () => {

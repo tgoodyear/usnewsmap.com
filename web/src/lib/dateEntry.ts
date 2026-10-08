@@ -19,9 +19,9 @@ export const FORMAT_ERROR = "Enter a date as mm/dd/yyyy, mm/yyyy or yyyy.";
 export const DAY_WITHOUT_MONTH = "Add the month, or enter just the year.";
 export const NO_SUCH_DATE = "That day doesn't exist. Check the month and day.";
 
-/** The range message, e.g. "Enter a date from 01/01/1736 to 12/31/1963." */
+/** The range message, e.g. "Enter a date between 01/01/1736 and 12/31/1963." */
 export function rangeError(bounds: DateBounds): string {
-  return `Enter a date from ${showDate(bounds.from)} to ${showDate(bounds.to)}.`;
+  return `Enter a date between ${showDate(bounds.from)} and ${showDate(bounds.to)}.`;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");

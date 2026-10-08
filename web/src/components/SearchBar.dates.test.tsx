@@ -94,7 +94,7 @@ describe("SearchBar dates", () => {
     fireEvent.change(to, { target: { value: "1963" } });
     submit();
     expect(onSearch).not.toHaveBeenCalled();
-    expect(screen.getByText("From: Enter a date from 01/01/1736 to 12/31/1963.")).toBeTruthy();
+    expect(screen.getByText("From: Enter a date between 01/01/1736 and 12/31/1963.")).toBeTruthy();
     fireEvent.change(from, { target: { value: "1736" } });
     submit();
     expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ from: "1736-01-01", to: "1963-12-31" }));
