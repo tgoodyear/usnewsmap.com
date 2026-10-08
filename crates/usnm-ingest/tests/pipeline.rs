@@ -3989,3 +3989,103 @@ async fn retained_archives_are_kept_and_read_back() {
         (b.pages, b.ok_pages, b.source_sha256)
     );
 }
+
+/// A packaged set (`usnm-qwcluster bundle`): the retained archives in one
+/// tar, the sample's documents in one zstd stream that reads back whole and
+/// checks out, and a manifest; a set is never replaced.
+#[tokio::test]
+async fn a_sample_set_packages_archives_and_documents() {
+    use usnm_ingest::cluster::{sample, set};
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let archive = e.root.join("batch_fx_set_ver01.tar.bz2");
+    let other = e.root.join("batch_fx_two_ver01.tar.bz2");
+    write_archive(&archive, &early, false, false);
+    write_archive(&other, &late, false, false);
+    let original = std::fs::read(&archive).unwrap();
+    let raw: Arc<dyn ObjectStore> = Arc::new(LocalStore::new(e.root.join("raw")));
+    let list = [
+        listed("batch_fx_set_ver01", &archive, Some(sha256_file(&archive))),
+        listed("batch_fx_two_ver01", &other, Some(sha256_file(&other))),
+    ];
+    source::enqueue(&e.state, &list).await.unwrap();
+    let w = usnm_ingest::worker::Worker {
+        raw: Some(raw.clone()),
+        ..e.worker("w")
+    };
+    assert_eq!(w.run(None).await.unwrap(), 2);
+    e.release(1, true).await.unwrap();
+    let bench = LocalStore::new(e.root.join("bench"));
+    let spec = sample::Spec {
+        cut: 10_000,
+        american_stories: false,
+        concurrency: 1,
+        part_bytes: 8192,
+        max_batches: None,
+    };
+    let published = sample::published(e.reference.as_ref()).await.unwrap();
+    let sm = sample::build(e.curated.clone(), published, &bench, "sample/all", &spec)
+        .await
+        .unwrap();
+    assert!(sm.parts.len() > 1, "several zstd frames, one stream");
+    let sets: Arc<dyn ObjectStore> = Arc::new(LocalStore::new(e.root.join("sets")));
+    let sources = || set::Sources {
+        raw: raw.clone(),
+        sample: &bench,
+        sample_prefix: "sample/all",
+        batches: vec!["batch_fx_set_ver01".into(), "batch_fx_two_ver01".into()],
+    };
+    let m = set::bundle(sets.clone(), "fx-all-v1", "every batch", sources())
+        .await
+        .unwrap();
+    assert_eq!(
+        (m.version, m.docs, m.pages),
+        (Some(1), sm.docs, sm.pages_read)
+    );
+    assert_eq!(m.batches.len(), 2);
+    assert_eq!(m.batches[0].bytes, original.len() as u64);
+    assert!(!m.american_stories);
+    assert_eq!(m.files.len(), 2);
+
+    // raw.tar holds the archive byte for byte, and its manifest.
+    let tar_bytes = sets.get("fx-all-v1/raw.tar").await.unwrap().unwrap();
+    assert_eq!(tar_bytes.len() as u64, m.files[0].bytes);
+    let mut entries = BTreeMap::new();
+    let mut t = tar::Archive::new(&tar_bytes[..]);
+    for entry in t.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let path = entry.path().unwrap().display().to_string();
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut body).unwrap();
+        entries.insert(path, body);
+    }
+    assert_eq!(
+        entries["batch_fx_set_ver01/batch_fx_set_ver01.tar.bz2"],
+        original
+    );
+    assert!(entries.contains_key("batch_fx_set_ver01/manifest.json"));
+
+    // The documents read back as one stream, in order, checked.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let feed = set::feed_docs(sets.as_ref(), &m, 4096, tx);
+    let collect = async {
+        let mut docs = 0u64;
+        while let Some(c) = rx.recv().await {
+            assert!(c.len() <= 4096);
+            docs += c.iter().filter(|&&b| b == b'\n').count() as u64;
+        }
+        docs
+    };
+    let (fed, docs) = tokio::join!(feed, collect);
+    fed.unwrap();
+    assert_eq!(docs, m.docs);
+
+    // Never replaced.
+    let err = set::bundle(sets.clone(), "fx-all-v1", "again", sources())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("never replaced"), "{err}");
+}

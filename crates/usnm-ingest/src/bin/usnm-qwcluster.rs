@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::Context;
 use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
-use usnm_ingest::cluster::{self, bench, load, members, node, sample};
+use usnm_ingest::cluster::{self, bench, load, members, node, sample, set};
 use usnm_ingest::telemetry;
 use usnm_store::ObjectStore;
 
@@ -97,9 +97,14 @@ enum Command {
     },
     /// Load a sample into a new index on the cluster (cluster::load).
     Load {
-        /// The sample's name.
+        /// The sample's name (in the bench store)...
+        #[arg(long, required_unless_present = "set", conflicts_with = "set")]
+        sample: Option<String>,
+        /// ...or a packaged set's (in the archival account's `sets`).
         #[arg(long)]
-        sample: String,
+        set: Option<String>,
+        #[arg(long, env = "USNM_ARCHIVE_SETS_URL")]
+        sets: Option<String>,
         /// The new index's id.
         #[arg(long)]
         index: String,
@@ -117,6 +122,27 @@ enum Command {
         cluster: String,
         #[arg(long, env = "USNM_QWCLUSTER_INDEX_ROOT")]
         index_root: String,
+        #[arg(long, env = "USNM_QWBENCH_URL")]
+        store: String,
+    },
+    /// Package a sample for reuse in the archival account (cluster::set):
+    /// `sets/{name}/raw.tar`, `docs.ndjson.zst` and `manifest.json`.
+    Bundle {
+        /// The set's name with its version, e.g. `loc-1pct-v1`; never replaced.
+        #[arg(long)]
+        name: String,
+        /// The sample whose documents it holds (in the bench store).
+        #[arg(long)]
+        sample: String,
+        /// How the batches were chosen, for the manifest.
+        #[arg(long)]
+        selection: String,
+        #[arg(long, env = "USNM_ARCHIVE_RAW_URL")]
+        raw: String,
+        #[arg(long, env = "USNM_ARCHIVE_SETS_URL")]
+        sets: String,
+        #[arg(long, env = "USNM_REFERENCE_URL")]
+        reference: String,
         #[arg(long, env = "USNM_QWBENCH_URL")]
         store: String,
     },
@@ -140,9 +166,14 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         index: Vec<String>,
         /// The sample the indexes were loaded from: its corpus bounds and
-        /// whether it has American Stories' text.
+        /// whether it has American Stories' text...
+        #[arg(long, required_unless_present = "set", conflicts_with = "set")]
+        sample: Option<String>,
+        /// ...or the packaged set.
         #[arg(long)]
-        sample: String,
+        set: Option<String>,
+        #[arg(long, env = "USNM_ARCHIVE_SETS_URL")]
+        sets: Option<String>,
         #[arg(long, value_delimiter = ',', default_value = "1,2,4,10")]
         levels: Vec<usize>,
         /// Seconds between levels.
@@ -175,6 +206,7 @@ impl Command {
             Command::Load { .. } => "load",
             Command::Bench { .. } => "bench",
             Command::Dump { .. } => "dump",
+            Command::Bundle { .. } => "bundle",
         }
     }
 }
@@ -330,6 +362,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Load {
             sample,
+            set,
+            sets,
             index,
             split_docs,
             senders,
@@ -345,7 +379,24 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             spec.senders = senders;
             spec.min_shards = min_shards;
             spec.merge_timeout = Duration::from_secs(merge_timeout_secs);
-            let report = load::run(store.as_ref(), &format!("sample/{sample}"), &spec).await?;
+            let report = match (&sample, &set) {
+                (Some(sample), _) => {
+                    load::run(store.as_ref(), &format!("sample/{sample}"), &spec).await?
+                }
+                (None, Some(name)) => {
+                    let sets = usnm_store::open(
+                        sets.as_deref()
+                            .context("--set needs the archival sets (USNM_ARCHIVE_SETS_URL)")?,
+                    )?;
+                    let manifest = set::manifest(sets.as_ref(), name).await?;
+                    let input = load::Input::Set {
+                        store: sets.as_ref(),
+                        manifest: &manifest,
+                    };
+                    load::run_from(&input, &spec).await?
+                }
+                (None, None) => anyhow::bail!("name a --sample or a --set"),
+            };
             keep(
                 store.as_ref(),
                 &index,
@@ -354,6 +405,40 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 &report.summary(),
             )
             .await
+        }
+        Command::Bundle {
+            name,
+            sample,
+            selection,
+            raw,
+            sets,
+            reference,
+            store,
+        } => {
+            let store = usnm_store::open(&store)?;
+            let reference = usnm_store::open(&reference)?;
+            let published = sample::published(reference.as_ref()).await?;
+            let batches = published
+                .batches
+                .iter()
+                .map(|b| format!("{}_ver{:02}", b.batch, b.curated.version))
+                .collect();
+            let m = set::bundle(
+                usnm_store::open(&sets)?,
+                &name,
+                &selection,
+                set::Sources {
+                    raw: usnm_store::open(&raw)?,
+                    sample: store.as_ref(),
+                    sample_prefix: &format!("sample/{sample}"),
+                    batches,
+                },
+            )
+            .await?;
+            let mut summary = serde_json::to_value(&m)?;
+            summary["batches"] = serde_json::json!(m.batches.len());
+            cluster::log_report("set", &summary);
+            Ok(())
         }
         Command::Dump { hold_secs, store } => {
             let store = usnm_store::open(&store)?;
@@ -367,6 +452,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             label,
             index,
             sample,
+            set,
+            sets,
             levels,
             pause,
             offset,
@@ -377,7 +464,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             store,
         } => {
             let store = usnm_store::open(&store)?;
-            let m = sample::manifest(store.as_ref(), &format!("sample/{sample}")).await?;
+            let (bounds, american_stories) = match (&sample, &set) {
+                (Some(sample), _) => {
+                    let m = sample::manifest(store.as_ref(), &format!("sample/{sample}")).await?;
+                    (m.bounds, m.american_stories)
+                }
+                (None, Some(name)) => {
+                    let sets = usnm_store::open(
+                        sets.as_deref()
+                            .context("--set needs the archival sets (USNM_ARCHIVE_SETS_URL)")?,
+                    )?;
+                    let m = set::manifest(sets.as_ref(), name).await?;
+                    (m.bounds, m.american_stories)
+                }
+                (None, None) => anyhow::bail!("name a --sample or a --set"),
+            };
             let date = |s: &str| {
                 NaiveDate::parse_from_str(s, "%Y-%m-%d")
                     .with_context(|| format!("the sample's bounds: `{s}`"))
@@ -385,8 +486,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let spec = bench::Spec {
                 root: cluster.trim_end_matches('/').to_owned(),
                 indexes: index,
-                american_stories: m.american_stories,
-                bounds: (date(&m.bounds.0)?, date(&m.bounds.1)?),
+                american_stories,
+                bounds: (date(&bounds.0)?, date(&bounds.1)?),
                 levels,
                 offset,
                 pause: Duration::from_secs(pause),

@@ -86,8 +86,11 @@ param searchClusterIndexers int = 1
 @maxValue(4)
 param searchClusterNodeVcpu int = 2
 
-@description('Retain every batch archive curation downloads, byte for byte, in the `raw` container (Cold tier), and curate from it instead of LoC when it holds the listed archive. For benchmark sets in dev; production keeps none (ADR-0006). Turning it off deletes the container.')
+@description('Retain every batch archive curation downloads, byte for byte, in a `raw` container of this environment\'s own data account (Cold tier), and curate from it instead of LoC when it holds the listed archive. It goes with the environment: turning it off deletes the container. For a set that outlives environments use archiveAccountId. Production keeps none (ADR-0006).')
 param retainRaw bool = false
+
+@description('The archival account (infra/archive/, scripts/archive-store.sh), as a resource id: curation keeps every LoC archive and listing it downloads in its `raw` container and reads archives back from it instead of LoC, through a private endpoint of this environment; the search cluster bench job reads `raw` and writes `sets`. Takes precedence over retainRaw. Empty: not used. Clearing it removes only this environment\'s endpoint and roles, never the account or its data.')
+param archiveAccountId string = ''
 
 @description('Backfill schedule, UTC cron (e.g. "0 9 2-4 10 *" while a backfill lasts). Empty: run the job manually.')
 param backfillCron string = ''
@@ -397,6 +400,39 @@ module deployer 'modules/deployer.bicep' = {
 
 var ingestScratch = ingestJobs && useAcr && ingestScratchGiB > 0
 
+// The archival account, outside this stack: an endpoint here, roles there.
+var archiveAccount = empty(archiveAccountId) ? '' : last(split(archiveAccountId, '/'))
+
+module archiveAccess 'modules/archive-access.bicep' = if (!empty(archiveAccountId)) {
+  scope: rg
+  name: 'archive-access'
+  params: {
+    location: location
+    tags: tags
+    name: 'pe-usnm-archive-blob'
+    subnetId: network.outputs.peSubnetId
+    accountId: archiveAccountId
+    blobDnsZoneId: network.outputs.blobDnsZoneId
+  }
+}
+
+module archiveGrant 'modules/archive-grant.bicep' = if (!empty(archiveAccountId)) {
+  scope: resourceGroup(split(archiveAccountId, '/')[2], split(archiveAccountId, '/')[4])
+  name: 'archive-grant-${env}'
+  params: {
+    accountName: archiveAccount
+    grants: concat(
+      [{ container: 'raw', principalId: identities.outputs.ingestPrincipalId, role: 'contributor' }],
+      searchClusterOn
+        ? [
+            { container: 'raw', principalId: searchClusterModule!.outputs.benchPrincipalId, role: 'reader' }
+            { container: 'sets', principalId: searchClusterModule!.outputs.benchPrincipalId, role: 'contributor' }
+          ]
+        : []
+    )
+  }
+}
+
 module rawStore 'modules/raw-store.bicep' = if (retainRaw) {
   scope: rg
   name: 'raw-store'
@@ -424,7 +460,7 @@ module scratch 'modules/ingest-scratch.bicep' = if (ingestScratch) {
 module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
   scope: rg
   name: 'ingest-jobs'
-  dependsOn: [rbac, privateEndpoints]
+  dependsOn: [rbac, privateEndpoints, archiveAccess, archiveGrant]
   params: {
     location: location
     tags: tags
@@ -452,7 +488,9 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     jaOcrImage: jaOcrJob ? '${registry.outputs.loginServer}/usnewsmap-ja-ocr:${imageTag}' : ''
     jaOcrReplicas: jaOcrReplicas
     rootImage: '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
-    rawUrl: retainRaw ? '${storage.outputs.blobEndpoint}${rawStore!.outputs.container}' : ''
+    rawUrl: !empty(archiveAccountId)
+      ? 'https://${archiveAccount}.blob.${environment().suffixes.storage}/raw'
+      : (retainRaw ? '${storage.outputs.blobEndpoint}${rawStore!.outputs.container}' : '')
   }
 }
 
@@ -475,6 +513,7 @@ module searchClusterModule 'modules/searchcluster.bicep' = if (searchClusterOn) 
     registryName: registry.outputs.name
     storageAccountName: storage.outputs.name
     storageBlobEndpoint: storage.outputs.blobEndpoint
+    archiveBlobEndpoint: empty(archiveAccountId) ? '' : 'https://${archiveAccount}.blob.${environment().suffixes.storage}/'
     nodes: searchClusterNodes
     indexers: searchClusterIndexers
     nodeVcpu: searchClusterNodeVcpu

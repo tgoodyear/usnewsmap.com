@@ -393,15 +393,44 @@ async fn count(http: &reqwest::Client, root: &str, index_id: &str) -> anyhow::Re
         .context("search response has no num_hits")
 }
 
+/// What to load: a sample ([`sample`]) or a packaged set ([`super::set`]).
+pub enum Input<'a> {
+    Sample {
+        store: &'a dyn ObjectStore,
+        prefix: &'a str,
+    },
+    Set {
+        store: &'a dyn ObjectStore,
+        manifest: &'a super::set::Manifest,
+    },
+}
+
 /// Load the sample at `prefix` in `store` into a new index, as `spec` says.
 pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::Result<Report> {
+    run_from(&Input::Sample { store, prefix }, spec).await
+}
+
+/// Load `input` into a new index, as `spec` says.
+pub async fn run_from(input: &Input<'_>, spec: &Spec) -> anyhow::Result<Report> {
     if !usnm_store::is_safe_segment(&spec.index_id) || spec.index_id.contains("qw-index") {
         bail!("`{}` isn't a usable index id", spec.index_id);
     }
     if spec.index_root.contains("qw-index") {
         bail!("the cluster's indexes never go in qw-index");
     }
-    let manifest = sample::manifest(store, prefix).await?;
+    // What is loaded: its documents, version and name.
+    let (expected_docs, version, label, parts) = match input {
+        Input::Sample { store, prefix } => {
+            let m = sample::manifest(*store, prefix).await?;
+            (m.docs, m.version, (*prefix).to_owned(), m.parts)
+        }
+        Input::Set { manifest, .. } => (
+            manifest.docs,
+            manifest.source_version.clone(),
+            format!("set/{}", manifest.name),
+            Vec::new(),
+        ),
+    };
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?;
@@ -444,8 +473,8 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
     let before = members::counters(&http, &all, Some(&spec.index_id)).await;
     tracing::info!(
         index = %spec.index_id,
-        sample = prefix,
-        docs = manifest.docs,
+        input = %label,
+        docs = expected_docs,
         indexers = indexers.len(),
         min_shards,
         senders = spec.senders,
@@ -482,7 +511,7 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
     // Progress every poll, and the series for the report.
     let rate = Arc::new(std::sync::Mutex::new(Vec::<(f64, u64)>::new()));
     let ticker = {
-        let (sent, rate, poll, expected) = (sent.clone(), rate.clone(), spec.poll, manifest.docs);
+        let (sent, rate, poll, expected) = (sent.clone(), rate.clone(), spec.poll, expected_docs);
         tokio::spawn(async move {
             let mut last = (0.0f64, 0u64);
             loop {
@@ -504,16 +533,23 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
         })
     };
     let feed = async {
-        for p in &manifest.parts {
-            let ndjson = sample::part(store, &p.path).await?;
-            for c in chunks(&ndjson, spec.chunk_bytes)? {
-                if tx.send(c).await.is_err() {
-                    // A sender failed; its error comes from the join below.
-                    return Ok::<_, anyhow::Error>(());
+        match input {
+            Input::Sample { store, .. } => {
+                for p in &parts {
+                    let ndjson = sample::part(*store, &p.path).await?;
+                    for c in chunks(&ndjson, spec.chunk_bytes)? {
+                        if tx.send(c).await.is_err() {
+                            // A sender failed; its error comes from the join below.
+                            return Ok::<_, anyhow::Error>(());
+                        }
+                    }
                 }
+                Ok(())
+            }
+            Input::Set { store, manifest } => {
+                super::set::feed_docs(*store, manifest, spec.chunk_bytes, tx.clone()).await
             }
         }
-        Ok(())
     };
     let fed = feed.await;
     drop(tx);
@@ -530,8 +566,8 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
         return Err(e.context(format!("loading `{}`", spec.index_id)));
     }
     let docs = sent.docs.load(Ordering::Relaxed);
-    if docs != manifest.docs {
-        bail!("sent {docs} documents, the sample has {}", manifest.docs);
+    if docs != expected_docs {
+        bail!("sent {docs} documents, {label} has {expected_docs}");
     }
 
     // Committed: every document searchable.
@@ -623,8 +659,8 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
     let rate = rate.lock().unwrap_or_else(|e| e.into_inner()).clone();
     Ok(Report {
         index_id: spec.index_id.clone(),
-        sample: prefix.to_owned(),
-        sample_version: manifest.version,
+        sample: label,
+        sample_version: version,
         members: all,
         indexers: indexers.iter().map(|m| m.node_id.clone()).collect(),
         senders: spec.senders,

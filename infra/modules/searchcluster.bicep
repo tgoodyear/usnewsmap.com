@@ -44,6 +44,8 @@ param registryServer string
 param registryName string
 param storageAccountName string
 param storageBlobEndpoint string
+@description('The archival account\'s Blob endpoint (USNM_ARCHIVE_ACCOUNT), for packaged sample sets; empty: none.')
+param archiveBlobEndpoint string = ''
 @description('Cluster members (apps ca-usnm-qw-0 to -{nodes - 1}). 0 runs no node and keeps the containers and the bench job: the idle state between runs.')
 @minValue(0)
 @maxValue(4)
@@ -298,7 +300,7 @@ resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
           // scripts/qwcluster.sh starts it with each step's arguments.
           args: ['members']
           resources: { cpu: json('4.0'), memory: '8Gi' }
-          env: [
+          env: concat([
             { name: 'AZURE_CLIENT_ID', value: benchIdentity.properties.clientId }
             { name: 'USNM_CURATED_URL', value: '${storageBlobEndpoint}curated' }
             { name: 'USNM_REFERENCE_URL', value: '${storageBlobEndpoint}reference' }
@@ -306,7 +308,10 @@ resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
             { name: 'USNM_QWCLUSTER_URL', value: rootUrl }
             { name: 'USNM_QWCLUSTER_INDEX_ROOT', value: 'azure://${clusterContainer}' }
             { name: 'RUST_LOG', value: 'info' }
-          ]
+          ], empty(archiveBlobEndpoint) ? [] : [
+            { name: 'USNM_ARCHIVE_RAW_URL', value: '${archiveBlobEndpoint}raw' }
+            { name: 'USNM_ARCHIVE_SETS_URL', value: '${archiveBlobEndpoint}sets' }
+          ])
         }
       ]
     }
@@ -316,3 +321,4 @@ resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
 output nodeApps array = [for i in range(0, nodes): nodeApps[i].name]
 output benchJobName string = benchJob.name
 output rootUrl string = rootUrl
+output benchPrincipalId string = benchIdentity.properties.principalId

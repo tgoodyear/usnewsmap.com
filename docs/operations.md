@@ -342,22 +342,74 @@ scripts/searches.sh prod 30      # searches per day, top queries, queries that f
 
 The data account is reachable only through its private endpoint, so run `searches.sh` from a network that reaches it. The first day file appears an hour after the first full UTC day with the log deployed.
 
-## Retained archives
+## Archival storage
 
-Production keeps no batch archives (ADR-0006): LoC is the source of record. For a benchmark set, an environment can keep them: `USNM_RETAIN_RAW true` and a provision add a `raw` container (Blob Data Contributor for `id-usnm-ingest` only) and give the ingest and backfill jobs `USNM_RAW_URL`. Then:
+Production keeps no batch archives (ADR-0006): LoC is the source of record. The archival account keeps everything we download from outside Azure, so re-curation, benchmarks and other environments never download it again: LoC's batch archives and batch lists now, other sources later. Benchmarks are one use.
 
-- **Every archive curation downloads is kept** byte for byte as fetched, at `raw/{batch}/{archive file}`, written in 8 MiB blocks as it streams (never held whole) at the Cold tier. Once the archive's sha256 checks out, the upload is committed, `raw/{batch}/manifest.json` records the source URL, bytes, sha256, the time and LoC's response headers (`last-modified`, `etag`, `content-length`, `content-type`), and only then is the batch marked curated. A download that fails its checksum leaves nothing.
-- **A batch already kept is curated from the copy,** not LoC, when its manifest's sha256 is the one LoC lists (or LoC lists none). It needs no download slot, and the copy is checked again as it is read. The `archive source` line says which (`source: raw` or `loc`), and `archive retained` logs each new copy.
-- **The batch list is kept too:** each remote list an `enqueue` or `run` reads goes to `raw/listings/{time}-{sha}.json`. Title records are cached by titles-sync anyway (`reference/raw/titles.json`, the fields it uses), and nothing else is downloaded from outside Azure (the search cluster's sample and bench read only the environment's own stores).
+**The account** (`infra/archive/`) is its own deployment stack, `usnm-archive`, in its own group, `rg-usnm-archive`, outside every environment's stack. An environment's provision or teardown can't delete it. It is StorageV2, Entra only (no keys, no SAS), with no public network access, versioning, 14-day soft delete, a lifecycle rule that moves `raw/` and `sets/` to the Cold tier, and a `CanNotDelete` lock. Its stack detaches what leaves the template rather than deleting it, and denies deletes outside the stack except of the lock and of private endpoint connections. Deploy it once:
 
-To give batches curated before the setting their archives, queue them again with `--force` (only curated or failed batches at the listed version; one being curated is left alone), then run the backfill job:
+```sh
+scripts/archive-store.sh deploy --subscription <id>     # prints the account's resource id
+```
+
+**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, Blob Data Contributor on `raw` for `id-usnm-ingest`. With the search cluster on, it also gives `id-usnm-qwbench` Reader on `raw` and Contributor on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
+
+```sh
+scripts/archive-store.sh unlock
+scripts/settings.sh dev USNM_ARCHIVE_ACCOUNT ""
+scripts/provision.sh dev
+scripts/archive-store.sh deploy        # the lock back
+```
+
+**What curation does with it:**
+
+- **Every archive it downloads is kept** byte for byte as fetched, at `raw/{batch}/{archive file}`. It is written in 8 MiB blocks as it streams (never held whole) at the Cold tier. Once the archive's sha256 checks out, the upload is committed and `raw/{batch}/manifest.json` records the source URL, bytes, sha256, the time and LoC's response headers (`last-modified`, `etag`, `content-length`, `content-type`). Only then is the batch marked curated. A download that fails its checksum leaves nothing.
+- **A batch already kept is curated from the copy,** not LoC, when its manifest's sha256 is the one LoC lists (or LoC lists none). It needs no download slot, and the copy is checked again as it's read. The `archive source` line says which (`source: raw` or `loc`), and `archive retained` logs each new copy.
+- **Batch lists are kept too:** each remote list an `enqueue` or `run` reads goes to `raw/listings/{time}-{sha}.json`. Titles-sync keeps the fields it uses from each title record in the environment's `reference/raw/titles.json`. Nothing else is downloaded from outside Azure: the search cluster's sample, sets and bench read only Azure stores.
+
+To keep the archives of batches curated before, queue them again with `--force` (only curated or failed batches at the listed version; one being curated is left alone), then run the backfill job. A re-curation writes a new attempt and replaces the batch's curation when it commits.
 
 ```sh
 scripts/start-job.sh dev INGEST_JOB enqueue --batches "$B" --force
 scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
 ```
 
-A re-curation writes a new attempt and replaces the batch's curation when it commits. Cost (East US 2 list prices, October 2026): the 1% set (23.8 GB) is about $0.09 a month at Cold ($0.0036 per GB-month). Reading it all back once costs about $0.71 ($0.03 per GB retrieved), and writing it about $0.05 (about 2,900 blocks at $0.18 per 10,000 writes). Cold has a 90-day early-deletion minimum. Turning `USNM_RETAIN_RAW` off deletes the container and every archive in it (soft delete keeps them 14 days).
+**An environment's own `raw` container** (`USNM_RETAIN_RAW true`) does the same inside the environment's data account. It goes with the environment, and turning the setting off deletes it, so it suits a short trial. `USNM_ARCHIVE_ACCOUNT` takes precedence when both are set. To move archives kept there into the archival account, with both settings on, run the copy in the ingest job. It streams each archive, checks it against its manifest, and skips those already there:
+
+```sh
+scripts/start-job.sh dev INGEST_JOB archive-copy \
+  --from "$(az storage account show -n "$(scripts/settings.sh dev STORAGE_ACCOUNT)" --query primaryEndpoints.blob -o tsv)raw" \
+  --batches "$B"
+```
+
+Then clear `USNM_RETAIN_RAW` and provision. That deletes the environment's own container, so check the copy's `archives copied` line first.
+
+**Cost** (East US 2 list prices, October 2026): Cold storage is $0.0036 per GB-month, so the 1% set's 23.8 GB is about $0.09 a month. Reading it all back once costs about $0.71 ($0.03 per GB retrieved), and writing it about $0.05 (about 2,900 blocks at $0.18 per 10,000 writes). Cold has a 90-day early-deletion minimum. Each environment's endpoint is about $7.30 a month ($0.01 an hour).
+
+### Sample sets
+
+A set packages a sample for reuse in `sets/{name}/`, built once by the search cluster's bench job and never replaced (build `-v2` instead):
+
+- `raw.tar`: the set's LoC batch archives as kept in `raw/`, with their manifests. It's a plain tar, since the archives are bzip2 already. Curate it offline, or extract it into another raw store.
+- `docs.ndjson.zst`: the sample's documents exactly as the release builds them (`text`, `text_cg`, every field; `text_as` and `text_as_cg` only when the manifest says `american_stories`). It's one zstd stream, so it can be loaded into any Quickwit 0.9 index created from `infra/quickwit/pages-index.yaml`.
+- `manifest.json`, written last: name and version, how the batches were chosen, the batch list with each archive's bytes and sha256, page and document counts, each file's bytes and sha256, the corpus bounds, the common-word pairs' and American Stories' versions, the index config's sha256, the builder's commit and `created_at`.
+
+```sh
+J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+J bundle --name loc-1pct-v1 --sample dev1pct \
+  --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
+J load --set loc-1pct-v1 --index s1ixset          # the cluster loads straight from the set
+```
+
+**From a container or a laptop with access** (Storage Blob Data Reader on `sets`, and a network path to the account: an environment's VNet, or a private endpoint of your own; public access is off):
+
+```sh
+az storage blob download --auth-mode login --account-name <archive account> -c sets -n loc-1pct-v1/docs.ndjson.zst -f docs.ndjson.zst
+zstd -dc docs.ndjson.zst | split -C 8m - chunk-        # request bodies under Quickwit's 10 MiB limit
+for f in chunk-*; do curl -sf -XPOST "$QW/api/v1/$INDEX/ingest" --data-binary @"$f"; done
+```
+
+Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.tar` gives `{batch}/{archive}` and `{batch}/manifest.json`, the layout of `raw/`.
 
 ## Search cluster experiment
 
@@ -385,10 +437,12 @@ An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1
 **Run it** (in `dev`; prod's data account is private, so dev curates its own 1% from LoC):
 
 ```sh
+scripts/archive-store.sh deploy                       # once per subscription; prints the account's id
+ARCHIVE_ID=<the id it printed>
 scripts/settings.sh dev USNM_INGEST_JOBS true
 scripts/settings.sh dev USNM_INGEST_SCRATCH_GIB 0     # 1% fits the replica's disk
 scripts/settings.sh dev USNM_LOG_DAILY_CAP_GB 1       # blob write logs; clear afterwards
-scripts/settings.sh dev USNM_RETAIN_RAW true          # keep every LoC archive (Retained archives, above)
+scripts/settings.sh dev USNM_ARCHIVE_ACCOUNT "$ARCHIVE_ID"   # keep every LoC download (Archival storage, above)
 scripts/provision.sh dev
 RG=$(scripts/settings.sh dev AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh dev ACR_NAME)
 TAG=qwc-$(git rev-parse --short HEAD)
@@ -401,7 +455,7 @@ scripts/provision.sh dev
 # The 1%: every 100th batch of LoC's listing by name, from the 40th (offset 39):
 # 30 batches, 238,057 pages of 23,838,683 (0.999%), 26 awardees, 23.8 GB of archives.
 B=arhi_beatles_ver01,az_fireant_ver01,ct_fairfield_ver01,curiv_plasse_ver01,dlc_alpha_ver03,dlc_debaptiste_ver01,dlc_goldenrod_ver01,dlc_leibovitz_ver01,dlc_saluki_ver01,gu_drteeth_ver01,iahi_hypno_ver01,in_irvington_ver01,khi_garwood_ver02,lu_juggernaut_ver01,me_calais_ver03,mnhi_dassel_ver01,mohi_berenice_ver01,mthi_goldeneye_ver01,ncu_cotton_ver04,nhd_lafayette_ver01,nn_keddy_ver01,ohi_himilco_ver01,oru_longspur_ver01,rp_hobgoblin_ver02,tu_eddie_ver02,uuml_anderson_ver01,vi_fezza_ver01,vnstcsc_duggan_ver01,whi_brie_ver01,wvu_jolie_ver02
-scripts/start-job.sh dev INGEST_JOB enqueue --batches $B --force   # --force: batches curated before USNM_RETAIN_RAW are curated again, now kept
+scripts/start-job.sh dev INGEST_JOB enqueue --batches $B --force   # --force: batches curated before are curated again, now kept
 scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
 scripts/start-job.sh dev INGEST_JOB run --batches $B --full --curate-max-runtime-secs 21600 \
   --titles-max-runtime-secs 28800 --quickwit-bin /usr/local/bin/quickwit \
@@ -416,6 +470,8 @@ scripts/provision.sh dev
 J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
 J members
 J sample --name dev1pct --pct 100          # dev's whole version is the 1%
+J bundle --name loc-1pct-v1 --sample dev1pct \
+  --selection "every 100th batch of LoC's listing sorted by name, from offset 39 (30 batches)"
 J load --sample dev1pct --index s1ix
 J bench --label n1 --index s1ix --sample dev1pct --expect-searchers 1
 # Two nodes, both indexing.

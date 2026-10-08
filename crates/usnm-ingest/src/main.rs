@@ -173,6 +173,21 @@ enum Command {
     /// Rebuild `catalog/titles.json` and `places.json` from the cached records
     /// and `overrides/places.json` (no network).
     Geocode,
+    /// Copy retained archives and kept batch lists between raw stores, e.g.
+    /// from this environment's own `raw` container into the archival
+    /// account (docs/operations.md, "Archival storage"). Each archive is
+    /// checked against its manifest's sha256; one already there is skipped.
+    ArchiveCopy {
+        /// The source raw store (a Blob container URL or a directory).
+        #[arg(long)]
+        from: String,
+        /// The destination (default: USNM_RAW_URL).
+        #[arg(long, env = "USNM_RAW_URL")]
+        to: String,
+        /// The batches (with their version suffix) to copy.
+        #[arg(long, value_delimiter = ',', required = true)]
+        batches: Vec<String>,
+    },
     /// Report pages that ship in more than one curated batch (04 §4.7):
     /// JSON on stdout. Reads every batch's counts and the parts of the
     /// batches that share title-days; changes nothing.
@@ -579,6 +594,7 @@ impl Command {
             Command::TitlesSync { .. } => "titles-sync",
             Command::Geocode => "geocode",
             Command::Duplicates => "duplicates",
+            Command::ArchiveCopy { .. } => "archive-copy",
             Command::Run { .. } => "run",
         }
     }
@@ -600,7 +616,8 @@ fn first_step(command: &Command) -> Option<Step> {
         Command::Enqueue { .. }
         | Command::Curate { .. }
         | Command::Geocode
-        | Command::Duplicates => None,
+        | Command::Duplicates
+        | Command::ArchiveCopy { .. } => None,
     }
 }
 
@@ -700,6 +717,16 @@ async fn command(
         Command::Geocode => geocode(usnm_store::open(&cli.stores.reference)?.as_ref())
             .await
             .map(|()| None),
+        Command::ArchiveCopy { from, to, batches } => {
+            let copied = usnm_ingest::raw::copy(
+                usnm_store::open(from)?.as_ref(),
+                usnm_store::open(to)?.as_ref(),
+                batches,
+            )
+            .await?;
+            tracing::info!(?copied, "archives copied");
+            Ok(None)
+        }
         Command::Duplicates => {
             let curated = usnm_store::open(&cli.stores.curated)?;
             let report = usnm_ingest::dedup::report(&state, curated.as_ref()).await?;

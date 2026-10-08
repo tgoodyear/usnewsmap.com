@@ -11,6 +11,8 @@
 //!   documents a full release would build for them (NDJSON parts).
 //! - [`load`]: those documents into a new index on the cluster, timed step
 //!   by step: sending, committed, merges settled, sealed.
+//! - [`set`]: a sample packaged for reuse in the archival account: the
+//!   batches' LoC archives in one tar and the documents in one file.
 //! - [`bench`]: the benchmark searches against the cluster's root, the way
 //!   the API runs them (`usnm_search::plan::aggregate`), cold, warm and at
 //!   rising concurrency, with each node's share of the leaf work.
@@ -22,6 +24,7 @@ pub mod load;
 pub mod members;
 pub mod node;
 pub mod sample;
+pub mod set;
 
 /// One JSON report line in the job's console (`qwcluster report`), which
 /// `scripts/qwcluster-report.py` reads back from Log Analytics.

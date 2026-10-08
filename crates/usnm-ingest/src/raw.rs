@@ -153,6 +153,90 @@ pub async fn record(raw: &dyn ObjectStore, m: &Manifest) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What [`copy`] did.
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Copied {
+    pub archives: u64,
+    pub bytes: u64,
+    /// Already there with the same sha256.
+    pub skipped: u64,
+    pub listings: u64,
+}
+
+/// Copy retained archives (`batches`, `{batch}_verNN`) and the kept batch
+/// lists from one raw store to another, e.g. from an environment's own
+/// `raw` container into the archival account. Each archive is streamed,
+/// checked against its manifest's sha256 as it goes, and committed (Cold)
+/// before its manifest is written; one already there with the same sha256
+/// is left alone.
+pub async fn copy(
+    from: &dyn ObjectStore,
+    to: &dyn ObjectStore,
+    batches: &[String],
+) -> anyhow::Result<Copied> {
+    use futures::StreamExt;
+    use sha2::{Digest, Sha256};
+    let mut out = Copied::default();
+    for b in batches {
+        let m = find(from, b, None)
+            .await?
+            .with_context(|| format!("`{b}` has no retained archive to copy"))?;
+        if find(to, b, Some(&m.sha256)).await?.is_some() {
+            out.skipped += 1;
+            continue;
+        }
+        let mut stream = from
+            .get_stream(&m.path)
+            .await?
+            .with_context(|| format!("`{}` is missing", m.path))?;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (commit, committed) = tokio::sync::oneshot::channel();
+        let upload = to.put_stream(&m.path, "application/x-bzip2", Some(TIER), rx, committed);
+        let feed = async {
+            let (mut hash, mut n) = (Sha256::new(), 0u64);
+            while let Some(c) = stream.next().await {
+                let c = c?;
+                hash.update(&c);
+                n += c.len() as u64;
+                if tx.send(c).await.is_err() {
+                    break;
+                }
+            }
+            drop(tx);
+            let sha = source::hex(&hash.finalize());
+            let ok = n == m.bytes && sha.eq_ignore_ascii_case(&m.sha256);
+            let _ = commit.send(ok);
+            anyhow::ensure!(
+                ok,
+                "`{}` read as {n} bytes, sha256 {sha}; its manifest says {} bytes, {}",
+                m.path,
+                m.bytes,
+                m.sha256
+            );
+            Ok::<_, anyhow::Error>(n)
+        };
+        let (uploaded, fed) = tokio::join!(upload, feed);
+        let n = fed?;
+        uploaded.with_context(|| format!("copying `{}`", m.path))?;
+        record(to, &m).await?;
+        tracing::info!(batch = %b, mb = n / (1024 * 1024), "archive copied");
+        out.archives += 1;
+        out.bytes += n;
+    }
+    for path in from.list("listings").await? {
+        if to.exists(&path).await? {
+            continue;
+        }
+        let bytes = from
+            .get(&path)
+            .await?
+            .with_context(|| format!("`{path}` vanished"))?;
+        to.put(&path, bytes, "application/json").await?;
+        out.listings += 1;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +329,49 @@ mod tests {
         .unwrap();
         assert_eq!(back, data);
         assert_eq!(digest.await.unwrap().unwrap(), want);
+    }
+
+    #[tokio::test]
+    async fn copies_archives_and_listings_once() {
+        use sha2::Digest;
+        let dir = tempfile::tempdir().unwrap();
+        let from = usnm_store::LocalStore::new(dir.path().join("a"));
+        let to = usnm_store::LocalStore::new(dir.path().join("b"));
+        let data = b"an archive".to_vec();
+        let sha = source::hex(&sha2::Sha256::digest(&data));
+        from.put("b_ver01/b_ver01.tar.bz2", data.clone(), "x")
+            .await
+            .unwrap();
+        let m = Manifest {
+            batch: "b_ver01".into(),
+            path: "b_ver01/b_ver01.tar.bz2".into(),
+            source_url: "https://x/b_ver01.tar.bz2".into(),
+            bytes: data.len() as u64,
+            sha256: sha,
+            fetched_at: Utc::now(),
+            headers: BTreeMap::new(),
+        };
+        record(&from, &m).await.unwrap();
+        from.put("listings/t-abc.json", b"[]".to_vec(), "application/json")
+            .await
+            .unwrap();
+        let batches = vec!["b_ver01".to_owned()];
+        let c = copy(&from, &to, &batches).await.unwrap();
+        assert_eq!((c.archives, c.bytes, c.skipped, c.listings), (1, 10, 0, 1));
+        assert_eq!(to.get(&m.path).await.unwrap().unwrap(), data);
+        assert_eq!(
+            find(&to, "b_ver01", Some(&m.sha256)).await.unwrap(),
+            Some(m.clone())
+        );
+        let again = copy(&from, &to, &batches).await.unwrap();
+        assert_eq!((again.archives, again.skipped, again.listings), (0, 1, 0));
+        // A copy that doesn't match its manifest isn't committed.
+        from.put(&m.path, b"changed!!!".to_vec(), "x")
+            .await
+            .unwrap();
+        let to2 = usnm_store::LocalStore::new(dir.path().join("c"));
+        assert!(copy(&from, &to2, &batches).await.is_err());
+        assert!(to2.get(&m.path).await.unwrap().is_none());
     }
 
     #[tokio::test]

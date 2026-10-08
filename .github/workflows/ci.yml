@@ -200,6 +200,7 @@ jobs:
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       - run: bicep build infra/main.bicep --stdout > /dev/null
       - run: bicep build infra/guardrails.bicep --stdout > /dev/null
+      - run: bicep build infra/archive/main.bicep --stdout > /dev/null
       # The parameters bootstrap deploys the stack with (settings from the
       # environment; unset ones take their defaults).
       - run: bicep build-params infra/main.bicepparam --stdout > /dev/null
