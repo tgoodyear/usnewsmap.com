@@ -177,9 +177,9 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         1
     );
 
-    // Back, with the cache full: the footer cache's gauges and increments;
-    // the fast field cache didn't change. The first footer eviction is
-    // logged, once.
+    // Back, with the footer cache full: its gauges and increments; the fast
+    // field cache didn't change. The first footer eviction is logged once,
+    // as what was seen: an eviction alone doesn't say the footers don't fit.
     let b = report(&[
         (Cache::SplitFooter, s(268_000_000, 790, 10, 802, 12)),
         (Cache::FastField, s(663, 4, 0, 4, 0)),
@@ -204,13 +204,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
     );
     assert_eq!(scraper.failures(), 0);
     assert_eq!(console.count("searcher cache metrics available again"), 1);
-    assert_eq!(
-        console.count(
-            "the split footer cache is evicting: the footers don't all fit \
-             split_footer_cache_capacity"
-        ),
-        1
-    );
+    assert_eq!(console.count("split footer cache evictions seen"), 1);
 
     // Quiet for the heartbeat: the gauges again, so a quiet replica still
     // reports what its caches hold.
@@ -226,8 +220,13 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         ]
     );
 
-    // The searcher restarted: its counters start from 0 again.
-    let d = report(&[(Cache::SplitFooter, s(8_000, 1, 0, 1, 0))]);
+    // The searcher restarted, and only the footer cache's counters went
+    // down: the fast field cache's 6 misses, more than before, are also all
+    // since the restart, not 2 more.
+    let d = report(&[
+        (Cache::SplitFooter, s(8_000, 1, 0, 1, 0)),
+        (Cache::FastField, s(663, 4, 0, 6, 0)),
+    ]);
     scraper.observe(Ok(d), t1 + HEARTBEAT + Duration::from_secs(60));
     let from = flush().await;
     assert_eq!(
@@ -235,9 +234,21 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         vec![
             row("bytes", "split_footer", 8_000.0),
             row("items", "split_footer", 1.0),
+            row("misses", "fast_field", 6.0),
             row("misses", "split_footer", 1.0),
         ]
     );
+    assert_eq!(
+        console.count("the searcher restarted; its cache counters start again from 0"),
+        1
+    );
+    // A new searcher run logs its first footer eviction again.
+    let e = report(&[
+        (Cache::SplitFooter, s(8_000, 1, 0, 2, 1)),
+        (Cache::FastField, s(663, 4, 0, 6, 0)),
+    ]);
+    scraper.observe(Ok(e), t1 + HEARTBEAT + Duration::from_secs(120));
+    assert_eq!(console.count("split footer cache evictions seen"), 2);
 
     drop(guard);
     tokio::task::spawn_blocking(move || {

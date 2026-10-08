@@ -2,9 +2,11 @@
 // holds at its last report (MB of 1,000,000 bytes, as Quickwit reads
 // "256MB") and its hits, misses and evictions in the time span. The API reads
 // them from the sidecar every minute (api.searcher_cache_* in AppMetrics,
-// 08 §8.1.2). The split footer cache holds every split's footer when its
-// Evictions stay 0 and its Items reach the published version's split count
-// (the "index layout" lines, index-layout).
+// 08 §8.1.2). The split footer cache holds every footer when the release's
+// footer total (index-layout, FooterMb) is below its capacity and, after the
+// warm-up, its Misses and Evictions stop growing. Evictions alone prove
+// nothing: Quickwit counts replacing an entry as one, and a publish drops the
+// old version's footers.
 let m = AppMetrics
     | where AppRoleName == "usnm-api" and Name startswith "api.searcher_cache_"
     | extend Cache = tostring(Properties.cache), Replica = AppRoleInstance;

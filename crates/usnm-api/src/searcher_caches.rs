@@ -15,12 +15,18 @@
 //!   `api.searcher_cache_evictions`: what happened since the last scrape
 //!   (counters), recorded only when not zero. The first scrape reports
 //!   everything since the searcher started, which in a fresh replica is the
-//!   warm-up; a counter that went down means the searcher restarted, and its
-//!   new value is what happened since.
+//!   warm-up. A restarted searcher starts every cache from 0, so if any
+//!   counter of any cache went down (or a cache disappeared), every cache's
+//!   new values are what happened since.
 //!
-//! The split footer cache holds every split's footer exactly when its
-//! evictions stay at 0 while its items reach the number of splits. The first
-//! footer eviction a process sees is also logged once, as a warning.
+//! Whether the split footer cache holds every footer is read from two
+//! things together: the release's footer total (`footer_bytes` on its
+//! `index layout` lines) against `split_footer_cache_capacity`, and whether
+//! footer misses and evictions keep coming after the warm-up. An eviction on
+//! its own proves nothing: Quickwit 0.9.1 also counts replacing an entry as
+//! one, and after a publish the cache drops the old version's footers. The
+//! first footer eviction a searcher run shows is logged once, without a
+//! cause.
 //!
 //! A scrape that fails (the sidecar starting, restarting or gone) records
 //! nothing. The first failure in a row is logged once, and the recovery once.
@@ -31,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use opentelemetry::metrics::{Counter, Gauge, Meter};
 use opentelemetry::KeyValue;
-use usnm_search::cache_metrics::{Cache, CacheReport, CacheStats};
+use usnm_search::cache_metrics::{Cache, CacheReport};
 
 /// The longest a gauge goes unrecorded while the scrapes succeed.
 pub const HEARTBEAT: Duration = Duration::from_secs(15 * 60);
@@ -82,7 +88,7 @@ pub struct Scraper {
     recorded: BTreeMap<Cache, ((u64, u64), Instant)>,
     /// Scrapes failed in a row.
     failures: u32,
-    /// Whether the footer evictions warning has been logged.
+    /// Whether this searcher run's first footer eviction has been logged.
     footer_evictions_logged: bool,
 }
 
@@ -121,6 +127,13 @@ impl Scraper {
             );
             self.failures = 0;
         }
+        // Counters that went down: the searcher restarted, and all of its
+        // caches count from 0 again.
+        if self.last.as_ref().is_some_and(|l| restarted(l, &report)) {
+            tracing::info!("the searcher restarted; its cache counters start again from 0");
+            self.last = None;
+            self.footer_evictions_logged = false;
+        }
         for (&cache, now_stats) in &report {
             let attrs = [KeyValue::new("cache", cache.label())];
             let gauges = (now_stats.bytes, now_stats.items);
@@ -139,7 +152,11 @@ impl Scraper {
                 .and_then(|l| l.get(&cache))
                 .copied()
                 .unwrap_or_default();
-            let (hits, misses, evictions) = increments(&before, now_stats);
+            let (hits, misses, evictions) = (
+                now_stats.hits.saturating_sub(before.hits),
+                now_stats.misses.saturating_sub(before.misses),
+                now_stats.evictions.saturating_sub(before.evictions),
+            );
             for (counter, n) in [
                 (&self.instruments.hits, hits),
                 (&self.instruments.misses, misses),
@@ -153,12 +170,11 @@ impl Scraper {
         if let Some(footers) = report.get(&Cache::SplitFooter) {
             if footers.evictions > 0 && !self.footer_evictions_logged {
                 self.footer_evictions_logged = true;
-                tracing::warn!(
+                tracing::info!(
                     bytes = footers.bytes,
                     items = footers.items,
                     evictions = footers.evictions,
-                    "the split footer cache is evicting: the footers don't all fit \
-                     split_footer_cache_capacity"
+                    "split footer cache evictions seen"
                 );
             }
         }
@@ -166,21 +182,13 @@ impl Scraper {
     }
 }
 
-/// Hits, misses and evictions between two scrapes. If any counter went
-/// down, the searcher restarted in between: its new values count from 0.
-fn increments(before: &CacheStats, now: &CacheStats) -> (u64, u64, u64) {
-    let restarted =
-        now.hits < before.hits || now.misses < before.misses || now.evictions < before.evictions;
-    let base = if restarted {
-        CacheStats::default()
-    } else {
-        *before
-    };
-    (
-        now.hits - base.hits,
-        now.misses - base.misses,
-        now.evictions - base.evictions,
-    )
+/// Whether the searcher restarted between two scrapes: a counter of any
+/// cache went down, or a cache it had reported is gone.
+fn restarted(before: &CacheReport, now: &CacheReport) -> bool {
+    before.iter().any(|(cache, b)| match now.get(cache) {
+        None => true,
+        Some(n) => n.hits < b.hits || n.misses < b.misses || n.evictions < b.evictions,
+    })
 }
 
 /// Scrape with `fetch` every `interval` (the first after one interval, once
@@ -206,6 +214,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use usnm_search::cache_metrics::CacheStats;
 
     fn stats(hits: u64, misses: u64, evictions: u64) -> CacheStats {
         CacheStats {
@@ -217,14 +226,36 @@ mod tests {
         }
     }
 
+    fn report(entries: &[(Cache, CacheStats)]) -> CacheReport {
+        entries.iter().copied().collect()
+    }
+
     #[test]
-    fn increments_between_scrapes() {
-        assert_eq!(
-            increments(&CacheStats::default(), &stats(5, 3, 0)),
-            (5, 3, 0)
-        );
-        assert_eq!(increments(&stats(5, 3, 0), &stats(9, 3, 1)), (4, 0, 1));
-        // The searcher restarted: everything counts from 0 again.
-        assert_eq!(increments(&stats(5, 3, 1), &stats(2, 7, 1)), (2, 7, 1));
+    fn a_restart_is_seen_in_any_cache() {
+        let before = report(&[
+            (Cache::SplitFooter, stats(5, 3, 0)),
+            (Cache::FastField, stats(9, 9, 1)),
+        ]);
+        assert!(!restarted(
+            &before,
+            &report(&[
+                (Cache::SplitFooter, stats(5, 4, 0)),
+                (Cache::FastField, stats(9, 9, 1)),
+                (Cache::Predicate, stats(1, 1, 0)),
+            ])
+        ));
+        // Only the fast field cache went down.
+        assert!(restarted(
+            &before,
+            &report(&[
+                (Cache::SplitFooter, stats(6, 4, 0)),
+                (Cache::FastField, stats(1, 2, 0)),
+            ])
+        ));
+        // A cache it had reported is gone.
+        assert!(restarted(
+            &before,
+            &report(&[(Cache::SplitFooter, stats(6, 4, 0))])
+        ));
     }
 }

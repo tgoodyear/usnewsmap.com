@@ -82,13 +82,13 @@ AppMetrics
 
 For `api.searcher_cache_bytes` and `api.searcher_cache_items` (gauges) read `Held`, the most the cache held in the span; for hits, misses and evictions read `Count`, their total in the span. Split footers are one item per split. A replica's first report counts everything since its sidecar started, the warm-up included.
 
-**Sizing `split_footer_cache_capacity`.** The cache holds every footer of the serving version when, after the warm-up and some traffic, the `split_footer` evictions are 0 and its items reach the version's split count. Evictions above 0 (and the API's warning `the split footer cache is evicting: the footers don't all fit split_footer_cache_capacity`, logged once per process) mean cold searches fetch footers again. To size it:
+**Sizing `split_footer_cache_capacity`.** Size it from the release's footer total, and check it against what the cache does after the warm-up. Evictions on their own don't show the footers don't fit: Quickwit 0.9.1 also counts replacing an entry as an eviction, and after a publish the cache drops the old version's footers. The API logs `split footer cache evictions seen` once per searcher run, for the record, without a cause. The footers don't fit when the total is above the capacity, or when footer misses and evictions keep coming hours after the warm-up, with no publish or restart in between. To size it:
 
 1. Add up `footer_bytes` on the version's `index layout` lines (`scripts/logs.sh prod index-layout 2d`, column `FooterMb`), or under `indexes` in `reference/<version>/manifest.json`, over every index the version lists: the base, its deltas and the Japanese index.
 2. Set `split_footer_cache_capacity` in `infra/quickwit/searcher.yaml` to that total plus about 25% for the deltas the next weekly releases add, rounded up. Quickwit reads `256MB` as 256,000,000 bytes, the unit `FooterMb` uses.
 3. Check it fits the sidecar's 4 GiB next to the fast field cache (1 GB), the aggregation memory limit (768 MB) and the partial request and predicate caches (32 MB each). If it doesn't, the fast field cache is the one to shrink first; then the container's memory (`infra/modules/containerapp.bicep`).
 
-The change goes live when it merges (CI applies `searcher.yaml` to the running app). Confirm with `searcher-caches` a day later: evictions 0, and footer misses about one per split per replica start.
+The change goes live when it merges (CI applies `searcher.yaml` to the running app). Confirm with `searcher-caches` a day later: after the warm-up, footer misses and evictions stay near 0 (each replica start misses about once per split), and the footer cache's MB held is about the footer total.
 
 ## Full rebuild
 
