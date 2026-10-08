@@ -235,6 +235,15 @@ input, select {
   padding: 4px 12px; font-size: 0.9rem; line-height: 1.45; box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
 }
 .infotip__body[hidden] { display: none; }
+/* A note on text already shown (Tooltip): a dotted underline says there is one. */
+.tooltip { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+.tooltip__body {
+  position: fixed; z-index: 20; width: max-content;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 4px 10px; font-size: 0.85rem; font-weight: 400; line-height: 1.45; white-space: normal;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+}
+.tooltip__body[hidden] { display: none; }
 /* Near the bottom of the map: open upward, from the button's left. */
 .infotip__body--up { top: auto; bottom: calc(100% + 6px); right: auto; left: 0; }
 @media (max-width: 640px) {

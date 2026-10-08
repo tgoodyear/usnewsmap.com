@@ -72,6 +72,12 @@ struct Totals {
     /// The pages on those days that sort first and last in `/v1/hits`.
     first: Option<Item>,
     last: Option<Item>,
+    /// Matching pages that match in American Stories' text but not in
+    /// LoC's (05 §5.5.4): the hits whose `matched_in` is
+    /// `["american_stories"]`. Only when the version searches American
+    /// Stories' text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    american_stories_only: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -345,6 +351,7 @@ async fn compute(
             last_day: agg.summary.last_day,
             first: agg.first.map(|h| Item::new(h, rd, &highlight)),
             last: agg.last.map(|h| Item::new(h, rd, &highlight)),
+            american_stories_only: agg.american_stories_only,
         },
         series: Series {
             hits: agg.summary.series.clone(),

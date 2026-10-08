@@ -68,7 +68,9 @@ impl Ctx {
 /// 4: snippets built from the page text, up to three per page (#126);
 /// the aggregate lists newspapers and languages (#121).
 /// 5: hits say when their snippets come from American Stories' text (#218).
-pub(crate) const RESPONSE_FORMAT: u32 = 5;
+/// 6: hits say which texts the query matches (`matched_in`), and the
+/// aggregate counts the pages only American Stories' text finds (#218).
+pub(crate) const RESPONSE_FORMAT: u32 = 6;
 
 /// A persistent-cache read slower than this is abandoned and the response computed.
 const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);

@@ -22,6 +22,8 @@ import { About } from "./components/About";
 import type { MapPoint } from "./components/mapTypes";
 import { MeasureToggle } from "./components/MeasureToggle";
 import { InfoTip } from "./components/InfoTip";
+import { Tooltip } from "./components/Tooltip";
+import { americanStoriesOnlyNote } from "./lib/matchSource";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { PagesLists, WhenLists, exactMedian, medianCandidates, type MedianStatus } from "./components/PlaceLists";
@@ -334,6 +336,13 @@ export function App() {
   const filteredPaper = view.lccn.length > 0 ? (papers.find((p) => view.lccn.includes(p.lccn))?.title ?? view.lccn.join(", ")) : null;
 
   const visible = points.filter((p) => p.value > 0);
+  const pagesShown = visible.reduce((a, p) => a + p.value, 0);
+  const pageCount = pagesShown.toLocaleString();
+  // Pages only American Stories' text matched (#218), when the API says. Its
+  // count is for the whole search, so only while the count shown is too.
+  const asOnlyNote = data
+    ? americanStoriesOnlyNote(data.total.american_stories_only, data.total.hits, pagesShown)
+    : null;
 
   // Median date lists: the bucket only gives a month (or year), so the
   // places that could be listed get their pages per day (/v1/days) and their
@@ -521,7 +530,15 @@ export function App() {
               <div className="toolbar">
                 <p className="summary">
                   <strong>{visible.length.toLocaleString()}</strong> places ·{" "}
-                  <strong>{visible.reduce((a, p) => a + p.value, 0).toLocaleString()}</strong> pages
+                  {asOnlyNote ? (
+                    <Tooltip note={asOnlyNote}>
+                      <strong>{pageCount}</strong> pages
+                    </Tooltip>
+                  ) : (
+                    <>
+                      <strong>{pageCount}</strong> pages
+                    </>
+                  )}
                   {data.coarsened && " · buckets coarsened to fit"}
                 </p>
                 {/* Options for one measure sit left of the controls every measure has, which keep

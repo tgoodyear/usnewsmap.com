@@ -1,6 +1,7 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api, ApiError, type SearchParams } from "../api/client";
 import type { HitItem, HitSort } from "../api/types";
+import { AMERICAN_STORIES_BADGE, americanStoriesNote } from "../lib/matchSource";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
 import { skewSentence, type SkewInfo } from "../lib/skewText";
@@ -87,6 +88,7 @@ export function PlacePanel({ params, version, placeId, placeName, sort, onSort, 
 
 /** One page in the list: date, newspaper, snippets and the LoC link. */
 export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
+  const asNote = americanStoriesNote(h);
   return (
     <li className="hit">
       <div className="hit__meta">
@@ -99,6 +101,15 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
               Our OCR
               {/* The title isn't announced reliably or shown on touch: say it in text too. */}
               <span className="visually-hidden">. {OCR_NOTE}</span>
+            </span>
+          </>
+        )}
+        {asNote && (
+          <>
+            {" "}
+            <span className="badge badge--ocr" title={asNote}>
+              {AMERICAN_STORIES_BADGE}
+              <span className="visually-hidden">. {asNote}</span>
             </span>
           </>
         )}

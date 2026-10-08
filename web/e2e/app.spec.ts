@@ -636,3 +636,55 @@ test("the median-date measure colours places by when they mentioned it", async (
   await expect(page.locator(".panel__summary")).toContainText(/pages in this search on \d+ days?/);
   await expectAccessible(page);
 });
+
+test("a page found only in American Stories' text is marked, and the page count says how many", async ({ page }) => {
+  // The fixture API doesn't search American Stories' text (current.json has
+  // no `american_stories`), so add what such a version answers (#218).
+  await page.route("**/v1/aggregate?*", async (route) => {
+    const resp = await route.fetch();
+    const body = await resp.json();
+    if (body.total) body.total.american_stories_only = 2;
+    await route.fulfill({ response: resp, json: body });
+  });
+  await page.route("**/v1/hits?*", async (route) => {
+    const resp = await route.fetch();
+    const body = await resp.json();
+    body.items?.forEach((item: { matched_in?: string[]; snippet_source?: string }, i: number) => {
+      item.matched_in = i === 0 ? ["american_stories"] : i === 1 ? ["loc", "american_stories"] : ["loc"];
+      if (i === 0) item.snippet_source = "american_stories";
+    });
+    await route.fulfill({ response: resp, json: body });
+  });
+  await page.goto("/?q=gold&from=1896-08-25&to=1896-09-30&place=P00001&tab=table");
+  const panel = page.getByRole("complementary");
+  const hits = panel.locator(".hit");
+  await expect(hits.first()).toBeVisible();
+  // Only the first page, found only in American Stories' text, has a badge.
+  const badge = hits.first().locator(".hit__meta .badge");
+  await expect(badge).toHaveText(/^American Stories OCR\. The Library of Congress text for this page doesn't contain the match\./);
+  await expect(badge).toHaveAttribute("title", /The snippet comes from that text\./);
+  await expect(panel.locator(".badge")).toHaveCount(1);
+
+  // The page count describes itself, and its note shows on keyboard focus.
+  const count = page.locator(".summary .tooltip");
+  const note = page.getByRole("tooltip");
+  const full = Number((await count.locator("strong").textContent())?.replace(/,/g, ""));
+  await expect(note).toBeHidden();
+  await count.focus();
+  await expect(note).toBeVisible();
+  await expect(note).toHaveText(/^2 of the \d+ pages in this search match only in American Stories' text/);
+  await expect(count).toHaveAttribute("aria-describedby", (await note.getAttribute("id"))!);
+  await expectAccessible(page);
+  await page.keyboard.press("Escape");
+  await expect(note).toBeHidden();
+
+  // Played back to early September, the count is only part of the search,
+  // so the whole search's number isn't offered as a note on it.
+  await page.goto("/?q=gold&from=1896-08-25&to=1896-09-30&place=P00001&tab=table&t=1896-09-05");
+  await expect(page.locator(".dock__label")).toContainText("1896");
+  const shown = Number((await page.locator(".summary strong").nth(1).textContent())?.replace(/,/g, ""));
+  expect(shown).toBeGreaterThan(0);
+  expect(shown).toBeLessThan(full);
+  await expect(page.locator(".summary .tooltip")).toHaveCount(0);
+  await expect(page.getByRole("tooltip", { includeHidden: true })).toHaveCount(0);
+});

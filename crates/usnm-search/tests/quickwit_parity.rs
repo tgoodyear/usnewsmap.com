@@ -249,6 +249,58 @@ async fn american_stories_text_adds_pages_only_when_searched() {
     assert!(total(both.clone(), "gold -bryan").await < total(both.clone(), "gold").await);
 }
 
+/// The aggregate's count of pages only American Stories' text matches
+/// (05 §5.5.4) is the reference's.
+#[tokio::test]
+async fn american_stories_only_counts_match_the_reference_backend() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let [_, (_, both)] = <[_; 2]>::try_from(sets()).ok().unwrap();
+    let mut found = 0;
+    for (qname, q) in queries() {
+        for (fname, f) in filter_cases() {
+            let ctx = format!("{qname} / {fname}");
+            let want = mem.american_stories_only(&both, &q, &f).await.unwrap();
+            let got = qw.american_stories_only(&both, &q, &f).await.expect(&ctx);
+            assert_eq!(got, want, "{ctx}");
+            found += got;
+        }
+    }
+    assert!(found > 0, "no page matched only in American Stories' text");
+}
+
+/// The count is the number of hits whose `matched_in` is American Stories'
+/// text alone, for every query shape, `NOT` and words from both texts
+/// included.
+#[tokio::test]
+async fn american_stories_only_counts_the_hits_matched_only_there() {
+    let mem = memory();
+    let [_, (_, both)] = <[_; 2]>::try_from(sets()).ok().unwrap();
+    let all = HitsQuery {
+        limit: 10_000,
+        ..HitsQuery::default()
+    };
+    let mut found = 0;
+    for (qname, q) in queries() {
+        for (fname, f) in filter_cases() {
+            let hits = mem.hits(&both, &q, &f, &all).await.unwrap();
+            assert_eq!(hits.hits.len() as u64, hits.total);
+            let only = hits
+                .hits
+                .iter()
+                .filter(|h| h.matched_in.as_deref() == Some(&["american_stories"][..]))
+                .count() as u64;
+            let counted = mem.american_stories_only(&both, &q, &f).await.unwrap();
+            assert_eq!(counted, only, "{qname} / {fname}");
+            found += only;
+        }
+    }
+    assert!(found > 0, "no page matched only in American Stories' text");
+}
+
 #[tokio::test]
 async fn hits_pages_match_the_reference_backend() {
     let Some(qw) = quickwit() else {
@@ -312,6 +364,8 @@ async fn hits_pages_match_the_reference_backend() {
                         // or American Stories' when only it matches.
                         h.snippets.clone(),
                         h.snippet_source,
+                        // Which texts match, from the same stored texts.
+                        h.matched_in.clone(),
                     )
                 };
                 assert_eq!(
@@ -334,6 +388,12 @@ async fn hits_pages_match_the_reference_backend() {
                     .iter()
                     .filter(|h| h.snippet_source.is_some())
                     .count();
+                assert!(
+                    got.hits
+                        .iter()
+                        .all(|h| h.matched_in.is_some() == set.american_stories()),
+                    "matched_in: {ctx}"
+                );
                 if qname == "phrase" && !got.hits.is_empty() {
                     assert!(got
                         .hits
@@ -571,6 +631,12 @@ async fn common_word_phrases(
         let want = sorted_cells(mem.cube(set, &q, &f, &spec, &all).await.unwrap());
         let got = sorted_cells(qw.cube(grams, &q, &f, &spec, &all).await.expect(&ctx));
         assert_eq!(got, want, "cube: {ctx}");
+        // The pages only American Stories' text matches, through the pairs.
+        if set.american_stories() {
+            let want = mem.american_stories_only(set, &q, &f).await.unwrap();
+            let got = qw.american_stories_only(grams, &q, &f).await.expect(&ctx);
+            assert_eq!(got, want, "american stories only: {ctx}");
+        }
         for sort in [HitSort::Oldest, HitSort::Newest] {
             let page = HitsQuery {
                 sort,
@@ -590,6 +656,11 @@ async fn common_word_phrases(
                 got.hits.iter().map(|h| &h.snippets).collect::<Vec<_>>(),
                 want.hits.iter().map(|h| &h.snippets).collect::<Vec<_>>(),
                 "snippets: {ctx}"
+            );
+            assert_eq!(
+                got.hits.iter().map(|h| &h.matched_in).collect::<Vec<_>>(),
+                want.hits.iter().map(|h| &h.matched_in).collect::<Vec<_>>(),
+                "matched_in: {ctx}"
             );
             if want.total > 0 {
                 assert!(

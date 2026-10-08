@@ -10,7 +10,7 @@ use usnm_core::query::{Node, Term};
 use usnm_core::text::tokenize;
 use usnm_core::time::BucketSpec;
 
-use crate::snippet::page_snippets;
+use crate::snippet::{matched_in, page_snippets};
 use crate::{
     ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
     KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
@@ -232,6 +232,8 @@ impl SearchBackend for MemoryBackend {
                             indexes.american_stories(),
                         ),
                     };
+                    let matched_in = (indexes.american_stories() && d.printed.is_none())
+                        .then(|| matched_in(&d.text, d.text_as.as_deref(), query));
                     Hit {
                         doc_id: d.doc_id.clone(),
                         day: d.day,
@@ -242,12 +244,29 @@ impl SearchBackend for MemoryBackend {
                         front_page: d.front_page,
                         snippets,
                         snippet_source,
+                        matched_in,
                         ocr_source: d.ocr_source.clone(),
                         ocr_engine: d.ocr_engine.clone(),
                     }
                 })
                 .collect(),
         })
+    }
+
+    async fn american_stories_only(
+        &self,
+        indexes: &IndexSet,
+        query: &Node,
+        filters: &Filters,
+    ) -> Result<u64, SearchError> {
+        let both = indexes.clone().with_american_stories(true);
+        let only = self
+            .matching(&both, query, filters)?
+            .filter(|d| {
+                !eval(query, &d.tokens) && d.as_tokens.as_ref().is_some_and(|t| eval(query, t))
+            })
+            .count();
+        Ok(only as u64)
     }
 
     async fn health(&self) -> Result<(), SearchError> {
@@ -548,9 +567,23 @@ mod shard_tests {
             hits.hits[0].snippet_source,
             Some(crate::SNIPPETS_FROM_AMERICAN_STORIES)
         );
+        assert_eq!(hits.hits[0].matched_in, Some(vec!["american_stories"]));
         let q = usnm_core::query::parse("cross").unwrap();
         let hits = b.hits(&on, &q, &f, &page).await.unwrap();
         assert!(hits.hits.iter().all(|h| h.snippet_source.is_none()));
+        // Doc 1 has `cross` in both texts, doc 2 (no American Stories text) in LoC's.
+        let matched: Vec<_> = hits.hits.iter().map(|h| h.matched_in.clone()).collect();
+        assert_eq!(
+            matched,
+            [Some(vec!["loc", "american_stories"]), Some(vec!["loc"])]
+        );
+        // Not when the search covers LoC's text alone.
+        let hits = b.hits(&off, &q, &f, &page).await.unwrap();
+        assert!(hits.hits.iter().all(|h| h.matched_in.is_none()));
+        // Doc 1 is found only through American Stories' text.
+        let gold = usnm_core::query::parse("gold").unwrap();
+        assert_eq!(b.american_stories_only(&on, &gold, &f).await.unwrap(), 1);
+        assert_eq!(b.american_stories_only(&on, &q, &f).await.unwrap(), 0);
     }
 
     #[tokio::test]

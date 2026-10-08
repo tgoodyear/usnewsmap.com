@@ -3,7 +3,8 @@
 //! The cube is only issued when its upper bound (places with hits × buckets)
 //! fits the caller's cell budget, so an oversized request never reaches the
 //! engine's aggregation limit. Alongside the cube, two one-hit queries find
-//! the earliest and latest matching page.
+//! the earliest and latest matching page, and when the search covers American
+//! Stories' text, a count of the pages only that text matches (05 §5.5.4).
 //!
 //! [`days`] plans `/v1/days`: matching pages per day for a few places.
 
@@ -31,6 +32,9 @@ pub struct Aggregate {
     /// The earliest and latest matching page; `None` when nothing matches.
     pub first: Option<Hit>,
     pub last: Option<Hit>,
+    /// When the search covers American Stories' text: how many of the
+    /// matching pages match in it but not in LoC's text (05 §5.5.4).
+    pub american_stories_only: Option<u64>,
 }
 
 pub enum Planned {
@@ -58,6 +62,7 @@ pub async fn aggregate(
             cube_calls: 0,
             first: None,
             last: None,
+            american_stories_only: indexes.american_stories().then_some(0),
         })));
     }
     let upper_bound = summary.places.len().saturating_mul(spec.len());
@@ -76,13 +81,25 @@ pub async fn aggregate(
         edge(backend, indexes, query, filters, HitSort::Oldest),
         edge(backend, indexes, query, filters, HitSort::Newest),
     );
-    let (parts, (first, last)) = futures::future::try_join(cube, edges).await?;
+    // One count-only query.
+    let american_stories_only = async {
+        if !indexes.american_stories() {
+            return Ok(None);
+        }
+        backend
+            .american_stories_only(indexes, query, filters)
+            .await
+            .map(Some)
+    };
+    let (parts, (first, last), american_stories_only) =
+        futures::future::try_join3(cube, edges, american_stories_only).await?;
     Ok(Planned::Complete(Box::new(Aggregate {
         summary,
         cells: parts.into_iter().flatten().collect(),
         cube_calls: n,
         first,
         last,
+        american_stories_only,
     })))
 }
 
@@ -268,6 +285,51 @@ mod tests {
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// With American Stories' text searched, the aggregate also counts the
+    /// pages only that text matches; without it, it asks nothing more.
+    #[tokio::test]
+    async fn aggregate_counts_pages_only_american_stories_text_matches() {
+        let mut b = MemoryBackend::new();
+        b.add_index(
+            "i",
+            (0..30).map(|i| {
+                let mut d = doc(i, 71_000 + i, (i % 3) as u8 + 1);
+                // Every other page: American Stories reads `gold` where LoC has `goid`.
+                if i % 2 == 0 {
+                    d.text = "goid".into();
+                    d.text_as = Some("gold".into());
+                }
+                d
+            }),
+        );
+        let q = usnm_core::query::parse("gold").unwrap();
+        let f = filters(71_000, 71_100);
+        let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+        let run = |set: IndexSet, q: Node| {
+            let (b, f, spec) = (&b, &f, &spec);
+            async move {
+                match aggregate(b, &set, &q, f, spec, 700_000).await.unwrap() {
+                    Planned::Complete(a) => a,
+                    Planned::TooManyCells { .. } => panic!("over budget"),
+                }
+            }
+        };
+        let off = IndexSet::new(vec!["i".into()]);
+        let on = off.clone().with_american_stories(true);
+        let a = run(on.clone(), q.clone()).await;
+        // Odd pages not divisible by 3 have `gold` in LoC's text: 10 of them;
+        // the 15 even pages have it in American Stories' only.
+        assert_eq!(
+            (a.summary.total_hits, a.american_stories_only),
+            (25, Some(15))
+        );
+        let a = run(off, q.clone()).await;
+        assert_eq!((a.summary.total_hits, a.american_stories_only), (10, None));
+        // Nothing matches: nothing found only in American Stories' text.
+        let none = usnm_core::query::parse("zyzzyva").unwrap();
+        assert_eq!(run(on, none).await.american_stories_only, Some(0));
     }
 
     #[tokio::test]

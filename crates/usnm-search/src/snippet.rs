@@ -5,10 +5,10 @@
 //! (which its REST API can't lengthen) no longer decides what readers see.
 
 use usnm_core::query::{Node, Term};
-use usnm_core::text::{fold, MAX_TOKEN_CHARS};
+use usnm_core::text::{fold, tokenize, MAX_TOKEN_CHARS};
 
-use crate::memory::levenshtein_within;
-use crate::{mark_html, SNIPPETS_FROM_AMERICAN_STORIES};
+use crate::memory::{eval, levenshtein_within};
+use crate::{mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES};
 
 /// Fragments per page.
 pub const MAX_FRAGMENTS: usize = 3;
@@ -223,6 +223,28 @@ pub fn page_snippets(
     }
 }
 
+/// Which of a page's texts the query matches (05 §5.5.4), from the texts
+/// the hit already carries for its snippets: [`MATCHED_IN_LOC`] when LoC's
+/// `text` matches the whole query on its own, [`SNIPPETS_FROM_AMERICAN_STORIES`]
+/// when American Stories' text does. A page found only by taking a word
+/// from each text (`a b` with `a` in one and `b` in the other) lists both.
+/// Evaluated as the memory backend evaluates a query, so a page listed
+/// without `loc` is one a search of LoC's text alone doesn't find: the
+/// pages `/v1/aggregate` counts in `total.american_stories_only`. Both
+/// backends use it.
+pub fn matched_in(text: &str, text_as: Option<&str>, query: &Node) -> Vec<&'static str> {
+    let Some(text_as) = text_as else {
+        return vec![MATCHED_IN_LOC];
+    };
+    let loc = eval(query, &tokenize(text));
+    let american = eval(query, &tokenize(text_as));
+    match (loc, american) {
+        (true, false) => vec![MATCHED_IN_LOC],
+        (false, true) => vec![SNIPPETS_FROM_AMERICAN_STORIES],
+        _ => vec![MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES],
+    }
+}
+
 fn collapse_spaces(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut space = false;
@@ -366,5 +388,32 @@ mod tests {
             (Vec::new(), None)
         );
         assert_eq!(page_snippets(loc, None, &q, true), (Vec::new(), None));
+    }
+
+    #[test]
+    fn matched_in_names_the_texts_that_match_the_whole_query() {
+        let m = |q: &str, loc: &str, american: Option<&str>| {
+            matched_in(loc, american, &parse(q).unwrap())
+        };
+        let loc = "a cross of goid, said the boy orator";
+        let american = "BRYAN AT CHICAGO a cross of gold, said the boy oratar";
+        assert_eq!(m("cross", loc, Some(american)), ["loc", "american_stories"]);
+        assert_eq!(m("orator", loc, Some(american)), ["loc"]);
+        assert_eq!(m("gold", loc, Some(american)), ["american_stories"]);
+        assert_eq!(
+            m(r#""cross of gold""#, loc, Some(american)),
+            ["american_stories"]
+        );
+        // Every word of the query in one text: `boy` is in both, `gold` in one.
+        assert_eq!(m("boy gold", loc, Some(american)), ["american_stories"]);
+        // A word from each text: neither matches alone, so both are listed.
+        assert_eq!(
+            m("bryan orator", loc, Some(american)),
+            ["loc", "american_stories"]
+        );
+        // An empty LoC text (a page only American Stories has text for).
+        assert_eq!(m("gold", "", Some(american)), ["american_stories"]);
+        // No American Stories text: LoC's.
+        assert_eq!(m("orator", loc, None), ["loc"]);
     }
 }
