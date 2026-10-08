@@ -1,4 +1,4 @@
-// Log Analytics with a daily cap (a ceiling on bursts; normal days stay within the free 5 GB/month) and
+// Log Analytics with a daily cap (main.bicep sets it per environment) and
 // workspace-based Application Insights (08 §8.1). Optional action group.
 
 param location string
@@ -8,11 +8,8 @@ param appInsightsName string
 param actionGroupName string
 @description('Alert recipients; no action group is created when empty.')
 param alertEmails array = []
-// 0.15 GB (inside the free 5 GB/month at any rate) stopped all logging on 2026-10-07: the
-// American Stories writer's blob writes reached it by 17:46 ET, and nothing was logged, alerts
-// included, until the next reset. 1 GB leaves room for bulk jobs; a normal day is about 0.08 GB.
-@description('Daily ingestion cap in GB.')
-param dailyCapGb string = '1'
+@description('Daily ingestion cap in GB (0.15 ≈ 4.5 GB/month, inside the free 5 GB; main.bicep raises it for prod).')
+param dailyCapGb string = '0.15'
 
 resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: workspaceName
