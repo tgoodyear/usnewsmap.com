@@ -160,6 +160,9 @@ pub struct Copied {
     pub bytes: u64,
     /// Already there with the same sha256.
     pub skipped: u64,
+    /// Not in the source but already in the destination (e.g. curated
+    /// straight into the archival account): nothing to copy.
+    pub already_there: u64,
     pub listings: u64,
 }
 
@@ -177,10 +180,18 @@ pub async fn copy(
     use futures::StreamExt;
     use sha2::{Digest, Sha256};
     let mut out = Copied::default();
+    let mut missing = Vec::new();
     for b in batches {
-        let m = find(from, b, None)
-            .await?
-            .with_context(|| format!("`{b}` has no retained archive to copy"))?;
+        let Some(m) = find(from, b, None).await? else {
+            // Curated straight into the destination, or never retained.
+            if find(to, b, None).await?.is_some() {
+                out.already_there += 1;
+            } else {
+                tracing::warn!(batch = %b, "no retained archive in the source or the destination");
+                missing.push(b.clone());
+            }
+            continue;
+        };
         if find(to, b, Some(&m.sha256)).await?.is_some() {
             out.skipped += 1;
             continue;
@@ -234,6 +245,16 @@ pub async fn copy(
         to.put(&path, bytes, "application/json").await?;
         out.listings += 1;
     }
+    // Everything that could be copied is; a batch retained nowhere is a gap.
+    anyhow::ensure!(
+        missing.is_empty(),
+        "no retained archive in the source or the destination for {} batch(es): {} (copied {}, skipped {}, already there {})",
+        missing.len(),
+        missing.join(", "),
+        out.archives,
+        out.skipped,
+        out.already_there
+    );
     Ok(out)
 }
 
@@ -397,6 +418,24 @@ mod tests {
         let to2 = usnm_store::LocalStore::new(dir.path().join("c"));
         assert!(copy(&from, &to2, &batches).await.is_err());
         assert!(to2.get(&m.path).await.unwrap().is_none());
+        // A batch the source never kept but the destination has (curated
+        // straight into it) is counted, not an error; one kept nowhere is.
+        let with_direct = vec!["b_ver01".to_owned(), "d_ver01".to_owned()];
+        let direct = Manifest {
+            batch: "d_ver01".into(),
+            path: "d_ver01/d_ver01.tar.bz2".into(),
+            ..m.clone()
+        };
+        to.put(&direct.path, data.clone(), "x").await.unwrap();
+        record(&to, &direct).await.unwrap();
+        let fresh = usnm_store::LocalStore::new(dir.path().join("e"));
+        fresh.put(&m.path, data.clone(), "x").await.unwrap();
+        record(&fresh, &m).await.unwrap();
+        let c = copy(&fresh, &to, &with_direct).await.unwrap();
+        assert_eq!((c.archives, c.skipped, c.already_there), (0, 1, 1));
+        let gap = vec!["b_ver01".to_owned(), "z_ver01".to_owned()];
+        let e = copy(&fresh, &to, &gap).await.unwrap_err().to_string();
+        assert!(e.contains("z_ver01"), "{e}");
     }
 
     #[tokio::test]
