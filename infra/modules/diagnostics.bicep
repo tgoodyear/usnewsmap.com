@@ -5,7 +5,7 @@
 //
 // Everything with resource logs is covered, with every category, except
 // where a category would record each request and eat the workspace's daily
-// cap (1 GB; a normal day is about 80 MB):
+// cap (1 GB in prod, 0.15 GB in dev; a normal prod day is about 80 MB):
 // - Blob reads (StorageRead): the public tiles and the index splits Quickwit
 //   range-reads on every search. Writes and deletes are the audit trail.
 // - Cosmos DataPlaneRequests and the per-query/per-request statistics: every
