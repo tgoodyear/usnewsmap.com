@@ -33,6 +33,8 @@ as an "american stories" line. One replica of the execution works (solo.py).
 
 from __future__ import annotations
 
+import contextlib
+import gzip
 import io
 import json
 import os
@@ -121,15 +123,59 @@ def scan_text(scan: dict) -> tuple[str, dict[str, int]]:
     return "\n".join(parts), legibility
 
 
+# Seconds a download may go without data before it fails. Without one, a stalled connection to
+# Hugging Face blocked a writer run for hours with nothing logged (#218).
+READ_TIMEOUT = 300
+
+
 def _open(year: int, opener):
     req = urllib.request.Request(URL.format(year=year), headers={"User-Agent": jaocr.UA, "DNT": "1"})
-    return (opener or urllib.request.urlopen)(req)
+    if opener:
+        return opener(req)
+    return urllib.request.urlopen(req, timeout=READ_TIMEOUT)
+
+
+class IncompleteDownload(OSError):
+    """A tarball that ended early (an OSError, so the writer retries the year)."""
+
+
+class _Counting:
+    """A response's bytes, counted as they're read."""
+
+    def __init__(self, f):
+        self.f, self.n = f, 0
+
+    def read(self, size: int = -1) -> bytes:
+        b = self.f.read(size)
+        self.n += len(b)
+        return b
+
+
+@contextlib.contextmanager
+def tar_stream(year: int, opener=None):
+    """The year's tarball as a streamed tar. A download cut short doesn't always fail by itself: a body
+    that stops at a member's end can read as a whole archive. So once the caller has read every member,
+    the gzip stream is read to its end marker (gzip raises EOFError when it's missing, and checks the
+    CRC), and the bytes read are compared with Content-Length when the response has one."""
+    with _open(year, opener) as resp:
+        raw = _Counting(resp)
+        gz = gzip.GzipFile(fileobj=raw, mode="rb")
+        with tarfile.open(fileobj=gz, mode="r|") as tar:
+            yield tar
+        while gz.read(1 << 20):  # the tar's end padding, then the gzip trailer
+            pass
+        while raw.read(1 << 20):
+            pass
+        headers = getattr(resp, "headers", None)
+        length = headers.get("Content-Length") if headers is not None else None
+        if length is not None and raw.n != int(length):
+            raise IncompleteDownload(f"faro_{year}.tar.gz: read {raw.n} of {length} bytes")
 
 
 def stream_year(year: int, cut: int, opener=None, keep=lambda: None) -> tuple[dict, dict]:
     """(sampled scans by doc_id: {batch, text, legibility}, totals) for one year's tarball, read twice."""
     names = []
-    with _open(year, opener) as resp, tarfile.open(fileobj=resp, mode="r|gz") as tar:
+    with tar_stream(year, opener) as tar:
         for member in tar:
             keep()  # each pass reads the whole tarball: renew the lock throughout
             if member.isfile() and member.name.endswith(".json"):
@@ -137,7 +183,7 @@ def stream_year(year: int, cut: int, opener=None, keep=lambda: None) -> tuple[di
     ids, stats = place(names)
     wanted = {n: d for n, d in ids.items() if quality.sampled(d, cut)}
     out: dict[str, dict] = {}
-    with _open(year, opener) as resp, tarfile.open(fileobj=resp, mode="r|gz") as tar:
+    with tar_stream(year, opener) as tar:
         for member in tar:
             keep()
             d = wanted.get(member.name)
