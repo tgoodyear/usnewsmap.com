@@ -98,6 +98,9 @@ param ingestMergeTimeoutSecs int = 14400
 @description('Cosmos DB free tier (one per subscription). False makes the account serverless.')
 param cosmosFreeTier bool = true
 
+@description('Log Analytics daily cap in GB; empty: 1 in prod, 0.15 elsewhere. Raise it for bulk work in a non-prod environment (the search cluster experiment writes thousands of blobs, each a log record), and clear it afterwards.')
+param logDailyCapGb string = ''
+
 @description('Comma-separated alert and budget recipients. Budget and alerts are skipped when empty.')
 param alertEmails string = ''
 
@@ -200,7 +203,7 @@ module monitoring 'modules/monitoring.bicep' = {
     // writes reached it by 17:46 ET; nothing was logged, alerts included, until the next reset).
     // A normal prod day is about 80 MB, inside the free 5 GB/month; the cap bounds bursts from
     // bulk jobs. Dev keeps 0.15 GB, inside the free allowance at any rate (ADR-0005).
-    dailyCapGb: env == 'prod' ? '1' : '0.15'
+    dailyCapGb: !empty(logDailyCapGb) ? logDailyCapGb : (env == 'prod' ? '1' : '0.15')
   }
 }
 

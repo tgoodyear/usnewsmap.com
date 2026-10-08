@@ -226,10 +226,13 @@ resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
               // Selects id-usnm-qwnode for the seed registry; the wrapper
               // removes it before Quickwit starts.
               { name: 'AZURE_CLIENT_ID', value: nodeIdentity.properties.clientId }
-              // As the API's sidecar: no search text in the logs (09 §9.4.2).
+              // Warnings, and the cluster's membership and the indexing
+              // pipelines at info: enough to follow joins, restarts and
+              // merges inside a dev workspace's 150 MB daily log cap, and no
+              // search text (09 §9.4.2).
               {
                 name: 'RUST_LOG'
-                value: 'info,quickwit_serve::search_api=warn,quickwit_search=warn,tantivy=warn'
+                value: 'warn,quickwit_cluster=info,quickwit_serve=info,quickwit_serve::search_api=warn,quickwit_indexing::actors::merge_pipeline=info'
               }
             ]
             probes: [

@@ -217,8 +217,11 @@ impl NodeCounters {
             ),
             root_requests: metric_sum(text, "quickwit_search_root_search_requests_total", &ok),
             docs_indexed: metric_sum(text, "quickwit_indexing_processed_docs_total", &docs),
-            merges_running: metric_sum(text, "quickwit_indexing_ongoing_merge_operations", &[]),
-            merges_queued: metric_sum(text, "quickwit_indexing_pending_merge_operations", &[]),
+            // Gauges Quickwit can report as -0.
+            merges_running: metric_sum(text, "quickwit_indexing_ongoing_merge_operations", &[])
+                .max(0.0),
+            merges_queued: metric_sum(text, "quickwit_indexing_pending_merge_operations", &[])
+                .max(0.0),
             footer_cache_bytes: metric_sum(text, "quickwit_cache_in_cache_num_bytes", &footer),
             footer_cache_hits: metric_sum(text, "quickwit_cache_cache_hits_total", &footer),
             footer_cache_misses: metric_sum(text, "quickwit_cache_cache_misses_total", &footer),

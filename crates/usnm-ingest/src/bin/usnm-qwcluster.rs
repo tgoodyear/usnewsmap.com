@@ -120,6 +120,17 @@ enum Command {
         #[arg(long, env = "USNM_QWBENCH_URL")]
         store: String,
     },
+    /// Print every stored report (`runs/*/*.json`, `sample/*/manifest.json`)
+    /// as `qwcluster report` lines, then wait: with Log Analytics over its
+    /// daily cap, `az containerapp job logs show --follow` still streams them
+    /// (scripts/qwcluster-report.py --from-file).
+    Dump {
+        /// Seconds to keep running after printing, for the log stream.
+        #[arg(long, default_value_t = 600)]
+        hold_secs: u64,
+        #[arg(long, env = "USNM_QWBENCH_URL")]
+        store: String,
+    },
     /// The benchmark searches against the cluster's root (cluster::bench).
     Bench {
         /// Names the run in the report (e.g. `s2-1ix`).
@@ -163,6 +174,7 @@ impl Command {
             Command::Sample { .. } => "sample",
             Command::Load { .. } => "load",
             Command::Bench { .. } => "bench",
+            Command::Dump { .. } => "dump",
         }
     }
 }
@@ -187,6 +199,51 @@ async fn keep(
         )
         .await?;
     Ok(())
+}
+
+/// Every stored report as (kind, the summary its log line had): samples'
+/// manifests, then each run's load and bench reports, by path.
+async fn dump(store: &dyn ObjectStore) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
+    let mut out = Vec::new();
+    for path in store.list("sample").await? {
+        if let Some(name) = path
+            .strip_prefix("sample/")
+            .and_then(|p| p.strip_suffix("/manifest.json"))
+        {
+            let m = sample::manifest(store, &format!("sample/{name}")).await?;
+            let mut v = serde_json::to_value(&m)?;
+            v["parts"] = serde_json::json!(m.parts.len());
+            v["name"] = serde_json::json!(name);
+            out.push(("sample".to_owned(), v));
+        }
+    }
+    for path in store.list("runs").await? {
+        let kind = match path.rsplit('/').next() {
+            Some("load.json") => "load",
+            Some("bench.json") => "bench",
+            _ => continue,
+        };
+        let Some(bytes) = store.get(&path).await? else {
+            continue;
+        };
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&bytes).with_context(|| path.clone())?;
+        // As logged: a bench without each search's calls, a load without
+        // its per-poll series.
+        if kind == "bench" {
+            for p in v["passes"].as_array_mut().into_iter().flatten() {
+                for s in p["searches"].as_array_mut().into_iter().flatten() {
+                    if let Some(o) = s.as_object_mut() {
+                        o.remove("calls");
+                    }
+                }
+            }
+        } else {
+            v["rate"] = serde_json::json!([]);
+        }
+        out.push((kind.to_owned(), v));
+    }
+    Ok(out)
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
@@ -298,6 +355,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             )
             .await
         }
+        Command::Dump { hold_secs, store } => {
+            let store = usnm_store::open(&store)?;
+            for (kind, report) in dump(store.as_ref()).await? {
+                cluster::log_report(&kind, &report);
+            }
+            tokio::time::sleep(Duration::from_secs(hold_secs)).await;
+            Ok(())
+        }
         Command::Bench {
             label,
             index,
@@ -395,6 +460,39 @@ mod tests {
         };
         assert_eq!(services.len(), 5);
         assert_eq!((rest_port, cpus), (7280, Some(2)));
+    }
+
+    #[tokio::test]
+    async fn dumps_every_stored_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
+        let bench = serde_json::json!({"label": "n1", "passes": [
+            {"name": "first", "searches": [{"name": "radio", "calls": [{"kind": "summary"}]}]}]});
+        store
+            .put(
+                "runs/n1/bench.json",
+                bench.to_string().into_bytes(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        store
+            .put(
+                "runs/s1ix/load.json",
+                br#"{"index_id": "s1ix", "rate": [[10.0, 5]]}"#.to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        store
+            .put("runs/s1ix/other.txt", b"x".to_vec(), "text/plain")
+            .await
+            .unwrap();
+        let got = dump(store.as_ref()).await.unwrap();
+        let kinds: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(kinds, ["bench", "load"]);
+        assert!(got[0].1["passes"][0]["searches"][0].get("calls").is_none());
+        assert_eq!(got[1].1["rate"], serde_json::json!([]));
     }
 
     #[test]
