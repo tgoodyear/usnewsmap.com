@@ -149,7 +149,9 @@ def pipeline():
 
 NAMES = {"eng": "English", "ger": "German", "spa": "Spanish", "fre": "French", "pol": "Polish",
          "ita": "Italian", "dan": "Danish", "cze": "Czech", "nor": "Norwegian", "yid": "Yiddish",
-         "fin": "Finnish", "swe": "Swedish", "hun": "Hungarian", "slv": "Slovenian"}
+         "fin": "Finnish", "swe": "Swedish", "hun": "Hungarian", "slv": "Slovenian", "srp": "Serbian",
+         "lit": "Lithuanian", "rus": "Russian", "slo": "Slovak", "hrv": "Croatian", "rum": "Romanian",
+         "ice": "Icelandic", "heb": "Hebrew", "haw": "Hawaiian"}
 
 
 def agreement():
@@ -223,7 +225,37 @@ def decades():
     return svg(w, h, "".join(b))
 
 
+def languages():
+    """Median damage and share badly damaged by detected language (not English), with English as a reference."""
+    rows = {r["language"]: r for r in audit("by_language")}
+    eng = rows["eng"]
+    langs = sorted((r for k, r in rows.items() if k in NAMES and k != "eng" and r["scored_pages"] >= 50),
+                   key=lambda r: -r["damage_rate_median"])
+    panels = [("damage_rate_median", "Median damage rate", 0.30, 190, 440, "{:.3f}"),
+              ("badly_damaged_share", "Pages badly damaged (rate over 0.25)", 0.60, 500, 730, "{:.1%}")]
+    top, rh = 36, 21
+    w, h = 760, top + rh * len(langs) + 34
+    b = []
+    for i, r in enumerate(langs):
+        y = top + i * rh
+        b.append(text(182, y + 13, f"{NAMES[r['language']]} ({r['scored_pages']:,})", 11.5, "end"))
+    for key, title, vmax, x0, x1, fmt in panels:
+        sc = (x1 - x0) / vmax
+        b.append(text(x0, 16, title, 12, weight="bold"))
+        ref, y1 = eng[key] * sc + x0, top + rh * len(langs)
+        b.append(f"<line x1='{ref:.1f}' y1='{top - 6}' x2='{ref:.1f}' y2='{y1}' stroke='{LOC}' stroke-width='1.5' stroke-dasharray='4 3'/>")
+        b.append(text(ref, top - 9, f"English {fmt.format(eng[key])}", 10, "middle", LOC))
+        for i, r in enumerate(langs):
+            y = top + i * rh
+            v = r[key]
+            b.append(f"<rect x='{x0}' y='{y + 2}' width='{v * sc:.1f}' height='14' fill='{OURS}'/>")
+            b.append(text(x0 + v * sc + 4, y + 13, fmt.format(v), 10, color=MUTED, halo=True))
+    b.append(text(10, h - 10, "Sampled pages by detected language, scored pages in brackets; languages with at least 50. Dashed: English.", 11, color=MUTED))
+    return svg(w, h, "".join(b))
+
+
 for name, fn in [("coverage-timeline", timeline), ("missing-text", missing), ("engines", engines),
-                 ("pipeline", pipeline), ("language-agreement", agreement), ("damage-by-decade", decades)]:
+                 ("pipeline", pipeline), ("language-agreement", agreement), ("damage-by-decade", decades),
+                 ("damage-by-language", languages)]:
     (HERE / f"{name}.svg").write_text(fn())
     print(f"wrote {name}.svg")
