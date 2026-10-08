@@ -124,8 +124,11 @@ test("example search maps, plays, drills down and keeps a permalink", async ({ p
   expect(early).toBeGreaterThan(0);
   expect(early).toBeLessThan(6);
 
+  await expect(page.getByRole("combobox", { name: "Map layer" })).toBeVisible();
   await page.getByRole("button", { name: "Table" }).click();
   await expect(page).toHaveURL(/tab=table/);
+  // Points or heat is a map setting: the table doesn't offer it.
+  await expect(page.getByRole("combobox", { name: "Map layer" })).toHaveCount(0);
   const rows = page.locator("table.places tbody tr");
   await expect(rows).toHaveCount(early);
   await expectAccessible(page);

@@ -10,7 +10,8 @@
 //! latlong for every city its record lists) counts as coming from
 //! multi-city records, and any other as LoC's own point for the city. The
 //! report lists the merges, renamed places, places that move, and every
-//! place's distance from the gazetteer.
+//! place's distance from the gazetteer. It can't list places whose LoC
+//! points are far apart (`loc_apart`): that needs the records.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -18,7 +19,7 @@ use serde_json::Value;
 use usnm_core::names::STATES;
 use usnm_ingest::catalog::{Place, Title};
 use usnm_ingest::places::{self, distance_km, Geo};
-use usnm_ingest::titles::{build, PlaceOverride, RawTitle, PLACE_OVERRIDES};
+use usnm_ingest::titles::{build, place_overrides, RawTitle, PLACE_OVERRIDES};
 
 struct Live {
     id: String,
@@ -37,7 +38,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "/tmp/places.json".into());
     let json: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
     let geo = Geo::compiled()?;
-    let overrides: Vec<PlaceOverride> = serde_json::from_str(PLACE_OVERRIDES)?;
+    let overrides = place_overrides(PLACE_OVERRIDES)?;
     let mut live = Vec::new();
     for f in json["features"].as_array().into_iter().flatten() {
         let p = &f["properties"];
@@ -97,6 +98,8 @@ fn main() -> anyhow::Result<()> {
             lat: l.lat,
             lon: l.lon,
             precision: l.precision.clone(),
+            coordinates_from: None,
+            variants: vec![],
         });
         let multi = shared(l);
         for k in 0..l.titles {
@@ -236,6 +239,15 @@ fn main() -> anyhow::Result<()> {
     for d in &report.disagreement_examples {
         println!("{d}");
     }
+
+    // The stand-in titles all sit at their place's live point, under
+    // made-up LCCNs, so `loc_apart` would be empty or list points that
+    // aren't LoC's: it needs LoC's title records (`geocode` logs it).
+    println!(
+        "\n== Places at the median of LoC points more than 25 km apart ==\n\
+         Not available from /v1/places: it needs LoC's title records (raw/titles.json). \
+         The geocode log lists them (loc_apart_examples)."
+    );
 
     // Every live place against the gazetteer.
     println!("\n== Every live place: gazetteer point and distance ==");

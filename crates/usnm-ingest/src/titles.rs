@@ -45,7 +45,8 @@ use usnm_core::names::{language_code, state_by_name, State, STATES};
 use usnm_store::ObjectStore;
 
 use crate::activity::Reporter;
-use crate::catalog::{Catalog, Place, Title, PLACES, TITLES};
+use crate::audit::{self, Audit, Earlier};
+use crate::catalog::{Catalog, Place, Title, Variant, PLACES, TITLES};
 use crate::places::{self, CityName, Found, Geo};
 use crate::source;
 
@@ -53,11 +54,14 @@ use crate::source;
 pub const LOC_ITEMS: &str = "https://www.loc.gov/item";
 /// The fields of every fetched title record, by LCCN.
 pub const RAW: &str = "raw/titles.json";
-/// Manual coordinates, `[{city, lat, lon, name?, precision?, state}]`, kept in git
+/// Manual coordinates, `[{added, city, lat, lon, name?, precision?, reason, ref, source, state}]`
+/// (with the audit fields of [`crate::audit`]), kept in git
 /// (`catalog/overrides/places.json`) and compiled in, so every environment
 /// applies the same corrections (08 §8.9).
 pub const PLACE_OVERRIDES: &str = include_str!("../../../catalog/overrides/places.json");
-/// Titles whose LoC record is under another LCCN, `{lccn: {record, note?}}`,
+/// Titles whose LoC record is under another LCCN,
+/// `{lccn: {added, reason, record, ref, source}}` (with the audit fields of
+/// [`crate::audit`]),
 /// kept in git (`catalog/overrides/titles.json`) and compiled in like the
 /// place overrides.
 pub const TITLE_OVERRIDES: &str = include_str!("../../../catalog/overrides/titles.json");
@@ -66,11 +70,36 @@ pub const TITLE_OVERRIDES: &str = include_str!("../../../catalog/overrides/title
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TitleOverride {
+    /// When it was decided (`YYYY-MM-DD`).
+    pub added: String,
+    /// Its earlier versions, oldest first (with `updated`).
+    #[serde(default)]
+    pub history: Vec<Earlier>,
+    /// Why.
+    pub reason: String,
     /// The LCCN of the LoC record that describes the title.
     pub record: String,
-    /// Why, and where that was found.
+    /// The issue or pull request where it was decided.
+    #[serde(rename = "ref")]
+    pub reference: u32,
+    /// Where the record was found.
+    pub source: String,
+    /// When it last changed (`YYYY-MM-DD`), with `history`.
     #[serde(default)]
-    pub note: Option<String>,
+    pub updated: Option<String>,
+}
+
+impl TitleOverride {
+    pub fn audit(&self) -> Audit<'_> {
+        Audit {
+            added: &self.added,
+            history: &self.history,
+            reason: &self.reason,
+            reference: self.reference,
+            source: &self.source,
+            updated: self.updated.as_deref(),
+        }
+    }
 }
 
 /// The record LCCN to fetch for each overridden title, from `json` in the
@@ -80,6 +109,9 @@ pub fn record_lccns(json: &str) -> anyhow::Result<BTreeMap<String, String>> {
         serde_json::from_str(json).context("catalog/overrides/titles.json")?;
     let mut records = BTreeMap::new();
     for (lccn, o) in entries {
+        o.audit()
+            .check(&[("record", |v| v.as_str().is_some_and(valid_lccn))])
+            .with_context(|| format!("catalog/overrides/titles.json: `{lccn}`"))?;
         anyhow::ensure!(
             valid_lccn(&lccn) && valid_lccn(&o.record) && o.record != lccn,
             "catalog/overrides/titles.json: `{lccn}` → `{}` isn't a pair of different, valid LCCNs",
@@ -412,11 +444,16 @@ async fn load_catalog(store: &dyn ObjectStore) -> anyhow::Result<(Vec<Title>, Ve
     Ok((titles, places))
 }
 
+/// One entry of [`PLACE_OVERRIDES`].
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlaceOverride {
+    /// When it was decided (`YYYY-MM-DD`).
+    pub added: String,
     pub city: String,
-    /// Postal code, e.g. `MD`.
-    pub state: String,
+    /// Its earlier versions, oldest first (with `updated`).
+    #[serde(default)]
+    pub history: Vec<Earlier>,
     pub lat: f64,
     pub lon: f64,
     /// The place's name, when neither an alias, the gazetteer nor LoC has
@@ -425,14 +462,83 @@ pub struct PlaceOverride {
     pub name: Option<String>,
     #[serde(default = "city_precision")]
     pub precision: String,
+    /// Why the override exists: the titles it is for, and what `geocode`
+    /// would do without it.
+    pub reason: String,
+    /// The issue or pull request where it was decided.
+    #[serde(rename = "ref")]
+    pub reference: u32,
+    /// Where the coordinates (and name) come from.
+    pub source: String,
+    /// Postal code, e.g. `MD`.
+    pub state: String,
+    /// When it last changed (`YYYY-MM-DD`), with `history`.
+    #[serde(default)]
+    pub updated: Option<String>,
+}
+
+impl PlaceOverride {
+    pub fn audit(&self) -> Audit<'_> {
+        Audit {
+            added: &self.added,
+            history: &self.history,
+            reason: &self.reason,
+            reference: self.reference,
+            source: &self.source,
+            updated: self.updated.as_deref(),
+        }
+    }
 }
 
 fn city_precision() -> String {
     "city".into()
 }
 
-/// A place whose LoC point (from records that list only its city) is
-/// further than this from the gazetteer's is listed for review.
+/// The place overrides in `json` (in the form of [`PLACE_OVERRIDES`]),
+/// each checked: an audit trail ([`crate::audit`]), a known state,
+/// coordinates in range and a known precision.
+pub fn place_overrides(json: &str) -> anyhow::Result<Vec<PlaceOverride>> {
+    let entries: Vec<PlaceOverride> =
+        serde_json::from_str(json).context("catalog/overrides/places.json")?;
+    for o in &entries {
+        let at = || format!("catalog/overrides/places.json: `{}, {}`", o.city, o.state);
+        anyhow::ensure!(!o.city.trim().is_empty(), "{}: no city", at());
+        o.audit()
+            .check(&[
+                ("lat", audit::latitude),
+                ("lon", audit::longitude),
+                ("name", audit::optional_text),
+                ("precision", audit::precision),
+            ])
+            .with_context(at)?;
+        anyhow::ensure!(
+            o.name.as_deref().is_none_or(|n| !n.trim().is_empty()),
+            "{}: `name` is blank (leave it out to keep the place's name)",
+            at()
+        );
+        anyhow::ensure!(
+            STATES.iter().any(|s| s.code == o.state),
+            "{}: unknown state",
+            at()
+        );
+        anyhow::ensure!(
+            (-90.0..=90.0).contains(&o.lat) && (-180.0..=180.0).contains(&o.lon),
+            "{}: coordinates out of range",
+            at()
+        );
+        anyhow::ensure!(
+            ["city", "county", "state"].contains(&o.precision.as_str()),
+            "{}: precision isn't city, county or state",
+            at()
+        );
+    }
+    Ok(entries)
+}
+
+/// Listed for review: a place whose LoC point (from records that list only
+/// its city) is further than this from the gazetteer's, and one whose
+/// point is the median of LoC points two of which are further apart than
+/// this.
 pub const DISAGREE_KM: f64 = 25.0;
 /// "X City" and "X" in one state are one place when their points are
 /// within this.
@@ -473,6 +579,12 @@ pub struct GeocodeReport {
     /// gazetteer's (LoC's is used), and the furthest of them.
     pub disagreements: usize,
     pub disagreement_examples: Vec<String>,
+    /// Places whose point is the median of LoC points (from records that
+    /// list only the city, else from records that list several) of which
+    /// two are more than [`DISAGREE_KM`] apart, and the furthest of them:
+    /// one of those records likely has another town's point.
+    pub loc_apart: usize,
+    pub loc_apart_examples: Vec<String>,
     /// Titles whose state couldn't be determined (left out).
     pub unresolved: Vec<String>,
     pub written: bool,
@@ -483,8 +595,7 @@ pub struct GeocodeReport {
 pub async fn geocode(reference: &dyn ObjectStore) -> anyhow::Result<GeocodeReport> {
     let raw = load_raw(reference).await?;
     let (titles, places) = load_catalog(reference).await?;
-    let overrides: Vec<PlaceOverride> =
-        serde_json::from_str(PLACE_OVERRIDES).context("catalog/overrides/places.json")?;
+    let overrides = place_overrides(PLACE_OVERRIDES)?;
     let geo = Geo::compiled()?;
     let (catalog, mut report) = build(&raw, titles.clone(), places.clone(), &overrides, geo)?;
     let new_places = serde_json::to_vec_pretty(&catalog.places)?;
@@ -532,8 +643,35 @@ enum Source {
     StateCentroid,
 }
 
+impl Source {
+    /// As the catalog records it (`Place::source`), named like the report's
+    /// counts.
+    fn as_str(self) -> &'static str {
+        match self {
+            Source::Override => "override",
+            Source::Loc => "loc",
+            Source::Gazetteer => "gazetteer",
+            Source::GazetteerOverLoc => "gazetteer_over_loc",
+            Source::LocMultiCity => "loc_multi_city",
+            Source::StateCentroid => "state_centroid",
+        }
+    }
+}
+
+/// A LoC point and the LCCN of the record it is on.
+type LocPoint<'a> = ((f64, f64), &'a str);
+
+/// The two LoC points furthest apart among those a place's coordinates
+/// are the median of, and how many there are.
+struct Spread<'a> {
+    km: f64,
+    a: LocPoint<'a>,
+    b: LocPoint<'a>,
+    points: usize,
+}
+
 /// A place's coordinates.
-struct Point {
+struct Point<'a> {
     lat: f64,
     lon: f64,
     precision: String,
@@ -542,6 +680,27 @@ struct Point {
     name: Option<String>,
     /// LoC's point and the gazetteer's, when both exist.
     check: Option<((f64, f64), (f64, f64))>,
+    /// For a median of LoC's points, the two furthest apart.
+    spread: Option<Spread<'a>>,
+}
+
+/// The two of `points` furthest apart, `None` for fewer than two.
+fn spread<'a>(points: &[LocPoint<'a>]) -> Option<Spread<'a>> {
+    let mut best: Option<Spread> = None;
+    for (i, &a) in points.iter().enumerate() {
+        for &b in &points[i + 1..] {
+            let km = places::distance_km(a.0, b.0);
+            if best.as_ref().is_none_or(|s| km > s.km) {
+                best = Some(Spread {
+                    km,
+                    a,
+                    b,
+                    points: points.len(),
+                });
+            }
+        }
+    }
+    best
 }
 
 /// The titles of one town: every spelling ("variant") that keys alike,
@@ -581,7 +740,7 @@ impl Spelling {
     }
 }
 
-impl Places<'_> {
+impl<'a> Places<'a> {
     /// How the titles of `members` keyed `key` spell their town.
     fn spelling(&self, members: &[usize], key: &str) -> Option<Spelling> {
         // Spelling → (titles, first position); members are in LCCN order.
@@ -612,7 +771,7 @@ impl Places<'_> {
     /// that list only this city; else the gazetteer; else the median of
     /// LoC's points on records that list several cities; else the state's
     /// centroid.
-    fn resolve(&self, keys: &[String], members: &[usize], code: &'static str) -> Point {
+    fn resolve(&self, keys: &[String], members: &[usize], code: &'static str) -> Point<'a> {
         let point = |lat, lon, precision: &str, source| Point {
             lat,
             lon,
@@ -620,6 +779,7 @@ impl Places<'_> {
             source,
             name: None,
             check: None,
+            spread: None,
         };
         if let Some(o) = keys
             .iter()
@@ -635,9 +795,9 @@ impl Places<'_> {
         if self.names[members[0]].is_none() {
             return centroid;
         }
-        let (mut single, mut multi) = (Vec::new(), Vec::new());
+        let (mut single, mut multi): (Vec<LocPoint<'a>>, Vec<LocPoint<'a>>) = (vec![], vec![]);
         for &i in members {
-            let d = &self.derived[i];
+            let d: &'a Derived<'a> = &self.derived[i];
             let (Some([lat, lon]), Some(own)) = (d.raw.latlong, &self.names[i]) else {
                 continue;
             };
@@ -648,10 +808,11 @@ impl Places<'_> {
                 .cities
                 .iter()
                 .all(|c| self.geo.city(&title_case(c), d.state).key == own.key);
+            let p = ((lat, lon), d.raw.lccn.as_str());
             if only_this {
-                single.push((lat, lon));
+                single.push(p);
             } else {
-                multi.push((lat, lon));
+                multi.push(p);
             }
         }
         let gazetteer = &self.geo.gazetteer;
@@ -691,7 +852,8 @@ impl Places<'_> {
                 .find_map(|k| gazetteer.near(code, places::plain_key(k)))
                 .map(|g| (g.lat, g.lon))
         });
-        if let Some((lat, lon)) = median(&single) {
+        let coords = |v: &[LocPoint]| v.iter().map(|p| p.0).collect::<Vec<_>>();
+        if let Some((lat, lon)) = median(&coords(&single)) {
             // LoC's point far from the state's one town of the name is
             // LoC's mistake (a state's or another town's point).
             if let Found::One(g) = exact {
@@ -705,14 +867,18 @@ impl Places<'_> {
             }
             return Point {
                 check: review.map(|g| ((lat, lon), g)),
+                spread: spread(&single),
                 ..point(lat, lon, "city", Source::Loc)
             };
         }
         if let Some((lat, lon)) = gaz {
             return point(lat, lon, "city", Source::Gazetteer);
         }
-        if let Some((lat, lon)) = median(&multi) {
-            return point(lat, lon, "city", Source::LocMultiCity);
+        if let Some((lat, lon)) = median(&coords(&multi)) {
+            return Point {
+                spread: spread(&multi),
+                ..point(lat, lon, "city", Source::LocMultiCity)
+            };
         }
         centroid
     }
@@ -945,6 +1111,7 @@ pub fn build(
     let mut place_of: HashMap<usize, String> = HashMap::new();
     let mut disagreements = Vec::new();
     let mut over_loc = Vec::new();
+    let mut apart = Vec::new();
     for (gi, g) in groups.iter().enumerate() {
         let point = ctx.resolve(&g.variants, &g.members, g.code);
         match point.source {
@@ -995,6 +1162,58 @@ pub fn build(
                 disagreements.push((km, name.clone(), g.code, loc, gaz));
             }
         }
+        if let Some(s) = point.spread.as_ref().filter(|s| s.km > DISAGREE_KM) {
+            let kind = match point.source {
+                Source::LocMultiCity => "multi-city",
+                _ => "single-city",
+            };
+            let at = |(ll, lccn): LocPoint| format!("{lccn} {:.4},{:.4}", ll.0, ll.1);
+            apart.push((
+                s.km,
+                format!(
+                    "{name}, {}: LoC {kind} points {:.0} km apart: {} and {} ({} points)",
+                    g.code,
+                    s.km,
+                    at(s.a),
+                    at(s.b),
+                    s.points
+                ),
+            ));
+        }
+        // The other names its titles use, and the rule that put each here.
+        let mut variants: Vec<Variant> = g
+            .members
+            .iter()
+            .filter_map(|&m| {
+                let d = &derived[m];
+                let (spelled, rule) = if geo.title_place(&d.raw.lccn).is_some() {
+                    // LoC's city for the title, before the override placed it.
+                    let loc = d
+                        .place_label
+                        .as_deref()
+                        .and_then(city_from_label)
+                        .filter(|c| !names_a_state(c))
+                        .or_else(|| d.raw.cities.first().map(|c| title_case(c)))?;
+                    (loc, "title_place")
+                } else {
+                    let n = names[m].as_ref()?;
+                    let rule = if n.alias.is_some() {
+                        "alias"
+                    } else if n.key != g.key {
+                        "x_city"
+                    } else {
+                        "spelling"
+                    };
+                    (n.clean.clone(), rule)
+                };
+                (spelled != name).then(|| Variant {
+                    name: spelled,
+                    rule: rule.to_owned(),
+                })
+            })
+            .collect();
+        variants.sort();
+        variants.dedup();
         // A folded place shows the same town until a full release moves
         // its published titles (an incremental release keeps them there).
         for &pi in &folded[gi] {
@@ -1003,6 +1222,8 @@ pub fn build(
                 p.lat = point.lat;
                 p.lon = point.lon;
                 p.precision = point.precision.clone();
+                p.coordinates_from = Some(point.source.as_str().to_owned());
+                p.variants = variants.clone();
             }
         }
         let place = match chosen[gi].and_then(|pi| slots[pi].take()) {
@@ -1011,6 +1232,8 @@ pub fn build(
                 p.lat = point.lat;
                 p.lon = point.lon;
                 p.precision = point.precision;
+                p.coordinates_from = Some(point.source.as_str().to_owned());
+                p.variants = variants;
                 p
             }
             None => {
@@ -1030,6 +1253,8 @@ pub fn build(
                     lat: point.lat,
                     lon: point.lon,
                     precision: point.precision,
+                    coordinates_from: Some(point.source.as_str().to_owned()),
+                    variants,
                 }
             }
         };
@@ -1056,6 +1281,13 @@ pub fn build(
     report.disagreements = disagreements.len();
     report.disagreement_examples = listed(disagreements);
     report.gazetteer_over_loc_places = listed(over_loc);
+    apart.sort_by(|a, b| b.0.total_cmp(&a.0));
+    report.loc_apart = apart.len();
+    report.loc_apart_examples = apart
+        .into_iter()
+        .take(MAX_LISTED)
+        .map(|(_, line)| line)
+        .collect();
 
     // Titles.
     let mut by_lccn: BTreeMap<String, Title> =
@@ -1530,6 +1762,12 @@ mod tests {
             lat: 42.0,
             lon: -93.0,
             name: None,
+            added: "2026-10-06".into(),
+            history: vec![],
+            reason: "test".into(),
+            reference: 1,
+            source: "test".into(),
+            updated: None,
             precision: "city".into(),
         };
         let (c2, rep2) = build(&r, c.titles.clone(), c.places.clone(), &[o], geo()).unwrap();
@@ -1649,6 +1887,8 @@ mod tests {
             lat: 41.88,
             lon: -87.63,
             precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
         };
         store
             .put(
@@ -1846,7 +2086,8 @@ mod tests {
         .unwrap();
         assert_eq!(r.not_found, ["sn87093109"]);
 
-        let records = record_lccns(r#"{"sn87093109": {"record": "sn84022797"}}"#).unwrap();
+        let records = record_lccns(TITLE_OVERRIDES).unwrap();
+        assert_eq!(records["sn87093109"], "sn84022797");
         let r = sync(store.as_ref(), &lccns, &records, false, &base, &unpaced())
             .await
             .unwrap();
@@ -1890,19 +2131,35 @@ mod tests {
 
     #[test]
     fn title_overrides_must_name_another_valid_lccn() {
-        assert!(record_lccns(r#"{"sn1": {"record": "sn1"}}"#).is_err());
-        assert!(record_lccns(r#"{"sn1": {"record": "BAD/x"}}"#).is_err());
-        assert!(record_lccns(r#"{"sn1": {"record": "sn2", "place": "x"}}"#).is_err());
-        assert_eq!(
-            record_lccns(r#"{"sn1": {"record": "sn2", "note": "why"}}"#).unwrap()["sn1"],
-            "sn2"
-        );
+        let entry = |record: &str, more: &str| {
+            format!(
+                r#"{{"sn1": {{"added": "2026-10-05", "reason": "Why.", "record": "{record}", "ref": 166, "source": "Where.",{more} "updated": null}}}}"#
+            )
+        };
+        assert_eq!(record_lccns(&entry("sn2", "")).unwrap()["sn1"], "sn2");
+        assert!(record_lccns(&entry("sn1", "")).is_err());
+        assert!(record_lccns(&entry("BAD/x", "")).is_err());
+        assert!(record_lccns(&entry("sn2", r#" "place": "x","#)).is_err());
+        // The audit trail is checked; a bare note no longer does.
+        assert!(record_lccns(&entry("sn2", "").replace("Where.", "")).is_err());
+        assert!(record_lccns(&entry("sn2", "").replace("166", "-1")).is_err());
+        assert!(record_lccns(r#"{"sn1": {"note": "why", "record": "sn2"}}"#).is_err());
+        // An earlier version's record is an LCCN too.
+        let changed = |earlier: &str| {
+            format!(
+                r#"{{"sn1": {{"added": "2026-10-05", "history": [{{"reason": "Old.", "record": {earlier}, "ref": 120, "source": "Old.", "updated": "2026-10-05"}}], "reason": "Why.", "record": "sn2", "ref": 166, "source": "Where.", "updated": "2026-10-06"}}}}"#
+            )
+        };
+        assert!(record_lccns(&changed(r#""sn3""#)).is_ok());
+        assert!(record_lccns(&changed("123")).is_err());
+        assert!(record_lccns(&changed(r#""BAD/x""#)).is_err());
     }
 
     #[test]
     fn the_title_overrides_in_git_parse_with_sorted_keys() {
         let records = title_records().unwrap();
         assert!(!records.is_empty());
+        crate::audit::assert_keys_sorted(TITLE_OVERRIDES);
         // Keyed JSON in git keeps its keys in ascending order: read the
         // object's keys in file order with a JSON parser (a text search could
         // match inside a value), then compare with the sorted map's.
@@ -2009,16 +2266,54 @@ mod tests {
 
     #[test]
     fn the_overrides_in_git_parse() {
-        let o: Vec<PlaceOverride> = serde_json::from_str(PLACE_OVERRIDES).unwrap();
-        for p in &o {
-            assert!(
-                STATES.iter().any(|s| s.code == p.state),
-                "{}: unknown state {}",
-                p.city,
-                p.state
-            );
-            assert!((-90.0..=90.0).contains(&p.lat) && (-180.0..=180.0).contains(&p.lon));
+        let o = place_overrides(PLACE_OVERRIDES).unwrap();
+        assert!(o.iter().any(|p| p.city == "New Echota" && p.state == "GA"));
+        let ok = |json: &str| place_overrides(json).is_ok();
+        let entry = |more: &str| {
+            format!(
+                r#"[{{"added": "2026-10-07", "city": "X", "lat": 1, "lon": 2, "reason": "Why.", "ref": 223, "source": "Where from.", "state": "IL"{more}}}]"#
+            )
+        };
+        assert!(ok(&entry("")));
+        // The audit fields are required, and checked.
+        for field in ["added", "reason", "ref", "source"] {
+            let mut v: serde_json::Value = serde_json::from_str(&entry("")).unwrap();
+            v[0].as_object_mut().unwrap().remove(field);
+            assert!(!ok(&v.to_string()), "without {field}");
         }
+        assert!(!ok(&entry("").replace("Where from.", " ")));
+        assert!(!ok(&entry("").replace("2026-10-07", "10/7/2026")));
+        assert!(!ok(&entry("").replace("223", "0")));
+        assert!(!ok(&entry(r#", "updated": "2026-10-08""#)));
+        assert!(ok(&entry(
+            r#", "history": [{"lat": 0.5, "reason": "Old.", "ref": 1, "source": "Old.", "updated": "2026-10-07"}], "updated": "2026-10-08""#
+        )));
+        // A name added later: the earlier version had none.
+        assert!(ok(&entry(
+            r#", "history": [{"name": null, "reason": "Old.", "ref": 1, "source": "Old.", "updated": "2026-10-07"}], "updated": "2026-10-08""#
+        )));
+        // An earlier version's values have the entry's types.
+        for bad in [
+            r#""lat": "north""#,
+            r#""lon": 200"#,
+            r#""precision": "town""#,
+            r#""name": 5"#,
+            r#""name": " ""#,
+        ] {
+            assert!(
+                !ok(&entry(&format!(
+                    r#", "history": [{{{bad}, "reason": "Old.", "ref": 1, "source": "Old.", "updated": "2026-10-07"}}], "updated": "2026-10-08""#
+                ))),
+                "{bad}"
+            );
+        }
+        // Unknown fields, states, precisions and far-off coordinates too.
+        assert!(!ok(&entry(r#", "note": "Why.""#)));
+        assert!(!ok(&entry(r#", "name": " ""#)));
+        assert!(ok(&entry(r#", "name": "Echota""#)));
+        assert!(!ok(&entry("").replace(r#""IL""#, r#""XX""#)));
+        assert!(!ok(&entry(r#", "precision": "town""#)));
+        assert!(!ok(&entry("").replace(r#""lat": 1"#, r#""lat": 91"#)));
     }
 
     #[test]
@@ -2031,6 +2326,8 @@ mod tests {
             lat: 41.88,
             lon: -87.63,
             precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
         };
         let title = Title {
             lccn: "sn99000001".into(),
@@ -2165,6 +2462,124 @@ mod tests {
         assert_eq!((rep.gazetteer_over_loc, rep.disagreements), (0, 1));
     }
 
+    /// The two Cherokee Phoenix records (#223), as LoC has them.
+    fn cherokee_phoenix() -> Vec<RawTitle> {
+        vec![
+            raw(
+                "sn83020866",
+                "Cherokee Phoenix (New Echota [Ga.]) 1828-1829",
+                &["new town"],
+                &["georgia"],
+                Some([34.018537, -84.263583]),
+            ),
+            raw(
+                "sn83020874",
+                "Cherokee Phoenix, and Indians' Advocate (New Echota [Ga.]) 1829-1834",
+                &["echota"],
+                &["georgia"],
+                Some([34.520087, -84.942443]),
+            ),
+        ]
+    }
+
+    #[test]
+    fn new_echota_without_its_override() {
+        // Both titles are New Echota, from their labels; their records list
+        // the city as "new town" and "echota", neither of which keys as New
+        // Echota, so neither record counts as listing only this city.
+        let geo = geo();
+        let ga = STATES.iter().find(|s| s.code == "GA").unwrap();
+        assert_eq!(geo.city("New Echota", ga).key, "newechota");
+        assert_eq!(geo.city("New Town", ga).key, "newtown");
+        assert_eq!(geo.city("Echota", ga).key, "echota");
+        assert!(
+            !geo.has("New Echota", ga),
+            "the gazetteer has no New Echota"
+        );
+
+        let (c, rep) = catalog_of(cherokee_phoenix(), geo);
+        let p = place_of(&c, "sn83020866");
+        assert_eq!(c.title("sn83020874").unwrap().place_id, p.id);
+        assert_eq!((p.name.as_str(), p.state.as_str()), ("New Echota", "GA"));
+        // So no single-city point and no gazetteer point: the median of the
+        // two multi-city points, about 42 km from each. (Before October
+        // 2026 a place took its first title's point, by LCCN: sn83020866's,
+        // the point the site shows.)
+        assert_eq!((rep.from_loc, rep.from_loc_multi_city), (0, 1));
+        assert_eq!(p.coordinates_from.as_deref(), Some("loc_multi_city"));
+        // Both records' titles name it New Echota.
+        assert!(p.variants.is_empty());
+        assert!(near(p, [34.269312, -84.603013]), "{p:?}");
+        // The report lists the two points, 84 km apart.
+        assert_eq!(rep.loc_apart, 1);
+        assert_eq!(
+            rep.loc_apart_examples,
+            ["New Echota, GA: LoC multi-city points 84 km apart: sn83020866 34.0185,-84.2636 and sn83020874 34.5201,-84.9424 (2 points)"]
+        );
+
+        // The override in git puts it at sn83020874's point, and the
+        // report no longer lists it.
+        let r: BTreeMap<String, RawTitle> = cherokee_phoenix()
+            .into_iter()
+            .map(|t| (t.lccn.clone(), t))
+            .collect();
+        let overrides = place_overrides(PLACE_OVERRIDES).unwrap();
+        let (c, rep) = build(&r, vec![], vec![], &overrides, geo).unwrap();
+        let p = place_of(&c, "sn83020866");
+        assert_eq!((p.lat, p.lon), (34.520087, -84.942443));
+        assert_eq!(
+            (p.name.as_str(), p.coordinates_from.as_deref()),
+            ("New Echota", Some("override"))
+        );
+        assert_eq!((rep.from_override, rep.loc_apart), (1, 0));
+    }
+
+    #[test]
+    fn single_city_points_far_apart_are_listed() {
+        let paper = |lccn: &str, ll| {
+            raw(
+                lccn,
+                "Paper (Memphis, Tenn.) 1900-1901",
+                &["memphis"],
+                &["tennessee"],
+                Some(ll),
+            )
+        };
+        // Not in the gazetteer: the median of the three single-city points,
+        // one of them Selma's, about 400 km off.
+        let (c, rep) = catalog_of(
+            vec![
+                paper("sn1", MEMPHIS),
+                paper("sn2", [35.15, -90.05]),
+                paper("sn3", SELMA),
+            ],
+            &Geo::default(),
+        );
+        assert_eq!(place_of(&c, "sn1").coordinates_from.as_deref(), Some("loc"));
+        assert_eq!(rep.loc_apart, 1);
+        assert!(
+            rep.loc_apart_examples[0].starts_with("Memphis, TN: LoC single-city points 4"),
+            "{:?}",
+            rep.loc_apart_examples
+        );
+        assert!(rep.loc_apart_examples[0].ends_with("(3 points)"));
+
+        // Within 25 km of each other: not listed.
+        let (_, rep) = catalog_of(
+            vec![paper("sn1", MEMPHIS), paper("sn2", [35.2, -89.9])],
+            &Geo::default(),
+        );
+        assert_eq!(rep.loc_apart, 0);
+
+        // A multi-city point far off isn't listed when single-city points
+        // place the city (it isn't used).
+        let (_, rep) = catalog_of(
+            vec![memphis_daily_appeal(), paper("sn2", MEMPHIS)],
+            &Geo::default(),
+        );
+        assert_eq!((rep.from_loc, rep.loc_apart), (1, 0));
+    }
+
     #[test]
     fn multi_city_records_pair_cities_and_states_by_position() {
         let gaz = Gazetteer::parse(
@@ -2222,7 +2637,12 @@ mod tests {
             .with_title_places(&[places::TitlePlace {
                 city: "Chicago".into(),
                 lccn: "sn84024055".into(),
-                note: None,
+                added: "2026-10-06".into(),
+                history: vec![],
+                reason: "test".into(),
+                reference: 1,
+                source: "test".into(),
+                updated: None,
                 state: "IL".into(),
             }])
             .unwrap();
@@ -2238,7 +2658,15 @@ mod tests {
         assert_eq!(d.place_label.as_deref(), Some("Salt Lake City, Utah"));
         // Its record lists two cities, so its latlong doesn't place Chicago.
         let (c, rep) = catalog_of(vec![r], &geo);
-        assert_eq!(place_of(&c, "sn84024055").name, "Chicago");
+        let p = place_of(&c, "sn84024055");
+        assert_eq!(p.name, "Chicago");
+        assert_eq!(
+            p.variants,
+            [Variant {
+                name: "Salt Lake City".into(),
+                rule: "title_place".into()
+            }]
+        );
         assert_eq!(rep.from_loc_multi_city, 1);
     }
 
@@ -2246,7 +2674,12 @@ mod tests {
     fn spelling_variants_and_aliases_share_a_place() {
         let alias = PlaceAlias {
             from: "Skaguay".into(),
-            note: Some("old spelling".into()),
+            added: "2026-10-06".into(),
+            history: vec![],
+            reason: "old spelling".into(),
+            reference: 1,
+            source: "test".into(),
+            updated: None,
             state: "AK".into(),
             to: "Skagway".into(),
         };
@@ -2337,6 +2770,31 @@ mod tests {
         assert_ne!(place_of(&c, "sn9").id, place_of(&c, "sn10").id);
         assert_eq!(place_of(&c, "sn5").name, "Skagway");
         assert_eq!(place_of(&c, "sn3").name, "Chicago");
+        // Each place records the other names its titles use, and the rule.
+        assert_eq!(
+            place_of(&c, "sn5").variants,
+            [Variant {
+                name: "Skaguay".into(),
+                rule: "alias".into()
+            }]
+        );
+        let st_paul = place_of(&c, "sn1");
+        assert_eq!(
+            st_paul.name, "St. Paul",
+            "the lowest LCCN's spelling on a tie"
+        );
+        assert_eq!(
+            st_paul.variants,
+            [Variant {
+                name: "Saint Paul".into(),
+                rule: "spelling".into()
+            }]
+        );
+        assert!(
+            place_of(&c, "sn3").variants.is_empty(),
+            "Chicago Ill. is Chicago"
+        );
+        assert!(place_of(&c, "sn10").variants.is_empty());
         assert_eq!(rep.aliased, 1);
         assert_eq!(c.places.len(), 6);
     }
@@ -2400,6 +2858,14 @@ mod tests {
         // The name with more titles.
         assert_eq!(y.name, "Yazoo City");
         assert!(near(y, yazoo), "the median of the three points");
+        // The catalog records the name it took in, and by which rule.
+        assert_eq!(
+            y.variants,
+            [Variant {
+                name: "Yazoo".into(),
+                rule: "x_city".into()
+            }]
+        );
         assert_ne!(place_of(&c, "sn4").id, place_of(&c, "sn5").id);
         assert_ne!(place_of(&c, "sn6").id, place_of(&c, "sn7").id);
     }
@@ -2431,6 +2897,8 @@ mod tests {
             lat: 44.95,
             lon: -93.09,
             precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
         };
         let title = |lccn: &str, ordinal, place_id: &str| Title {
             lccn: lccn.into(),
@@ -2560,6 +3028,12 @@ mod tests {
             lat: 44.9,
             lon: -93.1,
             name: Some("Saint Paul".into()),
+            added: "2026-10-06".into(),
+            history: vec![],
+            reason: "test".into(),
+            reference: 1,
+            source: "test".into(),
+            updated: None,
             precision: "city".into(),
         };
         let r: BTreeMap<String, RawTitle> = [raw(
@@ -2770,6 +3244,8 @@ mod tests {
             lat: 33.28,
             lon: -87.14,
             precision: "city".into(),
+            coordinates_from: None,
+            variants: vec![],
         };
         let title = |lccn: &str, ordinal| Title {
             lccn: lccn.into(),

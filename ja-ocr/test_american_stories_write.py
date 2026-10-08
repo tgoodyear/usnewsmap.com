@@ -129,6 +129,105 @@ class Write(unittest.TestCase):
         self.assertEqual(names, ["1865-000.parquet", "1865-001.parquet"])
         self.assertEqual(len(self.rows()), 4)
 
+    def test_a_stalled_download_is_started_again(self):
+        calls = {"n": 0}
+
+        def flaky(req):
+            if req.full_url != asw.TREE:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise TimeoutError("The read operation timed out")
+            return self.opener(req)
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw.jaocr, "log") as log:
+            got = asw.write(self.ref, self.cur, run="exec-5", opener=flaky)
+        self.assertEqual((got["years_written"], got["pages"]), (1, 4))
+        self.assertEqual(len(self.rows()), 4)
+        self.assertIn("american stories year failed; retrying", [c.args[0] for c in log.call_args_list])
+
+    def test_a_retry_rewrites_the_parts_of_the_failed_try(self):
+        # The first try reads every member and writes its parts, then fails (no gzip trailer); the retry
+        # writes the same part names again, so each page is in one part.
+        tries = {"n": 0}
+
+        def cut(req):
+            if req.full_url == asw.TREE:
+                return self.opener(req)
+            tries["n"] += 1
+            return contextlib.closing(io.BytesIO(self.tgz[:-8] if tries["n"] == 1 else self.tgz))
+
+        writes = []
+        write = self.cur.write
+
+        def counted(path, data):
+            if path.startswith(asw.PAGES):
+                writes.append((tries["n"], path))
+            return write(path, data)
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw, "FLUSH_ROWS", 1), \
+                mock.patch.object(self.cur, "write", counted):
+            got = asw.write(self.ref, self.cur, run="exec-6", opener=cut)
+        first = sorted(p for t, p in writes if t == 1)
+        second = sorted(p for t, p in writes if t == 2)
+        self.assertEqual((tries["n"], got["pages"]), (2, 4))
+        self.assertEqual(len(first), 3)  # the failed try wrote parts (the "pNone" page is placed after the read)
+        self.assertLessEqual(set(first), set(second))  # and the retry wrote the same names again
+        self.assertEqual(sorted(self.cur.list(asw.PAGES)), second)
+        self.assertEqual(sum(pq.read_table(io.BytesIO(self.cur.read(p))).num_rows for p in second), 4)
+        self.assertEqual(len(self.rows()), 4)
+
+    def test_a_download_cut_at_a_member_boundary_is_retried(self):
+        # Every member arrives, but the gzip trailer doesn't: tar alone would read this as a whole archive.
+        tries = {"n": 0}
+
+        def no_trailer(req):
+            if req.full_url == asw.TREE:
+                return self.opener(req)
+            tries["n"] += 1
+            return contextlib.closing(io.BytesIO(self.tgz[:-8] if tries["n"] == 1 else self.tgz))
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0):
+            got = asw.write(self.ref, self.cur, run="exec-8", opener=no_trailer)
+        self.assertEqual((tries["n"], got["pages"]), (2, 4))
+
+    def test_a_body_shorter_than_its_content_length_is_retried(self):
+        tries = {"n": 0}
+
+        class Response(io.BytesIO):
+            def __init__(self, body, length):
+                super().__init__(body)
+                self.headers = {"Content-Length": str(length)}
+
+        def short(req):
+            if req.full_url == asw.TREE:
+                return self.opener(req)
+            tries["n"] += 1
+            return Response(self.tgz, len(self.tgz) + (100 if tries["n"] == 1 else 0))
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), mock.patch.object(asw.jaocr, "log") as log:
+            got = asw.write(self.ref, self.cur, run="exec-9", opener=short)
+        self.assertEqual((tries["n"], got["pages"]), (2, 4))
+        errors = [c.kwargs.get("error", "") for c in log.call_args_list if c.args[0].endswith("retrying")]
+        self.assertTrue(errors and errors[0].startswith("IncompleteDownload"), errors)
+
+    def test_a_year_that_keeps_failing_gets_no_marker(self):
+        def broken(req):
+            if req.full_url == asw.TREE:
+                return self.opener(req)
+            return contextlib.closing(io.BytesIO(self.tgz[:-8]))  # never complete
+
+        with mock.patch.object(asw, "RETRY_SECONDS", 0), self.assertRaises(EOFError):
+            asw.write(self.ref, self.cur, run="exec-7", opener=broken)
+        self.assertFalse(self.cur.exists(f"{asw.YEARS}/1865.json"))
+
+    def test_downloads_have_a_timeout(self):
+        with mock.patch.object(asw.ams.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value = contextlib.closing(io.BytesIO(b"[]"))
+            asw.years_available()
+            asw.ams._open(1865, None)
+        self.assertEqual([c.kwargs.get("timeout") for c in urlopen.call_args_list],
+                         [asw.ams.READ_TIMEOUT, asw.ams.READ_TIMEOUT])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
 [
-  {"city": "Chicago", "lccn": "sn84024055", "note": "Published in Salt Lake City from 1895 and in Chicago from July 15, 1899 (its masthead); LoC's pages run to 1927, about 91% of them from Chicago.", "state": "IL"},
-  {"city": "Charles City", "lccn": "sn88059487", "note": "The St. Charles Republican Intelligencer, the same paper as the St. Charles City Republican Intelligencer (sn82014141) of Charles City.", "state": "IA"}
+  {"added": "2026-10-06", "city": "Chicago", "lccn": "sn84024055", "reason": "Published in Salt Lake City from 1895 and in Chicago from July 15, 1899 (its masthead); LoC's pages run to 1927, about 91% of them from Chicago.", "ref": 190, "source": "The paper's masthead (the issue consulted isn't recorded) and LoC's pages for sn84024055, about 91% of them from Chicago (counted in PR #190).", "state": "IL"},
+  {"added": "2026-10-06", "city": "Charles City", "lccn": "sn88059487", "reason": "The St. Charles Republican Intelligencer, the same paper as the St. Charles City Republican Intelligencer (sn82014141) of Charles City. Placed by LCCN rather than by a St. Charles alias, since Iowa also has a St. Charles (review on PR #190).", "ref": 190, "source": "Not recorded: added in PR #190, which gives no source for the two titles being one paper.", "state": "IA"}
 ]
