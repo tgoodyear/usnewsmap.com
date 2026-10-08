@@ -527,8 +527,9 @@ export function App() {
                 {/* Options for one measure sit left of the controls every measure has, which keep
                     their place against the right edge whichever measure is chosen. */}
                 <div className="toolbar__options">
-                  {/* The relative-rate view draws points only (doc 11, 11.6). */}
-                  {view.norm === "raw" && (
+                  {/* The relative-rate view draws points only (doc 11, 11.6), and the layer means
+                      nothing while the table is shown (the Table view, or no WebGL). */}
+                  {view.norm === "raw" && view.tab === "map" && webgl && (
                     <label>
                       <span className="visually-hidden">Map layer</span>
                       <select value={view.layer} onChange={(e) => setView({ layer: e.target.value as ViewState["layer"] })}>
