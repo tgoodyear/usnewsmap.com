@@ -4,7 +4,7 @@ subtitle: "Pages, text sources, OCR quality and search for the 29 languages Chro
 date: "October 2026"
 ---
 
-This report grew out of an earlier one on Japanese-language newspapers (merged in #195), which is why it keeps that report's directory. The Japanese material is now one section among the others.
+This report grew out of an earlier one on Japanese-language newspapers (merged in #195, in `docs/reports/2026-10-japanese-newspapers`, now renamed to this directory). The Japanese material is now one section among the others.
 
 # Summary
 
