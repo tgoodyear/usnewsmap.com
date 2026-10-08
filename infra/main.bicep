@@ -173,6 +173,11 @@ module monitoring 'modules/monitoring.bicep' = {
     appInsightsName: 'appi-usnm-${env}'
     actionGroupName: 'ag-usnm-${env}'
     alertEmails: emails
+    // Prod: 1 GB. 0.15 GB stopped all logging on 2026-10-07 (the American Stories writer's blob
+    // writes reached it by 17:46 ET; nothing was logged, alerts included, until the next reset).
+    // A normal prod day is about 80 MB, inside the free 5 GB/month; the cap bounds bursts from
+    // bulk jobs. Dev keeps 0.15 GB, inside the free allowance at any rate (ADR-0005).
+    dailyCapGb: env == 'prod' ? '1' : '0.15'
   }
 }
 

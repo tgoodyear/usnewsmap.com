@@ -1,4 +1,4 @@
-// Log Analytics with a daily cap (stays within the free 5 GB/month) and
+// Log Analytics with a daily cap (main.bicep sets it per environment) and
 // workspace-based Application Insights (08 §8.1). Optional action group.
 
 param location string
@@ -8,7 +8,7 @@ param appInsightsName string
 param actionGroupName string
 @description('Alert recipients; no action group is created when empty.')
 param alertEmails array = []
-@description('Daily ingestion cap in GB (0.15 ≈ 4.5 GB/month).')
+@description('Daily ingestion cap in GB (0.15 ≈ 4.5 GB/month, inside the free 5 GB; main.bicep raises it for prod).')
 param dailyCapGb string = '0.15'
 
 resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
