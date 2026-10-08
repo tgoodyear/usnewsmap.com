@@ -100,6 +100,38 @@ describe("SearchBar dates", () => {
     expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ from: "1736-01-01", to: "1963-12-31" }));
   });
 
+  it("keeps a year as typed until the index's days are known, then cuts it to them", () => {
+    const onSearch = vi.fn();
+    const later = { ...meta, bounds: { from: "1736-03-05", to: "1963-10-31" } } as Meta;
+    const { rerender } = render(<SearchBar view={{ ...DEFAULTS, q: "gold" }} meta={undefined} onSearch={onSearch} />);
+    const from = screen.getByRole("textbox", { name: "From" }) as HTMLInputElement;
+    const to = screen.getByRole("textbox", { name: "To" }) as HTMLInputElement;
+    fireEvent.change(from, { target: { value: "1736" } });
+    fireEvent.blur(from);
+    fireEvent.change(to, { target: { value: "10/1963" } });
+    fireEvent.blur(to);
+    expect(from.value).toBe("1736");
+    expect(to.value).toBe("10/1963");
+    expect(from.getAttribute("aria-invalid")).toBeNull();
+    // /v1/meta loads: the index starts on 03/05/1736 and ends on 10/31/1963.
+    rerender(<SearchBar view={{ ...DEFAULTS, q: "gold" }} meta={later} onSearch={onSearch} />);
+    fireEvent.blur(from);
+    expect(from.value).toBe("03/05/1736");
+    fireEvent.submit(from.closest("form")!);
+    expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ from: "1736-03-05", to: "1963-10-31" }));
+    expect(to.value).toBe("10/31/1963");
+  });
+
+  it("searches a year before the index's days are known without filling the box in", () => {
+    const onSearch = vi.fn();
+    render(<SearchBar view={{ ...DEFAULTS, q: "gold" }} meta={undefined} onSearch={onSearch} />);
+    const from = screen.getByRole("textbox", { name: "From" }) as HTMLInputElement;
+    fireEvent.change(from, { target: { value: "1736" } });
+    fireEvent.submit(from.closest("form")!);
+    expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ from: "1736-01-01" }));
+    expect(from.value).toBe("1736");
+  });
+
   it("opens the options on phones to show a problem", () => {
     const { from, submit } = setup();
     const toggle = screen.getByRole("button", { name: /^Options/ });

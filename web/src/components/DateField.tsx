@@ -32,9 +32,11 @@ export function DateField({ id, label, edge, text, onText, error, errorId, onErr
   const native = useRef<HTMLInputElement>(null);
   const parsed = parseDateEntry(text, edge, bounds);
   // Once the box is left, show the date the entry stands for (1827 is 01/01/1827 in From).
+  // Not before /v1/meta gives the index's first and last days: a year that
+  // overlaps them is cut to them, which a filled-in 01/01 would no longer be.
   const commit = () => {
     if (parsed.ok) {
-      onText(showDate(parsed.iso));
+      if (bounds) onText(showDate(parsed.iso));
       onError(null);
     } else {
       onError(parsed.error);

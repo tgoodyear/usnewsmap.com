@@ -104,9 +104,13 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
       (from.ok ? toRef : fromRef).current?.focus();
       return;
     }
-    // Show the dates searched: 1827 in From reads 01/01/1827.
-    setFromText(showDate(from.iso));
-    setToText(showDate(to.iso));
+    // Show the dates searched: 1827 in From reads 01/01/1827. Before
+    // /v1/meta has loaded, keep the entries as typed, so they are cut to the
+    // index's days once it has (see DateField).
+    if (bounds) {
+      setFromText(showDate(from.iso));
+      setToText(showDate(to.iso));
+    }
     setFromError(null);
     setToError(null);
     if (!draft.q.trim()) return;
