@@ -63,6 +63,33 @@ Poll LoC weekly for new batches: `scripts/settings.sh <env> USNM_INGEST_CRON "17
 
 Before it publishes, a release waits for the writer's merges: `release merges` lines (every 30 s: step `settle` then `finalize`, splits, merges running and queued, free disk), then `merges settled; closing the index for its final merges`, then `merged; the index is closed to further writes` with the new index's split count. It then logs one `index layout` line per index of the new version and records the same under `indexes` in `reference/<version>/manifest.json`. `scripts/logs.sh prod index-layout 2d` lists them. A merged index has at most `pages / 30,000` (rounded down) `+ 7` splits (`split_num_docs_target` in `infra/quickwit/pages-index.yaml`); the release fails rather than publish more, or if merges don't finish within `USNM_MERGE_TIMEOUT_SECS` (default 14400, 4 hours; a setting, `scripts/settings.sh <env> USNM_MERGE_TIMEOUT_SECS <secs>` then `scripts/provision.sh <env>`, budgeted under the ingest job's 48-hour replica timeout (the backfill and Japanese OCR jobs keep 24 hours) in `infra/modules/ingestjobs.bicep`), or if the writer reports a full disk or a failed merge, or exits. A writer the kernel killed for memory shows as `the Quickwit writer was killed by signal 9 (SIGKILL): it ran out of memory (…)` in the `command failed` line; `quickwit_rss_mb` in `release progress` is its memory (08 §8.4).
 
+## Searcher caches
+
+The Quickwit sidecar keeps the split footers, fast fields and partial and predicate results in memory, with the capacities in `infra/quickwit/searcher.yaml` (08 §8.4). The API reads the sidecar's metrics every minute and reports them as `api.searcher_cache_*` (08 §8.1.2):
+
+```sh
+scripts/logs.sh prod searcher-caches 1d        # per replica and cache: MB and items held, hits, misses, evictions, hit rate
+```
+
+The same table, and charts of MB held and of misses and evictions, are in the "usnewsmap API" workbook. In Log Analytics:
+
+```kusto
+AppMetrics
+| where AppRoleName == "usnm-api" and Name startswith "api.searcher_cache_"
+| where tostring(Properties.cache) == "split_footer"
+| summarize Count = sum(Sum), Held = max(Sum) by Name, Replica = AppRoleInstance
+```
+
+For `api.searcher_cache_bytes` and `api.searcher_cache_items` (gauges) read `Held`, the most the cache held in the span; for hits, misses and evictions read `Count`, their total in the span. Split footers are one item per split. A replica's first report counts everything since its sidecar started, the warm-up included.
+
+**Sizing `split_footer_cache_capacity`.** Size it from the release's footer total, and check it against what the cache does after the warm-up. Evictions on their own don't show the footers don't fit: Quickwit 0.9.1 also counts replacing an entry as an eviction, and after a publish the cache drops the old version's footers. The API logs `split footer cache evictions seen` once per searcher run, for the record, without a cause. The footers don't fit when the total is above the capacity, or when footer misses and evictions keep coming hours after the warm-up, with no publish or restart in between. To size it:
+
+1. Add up `footer_bytes` on the version's `index layout` lines (`scripts/logs.sh prod index-layout 2d`, column `FooterMb`), or under `indexes` in `reference/<version>/manifest.json`, over every index the version lists: the base, its deltas and the Japanese index.
+2. Set `split_footer_cache_capacity` in `infra/quickwit/searcher.yaml` to that total plus about 25% for the deltas the next weekly releases add, rounded up. Quickwit reads `256MB` as 256,000,000 bytes, the unit `FooterMb` uses.
+3. Check it fits the sidecar's 4 GiB next to the fast field cache (1 GB), the aggregation memory limit (768 MB) and the partial request and predicate caches (32 MB each). If it doesn't, the fast field cache is the one to shrink first; then the container's memory (`infra/modules/containerapp.bicep`).
+
+The change goes live when it merges (CI applies `searcher.yaml` to the running app). Confirm with `searcher-caches` a day later: after the warm-up, footer misses and evictions stay near 0 (each replica start misses about once per split), and the footer cache's MB held is about the footer total.
+
 ## Full rebuild
 
 Rebuild the indexes as one merged base (one-off, or a compaction). A release also builds a full base by itself, without `USNM_INGEST_FULL`, when the published version was built with another search backend or another version of the common-word pairs (05 §5.5.3), or when `USNM_AMERICAN_STORIES` is on and the published version doesn't have American Stories' text (below); the steps below force one. It is also how merged places and other place changes of published titles reach the site (04 §4.6). Indexes built before the merge settings (September 2026) keep their many small splits: their splits are past any maturation period, so nothing merges them in place, and they are sealed. A full release builds a new base from every curated batch, merged, and publishes a version with no deltas; the previous version stays in Blob for rollback (`current.json`). It takes the writer lock like any release, so it never runs alongside another writer (08 §8.4.1). Run it when no backfill or ingest execution is running and the backfill has finished:

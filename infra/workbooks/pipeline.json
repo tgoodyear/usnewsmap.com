@@ -249,6 +249,29 @@
       "name": "release-history"
     },
     {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "ContainerAppConsoleLogs\n| where ContainerName == \"ingest\"\n| where Log !has \"IDENTITY_HEADER\" and Log !has \"MSI_SECRET\"\n| where Log has_any (\"index layout\", \"merged; the index is closed\")\n| extend j = parse_json(Log)\n| extend Message = tostring(j.fields.message)\n| where Message in (\"index layout\", \"merged; the index is closed to further writes\")\n| project\n    TimeGenerated,\n    Version = tostring(j.span.version),\n    Message,\n    Index = tostring(j.fields.index),\n    Splits = tolong(j.fields.splits),\n    Docs = tolong(j.fields.docs),\n    Mb = tolong(j.fields.mb),\n    SmallestSplitDocs = tolong(j.fields.smallest_split_docs),\n    LargestSplitDocs = tolong(j.fields.largest_split_docs),\n    FooterMb = round(todouble(j.fields.footer_bytes) / 1e6, 1),\n    LargestFooterKb = round(todouble(j.fields.largest_footer_bytes) / 1e3, 1)\n| order by TimeGenerated desc",
+        "size": 0,
+        "title": "Index layout (last 30 days): splits, size and split footers per index of each release",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": [
+          "__WORKSPACE_ID__"
+        ],
+        "visualization": "table",
+        "timeContext": {
+          "durationMs": 2592000000
+        },
+        "noDataMessage": "No release logged an index layout in the last 30 days.",
+        "gridSettings": {
+          "filter": true
+        }
+      },
+      "name": "index-layout"
+    },
+    {
       "type": 1,
       "content": {
         "json": "### Release {Release}\nFrom its `release progress` lines, logged every 30 s and after each batch. Pick another release above."

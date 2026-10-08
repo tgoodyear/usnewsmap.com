@@ -15,6 +15,7 @@ use usnm_core::params::Filters;
 use usnm_core::query::Node;
 use usnm_core::time::BucketSpec;
 
+pub mod cache_metrics;
 pub mod memory;
 pub mod plan;
 pub mod quickwit;

@@ -3,7 +3,10 @@ use std::sync::Arc;
 use usnm_api::config::{BackendKind, Config};
 use usnm_api::searchlog::{LogConfig, SearchLog};
 use usnm_api::status::PipelineSource;
-use usnm_api::{app, spawn_background, spawn_startup_warm_up, telemetry, AppState, Engine, Loader};
+use usnm_api::{
+    app, searcher_caches, spawn_background, spawn_startup_warm_up, telemetry, AppState, Engine,
+    Loader,
+};
 use usnm_search::quickwit::QuickwitBackend;
 use usnm_state::cosmos::CosmosDocs;
 use usnm_store::credential;
@@ -32,6 +35,7 @@ async fn serve(
     // Each published version gets a fresh snapshot. The memory backend reloads
     // exactly the indexes the new version names; Quickwit is shared because
     // the index set travels with the reference data.
+    let mut searcher = None;
     let engine = match &config.backend {
         BackendKind::Memory => Engine::Memory {
             indexes_dir: config.data_dir.join("indexes"),
@@ -39,14 +43,18 @@ async fn serve(
         // A search's limit fits a warm-up query and a search computation
         // (the handlers cut each one at its own limit); index lookups and
         // health checks keep the short one.
-        BackendKind::Quickwit(url) => Engine::Shared(Arc::new(
-            QuickwitBackend::new(url, config.search_timeout)?.with_search_timeout(
-                config
-                    .search_timeout
-                    .max(config.prewarm_query_timeout)
-                    .max(config.compute_cap),
-            ),
-        )),
+        BackendKind::Quickwit(url) => {
+            let qw = Arc::new(
+                QuickwitBackend::new(url, config.search_timeout)?.with_search_timeout(
+                    config
+                        .search_timeout
+                        .max(config.prewarm_query_timeout)
+                        .max(config.compute_cap),
+                ),
+            );
+            searcher = Some(qw.clone());
+            Engine::Shared(qw)
+        }
     };
     let loader = Loader {
         reference: usnm_store::open(&config.reference_url)?,
@@ -121,6 +129,17 @@ async fn serve(
         &state,
         &opentelemetry::global::meter(telemetry::SERVICE.name),
     );
+    // The searcher sidecar's caches (#125), read over localhost.
+    if let Some(qw) = searcher.filter(|_| !state.config.searcher_metrics_interval.is_zero()) {
+        searcher_caches::spawn(
+            state.config.searcher_metrics_interval,
+            &opentelemetry::global::meter(telemetry::SERVICE.name),
+            move || {
+                let qw = qw.clone();
+                async move { qw.cache_metrics().await.map_err(|e| e.to_string()) }
+            },
+        );
+    }
     // Listening (so liveness passes) but not ready until the caches are warm.
     spawn_startup_warm_up(state.clone());
     spawn_background(state.clone());

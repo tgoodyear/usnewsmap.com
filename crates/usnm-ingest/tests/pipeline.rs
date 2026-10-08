@@ -615,6 +615,11 @@ async fn releases_into_a_quickwit_writer_node() {
         let splits = l["splits"].as_u64().unwrap();
         assert!((1..=7).contains(&splits), "{l}");
         assert!(l["bytes"].as_u64().unwrap() > 0, "{l}");
+        // Every split's footer, from the metastore (#125): part of the file.
+        let footers = l["footer_bytes"].as_u64().unwrap();
+        let largest = l["largest_footer_bytes"].as_u64().unwrap();
+        assert!(largest > 0 && largest <= footers, "{l}");
+        assert!(footers < l["bytes"].as_u64().unwrap(), "{l}");
     }
     let docs: u64 = layout.iter().map(|l| l["docs"].as_u64().unwrap()).sum();
     let http = reqwest::Client::new();

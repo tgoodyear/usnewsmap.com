@@ -2,7 +2,10 @@
 // publishes, one per index of the new version (base and deltas), and the
 // "merged" line for the index it built. A cold search opens every split of
 // every index it names (05 §5.5.1); the same numbers are in the version's
-// manifest.json under "indexes".
+// manifest.json under "indexes". FooterMb is the splits' footers in all,
+// what the searcher's split_footer_cache_capacity must hold for no cold
+// search to fetch a footer twice (#125), in Quickwit's MB (1,000,000 bytes,
+// as it reads "256MB"); empty for releases before it.
 // Lines that could carry the managed identity endpoint's secret are dropped.
 ContainerAppConsoleLogs
 | where ContainerName == "ingest"
@@ -20,5 +23,7 @@ ContainerAppConsoleLogs
     Docs = tolong(j.fields.docs),
     Mb = tolong(j.fields.mb),
     SmallestSplitDocs = tolong(j.fields.smallest_split_docs),
-    LargestSplitDocs = tolong(j.fields.largest_split_docs)
+    LargestSplitDocs = tolong(j.fields.largest_split_docs),
+    FooterMb = round(todouble(j.fields.footer_bytes) / 1e6, 1),
+    LargestFooterKb = round(todouble(j.fields.largest_footer_bytes) / 1e3, 1)
 | order by TimeGenerated asc

@@ -7,6 +7,7 @@ The API (`usnm-api`) is configured with environment variables. Defaults suit loc
 | `USNM_BIND` | `0.0.0.0:8080` | Listen address |
 | `USNM_BACKEND` | `memory` | `memory` (JSONL indexes under `USNM_DATA_DIR/indexes`) or `quickwit` |
 | `USNM_QUICKWIT_URL` | `http://127.0.0.1:7280` | Quickwit base URL (the localhost sidecar in production) |
+| `USNM_SEARCHER_METRICS_SECS` | `60` | With the Quickwit backend, how often the API reads the searcher's cache metrics from `USNM_QUICKWIT_URL/metrics` and reports them as `api.searcher_cache_*` (08 §8.1.2); `0` turns it off |
 | `USNM_DATA_DIR` | `fixtures/data` | Local data directory: the memory backend's `indexes/`, and the default reference location |
 | `USNM_REFERENCE_URL` | `USNM_DATA_DIR` | Where `current.json` and the reference snapshots live: a Blob container URL (`https://{account}.blob.core.windows.net/reference`) or a local directory. Every file is checked against the snapshot's `manifest.json` |
 | `USNM_RESPONSE_CACHE_URL` | unset | Persistent response cache (`https://{account}.blob.core.windows.net/cache` or a directory). Entries are `{index_version}/f{format}/{sha256}.json.zst` |
