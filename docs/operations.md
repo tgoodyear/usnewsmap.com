@@ -344,7 +344,7 @@ The data account is reachable only through its private endpoint, so run `searche
 
 ## Search cluster experiment
 
-An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1% sample: indexing with 1 and 2 indexers, then searching with 1, 2 and 3 searchers. It runs in its own environment (`dev`), never in prod, and everything it adds sits behind `USNM_SEARCH_CLUSTER`. With the setting off, the stack is exactly what it was (the module is `if (searchCluster && useAcr)`).
+An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1% sample: indexing with 1 and 2 indexers, then searching with 1, 2 and 3 searchers. It runs in its own environment (`dev`), never in prod (the template ignores the setting there), and everything it adds sits behind `USNM_SEARCH_CLUSTER`. With the setting off, the stack is exactly what it was (the module is `if (searchCluster && useAcr && env != 'prod')`).
 
 **What it deploys** (`infra/modules/searchcluster.bicep`):
 

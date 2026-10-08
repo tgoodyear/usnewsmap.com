@@ -103,12 +103,12 @@ pub struct Call {
 }
 
 /// A [`SearchBackend`] that records each call's time.
-struct Timed {
-    inner: QuickwitBackend,
+struct Timed<'a> {
+    inner: &'a QuickwitBackend,
     calls: Mutex<Vec<Call>>,
 }
 
-impl Timed {
+impl Timed<'_> {
     async fn time<T>(
         &self,
         kind: &'static str,
@@ -128,7 +128,7 @@ impl Timed {
 }
 
 #[async_trait]
-impl SearchBackend for Timed {
+impl SearchBackend for Timed<'_> {
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
@@ -233,7 +233,7 @@ pub struct SearchResult {
 
 /// Run one search as the API would.
 pub async fn search(
-    backend: QuickwitBackend,
+    backend: &QuickwitBackend,
     indexes: &IndexSet,
     name: &str,
     req: &SearchRequest,
@@ -383,25 +383,12 @@ async fn pass(
     let before = members::counters(http, members_now, None).await;
     let started_at = Utc::now();
     let t = std::time::Instant::now();
+    // One backend for the pass, as the API keeps one: connections are reused.
+    let backend = QuickwitBackend::new(&spec.root, spec.timeout)?;
     let results: Vec<SearchResult> = stream::iter(jobs)
         .map(|(n, req)| {
-            let indexes = indexes.clone();
-            let backend = QuickwitBackend::new(&spec.root, spec.timeout);
-            async move {
-                match backend {
-                    Ok(b) => search(b, &indexes, &n, &req).await,
-                    Err(e) => SearchResult {
-                        name: n,
-                        secs: 0.0,
-                        pages: None,
-                        places: None,
-                        cube_calls: None,
-                        coarsened: false,
-                        calls: vec![],
-                        error: Some(e.to_string()),
-                    },
-                }
-            }
+            let (indexes, backend) = (&indexes, &backend);
+            async move { search(backend, indexes, &n, &req).await }
         })
         .buffered(concurrency.max(1))
         .collect()
@@ -420,7 +407,8 @@ async fn pass(
         .filter(|m| m.ready && m.runs("searcher"))
         .all(|m| nodes.get(&m.node_id).is_some_and(|c| c.leaf_splits > 0.0));
     let ok: Vec<&SearchResult> = results.iter().filter(|r| r.error.is_none()).collect();
-    let mut times: Vec<f64> = results.iter().map(|r| r.secs).collect();
+    // Latency of the searches that answered; failures are counted apart.
+    let mut times: Vec<f64> = ok.iter().map(|r| r.secs).collect();
     times.sort_by(f64::total_cmp);
     let p = Pass {
         name: name.to_owned(),

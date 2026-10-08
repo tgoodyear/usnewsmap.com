@@ -57,11 +57,10 @@ pub fn sampled(doc_id: &str, cut: u32) -> bool {
 
 /// `pct` as a cut in 10,000: 1 → 100, 0.5 → 50. Between 0.01 and 100.
 pub fn cut_of(pct: f64) -> anyhow::Result<u32> {
-    let cut = (pct * 100.0).round();
-    if !(1.0..=10_000.0).contains(&cut) || !pct.is_finite() {
+    if !(0.01..=100.0).contains(&pct) {
         bail!("the sample share must be between 0.01 and 100 percent, not {pct}");
     }
-    Ok(cut as u32)
+    Ok((pct * 100.0).round() as u32)
 }
 
 /// The published version a sample is taken from.
@@ -448,7 +447,7 @@ mod tests {
         assert_eq!(cut_of(1.0).unwrap(), 100);
         assert_eq!(cut_of(0.5).unwrap(), 50);
         assert_eq!(cut_of(100.0).unwrap(), 10_000);
-        for bad in [0.0, 0.001, 101.0, -1.0, f64::NAN] {
+        for bad in [0.0, 0.001, 0.005, 100.004, 101.0, -1.0, f64::NAN] {
             assert!(cut_of(bad).is_err(), "{bad}");
         }
     }

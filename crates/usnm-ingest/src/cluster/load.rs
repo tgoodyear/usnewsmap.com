@@ -476,6 +476,9 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
             }
         });
     }
+    // Only the senders hold the receiver: if they all fail, the channel
+    // closes and the feed stops instead of waiting on a full buffer.
+    drop(rx);
     // Progress every poll, and the series for the report.
     let rate = Arc::new(std::sync::Mutex::new(Vec::<(f64, u64)>::new()));
     let ticker = {
@@ -567,6 +570,8 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
             loop {
                 let c = members::counters(http, indexers, Some(index_id)).await;
                 let running: f64 = c.values().map(|n| n.merges_running + n.merges_queued).sum();
+                // An indexer whose metrics didn't answer may be merging.
+                let heard = c.len() == indexers.len();
                 let split_ids: Vec<String> = node
                     .splits(index_id)
                     .await?
@@ -578,9 +583,10 @@ pub async fn run(store: &dyn ObjectStore, prefix: &str, spec: &Spec) -> anyhow::
                     step = label,
                     splits = split_ids.len(),
                     merges = running,
+                    indexers_heard = c.len(),
                     "cluster merges"
                 );
-                if s.observe(running == 0.0, &split_ids) && since.elapsed() >= grace {
+                if s.observe(heard && running == 0.0, &split_ids) && since.elapsed() >= grace {
                     return Ok::<_, anyhow::Error>(());
                 }
                 if tokio::time::Instant::now() >= deadline {
