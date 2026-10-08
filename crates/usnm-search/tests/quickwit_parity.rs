@@ -698,6 +698,7 @@ async fn cache_metrics_report_the_split_footers() {
         footers.bytes > 0 && footers.misses >= footers.items,
         "{report:?}"
     );
-    assert_eq!(footers.evictions, 0, "{report:?}");
+    // No assertion on evictions: the shared searcher's counter covers its whole
+    // life, and Quickwit 0.9.1 also counts replacing a footer as an eviction.
     assert!(report.contains_key(&Cache::FastField), "{report:?}");
 }
