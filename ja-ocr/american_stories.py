@@ -341,7 +341,7 @@ FALLBACK_CELLS = 250_000  # a gap with no token unique to both sides is aligned 
 EDGE_SAMPLES = 10  # pages per year of a phrase whose words are all in LoC's text but together only in AS's
 MAX_TOKEN_CHARS = 40  # usnm_core::text::MAX_TOKEN_CHARS
 
-# usnm_core::text: normalize_ocr (ligatures, long s, words broken across lines), then tokenize (split on
+# usnm_core::text: normalize_ocr (NFC, ligatures, long s, words broken across lines), then tokenize (split on
 # what isn't a letter or digit, fold, drop tokens over 40 characters).
 _OCR = str.maketrans({"ſ": "s", "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"})
 _FOLD = str.maketrans({"ſ": "s", "æ": "ae", "œ": "oe", "ø": "o", "ł": "l", "ß": "ss", "đ": "d", "ð": "d",
@@ -359,7 +359,7 @@ def fold(token: str) -> str:
 
 def index_tokens(text: str) -> list[str]:
     """A text's tokens as the index has them (usnm_core::text, approximately)."""
-    text = _HYPHEN.sub("", text.translate(_OCR))
+    text = _HYPHEN.sub("", unicodedata.normalize("NFC", text).translate(_OCR))
     return [t for m in _ALNUM.finditer(text) if len(t := fold(m.group())) <= MAX_TOKEN_CHARS]
 
 
@@ -576,7 +576,8 @@ def diff_phrases(year: int, pages: list[dict], groups: dict[str, set], named: tu
     """(a row per named phrase, a row per group), counting pages: the phrase matches in LoC's text, in
     American Stories', only in American Stories' (of those: with every word in LoC's text, the edge case),
     and of those only-AS pages, the ones whose delta keeps the match, per k; and pages where the delta's
-    windows run together would match it falsely."""
+    windows run together would match it falsely. A group row counts each page once: it matches if any of
+    the group's phrases does, and the delta keeps it if it keeps every only-AS phrase of the group there."""
     def blank() -> dict:
         return {"loc": 0, "american_stories": 0, "only_american_stories": 0, "only_words_all_in_loc": 0,
                 **{f"kept_k{k}": 0 for k in ks}, **{f"edge_kept_k{k}": 0 for k in ks},
@@ -587,23 +588,38 @@ def diff_phrases(year: int, pages: list[dict], groups: dict[str, set], named: tu
     totals = {name: blank() for name in groups}
     for p in pages:
         ph = p["phrases"]
+        page = {name: blank() for name in groups}  # this page's flags per group, added to totals once
         for g in ph["loc"] | ph["as"] | {g for b in p["by_k"].values() for g in b["phrases_spurious"]}:
             name = group_of.get(g)
             if name is None:
                 continue
-            counts = [totals[name]] + ([per[g]] if g in per else [])
             only = g in ph["as"] and g not in ph["loc"]
             edge = g in ph["edge"]
-            for c in counts:
-                c["loc"] += g in ph["loc"]
-                c["american_stories"] += g in ph["as"]
-                c["only_american_stories"] += only
-                c["only_words_all_in_loc"] += edge
-                for k in ks:
-                    kept = g in p["by_k"][k]["phrases_kept"]
-                    c[f"kept_k{k}"] += kept
-                    c[f"edge_kept_k{k}"] += edge and kept
-                    c[f"spurious_if_joined_k{k}"] += g in p["by_k"][k]["phrases_spurious"]
+            flags = {"loc": g in ph["loc"], "american_stories": g in ph["as"], "only_american_stories": only,
+                     "only_words_all_in_loc": edge}
+            for k in ks:
+                kept = g in p["by_k"][k]["phrases_kept"]
+                flags |= {f"kept_k{k}": kept, f"edge_kept_k{k}": edge and kept,
+                          f"spurious_if_joined_k{k}": g in p["by_k"][k]["phrases_spurious"]}
+            if g in per:
+                for f, v in flags.items():
+                    per[g][f] += v
+            # A group counts a page once: it matches if any of its phrases does; the delta keeps the page's
+            # only-AS (or edge) match only if it keeps every such phrase of the group on the page.
+            c, first_only, first_edge = page[name], not page[name]["only_american_stories"], \
+                not page[name]["only_words_all_in_loc"]
+            for f in ("loc", "american_stories", "only_american_stories", "only_words_all_in_loc"):
+                c[f] = c[f] or flags[f]
+            for k in ks:
+                if only:
+                    c[f"kept_k{k}"] = flags[f"kept_k{k}"] if first_only else c[f"kept_k{k}"] and flags[f"kept_k{k}"]
+                if edge:
+                    c[f"edge_kept_k{k}"] = (flags[f"edge_kept_k{k}"] if first_edge
+                                            else c[f"edge_kept_k{k}"] and flags[f"edge_kept_k{k}"])
+                c[f"spurious_if_joined_k{k}"] = c[f"spurious_if_joined_k{k}"] or flags[f"spurious_if_joined_k{k}"]
+        for name, c in page.items():
+            for f, v in c.items():
+                totals[name][f] += bool(v)
 
     def finish(c: dict) -> dict:
         return {**c, **{f"loss_k{k}": share(c["only_american_stories"] - c[f"kept_k{k}"], c["only_american_stories"])

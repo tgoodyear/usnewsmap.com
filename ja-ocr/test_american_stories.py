@@ -345,6 +345,15 @@ class Diff(unittest.TestCase):
         self.assertEqual((g["terms"]["only_american_stories"], g["terms"]["kept_k0"]), (1, 1))  # york, page 3
         self.assertEqual(g["context_2_words"]["american_stories"], 1)
 
+    def test_group_rows_count_a_page_once(self):
+        groups = {"common": {("new", "york"), ("york", "city")}}
+        page = ams.page_diff(toks("a b c d e f g"), toks("a new york city g"), {2: groups["common"]}, ks=(0,))
+        _, (g,) = ams.diff_phrases(1865, [page], groups, named=(), ks=(0,))
+        self.assertEqual((g["american_stories"], g["only_american_stories"], g["kept_k0"]), (1, 1, 1))
+
+    def test_tokens_compose_before_splitting(self):
+        self.assertEqual(ams.index_tokens("Cafe\u0301s"), ["cafes"])
+
 
 if __name__ == "__main__":
     unittest.main()
