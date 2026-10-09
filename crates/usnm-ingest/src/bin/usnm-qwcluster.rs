@@ -59,6 +59,9 @@ enum Command {
         /// The container's vCPUs, for Quickwit's thread pools.
         #[arg(long)]
         cpus: Option<u32>,
+        /// `searcher.max_num_concurrent_split_searches` (default: the sidecar's, 8).
+        #[arg(long)]
+        split_searches: Option<u32>,
         #[arg(
             long,
             env = "USNM_QUICKWIT_BIN",
@@ -291,6 +294,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             data_dir,
             advertise,
             cpus,
+            split_searches,
             quickwit_bin,
         } => {
             let data_dir = data_dir.unwrap_or_else(|| {
@@ -307,6 +311,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 metastore,
                 index_root,
                 storage_account,
+                split_searches,
             };
             let ip = match advertise {
                 Some(ip) => ip,

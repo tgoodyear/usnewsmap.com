@@ -59,6 +59,10 @@ param indexers int = 1
 @maxValue(4)
 param nodeVcpu int = 2
 
+@description('searcher.max_num_concurrent_split_searches on every node; 0 keeps the sidecar\'s value (8).')
+@minValue(0)
+param splitSearches int = 0
+
 var clusterContainer = 'qw-cluster'
 var benchContainer = 'qw-bench'
 // What node 0 adds to the indexer and searcher every node may run.
@@ -203,7 +207,7 @@ resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
             name: 'qwnode'
             image: image
             command: ['/usr/local/bin/usnm-qwcluster']
-            args: [
+            args: concat([
               'node'
               '--node-id'
               'qw-${i}'
@@ -222,7 +226,7 @@ resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
               storageAccountName
               '--cpus'
               string(nodeVcpu)
-            ]
+            ], splitSearches > 0 ? ['--split-searches', string(splitSearches)] : [])
             resources: { cpu: nodeCpu, memory: nodeMemory }
             env: [
               // Selects id-usnm-qwnode for the seed registry; the wrapper

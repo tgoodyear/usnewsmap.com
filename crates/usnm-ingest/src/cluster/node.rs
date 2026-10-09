@@ -56,7 +56,13 @@ pub struct NodeSpec {
     pub metastore: String,
     pub index_root: String,
     pub storage_account: String,
+    /// `searcher.max_num_concurrent_split_searches`; `None` keeps the
+    /// sidecar's value (infra/quickwit/searcher.yaml).
+    pub split_searches: Option<u32>,
 }
+
+/// The template's line for concurrent split searches (the sidecar's value).
+const SPLIT_SEARCHES_LINE: &str = "max_num_concurrent_split_searches: 8";
 
 impl NodeSpec {
     /// The node config, from [`NODE_TEMPLATE`].
@@ -85,6 +91,20 @@ impl NodeSpec {
             .replace("__METASTORE__", &self.metastore)
             .replace("__INDEX_ROOT__", &self.index_root)
             .replace("__STORAGE_ACCOUNT__", &self.storage_account);
+        let out = match self.split_searches {
+            Some(n) => {
+                anyhow::ensure!(n > 0, "concurrent split searches must be at least 1");
+                anyhow::ensure!(
+                    out.contains(SPLIT_SEARCHES_LINE),
+                    "the node config has no `{SPLIT_SEARCHES_LINE}` line to change"
+                );
+                out.replace(
+                    SPLIT_SEARCHES_LINE,
+                    &format!("max_num_concurrent_split_searches: {n}"),
+                )
+            }
+            None => out,
+        };
         if let Some(line) = out
             .lines()
             .find(|l| !l.trim_start().starts_with('#') && l.contains("__"))
@@ -291,7 +311,23 @@ mod tests {
             metastore: "azure://qw-cluster".into(),
             index_root: "azure://qw-cluster".into(),
             storage_account: "stusnmdabc123".into(),
+            split_searches: None,
         }
+    }
+
+    #[test]
+    fn concurrent_split_searches_can_be_set() {
+        let mut s = spec(&["searcher"]);
+        assert!(s
+            .config()
+            .unwrap()
+            .contains("max_num_concurrent_split_searches: 8"));
+        s.split_searches = Some(24);
+        let c = s.config().unwrap();
+        assert!(c.contains("max_num_concurrent_split_searches: 24"), "{c}");
+        assert!(!c.contains("max_num_concurrent_split_searches: 8"));
+        s.split_searches = Some(0);
+        assert!(s.config().is_err());
     }
 
     #[test]

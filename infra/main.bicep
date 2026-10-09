@@ -86,6 +86,9 @@ param searchClusterIndexers int = 1
 @maxValue(4)
 param searchClusterNodeVcpu int = 2
 
+@description('Search cluster experiment: searcher.max_num_concurrent_split_searches per node (0: the sidecar\'s 8).')
+param searchClusterSplitSearches int = 0
+
 @description('Retain every batch archive curation downloads, byte for byte, in a `raw` container of this environment\'s own data account (Cold tier), and curate from it instead of LoC when it holds the listed archive. It goes with the environment: turning it off deletes the container. For a set that outlives environments use archiveAccountId. Production keeps none (ADR-0006).')
 param retainRaw bool = false
 
@@ -517,6 +520,7 @@ module searchClusterModule 'modules/searchcluster.bicep' = if (searchClusterOn) 
     nodes: searchClusterNodes
     indexers: searchClusterIndexers
     nodeVcpu: searchClusterNodeVcpu
+    splitSearches: searchClusterSplitSearches
   }
 }
 
