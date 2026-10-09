@@ -40,10 +40,14 @@ searcher:
   # does (RAYON_NUM_THREADS, infra/modules/containerapp.bicep). Prod at 24 and
   # 3.75 vCPU: cold median 28.3 s, 2.2 vCPU used.
   max_num_concurrent_split_searches: 48
-  # What the splits warming up may hold in memory at once. Quickwit's default
-  # is 100 GB, no bound in a 7.5 GiB container; the caches and aggregation
-  # limit above take about 2.1 GB. Each split reserves at least 10 MB to start
-  # (300 MB scaled by its docs over 10M, ours have 30k to 56k).
+  # An admission budget for splits warming up, not a ceiling: Quickwit admits
+  # a split on its initial estimate (300 MB scaled by its docs over 10M, at
+  # least 10 MB, so 10 MB for ours of 30k to 56k docs) and lets actual use run
+  # past the budget, only pausing new admissions. The default is 100 GB, which
+  # never pauses anything. Headroom: the caches and aggregation limit above
+  # take about 2.1 GB, leaving about 5.4 GB of the 7.5 GiB. At 24 slots the
+  # whole searcher used 0.8 GB during cold searches (#251), so 48 should stay
+  # near 1.6 GB; replica memory is checked after the rollout.
   warmup_memory_budget: 3GB
   # Quickwit cancels a search, and each split search in it, at these (both
   # 30 s by default) and answers 408. The API's own limit on a computation
