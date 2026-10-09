@@ -2838,6 +2838,86 @@ async fn our_latin_text_follows_the_decade_layout() {
     assert_eq!(delta[&id(92)]["decade"], decade);
 }
 
+/// Copies without LoC's text don't cost a page our text (#203, review of
+/// #250): a page LoC's archive had no text for in one batch and an empty
+/// copy in another keeps our document (and the empty copy gets none), and
+/// an empty page with copies in two batches gets our text on the copy the
+/// version keeps, whichever batch's copy we read. One document each.
+#[tokio::test]
+async fn copies_without_locs_text_keep_our_text_once() {
+    let e = env().await;
+    let (early, _, early_pages, _) = curate_early_and_late(&e).await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let blank = pages
+        .iter()
+        .find(|p| p.date < split && p.text.is_empty())
+        .expect("an empty early page");
+    // Another batch, sorting first, with both pages and no text for either.
+    let empty = |seq| Page {
+        lccn: blank.lccn.clone(),
+        date: blank.date,
+        seq,
+        text: String::new(),
+    };
+    let (p90, pb) = (empty(90), empty(blank.seq));
+    let path = e.root.join("batch_fx_again_ver01.tar.gz");
+    write_archive(&path, &[&p90, &pb], false, true);
+    let mut both = early;
+    both.push(listed("batch_fx_again_ver01", &path, None));
+    curate(&e, both).await;
+    let row = |seq, loc_text, text| JaRow {
+        lccn: &blank.lccn,
+        date: blank.date,
+        seq,
+        batch: "batch_fx_early",
+        loc_text,
+        text,
+        ocred_at: 1,
+    };
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[
+            row(90, "missing", "Moritz Drug Co, 2001 Larimer Street"),
+            // We read the early batch's copy; the plan keeps batch_fx_again's.
+            row(blank.seq, "empty", "The relocation center held a meeting"),
+        ],
+    )
+    .await;
+    let v = e.release_latin(5, true, true).await.expect("base");
+    let id = |seq: u16| format!("{}_{}_ed-1_seq-{seq}", blank.lccn, blank.date);
+    let raw = read_jsonl(
+        &e.root
+            .join(format!("reference/indexes/{}.jsonl", v.indexes[0])),
+    );
+    let docs = |seq| {
+        raw.iter()
+            .filter(|d| d["doc_id"] == id(seq).as_str())
+            .collect::<Vec<_>>()
+    };
+    let d90 = docs(90);
+    assert_eq!(d90.len(), 1, "one document for page 90");
+    assert_eq!(d90[0]["text"], "Moritz Drug Co, 2001 Larimer Street");
+    assert_eq!(d90[0]["batch"], "batch_fx_early");
+    let db = docs(blank.seq);
+    assert_eq!(db.len(), 1, "one document for the empty page");
+    assert_eq!(db[0]["text"], "The relocation center held a meeting");
+    assert_eq!(db[0]["batch"], "batch_fx_again");
+    let latin = e
+        .reference_json(&format!("{}/ja_latin.json", v.index_version))
+        .await;
+    assert_eq!(latin["pages"][id(blank.seq)]["batch"], "batch_fx_again");
+    assert_eq!(latin["pages"][id(90)]["batch"], "batch_fx_early");
+    let hidden = e
+        .reference_json(&format!("{}/duplicates.json", v.index_version))
+        .await;
+    assert_eq!(hidden, serde_json::json!([]));
+    // The early pages, and page 90 from the other batch's counts; the empty
+    // page's two copies are one page.
+    assert_eq!(v.pages, early_pages as u64 + 1);
+}
+
 /// American Stories' text for the fixture pages that have some (their
 /// `text_as`), as `american_stories_write.py` writes it: a part per title
 /// and year, then each year's marker. Plus a page no batch has, and a

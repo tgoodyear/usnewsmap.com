@@ -236,13 +236,22 @@ struct Latin<'a> {
     /// Of the overlay's pages that curation never had, and of the pages the
     /// version's main indexes hold with our Latin text, the ones some batch
     /// of the version has in its curated parts.
-    curated_keys: &'a BTreeMap<String, bool>,
+    curated_keys: &'a BTreeMap<String, CuratedCopies>,
     /// Pages this release's main index added with our Latin text.
     added: u64,
     /// Pages an earlier index holds with our Latin text, now hidden.
     hidden: u64,
     /// Every page the version's main indexes hold with our Latin text.
     version: &'a JaLatin,
+}
+
+/// A page's copies in the curated parts of the version's batches.
+#[derive(Debug, Default)]
+struct CuratedCopies {
+    /// Some copy has LoC's text (`ok`).
+    with_text: bool,
+    /// The batches with a copy without it (`empty`, `short`).
+    without_text: BTreeSet<String>,
 }
 
 /// What the published `current.json` says about the version's indexes.
@@ -571,15 +580,27 @@ impl Release {
             self.curated_keys(&version_batches, &wanted).await?
         };
         // The Latin text this release's main index adds: the pages no main
-        // index of the version holds yet. None without a new main index.
+        // index of the version holds yet. None without a new main index. A
+        // copy with LoC's text supersedes ours; one without doesn't, and
+        // gets no document (`latin_owned`), unless an index the version
+        // keeps may hold it as a document already: with American Stories'
+        // text, a copy without LoC's is one when that text covers it.
+        let scope_names: BTreeSet<&str> = scope.iter().map(|b| b.batch.as_str()).collect();
         let latin_new: Vec<(&ocr_ja::JaPage, String)> = if self.ja_latin && !overlay_only {
             overlay
                 .pages
                 .iter()
                 .filter(|p| {
                     let id = p.key.doc_id();
+                    let copies = curated_keys.get(&id);
                     p.missing_from_curation()
-                        && !curated_keys.contains_key(&id)
+                        && !copies.is_some_and(|c| c.with_text)
+                        && !(self.american_stories
+                            && copies.is_some_and(|c| {
+                                c.without_text
+                                    .iter()
+                                    .any(|b| !scope_names.contains(b.as_str()))
+                            }))
                         && !latin_before.pages.contains_key(&id)
                 })
                 .filter_map(|p| p.latin().map(|t| (p, t)))
@@ -633,7 +654,7 @@ impl Release {
         let (latin_hidden, latin_kept): (Vec<_>, Vec<_>) =
             latin_before.pages.iter().partition(|(id, p)| {
                 if p.loc_text == "missing" {
-                    curated_keys.get(*id) == Some(&true)
+                    curated_keys.get(*id).is_some_and(|c| c.with_text)
                 } else {
                     usnm_core::ids::PageKey::from_doc_id(id).is_ok_and(|key| {
                         !dedup.keeps(&key, &p.batch) && dedup.kept_has_text(&key) == Some(true)
@@ -651,6 +672,17 @@ impl Release {
         let latin_kept: HashMap<String, String> = latin_kept
             .into_iter()
             .map(|(id, p)| (id.clone(), p.batch.clone()))
+            .collect();
+        // The pages whose document is ours, in an index the version keeps or
+        // in this release's: a copy of one without LoC's text gets none.
+        let latin_owned: HashMap<String, String> = latin_kept
+            .iter()
+            .map(|(id, b)| (id.clone(), b.clone()))
+            .chain(
+                latin_new
+                    .iter()
+                    .map(|(p, _)| (p.key.doc_id(), p.batch.clone())),
+            )
             .collect();
         // With American Stories' text on, the plan hides a losing copy
         // without LoC's text too: not ours, which stays the page's document.
@@ -778,7 +810,7 @@ impl Release {
                     stories.as_ref(),
                     &latin_new,
                     &latin_curated,
-                    &latin_kept,
+                    &latin_owned,
                     decades,
                     report,
                 )
@@ -1100,7 +1132,7 @@ impl Release {
         stories: Option<&american_stories::Source>,
         latin: &[(&ocr_ja::JaPage, String)],
         latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
-        latin_kept: &HashMap<String, String>,
+        latin_owned: &HashMap<String, String>,
         decades: Decades,
         report: &Reporter,
     ) -> anyhow::Result<(
@@ -1200,17 +1232,23 @@ impl Release {
                     } else {
                         texts.get(&doc_id).map(String::as_str)
                     };
-                    // Our reading of this batch's copy, where it reads more words.
-                    let ours = latin_curated.get(&doc_id).filter(|(p, t)| {
-                        p.batch == b.batch && ocr_ja::better_than_locs(t, row.text.as_deref())
-                    });
+                    // Our reading of the page, where it reads more words, on
+                    // the copy the version keeps (whichever batch's copy we read).
+                    let ours = latin_curated
+                        .get(&doc_id)
+                        .filter(|(_, t)| ocr_ja::better_than_locs(t, row.text.as_deref()));
                     let ok = row.status == TextStatus::Ok;
                     if !ok && text_as.is_none() && ours.is_none() {
                         return Ok(());
                     }
-                    // A copy without LoC's text of a page an earlier index
-                    // holds with ours: ours stays the page's document.
-                    if !ok && latin_kept.get(&doc_id).is_some_and(|ours| *ours != b.batch) {
+                    // A copy without LoC's text of a page whose document is
+                    // ours (an earlier index's, or a page LoC's archive had
+                    // no text for in another batch): ours stays the page's.
+                    if !ok
+                        && latin_owned
+                            .get(&doc_id)
+                            .is_some_and(|ours| *ours != b.batch)
+                    {
                         return Ok(());
                     }
                     with_as += u64::from(text_as.is_some());
@@ -1223,7 +1261,8 @@ impl Release {
                             replaced.push((
                                 doc_id,
                                 JaLatinPage {
-                                    batch: p.batch.clone(),
+                                    // The document's batch, which hidden copies name.
+                                    batch: b.batch.clone(),
                                     loc_text: p.loc_text.clone(),
                                     ocr_source: p.ocr_source.clone(),
                                     ocr_engine: p.ocr_engine.clone(),
@@ -1586,14 +1625,14 @@ impl Release {
     }
 
     /// The doc ids in `wanted` that some batch of the version has in its
-    /// curated parts, each with whether any of those copies has LoC's text.
-    /// Only the parts of batches holding these pages' titles are read,
-    /// without their text.
+    /// curated parts, with which of those copies have LoC's text. Only the
+    /// parts of batches holding these pages' titles are read, without
+    /// their text.
     async fn curated_keys(
         &self,
         batches: &[RunBatch],
         wanted: &BTreeSet<String>,
-    ) -> anyhow::Result<BTreeMap<String, bool>> {
+    ) -> anyhow::Result<BTreeMap<String, CuratedCopies>> {
         // A doc id starts with its title's LCCN (`sn83025517_1945-01-01_ed-1_seq-4`).
         let lccns: BTreeSet<&str> = wanted
             .iter()
@@ -1616,7 +1655,12 @@ impl Release {
                 read_part(bytes.into(), false, |row| {
                     let id = row.key.doc_id();
                     if wanted.contains(&id) {
-                        *found.entry(id).or_insert(false) |= row.status == TextStatus::Ok;
+                        let c: &mut CuratedCopies = found.entry(id).or_default();
+                        if row.status == TextStatus::Ok {
+                            c.with_text = true;
+                        } else {
+                            c.without_text.insert(b.batch.clone());
+                        }
                     }
                     Ok(())
                 })
