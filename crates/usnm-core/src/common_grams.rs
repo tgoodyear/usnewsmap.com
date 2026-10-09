@@ -51,19 +51,13 @@ pub fn is_common(word: &str) -> bool {
     WORDS.binary_search(&word).is_ok()
 }
 
-/// A folded word as one whitespace-free token: compatibility forms can
-/// decompose into several words (`ﷺ`), which must stay one position.
-fn atom(word: &str) -> String {
-    word.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
 /// The page's words, one per position as the `usnm_text` analyzer counts
 /// them; `None` where it drops one.
 fn positions(text: &str) -> Vec<Option<String>> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
         .map(|t| {
-            let w = atom(&fold(t));
+            let w = fold(t);
             (!w.is_empty() && w.chars().count() <= MAX_TOKEN_CHARS).then_some(w)
         })
         .collect()
@@ -97,7 +91,6 @@ pub fn index_text(text: &str) -> String {
 /// there gives the same pages as searching `text`: two or more words, at
 /// least one of them common, the last one not. `None` otherwise.
 pub fn query_terms(words: &[String]) -> Option<Vec<String>> {
-    let words: Vec<String> = words.iter().map(|w| atom(w)).collect();
     let (last, rest) = words.split_last()?;
     if rest.is_empty()
         || is_common(last)
@@ -165,8 +158,7 @@ mod tests {
             .filter(|t| *t != GAP)
             .map(|t| t.split('_').next().unwrap().to_owned())
             .collect();
-        let atoms: Vec<String> = tokenize(&text).iter().map(|t| atom(t)).collect();
-        assert_eq!(kept, atoms);
+        assert_eq!(kept, tokenize(&text));
     }
 
     #[test]

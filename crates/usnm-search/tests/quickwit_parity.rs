@@ -103,6 +103,19 @@ fn queries() -> Vec<(&'static str, Node)> {
         ("misread by american stories", parse("golcl").unwrap()),
         ("prefix in american stories", parse("bimet*").unwrap()),
         ("across texts", parse("bryan speaker").unwrap()),
+        // Fractions (#168): `½` and `61¼` are each one word, as the analyzer
+        // has them, and `1/2` is two.
+        ("vulgar fraction", parse("½").unwrap()),
+        ("fraction in a number", parse("61¼").unwrap()),
+        (
+            "phrase with a fraction and a common word",
+            parse(r#""½ higher at 61¼""#).unwrap(),
+        ),
+        (
+            "near with a fraction",
+            build("wheat ½", Some(Mode::Near), 2, 0).unwrap(),
+        ),
+        ("slash between digits", parse("1/2").unwrap()),
     ]
 }
 

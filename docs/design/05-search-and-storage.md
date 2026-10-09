@@ -147,7 +147,7 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 | `edition`, `seq` | u16 | – | – | ✅ | Link building |
 | `batch` | keyword | ✅ | – | – | Delete-by-batch on reprocessing |
 
-**Analyzer `usnm_text`:** a Unicode word tokenizer, then lowercase, then ASCII folding, then removal of tokens longer than 40 characters (OCR garbage). **No stemming and no stop words.** Historical exactness matters, and stop words are needed for phrases such as "cross of gold".
+**Analyzer `usnm_text`:** a Unicode word tokenizer, then lowercase, then ASCII folding, then removal of tokens longer than 40 characters (OCR garbage). **No stemming and no stop words.** Historical exactness matters, and stop words are needed for phrases such as "cross of gold". Words are split before they are folded, so `½` is the one token `½` (ASCII folding has no entry for it), and `1/2` is `1` and `2`. `usnm_core::text::tokenize` does the same for the memory backend, the common-word pairs and queries (#168).
 
 ### 5.5.1 Quickwit index config (validated in S-2)
 

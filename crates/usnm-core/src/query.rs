@@ -993,6 +993,61 @@ mod tests {
         assert_eq!(parse(&n.to_string()).unwrap(), n);
     }
 
+    fn assert_round_trips(q: &str) {
+        let n = parse(q).unwrap_or_else(|e| panic!("{q:?}: {e}"));
+        let canonical = n.to_string();
+        assert_eq!(parse(&canonical).as_ref(), Ok(&n), "{q:?} → {canonical:?}");
+        assert_eq!(parse(&canonical).unwrap().to_string(), canonical, "{q:?}");
+    }
+
+    #[test]
+    fn fractions_are_one_word_and_round_trip() {
+        // `½` is one word, as the index has it, not the phrase "1 2" (#168).
+        assert_eq!(parse("½").unwrap(), term("½"));
+        assert_eq!(parse("3½").unwrap(), term("3½"));
+        assert_eq!(parse("½").unwrap().to_string(), "½");
+        // A slash, fraction slash or division slash separates, as in the index.
+        let one_two = Node::Phrase {
+            terms: vec!["1".into(), "2".into()],
+            slop: 0,
+        };
+        for q in ["1/2", "1⁄2", "1∕2", r#""1 2""#] {
+            assert_eq!(parse(q).unwrap(), one_two, "{q}");
+        }
+        for f in crate::text::vulgar_fractions() {
+            for q in [
+                format!("{f}"),
+                format!("3{f}"),
+                format!("wheat {f} -corn"),
+                format!(r#""wheat {f} higher at 61{f}""#),
+                format!(r#""{f} cent"~3"#),
+                format!("61{f}*"),
+                format!("({f} OR 1/2) cent"),
+            ] {
+                assert_round_trips(&q);
+            }
+            for mode in [Mode::Phrase, Mode::All, Mode::Any, Mode::Near] {
+                let n = build(&format!("wheat {f} 1/2"), Some(mode), 2, 0).unwrap();
+                assert_eq!(parse(&n.to_string()).unwrap(), n, "{f} {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_alphanumeric_word_round_trips() {
+        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+            if !c.is_alphanumeric() || parse(&c.to_string()).is_err() {
+                continue;
+            }
+            assert_round_trips(&c.to_string());
+            // Characters that fold to Japanese ones (`㊀` → `一`) split a
+            // Latin word only once folded (#241).
+            if ja::is_ja(c) || !has_ja(&fold(&c.to_string())) {
+                assert_round_trips(&format!("\"a{c} b\""));
+            }
+        }
+    }
+
     #[test]
     fn supports_slop_fuzzy_and_prefix() {
         assert_eq!(

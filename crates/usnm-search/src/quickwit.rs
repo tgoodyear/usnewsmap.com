@@ -379,7 +379,7 @@ fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, Searc
                     terms
                         .iter()
                         .filter(|t| !usnm_core::common_grams::is_common(t))
-                        .filter(|t| !t.contains(char::is_whitespace) && seen.insert(*t))
+                        .filter(|t| seen.insert(*t))
                         .map(|w| format!("{text}:{w}")),
                 );
                 format!("({})", parts.join(" AND "))
@@ -1116,12 +1116,16 @@ mod tests {
             query_string(&parse(r#""the gold of the cross""#).unwrap(), true, false).unwrap(),
             "(text_cg:\"the_gold gold of_the the_cross cross\" AND text:gold AND text:cross)"
         );
-        // A word that folds to several is only required through the pairs.
-        let q = parse("\"of \u{fdfa} gold\"").unwrap();
-        let s = query_string(&q, true, false).unwrap();
-        assert!(s.starts_with("(text_cg:\"of_"), "{s}");
-        assert!(s.ends_with(" AND text:gold)"), "{s}");
-        assert_eq!(s.matches(" AND ").count(), 1, "{s}");
+        // A character that decomposes into several words (`ﷺ`) or with a
+        // separator (`½`) is one word, as the analyzer has it (#168).
+        assert_eq!(
+            query_string(&parse("\"of \u{fdfa} gold\"").unwrap(), true, false).unwrap(),
+            "(text_cg:\"of_\u{fdfa} \u{fdfa} gold\" AND text:\u{fdfa} AND text:gold)"
+        );
+        assert_eq!(
+            query_string(&parse(r#""½ higher at 61¼""#).unwrap(), true, false).unwrap(),
+            "(text_cg:\"½ higher at_61¼ 61¼\" AND text:½ AND text:higher AND text:61¼)"
+        );
         // Without the field, or for a phrase ending in a common word: `text`.
         assert_eq!(
             query_string(&parse(r#""cross of gold""#).unwrap(), false, false).unwrap(),
