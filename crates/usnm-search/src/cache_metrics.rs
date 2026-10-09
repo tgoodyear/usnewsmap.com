@@ -87,14 +87,7 @@ pub type CacheReport = BTreeMap<Cache, CacheStats>;
 /// doesn't know, or can't read, are skipped.
 pub fn parse(text: &str) -> CacheReport {
     let mut report = CacheReport::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((name, labels, value)) = split_sample(line) else {
-            continue;
-        };
+    for (name, labels, value) in samples(text) {
         let field: fn(&mut CacheStats) -> &mut u64 = match name {
             "quickwit_cache_in_cache_num_bytes" => |s| &mut s.bytes,
             "quickwit_cache_in_cache_count" => |s| &mut s.items,
@@ -113,6 +106,16 @@ pub fn parse(text: &str) -> CacheReport {
         *field(report.entry(cache).or_default()) = value;
     }
     report
+}
+
+/// The samples of Prometheus text, as `(name, labels, value)`
+/// ([`split_sample`]); comments, blank lines and lines it can't split are
+/// left out.
+pub(crate) fn samples(text: &str) -> impl Iterator<Item = (&str, &str, &str)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(split_sample)
 }
 
 /// `name{labels} value [timestamp]` into its name, label text (without the
@@ -149,7 +152,7 @@ fn closing_brace(line: &str, open: usize) -> Option<usize> {
 }
 
 /// The value of label `key` in `a="1",b="2"`, unescaped.
-fn label(labels: &str, key: &str) -> Option<String> {
+pub(crate) fn label(labels: &str, key: &str) -> Option<String> {
     let mut rest = labels;
     loop {
         rest = rest.trim_start_matches([',', ' ']);
@@ -179,7 +182,7 @@ fn label(labels: &str, key: &str) -> Option<String> {
 
 /// A sample value as a whole number: Quickwit writes counters as integers
 /// and gauges as floats. Negative, NaN and infinite values are unreadable.
-fn parse_value(value: &str) -> Option<u64> {
+pub(crate) fn parse_value(value: &str) -> Option<u64> {
     let v: f64 = value.parse().ok()?;
     (v.is_finite() && v >= 0.0).then(|| v.round() as u64)
 }
@@ -190,7 +193,8 @@ mod tests {
 
     /// `/metrics` from Quickwit 0.9.1 serving the fixture indexes
     /// (`scripts/quickwit-fixtures.sh`) after two searches over both
-    /// indexes, trimmed to the cache metrics and two others.
+    /// indexes, trimmed to the cache, thread pool and runtime metrics and
+    /// two others.
     const QUICKWIT_091: &str = include_str!("../tests/data/quickwit-0.9.1-metrics.txt");
 
     #[test]

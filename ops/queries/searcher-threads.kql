@@ -1,0 +1,44 @@
+// The Quickwit searcher sidecar's search thread pool and main Tokio runtime,
+// per API replica and minute (#251): whether cold searches wait on the search
+// pool's cores or on downloads. The API reads them from the sidecar every
+// minute (api.searcher_pool_tasks and api.searcher_runtime_* in AppMetrics,
+// 08 §8.1.2). SearchOngoing and SearchPending are the split searches the
+// search pool was running and had queued at the scrape (the most in the
+// minute). The pool has RAYON_NUM_THREADS threads (4, in
+// infra/modules/containerapp.bicep), so SearchOngoing at 4 with SearchPending
+// above 0 means searches wait for cores. MainBusyPercent is the share of the
+// main runtime's thread time spent busy: busy time over thread time
+// (threads times the time between scrapes), both as reported, so a minute
+// that holds two reports, or none, still gives a share. The main runtime does
+// the downloads, TLS and split opening, so near 100 with an idle search pool
+// means searches wait on it. The API reports neither at a replica's first
+// scrape or after a searcher restart. Set step to 5m for steadier lines.
+let step = 1m;
+let m = AppMetrics
+    | where AppRoleName == "usnm-api"
+    | where Name == "api.searcher_pool_tasks" or Name startswith "api.searcher_runtime_"
+    | extend Replica = AppRoleInstance;
+let searchPool = m
+    | where Name == "api.searcher_pool_tasks" and tostring(Properties.pool) == "search"
+    | extend State = tostring(Properties.state)
+    | summarize
+        SearchOngoing = tolong(maxif(Sum, State == "ongoing")),
+        SearchPending = tolong(maxif(Sum, State == "pending"))
+        by TimeGenerated = bin(TimeGenerated, step), Replica;
+let mainRuntime = m
+    | where Name startswith "api.searcher_runtime_" and tostring(Properties.runtime) == "main"
+    | summarize
+        BusyMs = sumif(Sum, Name == "api.searcher_runtime_busy_ms"),
+        CapacityMs = sumif(Sum, Name == "api.searcher_runtime_capacity_ms"),
+        MainThreads = tolong(maxif(Sum, Name == "api.searcher_runtime_threads"))
+        by TimeGenerated = bin(TimeGenerated, step), Replica;
+searchPool
+| join kind=fullouter mainRuntime on TimeGenerated, Replica
+| project
+    TimeGenerated = coalesce(TimeGenerated, TimeGenerated1),
+    Replica = coalesce(Replica, Replica1),
+    SearchOngoing,
+    SearchPending,
+    MainThreads,
+    MainBusyPercent = iff(CapacityMs > 0, round(100.0 * BusyMs / CapacityMs, 1), real(null))
+| order by TimeGenerated asc, Replica asc

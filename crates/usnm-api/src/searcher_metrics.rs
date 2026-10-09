@@ -1,5 +1,5 @@
-//! The Quickwit searcher sidecar's cache metrics, reported as the API's own
-//! (#125, 08 §8.1.2, 08 §8.4).
+//! The Quickwit searcher sidecar's cache, thread pool and runtime metrics,
+//! reported as the API's own (#125, #251, 08 §8.1.2, 08 §8.4).
 //!
 //! The sidecar listens on localhost only, and its storage is reachable only
 //! inside the network, so its Prometheus endpoint can't be read from
@@ -15,9 +15,32 @@
 //!   `api.searcher_cache_evictions`: what happened since the last scrape
 //!   (counters), recorded only when not zero. The first scrape reports
 //!   everything since the searcher started, which in a fresh replica is the
-//!   warm-up. A restarted searcher starts every cache from 0, so if any
-//!   counter of any cache went down (or a cache disappeared), every cache's
-//!   new values are what happened since.
+//!   warm-up. A restarted searcher starts every counter from 0, so if any
+//!   counter of any cache or runtime went down (or a cache or runtime
+//!   disappeared), every new value is what happened since.
+//!
+//! For the thread pools and Tokio runtimes, so a cold search waiting on the
+//! search pool's cores can be told from one waiting on downloads (#251), it
+//! reports:
+//!
+//! - `api.searcher_pool_tasks`: the tasks the `search` and `small_tasks`
+//!   thread pools (`pool`) are running and have queued (`state`: `ongoing`,
+//!   `pending`) at the scrape (a gauge). Recorded for both pools at every
+//!   scrape, 0 included, also before Quickwit has used a pool: a snapshot of
+//!   an idle pool says as much as a busy one.
+//! - `api.searcher_runtime_threads`: the worker threads of each Tokio
+//!   runtime (`runtime`: `main`; `blocking` and `non_blocking` once Quickwit
+//!   starts them), a gauge recorded at every scrape.
+//! - `api.searcher_runtime_busy_ms`: how long those threads were busy since
+//!   the last scrape, summed over them (a counter, recorded only when not
+//!   zero), and `api.searcher_runtime_capacity_ms`: the thread time they had
+//!   in the same span, threads times the time since the last scrape (a
+//!   counter). Busy over capacity, summed over any span, is the runtime's
+//!   busy share, however the reports fall into it. Both need the last
+//!   scrape of the same searcher run, so neither is recorded at the first
+//!   scrape or right after a restart, when the busy time covers the
+//!   searcher's whole life. The main runtime does the searcher's downloads
+//!   and opens the splits.
 //!
 //! Whether the split footer cache holds every footer is read from two
 //! things together: the release's footer total (`footer_bytes` on its
@@ -38,8 +61,10 @@ use std::time::{Duration, Instant};
 use opentelemetry::metrics::{Counter, Gauge, Meter};
 use opentelemetry::KeyValue;
 use usnm_search::cache_metrics::{Cache, CacheReport};
+use usnm_search::quickwit::SearcherMetrics;
+use usnm_search::thread_metrics::{Pool, ThreadReport};
 
-/// The longest a gauge goes unrecorded while the scrapes succeed.
+/// The longest a cache gauge goes unrecorded while the scrapes succeed.
 pub const HEARTBEAT: Duration = Duration::from_secs(15 * 60);
 
 /// The instruments the scrapes are recorded with.
@@ -49,6 +74,10 @@ pub struct Instruments {
     hits: Counter<u64>,
     misses: Counter<u64>,
     evictions: Counter<u64>,
+    pool_tasks: Gauge<u64>,
+    runtime_threads: Gauge<u64>,
+    runtime_busy: Counter<u64>,
+    runtime_capacity: Counter<u64>,
 }
 
 impl Instruments {
@@ -75,6 +104,28 @@ impl Instruments {
                 .u64_counter("api.searcher_cache_evictions")
                 .with_description("Items evicted from a searcher cache, by cache")
                 .build(),
+            pool_tasks: meter
+                .u64_gauge("api.searcher_pool_tasks")
+                .with_description("Tasks in a searcher thread pool, by pool and state")
+                .build(),
+            runtime_threads: meter
+                .u64_gauge("api.searcher_runtime_threads")
+                .with_description("Worker threads of a searcher Tokio runtime, by runtime")
+                .build(),
+            runtime_busy: meter
+                .u64_counter("api.searcher_runtime_busy_ms")
+                .with_unit("ms")
+                .with_description(
+                    "Time a searcher Tokio runtime's worker threads were busy, summed over them, by runtime",
+                )
+                .build(),
+            runtime_capacity: meter
+                .u64_counter("api.searcher_runtime_capacity_ms")
+                .with_unit("ms")
+                .with_description(
+                    "Thread time a searcher Tokio runtime had (worker threads times elapsed time), by runtime",
+                )
+                .build(),
         }
     }
 }
@@ -83,7 +134,9 @@ impl Instruments {
 pub struct Scraper {
     instruments: Instruments,
     /// The last successful scrape, for the counters' increments.
-    last: Option<CacheReport>,
+    last: Option<SearcherMetrics>,
+    /// When `last` was taken.
+    last_at: Option<Instant>,
     /// Per cache: the gauges' last recorded values, and when.
     recorded: BTreeMap<Cache, ((u64, u64), Instant)>,
     /// Scrapes failed in a row.
@@ -97,6 +150,7 @@ impl Scraper {
         Self {
             instruments,
             last: None,
+            last_at: None,
             recorded: BTreeMap::new(),
             failures: 0,
             footer_evictions_logged: false,
@@ -109,13 +163,13 @@ impl Scraper {
     }
 
     /// Record one scrape taken at `now`.
-    pub fn observe(&mut self, scraped: Result<CacheReport, String>, now: Instant) {
-        let report = match scraped {
-            Ok(r) => r,
+    pub fn observe(&mut self, scraped: Result<SearcherMetrics, String>, now: Instant) {
+        let metrics = match scraped {
+            Ok(m) => m,
             Err(error) => {
                 self.failures += 1;
                 if self.failures == 1 {
-                    tracing::warn!(%error, "searcher cache metrics unavailable; retrying quietly");
+                    tracing::warn!(%error, "searcher metrics unavailable; retrying quietly");
                 }
                 return;
             }
@@ -123,18 +177,26 @@ impl Scraper {
         if self.failures > 0 {
             tracing::info!(
                 failed_scrapes = self.failures,
-                "searcher cache metrics available again"
+                "searcher metrics available again"
             );
             self.failures = 0;
         }
         // Counters that went down: the searcher restarted, and all of its
-        // caches count from 0 again.
-        if self.last.as_ref().is_some_and(|l| restarted(l, &report)) {
-            tracing::info!("the searcher restarted; its cache counters start again from 0");
+        // caches and runtimes count from 0 again.
+        if self.last.as_ref().is_some_and(|l| restarted(l, &metrics)) {
+            tracing::info!("the searcher restarted; its counters start again from 0");
             self.last = None;
             self.footer_evictions_logged = false;
         }
-        for (&cache, now_stats) in &report {
+        self.observe_caches(&metrics.caches, now);
+        self.observe_threads(&metrics.threads, now);
+        self.last = Some(metrics);
+        self.last_at = Some(now);
+    }
+
+    /// Record the caches of one scrape.
+    fn observe_caches(&mut self, report: &CacheReport, now: Instant) {
+        for (&cache, now_stats) in report {
             let attrs = [KeyValue::new("cache", cache.label())];
             let gauges = (now_stats.bytes, now_stats.items);
             let due = self
@@ -149,7 +211,7 @@ impl Scraper {
             let before = self
                 .last
                 .as_ref()
-                .and_then(|l| l.get(&cache))
+                .and_then(|l| l.caches.get(&cache))
                 .copied()
                 .unwrap_or_default();
             let (hits, misses, evictions) = (
@@ -178,17 +240,68 @@ impl Scraper {
                 );
             }
         }
-        self.last = Some(report);
+    }
+
+    /// Record the thread pools and runtimes of one scrape taken at `now`.
+    fn observe_threads(&self, report: &ThreadReport, now: Instant) {
+        // Every pool, also one Quickwit hasn't used yet and so doesn't list.
+        for pool in Pool::ALL {
+            let tasks = report.pools.get(&pool).copied().unwrap_or_default();
+            for (state, n) in [("ongoing", tasks.ongoing), ("pending", tasks.pending)] {
+                self.instruments.pool_tasks.record(
+                    n,
+                    &[
+                        KeyValue::new("pool", pool.label()),
+                        KeyValue::new("state", state),
+                    ],
+                );
+            }
+        }
+        for (&runtime, now_stats) in &report.runtimes {
+            let attrs = [KeyValue::new("runtime", runtime.label())];
+            self.instruments
+                .runtime_threads
+                .record(now_stats.threads, &attrs);
+            // The busy time since the last scrape of this searcher run; none
+            // at the first, which covers the searcher's whole life.
+            let Some((before, at)) = self
+                .last
+                .as_ref()
+                .and_then(|l| l.threads.runtimes.get(&runtime))
+                .zip(self.last_at)
+            else {
+                continue;
+            };
+            let busy = now_stats.busy_ms.saturating_sub(before.busy_ms);
+            if busy > 0 {
+                self.instruments.runtime_busy.add(busy, &attrs);
+            }
+            let elapsed_ms = u64::try_from(now.duration_since(at).as_millis()).unwrap_or(u64::MAX);
+            self.instruments
+                .runtime_capacity
+                .add(now_stats.threads.saturating_mul(elapsed_ms), &attrs);
+        }
     }
 }
 
 /// Whether the searcher restarted between two scrapes: a counter of any
-/// cache went down, or a cache it had reported is gone.
-fn restarted(before: &CacheReport, now: &CacheReport) -> bool {
-    before.iter().any(|(cache, b)| match now.get(cache) {
-        None => true,
-        Some(n) => n.hits < b.hits || n.misses < b.misses || n.evictions < b.evictions,
-    })
+/// cache or runtime went down, or a cache or runtime it had reported is
+/// gone.
+fn restarted(before: &SearcherMetrics, now: &SearcherMetrics) -> bool {
+    let caches = before
+        .caches
+        .iter()
+        .any(|(cache, b)| match now.caches.get(cache) {
+            None => true,
+            Some(n) => n.hits < b.hits || n.misses < b.misses || n.evictions < b.evictions,
+        });
+    let runtimes = before.threads.runtimes.iter().any(|(runtime, b)| {
+        now.threads
+            .runtimes
+            .get(runtime)
+            .is_none_or(|n| n.busy_ms < b.busy_ms)
+    });
+    caches || runtimes
 }
 
 /// Scrape with `fetch` every `interval` (the first after one interval, once
@@ -196,7 +309,7 @@ fn restarted(before: &CacheReport, now: &CacheReport) -> bool {
 pub fn spawn<F, Fut>(interval: Duration, meter: &Meter, mut fetch: F) -> tokio::task::JoinHandle<()>
 where
     F: FnMut() -> Fut + Send + 'static,
-    Fut: Future<Output = Result<CacheReport, String>> + Send,
+    Fut: Future<Output = Result<SearcherMetrics, String>> + Send,
 {
     let mut scraper = Scraper::new(Instruments::new(meter));
     tokio::spawn(async move {
@@ -215,6 +328,7 @@ where
 mod tests {
     use super::*;
     use usnm_search::cache_metrics::CacheStats;
+    use usnm_search::thread_metrics::{Runtime, RuntimeStats};
 
     fn stats(hits: u64, misses: u64, evictions: u64) -> CacheStats {
         CacheStats {
@@ -226,8 +340,27 @@ mod tests {
         }
     }
 
-    fn report(entries: &[(Cache, CacheStats)]) -> CacheReport {
-        entries.iter().copied().collect()
+    fn report(entries: &[(Cache, CacheStats)]) -> SearcherMetrics {
+        SearcherMetrics {
+            caches: entries.iter().copied().collect(),
+            threads: ThreadReport::default(),
+        }
+    }
+
+    fn busy(mut metrics: SearcherMetrics, entries: &[(Runtime, u64)]) -> SearcherMetrics {
+        metrics.threads.runtimes = entries
+            .iter()
+            .map(|&(r, busy_ms)| {
+                (
+                    r,
+                    RuntimeStats {
+                        busy_ms,
+                        threads: 1,
+                    },
+                )
+            })
+            .collect();
+        metrics
     }
 
     #[test]
@@ -257,5 +390,27 @@ mod tests {
             &before,
             &report(&[(Cache::SplitFooter, stats(6, 4, 0))])
         ));
+    }
+
+    #[test]
+    fn a_restart_is_seen_in_a_runtime() {
+        let caches = [(Cache::SplitFooter, stats(5, 3, 0))];
+        let before = busy(report(&caches), &[(Runtime::Main, 60_000)]);
+        // More busy time, and a runtime that started since: no restart.
+        assert!(!restarted(
+            &before,
+            &busy(
+                report(&caches),
+                &[(Runtime::Main, 61_000), (Runtime::Blocking, 5)]
+            )
+        ));
+        // The caches alone don't show it, but the main runtime's busy time
+        // went down.
+        assert!(restarted(
+            &before,
+            &busy(report(&caches), &[(Runtime::Main, 900)])
+        ));
+        // The runtime is gone.
+        assert!(restarted(&before, &report(&caches)));
     }
 }

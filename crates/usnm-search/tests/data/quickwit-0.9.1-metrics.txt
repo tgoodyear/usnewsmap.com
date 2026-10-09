@@ -141,3 +141,29 @@ quickwit_cache_in_cache_count{component_name="shortlived"} 0
 quickwit_cache_in_cache_count{component_name="predicate"} 0
 quickwit_cache_in_cache_count{component_name="fastfields"} 4
 quickwit_cache_in_cache_count 0
+# HELP quickwit_runtime_tokio_worker_busy_duration_milliseconds_total  The total amount of time worker threads were busy.
+# TYPE quickwit_runtime_tokio_worker_busy_duration_milliseconds_total counter
+quickwit_runtime_tokio_worker_busy_duration_milliseconds_total 0
+quickwit_runtime_tokio_worker_busy_duration_milliseconds_total{runtime_type="main"} 13
+# HELP quickwit_runtime_tokio_worker_threads The number of worker threads used by the runtime.
+# TYPE quickwit_runtime_tokio_worker_threads gauge
+quickwit_runtime_tokio_worker_threads 0
+quickwit_runtime_tokio_worker_threads{runtime_type="main"} 3
+# HELP quickwit_runtime_tokio_worker_busy_ratio The ratio of time worker threads were busy since the last time runtime metrics were collected.
+# TYPE quickwit_runtime_tokio_worker_busy_ratio gauge
+quickwit_runtime_tokio_worker_busy_ratio{runtime_type="main"} 0.002006164494268085
+quickwit_runtime_tokio_worker_busy_ratio 0
+# HELP quickwit_thread_pool_pending_tasks number of tasks waiting in the queue before being processed by the thread pool
+# TYPE quickwit_thread_pool_pending_tasks gauge
+quickwit_thread_pool_pending_tasks{pool="search"} 0
+quickwit_thread_pool_pending_tasks{pool="small_tasks"} 0
+quickwit_thread_pool_pending_tasks 0
+# HELP quickwit_thread_pool_ongoing_tasks number of tasks being currently processed by threads in the thread pool
+# TYPE quickwit_thread_pool_ongoing_tasks gauge
+quickwit_thread_pool_ongoing_tasks{pool="small_tasks"} 0
+quickwit_thread_pool_ongoing_tasks{pool="search"} 0
+quickwit_thread_pool_ongoing_tasks 0
+# HELP quickwit_runtime_tokio_scheduled_tasks The total number of tasks currently scheduled in workers' local queues.
+# TYPE quickwit_runtime_tokio_scheduled_tasks gauge
+quickwit_runtime_tokio_scheduled_tasks{runtime_type="main"} 0
+quickwit_runtime_tokio_scheduled_tasks 0

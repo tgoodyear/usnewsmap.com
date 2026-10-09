@@ -1,6 +1,6 @@
-//! The searcher sidecar's cache metrics (#125): what reaches Application
-//! Insights (a fake ingestion endpoint) from each scrape, and what is logged
-//! while the sidecar is down.
+//! The searcher sidecar's cache, thread pool and runtime metrics (#125,
+//! #251): what reaches Application Insights (a fake ingestion endpoint) from
+//! each scrape, and what is logged while the sidecar is down.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use opentelemetry::metrics::MeterProvider as _;
 use serde_json::Value;
 use tracing_subscriber::layer::SubscriberExt;
-use usnm_api::searcher_caches::{self, Instruments, Scraper, HEARTBEAT};
+use usnm_api::searcher_metrics::{self, Instruments, Scraper, HEARTBEAT};
 use usnm_api::telemetry::SERVICE;
-use usnm_search::cache_metrics::{Cache, CacheReport, CacheStats};
-use usnm_search::quickwit::QuickwitBackend;
+use usnm_search::cache_metrics::{Cache, CacheStats};
+use usnm_search::quickwit::{QuickwitBackend, SearcherMetrics};
+use usnm_search::thread_metrics::{Pool, PoolTasks, Runtime, RuntimeStats, ThreadReport};
 use usnm_telemetry::testing::{fake_ingestion, Plain, Seen};
 
 /// Console output captured from the JSON log layer.
@@ -50,7 +51,9 @@ fn subscriber(console: &Captured) -> impl tracing::Subscriber + Send + Sync {
         }))
 }
 
-/// The searcher metrics in uploads `from..`: `(name, cache, value)`, sorted.
+/// The searcher metrics in uploads `from..`: `(name, attributes, value)`,
+/// sorted. The attributes are the values of `cache`, `pool`, `state` and
+/// `runtime` that the row has, joined by spaces.
 fn exported(seen: &Seen, from: usize) -> Vec<(String, String, f64)> {
     let mut out: Vec<_> = seen.uploads()[from..]
         .iter()
@@ -61,21 +64,20 @@ fn exported(seen: &Seen, from: usize) -> Vec<(String, String, f64)> {
         .filter(|e| e["data"]["baseType"] == "MetricData")
         .flat_map(|e| {
             let d = &e["data"]["baseData"];
-            let cache = d["properties"]["cache"].as_str().unwrap_or("").to_owned();
+            let attrs = ["cache", "pool", "state", "runtime"]
+                .iter()
+                .filter_map(|k| d["properties"][k].as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             d["metrics"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|m| {
-                    m["name"]
-                        .as_str()
-                        .unwrap()
-                        .starts_with("api.searcher_cache_")
-                })
+                .filter(|m| m["name"].as_str().unwrap().starts_with("api.searcher_"))
                 .map(|m| {
                     (
                         m["name"].as_str().unwrap().to_owned(),
-                        cache.clone(),
+                        attrs.clone(),
                         m["value"].as_f64().unwrap(),
                     )
                 })
@@ -86,16 +88,28 @@ fn exported(seen: &Seen, from: usize) -> Vec<(String, String, f64)> {
     out
 }
 
-fn row(name: &str, cache: &str, value: f64) -> (String, String, f64) {
-    (
-        format!("api.searcher_cache_{name}"),
-        cache.to_owned(),
-        value,
-    )
+/// The cache metrics among [`exported`]: the pools are recorded at every
+/// scrape.
+fn cache_rows(seen: &Seen, from: usize) -> Vec<(String, String, f64)> {
+    exported(seen, from)
+        .into_iter()
+        .filter(|r| r.0.starts_with("api.searcher_cache_"))
+        .collect()
 }
 
-fn report(entries: &[(Cache, CacheStats)]) -> CacheReport {
-    entries.iter().copied().collect()
+fn row(name: &str, cache: &str, value: f64) -> (String, String, f64) {
+    row_of(&format!("cache_{name}"), cache, value)
+}
+
+fn row_of(name: &str, attrs: &str, value: f64) -> (String, String, f64) {
+    (format!("api.searcher_{name}"), attrs.to_owned(), value)
+}
+
+fn report(entries: &[(Cache, CacheStats)]) -> SearcherMetrics {
+    SearcherMetrics {
+        caches: entries.iter().copied().collect(),
+        threads: ThreadReport::default(),
+    }
 }
 
 fn s(bytes: u64, items: u64, hits: u64, misses: u64, evictions: u64) -> CacheStats {
@@ -145,7 +159,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
     scraper.observe(Ok(a.clone()), t0);
     let from = flush().await;
     assert_eq!(
-        exported(&seen, from),
+        cache_rows(&seen, from),
         vec![
             row("bytes", "fast_field", 663.0),
             row("bytes", "split_footer", 17_220.0),
@@ -157,10 +171,10 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         ]
     );
 
-    // Nothing changed: nothing is sent.
+    // Nothing changed: no cache metric is sent.
     scraper.observe(Ok(a.clone()), t0 + Duration::from_secs(60));
     let from = flush().await;
-    assert_eq!(exported(&seen, from), vec![]);
+    assert_eq!(cache_rows(&seen, from), vec![]);
 
     // The sidecar goes away for a few scrapes: one warning, nothing sent.
     for i in 2..6 {
@@ -171,9 +185,9 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
     }
     assert_eq!(scraper.failures(), 4);
     let from = flush().await;
-    assert_eq!(exported(&seen, from), vec![]);
+    assert_eq!(cache_rows(&seen, from), vec![]);
     assert_eq!(
-        console.count("searcher cache metrics unavailable; retrying quietly"),
+        console.count("searcher metrics unavailable; retrying quietly"),
         1
     );
 
@@ -193,7 +207,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
     scraper.observe(Ok(c.clone()), t1 + Duration::from_secs(60));
     let from = flush().await;
     assert_eq!(
-        exported(&seen, from),
+        cache_rows(&seen, from),
         vec![
             row("bytes", "split_footer", 268_000_000.0),
             row("evictions", "split_footer", 13.0),
@@ -203,7 +217,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         ]
     );
     assert_eq!(scraper.failures(), 0);
-    assert_eq!(console.count("searcher cache metrics available again"), 1);
+    assert_eq!(console.count("searcher metrics available again"), 1);
     assert_eq!(console.count("split footer cache evictions seen"), 1);
 
     // Quiet for the heartbeat: the gauges again, so a quiet replica still
@@ -211,7 +225,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
     scraper.observe(Ok(c.clone()), t1 + HEARTBEAT);
     let from = flush().await;
     assert_eq!(
-        exported(&seen, from),
+        cache_rows(&seen, from),
         vec![
             row("bytes", "fast_field", 663.0),
             row("bytes", "split_footer", 268_000_000.0),
@@ -230,7 +244,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
     scraper.observe(Ok(d), t1 + HEARTBEAT + Duration::from_secs(60));
     let from = flush().await;
     assert_eq!(
-        exported(&seen, from),
+        cache_rows(&seen, from),
         vec![
             row("bytes", "split_footer", 8_000.0),
             row("items", "split_footer", 1.0),
@@ -239,7 +253,7 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
         ]
     );
     assert_eq!(
-        console.count("the searcher restarted; its cache counters start again from 0"),
+        console.count("the searcher restarted; its counters start again from 0"),
         1
     );
     // A new searcher run logs its first footer eviction again.
@@ -259,6 +273,189 @@ async fn scrapes_become_a_few_metrics_and_quiet_logs() {
     .unwrap();
 }
 
+fn threads(search: (u64, u64), main_busy_ms: u64) -> ThreadReport {
+    ThreadReport {
+        pools: [
+            (
+                Pool::Search,
+                PoolTasks {
+                    ongoing: search.0,
+                    pending: search.1,
+                },
+            ),
+            (Pool::SmallTasks, PoolTasks::default()),
+        ]
+        .into(),
+        runtimes: [(
+            Runtime::Main,
+            RuntimeStats {
+                busy_ms: main_busy_ms,
+                threads: 1,
+            },
+        )]
+        .into(),
+    }
+}
+
+fn with_threads(caches: &[(Cache, CacheStats)], threads: ThreadReport) -> SearcherMetrics {
+    SearcherMetrics {
+        threads,
+        ..report(caches)
+    }
+}
+
+/// The thread pools and runtimes (#251): both pools' tasks and every
+/// runtime's threads at each scrape, 0 included, also before Quickwit has
+/// used a pool; the busy time and thread time since the last scrape of the
+/// same searcher run, gaps included; and a restart seen in a runtime alone
+/// resets the caches' counts too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pools_and_runtimes_are_recorded_at_every_scrape() {
+    let (endpoint, seen) = fake_ingestion().await;
+    let conn = format!(
+        "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint={endpoint}"
+    );
+    let (tracer, meter_provider) =
+        usnm_telemetry::providers(&conn, Plain::with_token("tok"), SERVICE).unwrap();
+    let meter_provider = Arc::new(meter_provider);
+    let meter = meter_provider.meter(SERVICE.name);
+    let console = Captured::default();
+    let guard = tracing::subscriber::set_default(subscriber(&console));
+    let flush = || {
+        let p = meter_provider.clone();
+        let before = seen.uploads().len();
+        async move {
+            tokio::task::spawn_blocking(move || p.force_flush().unwrap())
+                .await
+                .unwrap();
+            before
+        }
+    };
+    let pools = |search: (f64, f64), small: (f64, f64)| {
+        vec![
+            row_of("pool_tasks", "search ongoing", search.0),
+            row_of("pool_tasks", "search pending", search.1),
+            row_of("pool_tasks", "small_tasks ongoing", small.0),
+            row_of("pool_tasks", "small_tasks pending", small.1),
+        ]
+    };
+
+    let mut scraper = Scraper::new(Instruments::new(&meter));
+    let t0 = Instant::now();
+    let footers = [(Cache::SplitFooter, s(17_220, 2, 4, 2, 0))];
+    let sorted = |mut rows: Vec<(String, String, f64)>| {
+        rows.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        rows
+    };
+
+    // The first scrape, before Quickwit has used either pool, so it lists
+    // neither: both are reported at 0. No busy or thread time: Quickwit's
+    // busy time covers its whole life so far.
+    let mut first = threads((0, 0), 13);
+    first.pools.clear();
+    scraper.observe(Ok(with_threads(&footers, first)), t0);
+    let from = flush().await;
+    let mut want = pools((0.0, 0.0), (0.0, 0.0));
+    want.extend([
+        row("bytes", "split_footer", 17_220.0),
+        row("hits", "split_footer", 4.0),
+        row("items", "split_footer", 2.0),
+        row("misses", "split_footer", 2.0),
+        row_of("runtime_threads", "main", 1.0),
+    ]);
+    assert_eq!(exported(&seen, from), sorted(want));
+
+    // A minute of cold searches: the search pool full and queued, the main
+    // runtime busy 59 of its 60 s of thread time. The caches didn't change.
+    let t1 = t0 + Duration::from_secs(60);
+    scraper.observe(Ok(with_threads(&footers, threads((3, 41), 59_013))), t1);
+    let from = flush().await;
+    let mut want = pools((3.0, 41.0), (0.0, 0.0));
+    want.extend([
+        row_of("runtime_busy_ms", "main", 59_000.0),
+        row_of("runtime_capacity_ms", "main", 60_000.0),
+        row_of("runtime_threads", "main", 1.0),
+    ]);
+    assert_eq!(exported(&seen, from), sorted(want));
+
+    // Nothing changed: the pools, threads and thread time again, but no
+    // busy time.
+    scraper.observe(
+        Ok(with_threads(&footers, threads((3, 41), 59_013))),
+        t1 + Duration::from_secs(60),
+    );
+    let from = flush().await;
+    let mut want = pools((3.0, 41.0), (0.0, 0.0));
+    want.extend([
+        row_of("runtime_capacity_ms", "main", 60_000.0),
+        row_of("runtime_threads", "main", 1.0),
+    ]);
+    assert_eq!(exported(&seen, from), sorted(want));
+
+    // A failed scrape records nothing, not even the pools.
+    scraper.observe(Err("timed out".into()), t1 + Duration::from_secs(120));
+    let from = flush().await;
+    assert_eq!(exported(&seen, from), vec![]);
+
+    // The next one covers both minutes, busy time and thread time alike.
+    scraper.observe(
+        Ok(with_threads(&footers, threads((1, 0), 59_013 + 90_000))),
+        t1 + Duration::from_secs(180),
+    );
+    let from = flush().await;
+    let mut want = pools((1.0, 0.0), (0.0, 0.0));
+    want.extend([
+        row_of("runtime_busy_ms", "main", 90_000.0),
+        row_of("runtime_capacity_ms", "main", 120_000.0),
+        row_of("runtime_threads", "main", 1.0),
+    ]);
+    assert_eq!(exported(&seen, from), sorted(want));
+
+    // The searcher restarted. Its footer cache already counts more misses
+    // than before, so only the main runtime's busy time shows the restart:
+    // the 5 misses are all since then, not 3 more. Its busy time covers the
+    // new searcher's life, so neither it nor the thread time is recorded.
+    let footers = [(Cache::SplitFooter, s(17_220, 2, 4, 5, 0))];
+    scraper.observe(
+        Ok(with_threads(&footers, threads((0, 0), 700))),
+        t1 + Duration::from_secs(240),
+    );
+    let from = flush().await;
+    let mut want = pools((0.0, 0.0), (0.0, 0.0));
+    want.extend([
+        row("hits", "split_footer", 4.0),
+        row("misses", "split_footer", 5.0),
+        row_of("runtime_threads", "main", 1.0),
+    ]);
+    assert_eq!(exported(&seen, from), sorted(want));
+    assert_eq!(
+        console.count("the searcher restarted; its counters start again from 0"),
+        1
+    );
+
+    // From the next scrape on, both again.
+    scraper.observe(
+        Ok(with_threads(&footers, threads((0, 0), 30_700))),
+        t1 + Duration::from_secs(300),
+    );
+    let from = flush().await;
+    let mut want = pools((0.0, 0.0), (0.0, 0.0));
+    want.extend([
+        row_of("runtime_busy_ms", "main", 30_000.0),
+        row_of("runtime_capacity_ms", "main", 60_000.0),
+        row_of("runtime_threads", "main", 1.0),
+    ]);
+    assert_eq!(exported(&seen, from), sorted(want));
+
+    drop(guard);
+    tokio::task::spawn_blocking(move || {
+        tracer.shutdown().unwrap();
+        meter_provider.shutdown().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 /// The scrape loop against a sidecar that isn't there: it keeps running and
 /// logs one line, however many scrapes fail.
 #[tokio::test]
@@ -268,7 +465,7 @@ async fn a_missing_sidecar_is_logged_once_and_the_loop_keeps_going() {
     // Nothing listens on port 9 (discard) of localhost.
     let qw = Arc::new(QuickwitBackend::new("http://127.0.0.1:9", Duration::from_secs(1)).unwrap());
     let calls = Arc::new(Mutex::new(0u32));
-    let handle = searcher_caches::spawn(
+    let handle = searcher_metrics::spawn(
         Duration::from_millis(20),
         &opentelemetry::global::meter("test"),
         {
@@ -276,7 +473,7 @@ async fn a_missing_sidecar_is_logged_once_and_the_loop_keeps_going() {
             move || {
                 let qw = qw.clone();
                 *calls.lock().unwrap() += 1;
-                async move { qw.cache_metrics().await.map_err(|e| e.to_string()) }
+                async move { qw.searcher_metrics().await.map_err(|e| e.to_string()) }
             }
         },
     );
@@ -290,7 +487,7 @@ async fn a_missing_sidecar_is_logged_once_and_the_loop_keeps_going() {
     assert!(!handle.is_finished(), "the loop ended");
     handle.abort();
     assert_eq!(
-        console.count("searcher cache metrics unavailable; retrying quietly"),
+        console.count("searcher metrics unavailable; retrying quietly"),
         1,
         "{}",
         console.text()
@@ -308,12 +505,19 @@ async fn reads_a_sidecar_over_http() {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let qw = QuickwitBackend::new(&format!("http://{addr}"), Duration::from_secs(1)).unwrap();
-    let r = qw.cache_metrics().await.unwrap();
-    assert_eq!(r[&Cache::SplitFooter], s(17_220, 2, 4, 2, 0));
+    let r = qw.searcher_metrics().await.unwrap();
+    assert_eq!(r.caches[&Cache::SplitFooter], s(17_220, 2, 4, 2, 0));
+    assert_eq!(
+        r.threads.runtimes[&Runtime::Main],
+        RuntimeStats {
+            busy_ms: 13,
+            threads: 3,
+        }
+    );
     // Something else on the port: an error, not a panic.
     let other = QuickwitBackend::new(&format!("http://{addr}/nope"), Duration::from_secs(1))
         .unwrap()
-        .cache_metrics()
+        .searcher_metrics()
         .await
         .unwrap_err()
         .to_string();

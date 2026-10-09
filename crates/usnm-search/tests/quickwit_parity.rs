@@ -675,22 +675,25 @@ async fn common_word_phrases(
     matched
 }
 
-/// The searcher's cache metrics have the names and labels the API reads
-/// (#125): after a search over both indexes, each split's footer is cached.
+/// The searcher's metrics have the names and labels the API reads (#125,
+/// #251): after a search over both indexes, each split's footer is cached,
+/// the search pool has run, and the main runtime has threads.
 #[tokio::test]
-async fn cache_metrics_report_the_split_footers() {
+async fn searcher_metrics_report_the_split_footers_and_the_search_pool() {
     let Some(qw) = quickwit() else {
         eprintln!("QUICKWIT_URL not set; skipping");
         return;
     };
     use usnm_search::cache_metrics::Cache;
+    use usnm_search::thread_metrics::{Pool, Runtime};
     let set = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     let f = filters("1890-01-01", "1899-12-31");
     let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
     qw.summary(&set, &parse("gold").unwrap(), &f, &spec)
         .await
         .unwrap();
-    let report = qw.cache_metrics().await.unwrap();
+    let metrics = qw.searcher_metrics().await.unwrap();
+    let report = &metrics.caches;
     let footers = report[&Cache::SplitFooter];
     // At least one split per index, each footer cached once.
     assert!(footers.items >= 2, "{report:?}");
@@ -701,6 +704,17 @@ async fn cache_metrics_report_the_split_footers() {
     // No assertion on evictions: the shared searcher's counter covers its whole
     // life, and Quickwit 0.9.1 also counts replacing a footer as an eviction.
     assert!(report.contains_key(&Cache::FastField), "{report:?}");
+    // The search is over, so the pool's numbers are whatever other tests
+    // run now; only that it is there.
+    let threads = &metrics.threads;
+    assert!(threads.pools.contains_key(&Pool::Search), "{threads:?}");
+    assert!(
+        threads
+            .runtimes
+            .get(&Runtime::Main)
+            .is_some_and(|m| m.threads >= 1),
+        "{threads:?}"
+    );
 }
 
 // ------------------------------------------------- decade partitions (#123)

@@ -114,9 +114,9 @@ pub struct Config {
     pub search_log_url: Option<String>,
     /// How often the search log appends its batch.
     pub search_log_flush: Duration,
-    /// How often the Quickwit searcher's cache metrics are read and
-    /// reported (`crate::searcher_caches`); zero turns it off. Quickwit
-    /// backend only.
+    /// How often the Quickwit searcher's cache, thread pool and runtime
+    /// metrics are read and reported (`crate::searcher_metrics`); zero turns
+    /// it off. Quickwit backend only.
     pub searcher_metrics_interval: Duration,
     /// End-to-end tests only, and only with the memory backend: an aggregate
     /// search whose query contains this term waits this long before it runs,

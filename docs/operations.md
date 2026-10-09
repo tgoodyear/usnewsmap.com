@@ -90,6 +90,22 @@ For `api.searcher_cache_bytes` and `api.searcher_cache_items` (gauges) read `Hel
 
 The change goes live when it merges (CI applies `searcher.yaml` to the running app). Confirm with `searcher-caches` a day later: after the warm-up, footer misses and evictions stay near 0 (each replica start misses about once per split), and the footer cache's MB held is about the footer total.
 
+## Searcher threads
+
+The sidecar runs each split's search on its `search` thread pool, and downloads from Blob and opens the splits on its main Tokio runtime. The API reads both with the caches, every minute, and reports them as `api.searcher_pool_tasks` and `api.searcher_runtime_*` (08 §8.1.2):
+
+```sh
+scripts/logs.sh prod searcher-threads 2h       # per replica and minute: search pool ongoing and pending, main runtime threads and busy share
+```
+
+Read it while cold searches run (`scripts/load-cold-searches.py`):
+
+- `SearchPending` above 0 with `SearchOngoing` at the pool's size: searches wait for cores. The pool has `RAYON_NUM_THREADS` threads (4, set on the sidecar in `infra/modules/containerapp.bicep`; without it, one per CPU Rust counts, which rounds the 3.75 vCPU quota down to 3). Quickwit doesn't report the size; it is the most `SearchOngoing` reaches.
+- `MainBusyPercent` near 100 with the search pool below its size and nothing pending: searches wait on the main runtime. It has `QW_TOKIO_RUNTIME_NUM_THREADS` threads (2, same file; `MainThreads`).
+- Neither: look at Blob reads, and at `max_num_concurrent_split_searches` in `infra/quickwit/searcher.yaml`, which limits the split searches downloading at once.
+
+The pool numbers are a reading once a minute, not an average, so a short burst can fall between two. `MainBusyPercent` is busy time over the thread time the runtime had (`api.searcher_runtime_capacity_ms`), so it stays a share however the reports fall into the minutes; it is empty for a replica's first minute and after a searcher restart.
+
 ## Cache warm-up
 
 Each API start, and each publish before it swaps the new version in, warms the caches with the home page's examples and the most frequent logged searches (06 §6.5). One line per run:
