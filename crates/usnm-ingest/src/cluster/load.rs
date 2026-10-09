@@ -536,12 +536,18 @@ pub async fn run_from(input: &Input<'_>, spec: &Spec) -> anyhow::Result<Report> 
         match input {
             Input::Sample { store, .. } => {
                 for p in &parts {
-                    let ndjson = sample::part(*store, &p.path).await?;
-                    for c in chunks(&ndjson, spec.chunk_bytes)? {
-                        if tx.send(c).await.is_err() {
-                            // A sender failed; its error comes from the join below.
-                            return Ok::<_, anyhow::Error>(());
-                        }
+                    let alive = sample::feed(
+                        *store,
+                        &p.path,
+                        Some(p.compressed_bytes),
+                        None,
+                        spec.chunk_bytes,
+                        tx.clone(),
+                    )
+                    .await?;
+                    if !alive {
+                        // A sender failed; its error comes from the join below.
+                        return Ok::<_, anyhow::Error>(());
                     }
                 }
                 Ok(())

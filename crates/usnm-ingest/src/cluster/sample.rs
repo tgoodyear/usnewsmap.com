@@ -345,7 +345,6 @@ pub async fn build(
         secs: 0.0,
     };
     let mut buf: Vec<u8> = Vec::new();
-    let mut buf_docs = 0u64;
     let mut last_log = tokio::time::Instant::now();
     while let Some(joined) = results.next().await {
         let b = joined.context("a batch's task failed")??;
@@ -355,9 +354,11 @@ pub async fn build(
         m.docs_with_as += b.with_as;
         m.docs_only_as += b.only_as;
         buf.extend_from_slice(&b.lines);
-        buf_docs += b.docs;
-        if buf.len() >= spec.part_bytes {
-            flush(out, prefix, &mut buf, &mut buf_docs, &mut m).await?;
+        // A batch can be larger than several parts: cut at line boundaries.
+        while buf.len() >= spec.part_bytes {
+            let rest = buf.split_off(cut_point(&buf, spec.part_bytes));
+            flush(out, prefix, &mut buf, &mut m).await?;
+            buf = rest;
         }
         if last_log.elapsed() >= Duration::from_secs(30) || m.batches as usize == total {
             last_log = tokio::time::Instant::now();
@@ -373,7 +374,7 @@ pub async fn build(
             );
         }
     }
-    flush(out, prefix, &mut buf, &mut buf_docs, &mut m).await?;
+    flush(out, prefix, &mut buf, &mut m).await?;
     m.secs = start.elapsed().as_secs_f64();
     out.put(
         &format!("{prefix}/manifest.json"),
@@ -384,11 +385,24 @@ pub async fn build(
     Ok(m)
 }
 
+/// Where to end a part of `buf` (whole lines, `buf.len() >= limit`): after
+/// the last line that ends within `limit` bytes, or after the first line if
+/// that one alone is longer.
+fn cut_point(buf: &[u8], limit: usize) -> usize {
+    let within = &buf[..limit.min(buf.len())];
+    match within.iter().rposition(|&b| b == b'\n') {
+        Some(i) => i + 1,
+        None => buf
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(buf.len(), |i| i + 1),
+    }
+}
+
 async fn flush(
     out: &dyn ObjectStore,
     prefix: &str,
     buf: &mut Vec<u8>,
-    docs: &mut u64,
     m: &mut Manifest,
 ) -> anyhow::Result<()> {
     if buf.is_empty() {
@@ -396,19 +410,19 @@ async fn flush(
     }
     let raw = std::mem::take(buf);
     let bytes = raw.len() as u64;
+    let docs = raw.iter().filter(|&&b| b == b'\n').count() as u64;
     let compressed = tokio::task::spawn_blocking(move || zstd::encode_all(&raw[..], 3)).await??;
     let path = format!("{prefix}/docs-{:05}.ndjson.zst", m.parts.len());
     let compressed_bytes = compressed.len() as u64;
     out.put(&path, compressed, "application/zstd").await?;
     m.parts.push(PartInfo {
         path,
-        docs: *docs,
+        docs,
         bytes,
         compressed_bytes,
     });
     m.bytes += bytes;
     m.compressed_bytes += compressed_bytes;
-    *docs = 0;
     Ok(())
 }
 
@@ -422,13 +436,86 @@ pub async fn manifest(store: &dyn ObjectStore, prefix: &str) -> anyhow::Result<M
     serde_json::from_slice(&bytes).context(path)
 }
 
-/// One sample part's NDJSON, decompressed.
+/// One sample part's NDJSON, decompressed, read as a stream (no store
+/// size limit applies). For tests and small parts; loads use [`feed`].
 pub async fn part(store: &dyn ObjectStore, path: &str) -> anyhow::Result<Vec<u8>> {
-    let bytes = store
-        .get(path)
+    use futures::StreamExt;
+    let mut stream = store
+        .get_stream(path)
         .await?
         .with_context(|| format!("sample part `{path}` is missing"))?;
-    Ok(tokio::task::spawn_blocking(move || zstd::decode_all(&bytes[..])).await??)
+    let mut compressed = Vec::new();
+    while let Some(c) = stream.next().await {
+        compressed.extend_from_slice(&c?);
+    }
+    Ok(tokio::task::spawn_blocking(move || zstd::decode_all(&compressed[..])).await??)
+}
+
+/// Stream zstd NDJSON at `path` (one or more frames) to `tx` as request
+/// bodies of at most `limit` bytes, whole lines, decoding as it reads: no
+/// object is held whole. Checks the file's sha256 when `sha256` is given.
+/// `Ok(false)` when the receiver went away first.
+pub async fn feed(
+    store: &dyn ObjectStore,
+    path: &str,
+    size: Option<u64>,
+    sha256: Option<&str>,
+    limit: usize,
+    tx: tokio::sync::mpsc::Sender<bytes::Bytes>,
+) -> anyhow::Result<bool> {
+    use std::io::BufRead;
+    let stream = store
+        .get_stream(path)
+        .await?
+        .with_context(|| format!("`{path}` is missing"))?;
+    let crate::source::Download {
+        reader,
+        digest,
+        task,
+        ..
+    } = crate::source::from_store(stream, path, size);
+    let sent = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let decoder = zstd::stream::read::Decoder::new(reader)?;
+        let mut lines = std::io::BufReader::new(decoder);
+        let (mut cur, mut line) = (Vec::new(), Vec::new());
+        loop {
+            line.clear();
+            if lines.read_until(b'\n', &mut line)? == 0 {
+                break;
+            }
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            if !line.ends_with(b"\n") {
+                line.push(b'\n');
+            }
+            if line.len() > limit {
+                bail!("a document is {} bytes, over the request limit", line.len());
+            }
+            if cur.len() + line.len() > limit
+                && tx.blocking_send(std::mem::take(&mut cur).into()).is_err()
+            {
+                return Ok(false);
+            }
+            cur.extend_from_slice(&line);
+        }
+        let alive = cur.is_empty() || tx.blocking_send(cur.into()).is_ok();
+        // Keep the read going until here.
+        drop(task);
+        Ok(alive)
+    })
+    .await?;
+    let alive = sent?;
+    if !alive {
+        return Ok(false);
+    }
+    let sha = digest.await.context("the read stopped")??;
+    if let Some(want) = sha256 {
+        if !sha.eq_ignore_ascii_case(want) {
+            bail!("`{path}` reads as sha256 {sha}, not its manifest's {want}");
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -460,6 +547,17 @@ mod tests {
         let v = u64::from_be_bytes(h[..8].try_into().unwrap()) % 10_000;
         assert!(sampled(id, u32::try_from(v).unwrap() + 1));
         assert!(!sampled(id, u32::try_from(v).unwrap()));
+    }
+
+    #[test]
+    fn parts_end_at_line_boundaries() {
+        let buf = b"aaaa\nbb\ncccccc\nd\n";
+        assert_eq!(cut_point(buf, 8), 8);
+        assert_eq!(cut_point(buf, 10), 8);
+        assert_eq!(cut_point(buf, 5), 5);
+        // A line longer than the limit is a part of its own.
+        assert_eq!(cut_point(b"aaaaaaaa\nb\n", 3), 9);
+        assert_eq!(cut_point(b"aaaaaaaa", 3), 8);
     }
 
     #[test]

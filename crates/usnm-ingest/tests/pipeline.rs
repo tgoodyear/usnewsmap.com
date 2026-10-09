@@ -3727,7 +3727,24 @@ async fn a_full_sample_is_the_release_s_documents() {
     let (m, all) = take(10_000, "all").await;
     assert_eq!(all, released, "every page, every field");
     assert_eq!(m.docs, released.len() as u64);
-    assert!(m.parts.len() > 1, "parts are cut at part_bytes");
+    // Each batch is many times part_bytes: its lines are split across
+    // parts, every part whole lines and at most part_bytes, but for a
+    // document longer than that on its own.
+    assert!(
+        m.parts.len() > 3 * m.batches as usize,
+        "{} parts",
+        m.parts.len()
+    );
+    let longest = all
+        .values()
+        .map(|d| serde_json::to_vec(d).unwrap().len() as u64 + 1)
+        .max()
+        .unwrap();
+    for p in &m.parts {
+        assert!(p.bytes <= 4096 || p.docs == 1, "{p:?}");
+        assert!(p.bytes <= 4096.max(longest), "{p:?}");
+    }
+    assert_eq!(m.parts.iter().map(|p| p.docs).sum::<u64>(), m.docs);
     assert!(m.docs_with_as > 0 && m.docs_only_as > 0, "{m:?}");
     assert_eq!(m.version, p.index_version);
     let (half, docs) = take(5_000, "half").await;
@@ -3990,6 +4007,46 @@ async fn retained_archives_are_kept_and_read_back() {
     );
 }
 
+/// A store that refuses `get` on sample parts and set documents, so tests
+/// show their readers stream them (`get` has a size limit; parts don't).
+#[derive(Debug)]
+struct StreamOnly(LocalStore);
+
+#[async_trait::async_trait]
+impl ObjectStore for StreamOnly {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        if path.contains("/docs-") || path.ends_with("docs.ndjson.zst") {
+            return Err(usnm_store::StoreError::TooLarge(path.into()));
+        }
+        self.0.get(path).await
+    }
+    async fn get_stream(
+        &self,
+        path: &str,
+    ) -> Result<Option<usnm_store::ByteStream>, usnm_store::StoreError> {
+        self.0.get_stream(path).await
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.0.put_new(path, body, content_type).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.0.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.0.list(prefix).await
+    }
+}
+
 /// A packaged set (`usnm-qwcluster bundle`): the retained archives in one
 /// tar, the sample's documents in one zstd stream that reads back whole and
 /// checks out, and a manifest; a set is never replaced.
@@ -4017,7 +4074,7 @@ async fn a_sample_set_packages_archives_and_documents() {
     };
     assert_eq!(w.run(None).await.unwrap(), 2);
     e.release(1, true).await.unwrap();
-    let bench = LocalStore::new(e.root.join("bench"));
+    let bench = StreamOnly(LocalStore::new(e.root.join("bench")));
     let spec = sample::Spec {
         cut: 10_000,
         american_stories: false,
@@ -4030,7 +4087,7 @@ async fn a_sample_set_packages_archives_and_documents() {
         .await
         .unwrap();
     assert!(sm.parts.len() > 1, "several zstd frames, one stream");
-    let sets: Arc<dyn ObjectStore> = Arc::new(LocalStore::new(e.root.join("sets")));
+    let sets: Arc<dyn ObjectStore> = Arc::new(StreamOnly(LocalStore::new(e.root.join("sets"))));
     let sources = || set::Sources {
         raw: raw.clone(),
         sample: &bench,
@@ -4050,7 +4107,7 @@ async fn a_sample_set_packages_archives_and_documents() {
     assert_eq!(m.files.len(), 2);
 
     // raw.tar holds the archive byte for byte, and its manifest.
-    let tar_bytes = sets.get("fx-all-v1/raw.tar").await.unwrap().unwrap();
+    let tar_bytes = std::fs::read(e.root.join("sets/fx-all-v1/raw.tar")).unwrap();
     assert_eq!(tar_bytes.len() as u64, m.files[0].bytes);
     let mut entries = BTreeMap::new();
     let mut t = tar::Archive::new(&tar_bytes[..]);

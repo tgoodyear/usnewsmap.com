@@ -268,12 +268,15 @@ pub async fn bundle(
         sets.clone(),
         &format!("{name}/docs.ndjson.zst"),
         |mut sink| async move {
+            // Streamed: a part can be any size.
             for p in &parts {
-                let bytes = sample_store
-                    .get(&p.path)
+                let mut stream = sample_store
+                    .get_stream(&p.path)
                     .await?
                     .with_context(|| format!("sample part `{}` is missing", p.path))?;
-                sink.send(bytes.into()).await?;
+                while let Some(c) = stream.next().await {
+                    sink.send(c?).await?;
+                }
             }
             Ok(sink)
         },
@@ -324,72 +327,28 @@ pub async fn bundle(
 }
 
 /// Send set `name`'s documents to `tx` as request bodies of at most
-/// `limit` bytes (whole lines), checking the file's sha256 at the end.
+/// `limit` bytes (whole lines), streaming, checking the file's sha256 at
+/// the end.
 pub async fn feed_docs(
     sets: &dyn ObjectStore,
     m: &Manifest,
     limit: usize,
     tx: tokio::sync::mpsc::Sender<bytes::Bytes>,
 ) -> anyhow::Result<()> {
-    use std::io::BufRead;
     let file = m
         .files
         .iter()
         .find(|f| f.path.ends_with("/docs.ndjson.zst"))
-        .context("the set has no docs.ndjson.zst")?
-        .clone();
-    let stream = sets
-        .get_stream(&file.path)
-        .await?
-        .with_context(|| format!("`{}` is missing", file.path))?;
-    let crate::source::Download {
-        reader,
-        digest,
-        task,
-        ..
-    } = crate::source::from_store(stream, &file.path, Some(file.bytes));
-    let sent = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let decoder = zstd::stream::read::Decoder::new(reader)?;
-        let mut lines = std::io::BufReader::new(decoder);
-        let (mut cur, mut line) = (Vec::new(), Vec::new());
-        loop {
-            line.clear();
-            if lines.read_until(b'\n', &mut line)? == 0 {
-                break;
-            }
-            if line.iter().all(u8::is_ascii_whitespace) {
-                continue;
-            }
-            if !line.ends_with(b"\n") {
-                line.push(b'\n');
-            }
-            if line.len() > limit {
-                bail!("a document is {} bytes, over the request limit", line.len());
-            }
-            if cur.len() + line.len() > limit
-                && tx.blocking_send(std::mem::take(&mut cur).into()).is_err()
-            {
-                return Ok(());
-            }
-            cur.extend_from_slice(&line);
-        }
-        if !cur.is_empty() {
-            let _ = tx.blocking_send(cur.into());
-        }
-        // Keep the read going until here.
-        drop(task);
-        Ok(())
-    })
+        .context("the set has no docs.ndjson.zst")?;
+    sample::feed(
+        sets,
+        &file.path,
+        Some(file.bytes),
+        Some(&file.sha256),
+        limit,
+        tx,
+    )
     .await?;
-    sent?;
-    let sha = digest.await.context("the read stopped")??;
-    if !sha.eq_ignore_ascii_case(&file.sha256) {
-        bail!(
-            "`{}` reads as sha256 {sha}, not its manifest's {}",
-            file.path,
-            file.sha256
-        );
-    }
     Ok(())
 }
 
