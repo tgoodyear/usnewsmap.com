@@ -136,6 +136,14 @@ az containerapp job execution list -n "$JOB" -g "$RG" -o table
 - `release merges`: step `settle`, then `finalize`; `splits` falls by 9 every minute or two after ingest ends. About 1.7 h for 23.8M pages in October 2026; with the 60,000-page splits and the common-word pairs, expect about 2.7 h (#156), and at most `USNM_MERGE_TIMEOUT_SECS`. American Stories' text about doubles the index (step 4 of #218 measures the merge time).
 - `merged; the index is closed to further writes`, `index layout` (about 800 splits for 23.8M pages at the 30,000-page target) and `released`. About 11 h from the start when the catalog was complete, in the October 2026 rebuild before #154. With the pairs, the 2026-10-05 rebuild sent only 230 to 460 pages a second, so plan for up to about 29 h of sending and about 41 h in all (up to 8 h of titles-sync, sending, up to 4 h of merges), inside the ingest job's 48 h replica timeout (#172, #173).
 
+**Laying the base out by decade (#123, 05 §5.5.5).** To have the rebuild keep each decade in its own splits, so that a date-limited search skips the others, add the setting to the first provision above:
+
+```sh
+scripts/settings.sh prod USNM_PARTITION_DECADE true   # the job's --partition-decade
+```
+
+Only a full base takes it. The release then logs `decade layout` when it creates the index, a `sent a decade's pages` line each time a decade's pages go to the writer (at most every 30,000 pages of a decade; until then they wait in `/scratch/usnm/quickwit/decade-spill`, a few GB at most), and `sent the pages a decade at a time` with the totals before the merges. The `index layout` line of the base has `splits_by_decade`. Check afterwards: `current.json` has `decades: 1`, and `reference/<version>/manifest.json` has `build.features.decades` and `splits_by_decade` under `indexes`. Leaving the setting on or off changes nothing until the next full rebuild: deltas follow the published version (with the field and decade tags on a version laid out by decade, without on one that isn't). To stop searches naming decades at once, without a rebuild, publish a `current.json` without the key.
+
 Then turn the full rebuild off, and the E4 profile with it, in two provisions: the job has to leave the profile before the profile can go.
 
 ```sh

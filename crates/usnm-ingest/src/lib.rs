@@ -12,6 +12,7 @@ pub mod audit;
 pub mod build_info;
 pub mod catalog;
 pub mod curated;
+pub mod decade_order;
 pub mod dedup;
 pub mod heartbeat;
 pub mod merges;

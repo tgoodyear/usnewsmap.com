@@ -85,6 +85,23 @@ for index in pages-base-fixture pages-delta-fixture-1 pages-ja-fixture; do
     --data-binary @"$docs" |
     grep -q '"num_rejected_docs": 0' || { echo "ingest of ${index} rejected documents" >&2; exit 1; }
 done
+# The same base and delta laid out by decade (05 §5.5.5): their pages moved
+# over four decades (fixtures/decades.rs), the base partitioned and the
+# delta tagged, as a release builds them.
+for pair in pages-base-fixture:partitioned pages-delta-fixture-1:tagged; do
+  index="${pair%%:*}-decades"
+  layout="${pair##*:}"
+  cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-ingest --example decade_fixture -- \
+    template "$layout" < "$root/infra/quickwit/pages-index.yaml" |
+    sed -e "s|\${INDEX_ID}|${index}|" -e "s|\${INDEX_URI}|file://${work}/indexes/${index}|" |
+    curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
+      "$url/api/v1/indexes" > /dev/null
+  cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-ingest --example decade_fixture -- \
+    docs < "$root/fixtures/data/indexes/${pair%%:*}.jsonl" > "$work/${index}.jsonl"
+  curl -sf -XPOST "$url/api/v1/${index}/ingest?commit=force" \
+    --data-binary @"$work/${index}.jsonl" |
+    grep -q '"num_rejected_docs": 0' || { echo "ingest of ${index} rejected documents" >&2; exit 1; }
+done
 stop
 start searcher
 echo "$url"

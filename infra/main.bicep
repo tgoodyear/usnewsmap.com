@@ -57,6 +57,9 @@ param ingestFull bool = false
 @description('Index American Stories\' text with LoC\'s (#218): the first ingest run with it builds a full base. Keep it on afterwards; turning it off makes the next release publish a version whose searches leave the text out (docs/operations.md, "American Stories\' text").')
 param americanStories bool = false
 
+@description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations.md, "Full rebuild").')
+param partitionDecade bool = false
+
 @description('Add a memory-optimized E4 workload profile (4 vCPU / 32 GiB, no minimum nodes) for full index rebuilds (#172). The environment pays the Dedicated plan management fee while it exists: turn it on for a rebuild, off afterwards (docs/operations.md, "Full rebuild").')
 param dedicatedProfile bool = false
 
@@ -403,6 +406,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     cron: ingestCron
     full: ingestFull
     americanStories: americanStories
+    partitionDecade: partitionDecade
     workers: backfillWorkers
     backfillCron: backfillCron
     scratchStorageName: ingestScratch ? scratch!.outputs.envStorageName : ''

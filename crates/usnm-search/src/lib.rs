@@ -6,6 +6,7 @@
 //!   development, tests, and as the correctness oracle for count checks.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -76,6 +77,11 @@ pub struct IndexSet {
     /// Every index has American Stories' text, `text_as` and `text_as_cg`,
     /// at the API's `usnm_core::american_stories::VERSION` (05 §5.5.4).
     american_stories: bool,
+    /// Every index has the `decade` field at the API's
+    /// `usnm_core::decade::VERSION`, and the decades its pages span (05
+    /// §5.5.5): a date-limited search names its decades, so Quickwit skips
+    /// the splits of the others.
+    decades: Option<RangeInclusive<u16>>,
     /// Batch → ids of its documents to hide.
     hidden: Arc<BTreeMap<String, BTreeSet<String>>>,
 }
@@ -86,6 +92,7 @@ impl IndexSet {
             ids,
             common_grams: false,
             american_stories: false,
+            decades: None,
             hidden: Arc::default(),
         }
     }
@@ -108,6 +115,17 @@ impl IndexSet {
 
     pub fn american_stories(&self) -> bool {
         self.american_stories
+    }
+
+    /// Whether searches name their decades, and the decades the version's
+    /// pages span (05 §5.5.5).
+    pub fn with_decades(mut self, span: Option<RangeInclusive<u16>>) -> Self {
+        self.decades = span;
+        self
+    }
+
+    pub fn decades(&self) -> Option<&RangeInclusive<u16>> {
+        self.decades.as_ref()
     }
 
     /// Hide each `(doc_id, batch)`: that batch's copy of the page.

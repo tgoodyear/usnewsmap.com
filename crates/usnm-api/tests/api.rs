@@ -104,6 +104,36 @@ fn oracle_count(q: &str, from: &str, to: &str, indexes: &[&str]) -> u64 {
         .count() as u64
 }
 
+/// A version laid out by decade (05 §5.5.5) names its decades for searches
+/// to skip the other decades' splits: only at the API's own decade version,
+/// over the decades of the version's bounds.
+#[tokio::test]
+async fn searches_name_their_decades_only_on_a_version_laid_out_with_them() {
+    let mut rd = refdata().await;
+    assert_eq!(rd.index_set().decades(), None);
+    rd.current.decades = Some(usnm_core::decade::VERSION + 1);
+    assert_eq!(rd.index_set().decades(), None);
+    rd.current.decades = Some(usnm_core::decade::VERSION);
+    // The fixtures run from 1895 to 1897.
+    assert_eq!(rd.index_set().decades(), Some(&(1890..=1890)));
+    // `current.json` written without the key reads as off, and the key
+    // round-trips.
+    let v = serde_json::to_value(&rd.current).unwrap();
+    assert_eq!(v["decades"], usnm_core::decade::VERSION);
+    // Searches return the same pages either way.
+    let on = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+    let off = state_with(None).await;
+    for q in [
+        "/v1/aggregate?q=gold&from=1896-01-01&to=1896-06-30",
+        "/v1/aggregate?q=gold",
+    ] {
+        let (status, _, a) = get(&on, q).await;
+        assert_eq!(status, StatusCode::OK, "{a}");
+        let (_, _, b) = get(&off, q).await;
+        assert_eq!(a["total"], b["total"], "{q}");
+    }
+}
+
 /// American Stories' text (05 §5.5.4) is searched only for a version built
 /// with it, and a hit says when its snippets come from it.
 #[tokio::test]

@@ -43,11 +43,12 @@ use crate::american_stories;
 use crate::build_info;
 use crate::catalog::{Catalog, Place, Title};
 use crate::curated::{read_part, CuratedRow};
+use crate::decade_order::DecadeOrder;
 use crate::dedup::{self, Plan};
-use crate::merges::IndexLayout;
+use crate::merges::{self, IndexLayout};
 use crate::ocr_ja;
 use crate::progress::{self, Progress};
-use crate::sink::IndexSink;
+use crate::sink::{Decades, IndexSink};
 use crate::source::hex;
 use crate::state::{
     Curated, IndexRun, LanguageBaselines, LanguageSet, RunBatch, RunStatus, State, Step,
@@ -79,6 +80,15 @@ pub struct Release {
     /// version built without it is rebuilt in full first. Off: nothing is
     /// read, and the documents and `current.json` are as before.
     pub american_stories: bool,
+    /// Lay a full base out by decade (05 §5.5.5, #123): every split holds
+    /// one decade's pages, sent a decade at a time (`crate::decade_order`),
+    /// and `current.json` says so (`decades`), so date-limited searches skip
+    /// the other decades' splits. Only a full base takes it: a delta follows
+    /// the published version (its pages get the `decade` field and its
+    /// splits the decade tags when that version has them), whatever this
+    /// says. Off: the documents, the index config and `current.json` are as
+    /// before.
+    pub partition_decade: bool,
 }
 
 /// A full release refused to start because titles-sync left titles unfetched
@@ -151,7 +161,14 @@ pub struct Published {
 /// Stories' text when it has some (05 §5.5.4). A page LoC has no usable
 /// text for is a document only with American Stories' text; its `text` is
 /// then empty.
-pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place, text_as: Option<&str>) -> Value {
+/// With `decade`, the page's decade partition too (05 §5.5.5).
+pub fn page_doc(
+    row: &CuratedRow,
+    title: &Title,
+    place: &Place,
+    text_as: Option<&str>,
+    decade: bool,
+) -> Value {
     let k = &row.key;
     let text = row.text.as_deref().unwrap_or_default();
     let mut doc = json!({
@@ -178,6 +195,9 @@ pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place, text_as: Option<
         doc["text_as_cg"] = usnm_core::common_grams::index_text(t).into();
         doc["text_as"] = t.into();
     }
+    if decade {
+        doc["decade"] = usnm_core::decade::of_date(k.date).into();
+    }
     doc
 }
 
@@ -188,6 +208,8 @@ struct PublishedPointer {
     grams: Option<u32>,
     /// `american_stories`: every index of the version has American Stories' text.
     american_stories: Option<u32>,
+    /// `decades`: every index of the version has the `decade` field (05 §5.5.5).
+    decades: Option<u32>,
 }
 
 /// How long the writer lock lasts without renewal, and how often it's renewed.
@@ -324,6 +346,7 @@ impl Release {
         let previous_backend = pointer.as_ref().map(|p| p.backend.as_str());
         let previous_grams = pointer.as_ref().and_then(|p| p.grams);
         let previous_as = pointer.as_ref().and_then(|p| p.american_stories);
+        let previous_decades = pointer.as_ref().and_then(|p| p.decades);
         // Every batch's last committed curation, whatever its current status.
         let curated: BTreeMap<String, Curated> = self
             .state
@@ -375,6 +398,7 @@ impl Release {
             || previous
                 .as_ref()
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
+        let decades = self.decade_layout(full, previous_decades);
         if let Some(why) = &self.titles_left {
             if full {
                 return Err(TitlesLeft(format!(
@@ -550,6 +574,7 @@ impl Release {
             engine: sink.engine().await,
             writer: crate::sink::WriterTuning::from_env()?,
             american_stories: self.american_stories,
+            decades,
         };
         let mut run = IndexRun {
             id: version.clone(),
@@ -579,7 +604,7 @@ impl Release {
         span.record("version", version.as_str());
         span.record("full", full);
         span.record("batches", scope.len());
-        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, "building index");
+        tracing::info!(%version, index = %new_index, full, batches = scope.len(), overlay_only, decades = ?decades, "building index");
 
         report.version(&version);
         report.step(Step::Indexing).await;
@@ -596,6 +621,7 @@ impl Release {
                     &catalog,
                     &dedup,
                     stories.as_ref(),
+                    decades,
                     report,
                 )
                 .await?
@@ -674,6 +700,12 @@ impl Release {
         if self.american_stories {
             pointer["american_stories"] = json!(usnm_core::american_stories::VERSION);
         }
+        // Every main index of the version has the `decade` field at this
+        // version: a partitioned base this run built, or one the published
+        // version has, with deltas tagged like this one (05 §5.5.5).
+        if decades.on() {
+            pointer["decades"] = json!(usnm_core::decade::VERSION);
+        }
         // The Japanese pages' index (#139). An API without Japanese search
         // ignores the field; one with it checks the fold version matches.
         if let Some((id, pages)) = &ja {
@@ -749,8 +781,48 @@ impl Release {
             backend: pointer["backend"].as_str().unwrap_or("memory").to_owned(),
             grams: feature("common_grams"),
             american_stories: feature("american_stories"),
+            decades: feature("decades"),
         };
         Ok(Some((run, published)))
+    }
+
+    /// How this release's main index lays its pages out by decade (05
+    /// §5.5.5): a full base as `partition_decade` says; a delta (or an
+    /// overlay-only release, which keeps the main indexes) as the published
+    /// version has it, so every main index of the new version has the
+    /// `decade` field or none does. A delta on a version laid out by decade
+    /// tags its splits instead of partitioning them: it is small, a few
+    /// splits at most, and partitions would cut those into one per decade,
+    /// which every full-range search (the site's default) would open.
+    fn decade_layout(&self, full: bool, published: Option<u32>) -> Decades {
+        if full {
+            return if self.partition_decade {
+                Decades::Partitioned
+            } else {
+                Decades::Off
+            };
+        }
+        match published {
+            Some(v) if v == usnm_core::decade::VERSION => Decades::Tagged,
+            Some(v) => {
+                tracing::warn!(
+                    published = v,
+                    api = usnm_core::decade::VERSION,
+                    "the published version is laid out by another version of the decades; this \
+                     delta has no decade field, so searches skip no splits until the next full release"
+                );
+                Decades::Off
+            }
+            None => {
+                if self.partition_decade {
+                    tracing::info!(
+                        "the published version isn't laid out by decade: --partition-decade \
+                         takes effect at the next full release"
+                    );
+                }
+                Decades::Off
+            }
+        }
     }
 
     /// `pages-v{date}-{n}` and its new index, `pages-{base|delta}-{date}-{n}`.
@@ -860,6 +932,7 @@ impl Release {
         catalog: &Catalog,
         dedup: &Plan,
         stories: Option<&american_stories::Source>,
+        decades: Decades,
         report: &Reporter,
     ) -> anyhow::Result<(u64, Option<american_stories::Record>)> {
         // Every title must resolve before anything is written.
@@ -874,7 +947,21 @@ impl Release {
         if !missing.is_empty() {
             bail!("titles missing from the catalog: {missing:?}");
         }
-        sink.create(index_id).await?;
+        sink.create(index_id, decades).await?;
+        // A partitioned base's pages go out a decade at a time, through
+        // files on the writer's scratch disk (`crate::decade_order`).
+        let mut order = match decades {
+            Decades::Partitioned => {
+                let work = sink
+                    .stats()
+                    .work_dir
+                    .clone()
+                    .unwrap_or_else(std::env::temp_dir);
+                let chunk = merges::template_setting("split_num_docs_target").unwrap_or(30_000);
+                Some(DecadeOrder::new(&work, chunk)?)
+            }
+            _ => None,
+        };
         // A line every 30 s and after each batch (the saved query
         // `release-progress` and the stall alert read them). Pages with
         // only American Stories' text join the expected count as they're
@@ -945,7 +1032,7 @@ impl Release {
                     only_as += u64::from(!ok);
                     let title = catalog.title(&row.key.lccn).context("title")?;
                     let place = catalog.place(&title.place_id).context("place")?;
-                    part_docs.push(page_doc(&row, title, place, text_as));
+                    part_docs.push(page_doc(&row, title, place, text_as, decades.on()));
                     Ok(())
                 })
                 .with_context(|| path.clone())?;
@@ -955,7 +1042,10 @@ impl Release {
                     r.only += only_as;
                 }
                 for d in &part_docs {
-                    sink.add(d).await?;
+                    match order.as_mut() {
+                        Some(o) => o.add(sink, d).await?,
+                        None => sink.add(d).await?,
+                    }
                 }
                 docs += part_docs.len() as u64;
             }
@@ -968,6 +1058,18 @@ impl Release {
                 "American Stories' text indexed"
             );
         }
+        if let Some(o) = order.as_mut() {
+            lease.check()?;
+            let s = drain(o, sink, lease).await?;
+            tracing::info!(
+                runs = s.runs,
+                pages = s.docs,
+                peak_held_pages = s.peak_docs,
+                peak_disk_mb = s.peak_bytes / (1024 * 1024),
+                "sent the pages a decade at a time"
+            );
+        }
+        drop(order);
         // The last commit and the merge wait, given up as soon as the lock is.
         report.step(Step::Merging).await;
         tokio::select! {
@@ -1290,6 +1392,23 @@ impl Release {
     }
 }
 
+/// Send the pages `order` still holds, given up as soon as the writer lock
+/// is: up to 15 decades of 30,000 pages can take longer than the lock lasts
+/// without renewal.
+async fn drain(
+    order: &mut DecadeOrder,
+    sink: &mut dyn IndexSink,
+    lease: &WriterLease,
+) -> anyhow::Result<crate::decade_order::OrderStats> {
+    tokio::select! {
+        r = order.finish(sink) => r,
+        () = lease.lost() => {
+            lease.check()?;
+            bail!("the writer lock was lost while sending the held pages")
+        }
+    }
+}
+
 /// The languages a title lists, sorted and without repeats; `None` when it
 /// lists none (no language filter matches its pages).
 fn language_set(title: &Title) -> Option<Vec<String>> {
@@ -1323,6 +1442,54 @@ mod tests {
         );
         t.languages = vec![];
         assert_eq!(language_set(&t), None);
+    }
+
+    /// A sink that never answers, like a writer that stopped taking pages.
+    struct Stuck;
+
+    #[async_trait::async_trait]
+    impl IndexSink for Stuck {
+        async fn create(&mut self, _: &str, _: Decades) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn add(&mut self, _: &Value) -> anyhow::Result<()> {
+            std::future::pending().await
+        }
+        async fn finish(&mut self, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn backend(&self) -> &'static str {
+            "stuck"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lost_lease_stops_sending_the_held_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 1000).unwrap();
+        let mut sink = Stuck;
+        order
+            .add(&mut sink, &json!({"doc_id": "a", "decade": 1890}))
+            .await
+            .unwrap();
+        let lost = Arc::new(AtomicBool::new(false));
+        let lease = WriterLease {
+            lost: lost.clone(),
+            renewer: tokio::spawn(async {}),
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            lost.store(true, Ordering::SeqCst);
+        });
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            drain(&mut order, &mut sink, &lease),
+        )
+        .await
+        .expect("the lost lease ends the drain")
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("could not be renewed"), "{err}");
     }
 
     #[tokio::test]

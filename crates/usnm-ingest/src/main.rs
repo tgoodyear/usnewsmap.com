@@ -124,6 +124,11 @@ enum Command {
         /// whose searches leave the text out.
         #[arg(long)]
         american_stories: bool,
+        /// Lay a full base out by decade (#123, 05 §5.5.5), so date-limited
+        /// searches skip the other decades' splits. Only a full base takes
+        /// it; deltas follow the published version.
+        #[arg(long)]
+        partition_decade: bool,
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -170,6 +175,9 @@ enum Command {
         /// As for `release`.
         #[arg(long)]
         american_stories: bool,
+        /// As for `release`.
+        #[arg(long)]
+        partition_decade: bool,
         /// As `curate --max-runtime-secs`, counted from the start of `run`:
         /// batches still queued then wait for the next run, and what was
         /// curated is released. Leave room for titles-sync and the release
@@ -353,6 +361,7 @@ async fn release(
     full: bool,
     synthetic: bool,
     american_stories: bool,
+    partition_decade: bool,
     titles_left: Option<String>,
     t: &IndexTarget,
     report: &Reporter,
@@ -367,6 +376,7 @@ async fn release(
         now: chrono::Utc::now(),
         titles_left,
         american_stories,
+        partition_decade,
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
@@ -408,6 +418,7 @@ async fn release_locked(
                 .context("--quickwit-bin needs --quickwit-metastore")?;
             let dir = cli.work_dir.join("quickwit");
             std::fs::create_dir_all(&dir)?;
+            remove_stale_spill(&dir)?;
             check_free_disk(&dir, t.min_free_gib)?;
             let n = QuickwitNode::start(bin, &dir, t.quickwit_port, metastore, root(t)?).await?;
             let sink = QuickwitSink::new(&n.url, root(t)?)?
@@ -423,6 +434,19 @@ async fn release_locked(
         n.stop().await?;
     }
     result
+}
+
+/// Remove the decade files (`decade_order::SPILL_DIR`) a release that
+/// stopped left in `dir`, whatever this release builds: only a partitioned
+/// base would remove them otherwise, and the free-disk check must see the
+/// space they take.
+fn remove_stale_spill(dir: &std::path::Path) -> anyhow::Result<()> {
+    let spill = dir.join(usnm_ingest::decade_order::SPILL_DIR);
+    if spill.exists() {
+        tracing::info!(dir = %spill.display(), "removing a previous release's decade files");
+        std::fs::remove_dir_all(&spill).with_context(|| format!("removing {}", spill.display()))?;
+    }
+    Ok(())
 }
 
 /// Fail before indexing anything if `dir` has less than `min_gib` free. A
@@ -653,6 +677,7 @@ async fn command(
             full,
             synthetic,
             american_stories,
+            partition_decade,
             target,
         } => {
             release(
@@ -661,6 +686,7 @@ async fn command(
                 *full,
                 *synthetic,
                 *american_stories,
+                *partition_decade,
                 None,
                 target,
                 report,
@@ -673,6 +699,7 @@ async fn command(
             full,
             synthetic,
             american_stories,
+            partition_decade,
             curate_max_runtime_secs,
             titles_max_runtime_secs,
             target,
@@ -715,6 +742,7 @@ async fn command(
                 *full,
                 *synthetic,
                 *american_stories,
+                *partition_decade,
                 titles_left,
                 target,
                 report,
@@ -820,6 +848,7 @@ mod tests {
             "run",
             "--full",
             "--american-stories",
+            "--partition-decade",
             "--titles-max-runtime-secs",
             "28800",
             "--index-dir",
@@ -830,14 +859,20 @@ mod tests {
             titles_max_runtime_secs,
             full,
             american_stories,
+            partition_decade,
             ..
         } = cli.command
         else {
             panic!("not a run");
         };
         assert_eq!(
-            (titles_max_runtime_secs, full, american_stories),
-            (Some(28800), true, true)
+            (
+                titles_max_runtime_secs,
+                full,
+                american_stories,
+                partition_decade
+            ),
+            (Some(28800), true, true, true)
         );
     }
 
@@ -851,6 +886,18 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("scratch volume"), "{err}");
+    }
+
+    #[test]
+    fn a_previous_releases_decade_files_are_removed_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = dir.path().join(usnm_ingest::decade_order::SPILL_DIR);
+        std::fs::create_dir_all(&spill).unwrap();
+        std::fs::write(spill.join("1890.jsonl.zst"), vec![0u8; 3000]).unwrap();
+        remove_stale_spill(dir.path()).unwrap();
+        assert!(!spill.exists());
+        // Nothing to remove is fine too.
+        remove_stale_spill(dir.path()).unwrap();
     }
 
     #[test]
@@ -880,12 +927,14 @@ mod tests {
         let Command::Release {
             target,
             american_stories,
+            partition_decade,
             ..
         } = cli.command
         else {
             panic!("not a release");
         };
         assert!(!american_stories, "off unless asked for");
+        assert!(!partition_decade, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
         assert_eq!(target.min_free_gib, 0);
     }
