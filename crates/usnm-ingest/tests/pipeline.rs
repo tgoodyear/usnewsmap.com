@@ -3905,8 +3905,21 @@ async fn a_two_node_cluster_indexes_and_searches_a_sample() {
         levels_only: false,
         expect_searchers: 2,
         timeout: Duration::from_secs(60),
+        wait_split_cache: None,
+        // Quickwit's per-split resource stats over gRPC (#251).
+        probe: true,
+        profile: None,
+        variant: None,
     };
     let b = bench::run("local", &bspec).await.unwrap();
+    let probe = b.probe.as_ref().unwrap();
+    assert!(
+        probe.searches.iter().all(|p| p.error.is_none()),
+        "{probe:?}"
+    );
+    assert!(probe.sum.localexec_num_splits > 0, "{probe:?}");
+    assert!(probe.sum.splits.warmup_microsecs > 0, "{probe:?}");
+    assert!(probe.sum.num_hits > 0, "{probe:?}");
     assert_eq!(b.searchers, 2);
     assert_eq!(
         b.passes.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
@@ -3945,6 +3958,7 @@ async fn a_two_node_cluster_indexes_and_searches_a_sample() {
         &bench::Spec {
             levels: vec![2],
             levels_only: true,
+            probe: false,
             ..bspec
         },
     )

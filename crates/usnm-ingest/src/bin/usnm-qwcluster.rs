@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::Context;
 use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
-use usnm_ingest::cluster::{self, bench, load, members, node, sample, set};
+use usnm_ingest::cluster::{self, bench, load, local, members, node, sample, set};
 use usnm_ingest::telemetry;
 use usnm_store::ObjectStore;
 
@@ -80,6 +80,21 @@ enum Command {
         /// Without it the node asks `quickwit --version`.
         #[arg(long)]
         legacy_searcher: bool,
+        /// Keep whole splits on the local disk, under the data directory, up
+        /// to this many GiB (`searcher.split_cache`; #251's local-disk test).
+        #[arg(long)]
+        split_cache_gib: Option<u32>,
+        /// Copy this index from --local-copy-from to --local-dir first, and
+        /// serve it from there (`file://`) instead of --metastore and
+        /// --index-root (#251's local-disk test).
+        #[arg(long, requires_all = ["local_copy_from", "local_dir"])]
+        local_copy: Option<String>,
+        /// The index root to copy from: a Blob container URL or a directory.
+        #[arg(long)]
+        local_copy_from: Option<String>,
+        /// Where the copy goes (its metastore and index root).
+        #[arg(long)]
+        local_dir: Option<PathBuf>,
         #[arg(
             long,
             env = "USNM_QUICKWIT_BIN",
@@ -219,6 +234,22 @@ enum Command {
         expect_searchers: usize,
         #[arg(long, default_value_t = 150)]
         timeout_secs: u64,
+        /// First wait (at most this many seconds) for the searchers' split
+        /// caches to hold every split of the indexes (#251's local-disk test).
+        #[arg(long)]
+        wait_split_cache_secs: Option<u64>,
+        /// After the passes, each search's summary over gRPC, for Quickwit's
+        /// per-split resource stats (warm-up, CPU pool wait, CPU search).
+        #[arg(long)]
+        probe: bool,
+        /// After the passes, profile the root's CPU this many seconds (5 to
+        /// 300) while searches run; the flame graph is stored beside the report.
+        #[arg(long)]
+        profile_secs: Option<u64>,
+        /// What the run tests (`blob`, `cache`, `copy`, ...), for grouping
+        /// runs in scripts/qwcluster-report.py.
+        #[arg(long)]
+        variant: Option<String>,
         #[arg(long, env = "USNM_QWCLUSTER_URL")]
         cluster: String,
         #[arg(long, env = "USNM_QWBENCH_URL")]
@@ -324,6 +355,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             search_threads,
             split_searches,
             legacy_searcher,
+            split_cache_gib,
+            local_copy,
+            local_copy_from,
+            local_dir,
             standalone,
             quickwit_bin,
         } => {
@@ -333,6 +368,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     .unwrap_or_else(std::env::temp_dir)
                     .join("qwdata")
             });
+            // The local-disk test's copy: the node then serves it, not Blob.
+            let (metastore, index_root) = match (&local_copy, &local_copy_from, &local_dir) {
+                (Some(index), Some(from), Some(dir)) => {
+                    let from = usnm_store::open(from)?;
+                    let copied = local::copy_index(from.as_ref(), index, dir).await?;
+                    (copied.root_uri.clone(), copied.root_uri)
+                }
+                _ => (metastore, index_root),
+            };
             let spec = node::NodeSpec {
                 node_id,
                 services,
@@ -343,6 +387,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 storage_account,
                 split_searches,
                 standalone,
+                split_cache_gib,
                 legacy_searcher: legacy_searcher
                     || node::is_pre_09(&quickwit_bin).unwrap_or_else(|| {
                         tracing::warn!(bin = %quickwit_bin.display(), "can't read Quickwit's version; writing the 0.9 searcher config");
@@ -507,6 +552,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             levels_only,
             expect_searchers,
             timeout_secs,
+            wait_split_cache_secs,
+            probe,
+            profile_secs,
+            variant,
             cluster,
             store,
         } => {
@@ -541,8 +590,24 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 levels_only,
                 expect_searchers,
                 timeout: Duration::from_secs(timeout_secs),
+                wait_split_cache: wait_split_cache_secs.map(Duration::from_secs),
+                probe,
+                profile: profile_secs.map(Duration::from_secs),
+                variant,
             };
             let report = bench::run(&label, &spec).await?;
+            if let Some(svg) = report.profile.as_ref().and_then(|p| p.svg.clone()) {
+                if !usnm_store::is_safe_segment(&label) {
+                    anyhow::bail!("`{label}` can't name a run");
+                }
+                store
+                    .put(
+                        &format!("runs/{label}/flamegraph.svg"),
+                        svg.into_bytes(),
+                        "image/svg+xml",
+                    )
+                    .await?;
+            }
             keep(
                 store.as_ref(),
                 &label,
@@ -656,6 +721,30 @@ mod tests {
         let mut both = args.to_vec();
         both.extend(["--registry", "/tmp/r"]);
         assert!(Cli::try_parse_from(both).is_err());
+        // The local-disk test's copy needs its source and directory.
+        let mut copy = args.to_vec();
+        copy.extend(["--local-copy", "s1ixb"]);
+        assert!(Cli::try_parse_from(copy.clone()).is_err());
+        copy.extend([
+            "--local-copy-from",
+            "/tmp/qw",
+            "--local-dir",
+            "/work/index",
+            "--split-cache-gib",
+            "40",
+        ]);
+        let Command::Node {
+            local_copy,
+            split_cache_gib,
+            ..
+        } = Cli::try_parse_from(copy).unwrap().command
+        else {
+            panic!("not a node");
+        };
+        assert_eq!(
+            (local_copy.as_deref(), split_cache_gib),
+            (Some("s1ixb"), Some(40))
+        );
     }
 
     #[tokio::test]

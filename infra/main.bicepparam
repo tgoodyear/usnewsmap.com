@@ -40,6 +40,9 @@ param searchClusterSplitSearches = int(readEnvironmentVariable('USNM_SEARCH_CLUS
 param searchClusterRuntimeThreads = int(readEnvironmentVariable('USNM_SEARCH_CLUSTER_RUNTIME_THREADS', '0'))
 param searchClusterSearchThreads = int(readEnvironmentVariable('USNM_SEARCH_CLUSTER_SEARCH_THREADS', '0'))
 param searchCompareTags = readEnvironmentVariable('USNM_SEARCH_COMPARE_TAGS', '')
+param searchLocalMode = readEnvironmentVariable('USNM_SEARCH_LOCAL_MODE', '')
+param searchLocalIndex = readEnvironmentVariable('USNM_SEARCH_LOCAL_INDEX', '')
+param searchLocalCacheGib = int(readEnvironmentVariable('USNM_SEARCH_LOCAL_CACHE_GIB', '40'))
 param budgetStartDate = readEnvironmentVariable('USNM_BUDGET_START', '')
 param dnsZoneName = readEnvironmentVariable('USNM_DNS_ZONE', '')
 // Google Search Console domain verification, published at the apex next to SPF.

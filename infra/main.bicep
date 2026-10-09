@@ -100,6 +100,17 @@ param searchClusterSearchThreads int = 0
 @description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher ca-usnm-qws-{i} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
 param searchCompareTags string = ''
 
+@description('Local-disk test (#251): blob, cache or copy runs a standalone 0.9.1 searcher, ca-usnm-qwl-0, on the E4 profile (needs dedicatedProfile), reading the search cluster\'s indexes from Blob, through a split cache on its disk, or from a copy of searchLocalIndex on its disk (docs/operations.md, "Local-disk test"). Empty: none.')
+@allowed(['', 'blob', 'cache', 'copy'])
+param searchLocalMode string = ''
+
+@description('Local-disk test: the index the copy mode copies.')
+param searchLocalIndex string = ''
+
+@description('Local-disk test: the split cache in GiB (cache mode).')
+@minValue(1)
+param searchLocalCacheGib int = 40
+
 @description('Retain every batch archive curation downloads, byte for byte, in a `raw` container of this environment\'s own data account (Cold tier), and curate from it instead of LoC when it holds the listed archive. It goes with the environment: turning it off deletes the container. For a set that outlives environments use archiveAccountId. Production keeps none (ADR-0006).')
 param retainRaw bool = false
 
@@ -534,6 +545,10 @@ module searchClusterModule 'modules/searchcluster.bicep' = if (searchClusterOn) 
     splitSearches: searchClusterSplitSearches
     runtimeThreads: searchClusterRuntimeThreads
     searchThreads: searchClusterSearchThreads
+    localMode: searchLocalMode
+    localProfile: containerEnv.outputs.dedicatedProfileName
+    localIndex: searchLocalIndex
+    localCacheGib: searchLocalCacheGib
     compareImages: map(
       filter(split(searchCompareTags, ','), t => !empty(trim(t))),
       t => '${registry.outputs.loginServer}/usnewsmap-ingest:${trim(t)}'
@@ -679,4 +694,6 @@ output SEARCH_CLUSTER_JOB string = searchClusterOn ? searchClusterModule!.output
 output SEARCH_CLUSTER_URL string = searchClusterOn ? searchClusterModule!.outputs.rootUrl : ''
 // The version comparison's searchers and their roots, in the order of USNM_SEARCH_COMPARE_TAGS.
 output SEARCH_COMPARE_APPS string = searchClusterOn ? join(searchClusterModule!.outputs.compareApps, ' ') : ''
+// The local-disk test's searcher root (inside the environment); empty when off.
+output SEARCH_LOCAL_URL string = searchClusterOn ? searchClusterModule!.outputs.localUrl : ''
 output SEARCH_COMPARE_URLS string = searchClusterOn ? join(searchClusterModule!.outputs.compareUrls, ' ') : ''

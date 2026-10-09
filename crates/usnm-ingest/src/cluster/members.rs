@@ -18,6 +18,8 @@ pub struct Member {
     /// Its REST API, `http://{ip}:{grpc port - 1}`: every node's config sets
     /// gRPC to the REST port plus one (infra/quickwit/cluster-node.yaml).
     pub rest_url: Option<String>,
+    /// Its gRPC API, `http://{grpc_advertise_addr}` (the probe's way in, #251).
+    pub grpc_url: Option<String>,
     pub services: Vec<String>,
     pub ready: bool,
 }
@@ -80,6 +82,9 @@ pub fn parse_members(v: &Value) -> anyhow::Result<Vec<Member>> {
                 .unwrap_or_default()
                 .to_owned(),
             rest_url,
+            grpc_url: value("grpc_advertise_addr")
+                .filter(|g| g.parse::<std::net::SocketAddr>().is_ok())
+                .map(|g| format!("http://{g}")),
             services: value("enabled_services")
                 .map(|s| s.split(',').map(|x| x.trim().to_owned()).collect())
                 .unwrap_or_default(),
@@ -211,6 +216,13 @@ pub struct NodeCounters {
     /// (gauges; a pass's peaks are in `bench::Pass::sampled`).
     pub search_ongoing: f64,
     pub search_pending: f64,
+    /// The split cache on the local disk (`searcher.split_cache`, #251's
+    /// local-disk test): splits and bytes held (gauges), and reads it
+    /// answered and didn't.
+    pub split_cache_splits: f64,
+    pub split_cache_bytes: f64,
+    pub split_cache_hits: f64,
+    pub split_cache_misses: f64,
 }
 
 impl NodeCounters {
@@ -223,6 +235,7 @@ impl NodeCounters {
         let footer = [("component_name", "splitfooter")];
         let main = [("runtime_type", "main")];
         let search = [("pool", "search")];
+        let split_cache = [("component_name", "searcher_split")];
         NodeCounters {
             leaf_requests: metric_sum(text, "quickwit_search_leaf_search_requests_total", &ok),
             leaf_splits: metric_sum(text, "quickwit_search_leaf_search_targeted_splits_sum", &ok),
@@ -254,6 +267,12 @@ impl NodeCounters {
                 .max(0.0),
             search_pending: metric_sum(text, "quickwit_thread_pool_pending_tasks", &search)
                 .max(0.0),
+            split_cache_splits: metric_sum(text, "quickwit_cache_in_cache_count", &split_cache)
+                .max(0.0),
+            split_cache_bytes: metric_sum(text, "quickwit_cache_in_cache_num_bytes", &split_cache)
+                .max(0.0),
+            split_cache_hits: metric_sum(text, "quickwit_cache_cache_hits_total", &split_cache),
+            split_cache_misses: metric_sum(text, "quickwit_cache_cache_misses_total", &split_cache),
         }
     }
 
@@ -275,6 +294,10 @@ impl NodeCounters {
             download_bytes: self.download_bytes - before.download_bytes,
             search_ongoing: self.search_ongoing,
             search_pending: self.search_pending,
+            split_cache_splits: self.split_cache_splits,
+            split_cache_bytes: self.split_cache_bytes,
+            split_cache_hits: self.split_cache_hits - before.split_cache_hits,
+            split_cache_misses: self.split_cache_misses - before.split_cache_misses,
         }
     }
 }
@@ -352,6 +375,7 @@ mod tests {
         assert_eq!(m[0].node_id, "qw-0");
         assert!(m[0].ready && m[0].runs("control_plane") && m[0].runs("indexer"));
         assert_eq!(m[0].rest_url.as_deref(), Some("http://100.100.0.1:7280"));
+        assert_eq!(m[0].grpc_url.as_deref(), Some("http://100.100.0.1:7281"));
         assert_eq!(m[1].services, ["searcher"]);
         // Live but not ready, the dead generation dropped.
         assert_eq!((m[2].generation, m[2].ready), (3, false));
@@ -408,12 +432,18 @@ quickwit_storage_object_storage_download_num_bytes 2.5e9
 quickwit_thread_pool_ongoing_tasks{pool=\"search\"} 3
 quickwit_thread_pool_ongoing_tasks{pool=\"small_tasks\"} 1
 quickwit_thread_pool_pending_tasks{pool=\"search\"} -0
+quickwit_cache_in_cache_count{component_name=\"searcher_split\"} 58
+quickwit_cache_in_cache_num_bytes{component_name=\"searcher_split\"} 7.5e9
+quickwit_cache_cache_hits_total{component_name=\"searcher_split\"} 900
+quickwit_cache_cache_hits_total{component_name=\"splitfooter\"} 5
 ";
         let c = NodeCounters::parse(text, None);
         assert_eq!(c.main_busy_ms, 120_500.0);
         assert_eq!(c.main_threads, 4.0);
         assert_eq!(c.download_bytes, 2.5e9);
         assert_eq!((c.search_ongoing, c.search_pending), (3.0, 0.0));
+        assert_eq!((c.split_cache_splits, c.split_cache_bytes), (58.0, 7.5e9));
+        assert_eq!((c.split_cache_hits, c.footer_cache_hits), (900.0, 5.0));
         let suffixed = "quickwit_storage_object_storage_download_num_bytes_total 10\n";
         assert_eq!(NodeCounters::parse(suffixed, None).download_bytes, 10.0);
         let later = NodeCounters {

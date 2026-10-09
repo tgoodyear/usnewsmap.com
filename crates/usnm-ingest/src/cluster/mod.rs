@@ -11,6 +11,12 @@
 //!   documents a full release would build for them (NDJSON parts).
 //! - [`load`]: those documents into a new index on the cluster, timed step
 //!   by step: sending, committed, merges settled, sealed.
+//! - [`flame`]: a searcher's CPU by thread and function, from the flame
+//!   graph of Quickwit's own profiler (#251).
+//! - [`grpc`]: one search over Quickwit's gRPC API, for the per-split
+//!   resource stats it reports only there (#251).
+//! - [`local`]: an index copied from Blob to the replica's disk and served
+//!   from there (#251's local-disk test).
 //! - [`set`]: a sample packaged for reuse in the archival account: the
 //!   batches' LoC archives in one tar and the documents in one file.
 //! - [`bench`]: the benchmark searches against the cluster's root, the way
@@ -20,7 +26,10 @@
 //! The `usnm-qwcluster` binary runs each of them.
 
 pub mod bench;
+pub mod flame;
+pub mod grpc;
 pub mod load;
+pub mod local;
 pub mod members;
 pub mod node;
 pub mod sample;

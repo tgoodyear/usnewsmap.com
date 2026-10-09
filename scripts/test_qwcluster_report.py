@@ -133,6 +133,27 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(report.app_of("qws-1"), "ca-usnm-qws-1")
         self.assertEqual(report.app_of("qw-0"), "ca-usnm-qw-0")
 
+    def test_local_disk_tables(self):
+        stats = {"num_hits": 10, "localexec_num_splits": 58, "leaf_wall_time_microsecs": 2_000_000,
+                 "splits": {"warmup_microsecs": 4_000_000, "wait_for_cpu_pool_microsecs": 0,
+                            "cpu_search_microsecs": 1_000_000, "wait_for_search_permit_microsecs": 500_000,
+                            "download_num_bytes": 2e9}}
+        b = {"label": "loc-cache-r2", "indexes": ["s1ixb"], "quickwit": {"version": "0.9.1"},
+             "split_cache": {"target_splits": 58, "splits": 58, "bytes": 7.5e9, "secs": 300.0, "complete": True},
+             "probe": {"shift_days": 9, "sum": stats, "searches": [{"name": "a", "stats": stats}]},
+             "profile": {"summary": {"total_samples": 1000,
+                                     "threads": {"main_runtime_thread": 600, "quickwit-search": 300},
+                                     "main_runtime_top": [["rustls::read", 300], ["memcpy", 60]]}},
+             "passes": [{"name": "c1", "nodes": {"qwl-0": {"split_cache_hits": 900, "split_cache_misses": 3}}}]}
+        p = report.probe_rows([b])[0]
+        self.assertEqual(p[2:], [1, "58", "4.00", "0.00", "1.00", "0.50", "2.000", "2.0", "2.00"])
+        f = report.profile_rows([b])[0]
+        self.assertEqual(f[1:5], [1000, "60", "30", "10"])
+        self.assertEqual(f[5], "rustls::read 50%, memcpy 10%")
+        c = report.cache_rows([b])[0]
+        self.assertEqual(c, ["loc-cache-r2", "c1", "58/58", "7.5", "300", "900", "3"])
+        self.assertEqual(report.probe_rows([{"label": "x", "passes": []}]), [])
+
     def test_reads_reports_from_a_log_stream(self):
         load = fixture("load.json")["Report"]
         line = json.dumps({"timestamp": "t", "level": "INFO",

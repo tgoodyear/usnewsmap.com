@@ -80,7 +80,14 @@ pub struct NodeSpec {
     /// keys it doesn't know ([`LEGACY_DROPPED`]) and pin
     /// [`LEGACY_WARMUP_ALLOCATION`].
     pub legacy_searcher: bool,
+    /// `searcher.split_cache.max_num_bytes` in GiB: whole splits kept on
+    /// the local disk under the data directory (#251's local-disk test).
+    pub split_cache_gib: Option<u32>,
 }
+
+/// How many splits the split cache downloads at once. Quickwit's default is
+/// 1; 4 fills the cache with a test index's 60 splits sooner.
+pub const SPLIT_CACHE_DOWNLOADS: u32 = 4;
 
 /// The template's key for concurrent split searches.
 const SPLIT_SEARCHES_KEY: &str = "max_num_concurrent_split_searches:";
@@ -130,6 +137,10 @@ impl NodeSpec {
         if let Some(n) = self.split_searches {
             anyhow::ensure!(n > 0, "concurrent split searches must be at least 1");
         }
+        anyhow::ensure!(
+            self.split_cache_gib != Some(0),
+            "a split cache needs at least 1 GiB"
+        );
         if self.standalone {
             anyhow::ensure!(
                 out.lines().any(|l| l == CLUSTER_ID_LINE),
@@ -158,6 +169,14 @@ impl NodeSpec {
             lines.push(line.to_owned());
             if self.legacy_searcher && line == "searcher:" {
                 lines.push(LEGACY_WARMUP_ALLOCATION.to_owned());
+            }
+            if let (Some(gib), "searcher:") = (self.split_cache_gib, line) {
+                lines.extend([
+                    "  split_cache:".to_owned(),
+                    format!("    max_num_bytes: {gib}GiB"),
+                    "    max_num_splits: 10000".to_owned(),
+                    format!("    num_concurrent_downloads: {SPLIT_CACHE_DOWNLOADS}"),
+                ]);
             }
         }
         anyhow::ensure!(
@@ -421,6 +440,11 @@ pub async fn start(
         search_threads = ?threads.search,
         "starting a cluster node"
     );
+    // The disk the data directory (and a split cache) is on, for the
+    // local-disk test (#251): Container Apps documents 8 GiB a replica.
+    if let Some(df) = disk_free(&spec.data_dir) {
+        tracing::info!(dir = %spec.data_dir.display(), df = %df, "data directory disk");
+    }
     let path = spec.data_dir.join("node.yaml");
     std::fs::write(&path, config).with_context(|| format!("writing {}", path.display()))?;
     let env = quickwit_env(std::env::vars(), advertise, &peers, threads);
@@ -430,6 +454,19 @@ pub async fn start(
         .args(["run", "--config"])
         .arg(&path);
     exec(cmd, quickwit)
+}
+
+/// `df -k`'s line for `dir`, if `df` runs.
+pub fn disk_free(dir: &Path) -> Option<String> {
+    let out = std::process::Command::new("df")
+        .arg("-k")
+        .arg(dir)
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .last()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 #[cfg(unix)]
@@ -465,7 +502,22 @@ mod tests {
             split_searches: None,
             standalone: false,
             legacy_searcher: false,
+            split_cache_gib: None,
         }
+    }
+
+    #[test]
+    fn a_split_cache_goes_in_the_searcher_section() {
+        let mut s = spec(&["searcher", "metastore"]);
+        assert!(!s.config().unwrap().contains("split_cache"));
+        s.split_cache_gib = Some(40);
+        let c = s.config().unwrap();
+        assert!(
+            c.contains("searcher:\n  split_cache:\n    max_num_bytes: 40GiB\n    max_num_splits: 10000\n    num_concurrent_downloads: 4\n"),
+            "{c}"
+        );
+        s.split_cache_gib = Some(0);
+        assert!(s.config().is_err());
     }
 
     #[test]

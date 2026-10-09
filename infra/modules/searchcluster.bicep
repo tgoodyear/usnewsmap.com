@@ -91,6 +91,20 @@ param searchThreads int = 0
 @maxLength(4)
 param compareImages array = []
 
+@description('Local-disk test (#251): one standalone 0.9.1 searcher, ca-usnm-qwl-0, on the dedicated profile, reading the cluster\'s indexes from Blob (blob), through a split cache on its disk (cache), or from a copy of localIndex on its disk (copy). Empty: none.')
+@allowed(['', 'blob', 'cache', 'copy'])
+param localMode string = ''
+
+@description('The dedicated workload profile the local-disk searcher runs on (the environment\'s E4); empty: no local-disk searcher.')
+param localProfile string = ''
+
+@description('The index the local-disk searcher copies to its disk (localMode copy).')
+param localIndex string = ''
+
+@description('The local-disk searcher\'s split cache in GiB (localMode cache).')
+@minValue(1)
+param localCacheGib int = 40
+
 var clusterContainer = 'qw-cluster'
 var benchContainer = 'qw-bench'
 // What node 0 adds to the indexer and searcher every node may run.
@@ -307,6 +321,105 @@ resource clusterWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   }
 ]
 
+// Local-disk test (#251): one standalone searcher on the dedicated profile,
+// whose ephemeral storage is about 80 GiB (Microsoft, September 2026, in
+// microsoft/azure-container-apps#1779; the Consumption profile's is 8 GiB,
+// too small for a test index), the same node for all three modes. An E4
+// replica gets at most 3.25 vCPU / 26 GiB (infra/modules/ingestjobs.bicep):
+// 3.25 vCPU, against the API sidecar's 3.75, with the sidecar's thread
+// counts. Its disk is the container's own, under /work (the image's work
+// directory, owned by its user): the data directory and the split cache in
+// /work/qwdata, the copy in /work/index. A restart empties it.
+var localOn = !empty(localMode) && !empty(localProfile)
+var localModeArgs = localMode == 'cache'
+  ? ['--split-cache-gib', string(localCacheGib)]
+  : (localMode == 'copy'
+      ? ['--local-copy', localIndex, '--local-copy-from', '${storageBlobEndpoint}${clusterContainer}', '--local-dir', '/work/index']
+      : [])
+
+resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
+  name: 'ca-usnm-qwl-0'
+  location: location
+  tags: tags
+  dependsOn: [pulls]
+  identity: {
+    type: 'SystemAssigned,UserAssigned'
+    userAssignedIdentities: { '${nodeIdentity.id}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: localProfile
+    configuration: {
+      activeRevisionsMode: 'Single'
+      registries: [{ server: registryServer, identity: nodeIdentity.id }]
+      ingress: {
+        external: false
+        targetPort: 7280
+        transport: 'http'
+        allowInsecure: true
+      }
+    }
+    template: {
+      containers: [
+        {
+          name: 'qwnode'
+          image: image
+          command: ['/usr/local/bin/usnm-qwcluster']
+          args: concat([
+            'node'
+            '--node-id'
+            'qwl-0'
+            '--standalone'
+            '--services'
+            'searcher,metastore'
+            '--metastore'
+            'azure://${clusterContainer}#polling_interval=30s'
+            '--index-root'
+            'azure://${clusterContainer}'
+            '--storage-account'
+            storageAccountName
+            '--cpus'
+            '4'
+            '--runtime-threads'
+            string(runtimeThreads > 0 ? runtimeThreads : 4)
+            '--search-threads'
+            string(searchThreads > 0 ? searchThreads : 4)
+          ], splitSearches > 0 ? ['--split-searches', string(splitSearches)] : [], localModeArgs)
+          resources: { cpu: json('3.25'), memory: '24Gi' }
+          env: [
+            { name: 'RUST_LOG', value: nodeRustLog }
+          ]
+          // A copy of a test index takes minutes before Quickwit listens.
+          probes: [
+            {
+              type: 'Startup'
+              httpGet: { path: '/health/livez', port: 7280 }
+              periodSeconds: 5
+              failureThreshold: 240
+            }
+            {
+              type: 'Liveness'
+              httpGet: { path: '/health/livez', port: 7280 }
+              periodSeconds: 30
+            }
+          ]
+        }
+      ]
+      scale: { minReplicas: 1, maxReplicas: 1 }
+    }
+  }
+}
+
+resource localReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (localOn) {
+  scope: cluster
+  name: guid(cluster.id, 'ca-usnm-qwl-0', blobReader)
+  properties: {
+    principalId: localApp!.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
+  }
+}
+
 // Version comparison (#251): standalone searchers over the cluster's indexes.
 resource compareApps 'Microsoft.App/containerApps@2024-03-01' = [
   for (compareImage, i) in compareImages: {
@@ -430,6 +543,7 @@ resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
 
 output nodeApps array = [for i in range(0, nodes): nodeApps[i].name]
 output compareApps array = [for (compareImage, i) in compareImages: compareApps[i].name]
+output localUrl string = localOn ? 'http://ca-usnm-qwl-0' : ''
 // Each comparison searcher's root for `bench --cluster`, inside the environment.
 output compareUrls array = [for (compareImage, i) in compareImages: 'http://${compareApps[i].name}']
 output benchJobName string = benchJob.name

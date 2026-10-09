@@ -323,8 +323,11 @@ def pass_load(b, p, node, c):
     threads = c.get("main_threads") or 0
     wall = p.get("wall_secs") or 0
     sampled = p.get("sampled", {}).get(node, {})
+    version = (b.get("quickwit") or {}).get("version") or "-"
+    if b.get("variant") and version != "-":
+        version = f"{version} {b['variant']}"
     return {
-        "version": (b.get("quickwit") or {}).get("version") or "-",
+        "version": version,
         "busy_per_search": busy / n if n else None,
         "gb_per_search": gb / n if n else None,
         "busy_share": busy / (threads * wall) if threads and wall else None,
@@ -414,6 +417,72 @@ def hit_mismatches(benches):
         if len(by_version) > 1 and len({n for v in by_version.values() for n in v}) > 1:
             rows.append([index, shift, name,
                          "; ".join(f"{v}: {sorted(n)}" for v, n in sorted(by_version.items()))])
+    return rows
+
+
+def probe_rows(benches):
+    """The gRPC probe (#251): Quickwit's per-split resource stats for each
+    search's summary request, per search on average."""
+    rows = []
+    for b in benches:
+        pr = b.get("probe")
+        if not pr:
+            continue
+        ok = [x for x in pr["searches"] if x.get("stats")]
+        n = len(ok)
+        if not n:
+            rows.append([b["label"], ",".join(b["indexes"]), 0] + ["-"] * 8)
+            continue
+        s = pr["sum"]
+        sp = s["splits"]
+        gb = sp["download_num_bytes"] / 1e9
+        warm = sp["warmup_microsecs"] / 1e6
+        rows.append([
+            b["label"], ",".join(b["indexes"]), n, fmt(s["localexec_num_splits"] / n, 0),
+            fmt(warm / n, 2), fmt(sp["wait_for_cpu_pool_microsecs"] / 1e6 / n, 2),
+            fmt(sp["cpu_search_microsecs"] / 1e6 / n, 2),
+            fmt(sp["wait_for_search_permit_microsecs"] / 1e6 / n, 2),
+            fmt(gb / n, 3), fmt(warm / gb if gb else None, 1),
+            fmt(s["leaf_wall_time_microsecs"] / 1e6 / n, 2),
+        ])
+    return rows
+
+
+def profile_rows(benches):
+    """The profile pass (#251): the root's CPU samples by thread, and the
+    main runtime's functions with the most samples of their own."""
+    rows = []
+    for b in benches:
+        pf = (b.get("profile") or {}).get("summary")
+        if not pf or not pf.get("total_samples"):
+            continue
+        total = pf["total_samples"]
+        threads = pf.get("threads", {})
+        main = threads.get("main_runtime_thread", 0)
+        pool = threads.get("quickwit-search", 0)
+        top = ", ".join(f"{name} {100 * n / main:.0f}%" for name, n in pf.get("main_runtime_top", [])[:6]) if main else "-"
+        rows.append([b["label"], total, fmt(100 * main / total, 0), fmt(100 * pool / total, 0),
+                     fmt(100 * (total - main - pool) / total, 0), top])
+    return rows
+
+
+def cache_rows(benches):
+    """The split cache on the local disk (#251): how it filled before the
+    passes, and the reads it answered in each pass."""
+    rows = []
+    for b in benches:
+        w = b.get("split_cache")
+        for p in b["passes"]:
+            hits = sum(c.get("split_cache_hits", 0) for c in p["nodes"].values())
+            misses = sum(c.get("split_cache_misses", 0) for c in p["nodes"].values())
+            if not w and not hits and not misses:
+                continue
+            rows.append([
+                b["label"], p["name"],
+                f"{w['splits']:.0f}/{w['target_splits']}" if w else "-",
+                fmt(w["bytes"] / 1e9, 1) if w else "-", fmt(w["secs"], 0) if w else "-",
+                fmt(hits, 0), fmt(misses, 0),
+            ])
     return rows
 
 
@@ -537,6 +606,27 @@ def report(env, since, out, from_file=None):
                    "By version, averaged over runs (ratios to 0.9.x; under 1 means less):", "",
                    table(["index", "pass", "quickwit", "runs", "median s", "× 0.9", "main busy s/search",
                           "× 0.9", "busy s/GB", "× 0.9"], compare_summary(benches)), ""]
+            prow, frow, crow = probe_rows(benches), profile_rows(benches), cache_rows(benches)
+            if crow:
+                md += ["### Split cache on the local disk", "",
+                       table(["label", "pass", "cached splits/index", "GB cached", "fill s",
+                              "cache hits", "cache misses"], crow), ""]
+            if prow:
+                md += ["### Per-split resource stats (gRPC probe)", "",
+                       "Each search's summary request once more, over gRPC, with windows no pass used: "
+                       "Quickwit's own accounting of its splits, per search on average. Warm-up is the "
+                       "main runtime's part (downloading and decoding what a split needs), CPU search the "
+                       "search pool's.", "",
+                       table(["label", "index", "searches", "splits", "warm-up s", "wait for pool s",
+                              "CPU search s", "wait for permit s", "GB downloaded", "warm-up s/GB",
+                              "leaf wall s"], prow), ""]
+            if frow:
+                md += ["### CPU profile (Quickwit's pprof)", "",
+                       "Samples by thread while searches with fresh windows ran, and the main runtime's "
+                       "functions with the most samples of their own (share of the main runtime's). The "
+                       "flame graph is in qw-bench at runs/{label}/flamegraph.svg.", "",
+                       table(["label", "samples", "main runtime %", "search pool %", "other %",
+                              "main runtime's top functions"], frow), ""]
             bad = hit_mismatches(benches)
             md += ["Pages found, by version, for the same searches and windows: "
                    + ("**they differ**, so the versions don't search the same way and the timings "

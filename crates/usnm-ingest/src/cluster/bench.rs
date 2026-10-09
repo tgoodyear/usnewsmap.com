@@ -41,6 +41,7 @@ use usnm_search::{
 };
 
 use super::members::{self, Member, NodeCounters};
+use super::{flame, grpc, load};
 
 /// A date window, `from` and `to`; `None` is the whole corpus.
 pub type Window = Option<(&'static str, &'static str)>;
@@ -409,6 +410,61 @@ pub struct Spec {
     /// Wait for this many ready searchers first.
     pub expect_searchers: usize,
     pub timeout: Duration,
+    /// Before the passes, wait (at most this long) until the searchers'
+    /// split caches hold every split of the indexes (#251's local-disk test).
+    pub wait_split_cache: Option<Duration>,
+    /// After the passes, each search's summary request once more, over gRPC,
+    /// for Quickwit's per-split resource stats ([`super::grpc`]).
+    pub probe: bool,
+    /// After the passes, profile the root's CPU for this long (Quickwit's
+    /// `/api/developer/pprof`) while searches with fresh windows run.
+    pub profile: Option<Duration>,
+    /// What this run tests, for grouping runs in the report (`blob`,
+    /// `cache`, `copy`, ...).
+    pub variant: Option<String>,
+}
+
+/// How long the searchers' split caches took to fill.
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheWait {
+    pub target_splits: usize,
+    pub splits: f64,
+    pub bytes: f64,
+    pub secs: f64,
+    /// Every split was cached; otherwise the wait timed out or the count
+    /// stopped growing short of the target.
+    pub complete: bool,
+}
+
+/// One search's gRPC probe.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProbeResult {
+    pub name: String,
+    pub secs: f64,
+    pub stats: Option<grpc::SearchStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The probe pass: each search's summary request over gRPC (#251).
+#[derive(Debug, Clone, Serialize)]
+pub struct Probe {
+    pub shift_days: u32,
+    pub searches: Vec<ProbeResult>,
+    /// The searches' stats summed.
+    pub sum: grpc::SearchStats,
+}
+
+/// The profile pass: the root's CPU by thread and function (#251).
+#[derive(Debug, Clone, Serialize)]
+pub struct Profile {
+    pub secs: f64,
+    pub searches: usize,
+    pub first_shift_days: u32,
+    pub summary: Option<flame::Summary>,
+    /// The flame graph itself, stored beside the report (`flamegraph.svg`).
+    #[serde(skip)]
+    pub svg: Option<String>,
 }
 
 /// A bench run.
@@ -419,11 +475,15 @@ pub struct Report {
     pub american_stories: bool,
     /// The root's Quickwit build; `None` if it didn't say.
     pub quickwit: Option<QuickwitBuild>,
+    pub variant: Option<String>,
     pub members: Vec<Member>,
     pub searchers: usize,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
     pub passes: Vec<Pass>,
+    pub split_cache: Option<CacheWait>,
+    pub probe: Option<Probe>,
+    pub profile: Option<Profile>,
 }
 
 impl Report {
@@ -575,6 +635,10 @@ pub async fn run(label: &str, spec: &Spec) -> anyhow::Result<Report> {
     let quickwit = quickwit_build(&http, &spec.root).await;
     tracing::info!(label, quickwit = ?quickwit, "bench root");
     let started_at = Utc::now();
+    let split_cache = match spec.wait_split_cache {
+        Some(limit) => Some(wait_split_cache(&http, spec, &members_now, limit).await?),
+        None => None,
+    };
     let mut passes = Vec::new();
     if !spec.levels_only {
         passes.push(pass(&http, spec, &members_now, "first", 1, 0).await?);
@@ -585,16 +649,229 @@ pub async fn run(label: &str, spec: &Spec) -> anyhow::Result<Report> {
         let shift = spec.offset + 1 + i as u32;
         passes.push(pass(&http, spec, &members_now, &format!("c{n}"), n, shift).await?);
     }
+    // Shifts past every pass's, so the partial request cache answers none.
+    let next_shift = spec.offset + 1 + spec.levels.len() as u32;
+    let probe = if spec.probe {
+        Some(probe(spec, &members_now, next_shift).await?)
+    } else {
+        None
+    };
+    let profile = match spec.profile {
+        Some(d) => Some(profile(&http, spec, d, next_shift + 1).await?),
+        None => None,
+    };
     Ok(Report {
         label: label.to_owned(),
         indexes: spec.indexes.clone(),
         american_stories: spec.american_stories,
         quickwit,
+        variant: spec.variant.clone(),
         members: members_now,
         searchers,
         started_at,
         ended_at: Utc::now(),
         passes,
+        split_cache,
+        probe,
+        profile,
+    })
+}
+
+/// Wait until the ready searchers' split caches together hold every split
+/// of the indexes, the count stops growing for a minute, or `limit` passes.
+async fn wait_split_cache(
+    http: &reqwest::Client,
+    spec: &Spec,
+    members_now: &[Member],
+    limit: Duration,
+) -> anyhow::Result<CacheWait> {
+    let mut target = 0;
+    for index in &spec.indexes {
+        target += load::splits(http, &spec.root, index).await?.len();
+    }
+    let searchers: Vec<Member> = members_now
+        .iter()
+        .filter(|m| m.ready && m.runs("searcher"))
+        .cloned()
+        .collect();
+    let t = std::time::Instant::now();
+    let (mut last, mut still) = (-1.0, 0);
+    loop {
+        let c = members::counters(http, &searchers, None).await;
+        let splits: f64 = c.values().map(|n| n.split_cache_splits).sum();
+        let bytes: f64 = c.values().map(|n| n.split_cache_bytes).sum();
+        let complete = splits >= target as f64;
+        still = if splits == last { still + 1 } else { 0 };
+        last = splits;
+        tracing::info!(splits, target, gb = bytes / 1e9, "split cache filling");
+        if complete || (splits > 0.0 && still >= 6) || t.elapsed() >= limit {
+            if !complete {
+                tracing::warn!(
+                    splits,
+                    target,
+                    "the split caches stopped short of every split"
+                );
+            }
+            return Ok(CacheWait {
+                target_splits: target,
+                splits,
+                bytes,
+                secs: t.elapsed().as_secs_f64(),
+                complete,
+            });
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+}
+
+/// Each search's summary request (the first and largest of the API's
+/// requests for it) once, over gRPC to the root, for its resource stats.
+async fn probe(spec: &Spec, members_now: &[Member], shift: u32) -> anyhow::Result<Probe> {
+    let root = members_now
+        .iter()
+        .filter(|m| m.ready && m.runs("searcher"))
+        .find(|m| m.runs("metastore"))
+        .or_else(|| members_now.iter().find(|m| m.ready && m.runs("searcher")))
+        .context("no ready searcher to probe")?;
+    let grpc_url = root
+        .grpc_url
+        .clone()
+        .context("the root has no gRPC address")?;
+    let http = grpc::client(spec.timeout)?;
+    let indexes = IndexSet::new(spec.indexes.clone())
+        .with_common_grams(true)
+        .with_american_stories(spec.american_stories);
+    let mut out = Vec::new();
+    let mut sum = grpc::SearchStats::default();
+    for (name, q, w) in SEARCHES {
+        let req = request(q, *w, spec.bounds, shift)?;
+        let body = usnm_search::quickwit::summary_request(
+            &req.query,
+            &req.filters,
+            &indexes,
+            &req.bucket_spec(),
+        )
+        .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+        let t = std::time::Instant::now();
+        let r = grpc::root_search(&http, &grpc_url, &spec.indexes, &body).await;
+        let secs = t.elapsed().as_secs_f64();
+        match r {
+            Ok(stats) => {
+                sum.add(&stats);
+                out.push(ProbeResult {
+                    name: name.to_string(),
+                    secs,
+                    stats: Some(stats),
+                    error: None,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(search = name, error = %format!("{e:#}"), "probe failed");
+                out.push(ProbeResult {
+                    name: name.to_string(),
+                    secs,
+                    stats: None,
+                    error: Some(format!("{e:#}")),
+                });
+            }
+        }
+    }
+    tracing::info!(
+        searches = out.len(),
+        warmup_secs = sum.splits.warmup_microsecs as f64 / 1e6,
+        cpu_search_secs = sum.splits.cpu_search_microsecs as f64 / 1e6,
+        wait_cpu_secs = sum.splits.wait_for_cpu_pool_microsecs as f64 / 1e6,
+        "bench probe"
+    );
+    Ok(Probe {
+        shift_days: shift,
+        searches: out,
+        sum,
+    })
+}
+
+/// Profile the root for `secs` while the searches run at concurrency 4,
+/// each round a day further back, then read the flame graph.
+async fn profile(
+    http: &reqwest::Client,
+    spec: &Spec,
+    secs: Duration,
+    first_shift: u32,
+) -> anyhow::Result<Profile> {
+    // Quickwit stops at 300 s and samples at most 1000 times a second.
+    let duration = secs.as_secs().clamp(5, 300);
+    // It keeps the last graph it drew: wait for one that differs.
+    let flamegraph = format!("{}/api/developer/pprof/flamegraph", spec.root);
+    let earlier = match http.get(&flamegraph).send().await {
+        Ok(r) if r.status().is_success() => r.text().await.ok(),
+        _ => None,
+    };
+    let resp = http
+        .get(format!("{}/api/developer/pprof/start", spec.root))
+        .query(&[
+            ("duration", duration.to_string()),
+            ("sampling", "100".to_owned()),
+        ])
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!(
+            "starting the profiler returned {status}: {}",
+            resp.text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect::<String>()
+        );
+    }
+    let t = std::time::Instant::now();
+    let indexes = IndexSet::new(spec.indexes.clone())
+        .with_common_grams(true)
+        .with_american_stories(spec.american_stories);
+    let backend = QuickwitBackend::new(&spec.root, spec.timeout)?;
+    let (mut shift, mut searches) = (first_shift, 0);
+    while t.elapsed().as_secs() < duration {
+        let mut jobs = Vec::new();
+        for (n, q, w) in SEARCHES {
+            jobs.push((n.to_string(), request(q, *w, spec.bounds, shift)?));
+        }
+        let done: Vec<SearchResult> = stream::iter(jobs)
+            .map(|(n, req)| {
+                let (indexes, backend) = (&indexes, &backend);
+                async move { search(backend, indexes, &n, &req).await }
+            })
+            .buffered(4)
+            .collect()
+            .await;
+        searches += done.len();
+        shift += 1;
+    }
+    // The graph is drawn when the profiler stops.
+    let deadline = std::time::Instant::now() + Duration::from_secs(duration + 120);
+    let svg = loop {
+        let resp = http.get(&flamegraph).send().await?;
+        if resp.status().is_success() {
+            let text = resp.text().await?;
+            if Some(&text) != earlier.as_ref() {
+                break Some(text);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!("no flame graph from the profiler");
+            break None;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    };
+    let summary = svg.as_deref().and_then(|s| flame::summarize(s, 15));
+    tracing::info!(searches, threads = ?summary.as_ref().map(|s| &s.threads), "bench profile");
+    Ok(Profile {
+        secs: t.elapsed().as_secs_f64(),
+        searches,
+        first_shift_days: first_shift,
+        summary,
+        svg,
     })
 }
 

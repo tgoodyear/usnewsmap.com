@@ -563,3 +563,42 @@ bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index
 
 **Afterwards** `USNM_SEARCH_COMPARE_TAGS ""` and a provision remove the searchers (collect the report first). Two 4 vCPU searchers cost about $0.86 an hour while they exist.
 
+### Local-disk test
+
+Whether reading splits from the local disk instead of Blob removes the main runtime's CPU cost (#251): the same index and bench on Quickwit 0.9.1 with the sidecar's 4 and 4 threads, in three modes on the same node, one at a time (`USNM_SEARCH_LOCAL_MODE`):
+
+- `blob`: splits read from Blob, as the sidecar reads them.
+- `cache`: Quickwit's split cache (`searcher.split_cache`, `USNM_SEARCH_LOCAL_CACHE_GIB`, default 40) on the replica's disk. A search reads from Blob and marks its splits; the cache downloads them whole in the background (4 at a time) and later searches read the local files.
+- `copy`: the index (`USNM_SEARCH_LOCAL_INDEX`) copied to the disk before Quickwit starts, its metastore pointed at the copy (`file://`), so no Blob client runs at all (`crates/usnm-ingest/src/cluster/local.rs`).
+
+**Where it runs.** A Consumption replica has 8 GiB of ephemeral storage ([storage mounts](https://learn.microsoft.com/azure/container-apps/storage-mounts#ephemeral-storage)), less than `s1ixb` (7.5 GB) with the rest of the container, and the indexes with American Stories' fields are about twice that. A VM is out: the `usnm-deny-iaas-compute` policy denies them in `rg-usnm-dev`. So the searcher, `ca-usnm-qwl-0`, runs on the environment's E4 dedicated profile (`USNM_DEDICATED_PROFILE`), where Microsoft reported about 80 GiB of ephemeral storage per replica in September 2026 (microsoft/azure-container-apps#1779; not yet in the docs, so the node logs `data directory disk` with `df` at start). An E4 replica gets at most 3.25 vCPU / 26 GiB: the searcher has 3.25 vCPU and 24 GiB (the sidecar has 3.75 and 7.5), the same for all three modes. The E4 node costs about $0.39 an hour plus the $0.10 Dedicated plan fee while the profile exists. Its disk is the container's own (`/work`), so a restart empties it.
+
+**What the bench adds.** `--probe` sends each search's summary request once more over Quickwit's gRPC API, the only place 0.9.1 reports its per-split resource stats (`SearchResponse.resource_stats`, quickwit #6416: not in the REST response, not in its metrics, in its logs only for memory-hungry queries): warm-up (the main runtime's downloading and decoding), waiting for the search pool, CPU search, waiting for a search permit, and bytes downloaded (`crates/usnm-ingest/src/cluster/grpc.rs`). `--profile-secs` runs searches with fresh windows under Quickwit's own CPU profiler (`/api/developer/pprof`, in its release builds) and stores the flame graph in `qw-bench` at `runs/{label}/flamegraph.svg`; the report lists samples by thread and the main runtime's busiest functions. `--wait-split-cache-secs` waits for the split cache to hold every split before the passes, and `--variant` names the mode in the report.
+
+With `RG`, `J`, `JOB` and `wait_for` as in the version comparison above, and the image tag that has these flags in `USNM_IMAGE_TAG`:
+
+```sh
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/settings.sh dev USNM_SEARCH_COMPARE_TAGS ""
+scripts/settings.sh dev USNM_DEDICATED_PROFILE true
+scripts/settings.sh dev USNM_SEARCH_LOCAL_INDEX s1ixb
+lbench() { wait_for "$(J bench --label "$1" --cluster http://ca-usnm-qwl-0 --index s1ixb --sample dev1pct --variant "$2" --levels 1,4,10 --probe --profile-secs 120 "${@:3}")"; }
+for mode in blob cache copy; do
+  scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE $mode
+  scripts/provision.sh dev                       # a new revision: a cold searcher
+  # Run 1 from cold; run 2 on windows no earlier search used (offset 100 days),
+  # after the split cache has every split in the cache mode.
+  lbench loc-$mode-r1 $mode
+  [ $mode = cache ] && wait_args=(--wait-split-cache-secs 1800) || wait_args=()
+  lbench loc-$mode-r2 $mode --levels-only --offset 100 "${wait_args[@]}"
+done
+az containerapp logs show -n ca-usnm-qwl-0 -g "$RG" --container qwnode --tail 200 | grep -E 'data directory disk|local copy disk|index copied'
+scripts/qwcluster-report.py dev --since 12h --out qwlocal.md
+scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE ""
+scripts/settings.sh dev USNM_DEDICATED_PROFILE ""   # after the local searcher is gone: a profile in use can't be removed
+scripts/provision.sh dev
+```
+
+(Provision with `USNM_SEARCH_LOCAL_MODE ""` first and `USNM_DEDICATED_PROFILE ""` in a second provision if the first refuses to drop a profile still in use.) The report's comparison tables group the runs as `0.9.1 blob`, `0.9.1 cache` and `0.9.1 copy` with ratios to blob. Compare the `r2` runs, which have warm footers and fast fields in all three modes: if `cache` and `copy` cut the main runtime's busy seconds per search and the probe's warm-up seconds by much more than they cut the downloaded bytes' share of the time, the Blob path (HTTP, TLS, the Azure client) is the main runtime's cost; if they barely move it, the cost is in decoding what a split needs, which a local disk doesn't remove. The flame graphs show which functions those seconds went to.
+
+
