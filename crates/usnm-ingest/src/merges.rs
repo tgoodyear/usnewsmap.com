@@ -74,6 +74,14 @@ pub fn max_splits(docs: u64) -> u64 {
     docs / target.max(1) + finals + 2
 }
 
+/// The most splits a fully merged index can have when its splits are
+/// partitioned (05 §5.5.5): Quickwit merges only splits of one partition,
+/// and runs its final merges in each, so every partition can be left with
+/// its own [`max_splits`]. `docs` are the documents of each partition.
+pub fn max_partitioned_splits(docs: impl IntoIterator<Item = u64>) -> u64 {
+    docs.into_iter().map(max_splits).sum()
+}
+
 /// What the writer node's output has said about the release so far: read
 /// line by line as the node writes it (`sink::forward`).
 #[derive(Debug, Default)]
@@ -322,6 +330,12 @@ pub struct Split {
     /// searcher reads first and keeps in `split_footer_cache_capacity`;
     /// `None` if the metastore doesn't say.
     pub footer_bytes: Option<u64>,
+    /// Quickwit's partition: 0 unless the index has a `partition_key`
+    /// (05 §5.5.5).
+    pub partition_id: u64,
+    /// The decades its pages are in, from its `decade:` tags; empty for an
+    /// index without them.
+    pub decades: Vec<u16>,
 }
 
 /// An index's published splits, as the release log and manifest report them.
@@ -342,6 +356,10 @@ pub struct IndexLayout {
     /// The largest single footer; absent like `footer_bytes`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub largest_footer_bytes: Option<u64>,
+    /// Splits per decade, for an index partitioned by decade (05 §5.5.5),
+    /// where every split holds one; absent otherwise.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub splits_by_decade: BTreeMap<u16, u64>,
 }
 
 impl IndexLayout {
@@ -358,6 +376,20 @@ impl IndexLayout {
             largest_footer_bytes: footers
                 .as_ref()
                 .map(|f| f.iter().copied().max().unwrap_or(0)),
+            // Only a partitioned index (a partition key, so nonzero
+            // partition ids): a tagged delta's split can also hold one decade.
+            splits_by_decade: if splits
+                .iter()
+                .all(|s| s.partition_id != 0 && s.decades.len() == 1)
+            {
+                let mut by = BTreeMap::new();
+                for s in splits {
+                    *by.entry(s.decades[0]).or_default() += 1;
+                }
+                by
+            } else {
+                BTreeMap::new()
+            },
         }
     }
 
@@ -372,6 +404,7 @@ impl IndexLayout {
             largest_split_docs = self.largest_split_docs,
             footer_bytes = self.footer_bytes,
             largest_footer_bytes = self.largest_footer_bytes,
+            splits_by_decade = ?self.splits_by_decade,
             "index layout"
         );
     }
@@ -393,9 +426,24 @@ fn parse_splits(v: &Value) -> anyhow::Result<Vec<Split>> {
                 // The footer ends the split file.
                 bytes: s["footer_offsets"]["end"].as_u64().unwrap_or(0),
                 footer_bytes: footer_bytes(&s["footer_offsets"]),
+                partition_id: s["partition_id"].as_u64().unwrap_or(0),
+                decades: decade_tags(&s["tags"]),
             })
         })
         .collect()
+}
+
+/// The decades in a split's tags (`decade:1890`), sorted.
+fn decade_tags(tags: &Value) -> Vec<u16> {
+    let mut decades: Vec<u16> = tags
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.as_str()?.strip_prefix("decade:")?.parse().ok())
+        .collect();
+    decades.sort_unstable();
+    decades.dedup();
+    decades
 }
 
 /// A split's footer size from its `footer_offsets` (`{"start", "end"}`,
@@ -836,11 +884,19 @@ fn check(index_id: &str, expected: u64, splits: &[Split]) -> anyhow::Result<Inde
             layout.splits
         );
     }
-    let ceiling = max_splits(expected);
+    let mut partitions: BTreeMap<u64, u64> = BTreeMap::new();
+    for s in splits {
+        *partitions.entry(s.partition_id).or_default() += s.docs;
+    }
+    let ceiling = max_partitioned_splits(partitions.values().copied());
     if layout.splits > ceiling {
+        let across = match partitions.len() {
+            0 | 1 => String::new(),
+            n => format!(" in {n} partitions"),
+        };
         bail!(
             "merging left `{index_id}` in {} splits; its merge policy leaves at most {ceiling} \
-             for {expected} documents. Not publishing a half-merged index",
+             for {expected} documents{across}. Not publishing a half-merged index",
             layout.splits
         );
     }
@@ -1024,12 +1080,16 @@ mod tests {
                 docs: 1_000_000,
                 bytes: 23_000_000_000,
                 footer_bytes: Some(3_500_000),
+                partition_id: 0,
+                decades: vec![],
             },
             Split {
                 id: "b".into(),
                 docs: 40_000,
                 bytes: 920_000_000,
                 footer_bytes: Some(92_377),
+                partition_id: 0,
+                decades: vec![],
             },
         ];
         let l = check("idx", 1_040_000, &splits).unwrap();
@@ -1044,6 +1104,7 @@ mod tests {
                 largest_split_docs: 1_000_000,
                 footer_bytes: Some(3_592_377),
                 largest_footer_bytes: Some(3_500_000),
+                splits_by_decade: BTreeMap::new(),
             }
         );
         // In the log line and the manifest.
@@ -1077,11 +1138,69 @@ mod tests {
                 docs: 7_000,
                 bytes: 1,
                 footer_bytes: None,
+                partition_id: 0,
+                decades: vec![],
             })
             .collect();
         let err = check("idx", 140_000, &many).unwrap_err().to_string();
         assert!(err.contains("at most 11"), "{err}");
         assert_eq!(IndexLayout::of("empty", &[]).splits, 0);
+
+        // Partitioned by decade (05 §5.5.5): each partition merges on its
+        // own, so each may keep its own small splits.
+        let decades: Vec<Split> = (0..20)
+            .map(|i| Split {
+                partition_id: 100 + i / 5,
+                decades: vec![1860 + 10 * (i / 5) as u16],
+                ..many[i as usize].clone()
+            })
+            .collect();
+        let l = check("idx", 140_000, &decades).unwrap();
+        assert_eq!(
+            l.splits_by_decade,
+            BTreeMap::from([(1860, 5), (1870, 5), (1880, 5), (1890, 5)])
+        );
+        assert_eq!(
+            serde_json::to_value(&l).unwrap()["splits_by_decade"],
+            serde_json::json!({"1860": 5, "1870": 5, "1880": 5, "1890": 5})
+        );
+        // 4 partitions of 35,000 pages: at most 4 × (1 + 5 + 2).
+        assert_eq!(max_partitioned_splits([35_000; 4]), 32);
+        assert_eq!(max_partitioned_splits([140_000]), max_splits(140_000));
+        let mut crowded = decades.clone();
+        for s in &mut crowded {
+            s.partition_id = 7;
+        }
+        let err = check("idx", 140_000, &crowded).unwrap_err().to_string();
+        assert!(
+            err.contains("at most 11") && !err.contains("partitions"),
+            "{err}"
+        );
+        let tiny: Vec<Split> = (0..40)
+            .map(|i| Split {
+                docs: 1,
+                partition_id: i / 20,
+                ..decades[0].clone()
+            })
+            .collect();
+        let err = check("idx", 40, &tiny).unwrap_err().to_string();
+        assert!(
+            err.contains("at most 14") && err.contains("in 2 partitions"),
+            "{err}"
+        );
+        // A split with several decades (a tagged delta) or none: no count.
+        let mut mixed = decades.clone();
+        mixed[0].decades = vec![1860, 1870];
+        assert!(IndexLayout::of("idx", &mixed).splits_by_decade.is_empty());
+        // A tagged delta whose splits each hold one decade isn't partitioned.
+        let tagged: Vec<Split> = decades
+            .iter()
+            .map(|s| Split {
+                partition_id: 0,
+                ..s.clone()
+            })
+            .collect();
+        assert!(IndexLayout::of("idx", &tagged).splits_by_decade.is_empty());
     }
 
     #[test]
@@ -1090,6 +1209,15 @@ mod tests {
             "split_state": "Published", "split_id": "01M3XPHH", "num_docs": 40000,
             "footer_offsets": {"start": 919982920, "end": 920075297}, "num_merge_ops": 1,
         }]});
+        let tagged = serde_json::json!({"splits": [{
+            "split_id": "t", "num_docs": 1, "partition_id": 3264326757911759461_u64,
+            "tags": ["decade!", "decade:1900", "decade:1890", "lccn:x"],
+        }]});
+        let t = &parse_splits(&tagged).unwrap()[0];
+        assert_eq!(
+            (t.partition_id, t.decades.clone()),
+            (3264326757911759461, vec![1890, 1900])
+        );
         assert_eq!(
             parse_splits(&v).unwrap(),
             vec![Split {
@@ -1097,6 +1225,8 @@ mod tests {
                 docs: 40000,
                 bytes: 920_075_297,
                 footer_bytes: Some(92_377),
+                partition_id: 0,
+                decades: vec![],
             }]
         );
         assert!(parse_splits(&serde_json::json!({"message": "index `x` not found"})).is_err());

@@ -352,8 +352,10 @@ pub fn better_than_locs(ours: &str, locs: Option<&str>) -> bool {
 
 /// The main-index document of a page curation never had (#203): the main
 /// index's fields ([`crate::release::main_doc`]) with `latin` as its text.
-pub fn latin_doc(page: &JaPage, latin: &str, title: &Title, place: &Place) -> Value {
-    crate::release::main_doc(&page.key, &page.batch, latin, title, place, None)
+/// With `decade`, the page's decade partition too (05 §5.5.5), as every
+/// main-index document of a version laid out by decade has.
+pub fn latin_doc(page: &JaPage, latin: &str, title: &Title, place: &Place, decade: bool) -> Value {
+    crate::release::main_doc(&page.key, &page.batch, latin, title, place, None, decade)
 }
 
 /// What our OCR found on a page: `japanese` (at least 20 characters, half of

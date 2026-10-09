@@ -49,6 +49,11 @@ pub struct Current {
     /// with (05 §5.5.4); absent for versions without `text_as`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub american_stories: Option<u32>,
+    /// The `usnm_core::decade::VERSION` every index's `decade` field was
+    /// written with (05 §5.5.5): the base is partitioned by decade, and its
+    /// deltas tag their splits with theirs. Absent for versions without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decades: Option<u32>,
 }
 
 /// `current.json`'s `ja`: the index of the Japanese pages we OCR ourselves.
@@ -309,9 +314,18 @@ impl RefData {
         // American Stories' text likewise: only a version built with it at
         // this API's version has `text_as` (05 §5.5.4).
         let american = self.current.american_stories == Some(usnm_core::american_stories::VERSION);
+        // Date-limited searches name their decades, so Quickwit skips the
+        // other decades' splits, only on a version laid out with this API's
+        // decades (05 §5.5.5): another version has no `decade` field, or
+        // other buckets.
+        let decades = (self.current.decades == Some(usnm_core::decade::VERSION)).then(|| {
+            usnm_core::decade::of_date(self.current.bounds.from)
+                ..=usnm_core::decade::of_date(self.current.bounds.to)
+        });
         IndexSet::new(self.current.indexes.clone())
             .with_common_grams(grams)
             .with_american_stories(american)
+            .with_decades(decades)
             .hiding(
                 self.hidden
                     .iter()

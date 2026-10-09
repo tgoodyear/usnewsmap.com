@@ -64,6 +64,28 @@ fn loc_fixture(index_id: &str) -> BTreeMap<String, Value> {
     )
 }
 
+#[path = "../../../fixtures/decades.rs"]
+#[allow(dead_code)]
+mod decades;
+
+/// `pages` moved over several decades as `fixtures/decades.rs` moves the
+/// fixture indexes' (05 §5.5.5): the 1830s, 1840s, 1860s and 1890s.
+fn over_decades(pages: &[&Page]) -> Vec<Page> {
+    use chrono::Datelike;
+    pages
+        .iter()
+        .map(|p| Page {
+            lccn: p.lccn.clone(),
+            date: p
+                .date
+                .with_year(p.date.year() - decades::years_back(&p.lccn))
+                .unwrap(),
+            seq: p.seq,
+            text: p.text.clone(),
+        })
+        .collect()
+}
+
 struct Page {
     lccn: String,
     date: NaiveDate,
@@ -203,6 +225,32 @@ impl Env {
         self.release_with(day, full, false).await.unwrap()
     }
 
+    /// A release with or without `--partition-decade` (05 §5.5.5).
+    async fn release_by_decade(&self, day: u32, full: bool, partition_decade: bool) -> Published {
+        let r = Release {
+            partition_decade,
+            ..self.releaser(day, full)
+        };
+        let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
+        r.run(&mut sink).await.unwrap().unwrap()
+    }
+
+    fn releaser(&self, day: u32, full: bool) -> Release {
+        Release {
+            state: self.state.clone(),
+            curated: self.curated.clone(),
+            reference: self.reference.clone(),
+            owner: "releaser".into(),
+            full,
+            synthetic: true,
+            now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
+            titles_left: None,
+            american_stories: false,
+            ja_latin: false,
+            partition_decade: false,
+        }
+    }
+
     /// A release with or without American Stories' text (`--american-stories`).
     async fn release_with(
         &self,
@@ -236,6 +284,7 @@ impl Env {
             titles_left: None,
             american_stories,
             ja_latin,
+            partition_decade: false,
         };
         let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
         r.run(&mut sink).await
@@ -557,6 +606,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        partition_decade: false,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     assert!(r.run(&mut sink).await.is_err());
@@ -609,6 +659,7 @@ async fn releases_into_a_quickwit_writer_node() {
             titles_left: None,
             american_stories: false,
             ja_latin: false,
+            partition_decade: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -853,7 +904,9 @@ async fn a_writer_seals_an_index_that_received_no_documents() {
             timeout: std::time::Duration::from_secs(45),
             ..quick_merges()
         });
-    sink.create(id).await.unwrap();
+    sink.create(id, usnm_ingest::sink::Decades::Off)
+        .await
+        .unwrap();
     sink.finish(0).await.unwrap();
     let layout = sink.layout(&[id.to_owned()]).await.unwrap();
     assert_eq!((layout[0].splits, layout[0].docs), (0, 0));
@@ -1011,7 +1064,11 @@ struct OtherBackend(u64);
 
 #[async_trait::async_trait]
 impl usnm_ingest::sink::IndexSink for OtherBackend {
-    async fn create(&mut self, _index_id: &str) -> anyhow::Result<()> {
+    async fn create(
+        &mut self,
+        _index_id: &str,
+        _: usnm_ingest::sink::Decades,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
     async fn add(&mut self, _doc: &Value) -> anyhow::Result<()> {
@@ -1059,6 +1116,7 @@ async fn a_backend_switch_forces_a_full_release() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        partition_decade: false,
     };
     let mut sink = OtherBackend(0);
     let p = r.run(&mut sink).await.unwrap().unwrap();
@@ -1097,6 +1155,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        partition_decade: false,
     };
     let lease = r.lock().await.unwrap();
     // Another writer takes the lock over (e.g. after this one stalled).
@@ -1179,6 +1238,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         titles_left,
         american_stories: false,
         ja_latin: false,
+        partition_decade: false,
     };
     let why = Some("LoC rate limited titles-sync with 5 of 9 titles left".to_owned());
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -1601,6 +1661,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        partition_decade: false,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     let err = format!("{:#}", r.run(&mut sink).await.unwrap_err());
@@ -1612,7 +1673,11 @@ struct FailingSink;
 
 #[async_trait::async_trait]
 impl usnm_ingest::sink::IndexSink for FailingSink {
-    async fn create(&mut self, _index_id: &str) -> anyhow::Result<()> {
+    async fn create(
+        &mut self,
+        _index_id: &str,
+        _: usnm_ingest::sink::Decades,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
     async fn add(&mut self, _doc: &Value) -> anyhow::Result<()> {
@@ -1653,6 +1718,7 @@ async fn a_failed_release_records_when_it_failed() {
         titles_left: None,
         american_stories: false,
         ja_latin: false,
+        partition_decade: false,
     };
     let before = Utc::now();
     let err = r.run(&mut FailingSink).await.unwrap_err();
@@ -1921,6 +1987,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             titles_left: None,
             american_stories: false,
             ja_latin: false,
+            partition_decade: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -2704,6 +2771,73 @@ async fn a_copy_without_locs_text_does_not_hide_ours() {
     assert_eq!(v2.pages, early_pages as u64 + 1, "each page counts once");
 }
 
+/// Our OCR's Latin text in a version laid out by decade (#203 with #123):
+/// its documents carry the `decade` field like LoC's, in the partitioned
+/// base and in a tagged delta, so a date-limited search that skips the
+/// other decades' splits still finds them.
+#[tokio::test]
+async fn our_latin_text_follows_the_decade_layout() {
+    let e = env().await;
+    let (early, late, _, _) = curate_early_and_late(&e).await;
+    curate(&e, early).await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let blank = pages
+        .iter()
+        .find(|p| p.date < split && p.text.is_empty())
+        .expect("an empty early page");
+    let row = |seq, loc_text, text| JaRow {
+        lccn: &blank.lccn,
+        date: blank.date,
+        seq,
+        batch: "batch_fx_early",
+        loc_text,
+        text,
+        ocred_at: 1,
+    };
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[
+            row(90, "missing", "Moritz Drug Co, 2001 Larimer Street"),
+            row(blank.seq, "empty", "The relocation center held a meeting"),
+        ],
+    )
+    .await;
+    let release = |day, full| Release {
+        partition_decade: true,
+        ja_latin: true,
+        ..e.releaser(day, full)
+    };
+    let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
+    let v1 = release(5, true).run(&mut sink).await.unwrap().unwrap();
+    assert_eq!(
+        e.reference_json("current.json").await["decades"],
+        usnm_core::decade::VERSION
+    );
+    let decade = usnm_core::decade::of_date(blank.date);
+    let id = |seq: u16| format!("{}_{}_ed-1_seq-{seq}", blank.lccn, blank.date);
+    let base = e.index(&v1.indexes[0]);
+    assert!(base.values().all(|d| d.get("decade").is_some()));
+    assert_eq!(base[&id(90)]["decade"], decade);
+    assert_eq!(base[&id(90)]["text"], "Moritz Drug Co, 2001 Larimer Street");
+    assert_eq!(base[&id(blank.seq)]["decade"], decade);
+
+    // A delta on it is tagged: its new page of ours has the field too.
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/b.parquet",
+        &[row(92, "missing", "SUNSHINE GROCERY 1851 Larimer Street")],
+    )
+    .await;
+    curate(&e, late).await;
+    let v2 = release(6, false).run(&mut sink).await.unwrap().unwrap();
+    assert!(!v2.full);
+    let delta = e.index(&v2.indexes[1]);
+    assert!(delta.values().all(|d| d.get("decade").is_some()));
+    assert_eq!(delta[&id(92)]["decade"], decade);
+}
+
 /// American Stories' text for the fixture pages that have some (their
 /// `text_as`), as `american_stories_write.py` writes it: a part per title
 /// and year, then each year's marker. Plus a page no batch has, and a
@@ -3133,6 +3267,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             titles_left: None,
             american_stories: true,
             ja_latin: false,
+            partition_decade: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -3186,5 +3321,277 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
         .await,
         want
     );
+    node.stop().await.unwrap();
+}
+
+/// A full base built with `--partition-decade` (05 §5.5.5): every page has
+/// its decade, the pages are written a decade at a time, and the version
+/// says so. Deltas follow the published version whatever the setting says,
+/// and a full base without it lays nothing out by decade.
+#[tokio::test]
+async fn a_base_laid_out_by_decade_and_the_releases_after_it() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+    let group = |from: &str, to: &str| -> Vec<Page> {
+        let g: Vec<&Page> = pages
+            .iter()
+            .filter(|p| p.date >= d(from) && p.date < d(to))
+            .collect();
+        over_decades(&g)
+    };
+    let batches = [
+        ("batch_fx_a_ver01", group("1895-01-01", "1896-07-01")),
+        ("batch_fx_b_ver01", group("1896-07-01", "1897-07-01")),
+        ("batch_fx_c_ver01", group("1897-07-01", "1898-01-01")),
+    ];
+    let curate = |i: usize| {
+        let (name, pages) = &batches[i];
+        let path = e.root.join(format!("{name}.tar.gz"));
+        write_archive(&path, &pages.iter().collect::<Vec<_>>(), false, true);
+        let e = &e;
+        let name = *name;
+        async move {
+            source::enqueue(&e.state, &[listed(name, &path, None)])
+                .await
+                .unwrap();
+            e.worker("w").run(None).await.unwrap();
+        }
+    };
+    let decade_of = |doc: &Value| usnm_core::decade::of_date(d(doc["date"].as_str().unwrap()));
+
+    // 1. A partitioned base.
+    curate(0).await;
+    let p1 = e.release_by_decade(1, true, true).await;
+    assert!(p1.full);
+    let pointer = e.reference_json("current.json").await;
+    assert_eq!(pointer["decades"], usnm_core::decade::VERSION);
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p1.index_version))
+        .await;
+    assert_eq!(
+        manifest["build"]["features"]["decades"],
+        usnm_core::decade::VERSION
+    );
+    let yaml = manifest["build"]["templates"]["pages"]["yaml"]
+        .as_str()
+        .unwrap();
+    assert!(yaml.contains("partition_key: decade"), "{yaml}");
+    let base = &p1.indexes[0];
+    let docs = read_jsonl(&e.root.join(format!("reference/indexes/{base}.jsonl")));
+    assert_eq!(docs.len() as u64, p1.docs);
+    for doc in &docs {
+        assert_eq!(
+            doc["decade"].as_u64(),
+            Some(u64::from(decade_of(doc))),
+            "{doc}"
+        );
+    }
+    // Written a decade at a time: under the split target, each decade's
+    // pages wait for the end and go out oldest decade first.
+    let written: Vec<u16> = docs.iter().map(decade_of).collect();
+    assert!(written.windows(2).all(|w| w[0] <= w[1]), "{written:?}");
+    let mut seen = written.clone();
+    seen.dedup();
+    assert_eq!(seen, [1830, 1840, 1860, 1890]);
+    // The order's files are gone.
+    assert!(!e
+        .root
+        .join("reference/indexes")
+        .join(usnm_ingest::decade_order::SPILL_DIR)
+        .exists());
+
+    // 2. A delta follows the version, the setting off: the field, and its
+    // splits would be tagged rather than partitioned.
+    curate(1).await;
+    let p2 = e.release_by_decade(8, false, false).await;
+    assert!(!p2.full);
+    assert_eq!(
+        e.reference_json("current.json").await["decades"],
+        usnm_core::decade::VERSION
+    );
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p2.index_version))
+        .await;
+    let yaml = manifest["build"]["templates"]["pages"]["yaml"]
+        .as_str()
+        .unwrap();
+    assert!(
+        yaml.contains("tag_fields: [decade]") && !yaml.contains("partition_key"),
+        "{yaml}"
+    );
+    let delta = read_jsonl(
+        &e.root
+            .join(format!("reference/indexes/{}.jsonl", p2.indexes[1])),
+    );
+    assert!(!delta.is_empty());
+    for doc in &delta {
+        assert_eq!(
+            doc["decade"].as_u64(),
+            Some(u64::from(decade_of(doc))),
+            "{doc}"
+        );
+    }
+
+    // 3. A full base without the setting: no decades anywhere.
+    let p3 = e.release_by_decade(15, true, false).await;
+    assert!(p3.full);
+    let pointer = e.reference_json("current.json").await;
+    assert!(pointer.get("decades").is_none(), "{pointer}");
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p3.index_version))
+        .await;
+    assert!(manifest["build"]["features"].get("decades").is_none());
+    let rebuilt = read_jsonl(
+        &e.root
+            .join(format!("reference/indexes/{}.jsonl", p3.indexes[0])),
+    );
+    assert!(rebuilt.iter().all(|doc| doc.get("decade").is_none()));
+    // The partitioned base's pages are this base's, apart from the field.
+    let rebuilt: BTreeMap<&str, &Value> = rebuilt
+        .iter()
+        .map(|doc| (doc["doc_id"].as_str().unwrap(), doc))
+        .collect();
+    for mut doc in docs {
+        doc.as_object_mut().unwrap().remove("decade");
+        assert_eq!(rebuilt[doc["doc_id"].as_str().unwrap()], &doc);
+    }
+
+    // 4. The setting on, but a delta: it follows the version, so no decades
+    // until the next full base.
+    curate(2).await;
+    let p4 = e.release_by_decade(22, false, true).await;
+    assert!(!p4.full);
+    assert!(e
+        .reference_json("current.json")
+        .await
+        .get("decades")
+        .is_none());
+    let delta = read_jsonl(
+        &e.root
+            .join(format!("reference/indexes/{}.jsonl", p4.indexes[1])),
+    );
+    assert!(!delta.is_empty() && delta.iter().all(|doc| doc.get("decade").is_none()));
+}
+
+/// A base built with `--partition-decade` on a real Quickwit writer (05
+/// §5.5.5): each split holds one decade, the release checks the merges per
+/// decade and records the splits of each, and a delta on it tags its split
+/// with its decades. Searches that name their decades get the same pages
+/// as without, from fewer splits. Runs when `QUICKWIT_BIN` is set.
+#[tokio::test]
+async fn releases_a_base_laid_out_by_decade_into_a_quickwit_writer_node() {
+    let Some(bin) = std::env::var_os("QUICKWIT_BIN").filter(|b| !b.is_empty()) else {
+        eprintln!("QUICKWIT_BIN not set; skipping");
+        return;
+    };
+    use usnm_core::params::Filters;
+    use usnm_core::query::parse;
+    use usnm_core::time::{BucketSpec, BucketUnit};
+    use usnm_ingest::sink::{QuickwitNode, QuickwitSink};
+    use usnm_search::quickwit::QuickwitBackend;
+    use usnm_search::{IndexSet, SearchBackend};
+
+    let e = env().await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let (early, late) = (over_decades(&early), over_decades(&late));
+    let archive = |name: &str, pages: &[Page]| {
+        let path = e.root.join(format!("{name}.tar.gz"));
+        write_archive(&path, &pages.iter().collect::<Vec<_>>(), false, true);
+        listed(name, &path, None)
+    };
+    let qw = e.root.join("qw");
+    std::fs::create_dir_all(&qw).unwrap();
+    let meta = format!("file://{}/meta", qw.display());
+    let root = format!("file://{}/indexes", qw.display());
+    let node = QuickwitNode::start(Path::new(&bin), &qw, 7403, &meta, &root)
+        .await
+        .unwrap();
+    let mut published = Vec::new();
+    for (day, full, batch) in [
+        (1, true, archive("batch_fx_early_ver01", &early)),
+        (8, false, archive("batch_fx_late_ver01", &late)),
+    ] {
+        curate(&e, vec![batch]).await;
+        let r = Release {
+            partition_decade: true,
+            ..e.releaser(day, full)
+        };
+        let mut sink = QuickwitSink::new(&node.url, &root)
+            .unwrap()
+            .watching(&node)
+            .merges(quick_merges());
+        published.push(r.run(&mut sink).await.unwrap().unwrap());
+    }
+    let p = published.last().unwrap();
+    assert_eq!(
+        e.reference_json("current.json").await["decades"],
+        usnm_core::decade::VERSION
+    );
+    // The base: one decade a split, counted per decade in the manifest.
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p.index_version))
+        .await;
+    let layout = manifest["indexes"].as_array().unwrap();
+    assert_eq!(
+        layout[0]["splits_by_decade"],
+        serde_json::json!({"1830": 1, "1840": 1, "1860": 1, "1890": 1}),
+        "{}",
+        layout[0]
+    );
+    // The delta: tagged, not partitioned, so one split with every decade.
+    assert_eq!(layout[1]["splits"], 1, "{}", layout[1]);
+    assert!(layout[1].get("splits_by_decade").is_none(), "{}", layout[1]);
+    let http = reqwest::Client::new();
+    let n = usnm_ingest::merges::Node {
+        http: &http,
+        base: &node.url,
+    };
+    let delta = n.splits(&p.indexes[1]).await.unwrap();
+    assert_eq!(delta[0].decades, [1840, 1860, 1890]);
+    assert_eq!(delta[0].partition_id, 0);
+
+    // Searches name their decades as the API does, and find the same pages.
+    let backend = QuickwitBackend::new(&node.url, std::time::Duration::from_secs(30)).unwrap();
+    let plain = IndexSet::new(p.indexes.clone());
+    let by_decade = plain.clone().with_decades(Some(1830..=1890));
+    let q = parse("gold").unwrap();
+    let mut found = 0;
+    for (from, to) in [
+        ("1868-01-01", "1868-12-31"),
+        ("1839-01-01", "1841-12-31"),
+        ("1860-01-01", "1899-12-31"),
+        ("1830-01-01", "1897-12-31"),
+    ] {
+        let f = Filters {
+            from: NaiveDate::parse_from_str(from, "%Y-%m-%d").unwrap(),
+            to: NaiveDate::parse_from_str(to, "%Y-%m-%d").unwrap(),
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+        };
+        let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
+        let a = backend.summary(&by_decade, &q, &f, &spec).await.unwrap();
+        let b = backend.summary(&plain, &q, &f, &spec).await.unwrap();
+        assert_eq!(a, b, "{from} to {to}");
+        found += a.total_hits;
+    }
+    assert!(found > 0);
+    // The splits a search for 1868 needs: the base's 1860s split and the
+    // delta's, of the five.
+    let mut targeted = 0;
+    for id in &p.indexes {
+        targeted += n
+            .splits(id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|s| s.decades.contains(&1860))
+            .count();
+    }
+    assert_eq!(targeted, 2);
     node.stop().await.unwrap();
 }

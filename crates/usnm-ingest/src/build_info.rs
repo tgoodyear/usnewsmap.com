@@ -38,6 +38,10 @@ pub struct Built {
     /// The release writes our Japanese OCR's Latin text for the pages LoC
     /// ships without text (`--ja-latin`, #203).
     pub ja_latin: bool,
+    /// The decade layout (05 §5.5.5): of the main index this run writes,
+    /// and of the version's main indexes, which all have the `decade` field
+    /// or none does.
+    pub decades: crate::sink::Decades,
 }
 
 /// The index templates the run applies, by name.
@@ -45,10 +49,8 @@ fn templates(b: &Built) -> Vec<(&'static str, String)> {
     let mut t = Vec::new();
     if b.main_index {
         // As the writer applies it: the run's tuning in place of the
-        // template's heap and commit timeout.
-        let pages = b
-            .writer
-            .apply(crate::sink::INDEX_TEMPLATE)
+        // template's heap and commit timeout, and its decade layout.
+        let pages = crate::sink::main_template(&b.writer, b.decades)
             .unwrap_or_else(|_| crate::sink::INDEX_TEMPLATE.to_owned());
         t.push(("pages", pages));
     }
@@ -92,6 +94,10 @@ pub fn summary(b: &Built) -> Value {
     if b.ja_latin {
         features["ja_latin"] = json!(crate::ocr_ja::LATIN_VERSION);
     }
+    // Likewise, as its `decades`.
+    if b.decades.on() {
+        features["decades"] = json!(usnm_core::decade::VERSION);
+    }
     json!({
         "commit": std::env::var(COMMIT_ENV).ok().filter(|s| !s.is_empty()),
         "ingest": env!("CARGO_PKG_VERSION"),
@@ -116,6 +122,7 @@ mod tests {
             writer: crate::sink::WriterTuning::default(),
             american_stories: false,
             ja_latin: false,
+            decades: crate::sink::Decades::Off,
         }
     }
 
@@ -146,6 +153,24 @@ mod tests {
             v["features"]["common_grams"],
             usnm_core::common_grams::VERSION
         );
+    }
+
+    #[test]
+    fn records_the_decade_layout_and_its_template() {
+        let off = record(&built(true, false));
+        assert!(off["features"].get("decades").is_none(), "{off}");
+        let mut b = built(true, false);
+        b.decades = crate::sink::Decades::Partitioned;
+        let v = record(&b);
+        assert_eq!(v["features"]["decades"], usnm_core::decade::VERSION);
+        let yaml = v["templates"]["pages"]["yaml"].as_str().unwrap();
+        assert!(yaml.contains("partition_key: decade"), "{yaml}");
+        b.decades = crate::sink::Decades::Tagged;
+        let yaml = record(&b)["templates"]["pages"]["yaml"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(yaml.contains("tag_fields: [decade]") && !yaml.contains("partition_key"));
     }
 
     #[test]

@@ -50,6 +50,99 @@ pub struct WriterTuning {
     pub queue: String,
 }
 
+/// How a main index lays out its pages by decade (05 §5.5.5, #123). Only
+/// this run's new main index takes it; the Japanese index never does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Decades {
+    /// No `decade` field: the template as it is.
+    #[default]
+    Off,
+    /// The `decade` field, recorded as a split tag (`tag_fields`): a delta
+    /// on a version laid out by decade. Its splits mix decades as before,
+    /// but a search skips each split that holds none of its decades.
+    Tagged,
+    /// Also `partition_key: decade`, so every split holds one decade: a
+    /// full base built with `--partition-decade`.
+    Partitioned,
+}
+
+/// The template lines [`Decades`] adds to: the doc mapping's timestamp
+/// field and the `year` field mapping.
+const TEMPLATE_TIMESTAMP: &str = "timestamp_field: date";
+const TEMPLATE_YEAR: &str = "- { name: year, type: u64, fast: true, indexed: true }";
+
+/// Partitions an indexer keeps apart at once, more than the 15 decades
+/// (1820s to 1960s, `usnm_core::decade`). Past it, Quickwit 0.9.1 puts the
+/// pages of further decades into one shared split, which a search can't
+/// skip. Each partition has its own in-memory split while the indexer
+/// fills, all within the one indexing heap.
+pub const MAX_NUM_PARTITIONS: u32 = 32;
+
+impl Decades {
+    /// Whether the pages carry the `decade` field.
+    pub fn on(self) -> bool {
+        self != Decades::Off
+    }
+
+    /// `template` with the `decade` field, and its tag and partitioning as
+    /// this layout has them. `Off` leaves it as it is. Each line it adds to
+    /// must be there exactly once, so a template change can't silently
+    /// drop the layout.
+    pub fn apply(self, template: &str) -> anyhow::Result<String> {
+        if self == Decades::Off {
+            return Ok(template.to_owned());
+        }
+        let mut found = (0, 0);
+        let mut out = Vec::new();
+        for line in template.lines() {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            out.push(line.to_owned());
+            match line.trim() {
+                TEMPLATE_TIMESTAMP => {
+                    found.0 += 1;
+                    out.push(format!(
+                        "{indent}# Decade partitions (05 §5.5.5, #123): searches name their \
+                         decades (`decade:IN [...]`), and Quickwit skips the splits of the others."
+                    ));
+                    out.push(format!("{indent}tag_fields: [decade]"));
+                    if self == Decades::Partitioned {
+                        out.push(format!("{indent}partition_key: decade"));
+                        out.push(format!("{indent}max_num_partitions: {MAX_NUM_PARTITIONS}"));
+                    }
+                }
+                TEMPLATE_YEAR => {
+                    found.1 += 1;
+                    out.push(format!(
+                        "{indent}# The page's decade, from 1820 (usnm_core::decade::of_year)."
+                    ));
+                    out.push(format!(
+                        "{indent}- {{ name: decade, type: u64, fast: false, indexed: true, stored: false }}"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if found != (1, 1) {
+            bail!(
+                "the index template needs exactly one `{TEMPLATE_TIMESTAMP}` and one `{TEMPLATE_YEAR}` line to add the decade to, not {} and {}",
+                found.0,
+                found.1
+            );
+        }
+        let mut out = out.join("\n");
+        if template.ends_with('\n') {
+            out.push('\n');
+        }
+        Ok(out)
+    }
+}
+
+/// The main index's config for this run: the template with the writer's
+/// tuning and the decade layout.
+pub fn main_template(tuning: &WriterTuning, decades: Decades) -> anyhow::Result<String> {
+    decades.apply(&tuning.apply(INDEX_TEMPLATE)?)
+}
+
 /// The template lines [`WriterTuning`] replaces.
 const TEMPLATE_HEAP: &str = "heap_size: 1GiB";
 const TEMPLATE_COMMIT: &str = "commit_timeout_secs: 30";
@@ -160,14 +253,20 @@ const INGEST_RETRY_FOR: Duration = Duration::from_secs(600);
 
 #[async_trait]
 pub trait IndexSink: Send {
-    /// Start a new, empty index. Fails if it already exists.
-    async fn create(&mut self, index_id: &str) -> anyhow::Result<()>;
+    /// Start a new, empty main index, laid out by decade as `decades` says
+    /// (05 §5.5.5). Fails if it already exists.
+    async fn create(&mut self, index_id: &str, decades: Decades) -> anyhow::Result<()>;
     /// Create an index with another mapping (the Japanese pages',
     /// `ocr_ja::JA_TEMPLATE`). Sinks without mappings just create it.
     async fn create_with(&mut self, index_id: &str, _template: &str) -> anyhow::Result<()> {
-        self.create(index_id).await
+        self.create(index_id, Decades::Off).await
     }
     async fn add(&mut self, doc: &Value) -> anyhow::Result<()>;
+    /// One document as the JSON line `add` would send, without its newline:
+    /// for documents already written out (`crate::decade_order`).
+    async fn add_line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        self.add(&serde_json::from_slice(line)?).await
+    }
     /// Flush and confirm the index holds exactly `expected` documents.
     async fn finish(&mut self, expected: u64) -> anyhow::Result<()>;
     /// `memory` or `quickwit`, recorded in `current.json`.
@@ -259,7 +358,9 @@ impl JsonlSink {
 
 #[async_trait]
 impl IndexSink for JsonlSink {
-    async fn create(&mut self, index_id: &str) -> anyhow::Result<()> {
+    /// The memory backend has no splits: the layout only changes the
+    /// documents, which the release writes.
+    async fn create(&mut self, index_id: &str, _decades: Decades) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(format!("{index_id}.jsonl"));
         let file = std::fs::OpenOptions::new()
@@ -272,12 +373,15 @@ impl IndexSink for JsonlSink {
     }
 
     async fn add(&mut self, doc: &Value) -> anyhow::Result<()> {
+        self.add_line(&serde_json::to_vec(doc)?).await
+    }
+
+    async fn add_line(&mut self, line: &[u8]) -> anyhow::Result<()> {
         use std::io::Write;
         let (_, w) = self.current.as_mut().context("no index created")?;
-        let mut line = serde_json::to_vec(doc)?;
-        line.push(b'\n');
-        w.write_all(&line)?;
-        self.stats.sent(1, line.len() as u64);
+        w.write_all(line)?;
+        w.write_all(b"\n")?;
+        self.stats.sent(1, line.len() as u64 + 1);
         Ok(())
     }
 
@@ -457,14 +561,17 @@ impl QuickwitSink {
 
 #[async_trait]
 impl IndexSink for QuickwitSink {
-    async fn create(&mut self, index_id: &str) -> anyhow::Result<()> {
-        // The main index takes this run's writer tuning; the Japanese index
-        // (about 11k pages) keeps its template's.
+    async fn create(&mut self, index_id: &str, decades: Decades) -> anyhow::Result<()> {
+        // The main index takes this run's writer tuning and decade layout;
+        // the Japanese index (about 11k pages) keeps its template's.
         let tuning = WriterTuning::from_env()?;
         if tuning != WriterTuning::default() {
             tracing::info!(heap = %tuning.heap, commit_timeout_secs = tuning.commit_timeout_secs, queue = %tuning.queue, "writer tuning");
         }
-        let template = tuning.apply(INDEX_TEMPLATE)?;
+        if decades.on() {
+            tracing::info!(index = index_id, layout = ?decades, "decade layout");
+        }
+        let template = main_template(&tuning, decades)?;
         self.create_with(index_id, &template).await
     }
 
@@ -494,20 +601,26 @@ impl IndexSink for QuickwitSink {
     }
 
     async fn add(&mut self, doc: &Value) -> anyhow::Result<()> {
-        let mut line = serde_json::to_vec(doc)?;
-        line.push(b'\n');
-        if line.len() > CHUNK_BYTES {
+        self.add_line(&serde_json::to_vec(doc)?).await
+    }
+
+    async fn add_line(&mut self, line: &[u8]) -> anyhow::Result<()> {
+        if line.len() + 1 > CHUNK_BYTES {
+            let doc_id = serde_json::from_slice::<Value>(line)
+                .ok()
+                .and_then(|d| d["doc_id"].as_str().map(str::to_owned));
             bail!(
                 "document `{}` is {} bytes, over the {CHUNK_BYTES}-byte ingest request limit",
-                doc["doc_id"].as_str().unwrap_or("?"),
-                line.len()
+                doc_id.as_deref().unwrap_or("?"),
+                line.len() + 1
             );
         }
         // Send first if this document would push the request over the limit.
-        if self.buf.len() + line.len() > CHUNK_BYTES {
+        if self.buf.len() + line.len() + 1 > CHUNK_BYTES {
             self.send("auto").await?;
         }
-        self.buf.extend_from_slice(&line);
+        self.buf.extend_from_slice(line);
+        self.buf.push(b'\n');
         Ok(())
     }
 
@@ -1249,6 +1362,40 @@ mod tests {
         assert!(!yaml.contains("heap_size: 1GiB") && !yaml.contains("commit_timeout_secs: 30"));
         // Everything else is the template's.
         assert_eq!(yaml.lines().count(), INDEX_TEMPLATE.lines().count());
+    }
+
+    #[test]
+    fn decade_layouts_add_the_field_and_its_tag_or_partitions() {
+        assert_eq!(Decades::Off.apply(INDEX_TEMPLATE).unwrap(), INDEX_TEMPLATE);
+        let tagged = Decades::Tagged.apply(INDEX_TEMPLATE).unwrap();
+        let partitioned = Decades::Partitioned.apply(INDEX_TEMPLATE).unwrap();
+        for yaml in [&tagged, &partitioned] {
+            assert!(yaml.contains("\n  tag_fields: [decade]\n"), "{yaml}");
+            assert!(yaml.contains(
+                "\n    - { name: decade, type: u64, fast: false, indexed: true, stored: false }\n"
+            ));
+            // Only the doc mapping changes: the indexing settings, which the
+            // merge checks read, are the template's.
+            let settings = |t: &str| t[t.find("indexing_settings:").unwrap()..].to_owned();
+            assert_eq!(settings(yaml), settings(INDEX_TEMPLATE));
+            // The template's lines, in order, with the new ones between them.
+            let mut lines = yaml.lines();
+            assert!(INDEX_TEMPLATE.lines().all(|l| lines.any(|y| y == l)));
+        }
+        assert!(!tagged.contains("partition_key"));
+        assert!(partitioned.contains("\n  partition_key: decade\n  max_num_partitions: 32\n"));
+        // With the writer's tuning too.
+        let t = WriterTuning {
+            heap: "6GiB".into(),
+            commit_timeout_secs: 120,
+            queue: "4GiB".into(),
+        };
+        let yaml = main_template(&t, Decades::Partitioned).unwrap();
+        assert!(yaml.contains("heap_size: 6GiB") && yaml.contains("partition_key: decade"));
+        // A template without the lines it adds to is refused.
+        assert!(Decades::Tagged.apply("version: 0.9").is_err());
+        let twice = format!("{INDEX_TEMPLATE}\n  timestamp_field: date\n");
+        assert!(Decades::Partitioned.apply(&twice).is_err());
     }
 
     #[test]
