@@ -104,7 +104,7 @@ Read it while cold searches run (`scripts/load-cold-searches.py`):
 - `MainBusyPercent` near 100 with the search pool below its size and nothing pending: searches wait on the main runtime. It has `QW_TOKIO_RUNTIME_NUM_THREADS` threads (2, same file; `MainThreads`).
 - Neither: look at Blob reads, and at `max_num_concurrent_split_searches` in `infra/quickwit/searcher.yaml`, which limits the split searches downloading at once.
 
-The pool numbers are a reading once a minute, not an average, so a short burst can fall between two. A replica's first busy time covers everything since its sidecar started.
+The pool numbers are a reading once a minute, not an average, so a short burst can fall between two. `MainBusyPercent` is busy time over the thread time the runtime had (`api.searcher_runtime_capacity_ms`), so it stays a share however the reports fall into the minutes; it is empty for a replica's first minute and after a searcher restart.
 
 ## Cache warm-up
 

@@ -7,15 +7,16 @@
 // minute). The pool has RAYON_NUM_THREADS threads (4, in
 // infra/modules/containerapp.bicep), so SearchOngoing at 4 with SearchPending
 // above 0 means searches wait for cores. MainBusyPercent is the share of the
-// main runtime's thread time spent busy: it does the downloads, TLS and split
-// opening, so near 100 with an idle search pool means searches wait on it.
-// Each report covers one scrape, so a minute can hold two or none; set step
-// to 5m for steadier lines. A replica's first report covers everything since
-// its sidecar started.
+// main runtime's thread time spent busy: busy time over thread time
+// (threads times the time between scrapes), both as reported, so a minute
+// that holds two reports, or none, still gives a share. The main runtime does
+// the downloads, TLS and split opening, so near 100 with an idle search pool
+// means searches wait on it. The API reports neither at a replica's first
+// scrape or after a searcher restart. Set step to 5m for steadier lines.
 let step = 1m;
 let m = AppMetrics
     | where AppRoleName == "usnm-api"
-    | where Name in ("api.searcher_pool_tasks", "api.searcher_runtime_busy_ms", "api.searcher_runtime_threads")
+    | where Name == "api.searcher_pool_tasks" or Name startswith "api.searcher_runtime_"
     | extend Replica = AppRoleInstance;
 let searchPool = m
     | where Name == "api.searcher_pool_tasks" and tostring(Properties.pool) == "search"
@@ -28,6 +29,7 @@ let mainRuntime = m
     | where Name startswith "api.searcher_runtime_" and tostring(Properties.runtime) == "main"
     | summarize
         BusyMs = sumif(Sum, Name == "api.searcher_runtime_busy_ms"),
+        CapacityMs = sumif(Sum, Name == "api.searcher_runtime_capacity_ms"),
         MainThreads = tolong(maxif(Sum, Name == "api.searcher_runtime_threads"))
         by TimeGenerated = bin(TimeGenerated, step), Replica;
 searchPool
@@ -38,5 +40,5 @@ searchPool
     SearchOngoing,
     SearchPending,
     MainThreads,
-    MainBusyPercent = iff(MainThreads > 0, round(100.0 * BusyMs / (MainThreads * (step / 1ms)), 1), real(null))
+    MainBusyPercent = iff(CapacityMs > 0, round(100.0 * BusyMs / CapacityMs, 1), real(null))
 | order by TimeGenerated asc, Replica asc

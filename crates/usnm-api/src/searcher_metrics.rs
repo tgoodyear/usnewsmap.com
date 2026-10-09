@@ -25,16 +25,22 @@
 //!
 //! - `api.searcher_pool_tasks`: the tasks the `search` and `small_tasks`
 //!   thread pools (`pool`) are running and have queued (`state`: `ongoing`,
-//!   `pending`) at the scrape (a gauge). Recorded at every scrape, 0
-//!   included: a snapshot of an idle pool says as much as a busy one.
+//!   `pending`) at the scrape (a gauge). Recorded for both pools at every
+//!   scrape, 0 included, also before Quickwit has used a pool: a snapshot of
+//!   an idle pool says as much as a busy one.
 //! - `api.searcher_runtime_threads`: the worker threads of each Tokio
 //!   runtime (`runtime`: `main`; `blocking` and `non_blocking` once Quickwit
 //!   starts them), a gauge recorded at every scrape.
 //! - `api.searcher_runtime_busy_ms`: how long those threads were busy since
 //!   the last scrape, summed over them (a counter, recorded only when not
-//!   zero, like the caches' counters). Divided by the threads times the
-//!   interval it is the runtime's busy share. The main runtime does the
-//!   searcher's downloads and opens the splits.
+//!   zero), and `api.searcher_runtime_capacity_ms`: the thread time they had
+//!   in the same span, threads times the time since the last scrape (a
+//!   counter). Busy over capacity, summed over any span, is the runtime's
+//!   busy share, however the reports fall into it. Both need the last
+//!   scrape of the same searcher run, so neither is recorded at the first
+//!   scrape or right after a restart, when the busy time covers the
+//!   searcher's whole life. The main runtime does the searcher's downloads
+//!   and opens the splits.
 //!
 //! Whether the split footer cache holds every footer is read from two
 //! things together: the release's footer total (`footer_bytes` on its
@@ -56,7 +62,7 @@ use opentelemetry::metrics::{Counter, Gauge, Meter};
 use opentelemetry::KeyValue;
 use usnm_search::cache_metrics::{Cache, CacheReport};
 use usnm_search::quickwit::SearcherMetrics;
-use usnm_search::thread_metrics::ThreadReport;
+use usnm_search::thread_metrics::{Pool, ThreadReport};
 
 /// The longest a cache gauge goes unrecorded while the scrapes succeed.
 pub const HEARTBEAT: Duration = Duration::from_secs(15 * 60);
@@ -71,6 +77,7 @@ pub struct Instruments {
     pool_tasks: Gauge<u64>,
     runtime_threads: Gauge<u64>,
     runtime_busy: Counter<u64>,
+    runtime_capacity: Counter<u64>,
 }
 
 impl Instruments {
@@ -112,6 +119,13 @@ impl Instruments {
                     "Time a searcher Tokio runtime's worker threads were busy, summed over them, by runtime",
                 )
                 .build(),
+            runtime_capacity: meter
+                .u64_counter("api.searcher_runtime_capacity_ms")
+                .with_unit("ms")
+                .with_description(
+                    "Thread time a searcher Tokio runtime had (worker threads times elapsed time), by runtime",
+                )
+                .build(),
         }
     }
 }
@@ -121,6 +135,8 @@ pub struct Scraper {
     instruments: Instruments,
     /// The last successful scrape, for the counters' increments.
     last: Option<SearcherMetrics>,
+    /// When `last` was taken.
+    last_at: Option<Instant>,
     /// Per cache: the gauges' last recorded values, and when.
     recorded: BTreeMap<Cache, ((u64, u64), Instant)>,
     /// Scrapes failed in a row.
@@ -134,6 +150,7 @@ impl Scraper {
         Self {
             instruments,
             last: None,
+            last_at: None,
             recorded: BTreeMap::new(),
             failures: 0,
             footer_evictions_logged: false,
@@ -172,8 +189,9 @@ impl Scraper {
             self.footer_evictions_logged = false;
         }
         self.observe_caches(&metrics.caches, now);
-        self.observe_threads(&metrics.threads);
+        self.observe_threads(&metrics.threads, now);
         self.last = Some(metrics);
+        self.last_at = Some(now);
     }
 
     /// Record the caches of one scrape.
@@ -224,9 +242,11 @@ impl Scraper {
         }
     }
 
-    /// Record the thread pools and runtimes of one scrape.
-    fn observe_threads(&self, report: &ThreadReport) {
-        for (&pool, tasks) in &report.pools {
+    /// Record the thread pools and runtimes of one scrape taken at `now`.
+    fn observe_threads(&self, report: &ThreadReport, now: Instant) {
+        // Every pool, also one Quickwit hasn't used yet and so doesn't list.
+        for pool in Pool::ALL {
+            let tasks = report.pools.get(&pool).copied().unwrap_or_default();
             for (state, n) in [("ongoing", tasks.ongoing), ("pending", tasks.pending)] {
                 self.instruments.pool_tasks.record(
                     n,
@@ -242,15 +262,24 @@ impl Scraper {
             self.instruments
                 .runtime_threads
                 .record(now_stats.threads, &attrs);
-            let before = self
+            // The busy time since the last scrape of this searcher run; none
+            // at the first, which covers the searcher's whole life.
+            let Some((before, at)) = self
                 .last
                 .as_ref()
                 .and_then(|l| l.threads.runtimes.get(&runtime))
-                .map_or(0, |b| b.busy_ms);
-            let busy = now_stats.busy_ms.saturating_sub(before);
+                .zip(self.last_at)
+            else {
+                continue;
+            };
+            let busy = now_stats.busy_ms.saturating_sub(before.busy_ms);
             if busy > 0 {
                 self.instruments.runtime_busy.add(busy, &attrs);
             }
+            let elapsed_ms = u64::try_from(now.duration_since(at).as_millis()).unwrap_or(u64::MAX);
+            self.instruments
+                .runtime_capacity
+                .add(now_stats.threads.saturating_mul(elapsed_ms), &attrs);
         }
     }
 }
