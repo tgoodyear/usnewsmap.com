@@ -24,7 +24,12 @@ use crate::text::fold;
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_TERMS: usize = 12;
 pub const MAX_OR_BRANCHES: usize = 4;
-pub const MIN_PREFIX_CHARS: usize = 3;
+/// Letters a word needs before a trailing `*` (`influ*`). A prefix search
+/// walks every indexed word that starts with them, in every split: on the full
+/// index three letters cost 39 s (`inf*`) to over 120 s (`con*`) of searcher
+/// time per cold search (06 §6.4). Inner wildcards (#124) are meant to share
+/// this minimum.
+pub const MIN_PREFIX_CHARS: usize = 5;
 pub const MAX_FUZZY: u8 = 2;
 pub const MAX_SLOP: u8 = 20;
 const MAX_DEPTH: usize = 8;
@@ -283,9 +288,9 @@ fn lex(input: &str) -> Result<Vec<Spanned>, QueryError> {
                 let text: String = chars[start..i].iter().collect();
                 if text.is_empty() {
                     let what = if chars[i] == '*' {
-                        "wildcards must follow at least 3 letters"
+                        format!("wildcards must follow at least {MIN_PREFIX_CHARS} letters")
                     } else {
-                        "'~' must follow a word or phrase"
+                        "'~' must follow a word or phrase".to_owned()
                     };
                     return Err(QueryError::at(what, i));
                 }
@@ -866,7 +871,7 @@ mod tests {
         assert_eq!(a, b);
         let again = parse(&a.to_string()).unwrap();
         assert_eq!(again, a);
-        let n = parse(r#"NOT (a1 OR b1) keep "x y"~3 infl* colr~1"#).unwrap();
+        let n = parse(r#"NOT (a1 OR b1) keep "x y"~3 influ* colr~1"#).unwrap();
         assert_eq!(parse(&n.to_string()).unwrap(), n);
     }
 
@@ -895,6 +900,34 @@ mod tests {
                 prefix: true
             })
         );
+    }
+
+    #[test]
+    fn prefixes_need_five_letters() {
+        assert_eq!(MIN_PREFIX_CHARS, 5);
+        for q in ["influ*", "Influ*", "influenza*", "gold silve*"] {
+            assert!(parse(q).is_ok(), "{q}");
+        }
+        // Counted after folding, so an accented letter is one letter.
+        assert!(parse("ñoños*").is_ok());
+        for (q, pos) in [
+            ("inf*", 0),
+            ("infl*", 0),
+            ("gold con*", 5),
+            ("gold (silv* OR bryan)", 6),
+            ("ñoño*", 0),
+        ] {
+            let e = parse(q).unwrap_err();
+            assert_eq!(e.message, "prefix searches need at least 5 letters", "{q}");
+            assert_eq!(e.position, Some(pos), "{q}");
+        }
+        let e = parse("gold *silver").unwrap_err();
+        assert_eq!(e.message, "wildcards must follow at least 5 letters");
+        assert_eq!(e.position, Some(5));
+        // The canonical form keeps the prefix and parses again.
+        let n = parse("Telegr* -wireless").unwrap();
+        assert_eq!(n.to_string(), "-wireless AND telegr*");
+        assert_eq!(parse(&n.to_string()).unwrap(), n);
     }
 
     #[test]

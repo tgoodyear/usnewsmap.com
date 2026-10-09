@@ -330,13 +330,14 @@ or_expr   := and_expr ( "OR" and_expr )*
 and_expr  := unary ( ["AND"] unary )*
 unary     := "-" primary | primary
 primary   := PHRASE [ "~" INT ]
-           | TERM [ "~" ("1" | "2") | "*" ]     (* fuzzy distance OR prefix, never both; prefix needs ≥ 3 chars *)
+           | TERM [ "~" ("1" | "2") | "*" ]     (* fuzzy distance OR prefix, never both; prefix needs ≥ 5 letters *)
            | "(" query ")"
 PHRASE    := '"' TERM ( TERM )* '"'
 TERM      := letter ( letter | digit | "'" )*
 ```
 
-- **Limits:** ≤ 12 terms, ≤ 4 OR branches, prefix length ≥ 3, fuzzy distance ≤ 2, slop ≤ 20, no leading wildcards, no field syntax (`field:`), and no engine local-params. This removes the legacy Solr injection risk structurally, because only the AST reaches the translator.
+- **Limits:** ≤ 12 terms, ≤ 4 OR branches, prefix length ≥ 5 letters (`MIN_PREFIX_CHARS`, also in `/v1/meta` `limits.min_prefix_chars`), fuzzy distance ≤ 2, slop ≤ 20, no leading wildcards, no field syntax (`field:`), and no engine local-params. This removes the legacy Solr injection risk structurally, because only the AST reaches the translator.
+- **Prefix length.** A prefix search walks every indexed word that starts with its letters, in every split, and holds one of the searcher's two computation slots meanwhile (§6.6). On the full index (`pages-v20261006-2`, 8 October 2026, `scripts/bench-cold-searches.py`), cold 3-letter prefixes took 39 s (`inf*`), 46 s (`was*`), 84 s (`pre*`) and 116 s (`the*`) of backend time, and `con*` passed the 120 s cap (`503`), where the plain word `radio` took 15 s. So a prefix needs 5 letters (`MIN_PREFIX_CHARS`). Inner wildcards (#124) are meant to share the constant.
 - **UI modes** (`mode=phrase|all|any|near`) are sugar that builds the same AST.
 - **Normalization** mirrors the index analyzer (lowercase, ASCII fold, `ſ`→`s`), so the query and the index agree.
 - **Japanese** (`usnm_core::ja`, #139). Japanese has no spaces between words, so each Japanese character is a token. A Japanese word is a phrase of its characters (`真珠湾` is `"真 珠 湾"`, shown as `"真珠湾"`). A word's runs between Japanese punctuation (、。「」) are ANDed. In `mode=any` a Japanese word is one alternative, not one per character. `near` counts characters. Old character forms fold to modern ones (`戰爭` and `戦争` are the same query), small kana fold to large (`っ`→`つ`), and compatibility ideographs and halfwidth katakana fold to their standard forms. A Japanese run counts as one term toward the 12-term limit, up to 32 characters. Prefix and fuzzy searches are refused for Japanese, since the text marks no word boundaries. A query whose only Japanese is excluded (`gold -東京`) is refused. The same folding builds the Japanese pages' index (04 §4.8), so the index and the query agree. A string with no Japanese tokenizes exactly as before.

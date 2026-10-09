@@ -1050,10 +1050,10 @@ mod tests {
 
     #[test]
     fn translates_ast_to_query_language() {
-        let q = parse(r#""cross of gold" -bryan (silver OR free*) "gold silver"~3"#).unwrap();
+        let q = parse(r#""cross of gold" -bryan (silver OR freed*) "gold silver"~3"#).unwrap();
         assert_eq!(
             query_string(&q, false, false).unwrap(),
-            r#"(text:"cross of gold" AND text:"gold silver"~3 AND NOT text:bryan AND (text:free* OR text:silver))"#
+            r#"(text:"cross of gold" AND text:"gold silver"~3 AND NOT text:bryan AND (text:freed* OR text:silver))"#
         );
         assert!(matches!(
             query_string(&parse("gold~1").unwrap(), false, false),
@@ -1104,7 +1104,7 @@ mod tests {
     fn american_stories_text_is_searched_leaf_by_leaf() {
         let qs = |q: &str, grams| query_string(&parse(q).unwrap(), grams, true).unwrap();
         assert_eq!(qs("gold", false), "(text:gold OR text_as:gold)");
-        assert_eq!(qs("silv*", false), "(text:silv* OR text_as:silv*)");
+        assert_eq!(qs("silve*", false), "(text:silve* OR text_as:silve*)");
         assert_eq!(
             qs(r#""gold silver"~3"#, true),
             r#"(text:"gold silver"~3 OR text_as:"gold silver"~3)"#

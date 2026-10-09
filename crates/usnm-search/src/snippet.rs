@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(
             snip(
                 "Bryan spoke; crucify mankind upon silver",
-                "\"bryan mankind\"~5 cruc* mankimd~1 -silver"
+                "\"bryan mankind\"~5 cruci* mankimd~1 -silver"
             ),
             ["<mark>Bryan</mark> spoke; <mark>crucify</mark> <mark>mankind</mark> upon silver"]
         );

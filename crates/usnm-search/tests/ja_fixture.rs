@@ -110,7 +110,7 @@ async fn japanese_words_match_through_folding_and_snippets_show_the_printed_text
     assert!(denver.total > 0 && denver.total < docs.len() as u64);
     // Prefix and NEAR matches get snippets too.
     let den = mem
-        .hits(&set, &parse("日本 OR den*").unwrap(), &f, &page)
+        .hits(&set, &parse("日本 OR denve*").unwrap(), &f, &page)
         .await
         .unwrap();
     assert!(den
