@@ -47,6 +47,9 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         "pages": rd.pages,
         // The Japanese pages we OCR (#139): searched by queries with Japanese words.
         "ja": c.ja,
+        // Whether searches cover American Stories' text (05 §5.5.4): the
+        // version has it and `USNM_AMERICAN_STORIES_SEARCH` leaves it on.
+        "american_stories": rd.searches_american_stories(),
         "languages": filter_languages(rd),
         "capabilities": snap.backend.capabilities(),
         "limits": {
@@ -108,6 +111,7 @@ pub(crate) async fn places_in(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
+    // Reference data alone, like coverage: no American Stories mark.
     let key = format!("{serving}|places|");
     let compute = async move {
         let rd = &snap.refdata;

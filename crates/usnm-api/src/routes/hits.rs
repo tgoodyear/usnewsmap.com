@@ -219,7 +219,7 @@ pub async fn hits(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
-    let key = format!("{serving}|hits|{canonical}");
+    let key = rd.search_key("hits", &canonical);
     let st = state.clone();
     let snap2 = snap.clone();
     let compute = async move {

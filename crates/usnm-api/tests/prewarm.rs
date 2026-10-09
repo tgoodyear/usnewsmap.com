@@ -383,6 +383,50 @@ async fn the_american_stories_only_count_is_warmed_with_the_aggregate() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// With `USNM_AMERICAN_STORIES_SEARCH=false`, a version published with
+/// American Stories' text is warmed and served without it, and the warm-up
+/// fills the same (marked) cache keys visitors' requests read.
+#[tokio::test]
+async fn a_version_is_warmed_without_american_stories_text_when_switched_off() {
+    let dir = temp_reference("american-stories-off");
+    let backend = Counting::new(Duration::ZERO, false);
+    let mut cfg = config();
+    cfg.american_stories_search = false;
+    let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
+    publish_v2(&dir);
+    let path = dir.join("current.json");
+    let mut current: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    current["american_stories"] = usnm_core::american_stories::VERSION.into();
+    std::fs::write(&path, current.to_string()).unwrap();
+    assert!(reload_if_changed(&state).await.unwrap());
+    let rd = &state.snapshot.load().refdata;
+    assert!(rd.has_american_stories() && !rd.searches_american_stories());
+
+    let (calls, _) = load_examples(&state, &backend, "fixture-v2").await;
+    assert_eq!(calls, 0);
+    for ex in prewarm::examples() {
+        let (_, body) = get(
+            &state,
+            &format!("/v1/aggregate?{}&v=fixture-v2", ex.aggregate),
+        )
+        .await;
+        assert!(body["total"]["hits"].is_u64(), "{}: {body}", ex.id);
+        assert!(
+            body["total"].get("american_stories_only").is_none(),
+            "{}: {body}",
+            ex.id
+        );
+    }
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert_eq!(
+        report.examples_warm,
+        prewarm::examples().len(),
+        "{report:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn warm_up_reports_what_it_ran() {
     let dir = temp_reference("report");

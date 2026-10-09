@@ -130,9 +130,9 @@ struct Timing {
     total: u128,
 }
 
-/// The response caches' key for the search `canonical` on `serving`.
-pub(crate) fn cache_key(serving: &str, canonical: &str) -> String {
-    format!("{serving}|aggregate|{canonical}")
+/// The response caches' key for the search `canonical` on `rd`'s version.
+pub(crate) fn cache_key(rd: &crate::refdata::RefData, canonical: &str) -> String {
+    rd.search_key("aggregate", canonical)
 }
 
 /// A visitor's search, and whether it goes in the search log. Every search
@@ -176,7 +176,7 @@ pub(crate) async fn aggregate_in(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
-    let key = cache_key(&serving, &canonical);
+    let key = cache_key(&snap.refdata, &canonical);
     let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
     let job = Job::search("aggregate", ctx.warm_up, ctx.timeout);
     let search = match log {

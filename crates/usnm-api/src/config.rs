@@ -118,6 +118,10 @@ pub struct Config {
     /// metrics are read and reported (`crate::searcher_metrics`); zero turns
     /// it off. Quickwit backend only.
     pub searcher_metrics_interval: Duration,
+    /// Whether searches cover American Stories' text on a version built
+    /// with it (`USNM_AMERICAN_STORIES_SEARCH`, 05 §5.5.4). Off, the API
+    /// searches LoC's text alone, whatever `current.json` says.
+    pub american_stories_search: bool,
     /// End-to-end tests only, and only with the memory backend: an aggregate
     /// search whose query contains this term waits this long before it runs,
     /// to stand in for a cold search on the real corpus.
@@ -135,6 +139,13 @@ impl Config {
         let num = |k: &str, default: u64| -> Result<u64, String> {
             var(k).map_or(Ok(default), |v| {
                 v.parse().map_err(|_| format!("{k} must be a whole number"))
+            })
+        };
+        let flag = |k: &str, default: bool| -> Result<bool, String> {
+            var(k).map_or(Ok(default), |v| match v.to_ascii_lowercase().as_str() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => Err(format!("{k} must be true or false")),
             })
         };
         let backend = match var("USNM_BACKEND").as_deref().unwrap_or("memory") {
@@ -232,6 +243,7 @@ impl Config {
             search_log_url: var("USNM_SEARCH_LOG_URL"),
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
             searcher_metrics_interval: Duration::from_secs(num("USNM_SEARCHER_METRICS_SECS", 60)?),
+            american_stories_search: flag("USNM_AMERICAN_STORIES_SEARCH", true)?,
             fixture_slow,
         })
     }
@@ -263,6 +275,19 @@ mod tests {
         assert_eq!(c.prewarm_log_days, 28);
         assert!(c.fixture_slow.is_none());
         assert_eq!(c.searcher_metrics_interval, Duration::from_secs(60));
+        assert!(c.american_stories_search);
+        let american = |v: &str| {
+            let v = v.to_owned();
+            Config::from_lookup(move |k| (k == "USNM_AMERICAN_STORIES_SEARCH").then(|| v.clone()))
+                .map(|c| c.american_stories_search)
+        };
+        assert_eq!(american("false"), Ok(false));
+        assert_eq!(american("FALSE"), Ok(false));
+        assert_eq!(american("true"), Ok(true));
+        // Empty, like unset, takes the default.
+        assert_eq!(american(""), Ok(true));
+        assert!(american("off").is_err());
+        assert!(american("0").is_err());
         let off = Config::from_lookup(|k| (k == "USNM_SEARCHER_METRICS_SECS").then(|| "0".into()))
             .unwrap();
         assert_eq!(off.searcher_metrics_interval, Duration::ZERO);

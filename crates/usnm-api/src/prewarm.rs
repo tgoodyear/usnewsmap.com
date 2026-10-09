@@ -644,7 +644,7 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
     } else {
         ranked(state, &snap, left).await
     };
-    let key = |canonical: &str| routes::aggregate_key(&version, canonical);
+    let key = |canonical: &str| routes::aggregate_key(&snap.refdata, canonical);
     let mut searches: Vec<Search> = order(&canonical, &ranked)
         .into_iter()
         .map(|i| Search {

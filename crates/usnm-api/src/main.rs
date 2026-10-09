@@ -125,6 +125,18 @@ async fn serve(
         state = state.with_search_log(log.clone());
     }
     let state = Arc::new(state);
+    {
+        // Whether searches cover American Stories' text (05 §5.5.4): the
+        // setting, whether the version has the text, and the outcome.
+        let snap = state.snapshot.load();
+        tracing::info!(
+            version = snap.refdata.version(),
+            setting = state.config.american_stories_search,
+            in_version = snap.refdata.has_american_stories(),
+            searched = snap.refdata.searches_american_stories(),
+            "American Stories' text search (USNM_AMERICAN_STORIES_SEARCH)"
+        );
+    }
     telemetry::observe_index_version(
         &state,
         &opentelemetry::global::meter(telemetry::SERVICE.name),
