@@ -117,7 +117,10 @@ var quickwitContainer = {
   image: quickwitImage
   // The image has no config for this role; write it from the environment.
   command: ['/bin/sh', '-c', 'printf \'%s\\n\' "$USNM_QW_CONFIG" > /tmp/node.yaml && exec quickwit run --config /tmp/node.yaml']
-  resources: { cpu: json('2.0'), memory: '4Gi' }
+  // 3.75 vCPU / 7.5 GiB: with the api container (0.25 / 0.5) the replica is at the
+  // Consumption profile's 4 vCPU / 8 GiB. The searcher is CPU-bound on the
+  // American Stories index (#251: 2.0 of 2.0 vCPU during cold searches).
+  resources: { cpu: json('3.75'), memory: '7.5Gi' }
   env: [
     { name: 'USNM_QW_CONFIG', value: quickwitConfig }
     { name: 'QW_DISABLE_TELEMETRY', value: '1' }
