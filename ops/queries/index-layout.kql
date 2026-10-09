@@ -5,7 +5,9 @@
 // manifest.json under "indexes". FooterMb is the splits' footers in all,
 // what the searcher's split_footer_cache_capacity must hold for no cold
 // search to fetch a footer twice (#125), in Quickwit's MB (1,000,000 bytes,
-// as it reads "256MB"); empty for releases before it.
+// as it reads "256MB"); empty for releases before it. SplitsByDecade is a
+// base laid out by decade's splits per decade (05 §5.5.5, #123); `{}` for
+// other indexes.
 // Lines that could carry the managed identity endpoint's secret are dropped.
 ContainerAppConsoleLogs
 | where ContainerName == "ingest"
@@ -25,5 +27,6 @@ ContainerAppConsoleLogs
     SmallestSplitDocs = tolong(j.fields.smallest_split_docs),
     LargestSplitDocs = tolong(j.fields.largest_split_docs),
     FooterMb = round(todouble(j.fields.footer_bytes) / 1e6, 1),
-    LargestFooterKb = round(todouble(j.fields.largest_footer_bytes) / 1e3, 1)
+    LargestFooterKb = round(todouble(j.fields.largest_footer_bytes) / 1e3, 1),
+    SplitsByDecade = tostring(j.fields.splits_by_decade)
 | order by TimeGenerated asc

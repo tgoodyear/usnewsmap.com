@@ -124,6 +124,11 @@ enum Command {
         /// whose searches leave the text out.
         #[arg(long)]
         american_stories: bool,
+        /// Lay a full base out by decade (#123, 05 §5.5.5), so date-limited
+        /// searches skip the other decades' splits. Only a full base takes
+        /// it; deltas follow the published version.
+        #[arg(long)]
+        partition_decade: bool,
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -170,6 +175,9 @@ enum Command {
         /// As for `release`.
         #[arg(long)]
         american_stories: bool,
+        /// As for `release`.
+        #[arg(long)]
+        partition_decade: bool,
         /// As `curate --max-runtime-secs`, counted from the start of `run`:
         /// batches still queued then wait for the next run, and what was
         /// curated is released. Leave room for titles-sync and the release
@@ -353,6 +361,7 @@ async fn release(
     full: bool,
     synthetic: bool,
     american_stories: bool,
+    partition_decade: bool,
     titles_left: Option<String>,
     t: &IndexTarget,
     report: &Reporter,
@@ -367,6 +376,7 @@ async fn release(
         now: chrono::Utc::now(),
         titles_left,
         american_stories,
+        partition_decade,
     };
     // Held from before the writer node starts until after it stops, and
     // released on every path.
@@ -426,15 +436,17 @@ async fn release_locked(
 }
 
 /// Fail before indexing anything if `dir` has less than `min_gib` free. A
-/// previous writer's data in `dir/qwdata` is about to be removed, so it
-/// counts as free.
+/// previous writer's data in `dir/qwdata`, and a previous release's decade
+/// files (`decade_order::SPILL_DIR`), are about to be removed, so they
+/// count as free.
 fn check_free_disk(dir: &std::path::Path, min_gib: u64) -> anyhow::Result<()> {
     if min_gib == 0 {
         return Ok(());
     }
     let free = usnm_ingest::progress::disk_free(dir)
         .with_context(|| format!("reading the free space of {}", dir.display()))?;
-    let stale = dir_size(&dir.join("qwdata"));
+    let stale =
+        dir_size(&dir.join("qwdata")) + dir_size(&dir.join(usnm_ingest::decade_order::SPILL_DIR));
     let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
     if free.saturating_add(stale) < min_gib.saturating_mul(1 << 30) {
         bail!(
@@ -653,6 +665,7 @@ async fn command(
             full,
             synthetic,
             american_stories,
+            partition_decade,
             target,
         } => {
             release(
@@ -661,6 +674,7 @@ async fn command(
                 *full,
                 *synthetic,
                 *american_stories,
+                *partition_decade,
                 None,
                 target,
                 report,
@@ -673,6 +687,7 @@ async fn command(
             full,
             synthetic,
             american_stories,
+            partition_decade,
             curate_max_runtime_secs,
             titles_max_runtime_secs,
             target,
@@ -715,6 +730,7 @@ async fn command(
                 *full,
                 *synthetic,
                 *american_stories,
+                *partition_decade,
                 titles_left,
                 target,
                 report,
@@ -820,6 +836,7 @@ mod tests {
             "run",
             "--full",
             "--american-stories",
+            "--partition-decade",
             "--titles-max-runtime-secs",
             "28800",
             "--index-dir",
@@ -830,14 +847,20 @@ mod tests {
             titles_max_runtime_secs,
             full,
             american_stories,
+            partition_decade,
             ..
         } = cli.command
         else {
             panic!("not a run");
         };
         assert_eq!(
-            (titles_max_runtime_secs, full, american_stories),
-            (Some(28800), true, true)
+            (
+                titles_max_runtime_secs,
+                full,
+                american_stories,
+                partition_decade
+            ),
+            (Some(28800), true, true, true)
         );
     }
 
@@ -880,12 +903,14 @@ mod tests {
         let Command::Release {
             target,
             american_stories,
+            partition_decade,
             ..
         } = cli.command
         else {
             panic!("not a release");
         };
         assert!(!american_stories, "off unless asked for");
+        assert!(!partition_decade, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
         assert_eq!(target.min_free_gib, 0);
     }

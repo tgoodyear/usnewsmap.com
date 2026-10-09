@@ -702,3 +702,290 @@ async fn cache_metrics_report_the_split_footers() {
     // life, and Quickwit 0.9.1 also counts replacing a footer as an eviction.
     assert!(report.contains_key(&Cache::FastField), "{report:?}");
 }
+
+// ------------------------------------------------- decade partitions (#123)
+
+#[path = "../../../fixtures/decades.rs"]
+mod decades;
+
+/// The fixture base and delta laid out by decade (05 §5.5.5), their pages
+/// moved over the 1830s, 1840s, 1860s and 1890s (`fixtures/decades.rs`):
+/// the base partitioned by decade, the delta with decade tags, as a release
+/// builds them (scripts/quickwit-fixtures.sh loads them).
+const DECADE_INDEXES: [&str; 2] = [
+    "pages-base-fixture-decades",
+    "pages-delta-fixture-1-decades",
+];
+
+/// The decades the moved pages span.
+const DECADE_SPAN: std::ops::RangeInclusive<u16> = 1830..=1890;
+
+/// The reference: the same moved pages, searched without the decade clause.
+fn decade_memory() -> MemoryBackend {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/indexes");
+    let mut m = MemoryBackend::new();
+    for (from, to) in INDEXES.iter().zip(DECADE_INDEXES) {
+        let file = std::fs::File::open(dir.join(format!("{from}.jsonl"))).expect("fixture");
+        let docs: Vec<PageDoc> = std::io::BufReader::new(file)
+            .lines()
+            .map(|l| {
+                let mut doc: serde_json::Value = serde_json::from_str(&l.expect("line")).unwrap();
+                decades::shift(&mut doc);
+                serde_json::from_value(doc).expect("doc")
+            })
+            .collect();
+        m.add_index(to, docs);
+    }
+    m
+}
+
+/// The laid-out indexes, in LoC's text and in both texts, naming their
+/// decades as the API does for a version with `decades`.
+fn decade_sets() -> Vec<(&'static str, IndexSet)> {
+    let loc = IndexSet::new(DECADE_INDEXES.iter().map(|s| (*s).to_owned()).collect())
+        .with_decades(Some(DECADE_SPAN));
+    let both = loc.clone().with_american_stories(true);
+    vec![("loc", loc), ("both texts", both)]
+}
+
+/// Date ranges over one decade, several, all of them, and none.
+fn decade_filter_cases() -> Vec<(&'static str, Filters)> {
+    let mut states = filters("1835-01-01", "1869-12-31");
+    states.states = vec!["GA".into(), "SC".into(), "IL".into()];
+    vec![
+        ("1868", filters("1868-01-01", "1868-12-31")),
+        ("1839 to 1841", filters("1839-06-01", "1841-06-30")),
+        ("1860 to 1899", filters("1860-01-01", "1899-12-31")),
+        ("1835 to 1869 in three states", states),
+        ("every decade", filters("1830-01-01", "1897-12-31")),
+        ("no pages", filters("1900-01-01", "1910-12-31")),
+    ]
+}
+
+/// A search over some of a version's decades names them, and Quickwit
+/// returns exactly the reference's pages: the decade clause only skips
+/// splits, the `day` filter decides.
+#[tokio::test]
+async fn searches_by_decade_match_the_reference_backend() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = decade_memory();
+    let mut named = 0;
+    let mut matched = 0;
+    for ((sname, set), (qname, q)) in decade_sets()
+        .into_iter()
+        .flat_map(|s| queries().into_iter().map(move |q| (s.clone(), q)))
+    {
+        let set = &set;
+        for (fname, f) in decade_filter_cases() {
+            let ctx = format!("{sname} / {qname} / {fname}");
+            let clause = usnm_search::quickwit::decade_clause(&f, set);
+            assert_eq!(
+                clause.is_none(),
+                fname == "every decade",
+                "{ctx}: {clause:?}"
+            );
+            named += u32::from(clause.is_some());
+            let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
+            let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
+            let got = sorted(qw.summary(set, &q, &f, &spec).await.expect(&ctx));
+            // Days with a match are a HyperLogLog estimate in Quickwit,
+            // merged over more splits here than in the other tests: within
+            // 2%, not exact.
+            assert!(
+                close(got.days, want.days),
+                "days: {ctx}: {} {}",
+                got.days,
+                want.days
+            );
+            assert_eq!(
+                Summary { days: 0, ..got },
+                Summary {
+                    days: 0,
+                    ..want.clone()
+                },
+                "summary: {ctx}"
+            );
+            matched += want.total_hits;
+
+            let all: Vec<u8> = (0..8).collect();
+            let want = sorted_cells(mem.cube(set, &q, &f, &spec, &all).await.unwrap());
+            let got = sorted_cells(qw.cube(set, &q, &f, &spec, &all).await.expect(&ctx));
+            assert_eq!(got, want, "cube: {ctx}");
+
+            for sort in [HitSort::Oldest, HitSort::Newest] {
+                let page = HitsQuery {
+                    limit: 9,
+                    sort,
+                    days: true,
+                    ..Default::default()
+                };
+                let want = mem.hits(set, &q, &f, &page).await.unwrap();
+                let got = qw.hits(set, &q, &f, &page).await.expect(&ctx);
+                assert_eq!(got.total, want.total, "hits total: {ctx}");
+                assert!(close(got.days.unwrap(), want.days.unwrap()), "days: {ctx}");
+                let ids = |p: &usnm_search::HitsPage| {
+                    p.hits.iter().map(|h| h.doc_id.clone()).collect::<Vec<_>>()
+                };
+                assert_eq!(ids(&got), ids(&want), "hits: {ctx}");
+            }
+            if set.american_stories() {
+                let want = mem.american_stories_only(set, &q, &f).await.unwrap();
+                let got = qw.american_stories_only(set, &q, &f).await.expect(&ctx);
+                assert_eq!(got, want, "american stories only: {ctx}");
+            }
+        }
+    }
+    assert!(named > 100, "only {named} searches named their decades");
+    assert!(matched > 0, "no search matched a page");
+}
+
+/// A HyperLogLog estimate of `want`: within 2% (at least 1).
+fn close(got: u64, want: u64) -> bool {
+    got.abs_diff(want) <= (want / 50).max(1)
+}
+
+/// The searcher's count of splits a root search targets, after pruning
+/// (`quickwit_search_root_search_targeted_splits`), for the one search `f`
+/// makes. Other tests search the same node at the same time, so it retries,
+/// for up to two minutes, until no other search was counted in between.
+async fn targeted_splits<F, Fut>(url: &str, f: F) -> u64
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let http = reqwest::Client::new();
+    let read = || {
+        let http = http.clone();
+        async move {
+            let text = http
+                .get(format!("{url}/metrics"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            let value = |name: &str| -> f64 {
+                text.lines()
+                    .find_map(|l| l.strip_prefix(&format!("{name}{{status=\"success\"}} ")))
+                    .map_or(0.0, |v| v.trim().parse().unwrap())
+            };
+            (
+                value("quickwit_search_root_search_targeted_splits_count"),
+                value("quickwit_search_root_search_targeted_splits_sum"),
+            )
+        }
+    };
+    for _ in 0..600 {
+        let (count, sum) = read().await;
+        f().await;
+        let (count2, sum2) = read().await;
+        if count2 - count == 1.0 {
+            return (sum2 - sum) as u64;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("other searches kept running between the metric reads");
+}
+
+/// Each split of the partitioned base holds one decade, the delta's split
+/// lists its decades, and a search names only the splits of its decades:
+/// the pruning #123 is for.
+#[tokio::test]
+async fn searches_by_decade_open_only_their_decades_splits() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let url = std::env::var("QUICKWIT_URL").unwrap();
+    let url = url.trim_end_matches('/');
+    let http = reqwest::Client::new();
+    // Each index's splits, as the decades in their tags.
+    let mut splits: Vec<(&str, Vec<u16>)> = Vec::new();
+    for id in DECADE_INDEXES {
+        let v: serde_json::Value = http
+            .get(format!(
+                "{url}/api/v1/indexes/{id}/splits?split_states=Published"
+            ))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        for s in v["splits"].as_array().unwrap() {
+            let tags: Vec<&str> = s["tags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t.as_str().unwrap())
+                .collect();
+            assert!(tags.contains(&"decade!"), "{id}: {tags:?}");
+            let decades: Vec<u16> = tags
+                .iter()
+                .filter_map(|t| t.strip_prefix("decade:")?.parse().ok())
+                .collect();
+            splits.push((id, decades));
+        }
+    }
+    let base: Vec<&Vec<u16>> = splits
+        .iter()
+        .filter(|(id, _)| *id == DECADE_INDEXES[0])
+        .map(|(_, d)| d)
+        .collect();
+    let mut base_decades: Vec<u16> = base.iter().flat_map(|d| d.iter().copied()).collect();
+    base_decades.sort_unstable();
+    assert!(
+        base.iter().all(|d| d.len() == 1),
+        "a partitioned split holds one decade: {base:?}"
+    );
+    assert_eq!(base_decades, [1830, 1840, 1860, 1890]);
+    assert!(
+        splits
+            .iter()
+            .any(|(id, d)| *id == DECADE_INDEXES[1] && d.len() > 1),
+        "the delta's split is tagged with its decades, not partitioned: {splits:?}"
+    );
+
+    let [(_, set), _] = <[_; 2]>::try_from(decade_sets()).ok().unwrap();
+    let plain = IndexSet::new(set.ids().to_vec());
+    let q = parse("gold").unwrap();
+    let opened = |set: IndexSet, f: Filters| {
+        let qw = &qw;
+        let q = &q;
+        async move {
+            targeted_splits(url, || {
+                let (set, f) = (set.clone(), f.clone());
+                async move {
+                    let spec = BucketSpec::new(BucketUnit::Year, f.from, f.to);
+                    qw.summary(&set, q, &f, &spec).await.unwrap();
+                }
+            })
+            .await
+        }
+    };
+    let holding = |decade: u16| splits.iter().filter(|(_, d)| d.contains(&decade)).count() as u64;
+    let f1868 = filters("1868-01-01", "1868-12-31");
+    assert_eq!(opened(set.clone(), f1868.clone()).await, holding(1860));
+    assert_eq!(opened(plain.clone(), f1868).await, splits.len() as u64);
+    assert!(holding(1860) < splits.len() as u64);
+    // Two decades: the splits holding either.
+    let either = splits
+        .iter()
+        .filter(|(_, d)| d.contains(&1830) || d.contains(&1840))
+        .count() as u64;
+    assert_eq!(
+        opened(set.clone(), filters("1839-06-01", "1840-06-30")).await,
+        either
+    );
+    // Every decade: no clause, every split.
+    assert_eq!(
+        opened(set.clone(), filters("1830-01-01", "1897-12-31")).await,
+        splits.len() as u64
+    );
+    // A range with no pages: none.
+    assert_eq!(opened(set, filters("1900-01-01", "1910-12-31")).await, 0);
+}

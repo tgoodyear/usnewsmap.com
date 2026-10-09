@@ -406,6 +406,15 @@ pub fn filter_clauses(filters: &Filters) -> Vec<String> {
     out
 }
 
+/// The decades a date-limited search needs, on a version laid out by
+/// decade (05 §5.5.5): Quickwit then skips the other decades' splits before
+/// opening them (tag pruning). The `day` filter stays the exact one. Never a
+/// timestamp or `date:` range: Quickwit 0.9.1 matches nothing before 1972
+/// with those (#158).
+pub fn decade_clause(filters: &Filters, indexes: &IndexSet) -> Option<String> {
+    usnm_core::decade::clause(filters.from, filters.to, indexes.decades()?)
+}
+
 /// Clauses that hide the copies of duplicated pages `indexes` names, one per
 /// batch: that batch's documents with those ids (04 §4.7). Doc ids and batch
 /// names are our own (letters, digits, `_` and `-`), so they need no escaping.
@@ -434,6 +443,7 @@ fn full_query(
 fn scoped(query: String, filters: &Filters, indexes: &IndexSet, extra: Vec<String>) -> String {
     let mut parts = vec![query];
     parts.extend(filter_clauses(filters));
+    parts.extend(decade_clause(filters, indexes));
     parts.extend(hidden_clauses(indexes));
     parts.extend(extra);
     parts.join(" AND ")
@@ -1178,6 +1188,56 @@ mod tests {
             .ends_with("AND place_shard:IN [0 5]"));
         let all = cube_request(&q, &filters(), &none(), &spec, &[0, 1, 2, 3, 4, 5, 6, 7]).unwrap();
         assert!(!all["query"].as_str().unwrap().contains("place_shard"));
+    }
+
+    #[test]
+    fn a_version_laid_out_by_decade_names_the_searchs_decades() {
+        let q = parse("gold").unwrap();
+        let spec = BucketSpec::new(BucketUnit::Week, d("1896-06-01"), d("1896-12-31"));
+        let set = IndexSet::new(vec!["i".into()]).with_decades(Some(1820..=1960));
+        // After the exact `day` filter, the decade for the splits to open,
+        // in every request: summaries, cubes, hits and the count.
+        let want = format!(
+            "text:gold AND day:[{} TO {}] AND state:IN [GA SC] AND front_page:true \
+             AND decade:IN [1890]",
+            filters().from_day(),
+            filters().to_day()
+        );
+        let s = summary_request(&q, &filters(), &set, &spec).unwrap();
+        assert_eq!(s["query"], want);
+        let c = cube_request(&q, &filters(), &set, &spec, &[0, 5]).unwrap();
+        assert!(c["query"]
+            .as_str()
+            .unwrap()
+            .contains("AND decade:IN [1890] AND place_shard"));
+        let h = hits_request(&q, &filters(), &set, &HitsQuery::default()).unwrap();
+        assert!(h["query"]
+            .as_str()
+            .unwrap()
+            .ends_with("AND decade:IN [1890]"));
+        let both = set.clone().with_american_stories(true);
+        let n = american_stories_only_request(&q, &filters(), &both).unwrap();
+        assert!(n["query"]
+            .as_str()
+            .unwrap()
+            .ends_with("AND decade:IN [1890]"));
+        // A search over every decade of the version skips nothing: no clause.
+        let mut all = filters();
+        all.from = d("1700-01-01");
+        all.to = d("1963-12-31");
+        let s = summary_request(&q, &all, &set, &spec).unwrap();
+        assert!(!s["query"].as_str().unwrap().contains("decade"));
+        // A version without the field never gets the clause, and no search
+        // ever filters on `date` or sends timestamps (#158).
+        let s = summary_request(&q, &filters(), &none(), &spec).unwrap();
+        assert!(!s["query"].as_str().unwrap().contains("decade"));
+        for r in [
+            summary_request(&q, &filters(), &set, &spec).unwrap(),
+            hits_request(&q, &filters(), &set, &HitsQuery::default()).unwrap(),
+        ] {
+            assert!(r.get("start_timestamp").is_none() && r.get("end_timestamp").is_none());
+            assert!(!r["query"].as_str().unwrap().contains("date:"));
+        }
     }
 
     #[test]
