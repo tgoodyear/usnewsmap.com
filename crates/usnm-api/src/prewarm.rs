@@ -644,13 +644,19 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
     } else {
         ranked(state, &snap, left).await
     };
-    let key = |canonical: &str| routes::aggregate_key(&snap.refdata, canonical);
+    // The handler's key for a canonical query string, which parses to the
+    // same search; `None` if it doesn't parse (the handler says why).
+    let key = |canonical: &str| {
+        let raw = RawParams::parse(canonical).ok()?;
+        let req = SearchRequest::from_raw(&raw, bounds).ok()?;
+        Some(routes::aggregate_key(&snap.refdata, canonical, &req.query))
+    };
     let mut searches: Vec<Search> = order(&canonical, &ranked)
         .into_iter()
         .map(|i| Search {
             label: examples()[i].id.clone(),
             query: examples()[i].aggregate.clone(),
-            key: canonical[i].as_deref().map(key),
+            key: canonical[i].as_deref().and_then(key),
             private: false,
         })
         .collect();
@@ -662,7 +668,7 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
     searches.extend(logged.into_iter().enumerate().map(|(rank, k)| Search {
         label: format!("search-log-{}", rank + 1),
         query: k.clone(),
-        key: Some(key(k)),
+        key: key(k),
         private: true,
     }));
 

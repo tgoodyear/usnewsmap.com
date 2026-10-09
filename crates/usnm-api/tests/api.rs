@@ -353,6 +353,26 @@ async fn search_cache_keys_mark_american_stories_switched_off() {
         );
     }
 
+    // Japanese queries search the Japanese pages, which have no American
+    // Stories text: their keys stay as they were.
+    let mut cfg = config();
+    cfg.american_stories_search = false;
+    let ja = ja_state_with(cfg, true).await;
+    for uri in ["/v1/aggregate?q=%E6%88%A6%E4%BA%89", "/v1/aggregate?q=gold"] {
+        let (status, _, body) = get(&ja, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+    }
+    let ja_keys: Vec<String> = cached_keys(&ja)
+        .await
+        .into_iter()
+        .filter(|k| k.contains("|aggregate|"))
+        .collect();
+    assert_eq!(ja_keys.len(), 2, "{ja_keys:?}");
+    for k in &ja_keys {
+        let japanese = k.contains("%E6%88%A6");
+        assert_eq!(k.ends_with("|american_stories=off"), !japanese, "{k}");
+    }
+
     // On a version without the text the setting changes nothing, and
     // neither do the keys.
     let mut cfg = config();
@@ -2144,6 +2164,12 @@ async fn api_responses_are_compressed_and_cors_is_limited_to_allowed_origins() {
 /// The fixture state with the Japanese pages' index (#139) published, and its
 /// synthetic title in the catalog.
 async fn ja_state() -> Arc<AppState> {
+    ja_state_with(config(), false).await
+}
+
+/// [`ja_state`] with `cfg`, on a version built with American Stories' text
+/// or not.
+async fn ja_state_with(cfg: Config, american_stories: bool) -> Arc<AppState> {
     let mut backend = fixture_backend();
     backend.add_index("pages-ja-fixture", load_docs("pages-ja-fixture"));
     let mut refdata = refdata().await;
@@ -2152,6 +2178,9 @@ async fn ja_state() -> Arc<AppState> {
         fold: usnm_core::ja::FOLD_VERSION,
         pages: 52,
     });
+    if american_stories {
+        refdata.current.american_stories = Some(usnm_core::american_stories::VERSION);
+    }
     refdata.titles.insert(
         "sn99000901".into(),
         serde_json::from_value(json!({
@@ -2160,7 +2189,7 @@ async fn ja_state() -> Arc<AppState> {
         }))
         .unwrap(),
     );
-    Arc::new(AppState::new(config(), Arc::new(backend), refdata))
+    Arc::new(AppState::new(cfg, Arc::new(backend), refdata))
 }
 
 #[tokio::test]

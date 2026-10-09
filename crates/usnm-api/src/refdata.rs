@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use usnm_core::query::Node;
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
 use usnm_state::state::{
@@ -336,15 +337,18 @@ impl RefData {
     }
 
     /// The response caches' key (in process and, hashed, in Blob, 06 §6.5)
-    /// for a search on `endpoint` with the canonical query `canonical`:
-    /// `{index_version}|{endpoint}|{canonical}`, with
+    /// for a search on `endpoint` for `query`, whose canonical parameters
+    /// are `canonical`: `{index_version}|{endpoint}|{canonical}`, with
     /// [`AMERICAN_STORIES_OFF_KEY`] appended when American Stories' text is
-    /// switched off, so responses computed without it and with it never
-    /// stand in for each other. With it on the key is the same as before the
-    /// setting existed, and responses cached then still serve.
-    pub fn search_key(&self, endpoint: &str, canonical: &str) -> String {
+    /// switched off and `query` searches the main indexes, so responses
+    /// computed without it and with it never stand in for each other. A
+    /// Japanese query searches the Japanese pages, which have no American
+    /// Stories text, so its key never changes. With the setting on the key
+    /// is the same as before the setting existed, and responses cached then
+    /// still serve.
+    pub fn search_key(&self, endpoint: &str, canonical: &str, query: &Node) -> String {
         let mut key = format!("{}|{endpoint}|{canonical}", self.version());
-        if self.american_stories_switched_off() {
+        if self.american_stories_switched_off() && !usnm_core::query::is_japanese(query) {
             key.push_str(AMERICAN_STORIES_OFF_KEY);
         }
         key
