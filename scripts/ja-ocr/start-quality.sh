@@ -45,7 +45,7 @@ elif [ "${1:-}" = targets ] || [ "${1:-}" = run ]; then
   [ "$command" = targets ] && job="caj-usnm-jaone-$ENV_NAME"
   shift
   for a in "$@"; do
-    [[ $a =~ ^(--mixed-below|0(\.[0-9]+)?|1(\.0+)?)$ ]] || die "unexpected argument \"$a\" for $command"
+    [[ $a =~ ^(--mixed-below|0(\.[0-9]{1,2})?|1(\.0+)?)$ ]] || die "unexpected argument \"$a\" for $command"
   done
 elif [ "${1:-}" = american-stories ] || [ "${1:-}" = american-stories-write ]; then
   command=$1

@@ -2635,6 +2635,75 @@ async fn a_copy_with_our_text_that_loses_to_locs_is_hidden() {
     assert_eq!(v2.pages, early_pages as u64, "the page counts once");
 }
 
+/// A later batch that ships a page with no text of LoC's doesn't take over
+/// from our copy (#203): neither a page our OCR read because LoC's archive
+/// had no text for it, nor an empty page given our text, is hidden, and the
+/// later copy gets no document, so each page is still searchable and counts
+/// once.
+#[tokio::test]
+async fn a_copy_without_locs_text_does_not_hide_ours() {
+    let e = env().await;
+    let (early, _, early_pages, _) = curate_early_and_late(&e).await;
+    curate(&e, early).await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let blank = pages
+        .iter()
+        .find(|p| p.date < split && p.text.is_empty())
+        .expect("an empty early page");
+    let row = |seq, loc_text, text| JaRow {
+        lccn: &blank.lccn,
+        date: blank.date,
+        seq,
+        batch: "batch_fx_early",
+        loc_text,
+        text,
+        ocred_at: 1,
+    };
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[
+            row(90, "missing", "Moritz Drug Co, 2001 Larimer Street"),
+            row(blank.seq, "empty", "The relocation center held a meeting"),
+        ],
+    )
+    .await;
+    let v1 = e.release_latin(5, true, true).await.expect("base");
+    let id = |seq: u16| format!("{}_{}_ed-1_seq-{seq}", blank.lccn, blank.date);
+    let base = e.index(&v1.indexes[0]);
+    assert!(base.contains_key(&id(90)) && base.contains_key(&id(blank.seq)));
+    assert_eq!(v1.pages, early_pages as u64 + 1);
+
+    // A batch whose name sorts first ships both pages, empty: its copy of
+    // the empty page wins the plan's tie, but has nothing to search.
+    let empty = |seq| Page {
+        lccn: blank.lccn.clone(),
+        date: blank.date,
+        seq,
+        text: String::new(),
+    };
+    let (p90, pb) = (empty(90), empty(blank.seq));
+    let path = e.root.join("batch_fx_again_ver01.tar.gz");
+    write_archive(&path, &[&p90, &pb], false, true);
+    curate(&e, vec![listed("batch_fx_again_ver01", &path, None)]).await;
+    let v2 = e.release_latin(6, false, true).await.expect("delta");
+    let delta = e.index(&v2.indexes[1]);
+    assert!(!delta.contains_key(&id(90)) && !delta.contains_key(&id(blank.seq)));
+    let hidden = e
+        .reference_json(&format!("{}/duplicates.json", v2.index_version))
+        .await;
+    assert_eq!(hidden, serde_json::json!([]));
+    let record = e
+        .reference_json(&format!("{}/ocr_ja.json", v2.index_version))
+        .await;
+    assert_eq!(record["latin"]["hidden"], 0);
+    assert_eq!(record["latin"]["pages"], 2);
+    // Page 90 is counted now from the new batch's counts, not ours; the
+    // empty page twice over is one page.
+    assert_eq!(v2.pages, early_pages as u64 + 1, "each page counts once");
+}
+
 /// American Stories' text for the fixture pages that have some (their
 /// `text_as`), as `american_stories_write.py` writes it: a part per title
 /// and year, then each year's marker. Plus a page no batch has, and a

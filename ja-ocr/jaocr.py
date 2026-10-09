@@ -285,19 +285,25 @@ def needs_ocr(text_status: str, text: str | None, mixed_below: float = MIXED_BEL
 
 
 def targets_name(mixed_below: float = MIXED_BELOW) -> str:
-    """The targets list's name (and its claims'): TARGETS, or with its own --mixed-below."""
+    """The targets list's name (and its claims'): TARGETS, or with its own
+    --mixed-below, a whole percentage (mixed_below_setting)."""
+    pct = round(mixed_below * 100)
+    if abs(mixed_below * 100 - pct) > 1e-9:
+        raise ValueError(f"--mixed-below must be a whole percentage, not {mixed_below}")
     if mixed_below == MIXED_BELOW:
         return TARGETS
-    return f"{TARGETS}-mixed{round(mixed_below * 100):02d}"
+    return f"{TARGETS}-mixed{pct:02d}"
 
 
 def mixed_below_setting(arg: float | None) -> float:
-    """--mixed-below, else JAOCR_MIXED_BELOW, else MIXED_BELOW; at most 1, and
-    at most GARBLED_BELOW turns `mixed` off."""
+    """--mixed-below, else JAOCR_MIXED_BELOW, else MIXED_BELOW: a whole
+    percentage from 0 to 1 (0.65, not 0.649), so each cut has its own list
+    and claims (targets_name); at most GARBLED_BELOW turns `mixed` off."""
     v = arg if arg is not None else float(os.environ.get("JAOCR_MIXED_BELOW", MIXED_BELOW))
-    if not 0 <= v <= 1:
-        raise ValueError(f"--mixed-below must be between 0 and 1, not {v}")
-    return v
+    pct = round(v * 100)
+    if not 0 <= v <= 1 or abs(v * 100 - pct) > 1e-9:
+        raise ValueError(f"--mixed-below must be a whole percentage from 0 to 1 (such as 0.65), not {v}")
+    return pct / 100
 
 
 def issue_key(lccn: str, date: str, edition: int) -> str:
@@ -751,8 +757,9 @@ def main() -> None:
     ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories", "american-stories-write"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
     ap.add_argument("--mixed-below", type=float,
-                    help=f"targets, run: OCR pages whose LoC text is under this word-like share "
-                         f"(default JAOCR_MIXED_BELOW or {MIXED_BELOW}; {GARBLED_BELOW} or less: no mixed pages)")
+                    help=f"targets, run: OCR pages whose LoC text is under this word-like share, a whole "
+                         f"percentage (default JAOCR_MIXED_BELOW or {MIXED_BELOW}; {GARBLED_BELOW} or less: "
+                         f"no mixed pages)")
     ap.add_argument("--all-languages", action="store_true", help="audit: every title, not just non-English ones")
     ap.add_argument("--sample-pct", type=float,
                     help="quality: percent of pages to score (default 2); american-stories: to compare (default 10)")

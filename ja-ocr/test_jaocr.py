@@ -51,6 +51,12 @@ class Classify(unittest.TestCase):
         self.assertEqual(jaocr.targets_name(jaocr.MIXED_BELOW), "targets-v3")
         self.assertEqual(jaocr.targets_name(0.8), "targets-v3-mixed80")
         self.assertEqual(jaocr.targets_name(0.35), "targets-v3-mixed35")
+        self.assertEqual(jaocr.targets_name(0.05), "targets-v3-mixed05")
+        self.assertEqual(jaocr.targets_name(1.0), "targets-v3-mixed100")
+        # Cuts between whole percentages would share a list: refused.
+        for bad in (0.649, 0.651):
+            with self.assertRaises(ValueError):
+                jaocr.targets_name(bad)
 
     def test_mixed_below_setting(self):
         old = os.environ.pop("JAOCR_MIXED_BELOW", None)
@@ -61,6 +67,13 @@ class Classify(unittest.TestCase):
             self.assertEqual(jaocr.mixed_below_setting(0.8), 0.8)
             with self.assertRaises(ValueError):
                 jaocr.mixed_below_setting(1.5)
+            self.assertEqual(jaocr.mixed_below_setting(0.07), 0.07)
+            for bad in (0.649, 0.651, 0.655):
+                with self.assertRaisesRegex(ValueError, "whole percentage"):
+                    jaocr.mixed_below_setting(bad)
+            os.environ["JAOCR_MIXED_BELOW"] = "0.649"
+            with self.assertRaises(ValueError):
+                jaocr.mixed_below_setting(None)
         finally:
             os.environ.pop("JAOCR_MIXED_BELOW", None)
             if old is not None:
