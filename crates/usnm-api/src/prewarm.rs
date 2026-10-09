@@ -139,12 +139,13 @@ pub struct Report {
     pub from_log: usize,
     /// The home page's examples.
     pub examples: usize,
-    /// Examples whose search the run left in the in-process cache.
+    /// Examples whose search is in the in-process cache when the run ends
+    /// (an entry the run added can have been evicted since).
     pub examples_warm: usize,
     /// Searches (examples and logged ones) a cache already held, read
     /// without a search.
     pub cached: usize,
-    /// Searches the run computed, whatever came of them.
+    /// Searches the run computed (or tried to), whatever came of them.
     pub computed: usize,
     /// Time computations waited for a free visitor slot (after a start).
     pub gave_way: Duration,
@@ -160,6 +161,19 @@ enum Outcome {
 }
 
 impl Outcome {
+    /// Where the answer came from: a cache read ([`Run::load`]) or a
+    /// response the handler served from the in-process cache is `Cache`;
+    /// anything the handler computed, or tried to, is `Computed`.
+    fn source(&self) -> Source {
+        match self {
+            Self::Ok(None) => Source::Cache,
+            Self::Ok(Some(resp)) if resp.extensions().get::<routes::FromCache>().is_some() => {
+                Source::Cache
+            }
+            _ => Source::Computed,
+        }
+    }
+
     fn label(&self) -> &'static str {
         match self {
             Self::Ok(_) => "ok",
@@ -190,10 +204,11 @@ impl Endpoint {
 /// Where a warm-up query's answer came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Source {
-    /// Read from the in-process or persistent cache, no search.
+    /// Read from the in-process or persistent cache, or served by the
+    /// handler from the in-process cache: nothing computed.
     Cache,
-    /// Through the handler, which computes it (places and coverage from
-    /// reference data, searches on the searcher).
+    /// Computed by the handler (places and coverage from reference data,
+    /// searches on the searcher), or by another request it waited on.
     Computed,
 }
 
@@ -253,7 +268,7 @@ impl Run<'_> {
         private: bool,
     ) -> Option<Response> {
         let (outcome, elapsed) = self.attempt(endpoint, uri, private).await;
-        self.record(endpoint, label, Source::Computed, outcome, elapsed)
+        self.record(endpoint, label, outcome, elapsed)
     }
 
     async fn attempt(&self, endpoint: Endpoint, uri: &str, private: bool) -> (Outcome, Duration) {
@@ -271,10 +286,10 @@ impl Run<'_> {
         &mut self,
         endpoint: Endpoint,
         label: &str,
-        source: Source,
         outcome: Outcome,
         elapsed: Duration,
     ) -> Option<Response> {
+        let source = outcome.source();
         self.report.queries += 1;
         match &outcome {
             Outcome::Ok(_) => self.report.ok += 1,
@@ -419,26 +434,17 @@ impl Run<'_> {
                 continue;
             };
             self.report.cached += 1;
-            if search.example() {
-                self.report.examples_warm += 1;
-            } else {
+            if search.private {
                 self.report.from_log += 1;
             }
             self.record(
                 Endpoint::Aggregate,
                 &search.label,
-                Source::Cache,
                 Outcome::Ok(None),
                 loaded.elapsed,
             );
             if let Some((outcome, elapsed)) = loaded.coverage {
-                self.record(
-                    Endpoint::Coverage,
-                    &search.label,
-                    Source::Computed,
-                    outcome,
-                    elapsed,
-                );
+                self.record(Endpoint::Coverage, &search.label, outcome, elapsed);
             }
         }
         tracing::info!(
@@ -477,24 +483,19 @@ impl Run<'_> {
             .attempt(Endpoint::Aggregate, &uri, search.private)
             .await;
         if !matches!(outcome, Outcome::Skipped) {
-            self.report.computed += 1;
+            // A visitor may have computed it since the cache reads.
+            match outcome.source() {
+                Source::Cache => self.report.cached += 1,
+                Source::Computed => self.report.computed += 1,
+            }
             if search.private {
                 self.report.from_log += 1;
             }
         }
-        let resp = self.record(
-            Endpoint::Aggregate,
-            &search.label,
-            Source::Computed,
-            outcome,
-            elapsed,
-        );
+        let resp = self.record(Endpoint::Aggregate, &search.label, outcome, elapsed);
         let Some(resp) = resp else {
             return;
         };
-        if search.example() {
-            self.report.examples_warm += 1;
-        }
         if let Some(coverage) = baseline_ref(resp).await {
             self.query(Endpoint::Coverage, &search.label, &coverage, search.private)
                 .await;
@@ -672,6 +673,14 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
     for search in pending {
         run.compute(search).await;
     }
+    // What visitors will find: the in-process cache is bounded in bytes
+    // (`USNM_CACHE_MB`), so a later entry can have evicted an earlier one.
+    state.cache.run_pending_tasks().await;
+    run.report.examples_warm = searches
+        .iter()
+        .filter(|s| s.example())
+        .filter(|s| s.key.as_ref().is_some_and(|k| state.cache.contains_key(k)))
+        .count();
 
     let mut report = run.report;
     report.elapsed = started.elapsed();

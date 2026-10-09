@@ -977,3 +977,37 @@ async fn a_starting_warm_up_gives_way_to_visitors() {
     assert_eq!(report.examples_warm, prewarm::examples().len());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `examples_warm` counts the examples still in the in-process cache when
+/// the run ends: a cache too small for them all has evicted some.
+#[tokio::test]
+async fn examples_warm_counts_what_the_cache_still_holds() {
+    use usnm_core::params::{RawParams, SearchRequest};
+
+    let dir = temp_reference("evicted");
+    let mut cfg = config();
+    // Room for a few responses, not for every example's.
+    cfg.cache_bytes = 64 * 1024;
+    let backend = Counting::new(Duration::ZERO, false);
+    let state = Arc::new(reloading_state(&dir, cfg, backend).await);
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    let n = prewarm::examples().len();
+    assert_eq!(report.computed, n, "{report:?}");
+    assert_eq!(report.skipped, 0, "{report:?}");
+
+    let bounds = state.snapshot.load().refdata.bounds();
+    state.cache.run_pending_tasks().await;
+    let held = prewarm::examples()
+        .iter()
+        .filter(|e| {
+            let raw = RawParams::parse(&e.aggregate).unwrap();
+            let canonical = SearchRequest::from_raw(&raw, bounds).unwrap().canonical();
+            state
+                .cache
+                .contains_key(&format!("fixture-v1|aggregate|{canonical}"))
+        })
+        .count();
+    assert!(held < n, "the cache held all {n} examples");
+    assert_eq!(report.examples_warm, held, "{report:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -374,8 +374,8 @@ Computations run one at a time on the warm-up's own slot (§6.6). Two at once wo
 | Field | Meaning |
 |-------|---------|
 | `trigger` | `startup` or `publish` |
-| `examples`, `examples_warm` | The home page's examples, and how many of them the run left in the in-process cache. Every example is warm when they are equal. |
-| `cached` | Searches (examples and logged ones) read from a cache, without a search. 0 before a publish. |
+| `examples`, `examples_warm` | The home page's examples, and how many of their searches are in the in-process cache when the run ends (counted then, so an entry evicted to make room for a later one doesn't count). Every example is warm when they are equal. |
+| `cached` | Searches (examples and logged ones) read from a cache, without a search: before a publish only those a visitor computed meanwhile. |
 | `computed` | Searches the run computed on the searcher, whatever their outcome. |
 | `from_log` | Logged searches the run warmed or tried. |
 | `queries` | Every query: places, searches, coverage cubes, and the skipped ones. |
@@ -384,7 +384,7 @@ Computations run one at a time on the warm-up's own slot (§6.6). Two at once wo
 | `gave_way_ms` | Time computations waited for a free visitor slot (after a start only). |
 | `ms` | The run's length: at the budget (300,000 or 900,000) when it ran out. |
 
-A start on a version and release that earlier runs have warmed reads everything: `cached` is the examples plus the logged searches, `computed` and `skipped` are 0, and `ms` is a few seconds. A start with `skipped` above 0 had more to compute than the budget allowed, after new examples or a release that changed the response format; the next start carries on from there. Each computed search also logs `slow warm-up query` (endpoint, example id or `search-log-N`, `source` `computed` or `cache`, outcome, `ms`) when it takes 1 s or more, and the cache reads log one `warm-up read the cached searches` line (`cached`, `missed`, `ms`). `api.prewarm_query_seconds` (by `endpoint` and `source`) has the time of every query that ran.
+A start on a version and release that earlier runs have warmed reads everything: `cached` is the examples plus the logged searches, `computed` and `skipped` are 0, and `ms` is a few seconds. A start with `skipped` above 0 had more to compute than the budget allowed, after new examples or a release that changed the response format; the next start carries on from there. Each computed search also logs `slow warm-up query` (endpoint, example id or `search-log-N`, `source` `computed` or `cache`, outcome, `ms`) when it takes 1 s or more, and the cache reads log one `warm-up read the cached searches` line (`cached`, `missed`, `ms`). `api.prewarm_query_seconds` (by `endpoint` and `source`) has the time of every query that ran: `source` is `cache` when the answer came from the in-process or Blob cache (examples often share a coverage cube, so most coverage queries are cache hits), `computed` when the handler computed it or waited on another request's computation.
 
 **Measuring cold searches.** `scripts/bench-cold-searches.py [base-url]` times three searches of the whole corpus by month (`radio`, `television`, `yellow fever`) one request at a time, cold and then warm, waiting out each `202`. It prints the time to the result, the number of `202`s and the backend time the API reports. Run it once, not in a loop; its numbers are for sizing decisions (more searcher compute, a Quickwit split cache). Its requests are not in the search log: they send no `Origin` or `Sec-Fetch-Site` and a script's user agent.
 

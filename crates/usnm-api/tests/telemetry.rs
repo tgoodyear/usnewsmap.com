@@ -172,6 +172,22 @@ fn metric_total(envs: &[Value], name: &str, attrs: &[(&str, &str)]) -> f64 {
         .sum()
 }
 
+/// How many values a histogram recorded with `attrs`.
+fn metric_count(envs: &[Value], name: &str, attrs: &[(&str, &str)]) -> f64 {
+    envs.iter()
+        .filter(|e| e["data"]["baseType"] == "MetricData")
+        .map(|e| &e["data"]["baseData"])
+        .filter(|d| {
+            attrs
+                .iter()
+                .all(|(k, v)| d["properties"][*k].as_str() == Some(*v))
+        })
+        .flat_map(|d| d["metrics"].as_array().unwrap().iter())
+        .filter(|m| m["name"] == name)
+        .map(|m| m["count"].as_f64().unwrap_or(1.0))
+        .sum()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn requests_are_exported_by_route_template_without_search_text() {
     let (endpoint, seen) = fake_ingestion().await;
@@ -452,6 +468,16 @@ async fn warm_up_is_logged_and_measured_and_fills_the_cache() {
     );
     let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
     assert!(report.ok > 0 && report.ok == report.queries, "{report:?}");
+    // Examples share coverage cubes (the fixtures' bounds clamp their
+    // dates): only the first query for each is computed.
+    state.cache.run_pending_tasks().await;
+    let coverages = state
+        .cache
+        .iter()
+        .filter(|(k, _)| k.contains("|coverage|"))
+        .count();
+    let n = prewarm::examples().len();
+    assert!(coverages > 0 && coverages < n, "{coverages} coverage cubes");
     // The first visitor's search is an in-process cache hit.
     let first = &prewarm::examples()[0];
     let uri = format!("/v1/aggregate?{}&v=fixture-v1", first.aggregate);
@@ -472,13 +498,21 @@ async fn warm_up_is_logged_and_measured_and_fills_the_cache() {
         total("api.prewarm_queries", &[("outcome", "ok")]),
         report.ok as f64
     );
-    for name in ["api.prewarm_duration_seconds", "api.prewarm_query_seconds"] {
-        assert!(
-            seen.all_json().contains(name),
-            "{name}: {}",
-            seen.all_json()
-        );
-    }
+    assert!(
+        seen.all_json().contains("api.prewarm_duration_seconds"),
+        "{}",
+        seen.all_json()
+    );
+    // Each coverage query, by where its answer came from.
+    let coverage = |source| {
+        metric_count(
+            &envs,
+            "api.prewarm_query_seconds",
+            &[("endpoint", "coverage"), ("source", source)],
+        )
+    };
+    assert_eq!(coverage("computed"), coverages as f64);
+    assert_eq!(coverage("cache"), (n - coverages) as f64);
     // Warm-up lookups aren't counted as visitors' cache lookups.
     let lookup = |result| {
         total(
@@ -505,11 +539,10 @@ async fn warm_up_is_logged_and_measured_and_fills_the_cache() {
     assert_eq!(f["ok"], report.ok as u64);
     assert_eq!(f["timed_out"], 0);
     assert_eq!(f["skipped"], 0);
-    let n = prewarm::examples().len() as u64;
-    assert_eq!(f["examples"], n);
-    assert_eq!(f["examples_warm"], n);
+    assert_eq!(f["examples"], n as u64);
+    assert_eq!(f["examples_warm"], n as u64);
     assert_eq!(f["cached"], report.cached as u64);
-    assert_eq!(f["computed"], n);
+    assert_eq!(f["computed"], n as u64);
     assert!(f["gave_way_ms"].is_u64());
     assert!(f["ms"].is_u64());
     assert!(!console.contains("cross of gold") && !console.contains("q="));

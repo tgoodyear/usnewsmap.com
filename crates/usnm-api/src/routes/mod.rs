@@ -229,6 +229,12 @@ fn computing(serving: &str, ahead: Option<usize>) -> Response {
     resp
 }
 
+/// Marks a response served from the in-process cache: nothing was computed
+/// for it, nor was it waiting on another request's computation. The warm-up
+/// reads it to report where each answer came from; it never leaves the API.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FromCache;
+
 /// Where a request's body comes from.
 enum Source {
     Cached(Arc<Vec<u8>>),
@@ -291,7 +297,9 @@ where
         .clone()
         .map(|store| (store, persisted_path(serving, &key)));
     let metrics = &state.metrics;
-    let body = match find_or_start(state, job, &key, persistent, compute).await {
+    let source = find_or_start(state, job, &key, persistent, compute).await;
+    let from_cache = matches!(source, Source::Cached(_));
+    let body = match source {
         Source::Cached(body) => {
             if !job.warm_up {
                 metrics.cache("memory", true);
@@ -337,6 +345,9 @@ where
     );
     resp.extensions_mut()
         .insert(ServedVersion(serving.to_owned()));
+    if from_cache {
+        resp.extensions_mut().insert(FromCache);
+    }
     Ok((resp, Some(body)))
 }
 

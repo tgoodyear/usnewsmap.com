@@ -98,11 +98,11 @@ Each API start, and each publish before it swaps the new version in, warms the c
 scripts/logs.sh prod warm-up 2d                # per run: examples warm, cached, computed, skipped, ms
 ```
 
-Read `Warm` against `Examples` first: equal means every example was in the in-process cache when the run ended. Then:
+Read `Warm` against `Examples` first: equal means every example's search was in the in-process cache when the run ended (it is counted then, so evictions show). Then:
 
 - **A start that read everything:** `Cached` is the examples plus the logged searches, `Computed` and `Skipped` are 0, and `Ms` is a few seconds. This is the usual start once a version and release have been warmed once.
 - **A start that computed some:** `Computed` above 0 means searches no cache held: examples added since, or every search after a release that changed the response format (`RESPONSE_FORMAT` in `crates/usnm-api/src/routes/mod.rs`). Each takes about 11 s, so about 26 fit in the 5-minute budget. `Skipped` above 0 means the budget ran out with that many searches left; the next start reads what this one computed and goes on from there, and a visitor who opens a skipped example computes and persists it.
-- **A publish:** `Cached` is 0 (nothing is cached for a new version yet), and `Computed` is the searches reached in 15 minutes, about 75 of the 100 examples. The next start computes the rest.
+- **A publish:** `Cached` is 0 or close to it (nothing is cached for a new version yet, unless a visitor computed it meanwhile), and `Computed` is the searches reached in 15 minutes, about 75 of the 100 examples. The next start computes the rest.
 - **`GaveWayMs`** is how long a start's computations waited because every visitor slot was taken. Large values mean visitors kept the searcher busy during the start.
 - **`TimedOut` or `Failed`** above 0: the `slow warm-up query` and `warm-up query failed` lines of that run name the example (`api-errors` lists the failures).
 
