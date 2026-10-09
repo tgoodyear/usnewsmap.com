@@ -29,7 +29,12 @@ searcher:
   split_footer_cache_capacity: 256MB
   partial_request_cache_capacity: 32MB
   predicate_cache_capacity: 32MB
-  max_num_concurrent_split_searches: 8
+  # 8 to 24 (#125): on the dev 1% index one 2-vCPU searcher's cold median
+  # went 1.66 to 1.1-1.3 s and its median one-at-a-time search 1.39 to 0.98 s;
+  # peak throughput +19%. Prod baseline at 8 on pages-v20261008-1 (American
+  # Stories, 640 splits; 9 Oct): cold radio 48 s, television 77 s, yellow
+  # fever 100 s. The same searches are re-run after this rolls out (#125).
+  max_num_concurrent_split_searches: 24
   # Quickwit cancels a search, and each split search in it, at these (both
   # 30 s by default) and answers 408. The API's own limit on a computation
   # is 120 s (USNM_COMPUTE_CAP_SECS), so Quickwit's must be longer, or busy
