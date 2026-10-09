@@ -1,0 +1,18 @@
+// The API's cache warm-ups, newest first: one row per run from its
+// `warm-up finished` line (06 §6.5 says how to read the fields). Runs from
+// before #183 have no examples, cached or computed fields. Lines that could
+// carry the managed identity endpoint's secret are dropped.
+ContainerAppConsoleLogs
+| where ContainerName == "api"
+| where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
+| where Log has "warm-up finished"
+| extend j = parse_json(Log)
+| where tostring(j.fields.message) == "warm-up finished"
+| extend f = j.fields
+| project TimeGenerated, Trigger = tostring(f["trigger"]), Version = tostring(f["version"]),
+    Examples = tolong(f["examples"]), Warm = tolong(f["examples_warm"]),
+    Cached = tolong(f["cached"]), Computed = tolong(f["computed"]),
+    Skipped = tolong(f["skipped"]), TimedOut = tolong(f["timed_out"]), Failed = tolong(f["failed"]),
+    FromLog = tolong(f["from_log"]), Queries = tolong(f["queries"]), Ok = tolong(f["ok"]),
+    GaveWayMs = tolong(f["gave_way_ms"]), Ms = tolong(f["ms"]), Replica = ContainerGroupName
+| order by TimeGenerated desc

@@ -6,7 +6,7 @@ mod hits;
 mod meta;
 
 pub use aggregate::aggregate;
-pub(crate) use aggregate::aggregate_in;
+pub(crate) use aggregate::{aggregate_in, cache_key as aggregate_key};
 pub use beacon::beacon;
 pub(crate) use beacon::is_bot;
 pub use coverage::coverage;
@@ -122,6 +122,24 @@ async fn read_persisted(store: &dyn ObjectStore, path: &str) -> Option<Vec<u8>> 
     }
 }
 
+/// The warm-up's read of a response a cache already holds (06 §6.5): the
+/// in-process cache's body for `key`, else the persistent cache's, which is
+/// then kept in process. `None` when neither holds it. Nothing is computed
+/// and no metric recorded: a warm-up isn't a visitor.
+pub(crate) async fn read_cached(
+    state: &AppState,
+    serving: &str,
+    key: &str,
+) -> Option<Arc<Vec<u8>>> {
+    if let Some(body) = state.cache.get(key).await {
+        return Some(body);
+    }
+    let store = state.responses.as_ref()?;
+    let body = Arc::new(read_persisted(store.as_ref(), &persisted_path(serving, key)).await?);
+    state.cache.insert(key.to_owned(), body.clone()).await;
+    Some(body)
+}
+
 /// Compress and store a computed body in the background; failures only log.
 fn persist(store: Arc<dyn ObjectStore>, path: String, body: Arc<Vec<u8>>) {
     tokio::spawn(async move {
@@ -211,6 +229,12 @@ fn computing(serving: &str, ahead: Option<usize>) -> Response {
     resp
 }
 
+/// Marks a response served from the in-process cache: nothing was computed
+/// for it, nor was it waiting on another request's computation. The warm-up
+/// reads it to report where each answer came from; it never leaves the API.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FromCache;
+
 /// Where a request's body comes from.
 enum Source {
     Cached(Arc<Vec<u8>>),
@@ -273,7 +297,9 @@ where
         .clone()
         .map(|store| (store, persisted_path(serving, &key)));
     let metrics = &state.metrics;
-    let body = match find_or_start(state, job, &key, persistent, compute).await {
+    let source = find_or_start(state, job, &key, persistent, compute).await;
+    let from_cache = matches!(source, Source::Cached(_));
+    let body = match source {
         Source::Cached(body) => {
             if !job.warm_up {
                 metrics.cache("memory", true);
@@ -319,6 +345,9 @@ where
     );
     resp.extensions_mut()
         .insert(ServedVersion(serving.to_owned()));
+    if from_cache {
+        resp.extensions_mut().insert(FromCache);
+    }
     Ok((resp, Some(body)))
 }
 
