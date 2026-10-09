@@ -376,7 +376,12 @@ impl IndexLayout {
             largest_footer_bytes: footers
                 .as_ref()
                 .map(|f| f.iter().copied().max().unwrap_or(0)),
-            splits_by_decade: if splits.iter().all(|s| s.decades.len() == 1) {
+            // Only a partitioned index (a partition key, so nonzero
+            // partition ids): a tagged delta's split can also hold one decade.
+            splits_by_decade: if splits
+                .iter()
+                .all(|s| s.partition_id != 0 && s.decades.len() == 1)
+            {
                 let mut by = BTreeMap::new();
                 for s in splits {
                     *by.entry(s.decades[0]).or_default() += 1;
@@ -1187,6 +1192,15 @@ mod tests {
         let mut mixed = decades.clone();
         mixed[0].decades = vec![1860, 1870];
         assert!(IndexLayout::of("idx", &mixed).splits_by_decade.is_empty());
+        // A tagged delta whose splits each hold one decade isn't partitioned.
+        let tagged: Vec<Split> = decades
+            .iter()
+            .map(|s| Split {
+                partition_id: 0,
+                ..s.clone()
+            })
+            .collect();
+        assert!(IndexLayout::of("idx", &tagged).splits_by_decade.is_empty());
     }
 
     #[test]

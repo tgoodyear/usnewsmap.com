@@ -1060,7 +1060,7 @@ impl Release {
         }
         if let Some(o) = order.as_mut() {
             lease.check()?;
-            let s = o.finish(sink).await?;
+            let s = drain(o, sink, lease).await?;
             tracing::info!(
                 runs = s.runs,
                 pages = s.docs,
@@ -1392,6 +1392,23 @@ impl Release {
     }
 }
 
+/// Send the pages `order` still holds, given up as soon as the writer lock
+/// is: up to 15 decades of 30,000 pages can take longer than the lock lasts
+/// without renewal.
+async fn drain(
+    order: &mut DecadeOrder,
+    sink: &mut dyn IndexSink,
+    lease: &WriterLease,
+) -> anyhow::Result<crate::decade_order::OrderStats> {
+    tokio::select! {
+        r = order.finish(sink) => r,
+        () = lease.lost() => {
+            lease.check()?;
+            bail!("the writer lock was lost while sending the held pages")
+        }
+    }
+}
+
 /// The languages a title lists, sorted and without repeats; `None` when it
 /// lists none (no language filter matches its pages).
 fn language_set(title: &Title) -> Option<Vec<String>> {
@@ -1425,6 +1442,54 @@ mod tests {
         );
         t.languages = vec![];
         assert_eq!(language_set(&t), None);
+    }
+
+    /// A sink that never answers, like a writer that stopped taking pages.
+    struct Stuck;
+
+    #[async_trait::async_trait]
+    impl IndexSink for Stuck {
+        async fn create(&mut self, _: &str, _: Decades) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn add(&mut self, _: &Value) -> anyhow::Result<()> {
+            std::future::pending().await
+        }
+        async fn finish(&mut self, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn backend(&self) -> &'static str {
+            "stuck"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lost_lease_stops_sending_the_held_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut order = DecadeOrder::new(dir.path(), 1000).unwrap();
+        let mut sink = Stuck;
+        order
+            .add(&mut sink, &json!({"doc_id": "a", "decade": 1890}))
+            .await
+            .unwrap();
+        let lost = Arc::new(AtomicBool::new(false));
+        let lease = WriterLease {
+            lost: lost.clone(),
+            renewer: tokio::spawn(async {}),
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            lost.store(true, Ordering::SeqCst);
+        });
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            drain(&mut order, &mut sink, &lease),
+        )
+        .await
+        .expect("the lost lease ends the drain")
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("could not be renewed"), "{err}");
     }
 
     #[tokio::test]

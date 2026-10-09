@@ -418,6 +418,7 @@ async fn release_locked(
                 .context("--quickwit-bin needs --quickwit-metastore")?;
             let dir = cli.work_dir.join("quickwit");
             std::fs::create_dir_all(&dir)?;
+            remove_stale_spill(&dir)?;
             check_free_disk(&dir, t.min_free_gib)?;
             let n = QuickwitNode::start(bin, &dir, t.quickwit_port, metastore, root(t)?).await?;
             let sink = QuickwitSink::new(&n.url, root(t)?)?
@@ -435,18 +436,29 @@ async fn release_locked(
     result
 }
 
+/// Remove the decade files (`decade_order::SPILL_DIR`) a release that
+/// stopped left in `dir`, whatever this release builds: only a partitioned
+/// base would remove them otherwise, and the free-disk check must see the
+/// space they take.
+fn remove_stale_spill(dir: &std::path::Path) -> anyhow::Result<()> {
+    let spill = dir.join(usnm_ingest::decade_order::SPILL_DIR);
+    if spill.exists() {
+        tracing::info!(dir = %spill.display(), "removing a previous release's decade files");
+        std::fs::remove_dir_all(&spill).with_context(|| format!("removing {}", spill.display()))?;
+    }
+    Ok(())
+}
+
 /// Fail before indexing anything if `dir` has less than `min_gib` free. A
-/// previous writer's data in `dir/qwdata`, and a previous release's decade
-/// files (`decade_order::SPILL_DIR`), are about to be removed, so they
-/// count as free.
+/// previous writer's data in `dir/qwdata` is about to be removed, so it
+/// counts as free.
 fn check_free_disk(dir: &std::path::Path, min_gib: u64) -> anyhow::Result<()> {
     if min_gib == 0 {
         return Ok(());
     }
     let free = usnm_ingest::progress::disk_free(dir)
         .with_context(|| format!("reading the free space of {}", dir.display()))?;
-    let stale =
-        dir_size(&dir.join("qwdata")) + dir_size(&dir.join(usnm_ingest::decade_order::SPILL_DIR));
+    let stale = dir_size(&dir.join("qwdata"));
     let gib = |b: u64| b as f64 / (1024.0 * 1024.0 * 1024.0);
     if free.saturating_add(stale) < min_gib.saturating_mul(1 << 30) {
         bail!(
@@ -874,6 +886,18 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("scratch volume"), "{err}");
+    }
+
+    #[test]
+    fn a_previous_releases_decade_files_are_removed_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let spill = dir.path().join(usnm_ingest::decade_order::SPILL_DIR);
+        std::fs::create_dir_all(&spill).unwrap();
+        std::fs::write(spill.join("1890.jsonl.zst"), vec![0u8; 3000]).unwrap();
+        remove_stale_spill(dir.path()).unwrap();
+        assert!(!spill.exists());
+        // Nothing to remove is fine too.
+        remove_stale_spill(dir.path()).unwrap();
     }
 
     #[test]
