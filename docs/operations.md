@@ -499,3 +499,67 @@ scripts/qwcluster-report.py dev --since 2d --out qwcluster-report.md
 Start each step once the previous execution has ended (`az containerapp job execution list -n "$(scripts/settings.sh dev SEARCH_CLUSTER_JOB)" -g "$RG" -o table`). For a cold `first` pass, restart the node revisions before a bench. The first provision with the cluster may restart node 0 a few times while its identity's role on `qw-cluster` propagates. If Log Analytics is over its cap, stream the stored reports with `J dump --hold-secs 600` and `az containerapp job logs show -n <job> -g "$RG" --container qwbench --follow > lines.txt`, then run `scripts/qwcluster-report.py dev --from-file lines.txt`. Collect the report before scaling down: a deleted app's metrics can't be queried.
 
 **Idle and teardown.** `USNM_SEARCH_CLUSTER_NODES 0` and a provision remove the node apps but keep the containers and the bench job, so nothing is billed but storage. `USNM_SEARCH_CLUSTER ""` and a provision remove everything the setting added, both containers included. Clear `USNM_LOG_DAILY_CAP_GB` afterwards.
+
+**Threads.** Every node runs one main-runtime thread and one search-pool thread per vCPU (`QW_TOKIO_RUNTIME_NUM_THREADS`, `RAYON_NUM_THREADS`), as the API's sidecar does with 4 and 4 at 3.75 vCPU (#251): 2 and 2 at the default 2 vCPU. Before October 2026 the nodes ran Quickwit's own default, a third of the CPUs rounded up for the main runtime (one thread at 2 vCPU), so the earlier benches had a single thread for downloads and split opening. `USNM_SEARCH_CLUSTER_RUNTIME_THREADS` and `USNM_SEARCH_CLUSTER_SEARCH_THREADS` override the counts (0: one per vCPU).
+
+### Quickwit version comparison
+
+Whether a pre-0.9 Quickwit searches our splits with less work than 0.9.1 (#251; upstream quickwit-oss/quickwit#6883 reports 0.9.1 1.25 to 2x slower than a 0.8 nightly on identical splits). The released 0.8.2 can't take part: it reads tantivy index formats 4 to 6 and 0.9.1 writes 7, and it authenticates to Azure only with an account key, which our accounts refuse (ADR-0009). The baseline is the `qw-azure-fix` nightly (`quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc…`, main of 23 September 2025 plus the Azure multipart fix, which reports 0.8.0): it writes and reads format 7, uses managed identity, reads the 0.9 metastore, and takes every searcher key of `searcher.yaml` but `predicate_cache_capacity` and `leaf_request_timeout_secs`.
+
+**What it deploys.** `USNM_SEARCH_COMPARE_TAGS`, ingest image tags separated by commas, gives one standalone searcher per tag, `ca-usnm-qws-{i}` (root `http://ca-usnm-qws-{i}` inside the environment), of `USNM_SEARCH_CLUSTER_NODE_VCPU` vCPU each. Each runs as the API sidecar does: searcher and metastore, polling the file-backed metastore in `qw-cluster` every 30 s, with Blob Data Reader on `qw-cluster` only, so it searches the cluster's indexes and can't change them. Each has a cluster id of its own and no seeds, so the two never join and a search never mixes versions. The node wrapper reads `quickwit --version` and, below 0.9, drops the two searcher keys and pins `warmup_single_split_initial_allocation` to 0.9.1's 300 MB (the nightly's default is 1 GB). The bench records the root's Quickwit version, each node's main-runtime busy time and Blob bytes downloaded per pass, and samples the search pool's running and queued split searches every 2 s.
+
+**Images.** The second tag is the ingest image on the nightly's Quickwit (`Dockerfile.ingest`'s `QUICKWIT_IMAGE`; CI always builds the default, v0.9.1):
+
+```sh
+cd ~/code/usnewsmap.com-qwcluster
+RG=$(scripts/settings.sh dev AZURE_RESOURCE_GROUP); ACR=$(scripts/settings.sh dev ACR_NAME)
+TAG=qwc-$(git rev-parse --short HEAD); SHA=$(git rev-parse HEAD)
+NIGHTLY=quickwit/quickwit:qw-azure-fix@sha256:d4f75ebc6d6ee7db4732b8a20be544ba3455bdc08ef0ccd7683f4aa854243ff6
+az acr build -r "$ACR" -t usnewsmap-ingest:$TAG -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA .
+az acr build -r "$ACR" -t usnewsmap-ingest:$TAG-qw2509 -f Dockerfile.ingest --build-arg USNM_GIT_SHA=$SHA --build-arg QUICKWIT_IMAGE=$NIGHTLY .
+az acr build -r "$ACR" -t usnewsmap-api:$TAG -f Dockerfile .
+```
+
+**Smoke test** on an index the cluster already holds (`s1ixb`, the 1% without American Stories, 58 splits): cluster nodes off, so nothing writes while they search; both searchers at the sidecar's 4 vCPU.
+
+```sh
+scripts/settings.sh dev USNM_IMAGE_TAG $TAG
+scripts/settings.sh dev USNM_SEARCH_CLUSTER true
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODE_VCPU 4
+scripts/settings.sh dev USNM_SEARCH_COMPARE_TAGS "$TAG,$TAG-qw2509"
+scripts/provision.sh dev
+J() { scripts/start-job.sh dev SEARCH_CLUSTER_JOB "$@"; }
+JOB=$(scripts/settings.sh dev SEARCH_CLUSTER_JOB)
+wait_for() {  # until execution $1 has ended; prints how
+  local s; while :; do
+    s=$(az containerapp job execution show -n "$JOB" -g "$RG" --job-execution-name "$1" --query properties.status -o tsv)
+    case "$s" in Running|Processing|Unknown|"") sleep 20 ;; *) echo "$1 $s"; return ;; esac
+  done
+}
+restart() { for a in ca-usnm-qws-0 ca-usnm-qws-1; do az containerapp revision restart -n $a -g "$RG" --revision "$(az containerapp revision list -n $a -g "$RG" --query "[?properties.active].name | [0]" -o tsv)"; done; sleep 90; }
+wait_for "$(J members --cluster http://ca-usnm-qws-0)"; wait_for "$(J members --cluster http://ca-usnm-qws-1)"
+bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index s1ixb --sample dev1pct --levels 1,4,10)"; }
+restart; bench cmp-v091-r1 qws-0; bench cmp-n2509-r1 qws-1
+restart; bench cmp-n2509-r2 qws-1; bench cmp-v091-r2 qws-0
+restart; bench cmp-v091-r3 qws-0; bench cmp-n2509-r3 qws-1
+scripts/qwcluster-report.py dev --since 6h --out qwcompare.md
+```
+
+The two `members` lines show each searcher alone in its cluster, with `main_threads` 4 in its counters (the nightly reports the same metric names as 0.9.1). The report's **Quickwit version comparison** section has, per pass, the main runtime's busy seconds per search and per GB downloaded, its busy share, and the search pool's peaks, then each version's averages with ratios to 0.9.1, then whether both versions found the same pages for every search. If they didn't, the timings don't compare. On dev's 1% the searches wait on Blob, not CPU (0.1 to 0.4 vCPU in October 2026), so the latency ratios don't carry to production; busy seconds per GB do, since production's cold searches wait on the main runtime (about 95% busy on 4 threads with an idle search pool, #251). A nightly ratio well under 1 (0.8 or less) on busy seconds per GB is worth the full run; near 1, the regression of #6883 isn't what holds production back.
+
+**Full run**, if the smoke test points that way: indexes shaped like production's, built by 0.9.1 (node 0) from the 1% with `text_as` and `text_as_cg` filled from `text` and `text_cg` (`load --as-from-text`; LoC's OCR twice, the shape of production's work but not its matches), at the loader's 3,000 pages per split (production's fan-out per search) and at production's 30,000 (production's split size):
+
+```sh
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 1
+scripts/provision.sh dev
+wait_for "$(J load --sample dev1pct --index asdup3k --as-from-text)"
+wait_for "$(J load --sample dev1pct --index asdup30k --split-docs 30000 --as-from-text)"
+scripts/settings.sh dev USNM_SEARCH_CLUSTER_NODES 0
+scripts/provision.sh dev
+bench() { wait_for "$(J bench --label "$1" --cluster "http://ca-usnm-$2" --index "$3" --sample dev1pct --american-stories --levels 1,4,10)"; }
+# then the same three rounds as above for asdup3k and asdup30k
+```
+
+**Afterwards** `USNM_SEARCH_COMPARE_TAGS ""` and a provision remove the searchers (collect the report first). Two 4 vCPU searchers cost about $0.86 an hour while they exist.
+

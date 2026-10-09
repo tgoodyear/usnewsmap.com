@@ -32,13 +32,29 @@
 // - The bench identity reads `curated` and `reference` (Blob Data Reader).
 // Both identities pull the ingest image (AcrPull): it has Quickwit and the
 // `usnm-qwcluster` binary.
+//
+// Version comparison (#251; docs/operations.md, "Quickwit version
+// comparison"): with `compareImages`, one standalone searcher per image,
+// `ca-usnm-qws-{i}`, each the API sidecar's shape (searcher and metastore,
+// polling the file-backed metastore in `qw-cluster`), with a cluster id of
+// its own and no seeds, so they never join each other or the cluster. Each
+// searches the same splits, the cluster's indexes, with Blob Data *Reader*
+// on `qw-cluster` (as the sidecar has on `qw-index`): neither can change
+// them. Load the indexes first, then set `nodes` to 0 so nothing writes
+// while they search. An image is an ingest image built on another Quickwit
+// (Dockerfile.ingest's QUICKWIT_IMAGE); the node wrapper writes the
+// pre-0.9 searcher config when `quickwit --version` is below 0.9.
+//
+// Threads: every node and comparison searcher runs one main-runtime and one
+// search-pool thread per vCPU unless `runtimeThreads`/`searchThreads` say
+// otherwise, as the API sidecar does (4 and 4 at 3.75 vCPU).
 
 param location string
 param tags object
 @description('Environment name, for the job and identity names.')
 param nameSuffix string
 param environmentId string
-@description('The ingest image (Quickwit 0.9.1 with usnm-ingest and usnm-qwcluster).')
+@description('The ingest image (Quickwit 0.9.1 with usnm-ingest and usnm-qwcluster): the cluster\'s nodes and the bench job.')
 param image string
 param registryServer string
 param registryName string
@@ -59,9 +75,21 @@ param indexers int = 1
 @maxValue(4)
 param nodeVcpu int = 2
 
-@description('searcher.max_num_concurrent_split_searches on every node; 0 keeps the sidecar\'s value (8).')
+@description('searcher.max_num_concurrent_split_searches on every node; 0 keeps the sidecar\'s value (infra/quickwit/searcher.yaml).')
 @minValue(0)
 param splitSearches int = 0
+
+@description('Main runtime threads per node and comparison searcher (QW_TOKIO_RUNTIME_NUM_THREADS); 0: one per vCPU, as the API sidecar runs.')
+@minValue(0)
+param runtimeThreads int = 0
+
+@description('Search pool threads per node and comparison searcher (RAYON_NUM_THREADS); 0: one per vCPU, as the API sidecar runs.')
+@minValue(0)
+param searchThreads int = 0
+
+@description('Version comparison (#251): one standalone searcher ca-usnm-qws-{i} per image, each nodeVcpu vCPU, reading the cluster\'s indexes. Empty: none.')
+@maxLength(4)
+param compareImages array = []
 
 var clusterContainer = 'qw-cluster'
 var benchContainer = 'qw-bench'
@@ -170,6 +198,31 @@ resource referenceReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 // At most 4 nodes, so `indexers` past `nodes` just means all of them.
 var nodeCpu = json(string(nodeVcpu))
 var nodeMemory = '${nodeVcpu * 2}Gi'
+// `usnm-qwcluster node` flags every node and comparison searcher shares:
+// its vCPUs, then threads and concurrent split searches when set.
+var tuningArgs = concat(
+  ['--cpus', string(nodeVcpu)],
+  runtimeThreads > 0 ? ['--runtime-threads', string(runtimeThreads)] : [],
+  searchThreads > 0 ? ['--search-threads', string(searchThreads)] : [],
+  splitSearches > 0 ? ['--split-searches', string(splitSearches)] : []
+)
+// Warnings, and the cluster's membership and the indexing pipelines at
+// info: enough to follow joins, restarts and merges inside a dev
+// workspace's 150 MB daily log cap, and no search text (09 §9.4.2).
+var nodeRustLog = 'warn,quickwit_cluster=info,quickwit_serve=info,quickwit_serve::search_api=warn,quickwit_indexing::actors::merge_pipeline=info'
+var nodeProbes = [
+  {
+    type: 'Startup'
+    httpGet: { path: '/health/livez', port: 7280 }
+    periodSeconds: 5
+    failureThreshold: 60
+  }
+  {
+    type: 'Liveness'
+    httpGet: { path: '/health/livez', port: 7280 }
+    periodSeconds: 30
+  }
+]
 
 resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
   for i in range(0, nodes): {
@@ -224,36 +277,15 @@ resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
               'azure://${clusterContainer}'
               '--storage-account'
               storageAccountName
-              '--cpus'
-              string(nodeVcpu)
-            ], splitSearches > 0 ? ['--split-searches', string(splitSearches)] : [])
+            ], tuningArgs)
             resources: { cpu: nodeCpu, memory: nodeMemory }
             env: [
               // Selects id-usnm-qwnode for the seed registry; the wrapper
               // removes it before Quickwit starts.
               { name: 'AZURE_CLIENT_ID', value: nodeIdentity.properties.clientId }
-              // Warnings, and the cluster's membership and the indexing
-              // pipelines at info: enough to follow joins, restarts and
-              // merges inside a dev workspace's 150 MB daily log cap, and no
-              // search text (09 §9.4.2).
-              {
-                name: 'RUST_LOG'
-                value: 'warn,quickwit_cluster=info,quickwit_serve=info,quickwit_serve::search_api=warn,quickwit_indexing::actors::merge_pipeline=info'
-              }
+              { name: 'RUST_LOG', value: nodeRustLog }
             ]
-            probes: [
-              {
-                type: 'Startup'
-                httpGet: { path: '/health/livez', port: 7280 }
-                periodSeconds: 5
-                failureThreshold: 60
-              }
-              {
-                type: 'Liveness'
-                httpGet: { path: '/health/livez', port: 7280 }
-                periodSeconds: 30
-              }
-            ]
+            probes: nodeProbes
           }
         ]
         scale: { minReplicas: 1, maxReplicas: 1 }
@@ -271,6 +303,80 @@ resource clusterWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
       principalId: nodeApps[i].identity.principalId
       principalType: 'ServicePrincipal'
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobContributor)
+    }
+  }
+]
+
+// Version comparison (#251): standalone searchers over the cluster's indexes.
+resource compareApps 'Microsoft.App/containerApps@2024-03-01' = [
+  for (compareImage, i) in compareImages: {
+    name: 'ca-usnm-qws-${i}'
+    location: location
+    tags: tags
+    dependsOn: [pulls]
+    // The user-assigned identity only pulls the image; Quickwit reads with
+    // the system-assigned one.
+    identity: {
+      type: 'SystemAssigned,UserAssigned'
+      userAssignedIdentities: { '${nodeIdentity.id}': {} }
+    }
+    properties: {
+      environmentId: environmentId
+      workloadProfileName: 'Consumption'
+      configuration: {
+        activeRevisionsMode: 'Single'
+        registries: [{ server: registryServer, identity: nodeIdentity.id }]
+        // The bench job's way in, inside the environment only.
+        ingress: {
+          external: false
+          targetPort: 7280
+          transport: 'http'
+          allowInsecure: true
+        }
+      }
+      template: {
+        containers: [
+          {
+            name: 'qwnode'
+            image: compareImage
+            command: ['/usr/local/bin/usnm-qwcluster']
+            args: concat([
+              'node'
+              '--node-id'
+              'qws-${i}'
+              '--standalone'
+              '--services'
+              'searcher,metastore'
+              // Read-only, polled, as the API sidecar reads qw-index.
+              '--metastore'
+              'azure://${clusterContainer}#polling_interval=30s'
+              '--index-root'
+              'azure://${clusterContainer}'
+              '--storage-account'
+              storageAccountName
+            ], tuningArgs)
+            resources: { cpu: nodeCpu, memory: nodeMemory }
+            env: [
+              { name: 'RUST_LOG', value: nodeRustLog }
+            ]
+            probes: nodeProbes
+          }
+        ]
+        scale: { minReplicas: 1, maxReplicas: 1 }
+      }
+    }
+  }
+]
+
+// Read only: a comparison searcher can't change the splits or the metastore.
+resource compareReaders 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for (compareImage, i) in compareImages: {
+    scope: cluster
+    name: guid(cluster.id, compareApps[i].id, blobReader)
+    properties: {
+      principalId: compareApps[i].identity.principalId
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
     }
   }
 ]
@@ -323,6 +429,9 @@ resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
 }
 
 output nodeApps array = [for i in range(0, nodes): nodeApps[i].name]
+output compareApps array = [for (compareImage, i) in compareImages: compareApps[i].name]
+// Each comparison searcher's root for `bench --cluster`, inside the environment.
+output compareUrls array = [for (compareImage, i) in compareImages: 'http://${compareApps[i].name}']
 output benchJobName string = benchJob.name
 output rootUrl string = rootUrl
 output benchPrincipalId string = benchIdentity.properties.principalId

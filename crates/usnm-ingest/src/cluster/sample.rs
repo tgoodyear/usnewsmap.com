@@ -257,7 +257,9 @@ async fn sample_batch(s: Arc<Shared>, b: RunBatch) -> anyhow::Result<BatchSample
             .title(&row.key.lccn)
             .with_context(|| format!("title `{}` is missing from the catalog", row.key.lccn))?;
         let place = s.catalog.place(&title.place_id).context("place")?;
-        let doc = page_doc(row, title, place, text_as);
+        // No `decade` field: the cluster's indexes take the template as
+        // it is (`load::index_config`, `sink::INDEX_TEMPLATE`), as do sets.
+        let doc = page_doc(row, title, place, text_as, false);
         serde_json::to_writer(&mut out.lines, &doc)?;
         out.lines.push(b'\n');
         out.docs += 1;

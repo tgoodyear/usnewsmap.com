@@ -300,6 +300,123 @@ def bench_rows(benches):
     return rows
 
 
+def app_of(node_id):
+    """A node's Container App: qw-1 is ca-usnm-qw-1, the version
+    comparison's qws-0 is ca-usnm-qws-0."""
+    return f"ca-usnm-{node_id}"
+
+
+def ok_searches(p):
+    return max(len(p.get("searches", [])) - p.get("failed", 0), 0)
+
+
+def pass_load(b, p, node, c):
+    """One node's work in one pass (#251): main runtime busy seconds and GB
+    downloaded per search, the runtime's busy share, its busy seconds per
+    GB, and the search pool's peaks. None for reports from before these
+    counters."""
+    if "main_busy_ms" not in c:
+        return None
+    n = ok_searches(p)
+    busy = c["main_busy_ms"] / 1000
+    gb = c.get("download_bytes", 0) / 1e9
+    threads = c.get("main_threads") or 0
+    wall = p.get("wall_secs") or 0
+    sampled = p.get("sampled", {}).get(node, {})
+    return {
+        "version": (b.get("quickwit") or {}).get("version") or "-",
+        "busy_per_search": busy / n if n else None,
+        "gb_per_search": gb / n if n else None,
+        "busy_share": busy / (threads * wall) if threads and wall else None,
+        "busy_per_gb": busy / gb if gb else None,
+        "ongoing_max": sampled.get("search_ongoing_max"),
+        "pending_max": sampled.get("search_pending_max"),
+        "pending_share": (sampled["samples_pending"] / sampled["samples"]
+                          if sampled.get("samples") else None),
+        "threads": threads,
+    }
+
+
+def compare_rows(benches):
+    """Per bench, pass and node: the version comparison's measures."""
+    rows = []
+    for b in benches:
+        for p in b["passes"]:
+            for node, c in sorted(p["nodes"].items()):
+                x = pass_load(b, p, node, c)
+                if x is None:
+                    continue
+                rows.append([
+                    b["label"], x["version"], ",".join(b["indexes"]),
+                    "yes" if b.get("american_stories") else "no", p["name"], p["concurrency"],
+                    fmt(p["median_secs"], 2), fmt(p["p90_secs"], 2), fmt(x["threads"], 0),
+                    fmt(x["busy_per_search"], 2), fmt(x["busy_share"] and 100 * x["busy_share"], 0),
+                    fmt(x["gb_per_search"], 3), fmt(x["busy_per_gb"], 1),
+                    fmt(x["ongoing_max"], 0), fmt(x["pending_max"], 0),
+                    fmt(x["pending_share"] and 100 * x["pending_share"], 0),
+                ])
+    return rows
+
+
+def compare_summary(benches):
+    """Each (index, pass) by Quickwit version, averaged over its runs, with
+    ratios to 0.9.x: latency, and main runtime busy seconds per search and
+    per GB (the CPU-bound measure that carries to production)."""
+    groups = {}
+    for b in benches:
+        for p in b["passes"]:
+            for node, c in p["nodes"].items():
+                x = pass_load(b, p, node, c)
+                if x is None or x["version"] == "-":
+                    continue
+                key = (",".join(b["indexes"]), p["name"])
+                g = groups.setdefault(key, {}).setdefault(x["version"], [])
+                g.append((p["median_secs"], x["busy_per_search"], x["busy_per_gb"]))
+
+    def mean(vals):
+        vals = [v for v in vals if v is not None]
+        return statistics.mean(vals) if vals else None
+
+    def ratio(a, b):
+        return a / b if a is not None and b else None
+
+    rows = []
+    for (index, name), by_version in sorted(groups.items()):
+        means = {v: [mean(col) for col in zip(*runs)] for v, runs in by_version.items()}
+        base = next((means[v] for v in sorted(means) if v.startswith("0.9")), None)
+        for v, (median, busy, per_gb) in sorted(means.items()):
+            rows.append([
+                index, name, v, len(by_version[v]), fmt(median, 2),
+                fmt(ratio(median, base[0]) if base else None, 2), fmt(busy, 2),
+                fmt(ratio(busy, base[1]) if base else None, 2), fmt(per_gb, 1),
+                fmt(ratio(per_gb, base[2]) if base else None, 2),
+            ])
+    return rows
+
+
+def hit_mismatches(benches):
+    """Searches whose page counts differ between Quickwit versions on the
+    same index and date windows (the comparison's correctness gate, #251):
+    (index, pass, search, {version: pages})."""
+    seen = {}
+    for b in benches:
+        version = (b.get("quickwit") or {}).get("version")
+        if not version:
+            continue
+        for p in b["passes"]:
+            for r in p.get("searches", []):
+                if r.get("error") is None and r.get("pages") is not None:
+                    key = (",".join(b["indexes"]), bool(b.get("american_stories")),
+                           p.get("shift_days"), r["name"])
+                    seen.setdefault(key, {}).setdefault(version, set()).add(r["pages"])
+    rows = []
+    for (index, _, shift, name), by_version in sorted(seen.items(), key=lambda kv: str(kv[0])):
+        if len(by_version) > 1 and len({n for v in by_version.values() for n in v}) > 1:
+            rows.append([index, shift, name,
+                         "; ".join(f"{v}: {sorted(n)}" for v, n in sorted(by_version.items()))])
+    return rows
+
+
 def window(report, start_key, end_key):
     return report[start_key], report[end_key]
 
@@ -377,7 +494,7 @@ def report(env, since, out, from_file=None):
             secs = secs_between(r["started_at"], r["sealed_at"])
             nodes = [m["node_id"] for m in r["members"]]
             for n in nodes:
-                app = "ca-usnm-qw-" + n.split("-")[-1]
+                app = app_of(n)
                 m = app_metrics(sub, rg, app, r["started_at"], r["sealed_at"]) or {}
                 rows.append([r["index_id"], app, fmt(m.get("cpu_avg"), 2), fmt(m.get("cpu_max"), 2),
                              fmt(m.get("mem_max_mib"), 0), fmt(secs, 0)])
@@ -398,18 +515,39 @@ def report(env, since, out, from_file=None):
         for b in benches:
             secs = secs_between(b["started_at"], b["ended_at"])
             for m in b["members"]:
-                app = "ca-usnm-qw-" + m["node_id"].split("-")[-1]
+                app = app_of(m["node_id"])
                 x = app_metrics(sub, rg, app, b["started_at"], b["ended_at"]) or {}
                 rows.append([b["label"], app, fmt(x.get("cpu_avg"), 2), fmt(x.get("cpu_max"), 2),
                              fmt(x.get("mem_max_mib"), 0), fmt(secs, 0)])
         md += ["### CPU and memory per node during each bench", "",
                table(["label", "app", "vCPU avg", "vCPU max", "memory max MiB", "secs"], rows), ""]
+        crows = compare_rows(benches)
+        if crows:
+            md += ["## Quickwit version comparison (#251)", "",
+                   "Per pass and node, from its metrics before and after the pass: the main Tokio "
+                   "runtime's busy seconds per search (downloads, TLS, split opening), its busy share "
+                   "(busy time over threads × wall time), GB downloaded from Blob per search, busy "
+                   "seconds per GB, and the search pool's peaks sampled every 2 s. On dev's I/O-bound "
+                   "1% the latencies don't carry to production; busy seconds per GB do, since "
+                   "production's cold searches wait on that runtime.", "",
+                   table(["label", "quickwit", "index", "AS", "pass", "conc.", "median s", "p90 s",
+                          "main threads", "main busy s/search", "main busy %", "GB/search",
+                          "busy s/GB", "pool running max", "pool queued max", "% samples queued"],
+                         crows), "",
+                   "By version, averaged over runs (ratios to 0.9.x; under 1 means less):", "",
+                   table(["index", "pass", "quickwit", "runs", "median s", "× 0.9", "main busy s/search",
+                          "× 0.9", "busy s/GB", "× 0.9"], compare_summary(benches)), ""]
+            bad = hit_mismatches(benches)
+            md += ["Pages found, by version, for the same searches and windows: "
+                   + ("**they differ**, so the versions don't search the same way and the timings "
+                      "above don't compare:" if bad else "the same in every search."), ""]
+            if bad:
+                md += [table(["index", "window shift (days)", "search", "pages by version"], bad), ""]
     # Idle: the last day's minutes at the idle rate, per node app still there.
     now = datetime.datetime.now(datetime.timezone.utc)
     day_ago = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     idle_rows = []
-    for i in range(4):
-        app = f"ca-usnm-qw-{i}"
+    for app in [f"ca-usnm-qw-{i}" for i in range(4)] + [f"ca-usnm-qws-{i}" for i in range(4)]:
         m = app_metrics(sub, rg, app, day_ago, now.strftime("%Y-%m-%dT%H:%M:%SZ"))
         if m and m["minutes"]:
             idle_rows.append([app, m["minutes"], m["idle_minutes"], fmt(m["cpu_avg"], 3),

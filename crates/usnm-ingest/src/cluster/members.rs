@@ -184,7 +184,10 @@ fn parse_labels(text: &str) -> BTreeMap<String, String> {
 }
 
 /// Counters read from every node: leaf searches and the splits they read,
-/// root searches, documents indexed, merges.
+/// root searches, documents indexed, merges, and (#251) the main runtime's
+/// busy time, the bytes downloaded from Blob and the search pool's tasks.
+/// Quickwit 0.9.1 and the pre-0.9 nightly name these the same
+/// (`quickwit-common/src/runtimes.rs`, `thread_pool`, `quickwit-storage/src/metrics.rs`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct NodeCounters {
     pub leaf_requests: f64,
@@ -197,6 +200,17 @@ pub struct NodeCounters {
     pub footer_cache_bytes: f64,
     pub footer_cache_hits: f64,
     pub footer_cache_misses: f64,
+    /// Milliseconds the main Tokio runtime's threads were busy (downloads,
+    /// TLS, split opening). Quickwit adds to it once a second.
+    pub main_busy_ms: f64,
+    /// The main runtime's threads (a gauge).
+    pub main_threads: f64,
+    /// Bytes downloaded from object storage.
+    pub download_bytes: f64,
+    /// The search pool's running and queued split searches at the scrape
+    /// (gauges; a pass's peaks are in `bench::Pass::sampled`).
+    pub search_ongoing: f64,
+    pub search_pending: f64,
 }
 
 impl NodeCounters {
@@ -207,6 +221,8 @@ impl NodeCounters {
             docs.push(("index", id));
         }
         let footer = [("component_name", "splitfooter")];
+        let main = [("runtime_type", "main")];
+        let search = [("pool", "search")];
         NodeCounters {
             leaf_requests: metric_sum(text, "quickwit_search_leaf_search_requests_total", &ok),
             leaf_splits: metric_sum(text, "quickwit_search_leaf_search_targeted_splits_sum", &ok),
@@ -225,6 +241,19 @@ impl NodeCounters {
             footer_cache_bytes: metric_sum(text, "quickwit_cache_in_cache_num_bytes", &footer),
             footer_cache_hits: metric_sum(text, "quickwit_cache_cache_hits_total", &footer),
             footer_cache_misses: metric_sum(text, "quickwit_cache_cache_misses_total", &footer),
+            main_busy_ms: metric_sum(
+                text,
+                "quickwit_runtime_tokio_worker_busy_duration_milliseconds_total",
+                &main,
+            ),
+            main_threads: metric_sum(text, "quickwit_runtime_tokio_worker_threads", &main),
+            // A counter some exporters suffix with `_total`.
+            download_bytes: metric_sum(text, DOWNLOAD_BYTES, &[])
+                + metric_sum(text, &format!("{DOWNLOAD_BYTES}_total"), &[]),
+            search_ongoing: metric_sum(text, "quickwit_thread_pool_ongoing_tasks", &search)
+                .max(0.0),
+            search_pending: metric_sum(text, "quickwit_thread_pool_pending_tasks", &search)
+                .max(0.0),
         }
     }
 
@@ -241,9 +270,17 @@ impl NodeCounters {
             footer_cache_bytes: self.footer_cache_bytes,
             footer_cache_hits: self.footer_cache_hits - before.footer_cache_hits,
             footer_cache_misses: self.footer_cache_misses - before.footer_cache_misses,
+            main_busy_ms: self.main_busy_ms - before.main_busy_ms,
+            main_threads: self.main_threads,
+            download_bytes: self.download_bytes - before.download_bytes,
+            search_ongoing: self.search_ongoing,
+            search_pending: self.search_pending,
         }
     }
 }
+
+/// Bytes downloaded from object storage (`quickwit-storage/src/metrics.rs`).
+const DOWNLOAD_BYTES: &str = "quickwit_storage_object_storage_download_num_bytes";
 
 /// Each member's counters, by node id. A node that doesn't answer is left out.
 pub async fn counters(
@@ -356,6 +393,39 @@ quickwit_cache_in_cache_num_bytes{component_name=\"splitfooter\"} 1.5e6
         assert_eq!(later.since(&c).leaf_splits, 10.0);
         // A metric whose name only starts the same isn't counted.
         assert_eq!(metric_sum(text, "quickwit_search_leaf_search", &[]), 0.0);
+    }
+
+    /// The #251 counters, as Quickwit 0.9.1 reports them (its label-less
+    /// series are always 0) and with a `_total` download counter.
+    #[test]
+    fn reads_the_runtime_downloads_and_search_pool() {
+        let text = "\
+quickwit_runtime_tokio_worker_busy_duration_milliseconds_total 0
+quickwit_runtime_tokio_worker_busy_duration_milliseconds_total{runtime_type=\"main\"} 120500
+quickwit_runtime_tokio_worker_busy_duration_milliseconds_total{runtime_type=\"blocking\"} 7
+quickwit_runtime_tokio_worker_threads{runtime_type=\"main\"} 4
+quickwit_storage_object_storage_download_num_bytes 2.5e9
+quickwit_thread_pool_ongoing_tasks{pool=\"search\"} 3
+quickwit_thread_pool_ongoing_tasks{pool=\"small_tasks\"} 1
+quickwit_thread_pool_pending_tasks{pool=\"search\"} -0
+";
+        let c = NodeCounters::parse(text, None);
+        assert_eq!(c.main_busy_ms, 120_500.0);
+        assert_eq!(c.main_threads, 4.0);
+        assert_eq!(c.download_bytes, 2.5e9);
+        assert_eq!((c.search_ongoing, c.search_pending), (3.0, 0.0));
+        let suffixed = "quickwit_storage_object_storage_download_num_bytes_total 10\n";
+        assert_eq!(NodeCounters::parse(suffixed, None).download_bytes, 10.0);
+        let later = NodeCounters {
+            main_busy_ms: 130_500.0,
+            download_bytes: 3.0e9,
+            search_ongoing: 0.0,
+            ..c.clone()
+        };
+        let d = later.since(&c);
+        assert_eq!((d.main_busy_ms, d.download_bytes), (10_000.0, 0.5e9));
+        // Gauges keep their latest value.
+        assert_eq!((d.main_threads, d.search_ongoing), (4.0, 0.0));
     }
 
     #[test]

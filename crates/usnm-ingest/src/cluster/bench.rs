@@ -299,10 +299,88 @@ pub struct Pass {
     pub max_secs: f64,
     pub failed: usize,
     pub searches: Vec<SearchResult>,
-    /// Each node's leaf searches, splits and split seconds in the pass.
+    /// Each node's leaf searches, splits and split seconds in the pass, and
+    /// its main runtime's busy time and Blob downloads (#251).
     pub nodes: BTreeMap<String, NodeCounters>,
+    /// Each node's search pool, sampled through the pass.
+    pub sampled: BTreeMap<String, Sampled>,
     /// Every ready searcher served leaf searches in the pass.
     pub all_searchers_used: bool,
+}
+
+/// A node's search pool through a pass, from its metrics every
+/// [`SAMPLE_EVERY`] (#251): whether split searches waited for its threads.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Sampled {
+    pub samples: u32,
+    pub search_ongoing_max: f64,
+    pub search_pending_max: f64,
+    /// Samples with split searches queued for the pool.
+    pub samples_pending: u32,
+}
+
+impl Sampled {
+    fn add(&mut self, c: &NodeCounters) {
+        self.samples += 1;
+        self.search_ongoing_max = self.search_ongoing_max.max(c.search_ongoing);
+        self.search_pending_max = self.search_pending_max.max(c.search_pending);
+        self.samples_pending += u32::from(c.search_pending > 0.0);
+    }
+}
+
+/// How often a pass reads each node's search pool.
+pub const SAMPLE_EVERY: Duration = Duration::from_secs(2);
+
+/// Read every node's search pool each [`SAMPLE_EVERY`] until `stop`.
+async fn sample_pools(
+    http: reqwest::Client,
+    members_now: Vec<Member>,
+    mut stop: tokio::sync::oneshot::Receiver<()>,
+) -> BTreeMap<String, Sampled> {
+    let mut out: BTreeMap<String, Sampled> = BTreeMap::new();
+    loop {
+        tokio::select! {
+            _ = &mut stop => return out,
+            _ = tokio::time::sleep(SAMPLE_EVERY) => {}
+        }
+        for (id, c) in members::counters(&http, &members_now, None).await {
+            out.entry(id).or_default().add(&c);
+        }
+    }
+}
+
+/// The root's Quickwit build (`GET /api/v1/version`), for telling the
+/// version comparison's runs apart (#251).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct QuickwitBuild {
+    pub version: Option<String>,
+    pub commit: Option<String>,
+    pub num_cpus: Option<u64>,
+}
+
+impl QuickwitBuild {
+    pub fn parse(v: &serde_json::Value) -> Self {
+        QuickwitBuild {
+            version: v["build"]["version"].as_str().map(str::to_owned),
+            commit: v["build"]["commit_short_hash"].as_str().map(str::to_owned),
+            num_cpus: v["runtime"]["num_cpus"].as_u64(),
+        }
+    }
+}
+
+async fn quickwit_build(http: &reqwest::Client, root: &str) -> Option<QuickwitBuild> {
+    let v: serde_json::Value = http
+        .get(format!("{root}/api/v1/version"))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    Some(QuickwitBuild::parse(&v))
 }
 
 /// `p` (0 to 1) of sorted `v`, nearest rank.
@@ -339,6 +417,8 @@ pub struct Report {
     pub label: String,
     pub indexes: Vec<String>,
     pub american_stories: bool,
+    /// The root's Quickwit build; `None` if it didn't say.
+    pub quickwit: Option<QuickwitBuild>,
     pub members: Vec<Member>,
     pub searchers: usize,
     pub started_at: DateTime<Utc>,
@@ -381,6 +461,8 @@ async fn pass(
         jobs.push((n.to_string(), request(q, *w, spec.bounds, shift)?));
     }
     let before = members::counters(http, members_now, None).await;
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let sampler = tokio::spawn(sample_pools(http.clone(), members_now.to_vec(), stopped));
     let started_at = Utc::now();
     let t = std::time::Instant::now();
     // One backend for the pass, as the API keeps one: connections are reused.
@@ -394,6 +476,8 @@ async fn pass(
         .collect()
         .await;
     let wall_secs = t.elapsed().as_secs_f64();
+    let _ = stop.send(());
+    let sampled = sampler.await.unwrap_or_default();
     let after = members::counters(http, members_now, None).await;
     let nodes: BTreeMap<String, NodeCounters> = after
         .iter()
@@ -423,6 +507,7 @@ async fn pass(
         failed: results.len() - ok.len(),
         searches: results,
         nodes,
+        sampled,
         all_searchers_used,
     };
     tracing::info!(
@@ -433,6 +518,12 @@ async fn pass(
         p90_secs = p.p90_secs,
         per_sec = p.throughput,
         failed = p.failed,
+        main_busy_secs = %p
+            .nodes
+            .iter()
+            .map(|(n, c)| format!("{n}={:.1}", c.main_busy_ms / 1000.0))
+            .collect::<Vec<_>>()
+            .join(" "),
         leaf_splits = %p
             .nodes
             .iter()
@@ -481,6 +572,8 @@ pub async fn run(label: &str, spec: &Spec) -> anyhow::Result<Report> {
             .join(", "),
         "bench start"
     );
+    let quickwit = quickwit_build(&http, &spec.root).await;
+    tracing::info!(label, quickwit = ?quickwit, "bench root");
     let started_at = Utc::now();
     let mut passes = Vec::new();
     if !spec.levels_only {
@@ -496,6 +589,7 @@ pub async fn run(label: &str, spec: &Spec) -> anyhow::Result<Report> {
         label: label.to_owned(),
         indexes: spec.indexes.clone(),
         american_stories: spec.american_stories,
+        quickwit,
         members: members_now,
         searchers,
         started_at,
@@ -550,6 +644,37 @@ mod tests {
         let small = (d("1895-01-01"), d("1897-12-31"));
         let r = request("q=x", Some(("1918-01-01", "1918-12-31")), small, 0).unwrap();
         assert_eq!((r.filters.from, r.filters.to), small);
+    }
+
+    #[test]
+    fn samples_keep_the_pool_s_peaks() {
+        let mut s = Sampled::default();
+        for (ongoing, pending) in [(2.0, 0.0), (4.0, 3.0), (1.0, 1.0)] {
+            s.add(&NodeCounters {
+                search_ongoing: ongoing,
+                search_pending: pending,
+                ..NodeCounters::default()
+            });
+        }
+        assert_eq!(s.samples, 3);
+        assert_eq!((s.search_ongoing_max, s.search_pending_max), (4.0, 3.0));
+        assert_eq!(s.samples_pending, 2);
+    }
+
+    #[test]
+    fn reads_the_root_s_build() {
+        let v = serde_json::json!({
+            "build": {"version": "0.9.1", "commit_short_hash": "962685f", "cargo_pkg_version": "0.9.1"},
+            "runtime": {"num_cpus": 4}
+        });
+        let b = QuickwitBuild::parse(&v);
+        assert_eq!(b.version.as_deref(), Some("0.9.1"));
+        assert_eq!(b.commit.as_deref(), Some("962685f"));
+        assert_eq!(b.num_cpus, Some(4));
+        assert_eq!(
+            QuickwitBuild::parse(&serde_json::json!({})),
+            QuickwitBuild::default()
+        );
     }
 
     #[test]

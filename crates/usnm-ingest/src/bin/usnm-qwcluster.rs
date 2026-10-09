@@ -39,8 +39,16 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         services: Vec<String>,
         /// The seed registry: a Blob container URL or a directory.
+        #[arg(
+            long,
+            required_unless_present = "standalone",
+            conflicts_with = "standalone"
+        )]
+        registry: Option<String>,
+        /// Outside the cluster (the version comparison, #251): no registry,
+        /// no seeds, a cluster id of its own.
         #[arg(long)]
-        registry: String,
+        standalone: bool,
         #[arg(long)]
         metastore: String,
         #[arg(long)]
@@ -59,9 +67,19 @@ enum Command {
         /// The container's vCPUs, for Quickwit's thread pools.
         #[arg(long)]
         cpus: Option<u32>,
-        /// `searcher.max_num_concurrent_split_searches` (default: the sidecar's, 8).
+        /// Main runtime threads (QW_TOKIO_RUNTIME_NUM_THREADS; default: --cpus).
+        #[arg(long)]
+        runtime_threads: Option<u32>,
+        /// Search pool threads (RAYON_NUM_THREADS; default: --cpus).
+        #[arg(long)]
+        search_threads: Option<u32>,
+        /// `searcher.max_num_concurrent_split_searches` (default: the sidecar's).
         #[arg(long)]
         split_searches: Option<u32>,
+        /// Write the searcher config for a Quickwit build from before 0.9.
+        /// Without it the node asks `quickwit --version`.
+        #[arg(long)]
+        legacy_searcher: bool,
         #[arg(
             long,
             env = "USNM_QUICKWIT_BIN",
@@ -119,6 +137,10 @@ enum Command {
         /// Shards (default: one per indexer).
         #[arg(long)]
         min_shards: Option<usize>,
+        /// Fill each document's American Stories' fields with its `text`
+        /// and `text_cg`, for an index shaped like production's (#251).
+        #[arg(long)]
+        as_from_text: bool,
         #[arg(long, default_value_t = 14400)]
         merge_timeout_secs: u64,
         #[arg(long, env = "USNM_QWCLUSTER_URL")]
@@ -177,6 +199,10 @@ enum Command {
         set: Option<String>,
         #[arg(long, env = "USNM_ARCHIVE_SETS_URL")]
         sets: Option<String>,
+        /// Search American Stories' fields too, whatever the sample says:
+        /// for an index loaded with `--as-from-text`.
+        #[arg(long)]
+        american_stories: bool,
         #[arg(long, value_delimiter = ',', default_value = "1,2,4,10")]
         levels: Vec<usize>,
         /// Seconds between levels.
@@ -294,7 +320,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             data_dir,
             advertise,
             cpus,
+            runtime_threads,
+            search_threads,
             split_searches,
+            legacy_searcher,
+            standalone,
             quickwit_bin,
         } => {
             let data_dir = data_dir.unwrap_or_else(|| {
@@ -312,13 +342,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 index_root,
                 storage_account,
                 split_searches,
+                standalone,
+                legacy_searcher: legacy_searcher
+                    || node::is_pre_09(&quickwit_bin).unwrap_or_else(|| {
+                        tracing::warn!(bin = %quickwit_bin.display(), "can't read Quickwit's version; writing the 0.9 searcher config");
+                        false
+                    }),
             };
+            let threads = node::Threads::new(cpus, runtime_threads, search_threads)?;
             let ip = match advertise {
                 Some(ip) => ip,
                 None => node::replica_address()?,
             };
-            let registry = usnm_store::open(&registry)?;
-            node::start(registry.as_ref(), &spec, ip, cpus, &quickwit_bin).await
+            let registry = registry.as_deref().map(usnm_store::open).transpose()?;
+            node::start(registry.as_deref(), &spec, ip, threads, &quickwit_bin).await
         }
         Command::Members { cluster } => {
             let http = reqwest::Client::new();
@@ -373,6 +410,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             split_docs,
             senders,
             min_shards,
+            as_from_text,
             merge_timeout_secs,
             cluster,
             index_root,
@@ -383,6 +421,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             spec.split_docs = split_docs;
             spec.senders = senders;
             spec.min_shards = min_shards;
+            spec.as_from_text = as_from_text;
             spec.merge_timeout = Duration::from_secs(merge_timeout_secs);
             let report = match (&sample, &set) {
                 (Some(sample), _) => {
@@ -461,6 +500,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             sample,
             set,
             sets,
+            american_stories: force_american_stories,
             levels,
             pause,
             offset,
@@ -493,7 +533,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let spec = bench::Spec {
                 root: cluster.trim_end_matches('/').to_owned(),
                 indexes: index,
-                american_stories,
+                american_stories: american_stories || force_american_stories,
                 bounds: (date(&bounds.0)?, date(&bounds.1)?),
                 levels,
                 offset,
@@ -568,6 +608,54 @@ mod tests {
         };
         assert_eq!(services.len(), 5);
         assert_eq!((rest_port, cpus), (7280, Some(2)));
+    }
+
+    /// A comparison searcher (#251): standalone, so no registry.
+    #[test]
+    fn parses_a_standalone_node_command() {
+        let args = [
+            "usnm-qwcluster",
+            "node",
+            "--node-id",
+            "qws-1",
+            "--standalone",
+            "--services",
+            "searcher,metastore",
+            "--metastore",
+            "azure://qw-cluster#polling_interval=30s",
+            "--index-root",
+            "azure://qw-cluster",
+            "--cpus",
+            "4",
+            "--runtime-threads",
+            "4",
+            "--search-threads",
+            "4",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        let Command::Node {
+            standalone,
+            registry,
+            runtime_threads,
+            search_threads,
+            legacy_searcher,
+            ..
+        } = cli.command
+        else {
+            panic!("not a node");
+        };
+        assert!(standalone && registry.is_none() && !legacy_searcher);
+        assert_eq!((runtime_threads, search_threads), (Some(4), Some(4)));
+        // A cluster node needs the registry; a standalone one refuses it.
+        let without: Vec<&str> = args
+            .iter()
+            .copied()
+            .filter(|a| *a != "--standalone")
+            .collect();
+        assert!(Cli::try_parse_from(without).is_err());
+        let mut both = args.to_vec();
+        both.extend(["--registry", "/tmp/r"]);
+        assert!(Cli::try_parse_from(both).is_err());
     }
 
     #[tokio::test]

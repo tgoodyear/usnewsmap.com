@@ -86,8 +86,19 @@ param searchClusterIndexers int = 1
 @maxValue(4)
 param searchClusterNodeVcpu int = 2
 
-@description('Search cluster experiment: searcher.max_num_concurrent_split_searches per node (0: the sidecar\'s 8).')
+@description('Search cluster experiment: searcher.max_num_concurrent_split_searches per node (0: the sidecar\'s).')
 param searchClusterSplitSearches int = 0
+
+@description('Search cluster experiment: main runtime threads per node (0: one per vCPU, as the API sidecar runs).')
+@minValue(0)
+param searchClusterRuntimeThreads int = 0
+
+@description('Search cluster experiment: search pool threads per node (0: one per vCPU, as the API sidecar runs).')
+@minValue(0)
+param searchClusterSearchThreads int = 0
+
+@description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher ca-usnm-qws-{i} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
+param searchCompareTags string = ''
 
 @description('Retain every batch archive curation downloads, byte for byte, in a `raw` container of this environment\'s own data account (Cold tier), and curate from it instead of LoC when it holds the listed archive. It goes with the environment: turning it off deletes the container. For a set that outlives environments use archiveAccountId. Production keeps none (ADR-0006).')
 param retainRaw bool = false
@@ -521,6 +532,12 @@ module searchClusterModule 'modules/searchcluster.bicep' = if (searchClusterOn) 
     indexers: searchClusterIndexers
     nodeVcpu: searchClusterNodeVcpu
     splitSearches: searchClusterSplitSearches
+    runtimeThreads: searchClusterRuntimeThreads
+    searchThreads: searchClusterSearchThreads
+    compareImages: map(
+      filter(split(searchCompareTags, ','), t => !empty(trim(t))),
+      t => '${registry.outputs.loginServer}/usnewsmap-ingest:${trim(t)}'
+    )
   }
 }
 
@@ -660,3 +677,6 @@ output OCR_ENDPOINT string = ocr ? ocrService!.outputs.endpoint : ''
 output SEARCH_CLUSTER_APPS string = searchClusterOn ? join(searchClusterModule!.outputs.nodeApps, ' ') : ''
 output SEARCH_CLUSTER_JOB string = searchClusterOn ? searchClusterModule!.outputs.benchJobName : ''
 output SEARCH_CLUSTER_URL string = searchClusterOn ? searchClusterModule!.outputs.rootUrl : ''
+// The version comparison's searchers and their roots, in the order of USNM_SEARCH_COMPARE_TAGS.
+output SEARCH_COMPARE_APPS string = searchClusterOn ? join(searchClusterModule!.outputs.compareApps, ' ') : ''
+output SEARCH_COMPARE_URLS string = searchClusterOn ? join(searchClusterModule!.outputs.compareUrls, ' ') : ''

@@ -108,6 +108,10 @@ pub struct Spec {
     pub finalize_grace: Duration,
     /// How long a request keeps retrying while the cluster pushes back.
     pub retry_for: Duration,
+    /// Give every document `text`'s words again as American Stories' text
+    /// ([`as_from_text`]): an index shaped like production's, which has
+    /// both texts, from a sample without American Stories (#251).
+    pub as_from_text: bool,
 }
 
 impl Spec {
@@ -124,8 +128,40 @@ impl Spec {
             poll: Duration::from_secs(10),
             finalize_grace: Duration::from_secs(60),
             retry_for: Duration::from_secs(600),
+            as_from_text: false,
         }
     }
+}
+
+/// `ndjson` with each document's `text` and `text_cg` copied to `text_as`
+/// and `text_as_cg` where those are missing or empty (#251). The sample
+/// sets so far have no American Stories' text, so their indexes hold about
+/// half of what a production split holds per page (05 §5.5.4: 37 KB
+/// against 74 KB); with the copy, a search reads two positional fields per
+/// text, as production's do. The copy is LoC's OCR again, not American
+/// Stories': the shape of the work is production's, the matches aren't.
+pub fn as_from_text(ndjson: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(ndjson.len() * 2);
+    for line in ndjson.split(|&b| b == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let mut doc: Value = serde_json::from_slice(line).context("a sample document")?;
+        let o = doc
+            .as_object_mut()
+            .context("a sample document isn't an object")?;
+        for (from, to) in [("text", "text_as"), ("text_cg", "text_as_cg")] {
+            let empty = o
+                .get(to)
+                .is_none_or(|v| v.is_null() || v.as_str() == Some(""));
+            if let (true, Some(v)) = (empty, o.get(from).cloned()) {
+                o.insert(to.to_owned(), v);
+            }
+        }
+        serde_json::to_writer(&mut out, &doc)?;
+        out.push(b'\n');
+    }
+    Ok(out)
 }
 
 /// One published split, with the node that wrote it.
@@ -257,6 +293,8 @@ pub struct Report {
     pub senders: usize,
     pub split_docs: u64,
     pub min_shards: usize,
+    /// American Stories' fields filled from `text` ([`as_from_text`]).
+    pub as_from_text: bool,
     pub docs: u64,
     pub bytes: u64,
     pub requests: u64,
@@ -479,6 +517,7 @@ pub async fn run_from(input: &Input<'_>, spec: &Spec) -> anyhow::Result<Report> 
         min_shards,
         senders = spec.senders,
         split_docs = spec.split_docs,
+        as_from_text = spec.as_from_text,
         "loading the sample"
     );
 
@@ -490,18 +529,28 @@ pub async fn run_from(input: &Input<'_>, spec: &Spec) -> anyhow::Result<Report> 
     let url = format!("{root}/api/v1/{}/ingest?commit=auto", spec.index_id);
     let mut workers = tokio::task::JoinSet::new();
     for _ in 0..spec.senders.max(1) {
-        let (rx, sent, http, url, retry_for) = (
+        let (rx, sent, http, url, retry_for, copy_as, limit) = (
             rx.clone(),
             sent.clone(),
             http.clone(),
             url.clone(),
             spec.retry_for,
+            spec.as_from_text,
+            spec.chunk_bytes,
         );
         workers.spawn(async move {
             loop {
                 let next = rx.lock().await.recv().await;
                 let Some(body) = next else { return Ok(()) };
-                send_chunk(&http, &url, body, retry_for, &sent).await?;
+                // The copy about doubles a chunk: cut it again under the limit.
+                let bodies = if copy_as {
+                    chunks(&as_from_text(&body)?, limit)?
+                } else {
+                    vec![body]
+                };
+                for body in bodies {
+                    send_chunk(&http, &url, body, retry_for, &sent).await?;
+                }
             }
         });
     }
@@ -672,6 +721,7 @@ pub async fn run_from(input: &Input<'_>, spec: &Spec) -> anyhow::Result<Report> 
         senders: spec.senders,
         split_docs: spec.split_docs,
         min_shards,
+        as_from_text: spec.as_from_text,
         docs,
         bytes: sent.bytes.load(Ordering::Relaxed),
         requests: sent.requests.load(Ordering::Relaxed),
@@ -715,6 +765,30 @@ mod tests {
         }
         assert!(index_config("x1", "u", 0, 1).is_err());
         assert!(index_config("x1", "u", 1, 0).is_err());
+    }
+
+    #[test]
+    fn american_stories_fields_copy_the_text_where_empty() {
+        let ndjson = br#"{"doc_id":"a","text":"cross of gold","text_cg":"cross_of of_gold"}
+{"doc_id":"b","text":"loc","text_cg":"","text_as":"stories","text_as_cg":""}
+
+"#;
+        let out = as_from_text(ndjson).unwrap();
+        let docs: Vec<Value> = out
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_slice(l).unwrap())
+            .collect();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0]["text_as"], "cross of gold");
+        assert_eq!(docs[0]["text_as_cg"], "cross_of of_gold");
+        // A document's own American Stories' text stays.
+        assert_eq!(docs[1]["text_as"], "stories");
+        assert_eq!(docs[1]["text_as_cg"], "");
+        assert!(as_from_text(b"not json\n").is_err());
+        // Cut again under the limit, the copy still makes whole lines.
+        let bodies = chunks(&out, 130).unwrap();
+        assert!(bodies.len() >= 2 && bodies.iter().all(|b| b.len() <= 130 && b.ends_with(b"\n")));
     }
 
     #[test]
@@ -762,6 +836,7 @@ mod tests {
             senders: 1,
             split_docs: 1,
             min_shards: 1,
+            as_from_text: false,
             docs: 0,
             bytes: 0,
             requests: 0,
