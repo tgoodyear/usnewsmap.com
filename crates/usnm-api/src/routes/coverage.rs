@@ -114,6 +114,8 @@ pub(crate) async fn coverage_in(
                 .into(),
         ));
     }
+    // Reference data alone, the same whether or not searches cover
+    // American Stories' text, so the key has no mark for it.
     let key = format!("{serving}|coverage|{canonical}");
     let compute = async move {
         let rd = &snap.refdata;

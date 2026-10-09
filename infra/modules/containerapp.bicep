@@ -38,6 +38,8 @@ param registryServer string = ''
 param appInsightsConnectionString string = ''
 @description('The ingest job\'s cron schedule (UTC), shown on the status page as the next scheduled run. Empty: the job is started by hand.')
 param ingestCron string = ''
+@description('Search American Stories\' text on a version built with it. False sets USNM_AMERICAN_STORIES_SEARCH=false: LoC\'s text alone.')
+param americanStoriesSearch bool = true
 @description('Custom hostnames with their managed certificates, as { name, certificateId }. scripts/bootstrap.sh issues each certificate once DNS is delegated; a name with no certificate yet is left out. Declaring them here keeps a re-deploy from dropping the bindings.')
 param customDomains array = []
 
@@ -70,6 +72,10 @@ var telemetryEnv = empty(appInsightsConnectionString)
   : [{ name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }]
 // The ingest job's schedule, for /v1/status's next scheduled run.
 var scheduleEnv = empty(ingestCron) ? [] : [{ name: 'USNM_INGEST_CRON', value: ingestCron }]
+// Only when off, so the default leaves the container's settings as they were.
+var americanStoriesEnv = americanStoriesSearch
+  ? []
+  : [{ name: 'USNM_AMERICAN_STORIES_SEARCH', value: 'false' }]
 var backendEnv = quickwit
   ? [
       { name: 'USNM_BACKEND', value: 'quickwit' }
@@ -82,7 +88,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv)
+  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv)
   probes: [
     {
       // A start loads the published version (retrying while the sidecar

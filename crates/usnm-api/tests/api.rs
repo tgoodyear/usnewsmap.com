@@ -241,6 +241,214 @@ async fn hits_say_which_texts_match_and_the_aggregate_counts_american_stories_on
     assert!(items.iter().all(|i| i.get("matched_in").is_none()));
 }
 
+/// A state on a version built with American Stories' text, searching it or
+/// not (`USNM_AMERICAN_STORIES_SEARCH`).
+async fn american_stories_state(search: bool) -> Arc<AppState> {
+    let mut rd = refdata().await;
+    rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+    let mut cfg = config();
+    cfg.american_stories_search = search;
+    Arc::new(AppState::new(cfg, Arc::new(fixture_backend()), rd))
+}
+
+/// The search endpoints, and the reference-data ones a search links to.
+const AMERICAN_STORIES_URIS: [&str; 6] = [
+    "/v1/aggregate?q=gold",
+    "/v1/aggregate?q=bimetallism",
+    "/v1/aggregate?q=gold+-bryan&from=1896-01-01&to=1896-12-31",
+    "/v1/hits?q=gold&place=P00001&limit=50",
+    "/v1/hits?q=council&place=P00001&limit=50",
+    "/v1/days?q=gold&place=P00001,P00006",
+];
+
+/// With `USNM_AMERICAN_STORIES_SEARCH=false`, a version built with American
+/// Stories' text answers exactly as if `current.json` had no
+/// `american_stories`: LoC's text alone, no `matched_in`, no
+/// `snippet_source`, no `american_stories_only` (05 §5.5.4).
+#[tokio::test]
+async fn the_setting_switches_american_stories_text_off() {
+    let switched = american_stories_state(false).await;
+    let on = american_stories_state(true).await;
+    let loc = state_with(None).await;
+    let strip = |mut v: Value| {
+        if let Some(o) = v.as_object_mut() {
+            o.remove("timing_ms");
+        }
+        v
+    };
+    for uri in AMERICAN_STORIES_URIS {
+        let (status, _, off) = get(&switched, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {off}");
+        let (_, _, without) = get(&loc, uri).await;
+        assert_eq!(strip(off.clone()), strip(without), "{uri}");
+        let (_, _, with) = get(&on, uri).await;
+        assert_ne!(strip(off), strip(with), "{uri}");
+    }
+    let (_, _, agg) = get(&switched, "/v1/aggregate?q=bimetallism").await;
+    assert_eq!(agg["total"]["hits"], 0);
+    let (_, _, agg) = get(&switched, "/v1/aggregate?q=gold").await;
+    assert!(agg["total"].get("american_stories_only").is_none());
+    assert!(agg["total"]["first"].get("matched_in").is_none());
+
+    // `/v1/meta` says whether searches cover the text.
+    for (s, searched) in [(&switched, false), (&on, true), (&loc, false)] {
+        let (_, _, meta) = get(s, "/v1/meta").await;
+        assert_eq!(meta["american_stories"], searched);
+    }
+}
+
+/// The keys of every response cached in process, after the cache settles.
+async fn cached_keys(state: &Arc<AppState>) -> std::collections::BTreeSet<String> {
+    state.cache.run_pending_tasks().await;
+    state.cache.iter().map(|(k, _)| (*k).clone()).collect()
+}
+
+/// Search responses computed with American Stories' text switched off are
+/// cached under keys of their own, so neither state serves the other's;
+/// with it on the keys are as before the setting, and reference-data
+/// responses (places, coverage) share their keys.
+#[tokio::test]
+async fn search_cache_keys_mark_american_stories_switched_off() {
+    let (on, off) = (
+        american_stories_state(true).await,
+        american_stories_state(false).await,
+    );
+    let (_, _, agg) = get(&on, "/v1/aggregate?q=gold").await;
+    let coverage = agg["cube"]["baseline_ref"].as_str().unwrap().to_owned();
+    let mut uris: Vec<&str> = AMERICAN_STORIES_URIS.to_vec();
+    uris.extend(["/v1/places", coverage.as_str()]);
+    for s in [&on, &off] {
+        for uri in &uris {
+            let (status, _, body) = get(s, uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        }
+    }
+    let on_keys = cached_keys(&on).await;
+    let off_keys = cached_keys(&off).await;
+    // On: `{index_version}|{endpoint}|{canonical}`, unchanged.
+    let canonical = agg["query"]["canonical"].as_str().unwrap();
+    assert!(on_keys.contains(&format!("fixture-v1|aggregate|{canonical}")));
+    assert!(on_keys.iter().all(|k| !k.contains("american_stories")));
+    assert!(on_keys.iter().any(|k| k.contains("|places|")));
+    assert!(on_keys.iter().any(|k| k.contains("|coverage|")));
+    // Off: the same keys, the searches' marked.
+    let expected: std::collections::BTreeSet<String> = on_keys
+        .iter()
+        .map(|k| {
+            if k.contains("|places|") || k.contains("|coverage|") {
+                k.clone()
+            } else {
+                format!("{k}{}", usnm_api::refdata::AMERICAN_STORIES_OFF_KEY)
+            }
+        })
+        .collect();
+    assert_eq!(off_keys, expected);
+    for endpoint in ["aggregate", "hits", "days"] {
+        assert!(
+            off_keys
+                .iter()
+                .any(|k| k.contains(&format!("|{endpoint}|"))
+                    && k.ends_with("|american_stories=off")),
+            "{endpoint}"
+        );
+    }
+
+    // Japanese queries search the Japanese pages, which have no American
+    // Stories text: their keys stay as they were.
+    let mut cfg = config();
+    cfg.american_stories_search = false;
+    let ja = ja_state_with(cfg, true).await;
+    for uri in ["/v1/aggregate?q=%E6%88%A6%E4%BA%89", "/v1/aggregate?q=gold"] {
+        let (status, _, body) = get(&ja, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+    }
+    let ja_keys: Vec<String> = cached_keys(&ja)
+        .await
+        .into_iter()
+        .filter(|k| k.contains("|aggregate|"))
+        .collect();
+    assert_eq!(ja_keys.len(), 2, "{ja_keys:?}");
+    for k in &ja_keys {
+        let japanese = k.contains("%E6%88%A6");
+        assert_eq!(k.ends_with("|american_stories=off"), !japanese, "{k}");
+    }
+
+    // On a version without the text the setting changes nothing, and
+    // neither do the keys.
+    let mut cfg = config();
+    cfg.american_stories_search = false;
+    let plain = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let (_, _, _) = get(&plain, "/v1/aggregate?q=gold").await;
+    assert!(cached_keys(&plain)
+        .await
+        .contains(&format!("fixture-v1|aggregate|{canonical}")));
+}
+
+/// The persistent cache too: a response persisted with American Stories'
+/// text on is never read with it off, and the other way round.
+#[tokio::test]
+async fn persisted_responses_stay_with_their_american_stories_state() {
+    let dir = std::env::temp_dir().join(format!("usnm-respcache-as-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store: Arc<LocalStore> = Arc::new(LocalStore::new(&dir));
+    let state = |search: bool| {
+        let store = store.clone();
+        async move {
+            let mut rd = refdata().await;
+            rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+            let mut cfg = config();
+            cfg.persist_after = Duration::ZERO;
+            cfg.american_stories_search = search;
+            Arc::new(AppState::new(cfg, Arc::new(fixture_backend()), rd).with_response_store(store))
+        }
+    };
+    let wait_for = |n: usize| {
+        let dir = dir.clone();
+        async move {
+            for _ in 0..100 {
+                if persisted_files(&dir).len() == n {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(persisted_files(&dir).len(), n);
+        }
+    };
+    let uri = "/v1/aggregate?q=gold&v=fixture-v1";
+    let (status, _, body) = get(&state(true).await, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["total"]["american_stories_only"].is_u64());
+    wait_for(1).await;
+    // Off, with nothing in process: computed, not read, and persisted apart.
+    let (status, _, body) = get(&state(false).await, uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["total"].get("american_stories_only").is_none(),
+        "{body}"
+    );
+    wait_for(2).await;
+    // Each state reads its own entry back, with an empty index.
+    for (search, only) in [(true, true), (false, false)] {
+        let mut rd = refdata().await;
+        rd.current.american_stories = Some(usnm_core::american_stories::VERSION);
+        let mut cfg = config();
+        cfg.american_stories_search = search;
+        let restarted = Arc::new(
+            AppState::new(cfg, Arc::new(MemoryBackend::new()), rd)
+                .with_response_store(store.clone()),
+        );
+        let (status, _, body) = get(&restarted, uri).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"]["american_stories_only"].is_u64(), only);
+        assert!(body["total"]["hits"].as_u64().unwrap() > 0);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn health_and_meta() {
     let s = state_with(None).await;
@@ -1956,6 +2164,12 @@ async fn api_responses_are_compressed_and_cors_is_limited_to_allowed_origins() {
 /// The fixture state with the Japanese pages' index (#139) published, and its
 /// synthetic title in the catalog.
 async fn ja_state() -> Arc<AppState> {
+    ja_state_with(config(), false).await
+}
+
+/// [`ja_state`] with `cfg`, on a version built with American Stories' text
+/// or not.
+async fn ja_state_with(cfg: Config, american_stories: bool) -> Arc<AppState> {
     let mut backend = fixture_backend();
     backend.add_index("pages-ja-fixture", load_docs("pages-ja-fixture"));
     let mut refdata = refdata().await;
@@ -1964,6 +2178,9 @@ async fn ja_state() -> Arc<AppState> {
         fold: usnm_core::ja::FOLD_VERSION,
         pages: 52,
     });
+    if american_stories {
+        refdata.current.american_stories = Some(usnm_core::american_stories::VERSION);
+    }
     refdata.titles.insert(
         "sn99000901".into(),
         serde_json::from_value(json!({
@@ -1972,7 +2189,7 @@ async fn ja_state() -> Arc<AppState> {
         }))
         .unwrap(),
     );
-    Arc::new(AppState::new(config(), Arc::new(backend), refdata))
+    Arc::new(AppState::new(cfg, Arc::new(backend), refdata))
 }
 
 #[tokio::test]
