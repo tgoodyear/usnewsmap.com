@@ -81,7 +81,7 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 
 | Item | Assumption | Low | Typical | High |
 |------|------------|-----|---------|------|
-| Container App `ca-usnm` (API + Quickwit sidecar) | 1 replica × 1.25 vCPU / 2.5 GiB, always warm, mostly idle rate. Active search time mostly within the free grant. A spike month scales to a second replica for some hours | $16 | $30 | $50 |
+| Container App `ca-usnm` (API + Quickwit sidecar) | 1 replica × 4 vCPU / 8 GiB (the Consumption maximum, since 9 October 2026, #251), always warm, mostly idle rate: about $95 a month idle (4 vCPU at $0.000003/s, 8 GiB at $0.000003/GiB-s), less the free grant. Active search time adds $0.000021 per vCPU-second over idle. A spike month scales to a second replica for some hours | $90 | $100 | $140 |
 | Blob: search index (Hot) | 0.5–0.9 TB | $10 | $14 | $18 |
 | Blob: curated Parquet (Cool) | 150–300 GB; read only during rebuilds | $2 | $2 | $3 |
 | Blob: reference, response cache, tiles (Hot) + transactions | ~20–40 GB | $1 | $2 | $4 |
@@ -94,11 +94,11 @@ The error budget for 99.0% is about 7.3 hours per month. When it is exhausted, f
 | Azure DNS zone | 1 zone + queries | $1 | $1 | $1 |
 | Container registry | ACR Basic (private images) | $5 | $5 | $5 |
 | Ingest scratch share (08 §8.4) | NFS Azure Files, provisioned v2 SSD, 128 GiB at about $0.10/GiB, baseline IOPS and throughput included; its private endpoint ($7.30) and private DNS zone ($0.50); endpoint data processing for releases (a full rebuild moves about 1–2 TB through it, ~$10–20 that month) | $21 | $22 | $41 |
-| **Total** | | **~$76** | **~$98** | **~$159** |
+| **Total** | | **~$150** | **~$168** | **~$249** |
 
-"High" is a press-spike month billed at the upper idle rates; it **exceeds $80**, driven by compute. The ingest scratch share (October 2026) puts even a typical month over the $80 target: it is what lets the writer merge an index into a few large splits, which cold searches need (05 §5.5.1). The lever is its size (`USNM_INGEST_SCRATCH_GIB`; a smaller share means a smaller `split_num_docs_target` and more splits), or `0` to remove it. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $200. Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
+Every column **exceeds $80**, driven by compute: the 4 vCPU / 8 GiB replica is a stopgap for cold-search latency on the American Stories index (#251) until the index-side fixes there land, after which it can go back down. "High" is a press-spike month billed at the upper idle rates. The ingest scratch share (October 2026) puts even a typical month over the $80 target: it is what lets the writer merge an index into a few large splits, which cold searches need (05 §5.5.1). The lever is its size (`USNM_INGEST_SCRATCH_GIB`; a smaller share means a smaller `split_num_docs_target` and more splits), or `0` to remove it. The hard cap is `maxReplicas: 2`: even if both replicas ran at the **active** rate all month (a sustained attack, not realistic traffic), compute would be about $620 at 4 vCPU / 8 GiB each (8 vCPU at $0.000024/s plus 16 GiB at $0.000003/s over 30 days; about $350 at the earlier 2.25 / 4.5). Budget alerts at $40, $60 and $75 (actual) and $80 (forecast) trigger the cost-spike runbook well before that.
 
-**The first cost lever if search is too slow:** raise Quickwit to 2 vCPU / 4 GiB. That adds about $15–30 per month, which puts a typical month at **~$87–102, over the $80 target** now that private networking (~$17) and the registry (~$5) are in. If S-2 shows the lever is needed, the options are: raise the ceiling to ~$100, drop the private endpoints (−$17, back to identity-only), or accept slower common-word searches.
+**Sidecar size is the biggest cost lever.** Quickwit went from 1 to 2 vCPU in October 2026 and to 3.75 vCPU / 7.5 GiB on 9 October 2026 (#251). Each vCPU with its 2 GiB costs about $24 a month at the idle rate. Going back to 2 vCPU / 4 GiB (replica 2.25 / 4.5) saves about $41 a month once the index needs less CPU per search; the other options are dropping the private endpoints (−$17, back to identity-only) or accepting slower common-word searches.
 
 ### One-time backfill (Container Apps Jobs)
 

@@ -24,8 +24,8 @@
 //! for the new version yet, and the run computes every search, which warms
 //! the search engine's caches for it too.
 //!
-//! Computations run one at a time on the warm-up's own slot: the searcher's
-//! two vCPUs are the limit, and two searches at once each take twice as long
+//! Computations run one at a time on the warm-up's own slot: searches are
+//! CPU-bound, and on a 2-vCPU searcher two at once each took twice as long
 //! (06 §6.5). After a start, a computation waits while every visitor slot is
 //! taken, so the warm-up doesn't add a third search to visitors' two. Each
 //! has `config.prewarm_query_timeout` (the searcher's own limit per call

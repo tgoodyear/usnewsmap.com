@@ -16,7 +16,7 @@ The API (`usnm-api`) is configured with environment variables. Defaults suit loc
 | `USNM_SITE_HOST` | `usnewsmap.com` | The site's hostname. Requests for `www.` plus this name get a 301 to `https://` plus this name, with the same path and query |
 | `USNM_SEARCH_TIMEOUT_SECS` | `10` | How long a visitor's request waits for a response (plus 2 s with a persistent cache); past it the API answers `202 Accepted` and the search carries on (06 §6.3.5) |
 | `USNM_COMPUTE_CAP_SECS` | `120` | Limit on one search computation and each backend call in it, from when it gets its slot; past it the search fails with a `503` timeout, which is not cached. A search still queued for a slot after this long gets `503 /errors/busy` |
-| `USNM_COMPUTE_CONCURRENCY` | `2` | Searches computed at once (one per searcher vCPU: more add no throughput, 06 §6.5), including those still running after a `202`; when all are busy, a new search queues for one (06 §6.6) |
+| `USNM_COMPUTE_CONCURRENCY` | `2` | Searches computed at once (on a 2-vCPU searcher more added no throughput, 06 §6.5; #251 re-measures it at 3.75 vCPU), including those still running after a `202`; when all are busy, a new search queues for one (06 §6.6) |
 | `USNM_SEARCH_QUEUE` | `16` | Searches allowed to wait for a slot, first come, first served; each keeps its place while its visitor keeps asking, and its `202` says how many are ahead. A search that finds the queue full gets `503 /errors/busy` at once |
 | `USNM_ABANDON_AFTER_SECS` | `15` | A computation no request has waited on for this long is cancelled (the visitor changed the search or left); at least 5 |
 | `USNM_REFRESH_SECS` | `600` | How often `current.json` is re-read for a newly published version |
