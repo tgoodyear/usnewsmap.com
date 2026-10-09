@@ -6,7 +6,7 @@
 #   scripts/ja-ocr/start-quality.sh prod --sample-pct 10
 #   scripts/ja-ocr/start-quality.sh prod --sample-pct 2 --min-pages 50
 #   scripts/ja-ocr/start-quality.sh prod mixed     # jaocr.py mixed instead (mixed.py)
-#   scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925   (american_stories.py)
+#   scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925 [--diff]   (american_stories.py)
 #   scripts/ja-ocr/start-quality.sh prod american-stories-write [--year 1865 ...]  (american_stories_write.py)
 #   scripts/ja-ocr/start-quality.sh prod targets [--mixed-below 0.65]   (jaocr.py targets: the OCR's page list)
 #   scripts/ja-ocr/start-quality.sh prod run [--mixed-below 0.65]       (the OCR itself, as a plain start does)
@@ -52,7 +52,7 @@ elif [ "${1:-}" = american-stories ] || [ "${1:-}" = american-stories-write ]; t
   job="caj-usnm-jaone-$ENV_NAME"
   shift
   # The writer reads every page of each year it's given: only --year narrows it.
-  allowed='^(--year|--sample-pct|[0-9]+(\.[0-9]+)?)$'
+  allowed='^(--year|--sample-pct|--diff|[0-9]+(\.[0-9]+)?)$'
   [ "$command" = american-stories-write ] && allowed='^(--year|[0-9]{4})$'
   for a in "$@"; do
     [[ $a =~ $allowed ]] || die "unexpected argument \"$a\" for $command"

@@ -1,6 +1,6 @@
 """Compare American Stories' text with LoC's on our pages (#205).
 
-    python3 jaocr.py american-stories --year 1865 --year 1925 [--sample-pct 10]
+    python3 jaocr.py american-stories --year 1865 --year 1925 [--sample-pct 10] [--diff]
 
 American Stories (Dell et al. 2023, arXiv:2308.12477; CC BY 4.0) re-read
 Chronicling America with layout detection, a legibility classifier and
@@ -27,13 +27,22 @@ pages of titles whose first catalog language is English:
 - legibility: the share of a page's text regions American Stories marked
   Illegible (it doesn't OCR those), against LoC's damage rate.
 
+With --diff (#251), it also measures indexing American Stories' text only where it differs from LoC's
+(diff_year, below): per year and k, the delta's tokens and terms against both texts, the n-grams and phrases
+that match only in American Stories' text and how many the delta keeps (tables diff_summary, diff_phrase,
+diff_phrase_group, diff_edge_examples).
+
 Writes audit/american-stories-<version>-<execution>.json and logs each row
 as an "american stories" line. One replica of the execution works (solo.py).
 """
 
 from __future__ import annotations
 
+import bisect
+import collections
 import contextlib
+import difflib
+import functools
 import gzip
 import io
 import json
@@ -41,6 +50,8 @@ import os
 import re
 import statistics
 import tarfile
+import time
+import unicodedata
 import urllib.request
 
 import jaocr
@@ -312,8 +323,327 @@ def compare(year: int, ours: dict[str, dict], theirs: dict[str, dict], english: 
     return {"summary": summary, "recall": recall, "legibility": legibility, "only_american_stories": only}
 
 
+# ---------------------------------------------------------------- --diff (#251)
+#
+# Would it do to index American Stories' text only where it differs from LoC's? A page's delta keeps, for
+# each region where American Stories' tokens differ from LoC's, that region's American Stories tokens and
+# k tokens of context each side (k in DIFF_KS) (a region LoC has more tokens in, with none of American Stories', keeps
+# its context only), overlapping or touching windows merged. A term in American Stories' text is in LoC's or
+# in a region, so terms keep their matches. A phrase of n words that matches only in American Stories' text
+# overlaps a region or the place of LoC's extra tokens, so with k >= n - 1 a window holds it; the measurement
+# checks that, and what smaller k loses and each k costs.
+
+DIFF_KS = (0, 2, 3, 5)
+COMMON_PHRASES = ("new york", "united states", "civil war", "cross of gold", "yellow fever", "red cross",
+                  "supreme court", "great britain", "fourth of july", "ku klux klan")
+PHRASE_WORDS = (2, 3)  # the n-grams measured over every page's text
+FALLBACK_CELLS = 250_000  # a gap with no token unique to both sides is aligned by difflib up to this size
+EDGE_SAMPLES = 10  # pages per year of a phrase whose words are all in LoC's text but together only in AS's
+MAX_TOKEN_CHARS = 40  # usnm_core::text::MAX_TOKEN_CHARS
+
+# usnm_core::text: normalize_ocr (ligatures, long s, words broken across lines), then tokenize (split on
+# what isn't a letter or digit, fold, drop tokens over 40 characters).
+_OCR = str.maketrans({"ſ": "s", "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"})
+_FOLD = str.maketrans({"ſ": "s", "æ": "ae", "œ": "oe", "ø": "o", "ł": "l", "ß": "ss", "đ": "d", "ð": "d",
+                       "þ": "th", "ı": "i", "ŋ": "ng", "ħ": "h"})
+_HYPHEN = re.compile(r"(?<=[^\W\d_])-[ \t]*\n\s*(?=[^\W\d_])")
+_ALNUM = re.compile(r"[^\W_]+")
+
+
+@functools.lru_cache(maxsize=1 << 18)
+def fold(token: str) -> str:
+    """usnm_core::text::fold: NFKD without combining marks, lowercased, the rest of Lucene's ASCII folding."""
+    s = "".join(c for c in unicodedata.normalize("NFKD", token) if not unicodedata.combining(c))
+    return s.lower().translate(_FOLD)
+
+
+def index_tokens(text: str) -> list[str]:
+    """A text's tokens as the index has them (usnm_core::text, approximately)."""
+    text = _HYPHEN.sub("", text.translate(_OCR))
+    return [t for m in _ALNUM.finditer(text) if len(t := fold(m.group())) <= MAX_TOKEN_CHARS]
+
+
+def _anchors(a: list, b: list, alo: int, ahi: int, blo: int, bhi: int) -> list[tuple[int, int]]:
+    """Tokens once in a[alo:ahi] and once in b[blo:bhi], as (i, j), the longest run increasing in both."""
+    ca, cb = collections.Counter(a[alo:ahi]), collections.Counter(b[blo:bhi])
+    pos_b = {b[j]: j for j in range(blo, bhi) if cb[b[j]] == 1}
+    pairs = [(i, pos_b[a[i]]) for i in range(alo, ahi) if ca[a[i]] == 1 and a[i] in pos_b]
+    # Longest run increasing in j (patience sorting); pairs are in i order already.
+    tail_j: list[int] = []  # tail_j[n]: the smallest last j of a run of n + 1
+    tail_p: list[int] = []  # that run's last pair
+    back = [-1] * len(pairs)
+    for p, (_, j) in enumerate(pairs):
+        n = bisect.bisect_left(tail_j, j)
+        back[p] = tail_p[n - 1] if n else -1
+        if n == len(tail_j):
+            tail_j.append(j)
+            tail_p.append(p)
+        else:
+            tail_j[n], tail_p[n] = j, p
+    out, p = [], tail_p[-1] if tail_p else -1
+    while p >= 0:
+        out.append(pairs[p])
+        p = back[p]
+    return out[::-1]
+
+
+def matching_blocks(a: list, b: list) -> tuple[list[tuple[int, int, int]], int]:
+    """(blocks (i, j, n) with a[i:i+n] == b[j:j+n], increasing in i and j; gaps given up on). A patience diff:
+    common ends, then tokens unique to both sides as anchors, splitting the rest into gaps; a gap with no
+    such token goes to difflib (autojunk off) when small, else counts as changed whole. Near linear on OCR
+    of the same page, where SequenceMatcher on the whole page is quadratic in its common words."""
+    blocks: list[tuple[int, int, int]] = []
+    gave_up = 0
+    stack = [(0, len(a), 0, len(b))]
+    while stack:
+        alo, ahi, blo, bhi = stack.pop()
+        n = 0
+        while alo + n < ahi and blo + n < bhi and a[alo + n] == b[blo + n]:
+            n += 1
+        if n:
+            blocks.append((alo, blo, n))
+            alo, blo = alo + n, blo + n
+        n = 0
+        while alo < ahi - n and blo < bhi - n and a[ahi - 1 - n] == b[bhi - 1 - n]:
+            n += 1
+        if n:
+            blocks.append((ahi - n, bhi - n, n))
+            ahi, bhi = ahi - n, bhi - n
+        if alo == ahi or blo == bhi:
+            continue
+        anchors = _anchors(a, b, alo, ahi, blo, bhi)
+        if anchors:
+            pi, pj = alo, blo
+            for i, j in anchors:
+                blocks.append((i, j, 1))
+                stack.append((pi, i, pj, j))
+                pi, pj = i + 1, j + 1
+            stack.append((pi, ahi, pj, bhi))
+        elif (ahi - alo) * (bhi - blo) <= FALLBACK_CELLS:
+            sm = difflib.SequenceMatcher(None, a[alo:ahi], b[blo:bhi], autojunk=False)
+            blocks += [(alo + i, blo + j, n) for i, j, n in sm.get_matching_blocks() if n]
+        else:
+            gave_up += 1
+    blocks.sort()
+    return blocks, gave_up
+
+
+def diff_regions(blocks: list[tuple[int, int, int]], na: int, nb: int) -> list[tuple[int, int]]:
+    """The regions (j1, j2) of b that differ from a, in order; j1 == j2 where a has tokens b hasn't."""
+    out, pi, pj = [], 0, 0
+    for i, j, n in [*blocks, (na, nb, 0)]:
+        if i > pi or j > pj:
+            out.append((pj, j))
+        pi, pj = i + n, j + n
+    return out
+
+
+def windows(regions: list[tuple[int, int]], n: int, k: int) -> list[tuple[int, int]]:
+    """Each region widened by k tokens each side, within [0, n), overlapping or touching ones merged."""
+    out: list[tuple[int, int]] = []
+    for j1, j2 in regions:
+        s, e = max(0, j1 - k), min(n, j2 + k)
+        if s >= e:
+            continue
+        if out and s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def ngrams(tokens: list[str], n: int, lo: int = 0, hi: int | None = None) -> set[tuple[str, ...]]:
+    seq = tokens[lo:hi]
+    return set(zip(*(seq[i:] for i in range(n))))
+
+
+def window_ngrams(tokens: list[str], wins: list[tuple[int, int]], n: int) -> set[tuple[str, ...]]:
+    """The n-grams inside one window (none across two)."""
+    out: set[tuple[str, ...]] = set()
+    for s, e in wins:
+        out |= ngrams(tokens, n, s, e)
+    return out
+
+
+def phrase_kept(tokens: list[str], wins: list[tuple[int, int]], phrase: tuple[str, ...]) -> bool:
+    """Whether the phrase matches within one of the windows."""
+    return phrase in window_ngrams(tokens, wins, len(phrase))
+
+
+def page_diff(loc: list[str], ast: list[str], phrases: dict[int, set], ks=DIFF_KS) -> dict:
+    """One page's measures: {loc_tokens, as_tokens, identical, gave_up, terms: {loc, as, as_only},
+    ngrams: {n: {as_only, edge}}, phrases: {loc, as, edge}, by_k: {k: {...}}}. `phrases` by length (1 to 3),
+    as tuples of tokens. An edge n-gram or phrase matches only in American Stories' text though each of its
+    words is in LoC's."""
+    blocks, gave_up = matching_blocks(loc, ast)
+    regions = diff_regions(blocks, len(loc), len(ast))
+    loc_terms, as_terms = set(loc), set(ast)
+    loc_ng = {n: ngrams(loc, n) for n in PHRASE_WORDS}
+    as_ng = {n: ngrams(ast, n) for n in PHRASE_WORDS}
+    as_only = {n: as_ng[n] - loc_ng[n] for n in PHRASE_WORDS}
+    edge = {n: {g for g in as_only[n] if all(t in loc_terms for t in g)} for n in PHRASE_WORDS}
+
+    def matched(terms: set, ng: dict) -> set:
+        return {g for g in phrases.get(1, ()) if g[0] in terms} | {
+            g for n in PHRASE_WORDS for g in phrases.get(n, set()) & ng[n]}
+
+    loc_ph, as_ph = matched(loc_terms, loc_ng), matched(as_terms, as_ng)
+    only_ph = as_ph - loc_ph
+    by_k = {}
+    for k in ks:
+        wins = windows(regions, len(ast), k)
+        win_terms = {t for s, e in wins for t in ast[s:e]}
+        win_ng = {n: window_ngrams(ast, wins, n) for n in PHRASE_WORDS}
+        joined = [t for s, e in wins for t in ast[s:e]]
+        joined_ng = {n: ngrams(joined, n) for n in PHRASE_WORDS}
+        spurious = {n: joined_ng[n] - as_ng[n] - loc_ng[n] for n in PHRASE_WORDS}
+        by_k[k] = {
+            "delta_tokens": sum(e - s for s, e in wins), "windows": len(wins), "delta_terms": len(win_terms),
+            "terms_lost": len(as_terms - loc_terms - win_terms),
+            "ngrams": {n: {"kept": len(as_only[n] & win_ng[n]), "edge_kept": len(edge[n] & win_ng[n]),
+                           "spurious_if_joined": len(spurious[n])} for n in PHRASE_WORDS},
+            "phrases_kept": {g for g in only_ph if (g[0] in win_terms if len(g) == 1 else g in win_ng[len(g)])},
+            "phrases_spurious": {g for n in PHRASE_WORDS for g in phrases.get(n, set()) & spurious[n]},
+        }
+    return {"loc_tokens": len(loc), "as_tokens": len(ast), "identical": not regions, "gave_up": gave_up,
+            "terms": {"loc": len(loc_terms), "as": len(as_terms), "as_only": len(as_terms - loc_terms)},
+            "ngrams": {n: {"as_only": len(as_only[n]), "edge": len(edge[n])} for n in PHRASE_WORDS},
+            "phrases": {"loc": loc_ph, "as": as_ph, "edge": {g for g in only_ph if all(t in loc_terms for t in g)}},
+            "by_k": by_k}
+
+
+def context_phrases(contexts: list[dict]) -> set[tuple[str, ...]]:
+    """The bigrams and trigrams of the only_american_stories contexts, less each context's first and last
+    token (the context cuts words)."""
+    out: set[tuple[str, ...]] = set()
+    for c in contexts:
+        toks = index_tokens(c.get("context") or "")[1:-1]
+        for n in PHRASE_WORDS:
+            out |= ngrams(toks, n)
+    return out
+
+
+def phrase_groups(contexts: list[dict]) -> dict[str, set[tuple[str, ...]]]:
+    named = {"terms": {(t,) for t in TERMS}, "common": {tuple(index_tokens(p)) for p in COMMON_PHRASES}}
+    ctx = context_phrases(contexts) - named["common"]
+    return {**named, **{f"context_{n}_words": {g for g in ctx if len(g) == n} for n in PHRASE_WORDS}}
+
+
+def _quantile(xs: list[float], q: float) -> float | None:
+    if not xs:
+        return None
+    xs = sorted(xs)
+    return round(xs[min(len(xs) - 1, int(q * len(xs)))], 4)
+
+
+def diff_summary(year: int, pages: list[dict], secs: float, ks=DIFF_KS) -> list[dict]:
+    """A row per k: the delta's size against American Stories' and LoC's text, and what it keeps."""
+    rows = []
+    loc_t, as_t = sum(p["loc_tokens"] for p in pages), sum(p["as_tokens"] for p in pages)
+    terms = {f: sum(p["terms"][f] for p in pages) for f in ("loc", "as", "as_only")}
+    for k in ks:
+        ks_ = [p["by_k"][k] for p in pages]
+        delta, delta_terms = sum(b["delta_tokens"] for b in ks_), sum(b["delta_terms"] for b in ks_)
+        shares = [b["delta_tokens"] / p["as_tokens"] for p, b in zip(pages, ks_) if p["as_tokens"]]
+        row = {"year": year, "k": k, "pages": len(pages),
+               "pages_identical": sum(p["identical"] for p in pages),
+               "pages_without_loc_text": sum(1 for p in pages if not p["loc_tokens"]),
+               "align_gaps_given_up": sum(p["gave_up"] for p in pages),
+               "loc_tokens": loc_t, "as_tokens": as_t, "delta_tokens": delta,
+               "delta_share_of_as": share(delta, as_t), "delta_vs_loc": share(delta, loc_t),
+               "page_delta_share_median": median(shares), "page_delta_share_p90": _quantile(shares, 0.9),
+               "windows": sum(b["windows"] for b in ks_),
+               "loc_terms": terms["loc"], "as_terms": terms["as"], "as_only_terms": terms["as_only"],
+               "delta_terms": delta_terms, "delta_terms_share_of_as": share(delta_terms, terms["as"]),
+               "terms_lost": sum(b["terms_lost"] for b in ks_),
+               "diff_secs": round(secs, 1),
+               "secs_per_1000_pages": round(1000 * secs / len(pages), 1) if pages else None}
+        for n in PHRASE_WORDS:
+            only = sum(p["ngrams"][n]["as_only"] for p in pages)
+            kept = sum(b["ngrams"][n]["kept"] for b in ks_)
+            edge = sum(p["ngrams"][n]["edge"] for p in pages)
+            edge_kept = sum(b["ngrams"][n]["edge_kept"] for b in ks_)
+            row.update({f"ngram{n}_as_only": only, f"ngram{n}_kept": kept, f"ngram{n}_loss": share(only - kept, only),
+                        f"ngram{n}_edge": edge, f"ngram{n}_edge_kept": edge_kept,
+                        f"ngram{n}_edge_loss": share(edge - edge_kept, edge),
+                        f"ngram{n}_spurious_if_joined": sum(b["ngrams"][n]["spurious_if_joined"] for b in ks_)})
+        rows.append(row)
+    return rows
+
+
+def diff_phrases(year: int, pages: list[dict], groups: dict[str, set], named: tuple = ("terms", "common"),
+                 ks=DIFF_KS) -> tuple[list[dict], list[dict]]:
+    """(a row per named phrase, a row per group), counting pages: the phrase matches in LoC's text, in
+    American Stories', only in American Stories' (of those: with every word in LoC's text, the edge case),
+    and of those only-AS pages, the ones whose delta keeps the match, per k; and pages where the delta's
+    windows run together would match it falsely."""
+    def blank() -> dict:
+        return {"loc": 0, "american_stories": 0, "only_american_stories": 0, "only_words_all_in_loc": 0,
+                **{f"kept_k{k}": 0 for k in ks}, **{f"edge_kept_k{k}": 0 for k in ks},
+                **{f"spurious_if_joined_k{k}": 0 for k in ks}}
+
+    group_of = {g: name for name, gs in groups.items() for g in gs}
+    per = {g: blank() for name in named for g in groups.get(name, ())}
+    totals = {name: blank() for name in groups}
+    for p in pages:
+        ph = p["phrases"]
+        for g in ph["loc"] | ph["as"] | {g for b in p["by_k"].values() for g in b["phrases_spurious"]}:
+            name = group_of.get(g)
+            if name is None:
+                continue
+            counts = [totals[name]] + ([per[g]] if g in per else [])
+            only = g in ph["as"] and g not in ph["loc"]
+            edge = g in ph["edge"]
+            for c in counts:
+                c["loc"] += g in ph["loc"]
+                c["american_stories"] += g in ph["as"]
+                c["only_american_stories"] += only
+                c["only_words_all_in_loc"] += edge
+                for k in ks:
+                    kept = g in p["by_k"][k]["phrases_kept"]
+                    c[f"kept_k{k}"] += kept
+                    c[f"edge_kept_k{k}"] += edge and kept
+                    c[f"spurious_if_joined_k{k}"] += g in p["by_k"][k]["phrases_spurious"]
+
+    def finish(c: dict) -> dict:
+        return {**c, **{f"loss_k{k}": share(c["only_american_stories"] - c[f"kept_k{k}"], c["only_american_stories"])
+                        for k in ks}}
+
+    phrase_rows = [{"year": year, "phrase": " ".join(g), "group": group_of[g], "words": len(g), **finish(c)}
+                   for g, c in sorted(per.items(), key=lambda x: (group_of[x[0]], x[0]))]
+    group_rows = [{"year": year, "group": name, "phrases": len(groups[name]), **finish(c)}
+                  for name, c in totals.items()]
+    return phrase_rows, group_rows
+
+
+def diff_year(year: int, ours: dict[str, dict], theirs: dict[str, dict], english: set[str],
+              groups: dict[str, set], keep=lambda: None, ks=DIFF_KS) -> dict:
+    """The --diff rows of a year, over the pages compare() reads (English titles, both texts)."""
+    phrases: dict[int, set] = {}
+    for gs in groups.values():
+        for g in gs:
+            phrases.setdefault(len(g), set()).add(g)
+    pages, examples, secs = [], [], 0.0
+    for d, p in ours.items():
+        if p["year"] != year or p["lccn"] not in english or d not in theirs:
+            continue
+        keep()
+        t0 = time.perf_counter()
+        loc, ast = index_tokens(p["text"] or ""), index_tokens(theirs[d]["text"] or "")
+        got = page_diff(loc, ast, phrases, ks)
+        secs += time.perf_counter() - t0
+        for g in sorted(got["phrases"]["edge"]):
+            if len(examples) < EDGE_SAMPLES and len(g) > 1:
+                examples.append({"year": year, "phrase": " ".join(g), "doc_id": d, "url": loc_url(d),
+                                 **{f"kept_k{k}": g in got["by_k"][k]["phrases_kept"] for k in ks}})
+        pages.append(got)
+    phrase_rows, group_rows = diff_phrases(year, pages, groups, ks=ks)
+    return {"diff_summary": diff_summary(year, pages, secs, ks), "diff_phrase": phrase_rows,
+            "diff_phrase_group": group_rows, "diff_edge_examples": examples}
+
+
 def american_stories(reference, curated, years: list[int], sample_pct: float = 10.0, run: str | None = None,
-                     opener=None, loader=None) -> dict | None:
+                     opener=None, loader=None, diff: bool = False) -> dict | None:
     current = json.loads(reference.read("current.json"))
     version = current["reference"]
     if not jaocr.SAFE_SEGMENT.match(version):
@@ -330,7 +660,8 @@ def american_stories(reference, curated, years: list[int], sample_pct: float = 1
         return None
     titles = quality.load_titles(reference, version)
     english = {lccn for lccn, t in titles.items() if (t.get("languages") or ["eng"])[0] == "eng"}
-    jaocr.log("american stories starting", version=version, years=years, sample_pct=sample_pct, run=solo.run)
+    jaocr.log("american stories starting", version=version, years=years, sample_pct=sample_pct, diff=diff,
+              run=solo.run)
     theirs, totals = {}, {}
     for y in years:
         got, totals[y] = stream_year(y, cut, opener, solo.keep)
@@ -345,7 +676,19 @@ def american_stories(reference, curated, years: list[int], sample_pct: float = 1
         tables["recall"] += rows["recall"]
         tables["legibility"] += rows["legibility"]
         tables["only_american_stories"] += rows["only_american_stories"]
-    report = {"version": version, "years": years, "sample_pct": sample_pct, "terms": TERMS, **tables,
+    extra = {}
+    if diff:
+        groups = phrase_groups(tables["only_american_stories"])
+        for y in years:
+            rows = diff_year(y, ours, theirs, english, groups, solo.keep)
+            for name, got in rows.items():
+                tables.setdefault(name, []).extend(got)
+            s = rows["diff_summary"][0] if rows["diff_summary"] else {}
+            jaocr.log("american stories diff year", year=y, pages=s.get("pages", 0),
+                      secs_per_1000_pages=s.get("secs_per_1000_pages"))
+        extra = {"diff_ks": DIFF_KS, "diff_phrases": {n: len(g) for n, g in groups.items()},
+                 "diff_common_phrases": COMMON_PHRASES}
+    report = {"version": version, "years": years, "sample_pct": sample_pct, "terms": TERMS, **extra, **tables,
               "source": URL.format(year="<year>"), "license": "CC BY 4.0 (Dell et al. 2023)"}
     base = f"audit/american-stories-{version}-{solo.run}"
     curated.write(f"{base}.json", json.dumps(report, ensure_ascii=False, indent=1).encode())

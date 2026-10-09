@@ -179,6 +179,48 @@ class AmericanStories(unittest.TestCase):
         self.assertEqual([c.args[2:] for c in a.call_args_list], [([1865, 1925], 10.0), ([1865], 2.0)])
         self.assertEqual([c.args[2] for c in q.call_args_list], [2.0, 10.0])
 
+    def test_diff_tables(self):
+        with tempfile.TemporaryDirectory() as d:
+            ref, cur, tgz = self.fixture(d)
+            got = ams.american_stories(ref, cur, [1865], sample_pct=100, run="exec-d", diff=True,
+                                       opener=lambda req: contextlib.closing(io.BytesIO(tgz)))
+            summary = {r["k"]: r for r in got["diff_summary"]}
+            self.assertEqual(sorted(summary), list(ams.DIFF_KS))
+            s0, s2 = summary[0], summary[2]
+            self.assertEqual((s0["pages"], s0["pages_identical"], s0["align_gaps_given_up"]), (3, 0, 0))
+            # LoC's "tbe", "aud" and "railr0ad", and AS's headline: the delta is a part of AS's text, more with k.
+            self.assertLess(0, s0["delta_tokens"])
+            self.assertLess(s0["delta_tokens"], s2["delta_tokens"])
+            self.assertLessEqual(s2["delta_tokens"], s2["as_tokens"])
+            self.assertEqual(s0["delta_share_of_as"], round(s0["delta_tokens"] / s0["as_tokens"], 4))
+            for s in summary.values():
+                self.assertEqual(s["terms_lost"], 0)  # every term of AS's text is in LoC's or the delta
+            self.assertGreater(s0["ngram2_loss"], 0)  # "the railroad": "the" was "tbe", "railroad" was too
+            self.assertEqual((s2["ngram2_loss"], s2["ngram3_loss"]), (0.0, 0.0))  # k >= n - 1 keeps them
+            phrases = {r["phrase"]: r for r in got["diff_phrase"]}
+            self.assertEqual(set(phrases), set(ams.TERMS) | set(ams.COMMON_PHRASES))
+            rr = phrases["railroad"]
+            self.assertEqual((rr["loc"], rr["only_american_stories"], rr["kept_k0"], rr["loss_k0"]), (0, 3, 3, 0.0))
+            groups = {r["group"]: r for r in got["diff_phrase_group"]}
+            self.assertEqual(set(groups), {"terms", "common", "context_2_words", "context_3_words"})
+            self.assertEqual(groups["terms"]["only_american_stories"], 3)  # railroad, on 3 pages
+            # The contexts' n-grams: "the railroad company", for one, matches only in AS's text.
+            self.assertGreater(groups["context_3_words"]["only_american_stories"], 0)
+            self.assertEqual(groups["context_3_words"]["loss_k2"], 0.0)
+            self.assertIn("diff_summary", json.loads(cur.read("audit/american-stories-v1-exec-d.json")))
+
+    def test_the_cli_passes_diff(self):
+        from unittest import mock
+
+        env = {"USNM_REFERENCE_URL": "/r", "USNM_CURATED_URL": "/c"}
+        with mock.patch.dict(os.environ, env), mock.patch.object(jaocr, "store", lambda url: url), \
+                mock.patch.object(ams, "american_stories") as a:
+            for argv in (["jaocr.py", "american-stories", "--year", "1865", "--diff"],
+                         ["jaocr.py", "american-stories", "--year", "1865"]):
+                with mock.patch("sys.argv", argv):
+                    jaocr.main()
+        self.assertEqual([c.kwargs["diff"] for c in a.call_args_list], [True, False])
+
     def test_context_reads_hyphenated_words_as_terms_do(self):
         self.assertEqual(ams.context("The rail-\nroad company met.", "railroad", 4), "The railroad com")
 
@@ -189,6 +231,119 @@ class AmericanStories(unittest.TestCase):
         text, leg = ams.scan_text(body)
         self.assertEqual(text, "NEWS\nBody.")
         self.assertEqual(leg, {"illegible": 1, "legible": 2, "questionable": 1})  # ads aren't text regions
+
+
+def toks(s: str) -> list[str]:
+    return s.split()
+
+
+class Diff(unittest.TestCase):
+    """--diff: the delta of American Stories' text against LoC's (#251)."""
+
+    def regions(self, loc: str, ast: str) -> list[tuple[int, int]]:
+        a, b = toks(loc), toks(ast)
+        blocks, gave_up = ams.matching_blocks(a, b)
+        self.assertEqual(gave_up, 0)
+        for i, j, n in blocks:
+            self.assertEqual(a[i:i + n], b[j:j + n])
+        return ams.diff_regions(blocks, len(a), len(b))
+
+    def test_index_tokens_like_the_analyzer(self):
+        # usnm_core::text's tokenize test, and normalize_ocr's hyphens, ligatures and long s.
+        self.assertEqual(ams.index_tokens("Crucify mankind upon a CROSS of Gold! Café—ſo"),
+                         ["crucify", "mankind", "upon", "a", "cross", "of", "gold", "cafe", "so"])
+        self.assertEqual(ams.index_tokens("The indus-\ntry ﬁne Æsop x_y well-known 1896-\n97 " + "a" * 41),
+                         ["the", "industry", "fine", "aesop", "x", "y", "well", "known", "1896", "97"])
+
+    def test_regions(self):
+        self.assertEqual(self.regions("a b c", "a b c"), [])  # identical: nothing differs
+        self.assertEqual(self.regions("", "a b"), [(0, 2)])  # no LoC text: all of AS's
+        self.assertEqual(self.regions("a b", ""), [(0, 0)])  # no AS text: only LoC's extra tokens
+        self.assertEqual(self.regions("a x c d", "a y c d"), [(1, 2)])  # replaced
+        self.assertEqual(self.regions("a c d", "a b c d"), [(1, 2)])  # inserted in AS
+        self.assertEqual(self.regions("a b x c d", "a b c d"), [(2, 2)])  # LoC has more: a point
+        # Common words with no unique anchor between them: difflib aligns the gap.
+        self.assertEqual(self.regions("u the of the v", "u the the of v"), [(2, 2), (3, 4)])
+
+    def test_windows(self):
+        self.assertEqual(ams.windows([], 10, 3), [])
+        self.assertEqual(ams.windows([(4, 5)], 10, 0), [(4, 5)])
+        self.assertEqual(ams.windows([(4, 5)], 10, 2), [(2, 7)])
+        self.assertEqual(ams.windows([(0, 1), (9, 10)], 10, 2), [(0, 3), (7, 10)])  # clipped to the page
+        self.assertEqual(ams.windows([(2, 2)], 10, 0), [])  # LoC's extra tokens: nothing to keep at k = 0
+        self.assertEqual(ams.windows([(2, 2)], 10, 1), [(1, 3)])  # the AS tokens around them
+        self.assertEqual(ams.windows([(2, 3), (5, 6)], 10, 1), [(1, 7)])  # touching: one window
+        self.assertEqual(ams.windows([(2, 3), (6, 7)], 10, 1), [(1, 4), (5, 8)])  # apart
+        self.assertEqual(ams.windows([(2, 3), (4, 5)], 10, 2), [(0, 7)])  # overlapping
+        self.assertEqual(ams.windows([(0, 2)], 2, 3), [(0, 2)])  # the whole page
+
+    def test_phrase_kept(self):
+        ast = toks("the city of new york county voted")
+        self.assertTrue(ams.phrase_kept(ast, [(2, 5)], ("new", "york")))
+        self.assertFalse(ams.phrase_kept(ast, [(2, 4)], ("new", "york")))  # cut at the window's end
+        self.assertFalse(ams.phrase_kept(ast, [(2, 4), (4, 6)], ("new", "york")))  # not across two windows
+        self.assertTrue(ams.phrase_kept(ast, [(4, 5)], ("york",)))
+        self.assertFalse(ams.phrase_kept(ast, [], ("york",)))
+
+    def test_words_in_both_texts_together_only_in_american_stories(self):
+        loc, ast = toks("the city of new hampshire and york county voted"), toks("the city of new york county voted")
+        phrases = {2: {("new", "york"), ("york", "county")}, 1: {("york",)}}
+        got = ams.page_diff(loc, ast, phrases, ks=(0, 1, 2))
+        self.assertEqual(got["phrases"]["as"] - got["phrases"]["loc"], {("new", "york")})
+        self.assertEqual(got["phrases"]["edge"], {("new", "york")})
+        self.assertEqual(got["ngrams"][2], {"as_only": 1, "edge": 1})  # "new york"
+        self.assertEqual(got["ngrams"][3], {"as_only": 2, "edge": 2})  # "of new york", "new york county"
+        # LoC's extra "hampshire and" sits between "new" and "york": k = 0 keeps nothing, k = 1 the bigram.
+        self.assertEqual([got["by_k"][k]["phrases_kept"] for k in (0, 1, 2)],
+                         [set(), {("new", "york")}, {("new", "york")}])
+        self.assertEqual([got["by_k"][k]["ngrams"][3]["kept"] for k in (0, 1, 2)], [0, 0, 2])
+        self.assertEqual([got["by_k"][k]["delta_tokens"] for k in (0, 1, 2)], [0, 2, 4])
+        self.assertEqual(got["by_k"][0]["terms_lost"], 0)
+
+    def test_windows_run_together_could_match_falsely(self):
+        loc, ast = toks("a b c x d e f q r s"), toks("a b c y d e f z r s")  # two replaced, apart
+        got = ams.page_diff(loc, ast, {2: {("y", "z")}}, ks=(0,))
+        self.assertEqual(got["by_k"][0]["delta_tokens"], 2)
+        self.assertEqual(got["by_k"][0]["phrases_spurious"], {("y", "z")})  # "y z" joined, in neither text
+        self.assertEqual(got["by_k"][0]["ngrams"][2]["spurious_if_joined"], 1)
+
+    def test_summary_arithmetic(self):
+        pages = [ams.page_diff(toks(loc), toks(ast), {}, ks=(0, 1)) for loc, ast in (
+            ("a b c d e f g h", "a b x d e f g h"),  # one replaced: 1 token at k = 0, 3 at k = 1
+            ("a b c d", "a b c d"),  # identical
+            ("", "p q"),  # no LoC text
+        )]
+        rows = {r["k"]: r for r in ams.diff_summary(1865, pages, 2.0, ks=(0, 1))}
+        r0, r1 = rows[0], rows[1]
+        self.assertEqual((r0["pages"], r0["pages_identical"], r0["pages_without_loc_text"]), (3, 1, 1))
+        self.assertEqual((r0["loc_tokens"], r0["as_tokens"], r0["delta_tokens"], r1["delta_tokens"]), (12, 14, 3, 5))
+        self.assertEqual((r0["delta_share_of_as"], r0["delta_vs_loc"]), (round(3 / 14, 4), 0.25))
+        self.assertEqual((r0["page_delta_share_median"], r0["page_delta_share_p90"]), (0.125, 1.0))
+        self.assertEqual((r0["as_terms"], r0["loc_terms"], r0["as_only_terms"]), (14, 12, 3))
+        self.assertEqual((r0["delta_terms"], r1["delta_terms"], r0["terms_lost"]), (3, 5, 0))
+        # Bigrams only in AS: "b x", "x d", "p q"; k = 0 keeps "p q", k = 1 all three.
+        self.assertEqual((r0["ngram2_as_only"], r0["ngram2_kept"], r0["ngram2_loss"]), (3, 1, round(2 / 3, 4)))
+        self.assertEqual((r1["ngram2_kept"], r1["ngram2_loss"]), (3, 0.0))
+        self.assertEqual((r0["windows"], r0["secs_per_1000_pages"]), (2, 666.7))
+        self.assertEqual(ams.diff_summary(1865, [], 0.0, ks=(0,))[0]["secs_per_1000_pages"], None)
+
+    def test_phrase_rows_count_pages(self):
+        groups = {"terms": {("york",)}, "common": {("new", "york")}, "context_2_words": {("city", "of")}}
+        phrases = {1: groups["terms"], 2: groups["common"] | groups["context_2_words"]}
+        pages = [ams.page_diff(toks(loc), toks(ast), phrases, ks=(0, 1)) for loc, ast in (
+            ("the city of new hampshire and york", "the city of new york"),  # only in AS, words all in LoC
+            ("in new york today", "in new york today"),  # in both
+            ("in now yark today", "in new york today"),  # only in AS: both words replaced, kept at k = 0
+        )]
+        rows, groups_rows = ams.diff_phrases(1865, pages, groups, ks=(0, 1))
+        ny = {r["phrase"]: r for r in rows}["new york"]
+        self.assertEqual((ny["loc"], ny["american_stories"], ny["only_american_stories"], ny["only_words_all_in_loc"]),
+                         (1, 3, 2, 1))
+        self.assertEqual((ny["kept_k0"], ny["kept_k1"], ny["edge_kept_k0"], ny["edge_kept_k1"]), (1, 2, 0, 1))
+        self.assertEqual((ny["loss_k0"], ny["loss_k1"]), (0.5, 0.0))
+        g = {r["group"]: r for r in groups_rows}
+        self.assertEqual((g["terms"]["only_american_stories"], g["terms"]["kept_k0"]), (1, 1))  # york, page 3
+        self.assertEqual(g["context_2_words"]["american_stories"], 1)
 
 
 if __name__ == "__main__":

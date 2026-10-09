@@ -9,7 +9,7 @@
     python3 jaocr.py quality [--sample-pct 2] [--min-pages 50] [--metric v2]
                                       how good LoC's OCR is, by language and decade (quality.py)
     python3 jaocr.py mixed            text on the Japanese titles' pages search can't reach yet (mixed.py)
-    python3 jaocr.py american-stories --year 1865 [--year ...] [--sample-pct 10]
+    python3 jaocr.py american-stories --year 1865 [--year ...] [--sample-pct 10] [--diff]
                                       American Stories' text against LoC's on our pages (american_stories.py)
     python3 jaocr.py american-stories-write [--year ...]
                                       write American Stories' text for our pages (american_stories_write.py)
@@ -766,6 +766,8 @@ def main() -> None:
     ap.add_argument("--min-pages", type=int, default=50,
                     help="quality: scored pages a title or batch needs for the worst lists (default 50)")
     ap.add_argument("--year", type=int, action="append", help="american-stories: a year to compare (repeatable)")
+    ap.add_argument("--diff", action="store_true",
+                    help="american-stories: also measure indexing its text only where it differs from LoC's (#251)")
     ap.add_argument("--metric", choices=["v1", "v2"], default="v2",
                     help="quality: v2 (page language, function words, damage rate; default) or v1 (dict_share)")
     a = ap.parse_args()
@@ -782,7 +784,8 @@ def main() -> None:
     elif a.command == "american-stories":
         import american_stories
 
-        american_stories.american_stories(reference, curated, a.year or [], 10.0 if a.sample_pct is None else a.sample_pct)
+        pct = 10.0 if a.sample_pct is None else a.sample_pct
+        american_stories.american_stories(reference, curated, a.year or [], pct, diff=a.diff)
     elif a.command == "mixed":
         import mixed
 
