@@ -51,6 +51,8 @@ param cron string = ''
 param full bool = false
 @description('Index American Stories\' text with LoC\'s (04 §4.9, #218). The first run with it builds a full base; keep it on afterwards.')
 param americanStories bool = false
+@description('Give the pages LoC ships without text a main-index document with the Latin-script text our Japanese OCR read on them (04 §4.8, #203).')
+param jaLatin bool = false
 @minValue(1)
 @maxValue(32)
 param workers int = 8
@@ -206,7 +208,8 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
               'azure://qw-index'
             ],
             full ? ['--full'] : [],
-            americanStories ? ['--american-stories'] : []
+            americanStories ? ['--american-stories'] : [],
+            jaLatin ? ['--ja-latin'] : []
           )
           resources: ingestResources
           env: concat(env, scratchEnv, writerTuningEnv, [

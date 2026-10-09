@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """OCR the Japanese pages LoC has no text for, with NDLOCR-Lite (#128).
 
-    python3 jaocr.py targets          list the pages to OCR (writes ocr-ja/targets-v2.jsonl)
-    python3 jaocr.py run [--limit N]  OCR the targets not done yet
+    python3 jaocr.py targets [--mixed-below 0.65]
+                                      list the pages to OCR (writes ocr-ja/targets-v3.jsonl)
+    python3 jaocr.py run [--limit N] [--mixed-below 0.65]
+                                      OCR the targets not done yet
     python3 jaocr.py audit            titles LoC ships pages without text for (audit.py)
     python3 jaocr.py quality [--sample-pct 2] [--min-pages 50] [--metric v2]
                                       how good LoC's OCR is, by language and decade (quality.py)
@@ -22,14 +24,18 @@ directories, so the job runs the same way against a copy on disk:
 
 Targets are pages of titles whose catalog languages include Japanese whose
 LoC text is missing, empty, short or mostly not words: LoC's OCR has no
-Japanese script, so those are the Japanese pages. Two sources:
+Japanese script, so those are the Japanese pages. Pages whose LoC text is
+word-like enough to keep but under --mixed-below (JAOCR_MIXED_BELOW, 0.65)
+are targets too (`mixed`, #204): a page with an English column and a
+Japanese one that LoC read in English. Two sources:
 
 - missing: LoC's bulk archives ship a Japanese page as an empty ALTO
   ocr.xml with no ocr.txt, so curation (which reads ocr.txt) never saw it.
   The job lists the archives of every batch LoC's datasets listing gives
   for a Japanese title, and takes each page with ocr.xml and no ocr.txt.
-- empty, short, garbled: pages curation did see, in the published version's
-  Parquet parts, whose text is empty, short or garbled Latin.
+- empty, short, garbled, mixed: pages curation did see, in the published
+  version's Parquet parts, whose text is empty, short, garbled Latin, or
+  partly so.
 
 `run` claims one issue at a time by creating ocr-ja/claims/<targets>/<issue>.json
 (a create-only write, so replicas never take the same issue; a claim older
@@ -73,10 +79,22 @@ import alto
 UA = "usnewsmap-ja-ocr/1.0 (+https://usnewsmap.com)"
 OCR_SOURCE = "usnm-ndlocr-lite"
 PREFIX = "ocr-ja"
-# Bumped when the way targets are chosen changes, so a run lists them again.
-TARGETS = "targets-v2"
-# Claims for the run that adds ALTO: the targets' first claims are spent.
-CLAIMS = f"{TARGETS}-alto"
+# Bumped when the way targets are chosen changes, so a run lists them again
+# (v3: the `mixed` pages, #204). A --mixed-below other than the default
+# names its own list (targets_name).
+TARGETS = "targets-v3"
+# Of pages with LoC text, those under this word-like share are targets
+# (#204). Under 0.35 they are `garbled`; from 0.35 to here, `mixed`. 0.65 is
+# where the Japanese titles' excess over the control stops: 0.35-0.5 holds
+# 2.1% of their pages against 1.3% (1.6 times), 0.5-0.65 6.3% against 2.5%
+# (2.5 times), 0.65-0.8 27.4% against 22.7% (1.2 times, while 0.8-0.9 has
+# 6.4 points fewer: a shift of the whole distribution, not extra pages).
+# Read with NDLOCR-Lite, 3 of 13 sampled pages from 0.5 to 0.65 had Japanese
+# (Rocky Shimpo front pages) and none of 28 from 0.35 to 0.5 or 0.65 to 0.8;
+# the English ones it read better than LoC up to 0.65 and about as well
+# above (04 §4.8).
+MIXED_BELOW = 0.65
+GARBLED_BELOW = 0.35
 COLLECTION = "https://www.loc.gov/collections/chronicling-america/?fo=json&c=1&at=datasets"
 MIN_PAGE_CHARS = 20  # crates/usnm-core/src/text.rs
 # A word: Capitalized or lower case, or ALL CAPS (headlines); mixed case is OCR noise.
@@ -254,13 +272,32 @@ def wordlike_share(text: str) -> float:
     return sum(1 for w in words if WORDLIKE.match(w.strip(".,;:!?'\"()"))) / len(words)
 
 
-def needs_ocr(text_status: str, text: str | None) -> str | None:
+def needs_ocr(text_status: str, text: str | None, mixed_below: float = MIXED_BELOW) -> str | None:
     """Why a Japanese title's page needs our OCR, or None if LoC's text is English."""
     if text_status != "ok":
         return text_status  # empty or short: LoC found no text
-    if wordlike_share(text or "") < 0.35:
+    share = wordlike_share(text or "")
+    if share < GARBLED_BELOW:
         return "garbled"
+    if share < mixed_below:
+        return "mixed"  # partly words: an English column beside one LoC couldn't read
     return None
+
+
+def targets_name(mixed_below: float = MIXED_BELOW) -> str:
+    """The targets list's name (and its claims'): TARGETS, or with its own --mixed-below."""
+    if mixed_below == MIXED_BELOW:
+        return TARGETS
+    return f"{TARGETS}-mixed{round(mixed_below * 100):02d}"
+
+
+def mixed_below_setting(arg: float | None) -> float:
+    """--mixed-below, else JAOCR_MIXED_BELOW, else MIXED_BELOW; at most 1, and
+    at most GARBLED_BELOW turns `mixed` off."""
+    v = arg if arg is not None else float(os.environ.get("JAOCR_MIXED_BELOW", MIXED_BELOW))
+    if not 0 <= v <= 1:
+        raise ValueError(f"--mixed-below must be between 0 and 1, not {v}")
+    return v
 
 
 def issue_key(lccn: str, date: str, edition: int) -> str:
@@ -339,7 +376,8 @@ def list_archive(url: str, pacer: "Pacer") -> list[str]:
     raise RuntimeError(f"giving up on {url}")
 
 
-def targets(reference, curated, datasets: list[dict] | None = None) -> list[dict]:
+def targets(reference, curated, datasets: list[dict] | None = None,
+            mixed_below: float = MIXED_BELOW) -> list[dict]:
     current = json.loads(reference.read("current.json"))
     version = current["reference"]
     # The same rule as the API and the store: one path segment, no traversal.
@@ -364,7 +402,7 @@ def targets(reference, curated, datasets: list[dict] | None = None) -> list[dict
             for r in t.to_pylist():
                 if r["lccn"] not in jpn:
                     continue
-                why = needs_ocr(r["text_status"], r["text"])
+                why = needs_ocr(r["text_status"], r["text"], mixed_below)
                 if why:
                     by_id[r["doc_id"]] = {
                         "doc_id": r["doc_id"], "page_key": r["page_key"], "lccn": r["lccn"],
@@ -599,16 +637,18 @@ def write_status(reference, curated, rows: list[dict], started: datetime, done_a
     return body
 
 
-def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> None:
+def run(reference, curated, ndl_root: Path, limit: int | None, owner: str,
+        mixed_below: float = MIXED_BELOW) -> None:
     replicas = max(1, int(os.environ.get("JAOCR_REPLICAS", "1")))
     api = Pacer(float(os.environ.get("JAOCR_API_GAP", "3.5")) * replicas)
     tile = Pacer(float(os.environ.get("JAOCR_TILE_GAP", "1.0")) * replicas)
     stale = timedelta(hours=float(os.environ.get("JAOCR_CLAIM_HOURS", "6")))
-    tfile = f"{PREFIX}/{TARGETS}.jsonl"
+    name = targets_name(mixed_below)
+    tfile = f"{PREFIX}/{name}.jsonl"
     if curated.exists(tfile):
         rows = [json.loads(x) for x in curated.read(tfile).decode().splitlines() if x]
     else:
-        rows = targets(reference, curated)
+        rows = targets(reference, curated, mixed_below=mixed_below)
         curated.write(tfile, "\n".join(json.dumps(r) for r in rows).encode())
     parts = curated.list(f"{PREFIX}/pages/")
     done = done_pages(curated, parts) & alto_pages(curated)
@@ -617,7 +657,7 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
         if r["doc_id"] not in done:
             by_issue.setdefault(issue_key(r["lccn"], r["date"], r["edition"]), []).append(r)
     todo = sorted(by_issue)
-    log("ocr starting", targets=len(rows), done_pages=len(done), todo_issues=len(todo),
+    log("ocr starting", targets=len(rows), targets_file=tfile, done_pages=len(done), todo_issues=len(todo),
         todo_pages=sum(len(v) for v in by_issue.values()), replicas=replicas)
     engine = f"ndlocr-lite {ndlocr_version(ndl_root)}"
     started = datetime.now(timezone.utc)
@@ -632,7 +672,8 @@ def run(reference, curated, ndl_root: Path, limit: int | None, owner: str) -> No
             last_status = datetime.now(timezone.utc)
         if limit is not None and pages_done >= limit:
             break
-        if not claim(curated, f"{CLAIMS}/{issue}", owner, stale):
+        # Claims are per targets list: a new list's issues are claimed afresh.
+        if not claim(curated, f"{name}/{issue}", owner, stale):
             continue
         try:
             pages_done += ocr_issue(curated, ndl_root, issue, by_issue[issue], api, tile, engine)
@@ -709,6 +750,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("command", choices=["targets", "run", "audit", "quality", "mixed", "american-stories", "american-stories-write"])
     ap.add_argument("--limit", type=int, help="stop after about this many pages")
+    ap.add_argument("--mixed-below", type=float,
+                    help=f"targets, run: OCR pages whose LoC text is under this word-like share "
+                         f"(default JAOCR_MIXED_BELOW or {MIXED_BELOW}; {GARBLED_BELOW} or less: no mixed pages)")
     ap.add_argument("--all-languages", action="store_true", help="audit: every title, not just non-English ones")
     ap.add_argument("--sample-pct", type=float,
                     help="quality: percent of pages to score (default 2); american-stories: to compare (default 10)")
@@ -741,8 +785,9 @@ def main() -> None:
 
         quality.quality(reference, curated, 2.0 if a.sample_pct is None else a.sample_pct, a.min_pages, metric=a.metric)
     elif a.command == "targets":
-        rows = targets(reference, curated)
-        curated.write(f"{PREFIX}/{TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
+        below = mixed_below_setting(a.mixed_below)
+        rows = targets(reference, curated, mixed_below=below)
+        curated.write(f"{PREFIX}/{targets_name(below)}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
         issues = {issue_key(r["lccn"], r["date"], r["edition"]) for r in rows}
         why: dict[str, int] = {}
         for r in rows:
@@ -751,7 +796,7 @@ def main() -> None:
     else:
         ndl = Path(os.environ.get("NDLOCR_ROOT", "/opt/ndlocr-lite"))
         owner = os.environ.get("CONTAINER_APP_REPLICA_NAME") or os.environ.get("HOSTNAME") or "local"
-        run(reference, curated, ndl, a.limit, owner)
+        run(reference, curated, ndl, a.limit, owner, mixed_below_setting(a.mixed_below))
 
 
 if __name__ == "__main__":

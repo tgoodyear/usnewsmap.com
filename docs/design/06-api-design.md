@@ -189,6 +189,8 @@ Snippets are built by the API from the page's stored text, the same way for ever
 - snippets come from the text as printed, so old forms such as 戰 stay as printed while 戦 matches them
 - the LoC viewer link has no `q`, because LoC has no text for the page and its viewer can't highlight the words
 
+**Our OCR's English in the main index** (#203, 04 §4.8). A version built with `--ja-latin` holds some pages in its main indexes with the Latin-script text of our Japanese OCR rather than LoC's; its snapshot lists them in `ja_latin.json` (checked against the manifest like the other files). Their items carry the same `ocr` and an unhighlighted viewer link. A listed copy the version hides (`duplicates.json`) isn't marked, since its hits show the other copy.
+
 Without a `lang` filter, a Japanese query's `baseline_ref` and national baseline use `lang=jpn`: its matches are all pages of titles that list Japanese, so the relative rate compares with those pages (11 §11.2).
 
 ### 6.3.5 Errors

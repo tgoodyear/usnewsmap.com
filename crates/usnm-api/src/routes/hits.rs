@@ -80,7 +80,8 @@ pub(crate) struct Item {
     /// searches American Stories' text, and not on Japanese pages.
     #[serde(skip_serializing_if = "Option::is_none")]
     matched_in: Option<Vec<&'static str>>,
-    /// When the text is our own OCR, not LoC's (#139).
+    /// When the text is our own OCR, not LoC's: the Japanese index's pages
+    /// (#139), and the main index's pages with our OCR's Latin text (#203).
     #[serde(skip_serializing_if = "Option::is_none")]
     ocr: Option<Ocr>,
     links: Links,
@@ -101,6 +102,18 @@ struct Links {
 impl Item {
     /// `highlight` is the query's highlight terms, for the LoC viewer link.
     pub(crate) fn new(h: Hit, rd: &RefData, highlight: &str) -> Self {
+        // A Japanese page says so itself; a main-index page with our Latin
+        // text is in the snapshot's list.
+        let ocr = match h.ocr_source {
+            Some(source) => Some(Ocr {
+                source,
+                engine: h.ocr_engine,
+            }),
+            None => rd.ja_latin.get(&h.doc_id).map(|p| Ocr {
+                source: p.ocr_source.clone(),
+                engine: Some(p.ocr_engine.clone()),
+            }),
+        };
         Item {
             date: date_from_day(h.day).to_string(),
             title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),
@@ -109,12 +122,9 @@ impl Item {
                 // highlight the words: link the page without them.
                 viewer: PageKey::from_doc_id(&h.doc_id)
                     .ok()
-                    .map(|k| k.viewer_url(h.ocr_source.is_none().then_some(highlight))),
+                    .map(|k| k.viewer_url(ocr.is_none().then_some(highlight))),
             },
-            ocr: h.ocr_source.map(|source| Ocr {
-                source,
-                engine: h.ocr_engine,
-            }),
+            ocr,
             doc_id: h.doc_id,
             lccn: h.lccn,
             place_id: h.place_id,

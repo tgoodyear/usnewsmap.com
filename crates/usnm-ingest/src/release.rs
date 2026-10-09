@@ -50,8 +50,9 @@ use crate::progress::{self, Progress};
 use crate::sink::IndexSink;
 use crate::source::hex;
 use crate::state::{
-    Curated, IndexRun, LanguageBaselines, LanguageSet, RunBatch, RunStatus, State, Step,
-    DUPLICATES_FILE, LANGUAGE_BASELINES_FILE, RUN_BATCHES_FILE, TITLE_PAGES_FILE,
+    Curated, IndexRun, JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, RunBatch, RunStatus,
+    State, Step, DUPLICATES_FILE, JA_LATIN_FILE, LANGUAGE_BASELINES_FILE, RUN_BATCHES_FILE,
+    TITLE_PAGES_FILE,
 };
 
 pub use crate::state::{MAX_DELTAS, WRITER_LOCK};
@@ -79,6 +80,14 @@ pub struct Release {
     /// version built without it is rebuilt in full first. Off: nothing is
     /// read, and the documents and `current.json` are as before.
     pub american_stories: bool,
+    /// Give the pages LoC ships without text (`loc_text = missing`) a
+    /// main-index document with the Latin-script text our Japanese OCR read
+    /// on them (#203, 04 §4.8), so English searches reach their English ads
+    /// and sections. The pages are in the baselines already (#139). The
+    /// release's new main index (a delta or a base) takes the pages no main
+    /// index of the version holds yet; a delta keeps the earlier ones. Off:
+    /// no new ones are written, and a full release drops them.
+    pub ja_latin: bool,
 }
 
 /// A full release refused to start because titles-sync left titles unfetched
@@ -152,8 +161,27 @@ pub struct Published {
 /// text for is a document only with American Stories' text; its `text` is
 /// then empty.
 pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place, text_as: Option<&str>) -> Value {
-    let k = &row.key;
-    let text = row.text.as_deref().unwrap_or_default();
+    main_doc(
+        &row.key,
+        &row.batch,
+        row.text.as_deref().unwrap_or_default(),
+        title,
+        place,
+        text_as,
+    )
+}
+
+/// A main-index document for page `k` of `batch` with `text` as its text:
+/// [`page_doc`]'s, and the Latin-script text of our Japanese OCR on a page
+/// LoC ships without text (`ocr_ja::latin_doc`).
+pub fn main_doc(
+    k: &usnm_core::ids::PageKey,
+    batch: &str,
+    text: &str,
+    title: &Title,
+    place: &Place,
+    text_as: Option<&str>,
+) -> Value {
     let mut doc = json!({
         "doc_id": k.doc_id(),
         "day": day_number(k.date),
@@ -170,7 +198,7 @@ pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place, text_as: Option<
         // Hits order within a day: title, then edition, then page.
         "sort_key": (u64::from(title.ordinal) << 32) | (u64::from(k.edition) << 16) | u64::from(k.seq),
         "date": k.date.to_string(),
-        "batch": row.batch,
+        "batch": batch,
         "text_cg": usnm_core::common_grams::index_text(text),
         "text": text,
     });
@@ -179,6 +207,20 @@ pub fn page_doc(row: &CuratedRow, title: &Title, place: &Place, text_as: Option<
         doc["text_as"] = t.into();
     }
     doc
+}
+
+/// The pages of our OCR the snapshot accounts for (#139, #203).
+struct Latin<'a> {
+    /// Of the overlay's pages that curation never had, and of the pages the
+    /// version's main indexes hold with our Latin text, the ones some batch
+    /// of the version has in its curated parts.
+    curated_keys: &'a BTreeSet<String>,
+    /// Pages this release's main index added with our Latin text.
+    added: u64,
+    /// Pages an earlier index holds with our Latin text, now hidden.
+    hidden: u64,
+    /// Every page the version's main indexes hold with our Latin text.
+    version: &'a JaLatin,
 }
 
 /// What the published `current.json` says about the version's indexes.
@@ -484,6 +526,56 @@ impl Release {
             );
         }
 
+        // Of the pages of our OCR that curation never had, and of the pages
+        // a main index of the version holds with our OCR's Latin text
+        // (#203), the ones some batch of the version has in its curated
+        // parts: those are counted, and indexed, from LoC's copy.
+        let latin_before = match &previous {
+            Some(prev) if !full => self.previous_latin(&prev.index_version).await?,
+            _ => JaLatin::default(),
+        };
+        let curated_keys = {
+            let mut wanted: BTreeSet<String> = overlay
+                .pages
+                .iter()
+                .filter(|p| p.missing_from_curation())
+                .map(|p| p.key.doc_id())
+                .collect();
+            wanted.extend(latin_before.pages.keys().cloned());
+            self.curated_keys(&version_batches, &wanted).await?
+        };
+        // The Latin text this release's main index adds: the pages no main
+        // index of the version holds yet. None without a new main index.
+        let latin_new: Vec<(&ocr_ja::JaPage, String)> = if self.ja_latin && !overlay_only {
+            overlay
+                .pages
+                .iter()
+                .filter(|p| {
+                    let id = p.key.doc_id();
+                    p.missing_from_curation()
+                        && !curated_keys.contains(&id)
+                        && !latin_before.pages.contains_key(&id)
+                })
+                .filter_map(|p| p.latin().map(|t| (p, t)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Pages curation had that our OCR read Latin text on: a batch this
+        // release indexes takes ours in place of LoC's text where ours reads
+        // more words (#203).
+        let latin_curated: HashMap<String, (&ocr_ja::JaPage, String)> =
+            if self.ja_latin && !overlay_only {
+                overlay
+                    .pages
+                    .iter()
+                    .filter(|p| !p.missing_from_curation())
+                    .filter_map(|p| p.latin().map(|t| (p.key.doc_id(), (p, t))))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+
         // Pages that ship in more than one batch: which copy the version
         // keeps. The batches outside the scope are in indexes it keeps.
         let new: BTreeSet<&str> = scope.iter().map(|b| b.batch.as_str()).collect();
@@ -496,7 +588,7 @@ impl Release {
             Some(prev) if !full => self.previously_hidden(&prev.index_version).await?,
             _ => Some(BTreeSet::new()),
         };
-        let dedup = dedup::plan(
+        let mut dedup = dedup::plan(
             self.curated.as_ref(),
             &version_batches,
             &indexed,
@@ -504,6 +596,53 @@ impl Release {
             self.american_stories,
         )
         .await?;
+        // A page an earlier index holds with our Latin text that a batch of
+        // the version now has from LoC (a delta can't take it out): hidden,
+        // so the page counts once, from LoC's copy. Likewise a copy given our
+        // text in place of LoC's that another batch's copy now wins over:
+        // the plan hides only the copies that have LoC's text (or American
+        // Stories'), and an `empty` or `short` one is a document with ours.
+        let latin_hidden = latin_before
+            .pages
+            .iter()
+            .filter(|(id, p)| {
+                if p.loc_text == "missing" {
+                    curated_keys.contains(*id)
+                } else {
+                    usnm_core::ids::PageKey::from_doc_id(id)
+                        .is_ok_and(|key| !dedup.keeps(&key, &p.batch))
+                }
+            })
+            .map(|(id, p)| dedup::Hidden {
+                doc_id: id.clone(),
+                batch: p.batch.clone(),
+            })
+            .collect::<Vec<_>>();
+        if !latin_hidden.is_empty() {
+            tracing::warn!(
+                pages = latin_hidden.len(),
+                "pages indexed with our OCR's Latin text now have LoC's; hiding our copies"
+            );
+            dedup.hidden.extend(latin_hidden.iter().cloned());
+            dedup.hidden.sort();
+            dedup.hidden.dedup();
+        }
+        // What the version's main indexes hold with our Latin text: the
+        // pages kept from the indexes it keeps, this release's pages that
+        // curation never had, and (after the build) the pages it gave our
+        // text in place of LoC's.
+        let mut latin_after = latin_before;
+        for (p, _) in &latin_new {
+            latin_after.pages.insert(
+                p.key.doc_id(),
+                JaLatinPage {
+                    batch: p.batch.clone(),
+                    loc_text: p.loc_text.clone(),
+                    ocr_source: p.ocr_source.clone(),
+                    ocr_engine: p.ocr_engine.clone(),
+                },
+            );
+        }
         if dedup.duplicate_pages > 0 {
             tracing::warn!(
                 pages = dedup.duplicate_pages,
@@ -550,6 +689,7 @@ impl Release {
             engine: sink.engine().await,
             writer: crate::sink::WriterTuning::from_env()?,
             american_stories: self.american_stories,
+            ja_latin: self.ja_latin,
         };
         let mut run = IndexRun {
             id: version.clone(),
@@ -584,8 +724,8 @@ impl Release {
         report.version(&version);
         report.step(Step::Indexing).await;
         let outcome = async {
-            let (docs, stories_record) = if overlay_only {
-                (0, None)
+            let (docs, stories_record, replaced) = if overlay_only {
+                (0, None, Vec::new())
             } else {
                 self.build_index(
                     lease,
@@ -596,10 +736,14 @@ impl Release {
                     &catalog,
                     &dedup,
                     stories.as_ref(),
+                    &latin_new,
+                    &latin_curated,
                     report,
                 )
                 .await?
             };
+            let added_latin = (latin_new.len() + replaced.len()) as u64;
+            latin_after.pages.extend(replaced);
             let stories_record = stories.as_ref().zip(stories_record.as_ref());
             let ja = self
                 .build_ja_index(lease, sink, &version, &overlay, &catalog)
@@ -624,6 +768,12 @@ impl Release {
                     &layout,
                     &overlay,
                     ja.as_ref(),
+                    &Latin {
+                        curated_keys: &curated_keys,
+                        added: added_latin,
+                        hidden: latin_hidden.len() as u64,
+                        version: &latin_after,
+                    },
                     stories_record,
                     &build_info::record(&built),
                 )
@@ -860,8 +1010,14 @@ impl Release {
         catalog: &Catalog,
         dedup: &Plan,
         stories: Option<&american_stories::Source>,
+        latin: &[(&ocr_ja::JaPage, String)],
+        latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
         report: &Reporter,
-    ) -> anyhow::Result<(u64, Option<american_stories::Record>)> {
+    ) -> anyhow::Result<(
+        u64,
+        Option<american_stories::Record>,
+        Vec<(String, JaLatinPage)>,
+    )> {
         // Every title must resolve before anything is written.
         let mut missing = BTreeSet::new();
         for b in scope {
@@ -897,6 +1053,8 @@ impl Release {
             progress.report_every(progress::INTERVAL, self.state.clone(), version.to_owned());
         let mut docs = 0u64;
         let mut record = stories.map(|_| american_stories::Record::default());
+        // The pages given our Latin text in place of LoC's (#203).
+        let mut replaced: Vec<(String, JaLatinPage)> = Vec::new();
         for b in scope {
             // This batch's American Stories texts, dropped after the batch.
             let texts = match stories {
@@ -927,29 +1085,50 @@ impl Release {
                     .await?
                     .with_context(|| format!("curated part `{path}` is missing"))?;
                 let mut part_docs = Vec::new();
-                let (mut with_as, mut only_as) = (0u64, 0u64);
+                let (mut with_as, mut only_as, mut without_locs) = (0u64, 0u64, 0u64);
                 read_part(bytes.into(), true, |row| {
                     if !dedup.keeps(&row.key, &b.batch) {
                         return Ok(());
                     }
+                    let doc_id = row.key.doc_id();
                     let text_as = if texts.is_empty() {
                         None
                     } else {
-                        texts.get(&row.key.doc_id()).map(String::as_str)
+                        texts.get(&doc_id).map(String::as_str)
                     };
+                    // Our reading of this batch's copy, where it reads more words.
+                    let ours = latin_curated.get(&doc_id).filter(|(p, t)| {
+                        p.batch == b.batch && ocr_ja::better_than_locs(t, row.text.as_deref())
+                    });
                     let ok = row.status == TextStatus::Ok;
-                    if !ok && text_as.is_none() {
+                    if !ok && text_as.is_none() && ours.is_none() {
                         return Ok(());
                     }
                     with_as += u64::from(text_as.is_some());
-                    only_as += u64::from(!ok);
+                    only_as += u64::from(!ok && ours.is_none());
+                    without_locs += u64::from(!ok);
                     let title = catalog.title(&row.key.lccn).context("title")?;
                     let place = catalog.place(&title.place_id).context("place")?;
-                    part_docs.push(page_doc(&row, title, place, text_as));
+                    part_docs.push(match ours {
+                        Some((p, text)) => {
+                            replaced.push((
+                                doc_id,
+                                JaLatinPage {
+                                    batch: p.batch.clone(),
+                                    loc_text: p.loc_text.clone(),
+                                    ocr_source: p.ocr_source.clone(),
+                                    ocr_engine: p.ocr_engine.clone(),
+                                },
+                            ));
+                            main_doc(&row.key, &row.batch, text, title, place, text_as)
+                        }
+                        None => page_doc(&row, title, place, text_as),
+                    });
                     Ok(())
                 })
                 .with_context(|| path.clone())?;
-                progress.add_expected(only_as);
+                // Pages LoC has no usable text for are documents with another's.
+                progress.add_expected(without_locs);
                 if let Some(r) = record.as_mut() {
                     r.docs += with_as;
                     r.only += only_as;
@@ -968,6 +1147,25 @@ impl Release {
                 "American Stories' text indexed"
             );
         }
+        // The pages LoC ships without text that our OCR read Latin text on
+        // (#203): after the batches, each with its own batch's name.
+        if !latin.is_empty() {
+            progress.add_expected(latin.len() as u64);
+            for (p, text) in latin {
+                lease.check()?;
+                let title = catalog.title(&p.key.lccn).context("title")?;
+                let place = catalog.place(&title.place_id).context("place")?;
+                sink.add(&ocr_ja::latin_doc(p, text, title, place)).await?;
+            }
+            docs += latin.len() as u64;
+        }
+        if !latin.is_empty() || !replaced.is_empty() {
+            tracing::info!(
+                missing = latin.len(),
+                in_place_of_locs = replaced.len(),
+                "indexed our Japanese OCR's Latin text"
+            );
+        }
         // The last commit and the merge wait, given up as soon as the lock is.
         report.step(Step::Merging).await;
         tokio::select! {
@@ -976,7 +1174,7 @@ impl Release {
         }
         progress.snapshot().log(None);
         progress::report(&self.state, version, &progress.snapshot()).await;
-        Ok((docs, record))
+        Ok((docs, record, replaced))
     }
 
     /// Whether the overlay's parts differ from the ones `version` was built
@@ -1046,6 +1244,7 @@ impl Release {
         layout: &[IndexLayout],
         overlay: &ocr_ja::Overlay,
         ja: Option<&(String, u64)>,
+        latin: &Latin<'_>,
         stories: Option<(&american_stories::Source, &american_stories::Record)>,
         build: &Value,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
@@ -1104,17 +1303,14 @@ impl Release {
         // Our OCR of pages curation never had (no ocr.txt in LoC's archive):
         // they are in no counts.json, so they join the baselines here. A page
         // missing from one batch's archive can have text in another batch of
-        // the version, which counted it already: those are left out.
-        let candidates: Vec<&ocr_ja::JaPage> = overlay
+        // the version, which counted it already: those are left out. A page
+        // with a main-index document of our Latin text (#203) is one of these,
+        // counted here and nowhere else.
+        let mut added = 0u64;
+        for p in overlay
             .pages
             .iter()
-            .filter(|p| p.missing_from_curation())
-            .collect();
-        let curated_keys = self.curated_keys(batches, &candidates).await?;
-        let mut added = 0u64;
-        for p in candidates
-            .into_iter()
-            .filter(|p| !curated_keys.contains(&p.key.doc_id()))
+            .filter(|p| p.missing_from_curation() && !latin.curated_keys.contains(&p.key.doc_id()))
         {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let day = day_number(p.key.date);
@@ -1187,12 +1383,24 @@ impl Release {
                 "indexed": ja.map_or(0, |(_, n)| *n),
                 "pages": overlay.pages.len(),
                 "added_to_baselines": added,
+                // Pages with a main-index document of our Latin text (#203):
+                // added by this release, in the version, and hidden.
+                "latin": {
+                    "added": latin.added,
+                    "pages": latin.version.pages.len(),
+                    "hidden": latin.hidden,
+                },
                 "skipped": overlay.skipped,
                 // What the OCR found: Japanese text, near-blank pages, mostly Latin.
                 "kinds": ocr_ja::kinds(&overlay.pages),
                 "parts": overlay.parts,
             });
             snapshot_files.push((ocr_ja::OCR_JA_FILE, serde_json::to_vec(&record)?));
+        }
+        // The pages the main indexes hold with our Latin text, for the API to
+        // mark their hits as our OCR (only when there are any).
+        if !latin.version.pages.is_empty() {
+            snapshot_files.push((JA_LATIN_FILE, serde_json::to_vec(latin.version)?));
         }
         // Which American Stories parts the new main index was built from
         // (only when it was built with them). The list can be long, so the
@@ -1241,16 +1449,19 @@ impl Release {
         Ok(((date_from_day(first), date_from_day(last)), added))
     }
 
-    /// The doc ids of `pages` that some batch of the version has in its
+    /// The doc ids in `wanted` that some batch of the version has in its
     /// curated parts. Only the parts of batches holding these pages' titles
     /// are read, without their text.
     async fn curated_keys(
         &self,
         batches: &[RunBatch],
-        pages: &[&ocr_ja::JaPage],
+        wanted: &BTreeSet<String>,
     ) -> anyhow::Result<BTreeSet<String>> {
-        let wanted: BTreeSet<String> = pages.iter().map(|p| p.key.doc_id()).collect();
-        let lccns: BTreeSet<&str> = pages.iter().map(|p| p.key.lccn.as_str()).collect();
+        // A doc id starts with its title's LCCN (`sn83025517_1945-01-01_ed-1_seq-4`).
+        let lccns: BTreeSet<&str> = wanted
+            .iter()
+            .filter_map(|id| id.split_once('_').map(|(lccn, _)| lccn))
+            .collect();
         let mut found = BTreeSet::new();
         if wanted.is_empty() {
             return Ok(found);
@@ -1276,6 +1487,16 @@ impl Release {
             }
         }
         Ok(found)
+    }
+
+    /// The pages `version`'s main indexes hold with our Latin text (its
+    /// `ja_latin.json`; none if it has none).
+    async fn previous_latin(&self, version: &str) -> anyhow::Result<JaLatin> {
+        let path = format!("{version}/{JA_LATIN_FILE}");
+        match self.reference.get(&path).await? {
+            Some(bytes) => serde_json::from_slice(&bytes).context(path),
+            None => Ok(JaLatin::default()),
+        }
     }
 
     async fn put_new(&self, path: &str, body: Vec<u8>) -> anyhow::Result<()> {

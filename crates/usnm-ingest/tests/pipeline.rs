@@ -210,6 +210,21 @@ impl Env {
         full: bool,
         american_stories: bool,
     ) -> anyhow::Result<Option<Published>> {
+        self.release_opts(day, full, american_stories, false).await
+    }
+
+    /// A release with or without our OCR's Latin text (`--ja-latin`, #203).
+    async fn release_latin(&self, day: u32, full: bool, ja_latin: bool) -> Option<Published> {
+        self.release_opts(day, full, false, ja_latin).await.unwrap()
+    }
+
+    async fn release_opts(
+        &self,
+        day: u32,
+        full: bool,
+        american_stories: bool,
+        ja_latin: bool,
+    ) -> anyhow::Result<Option<Published>> {
         let r = Release {
             state: self.state.clone(),
             curated: self.curated.clone(),
@@ -220,6 +235,7 @@ impl Env {
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
             titles_left: None,
             american_stories,
+            ja_latin,
         };
         let mut sink = JsonlSink::new(self.root.join("reference/indexes"));
         r.run(&mut sink).await
@@ -540,6 +556,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         now: Utc::now(),
         titles_left: None,
         american_stories: false,
+        ja_latin: false,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     assert!(r.run(&mut sink).await.is_err());
@@ -591,6 +608,7 @@ async fn releases_into_a_quickwit_writer_node() {
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
             titles_left: None,
             american_stories: false,
+            ja_latin: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -1040,6 +1058,7 @@ async fn a_backend_switch_forces_a_full_release() {
         now: Utc.with_ymd_and_hms(2026, 10, 8, 3, 0, 0).unwrap(),
         titles_left: None,
         american_stories: false,
+        ja_latin: false,
     };
     let mut sink = OtherBackend(0);
     let p = r.run(&mut sink).await.unwrap().unwrap();
@@ -1077,6 +1096,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         now: Utc::now(),
         titles_left: None,
         american_stories: false,
+        ja_latin: false,
     };
     let lease = r.lock().await.unwrap();
     // Another writer takes the lock over (e.g. after this one stalled).
@@ -1158,6 +1178,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         now: Utc.with_ymd_and_hms(2026, 10, 1, 3, 0, 0).unwrap(),
         titles_left,
         american_stories: false,
+        ja_latin: false,
     };
     let why = Some("LoC rate limited titles-sync with 5 of 9 titles left".to_owned());
     let mut sink = JsonlSink::new(e.root.join("reference/indexes"));
@@ -1579,6 +1600,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         now: Utc.with_ymd_and_hms(2026, 10, 8, 3, 0, 0).unwrap(),
         titles_left: None,
         american_stories: false,
+        ja_latin: false,
     };
     let mut sink = JsonlSink::new(e.root.join("idx"));
     let err = format!("{:#}", r.run(&mut sink).await.unwrap_err());
@@ -1630,6 +1652,7 @@ async fn a_failed_release_records_when_it_failed() {
         now,
         titles_left: None,
         american_stories: false,
+        ja_latin: false,
     };
     let before = Utc::now();
     let err = r.run(&mut FailingSink).await.unwrap_err();
@@ -1897,6 +1920,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
             titles_left: None,
             american_stories: false,
+            ja_latin: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
@@ -2331,6 +2355,286 @@ async fn japanese_ocr_with_nothing_to_index_waits() {
     assert!(e.release(6, false).await.is_none());
 }
 
+/// Our OCR's Latin text on the pages LoC ships without text (#203,
+/// `--ja-latin`): the release's new main index takes the pages no index of
+/// the version holds yet, each counted once (the baselines had them since
+/// #139). A delta keeps the earlier ones, and hides one a new batch now has
+/// from LoC; an overlay-only release adds none; a full release without the
+/// setting leaves them out. A page curation had takes our text in place of
+/// LoC's where ours reads more words (here, an empty one).
+#[tokio::test]
+async fn our_ocr_latin_text_reaches_the_main_index_once() {
+    let e = env().await;
+    let (early, late, early_pages, late_pages) = curate_early_and_late(&e).await;
+    curate(&e, early).await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let p0 = pages
+        .iter()
+        .find(|p| p.date < split && !p.text.is_empty())
+        .unwrap();
+    let p1 = pages
+        .iter()
+        .find(|p| p.lccn == p0.lccn && p.date == p0.date && p.seq != p0.seq && !p.text.is_empty())
+        .expect("two pages with text on one day");
+    // An early page LoC has no text for, which curation has (an `empty` page).
+    let blank = pages
+        .iter()
+        .find(|p| p.date < split && p.text.is_empty())
+        .expect("an empty early page");
+    // A late page with LoC's text, which our OCR also read as a page missing from the early batch.
+    let late_page = pages
+        .iter()
+        .find(|p| p.date >= split && !p.text.is_empty())
+        .unwrap();
+    let id = |p: &Page| format!("{}_{}_ed-1_seq-{}", p.lccn, p.date, p.seq);
+    let at = |seq: u16| format!("{}_{}_ed-1_seq-{seq}", p0.lccn, p0.date);
+    let row = |lccn, date, seq, loc_text, text| JaRow {
+        lccn,
+        date,
+        seq,
+        batch: "batch_fx_early",
+        loc_text,
+        text,
+        ocred_at: 1,
+    };
+    let ads = "Moritz Drug Co\n2001 Larimer St., Denver\n米國と日本の戰爭";
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[
+            row(&p0.lccn, p0.date, 90, "missing", ads),
+            // Japanese only: no main-index document.
+            row(&p0.lccn, p0.date, 91, "missing", "東京の新聞"),
+            // Curation has these from LoC: no document of ours.
+            row(
+                &p0.lccn,
+                p0.date,
+                p1.seq,
+                "missing",
+                "Larimer Street, Denver, Colorado",
+            ),
+            row(
+                &p0.lccn,
+                p0.date,
+                p0.seq,
+                "garbled",
+                "Larimer Street, Denver, Colorado",
+            ),
+            row(
+                &late_page.lccn,
+                late_page.date,
+                late_page.seq,
+                "missing",
+                "Sunshine Grocery, Denver",
+            ),
+            // Ours reads words where LoC has none: its document takes our text.
+            row(
+                &blank.lccn,
+                blank.date,
+                blank.seq,
+                "empty",
+                "The relocation center held a meeting",
+            ),
+        ],
+    )
+    .await;
+
+    // A base with the setting: the two pages curation doesn't have get our
+    // Latin text, and so does the empty one, in its own document.
+    let v1 = e.release_latin(5, true, true).await.expect("base");
+    let base = e.index(&v1.indexes[0]);
+    let early_docs = early_pages
+        - pages
+            .iter()
+            .filter(|p| p.date < split && p.text.is_empty())
+            .count();
+    assert_eq!(base.len(), early_docs + 3, "{:?}", v1);
+    assert_eq!(
+        base[&id(blank)]["text"],
+        "The relocation center held a meeting"
+    );
+    let doc = &base[&at(90)];
+    assert_eq!(doc["text"], "Moritz Drug Co\n2001 Larimer St., Denver");
+    // Its batch is the one whose archive had no text for it (hidden copies name it).
+    let raw = read_jsonl(
+        &e.root
+            .join(format!("reference/indexes/{}.jsonl", v1.indexes[0])),
+    );
+    let raw = raw.iter().find(|d| d["doc_id"] == at(90).as_str()).unwrap();
+    assert_eq!(raw["batch"], "batch_fx_early");
+    assert_eq!(base[&id(late_page)]["text"], "Sunshine Grocery, Denver");
+    assert!(!base.contains_key(&at(91)));
+    // LoC's copies, untouched.
+    assert_eq!(base[&id(p1)]["text"], p1.text.as_str());
+    assert_eq!(base[&id(p0)]["text"], p0.text.as_str());
+    let v = &v1.index_version;
+    let latin = e.reference_json(&format!("{v}/ja_latin.json")).await;
+    assert_eq!(
+        latin["pages"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        {
+            let mut want = vec![at(90), id(late_page), id(blank)];
+            want.sort();
+            want
+        }
+        .iter()
+        .collect::<Vec<_>>()
+    );
+    assert_eq!(latin["pages"][at(90)]["ocr_engine"], "ndlocr-lite test");
+    assert_eq!(latin["pages"][at(90)]["loc_text"], "missing");
+    assert_eq!(latin["pages"][id(blank)]["loc_text"], "empty");
+    let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
+    assert_eq!(
+        record["latin"],
+        serde_json::json!({"added": 3, "pages": 3, "hidden": 0})
+    );
+    // Counted once each: the three pages curation never had (90, 91 and the
+    // late one, in no counts.json of this version).
+    assert_eq!(record["added_to_baselines"], 3);
+    assert_eq!(v1.pages, early_pages as u64 + 3);
+    let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    assert_eq!(
+        manifest["build"]["features"]["ja_latin"],
+        usnm_ingest::ocr_ja::LATIN_VERSION
+    );
+
+    // New OCR alone: a new Japanese index, no main index, the same Latin pages.
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/b.parquet",
+        &[row(
+            &p0.lccn,
+            p0.date,
+            92,
+            "missing",
+            "SUNSHINE GROCERY 1851 Larimer Street",
+        )],
+    )
+    .await;
+    let v2 = e.release_latin(6, false, true).await.expect("overlay-only");
+    assert_eq!(v2.indexes, v1.indexes);
+    assert_eq!(v2.pages, v1.pages + 1);
+    let latin2 = e
+        .reference_json(&format!("{}/ja_latin.json", v2.index_version))
+        .await;
+    assert_eq!(latin2, latin);
+
+    // A delta with the late batch: it takes page 92, and the late page now
+    // has LoC's text, so our copy in the base is hidden and it counts once.
+    curate(&e, late).await;
+    let v3 = e.release_latin(7, false, true).await.expect("delta");
+    assert!(!v3.full);
+    let delta = e.index(&v3.indexes[1]);
+    assert_eq!(
+        delta[&at(92)]["text"],
+        "SUNSHINE GROCERY 1851 Larimer Street"
+    );
+    assert_eq!(delta[&id(late_page)]["text"], late_page.text.as_str());
+    assert!(!delta.contains_key(&at(90)), "already in the base");
+    let v = &v3.index_version;
+    let latin3 = e.reference_json(&format!("{v}/ja_latin.json")).await;
+    assert_eq!(latin3["pages"].as_object().unwrap().len(), 4);
+    let hidden = e.reference_json(&format!("{v}/duplicates.json")).await;
+    assert_eq!(
+        hidden,
+        serde_json::json!([{"doc_id": id(late_page), "batch": "batch_fx_early"}])
+    );
+    let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
+    assert_eq!(
+        record["latin"],
+        serde_json::json!({"added": 1, "pages": 4, "hidden": 1})
+    );
+    // Every fixture page, and 90, 91 and 92 once each.
+    assert_eq!(v3.pages, (early_pages + late_pages) as u64 + 3);
+    let title_pages = e.reference_json(&format!("{v}/title_pages.json")).await;
+    let total: u64 = title_pages
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(total, v3.pages);
+
+    // A full release without the setting: LoC's text only, and no record.
+    let v4 = e.release_latin(8, true, false).await.expect("full");
+    let docs: usize = v4.indexes.iter().map(|i| e.index(i).len()).sum();
+    let fixture_docs = pages.iter().filter(|p| !p.text.is_empty()).count();
+    assert_eq!(docs, fixture_docs);
+    assert_eq!(v4.pages, v3.pages);
+    assert!(e
+        .reference
+        .get(&format!("{}/ja_latin.json", v4.index_version))
+        .await
+        .unwrap()
+        .is_none());
+    let hidden = e
+        .reference_json(&format!("{}/duplicates.json", v4.index_version))
+        .await;
+    assert_eq!(hidden, serde_json::json!([]));
+}
+
+/// A page LoC had no text for, indexed with ours in its own document
+/// (#203), that a later batch ships with LoC's text: the later copy wins,
+/// and the snapshot hides ours, so the page counts once.
+#[tokio::test]
+async fn a_copy_with_our_text_that_loses_to_locs_is_hidden() {
+    let e = env().await;
+    let (early, _, early_pages, _) = curate_early_and_late(&e).await;
+    curate(&e, early).await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let blank = pages
+        .iter()
+        .find(|p| p.date < split && p.text.is_empty())
+        .expect("an empty early page");
+    let id = format!("{}_{}_ed-1_seq-{}", blank.lccn, blank.date, blank.seq);
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[JaRow {
+            lccn: &blank.lccn,
+            date: blank.date,
+            seq: blank.seq,
+            batch: "batch_fx_early",
+            loc_text: "empty",
+            text: "The relocation center held a meeting",
+            ocred_at: 1,
+        }],
+    )
+    .await;
+    let v1 = e.release_latin(5, true, true).await.expect("base");
+    assert_eq!(
+        e.index(&v1.indexes[0])[&id]["text"],
+        "The relocation center held a meeting"
+    );
+    assert_eq!(v1.pages, early_pages as u64);
+
+    // A later batch has the page with LoC's text.
+    let again = Page {
+        lccn: blank.lccn.clone(),
+        date: blank.date,
+        seq: blank.seq,
+        text: "The council met on Tuesday and voted for the new school.".into(),
+    };
+    let path = e.root.join("batch_fx_again_ver01.tar.gz");
+    write_archive(&path, &[&again], false, true);
+    curate(&e, vec![listed("batch_fx_again_ver01", &path, None)]).await;
+    let v2 = e.release_latin(6, false, true).await.expect("delta");
+    assert_eq!(e.index(&v2.indexes[1])[&id]["text"], again.text.as_str());
+    let hidden = e
+        .reference_json(&format!("{}/duplicates.json", v2.index_version))
+        .await;
+    assert_eq!(
+        hidden,
+        serde_json::json!([{"doc_id": id, "batch": "batch_fx_early"}])
+    );
+    assert_eq!(v2.pages, early_pages as u64, "the page counts once");
+}
+
 /// American Stories' text for the fixture pages that have some (their
 /// `text_as`), as `american_stories_write.py` writes it: a part per title
 /// and year, then each year's marker. Plus a page no batch has, and a
@@ -2759,6 +3063,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             now: Utc.with_ymd_and_hms(2026, 10, day, 3, 0, 0).unwrap(),
             titles_left: None,
             american_stories: true,
+            ja_latin: false,
         };
         let mut sink = QuickwitSink::new(&node.url, &root)
             .unwrap()
