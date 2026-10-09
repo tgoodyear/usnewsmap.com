@@ -71,7 +71,7 @@ fn queries() -> Vec<(&'static str, Node)> {
         ("and", parse("free silver").unwrap()),
         ("or", parse("(yellow OR orator)").unwrap()),
         ("not", parse("gold -standard").unwrap()),
-        ("prefix", parse("silv*").unwrap()),
+        ("prefix", parse("silve*").unwrap()),
         (
             "mode any",
             build("bankers orator", Some(Mode::Any), 0, 0).unwrap(),

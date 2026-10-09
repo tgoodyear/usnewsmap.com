@@ -281,7 +281,7 @@ The user-facing syntax is simple and matches LoC's modes. The API parses it into
 | Near | mode = near, n = 5 | `Phrase(slop 5, unordered)` | `text:"a b"~5` | `"a b"~5` |
 | Exclude | `-word` | `Not(Term)` | `-text:word` | `-word` |
 | Fuzzy (OCR) | toggle "OCR-tolerant" | `Fuzzy(term, d=1 or 2)` | not supported in 0.9 (§5.5.1); refused | `term~1` |
-| Prefix | `word*` (≥ 3 chars) | `Prefix` | `text:word*` | `word*` |
+| Prefix | `word*` (≥ 5 letters) | `Prefix` | `text:word*` | `word*` |
 
 Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range and term filters on `day`, `state`, etc. They are never free text.
 

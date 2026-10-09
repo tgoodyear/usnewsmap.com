@@ -23,7 +23,7 @@ Base URL `https://api.usnewsmap.com/v1`. The same routes answer at `https://usne
 
 Search parameters, shared by `/v1/aggregate` and `/v1/hits`:
 
-- `q` (required): the search, up to 256 characters and 12 terms. Without `mode`, words are all required, a phrase goes in double quotes, `OR` joins alternatives (up to 4), a leading `-` excludes a word, and `word*` matches words starting with at least 3 letters.
+- `q` (required): the search, up to 256 characters and 12 terms. Without `mode`, words are all required, a phrase goes in double quotes, `OR` joins alternatives (up to 4), a leading `-` excludes a word, and `word*` matches words that start with `word`, which needs at least 5 letters (`limits.min_prefix_chars` in `/v1/meta`).
 - `mode`: `phrase`, `all`, `any` or `near`, for a plain list of words. `mode=near` also needs `near`, 1 to 20: how many words apart the terms may be.
 - `from`, `to`: dates as `YYYY-MM-DD`. Dates outside `bounds` in `/v1/meta` are moved to the nearest bound.
 - `state`: comma-separated two-letter postal codes, such as `GA,SC`.

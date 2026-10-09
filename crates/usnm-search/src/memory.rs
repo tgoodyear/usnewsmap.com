@@ -413,14 +413,14 @@ mod tests {
         assert!(eval(&parse("bryan -silver").unwrap(), &t));
         assert!(!eval(&parse("bryan -gold").unwrap(), &t));
         assert!(eval(&parse("silver OR mankind").unwrap(), &t));
-        assert!(eval(&parse("cruc*").unwrap(), &t));
+        assert!(eval(&parse("cruci*").unwrap(), &t));
         assert!(eval(&parse("mankimd~1").unwrap(), &t));
         assert!(!eval(&parse("mankxxd~1").unwrap(), &t));
     }
 
     #[test]
     fn mentions_count_matching_words_and_whole_phrases() {
-        let q = parse("gold cruc* -silver").unwrap();
+        let q = parse("gold cruci* -silver").unwrap();
         assert_eq!(
             mentions(&q, &toks("gold, gold and crucify; silver gold")),
             4

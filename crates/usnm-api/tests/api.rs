@@ -221,6 +221,7 @@ async fn health_and_meta() {
     assert_eq!(meta["index_version"], "fixture-v1");
     assert_eq!(meta["synthetic"], true);
     assert_eq!(meta["places"], 6);
+    assert_eq!(meta["limits"]["min_prefix_chars"], 5);
     // Every page in the version: the sum of the baselines.
     let baselines: HashMap<String, Vec<(u32, u32)>> = serde_json::from_slice(
         &std::fs::read(data_dir().join("fixture-v1/baselines.json")).unwrap(),
@@ -495,6 +496,18 @@ async fn problems_for_bad_requests() {
     );
     assert_eq!(body["type"], "/errors/query-syntax");
     assert_eq!(body["position"], 4);
+    // A prefix needs 5 letters: a shorter one would walk too many words.
+    let (status, headers, body) = get(&s, "/v1/aggregate?q=gold+silv*").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        header_str(&headers, header::CONTENT_TYPE),
+        "application/problem+json"
+    );
+    assert_eq!(body["type"], "/errors/query-syntax");
+    assert_eq!(body["detail"], "prefix searches need at least 5 letters");
+    assert_eq!(body["position"], 5);
+    let (status, _, body) = get(&s, "/v1/aggregate?q=gold+silve*").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, _, body) = get(&s, "/v1/aggregate?q=gold&cachebust=1").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["type"], "/errors/bad-parameter");
