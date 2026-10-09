@@ -118,12 +118,23 @@ var quickwitContainer = {
   // The image has no config for this role; write it from the environment.
   command: ['/bin/sh', '-c', 'printf \'%s\\n\' "$USNM_QW_CONFIG" > /tmp/node.yaml && exec quickwit run --config /tmp/node.yaml']
   // 3.75 vCPU / 7.5 GiB: with the api container (0.25 / 0.5) the replica is at the
-  // Consumption profile's 4 vCPU / 8 GiB. The searcher is CPU-bound on the
-  // American Stories index (#251: 2.0 of 2.0 vCPU during cold searches).
+  // Consumption profile's 4 vCPU / 8 GiB. On the American Stories index the
+  // searcher used 2.0 of 2.0 vCPU during cold searches, then 2.2 of 3.75 (#251;
+  // the thread counts below).
   resources: { cpu: json('3.75'), memory: '7.5Gi' }
   env: [
     { name: 'USNM_QW_CONFIG', value: quickwitConfig }
     { name: 'QW_DISABLE_TELEMETRY', value: '1' }
+    // Thread counts (#251). Quickwit 0.9.1 searches each split on one thread of
+    // its rayon "search" pool, sized by RAYON_NUM_THREADS or else Rust's CPU
+    // count, which rounds the 3.75 quota down to 3. Its blob downloads, TLS and
+    // split opening run on the main tokio runtime, ceil(cpus / 3) threads: 1.
+    // Cold searches used 2.2 of 3.75 vCPU with those defaults. QW_NUM_CPUS is
+    // its own CPU count (rounded up from k8s syntax), which sizes the
+    // small_tasks pool; it doesn't size the search pool.
+    { name: 'QW_NUM_CPUS', value: '4' }
+    { name: 'RAYON_NUM_THREADS', value: '4' }
+    { name: 'QW_TOKIO_RUNTIME_NUM_THREADS', value: '2' }
     // The image sets QW_LISTEN_ADDRESS=0.0.0.0, which overrides the config's
     // listen_address, and Quickwit refuses 0.0.0.0 without an advertise
     // address ("listen address `0.0.0.0` is unspecified"). Pin it here.

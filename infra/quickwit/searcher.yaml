@@ -34,7 +34,17 @@ searcher:
   # peak throughput +19%. Prod baseline at 8 on pages-v20261008-1 (American
   # Stories, 640 splits; 9 Oct): cold radio 48 s, television 77 s, yellow
   # fever 100 s. The same searches are re-run after this rolls out (#125).
-  max_num_concurrent_split_searches: 24
+  #
+  # 24 to 48 (#251): in 0.9.1 this is the number of splits downloading what a
+  # search needs at once (warm-up slots), not CPU work, which the search pool
+  # does (RAYON_NUM_THREADS, infra/modules/containerapp.bicep). Prod at 24 and
+  # 3.75 vCPU: cold median 28.3 s, 2.2 vCPU used.
+  max_num_concurrent_split_searches: 48
+  # What the splits warming up may hold in memory at once. Quickwit's default
+  # is 100 GB, no bound in a 7.5 GiB container; the caches and aggregation
+  # limit above take about 2.1 GB. Each split reserves at least 10 MB to start
+  # (300 MB scaled by its docs over 10M, ours have 30k to 56k).
+  warmup_memory_budget: 3GB
   # Quickwit cancels a search, and each split search in it, at these (both
   # 30 s by default) and answers 408. The API's own limit on a computation
   # is 120 s (USNM_COMPUTE_CAP_SECS), so Quickwit's must be longer, or busy
