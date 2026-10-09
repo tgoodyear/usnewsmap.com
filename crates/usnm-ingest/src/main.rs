@@ -124,6 +124,13 @@ enum Command {
         /// whose searches leave the text out.
         #[arg(long)]
         american_stories: bool,
+        /// Give the pages LoC ships without text a main-index document with
+        /// the Latin-script text our Japanese OCR read on them (#203, 04
+        /// §4.8), so English searches reach their English ads and sections.
+        /// The release's new main index takes the pages no index of the
+        /// version holds yet; without it, a full release leaves them out.
+        #[arg(long)]
+        ja_latin: bool,
         /// Lay a full base out by decade (#123, 05 §5.5.5), so date-limited
         /// searches skip the other decades' splits. Only a full base takes
         /// it; deltas follow the published version.
@@ -175,6 +182,9 @@ enum Command {
         /// As for `release`.
         #[arg(long)]
         american_stories: bool,
+        /// As for `release`.
+        #[arg(long)]
+        ja_latin: bool,
         /// As for `release`.
         #[arg(long)]
         partition_decade: bool,
@@ -361,6 +371,7 @@ async fn release(
     full: bool,
     synthetic: bool,
     american_stories: bool,
+    ja_latin: bool,
     partition_decade: bool,
     titles_left: Option<String>,
     t: &IndexTarget,
@@ -376,6 +387,7 @@ async fn release(
         now: chrono::Utc::now(),
         titles_left,
         american_stories,
+        ja_latin,
         partition_decade,
     };
     // Held from before the writer node starts until after it stops, and
@@ -677,6 +689,7 @@ async fn command(
             full,
             synthetic,
             american_stories,
+            ja_latin,
             partition_decade,
             target,
         } => {
@@ -686,6 +699,7 @@ async fn command(
                 *full,
                 *synthetic,
                 *american_stories,
+                *ja_latin,
                 *partition_decade,
                 None,
                 target,
@@ -699,6 +713,7 @@ async fn command(
             full,
             synthetic,
             american_stories,
+            ja_latin,
             partition_decade,
             curate_max_runtime_secs,
             titles_max_runtime_secs,
@@ -742,6 +757,7 @@ async fn command(
                 *full,
                 *synthetic,
                 *american_stories,
+                *ja_latin,
                 *partition_decade,
                 titles_left,
                 target,
@@ -848,6 +864,7 @@ mod tests {
             "run",
             "--full",
             "--american-stories",
+            "--ja-latin",
             "--partition-decade",
             "--titles-max-runtime-secs",
             "28800",
@@ -859,6 +876,7 @@ mod tests {
             titles_max_runtime_secs,
             full,
             american_stories,
+            ja_latin,
             partition_decade,
             ..
         } = cli.command
@@ -870,9 +888,10 @@ mod tests {
                 titles_max_runtime_secs,
                 full,
                 american_stories,
+                ja_latin,
                 partition_decade
             ),
-            (Some(28800), true, true, true)
+            (Some(28800), true, true, true, true)
         );
     }
 
@@ -927,6 +946,7 @@ mod tests {
         let Command::Release {
             target,
             american_stories,
+            ja_latin,
             partition_decade,
             ..
         } = cli.command
@@ -934,6 +954,7 @@ mod tests {
             panic!("not a release");
         };
         assert!(!american_stories, "off unless asked for");
+        assert!(!ja_latin, "off unless asked for");
         assert!(!partition_decade, "off unless asked for");
         assert_eq!(target.merge_timeout_secs, merges::DEFAULT_TIMEOUT_SECS);
         assert_eq!(target.min_free_gib, 0);

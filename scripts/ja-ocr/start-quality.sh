@@ -8,16 +8,18 @@
 #   scripts/ja-ocr/start-quality.sh prod mixed     # jaocr.py mixed instead (mixed.py)
 #   scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925   (american_stories.py)
 #   scripts/ja-ocr/start-quality.sh prod american-stories-write [--year 1865 ...]  (american_stories_write.py)
+#   scripts/ja-ocr/start-quality.sh prod targets [--mixed-below 0.65]   (jaocr.py targets: the OCR's page list)
+#   scripts/ja-ocr/start-quality.sh prod run [--mixed-below 0.65]       (the OCR itself, as a plain start does)
 #
 # The quality audit runs on the ja-ocr job, whose replicas share its work
-# (quality.py); mixed and the american-stories commands, which one replica does, run on the
+# (quality.py); mixed, targets and the american-stories commands, which one replica does, run on the
 # one-replica audit job (caj-usnm-jaone-<env>), so a second replica can't
 # fail the execution. `az containerapp job start
 # --args` sends a container without the image or settings, so this copies the
 # job's template and swaps only the arguments. Needs az signed in to the
 # environment's subscription and jq. Results: scripts/ja-ocr/quality-rows.sh.
 set -euo pipefail
-[ $# -ge 1 ] || { sed -n '2,19s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,21s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 shift
 die() { echo "error: $*" >&2; exit 1; }
@@ -34,6 +36,17 @@ if [ "${1:-}" = mixed ]; then
   job="caj-usnm-jaone-$ENV_NAME"
   shift
   [ $# -eq 0 ] || die "mixed takes no options"
+elif [ "${1:-}" = targets ] || [ "${1:-}" = run ]; then
+  # targets lists the pages once, on one replica, before the OCR job's
+  # replicas start (they would otherwise both list them, streaming every
+  # Japanese title's archive). run is the OCR job's own command, for a
+  # --mixed-below other than the default.
+  command=$1
+  [ "$command" = targets ] && job="caj-usnm-jaone-$ENV_NAME"
+  shift
+  for a in "$@"; do
+    [[ $a =~ ^(--mixed-below|0(\.[0-9]{1,2})?|1(\.0+)?)$ ]] || die "unexpected argument \"$a\" for $command"
+  done
 elif [ "${1:-}" = american-stories ] || [ "${1:-}" = american-stories-write ]; then
   command=$1
   job="caj-usnm-jaone-$ENV_NAME"

@@ -51,6 +51,8 @@ param cron string = ''
 param full bool = false
 @description('Index American Stories\' text with LoC\'s (04 §4.9, #218). The first run with it builds a full base; keep it on afterwards.')
 param americanStories bool = false
+@description('Give the pages LoC ships without text a main-index document with the Latin-script text our Japanese OCR read on them (04 §4.8, #203).')
+param jaLatin bool = false
 @description('Lay a full rebuild\'s base out by decade (#123, 05 §5.5.5), so date-limited searches skip the other decades\' splits. Only a full base takes it; deltas follow the published version.')
 param partitionDecade bool = false
 @minValue(1)
@@ -209,6 +211,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             ],
             full ? ['--full'] : [],
             americanStories ? ['--american-stories'] : [],
+            jaLatin ? ['--ja-latin'] : [],
             partitionDecade ? ['--partition-decade'] : []
           )
           resources: ingestResources

@@ -175,6 +175,31 @@ The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #
 
 Keep `USNM_AMERICAN_STORIES` set afterwards: weekly deltas then write the text for their pages too. Clearing it makes the next release publish a version without `american_stories`, so searches leave the text out (the quick way to switch it off, without a rebuild); setting it again rebuilds in full. To switch it off at once, without a release, publish a `current.json` without the key (05 §5.5.4).
 
+## Japanese OCR: mixed pages and English text
+
+**Mixed pages** (#204, 04 §4.8). The OCR job's targets (`targets-v3`) include the Japanese titles' pages whose LoC text is from 0.35 to under 0.65 word-like (`loc_text = mixed`, about 2,000 pages). List them once on the one-replica job, then start the OCR job as usual:
+
+```sh
+RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
+scripts/ja-ocr/start-quality.sh prod targets            # caj-usnm-jaone: writes ocr-ja/targets-v3.jsonl
+# its log ends with `targets written` and the pages by loc_text (mixed: about 2,000); then
+az containerapp job start -n caj-usnm-jaocr-prod -g "$RG"   # `run`: OCRs the targets not done yet
+```
+
+Listing streams the archive of every batch with a Japanese title again, as the first listing did, to find the pages LoC ships without text; pages already read are skipped by the run. Another cut: `start-quality.sh prod targets --mixed-below 0.8`, then `start-quality.sh prod run --mixed-below 0.8` (its own list and claims, `targets-v3-mixed80`); 0.35 or less lists no mixed pages. At the job's pace in October 2026 (a 2-page issue in about 21 s and a 4-page one in about 38 s per replica, mostly loc.gov's pacing) the 2,000 pages take about 5 hours on the two replicas, about $4.50 of Consumption time (2 × 4 vCPU and 8 GiB at about $0.43 an hour each), plus the listing. The next release publishes their Japanese text (an overlay-only release when nothing else is new). A mixed page joins the Japanese index only with Japanese on it: expect about 200 (Rocky Shimpo's front pages).
+
+**English text of our OCR** (#203, 04 §4.8). Off by default. With `USNM_JA_LATIN` (the job's `--ja-latin`), a release gives the pages LoC ships without text a main-index document with the Latin-script text our OCR read on them (their English ads, mastheads and sections), and gives a page LoC read badly our text in place of LoC's where ours reads more words. No full rebuild is forced:
+
+```sh
+scripts/settings.sh prod USNM_JA_LATIN true
+scripts/provision.sh prod
+```
+
+- The next release that builds a main index (the weekly delta) adds the pages LoC ships without text, a few thousand documents. An overlay-only release adds none. Its log has `indexed our Japanese OCR's Latin text` with `missing` and `in_place_of_locs`; `reference/<version>/ocr_ja.json` has `latin: {added, pages, hidden}`, `ja_latin.json` lists the pages, and the build record has `features.ja_latin`.
+- Our text in place of LoC's reaches a batch when a release indexes it, so for the published Japanese batches at the next [full rebuild](#full-rebuild) (with the setting on).
+- Check: an English search for a word in a Colorado Times ad (for example `"Larimer Street"` over 1945) finds pages marked "Our OCR", whose viewer link has no highlight. The page totals don't change: these pages were counted since #139.
+- Clearing the setting stops new documents; a delta keeps the ones already indexed, and the next full rebuild leaves them out.
+
 ## Check Japanese search
 
 Our OCR of the Japanese pages LoC ships without text (04 §4.8) goes live only with a release: each release reads the OCR job's output once, near its start, and logs `Japanese OCR overlay` with the pages it took. Pages the job reads after that wait for the next release; when nothing else is new, a run releases them on their own ("releasing the new Japanese OCR on the same indexes"). After a release publishes, check from outside:
@@ -241,7 +266,7 @@ Read the numbers with these limits in mind:
 
 ## Text the Japanese titles' pages hold that search can't reach
 
-`jaocr.py mixed` (`ja-ocr/mixed.py`) measures two gaps the Japanese OCR leaves. The OCR job reads a page only when LoC's text for it is missing, empty, short or under 35% word-like; a Japanese query searches only our OCR, any other query only LoC's text.
+`jaocr.py mixed` (`ja-ocr/mixed.py`) measures two gaps the Japanese OCR leaves. The OCR job read a page only when LoC's text for it was missing, empty, short or under 35% word-like; a Japanese query searches only our OCR, any other query only LoC's text. Its October 2026 results led to the `mixed` targets and the English text of our OCR in the main index ([above](#japanese-ocr-mixed-pages-and-english-text)); the command still measures by the 35% test.
 
 - Japanese on pages LoC read as words: a page with an English column and a Japanese one, read in English, can pass the 35% test, and its Japanese column is then garbled Latin. For every page with LoC text of a title that lists Japanese, in the batches that hold such titles, it counts pages by word-like share (bands from under 0.35 to 0.9 and over); the other titles in those batches, same scanning and OCR but English only, are the control.
 - English on the pages we read: NDLOCR-Lite reads some English (mastheads, short lines), but only into the Japanese index. For every page of our OCR it counts the tokens that are among English's 5,000 most frequent words (3 letters or more).

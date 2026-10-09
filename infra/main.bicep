@@ -57,6 +57,8 @@ param ingestFull bool = false
 @description('Index American Stories\' text with LoC\'s (#218): the first ingest run with it builds a full base. Keep it on afterwards; turning it off makes the next release publish a version whose searches leave the text out (docs/operations.md, "American Stories\' text").')
 param americanStories bool = false
 
+@description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
+param jaLatin bool = false
 @description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations.md, "Full rebuild").')
 param partitionDecade bool = false
 
@@ -406,6 +408,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     cron: ingestCron
     full: ingestFull
     americanStories: americanStories
+    jaLatin: jaLatin
     partitionDecade: partitionDecade
     workers: backfillWorkers
     backfillCron: backfillCron

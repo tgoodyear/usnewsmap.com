@@ -2,8 +2,9 @@
 
     python3 jaocr.py mixed
 
-The Japanese OCR job reads a page only when LoC's text for it is missing,
-empty, short or under 35% word-like (jaocr.needs_ocr); a Japanese query
+The Japanese OCR job read a page only when LoC's text for it was missing,
+empty, short or under 35% word-like (jaocr.needs_ocr before #204, which
+added the `mixed` pages up to 0.65; this still measures by 0.35); a Japanese query
 searches only our OCR, any other query only LoC's text. So two kinds of text
 can fall through:
 

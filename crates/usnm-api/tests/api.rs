@@ -579,6 +579,81 @@ async fn hits_are_sorted_marked_linked_and_paginated() {
     assert!(items.iter().all(|i| i["doc_id"] != second_first));
 }
 
+/// A page whose main-index document holds our OCR's Latin text (#203,
+/// the snapshot's `ja_latin.json`) is marked as our OCR in hits, and its
+/// viewer link has no highlight; the other hits are LoC's as before.
+#[tokio::test]
+async fn hits_on_our_latin_text_are_marked_as_our_ocr() {
+    use sha2::Digest;
+    let base = "/v1/hits?q=gold&place=P00001&limit=5";
+    let (_, _, before) = get(&state_with(None).await, base).await;
+    let ours = before["items"][0]["doc_id"].as_str().unwrap().to_owned();
+    let theirs = before["items"][1]["doc_id"].as_str().unwrap().to_owned();
+
+    // The fixture snapshot with `ja_latin.json` listing the first hit.
+    let dir = temp_data_dir("ja-latin");
+    let body = serde_json::to_vec(&json!({"pages": {&ours: {
+        "batch": "batch_fx", "loc_text": "missing", "ocr_source": "usnm-ndlocr-lite",
+        "ocr_engine": "ndlocr-lite 636d1cf",
+    }}}))
+    .unwrap();
+    std::fs::write(dir.join("fixture-v1/ja_latin.json"), &body).unwrap();
+    let manifest = dir.join("fixture-v1/manifest.json");
+    let mut m: Value = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    let digest: String = sha2::Sha256::digest(&body)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    m["files"].as_array_mut().unwrap().push(json!({
+        "path": "ja_latin.json", "sha256": digest, "bytes": body.len(),
+    }));
+    std::fs::write(&manifest, m.to_string()).unwrap();
+    let rd = RefData::load(&LocalStore::new(&dir)).await.unwrap();
+    assert_eq!(rd.ja_latin.len(), 1);
+    let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+
+    let (status, _, after) = get(&s, base).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(
+        after["total"], before["total"],
+        "the same pages, counted the same"
+    );
+    let item = |id: &str| {
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["doc_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let it = item(&ours);
+    assert_eq!(
+        it["ocr"],
+        json!({"source": "usnm-ndlocr-lite", "engine": "ndlocr-lite 636d1cf"})
+    );
+    assert!(!it["links"]["viewer"].as_str().unwrap().contains("&q="));
+    let it = item(&theirs);
+    assert!(it.get("ocr").is_none());
+    assert!(it["links"]["viewer"].as_str().unwrap().ends_with("&q=gold"));
+
+    // When the version hides our copy (another batch's copy of the page
+    // wins), its hits are that copy's, not ours.
+    let hidden = serde_json::to_vec(&json!([{"doc_id": &ours, "batch": "batch_fx"}])).unwrap();
+    std::fs::write(dir.join("fixture-v1/duplicates.json"), &hidden).unwrap();
+    let digest: String = sha2::Sha256::digest(&hidden)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let files = m["files"].as_array_mut().unwrap();
+    files.retain(|f| f["path"] != "duplicates.json");
+    files.push(json!({"path": "duplicates.json", "sha256": digest, "bytes": hidden.len()}));
+    std::fs::write(&manifest, m.to_string()).unwrap();
+    let rd = RefData::load(&LocalStore::new(&dir)).await.unwrap();
+    assert!(rd.ja_latin.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Matching pages per day for some places, against a brute-force pass over
 /// the fixture files and the aggregate's per-place totals.
 #[tokio::test]

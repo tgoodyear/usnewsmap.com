@@ -51,8 +51,9 @@ pub struct Hidden {
 /// Which copy of each duplicated page a version keeps.
 #[derive(Debug, Default)]
 pub struct Plan {
-    /// Pages with more than one copy: the batch whose copy is kept.
-    keep: HashMap<PageKey, String>,
+    /// Pages with more than one copy: the batch whose copy is kept, and
+    /// whether that copy has LoC's text.
+    keep: HashMap<PageKey, (String, bool)>,
     /// Copies beyond the first, per (lccn, day), to take off the counts.
     excess: HashMap<(String, u32), u32>,
     /// Copies with text that won't be indexed, per batch.
@@ -71,7 +72,13 @@ pub struct Plan {
 impl Plan {
     /// Whether `batch`'s copy of `key` is the one the version keeps.
     pub fn keeps(&self, key: &PageKey, batch: &str) -> bool {
-        self.keep.get(key).is_none_or(|b| b == batch)
+        self.keep.get(key).is_none_or(|(b, _)| b == batch)
+    }
+
+    /// Whether the copy of `key` the version keeps has LoC's text, when the
+    /// page has more than one copy (`None` when it has one).
+    pub fn kept_has_text(&self, key: &PageKey) -> Option<bool> {
+        self.keep.get(key).map(|(_, ok)| *ok)
     }
 
     /// Pages the summed counts overstate: (lccn, day, pages).
@@ -218,7 +225,7 @@ pub async fn plan(
         if c.len() < 2 {
             continue;
         }
-        let &(kept, _) = c
+        let &(kept, kept_ok) = c
             .iter()
             .min_by_key(|c| rank(c))
             .expect("two or more copies");
@@ -260,7 +267,7 @@ pub async fn plan(
                 *out.skipped_docs.entry(name(b).to_owned()).or_default() += 1;
             }
         }
-        out.keep.insert(key, name(kept).to_owned());
+        out.keep.insert(key, (name(kept).to_owned(), kept_ok));
     }
     out.hidden.sort();
     Ok(out)

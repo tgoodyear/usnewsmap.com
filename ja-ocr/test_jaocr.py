@@ -36,6 +36,49 @@ class Classify(unittest.TestCase):
         text = "Br H rJjr Jjw-Ini l iiiTTTTiwtiawyM d j.. s,y fr r vtT r i j TtTrHPPIIHHkVHHVBL"
         self.assertEqual(jaocr.needs_ocr("ok", text), "garbled")
 
+    def test_partly_words_is_mixed_under_the_setting(self):
+        text = "The camp council met today rJjr TtTrH iiiTTTT s,y d"
+        self.assertAlmostEqual(jaocr.wordlike_share(text), 0.5)
+        self.assertEqual(jaocr.needs_ocr("ok", text), "mixed")
+        self.assertIsNone(jaocr.needs_ocr("ok", text, mixed_below=0.5))
+        self.assertIsNone(jaocr.needs_ocr("ok", text, mixed_below=0.35))
+        self.assertEqual(jaocr.needs_ocr("ok", text, mixed_below=0.8), "mixed")
+        # Under 0.35 stays garbled whatever the setting.
+        self.assertEqual(jaocr.needs_ocr("ok", "rJjr TtTrH iiiTTTT s,y d The", mixed_below=0), "garbled")
+
+    def test_each_setting_has_its_own_targets_list(self):
+        self.assertEqual(jaocr.targets_name(), jaocr.TARGETS)
+        self.assertEqual(jaocr.targets_name(jaocr.MIXED_BELOW), "targets-v3")
+        self.assertEqual(jaocr.targets_name(0.8), "targets-v3-mixed80")
+        self.assertEqual(jaocr.targets_name(0.35), "targets-v3-mixed35")
+        self.assertEqual(jaocr.targets_name(0.05), "targets-v3-mixed05")
+        self.assertEqual(jaocr.targets_name(1.0), "targets-v3-mixed100")
+        # Cuts between whole percentages would share a list: refused.
+        for bad in (0.649, 0.651):
+            with self.assertRaises(ValueError):
+                jaocr.targets_name(bad)
+
+    def test_mixed_below_setting(self):
+        old = os.environ.pop("JAOCR_MIXED_BELOW", None)
+        try:
+            self.assertEqual(jaocr.mixed_below_setting(None), jaocr.MIXED_BELOW)
+            os.environ["JAOCR_MIXED_BELOW"] = "0.5"
+            self.assertEqual(jaocr.mixed_below_setting(None), 0.5)
+            self.assertEqual(jaocr.mixed_below_setting(0.8), 0.8)
+            with self.assertRaises(ValueError):
+                jaocr.mixed_below_setting(1.5)
+            self.assertEqual(jaocr.mixed_below_setting(0.07), 0.07)
+            for bad in (0.649, 0.651, 0.655):
+                with self.assertRaisesRegex(ValueError, "whole percentage"):
+                    jaocr.mixed_below_setting(bad)
+            os.environ["JAOCR_MIXED_BELOW"] = "0.649"
+            with self.assertRaises(ValueError):
+                jaocr.mixed_below_setting(None)
+        finally:
+            os.environ.pop("JAOCR_MIXED_BELOW", None)
+            if old is not None:
+                os.environ["JAOCR_MIXED_BELOW"] = old
+
     def test_japanese_titles(self):
         titles = [{"lccn": "a", "languages": ["eng", "jpn"]}, {"lccn": "b", "languages": ["eng"]},
                   {"lccn": "c"}]
@@ -179,9 +222,10 @@ class Resilience(unittest.TestCase):
                      "date": f"1945-01-0{i}", "edition": 1, "seq": 1, "batch": "b", "loc_text": "missing"}
                     for i in (1, 2)]
             cur.write(f"ocr-ja/{jaocr.TARGETS}.jsonl", "\n".join(json.dumps(r) for r in rows).encode())
-            # Both have text from before ALTO; only the first has ALTO. Its old claim is spent.
+            # Both have text from before ALTO; only the first has ALTO. An
+            # older list's claim of the issue doesn't hold it back.
             cur.write(f"ocr-ja/alto/{rows[0]['doc_id']}.xml", b"<alto/>")
-            cur.write(f"ocr-ja/claims/{jaocr.TARGETS}/sn1_1945-01-02_ed-1.json", b"{}")
+            cur.write("ocr-ja/claims/targets-v2-alto/sn1_1945-01-02_ed-1.json", b"{}")
             seen = []
             orig_done, orig_ocr = jaocr.done_pages, jaocr.ocr_issue
             jaocr.done_pages = lambda c, parts: {r["doc_id"] for r in rows}
@@ -191,7 +235,7 @@ class Resilience(unittest.TestCase):
             finally:
                 jaocr.done_pages, jaocr.ocr_issue = orig_done, orig_ocr
             self.assertEqual(seen, ["sn1_1945-01-02_ed-1"])
-            self.assertTrue(cur.exists(f"ocr-ja/claims/{jaocr.CLAIMS}/sn1_1945-01-02_ed-1.json"))
+            self.assertTrue(cur.exists(f"ocr-ja/claims/{jaocr.TARGETS}/sn1_1945-01-02_ed-1.json"))
 
     def test_status_estimates_the_finish(self):
         from datetime import datetime, timedelta, timezone
@@ -260,6 +304,8 @@ class Parquet(unittest.TestCase):
             ("sn1/1945-01-01/ed-1/seq-1", "sn1", 1, "ok", english),
             ("sn1/1945-01-01/ed-1/seq-2", "sn1", 2, "empty", None),
             ("sn1/1945-01-01/ed-1/seq-3", "sn1", 3, "ok", "Br H rJjr Jjw-Ini iiiTTTTiwtiawyM d j s,y fr"),
+            # Half words: an English column beside one LoC couldn't read.
+            ("sn1/1945-01-01/ed-1/seq-5", "sn1", 5, "ok", "The camp council met today rJjr TtTrH iiiTTTT s,y d"),
             ("sn2/1945-01-01/ed-1/seq-1", "sn2", 1, "empty", None),
         ]
         import datetime as dt
@@ -284,8 +330,11 @@ class Parquet(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ref, cur = self.fixture(d)
             got = jaocr.targets(ref, cur, datasets=[])
-            self.assertEqual([(r["seq"], r["loc_text"]) for r in got], [(2, "empty"), (3, "garbled")])
+            self.assertEqual([(r["seq"], r["loc_text"]) for r in got],
+                             [(2, "empty"), (3, "garbled"), (5, "mixed")])
             self.assertEqual(got[0]["date"], "1945-01-01")
+            got = jaocr.targets(ref, cur, datasets=[], mixed_below=0.35)
+            self.assertEqual([(r["seq"], r["loc_text"]) for r in got], [(2, "empty"), (3, "garbled")])
 
     def test_targets_add_pages_missing_from_the_archives(self):
         with tempfile.TemporaryDirectory() as d:
@@ -302,7 +351,8 @@ class Parquet(unittest.TestCase):
             finally:
                 jaocr.list_archive = orig
             self.assertEqual([(r["seq"], r["loc_text"], r["batch"]) for r in got],
-                             [(2, "empty", "b1"), (3, "garbled", "b1"), (4, "missing", "b1")])
+                             [(2, "empty", "b1"), (3, "garbled", "b1"), (4, "missing", "b1"),
+                              (5, "mixed", "b1")])
             self.assertEqual(got[2]["doc_id"], "sn1_1945-01-01_ed-1_seq-4")
 
     def test_done_is_per_page(self):

@@ -155,6 +155,34 @@ pub const DUPLICATES_FILE: &str = "duplicates.json";
 /// existed don't have it.
 pub const LANGUAGE_BASELINES_FILE: &str = "language_baselines.json";
 
+/// The file in a version's reference snapshot with the pages whose main-index
+/// document holds the Latin-script text of our own OCR rather than LoC's
+/// ([`JaLatin`], #203, 04 §4.8). Only versions with such pages have it.
+pub const JA_LATIN_FILE: &str = "ja_latin.json";
+
+/// The pages a main index of the version holds with the Latin-script text
+/// our Japanese OCR read rather than LoC's, keyed by `doc_id`: pages LoC
+/// ships without text (`loc_text = missing`; their English ads, mastheads
+/// and sections), and pages whose LoC text our reading beats (`garbled`,
+/// `short`, `empty`, `mixed`). The API marks their hits as our OCR, as it
+/// does the Japanese index's.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JaLatin {
+    pub pages: std::collections::BTreeMap<String, JaLatinPage>,
+}
+
+/// One page of [`JaLatin`]: the batch its document carries (the one whose
+/// archive had no `ocr.txt` for it) and who read it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JaLatinPage {
+    pub batch: String,
+    /// Why our OCR read the page (the overlay's `loc_text`): `missing` for a
+    /// page with no LoC copy in the version, else the page's LoC copy.
+    pub loc_text: String,
+    pub ocr_source: String,
+    pub ocr_engine: String,
+}
+
 /// Pages published per place and day, split by the languages the pages' title
 /// lists. A page counts in exactly one set, so any selection of languages
 /// sums the sets that share one of them without counting a page twice.

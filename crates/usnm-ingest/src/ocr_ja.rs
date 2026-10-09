@@ -8,7 +8,13 @@
 //! `infra/quickwit/pages-ja-index.yaml`), rebuilt at every release, and adds
 //! the pages curation never had (`loc_text = missing`: no `ocr.txt` in LoC's
 //! archive) to the version's baselines. Pages curation did have (empty,
-//! short or garbled LoC text) are already counted there.
+//! short, garbled or mixed LoC text) are already counted there.
+//!
+//! With `--ja-latin` (#203), the missing pages also get a main-index document
+//! holding the Latin-script text our OCR read on them ([`latin_text`]: the
+//! English ads, mastheads and sections), so English searches reach them.
+//! Each page is counted once: the baselines have it already, and a query
+//! searches either the main indexes or the Japanese one, never both.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,7 +52,9 @@ pub const OCR_JA_FILE: &str = "ocr_ja.json";
 pub struct JaPage {
     pub key: PageKey,
     pub batch: String,
-    /// Why LoC's text wasn't used: `missing`, `empty`, `short` or `garbled`.
+    /// Why LoC's text wasn't used: `missing`, `empty`, `short`, `garbled`
+    /// or `mixed` (word-like enough to keep, but likely a page with a
+    /// Japanese column LoC read as Latin, #204).
     pub loc_text: String,
     pub ok: bool,
     pub printed: Option<String>,
@@ -57,9 +65,30 @@ pub struct JaPage {
 }
 
 impl JaPage {
-    /// Whether the page goes into the Japanese index: our OCR found text.
+    /// Whether the page goes into the Japanese index: our OCR found text,
+    /// and on a `mixed` page (one LoC read as mostly words) some Japanese.
+    /// Such a page is in the main index with LoC's text already; when our
+    /// OCR finds no Japanese on it, it is an English page that LoC read
+    /// badly, not a Japanese one.
     pub fn indexable(&self) -> bool {
-        self.ok && self.printed.is_some()
+        let Some(printed) = self.printed.as_deref() else {
+            return false;
+        };
+        self.ok && (self.loc_text != "mixed" || japanese_chars(printed) >= MIN_MIXED_JA_CHARS)
+    }
+
+    /// The Latin-script text our OCR read on this page (#203), for its
+    /// main-index document, or `None` with less than
+    /// [`usnm_core::text::MIN_PAGE_CHARS`] of it, the bar LoC's own text has
+    /// to clear (04 §4.5). A page curation never had gets a document with
+    /// it; a page curation had gets it in place of LoC's text when it reads
+    /// more words ([`better_than_locs`]).
+    pub fn latin(&self) -> Option<String> {
+        if !self.ok {
+            return None;
+        }
+        let text = latin_text(self.printed.as_deref()?);
+        (usnm_core::text::text_status(&text) == usnm_core::text::TextStatus::Ok).then_some(text)
     }
 
     /// A page curation never saw: not in any `counts.json`, so not in the baselines.
@@ -227,6 +256,108 @@ pub fn ja_doc(page: &JaPage, title: &Title, place: &Place) -> Value {
     })
 }
 
+/// The rule [`latin_text`] reads the Latin-script text by, recorded in a
+/// version's build record when it writes such text (`--ja-latin`).
+pub const LATIN_VERSION: u32 = 1;
+
+/// Japanese characters a `mixed` page's OCR needs to join the Japanese index:
+/// a short line of Japanese. NDLOCR-Lite reading an English page puts out a
+/// few Japanese-looking characters for specks and rules (一, ー, ロ): at most
+/// 13 on 42 sampled English pages, against 1,433 or more on the mixed ones
+/// (04 §4.8).
+pub const MIN_MIXED_JA_CHARS: usize = 20;
+
+/// The Japanese characters (kana, Han) in `text`.
+pub fn japanese_chars(text: &str) -> usize {
+    text.chars().filter(|c| ja::is_ja(*c)).count()
+}
+
+/// A character of Latin-script text: ASCII (after folding full-width forms,
+/// [`fold_fullwidth`]), Latin letters with diacritics, and the general
+/// punctuation English print uses (dashes, curly quotes).
+fn is_latin_run_char(c: char) -> bool {
+    c.is_ascii() || matches!(c, '\u{00A0}'..='\u{024F}' | '\u{2010}'..='\u{205E}')
+}
+
+/// Full-width ASCII forms (`Ｄｅｎｖｅｒ`, which a Japanese engine may put out for
+/// Latin set in Japanese type) as ASCII.
+fn fold_fullwidth(c: char) -> char {
+    match c {
+        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+        '\u{3000}' => ' ',
+        c => c,
+    }
+}
+
+/// The Latin-script text in our OCR of a page (#203): on each line, the runs
+/// between Japanese characters and Japanese punctuation that hold at least
+/// two Latin letters (`Moritz Drug Co`, `2001 Larimer St., Denver`), joined
+/// by spaces, a line per line, then normalized as LoC's text is (04 §4.5).
+/// Numbers alone in Japanese text (`1945年`) and stray letters are left out.
+pub fn latin_text(printed: &str) -> String {
+    let mut out = String::new();
+    for line in printed.lines() {
+        let mut kept: Vec<String> = Vec::new();
+        let mut run = String::new();
+        let mut flush = |run: &mut String| {
+            let letters = run.chars().filter(|c| c.is_alphabetic()).count();
+            let trimmed = run.trim();
+            if letters >= 2 {
+                kept.push(trimmed.to_owned());
+            }
+            run.clear();
+        };
+        for c in line.chars().map(fold_fullwidth) {
+            if is_latin_run_char(c) && !c.is_control() {
+                run.push(c);
+            } else {
+                flush(&mut run);
+            }
+        }
+        flush(&mut run);
+        if !kept.is_empty() {
+            out.push_str(&kept.join(" "));
+            out.push('\n');
+        }
+    }
+    usnm_core::text::normalize_ocr(&out)
+}
+
+/// Tokens that look like words, by `ja-ocr/jaocr.py`'s rule (`WORDLIKE`,
+/// the test that picks pages for our OCR): after trimming `.,;:!?'"()`, a
+/// lower-case word of 2 letters or more, optionally capitalized, or 3 to 15
+/// capitals. OCR noise mixes case and letters with digits and symbols.
+pub fn wordlike_tokens(text: &str) -> usize {
+    text.split_whitespace()
+        .map(|w| w.trim_matches(|c| ".,;:!?'\"()".contains(c)))
+        .filter(|w| {
+            let n = w.chars().count();
+            let lower = |s: &str| s.len() >= 2 && s.chars().all(|c| c.is_ascii_lowercase());
+            let rest = w
+                .strip_prefix(|c: char| c.is_ascii_uppercase())
+                .unwrap_or(w);
+            lower(rest) || ((3..=15).contains(&n) && w.chars().all(|c| c.is_ascii_uppercase()))
+        })
+        .count()
+}
+
+/// Whether our Latin text should stand in for LoC's on a page curation had
+/// (#203): it holds more word-like tokens. On the English pages LoC read
+/// badly (mimeographed bulletins, `garbled` and the lower `mixed` bands),
+/// NDLOCR-Lite read 1,245 common English words on four sampled pages where
+/// LoC's text had 339 (04 §4.8).
+pub fn better_than_locs(ours: &str, locs: Option<&str>) -> bool {
+    wordlike_tokens(ours) > wordlike_tokens(locs.unwrap_or_default())
+}
+
+/// The main-index document of a page curation never had (#203): the main
+/// index's fields ([`crate::release::main_doc`]) with `latin` as its text.
+/// With `decade`, the page's decade partition too (05 §5.5.5), as every
+/// main-index document of a version laid out by decade has.
+pub fn latin_doc(page: &JaPage, latin: &str, title: &Title, place: &Place, decade: bool) -> Value {
+    crate::release::main_doc(&page.key, &page.batch, latin, title, place, None, decade)
+}
+
 /// What our OCR found on a page: `japanese` (at least 20 characters, half of
 /// them or more Japanese), `near_blank` (under 20 characters: a blank page,
 /// a picture, a masthead) or `mostly_latin` (the rest). For the snapshot's
@@ -286,6 +417,97 @@ mod tests {
         );
         assert_eq!(kind(Some("  ﾉ 1 \n")), "near_blank");
         assert_eq!(kind(None), "near_blank");
+    }
+
+    #[test]
+    fn keeps_the_latin_runs_of_a_page() {
+        // Lines from NDLOCR-Lite's reading of a Colorado Times page (1945-03-29, seq 4).
+        let printed = "ハート山通信 雨宮一聲\n\
+            Moritz Drug Co\n\
+            2001 Larimer St., Denver\n\
+            比較して、 ) (一二\n\
+            一月上旬ハ千七百臺であつ\n\
+            1946年 パウエル市 Powell 開拓局\n\
+            Ｄｅｎｖｅｒ　２\n\
+            UMEYA COMPANY\n\
+            x";
+        assert_eq!(
+            latin_text(printed),
+            "Moritz Drug Co\n2001 Larimer St., Denver\nPowell\nDenver 2\nUMEYA COMPANY"
+        );
+        assert_eq!(latin_text("去年の大記事は何?やはり西歐大侵略戰。1945"), "");
+    }
+
+    fn page(loc_text: &str, printed: &str) -> JaPage {
+        JaPage {
+            key: PageKey::new(
+                "sn83025518",
+                chrono::NaiveDate::from_ymd_opt(1945, 3, 29).unwrap(),
+                1,
+                4,
+            )
+            .unwrap(),
+            batch: "batch_dlc_dupontcircle".into(),
+            loc_text: loc_text.into(),
+            ok: true,
+            printed: Some(printed.into()),
+            ocr_source: "usnm-ndlocr-lite".into(),
+            ocr_engine: "ndlocr-lite test".into(),
+            ocred_at: 0,
+            part: "p".into(),
+        }
+    }
+
+    #[test]
+    fn latin_text_needs_twenty_characters() {
+        let ads = "Moritz Drug Co\n2001 Larimer St., Denver\n日本語の記事";
+        for loc_text in ["missing", "garbled", "short", "empty", "mixed"] {
+            assert_eq!(
+                page(loc_text, ads).latin().as_deref(),
+                Some("Moritz Drug Co\n2001 Larimer St., Denver"),
+                "{loc_text}"
+            );
+        }
+        // Under 20 characters, like LoC's `short` pages: no document.
+        assert_eq!(page("missing", "ROCKY SHIMPO\n日本").latin(), None);
+        let mut blank = page("missing", ads);
+        blank.ok = false;
+        assert_eq!(blank.latin(), None);
+    }
+
+    #[test]
+    fn counts_word_like_tokens_as_the_job_does() {
+        // jaocr.py WORDLIKE: "The", "relocation", "WAR", "Denver," and "(news)".
+        assert_eq!(
+            wordlike_tokens("The relocation WAR Denver, (news) tbE aB 1945 x Ab ABCDEFGHIJKLMNOP"),
+            5
+        );
+        let locs = "Br H rJjr Jjw-Ini l iiiTTTTiwtiawyM d j.. s,y fr r vtT the";
+        assert!(better_than_locs(
+            "The relocation center held a meeting",
+            Some(locs)
+        ));
+        assert!(!better_than_locs(
+            "THE OUTPOST",
+            Some("The relocation center held a meeting")
+        ));
+        assert!(better_than_locs("THE OUTPOST", None));
+        assert!(!better_than_locs("1945 ー", None));
+    }
+
+    #[test]
+    fn a_mixed_page_joins_the_japanese_index_only_with_japanese_on_it() {
+        let english = "THE ROHWER OUTPOST Saturday, March 24, 1945 一 ロ ー";
+        assert!(!page("mixed", english).indexable());
+        assert!(
+            page("garbled", english).indexable(),
+            "unchanged for the others"
+        );
+        let mixed = format!(
+            "{english}\n{}",
+            "去年の大記事は何?やはり西歐大侵略戰。米國通信社の面白い調査"
+        );
+        assert!(page("mixed", &mixed).indexable());
     }
 
     #[test]

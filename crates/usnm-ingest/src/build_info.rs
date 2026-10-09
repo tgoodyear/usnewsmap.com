@@ -35,6 +35,9 @@ pub struct Built {
     /// The version has American Stories' text (`--american-stories`): the
     /// main index this run writes has it, and so do the ones it keeps.
     pub american_stories: bool,
+    /// The release writes our Japanese OCR's Latin text for the pages LoC
+    /// ships without text (`--ja-latin`, #203).
+    pub ja_latin: bool,
     /// The decade layout (05 §5.5.5): of the main index this run writes,
     /// and of the version's main indexes, which all have the `decade` field
     /// or none does.
@@ -88,6 +91,9 @@ pub fn summary(b: &Built) -> Value {
     if b.american_stories {
         features["american_stories"] = json!(usnm_core::american_stories::VERSION);
     }
+    if b.ja_latin {
+        features["ja_latin"] = json!(crate::ocr_ja::LATIN_VERSION);
+    }
     // Likewise, as its `decades`.
     if b.decades.on() {
         features["decades"] = json!(usnm_core::decade::VERSION);
@@ -115,8 +121,21 @@ mod tests {
             engine: Some("Quickwit 0.9.1".into()),
             writer: crate::sink::WriterTuning::default(),
             american_stories: false,
+            ja_latin: false,
             decades: crate::sink::Decades::Off,
         }
+    }
+
+    #[test]
+    fn records_the_latin_text_only_for_a_version_with_it() {
+        let v = summary(&built(true, false));
+        assert!(v["features"].get("ja_latin").is_none(), "{v}");
+        let mut b = built(true, false);
+        b.ja_latin = true;
+        assert_eq!(
+            summary(&b)["features"]["ja_latin"],
+            crate::ocr_ja::LATIN_VERSION
+        );
     }
 
     #[test]

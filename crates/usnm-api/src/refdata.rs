@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
 use usnm_state::state::{
-    LanguageBaselines, LanguageSet, DUPLICATES_FILE, LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
+    JaLatin, JaLatinPage, LanguageBaselines, LanguageSet, DUPLICATES_FILE, JA_LATIN_FILE,
+    LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
 };
 use usnm_store::{is_safe_segment, ObjectStore};
 
@@ -116,6 +117,10 @@ pub struct RefData {
     /// Copies of duplicated pages that an index of the version holds but
     /// searches must not see, from the snapshot's `duplicates.json`.
     pub hidden: Vec<HiddenCopy>,
+    /// Pages whose main-index document holds our own OCR's Latin-script
+    /// text, not LoC's (#203), from the snapshot's `ja_latin.json`: their
+    /// hits are marked as our OCR. Empty for snapshots without it.
+    pub ja_latin: HashMap<String, JaLatinPage>,
 }
 
 /// One copy of a page to hide: the document `doc_id` from `batch`.
@@ -203,6 +208,10 @@ impl RefData {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
         };
+        let ja_latin = match optional(JA_LATIN_FILE) {
+            Some(entry) => Some(fetch_checked(store, dir, entry).await?),
+            None => None,
+        };
         let published_batches = manifest.built_from.map(|b| {
             b.batches
                 .into_iter()
@@ -222,12 +231,27 @@ impl RefData {
                 }
                 rd.language_baselines = Some(lb.sets);
             }
+            if let Some((path, bytes)) = ja_latin {
+                let latin: JaLatin = parse(&path, &bytes)?;
+                rd.ja_latin = latin.pages.into_iter().collect();
+            }
             Ok::<_, String>(rd)
         })
         .await
         .map_err(|e| e.to_string())??;
         refdata.published_batches = published_batches;
         refdata.duplicate_pages = manifest.duplicate_pages;
+        // A copy of ours that the version hides isn't what its hits show.
+        if !refdata.ja_latin.is_empty() {
+            let hidden_ours: std::collections::HashSet<(&str, &str)> = hidden
+                .iter()
+                .filter(|h: &&HiddenCopy| refdata.ja_latin.contains_key(&h.doc_id))
+                .map(|h| (h.doc_id.as_str(), h.batch.as_str()))
+                .collect();
+            refdata
+                .ja_latin
+                .retain(|doc_id, p| !hidden_ours.contains(&(doc_id.as_str(), p.batch.as_str())));
+        }
         refdata.hidden = hidden;
         Ok(refdata)
     }
@@ -274,6 +298,7 @@ impl RefData {
             published_batches: None,
             duplicate_pages: None,
             hidden: Vec::new(),
+            ja_latin: HashMap::new(),
         })
     }
 

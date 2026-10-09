@@ -128,7 +128,7 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 | Field | Type | Indexed | Fast/Facet/Sort | Stored | Purpose |
 |-------|------|---------|-----------------|--------|---------|
 | `doc_id` | keyword | key | ✅ | ✅ | Identity |
-| `text` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | Search |
+| `text` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | Search. LoC's text, or with `--ja-latin` the Latin-script text of our Japanese OCR on the pages the snapshot's `ja_latin.json` lists (04 §4.8, #203) |
 | `text_cg` | text (positions) | ✅ tokenizer `whitespace` | – | – | Phrases holding common words (§5.5.3) |
 | `text_as` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | American Stories' text of the page, searched with `text` (§5.5.4) |
 | `text_as_cg` | text (positions) | ✅ tokenizer `whitespace` | – | – | `text_as`'s common-word pairs (§5.5.3, §5.5.4) |
