@@ -23,7 +23,7 @@ The API (`usnm-api`) is configured with environment variables. Defaults suit loc
 | `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |
 | `USNM_PREWARM_BUDGET_SECS` | `900` | Cache warm-up before a publish swaps a version in: limit on the whole run; the rest is skipped |
 | `USNM_PREWARM_STARTUP_BUDGET_SECS` | `300` | The same limit for the warm-up after a start, which can go on past the readiness cap while the replica serves |
-| `USNM_PREWARM_TOP_SEARCHES` | `20` | Cache warm-up: after the examples, this many of the most frequent searches in the search log (`0` turns it off) |
+| `USNM_PREWARM_TOP_SEARCHES` | `20` | Cache warm-up: after the examples, this many of the most frequent searches in the search log; the examples searched most go first (`0` turns both off) |
 | `USNM_PREWARM_LOG_DAYS` | `28` | Cache warm-up: how many days of the search log are counted, back from yesterday |
 | `USNM_READY_CAP_SECS` | `60` | After a start, `/readyz` reports ready once the warm-up ends or this much time passes |
 | `USNM_CACHE_MB` | `256` | In-process response cache size |

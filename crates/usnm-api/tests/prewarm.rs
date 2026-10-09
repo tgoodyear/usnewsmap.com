@@ -61,6 +61,8 @@ struct Counting {
     fail_first: AtomicUsize,
     /// Every call is refused as a bad request (a Quickwit 4xx).
     reject: bool,
+    /// The query of each summary call (one per search), in order.
+    searched: std::sync::Mutex<Vec<String>>,
 }
 
 impl Counting {
@@ -72,6 +74,7 @@ impl Counting {
             fail,
             fail_first: AtomicUsize::new(0),
             reject: false,
+            searched: Default::default(),
         })
     }
 
@@ -83,6 +86,7 @@ impl Counting {
             fail: false,
             fail_first: AtomicUsize::new(0),
             reject: true,
+            searched: Default::default(),
         })
     }
 
@@ -145,6 +149,7 @@ impl SearchBackend for Counting {
         f: &Filters,
         s: &BucketSpec,
     ) -> Result<Summary, SearchError> {
+        self.searched.lock().unwrap().push(q.to_string());
         self.enter().await?;
         self.inner.summary(i, q, f, s).await
     }
@@ -391,10 +396,19 @@ async fn warm_up_reports_what_it_ran() {
     assert_eq!(visit_examples(&state, &backend, "fixture-v1").await, 0);
 
     // Again: everything is in the in-process cache already.
+    let n = prewarm::examples().len();
+    assert_eq!(report.examples, n);
+    assert_eq!(report.examples_warm, n, "{report:?}");
+    assert_eq!(report.computed, n, "{report:?}");
+    assert_eq!(report.cached, 0, "{report:?}");
     let calls = backend.calls();
     let again = prewarm::run(&state, snap, Trigger::Startup).await;
     assert_eq!(again.ok, queries);
     assert_eq!(backend.calls(), calls);
+    // Read from the in-process cache: nothing computed.
+    assert_eq!(again.cached, n, "{again:?}");
+    assert_eq!(again.computed, 0, "{again:?}");
+    assert_eq!(again.examples_warm, n, "{again:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -422,6 +436,14 @@ async fn a_slow_backend_holds_the_swap_for_the_budget_at_most() {
         report.ok + report.timed_out + report.skipped,
         1 + prewarm::examples().len(),
         "no coverage without its search: {report:?}"
+    );
+    // Every example was either computed (and timed out) or skipped.
+    assert_eq!(report.examples_warm, 0, "{report:?}");
+    assert_eq!(report.cached, 0, "{report:?}");
+    assert_eq!(
+        report.computed + report.skipped,
+        prewarm::examples().len(),
+        "{report:?}"
     );
 
     // A publish swaps once the budget is spent, and v1 serves meanwhile.
@@ -704,5 +726,254 @@ async fn logged_searches_wait_for_the_examples_and_the_budget() {
     assert!(started.elapsed() < Duration::from_secs(2), "{report:?}");
     assert_eq!(report.from_log, 0, "{report:?}");
     log.shutdown(Duration::from_secs(5)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A store that counts the reads in flight at once, each held `delay`.
+#[derive(Debug)]
+struct Gauged {
+    inner: LocalStore,
+    delay: Duration,
+    reading: AtomicUsize,
+    most: AtomicUsize,
+    reads: AtomicUsize,
+}
+
+impl Gauged {
+    fn new(dir: &Path, delay: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            inner: LocalStore::new(dir),
+            delay,
+            reading: AtomicUsize::new(0),
+            most: AtomicUsize::new(0),
+            reads: AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait]
+impl usnm_store::ObjectStore for Gauged {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        let now = self.reading.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(self.delay).await;
+        let found = self.inner.get(path).await;
+        self.reading.fetch_sub(1, Ordering::SeqCst);
+        found
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.inner.put_new(path, body, content_type).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.inner.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.inner.list(prefix).await
+    }
+}
+
+/// After a start, the searches the persistent cache holds (an earlier
+/// replica's warm-up wrote them) are read, a few at a time, not computed:
+/// a slow searcher costs the run nothing, and the budget meant for
+/// computations doesn't cut it short.
+#[tokio::test]
+async fn after_a_start_cached_searches_are_read_not_computed() {
+    let dir = temp_reference("blob-first");
+    let cache = dir.join("cache");
+    // An earlier replica: computes everything and persists it.
+    let mut cfg = config();
+    cfg.persist_after = Duration::ZERO;
+    let earlier = Counting::new(Duration::ZERO, false);
+    let first = Arc::new(
+        reloading_state(&dir, cfg, earlier.clone())
+            .await
+            .with_response_store(Arc::new(LocalStore::new(&cache))),
+    );
+    let report = prewarm::run(&first, first.snapshot.load_full(), Trigger::Startup).await;
+    let n = prewarm::examples().len();
+    assert_eq!(report.computed, n, "{report:?}");
+    let (_, distinct) = load_examples(&first, &earlier, "fixture-v1").await;
+    for _ in 0..200 {
+        if persisted(&cache, "fixture-v1") == distinct {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(persisted(&cache, "fixture-v1"), distinct);
+
+    // A new replica with a searcher that would take 30 s per call, and a
+    // budget far too short to compute anything.
+    let mut cfg = config();
+    cfg.prewarm_startup_budget = Duration::from_secs(3);
+    let slow = Counting::new(Duration::from_secs(30), false);
+    let store = Gauged::new(&cache, Duration::from_millis(20));
+    let state = Arc::new(
+        reloading_state(&dir, cfg, slow.clone())
+            .await
+            .with_response_store(store.clone()),
+    );
+    let started = Instant::now();
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert!(started.elapsed() < Duration::from_secs(3), "{report:?}");
+    assert_eq!(slow.calls(), 0, "nothing was computed: {report:?}");
+    assert_eq!(report.cached, n, "{report:?}");
+    assert_eq!(report.computed, 0, "{report:?}");
+    assert_eq!(report.examples_warm, n, "{report:?}");
+    assert_eq!(report.skipped, 0, "{report:?}");
+    assert_eq!(report.ok, report.queries, "{report:?}");
+    // One read per example, several at once, never more than the bound.
+    assert_eq!(store.reads.load(Ordering::SeqCst), n);
+    let most = store.most.load(Ordering::SeqCst);
+    assert!(
+        most > 1 && most <= prewarm::LOADS_AT_ONCE,
+        "{most} reads at once"
+    );
+    // Visitors find every example in the in-process cache.
+    let reads = store.reads.load(Ordering::SeqCst);
+    assert_eq!(visit_examples(&state, &slow, "fixture-v1").await, 0);
+    assert_eq!(store.reads.load(Ordering::SeqCst), reads);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The examples visitors searched most (in the search log) are computed
+/// first, then the rest in the file's order.
+#[tokio::test]
+async fn the_most_searched_examples_are_warmed_first() {
+    use usnm_api::searchlog::{day_path, LogConfig, SearchLog};
+    use usnm_core::params::{RawParams, SearchRequest};
+    use usnm_store::ObjectStore;
+
+    let dir = temp_reference("order");
+    let store = Arc::new(LocalStore::new(dir.join("searches")));
+    let yesterday = chrono::Utc::now().date_naive().pred_opt().unwrap();
+    let bounds = (
+        chrono::NaiveDate::from_ymd_opt(1770, 1, 1).unwrap(),
+        chrono::NaiveDate::from_ymd_opt(1963, 12, 31).unwrap(),
+    );
+    let ex = prewarm::examples();
+    let request = |e: &prewarm::Example| {
+        SearchRequest::from_raw(&RawParams::parse(&e.aggregate).unwrap(), bounds).unwrap()
+    };
+    // The search log's record of a visitor running example `e`.
+    let clicked = |e: &prewarm::Example| {
+        let req = request(e);
+        let mut r = record(&req.query.to_string(), yesterday);
+        r.from = req.filters.from;
+        r.to = req.filters.to;
+        r.bucket = req.bucket.as_str().into();
+        r.lang = req.filters.langs.clone();
+        r.state = req.filters.states.clone();
+        assert_eq!(
+            usnm_api::searchlog::canonical(&r, bounds),
+            Some(req.canonical()),
+            "{}",
+            e.id
+        );
+        serde_json::to_string(&r).unwrap()
+    };
+    let (last, tenth) = (&ex[ex.len() - 1], &ex[9]);
+    let lines = [
+        clicked(tenth),
+        clicked(last),
+        clicked(last),
+        clicked(tenth),
+        clicked(last),
+    ];
+    store
+        .put(
+            &day_path(yesterday),
+            lines.join("\n").into_bytes(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    let log = SearchLog::start(
+        store,
+        LogConfig {
+            flush_interval: Duration::from_secs(3600),
+            ..LogConfig::default()
+        },
+        &opentelemetry::global::meter("test"),
+    );
+    let backend = Counting::new(Duration::ZERO, false);
+    let state = Arc::new(
+        reloading_state(&dir, config(), backend.clone())
+            .await
+            .with_search_log(log.clone()),
+    );
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert_eq!(report.examples_warm, ex.len(), "{report:?}");
+    assert_eq!(
+        report.from_log, 0,
+        "the examples aren't run twice: {report:?}"
+    );
+
+    let mut searched: Vec<String> = Vec::new();
+    for q in backend.searched.lock().unwrap().iter() {
+        if !searched.contains(q) {
+            searched.push(q.clone());
+        }
+    }
+    let expected: Vec<String> = [last, tenth, &ex[0], &ex[1]]
+        .iter()
+        .map(|e| request(e).query.to_string())
+        .collect();
+    assert_eq!(&searched[..4], &expected[..]);
+    log.shutdown(Duration::from_secs(5)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// After a start, the warm-up doesn't start a search while every visitor
+/// slot is taken: it waits, within its budget.
+#[tokio::test]
+async fn a_starting_warm_up_gives_way_to_visitors() {
+    let dir = temp_reference("give-way");
+    let mut cfg = config();
+    cfg.compute_concurrency = 1;
+    cfg.prewarm_startup_budget = Duration::from_millis(400);
+    let backend = Counting::new(Duration::from_secs(2), false);
+    let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
+
+    // A visitor's search holds the only slot.
+    let visitor = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            get(
+                &state,
+                "/v1/aggregate?q=silver&from=1896-01-01&to=1896-12-31&bucket=month",
+            )
+            .await
+        })
+    };
+    while state.flights.free_slots() > 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let calls = backend.calls();
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Startup).await;
+    assert_eq!(backend.calls(), calls, "no warm-up search: {report:?}");
+    assert_eq!(report.computed, 0, "{report:?}");
+    assert_eq!(report.skipped, prewarm::examples().len(), "{report:?}");
+    assert!(report.gave_way >= Duration::from_millis(300), "{report:?}");
+    visitor.abort();
+
+    // A publish doesn't wait: the old version serves meanwhile.
+    let mut cfg = config();
+    cfg.compute_concurrency = 1;
+    let quick = Counting::new(Duration::ZERO, false);
+    let state = Arc::new(reloading_state(&dir, cfg, quick).await);
+    let report = prewarm::run(&state, state.snapshot.load_full(), Trigger::Publish).await;
+    assert_eq!(report.gave_way, Duration::ZERO, "{report:?}");
+    assert_eq!(report.examples_warm, prewarm::examples().len());
     let _ = std::fs::remove_dir_all(&dir);
 }

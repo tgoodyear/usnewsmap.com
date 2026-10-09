@@ -472,11 +472,13 @@ async fn warm_up_is_logged_and_measured_and_fills_the_cache() {
         total("api.prewarm_queries", &[("outcome", "ok")]),
         report.ok as f64
     );
-    assert!(
-        seen.all_json().contains("api.prewarm_duration_seconds"),
-        "{}",
-        seen.all_json()
-    );
+    for name in ["api.prewarm_duration_seconds", "api.prewarm_query_seconds"] {
+        assert!(
+            seen.all_json().contains(name),
+            "{name}: {}",
+            seen.all_json()
+        );
+    }
     // Warm-up lookups aren't counted as visitors' cache lookups.
     let lookup = |result| {
         total(
@@ -502,6 +504,13 @@ async fn warm_up_is_logged_and_measured_and_fills_the_cache() {
     assert_eq!(f["queries"], report.queries as u64);
     assert_eq!(f["ok"], report.ok as u64);
     assert_eq!(f["timed_out"], 0);
+    assert_eq!(f["skipped"], 0);
+    let n = prewarm::examples().len() as u64;
+    assert_eq!(f["examples"], n);
+    assert_eq!(f["examples_warm"], n);
+    assert_eq!(f["cached"], report.cached as u64);
+    assert_eq!(f["computed"], n);
+    assert!(f["gave_way_ms"].is_u64());
     assert!(f["ms"].is_u64());
     assert!(!console.contains("cross of gold") && !console.contains("q="));
 }

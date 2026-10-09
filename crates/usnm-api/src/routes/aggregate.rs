@@ -130,6 +130,11 @@ struct Timing {
     total: u128,
 }
 
+/// The response caches' key for the search `canonical` on `serving`.
+pub(crate) fn cache_key(serving: &str, canonical: &str) -> String {
+    format!("{serving}|aggregate|{canonical}")
+}
+
 /// A visitor's search, and whether it goes in the search log. Every search
 /// on the site requests this endpoint once, so this is where it's counted
 /// (06 §6.8).
@@ -171,7 +176,7 @@ pub(crate) async fn aggregate_in(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
-    let key = format!("{serving}|aggregate|{canonical}");
+    let key = cache_key(&serving, &canonical);
     let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
     let job = Job::search("aggregate", ctx.warm_up, ctx.timeout);
     let search = match log {

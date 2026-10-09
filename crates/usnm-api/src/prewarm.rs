@@ -1,4 +1,4 @@
-//! Cache warm-up before a version serves (06 §6.6).
+//! Cache warm-up before a version serves (06 §6.5).
 //!
 //! The first search against a cold index can take longer than the request
 //! timeout, so before a replica serves a version (at start, and before a
@@ -6,14 +6,30 @@
 //! the places layer, and each example search from the home page with the
 //! coverage cube its response links to; then, with what is left of the
 //! budget, the searches visitors made most often recently, read from the
-//! search log (06 §6.8), each with its coverage cube. The requests go through the same
-//! handlers as visitors' requests, pinned to the new version, so the search
-//! engine's caches and the response caches (in-process, and the persistent
-//! cache for slow ones) hold exactly the entries those visitors will ask for.
+//! search log (06 §6.8), each with its coverage cube. The requests go through
+//! the same handlers as visitors' requests, pinned to the new version, so the
+//! search engine's caches and the response caches (in-process, and the
+//! persistent cache for slow ones) hold exactly the entries those visitors
+//! will ask for.
 //!
-//! Queries run one at a time (the searcher has one vCPU), each with
-//! `config.prewarm_query_timeout` (the searcher's own limit per call still
-//! applies), all within `config.prewarm_budget` before a publish, or
+//! The examples run in the order visitors pick them: those searched most in
+//! the search log first, then the rest in the file's order (the home page
+//! shows them in a random order per visit, so no order of its own comes
+//! first).
+//!
+//! After a start, a search whose response a cache already holds (the
+//! persistent cache, filled by an earlier warm-up or a visitor) is only read
+//! into the in-process cache, [`LOADS_AT_ONCE`] at a time: that needs no
+//! search. Only the misses are computed. Before a publish nothing is cached
+//! for the new version yet, and the run computes every search, which warms
+//! the search engine's caches for it too.
+//!
+//! Computations run one at a time on the warm-up's own slot: the searcher's
+//! two vCPUs are the limit, and two searches at once each take twice as long
+//! (06 §6.5). After a start, a computation waits while every visitor slot is
+//! taken, so the warm-up doesn't add a third search to visitors' two. Each
+//! has `config.prewarm_query_timeout` (the searcher's own limit per call
+//! still applies), all within `config.prewarm_budget` before a publish, or
 //! `config.prewarm_startup_budget` after a start. Nothing here fails: a
 //! warm-up that times out or errors is logged and the version serves anyway.
 //!
@@ -26,6 +42,8 @@ use std::time::{Duration, Instant};
 
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
+use futures::future::BoxFuture;
+use futures::{FutureExt, StreamExt};
 use serde::Deserialize;
 
 use usnm_core::params::{RawParams, SearchRequest};
@@ -39,6 +57,14 @@ const SLOW: Duration = Duration::from_secs(1);
 
 /// Largest response body read back to find the coverage link.
 const MAX_BODY: usize = 64 * 1024 * 1024;
+
+/// Responses read from the persistent cache at once after a start. They
+/// need no search, only a Blob read (tens of milliseconds) and the coverage
+/// cube, which is computed from reference data.
+pub const LOADS_AT_ONCE: usize = 8;
+
+/// How often a computation waiting for a free visitor slot looks again.
+const GIVE_WAY_POLL: Duration = Duration::from_millis(200);
 
 /// The home page's example searches, shared with the web app.
 const EXAMPLES_JSON: &str = include_str!("../../../web/src/examples.json");
@@ -100,20 +126,34 @@ const RETRY_PAUSE_MAX: Duration = Duration::from_secs(10);
 /// What one warm-up run did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Report {
+    /// Every query, places and coverage included, skipped ones too.
     pub queries: usize,
     pub ok: usize,
     pub timed_out: usize,
     pub failed: usize,
     /// Not run because the budget ran out.
     pub skipped: usize,
-    /// Searches from the search log the run went on to (each with its
-    /// coverage cube, which is counted in `queries` too).
+    /// Searches from the search log the run warmed or tried (each with its
+    /// coverage cube, which is counted in `queries` too); the ones it didn't
+    /// reach count in `skipped`.
     pub from_log: usize,
+    /// The home page's examples.
+    pub examples: usize,
+    /// Examples whose search the run left in the in-process cache.
+    pub examples_warm: usize,
+    /// Searches (examples and logged ones) a cache already held, read
+    /// without a search.
+    pub cached: usize,
+    /// Searches the run computed, whatever came of them.
+    pub computed: usize,
+    /// Time computations waited for a free visitor slot (after a start).
+    pub gave_way: Duration,
     pub elapsed: Duration,
 }
 
 enum Outcome {
-    Ok(Response),
+    /// The response, if the handler served one (a cache read has none).
+    Ok(Option<Response>),
     TimedOut,
     Failed(String),
     Skipped,
@@ -147,36 +187,105 @@ impl Endpoint {
     }
 }
 
+/// Where a warm-up query's answer came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// Read from the in-process or persistent cache, no search.
+    Cache,
+    /// Through the handler, which computes it (places and coverage from
+    /// reference data, searches on the searcher).
+    Computed,
+}
+
+impl Source {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Cache => "cache",
+            Self::Computed => "computed",
+        }
+    }
+}
+
+/// One search the run warms: an example or a search from the log.
+struct Search {
+    /// The example's id, or `search-log-{rank}`.
+    label: String,
+    /// The aggregate query string, without `v`.
+    query: String,
+    /// The in-process cache key; `None` if the query doesn't parse (the
+    /// handler then reports why).
+    key: Option<String>,
+    /// From the search log: logged by rank, its errors by kind.
+    private: bool,
+}
+
+impl Search {
+    fn example(&self) -> bool {
+        !self.private
+    }
+}
+
+/// A search read from a cache, and its coverage cube.
+struct Loaded {
+    elapsed: Duration,
+    coverage: Option<(Outcome, Duration)>,
+}
+
 struct Run<'a> {
     state: &'a Arc<AppState>,
     snap: Arc<Snapshot>,
+    /// The version, as a `v` query value.
+    v: String,
+    trigger: Trigger,
     deadline: Instant,
     report: Report,
 }
 
 impl Run<'_> {
-    /// One warm-up request, labelled `example` in the logs. A `private`
-    /// one came from the search log: its error is logged by kind only.
+    /// One warm-up request through its handler, labelled `label` in the
+    /// logs. A `private` one came from the search log: its error is logged by
+    /// kind only.
     async fn query(
         &mut self,
         endpoint: Endpoint,
-        example: &str,
+        label: &str,
         uri: &str,
         private: bool,
     ) -> Option<Response> {
-        self.report.queries += 1;
+        let (outcome, elapsed) = self.attempt(endpoint, uri, private).await;
+        self.record(endpoint, label, Source::Computed, outcome, elapsed)
+    }
+
+    async fn attempt(&self, endpoint: Endpoint, uri: &str, private: bool) -> (Outcome, Duration) {
         let started = Instant::now();
         let outcome = match uri.parse::<Uri>() {
             Err(_) if private => Outcome::Failed("invalid uri".to_owned()),
             Err(e) => Outcome::Failed(e.to_string()),
             Ok(uri) => self.call(endpoint, &uri, private).await,
         };
-        let elapsed = started.elapsed();
+        (outcome, started.elapsed())
+    }
+
+    /// Count and log one query's outcome; its response, if it has one.
+    fn record(
+        &mut self,
+        endpoint: Endpoint,
+        label: &str,
+        source: Source,
+        outcome: Outcome,
+        elapsed: Duration,
+    ) -> Option<Response> {
+        self.report.queries += 1;
         match &outcome {
             Outcome::Ok(_) => self.report.ok += 1,
             Outcome::TimedOut => self.report.timed_out += 1,
             Outcome::Failed(_) => self.report.failed += 1,
             Outcome::Skipped => self.report.skipped += 1,
+        }
+        if !matches!(outcome, Outcome::Skipped) {
+            self.state
+                .metrics
+                .prewarm_query(endpoint.as_str(), source.as_str(), elapsed);
         }
         let version = self.snap.refdata.version();
         let ms = elapsed.as_millis() as u64;
@@ -184,7 +293,8 @@ impl Run<'_> {
             Outcome::Failed(error) => tracing::warn!(
                 version,
                 endpoint = endpoint.as_str(),
-                example,
+                example = label,
+                source = source.as_str(),
                 ms,
                 error = %error,
                 "warm-up query failed"
@@ -193,7 +303,8 @@ impl Run<'_> {
             _ if elapsed >= SLOW => tracing::info!(
                 version,
                 endpoint = endpoint.as_str(),
-                example,
+                example = label,
+                source = source.as_str(),
                 outcome = outcome.label(),
                 ms,
                 "slow warm-up query"
@@ -201,7 +312,7 @@ impl Run<'_> {
             _ => {}
         }
         match outcome {
-            Outcome::Ok(resp) => Some(resp),
+            Outcome::Ok(resp) => resp,
             _ => None,
         }
     }
@@ -277,12 +388,131 @@ impl Run<'_> {
             Err(_) | Ok(Err(ApiError::Timeout)) => (Outcome::TimedOut, false),
             Ok(Err(e @ ApiError::Backend(_))) => (Outcome::Failed(describe(&e)), true),
             Ok(Err(e)) => (Outcome::Failed(describe(&e)), false),
-            Ok(Ok(resp)) if resp.status() == StatusCode::OK => (Outcome::Ok(resp), false),
+            Ok(Ok(resp)) if resp.status() == StatusCode::OK => (Outcome::Ok(Some(resp)), false),
             Ok(Ok(resp)) => {
                 let retry = resp.status().is_server_error();
                 (Outcome::Failed(format!("status {}", resp.status())), retry)
             }
         }
+    }
+
+    /// Read every search a cache already holds into the in-process cache,
+    /// [`LOADS_AT_ONCE`] at a time, with its coverage cube; the searches
+    /// none holds, in their order, to compute.
+    async fn load_cached<'s>(&mut self, searches: &'s [Search]) -> Vec<&'s Search> {
+        let started = Instant::now();
+        let this = &*self;
+        // Boxed: the borrows in an unboxed future here are too general for
+        // the compiler to prove the task `Send`.
+        let reads: Vec<BoxFuture<'_, (&Search, Option<Loaded>)>> = searches
+            .iter()
+            .map(|s| async move { (s, this.load(s).await) }.boxed())
+            .collect();
+        let loaded: Vec<(&Search, Option<Loaded>)> = futures::stream::iter(reads)
+            .buffered(LOADS_AT_ONCE)
+            .collect()
+            .await;
+        let mut misses = Vec::new();
+        for (search, loaded) in loaded {
+            let Some(loaded) = loaded else {
+                misses.push(search);
+                continue;
+            };
+            self.report.cached += 1;
+            if search.example() {
+                self.report.examples_warm += 1;
+            } else {
+                self.report.from_log += 1;
+            }
+            self.record(
+                Endpoint::Aggregate,
+                &search.label,
+                Source::Cache,
+                Outcome::Ok(None),
+                loaded.elapsed,
+            );
+            if let Some((outcome, elapsed)) = loaded.coverage {
+                self.record(
+                    Endpoint::Coverage,
+                    &search.label,
+                    Source::Computed,
+                    outcome,
+                    elapsed,
+                );
+            }
+        }
+        tracing::info!(
+            version = self.snap.refdata.version(),
+            cached = searches.len() - misses.len(),
+            missed = misses.len(),
+            ms = started.elapsed().as_millis() as u64,
+            "warm-up read the cached searches"
+        );
+        misses
+    }
+
+    /// `search` from the in-process or persistent cache, and its coverage
+    /// cube; `None` if neither cache holds it, or the budget is spent.
+    async fn load(&self, search: &Search) -> Option<Loaded> {
+        let key = search.key.as_deref()?;
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        let started = Instant::now();
+        let read = routes::read_cached(self.state, self.snap.refdata.version(), key);
+        let body = tokio::time::timeout(left, read).await.ok()??;
+        let elapsed = started.elapsed();
+        let coverage = match coverage_link(&body) {
+            Some(uri) => Some(self.attempt(Endpoint::Coverage, &uri, search.private).await),
+            None => None,
+        };
+        Some(Loaded { elapsed, coverage })
+    }
+
+    /// Compute `search` through its handler, then its coverage cube.
+    async fn compute(&mut self, search: &Search) {
+        if self.trigger == Trigger::Startup {
+            self.give_way().await;
+        }
+        let uri = format!("/v1/aggregate?{}&v={}", search.query, self.v);
+        let (outcome, elapsed) = self
+            .attempt(Endpoint::Aggregate, &uri, search.private)
+            .await;
+        if !matches!(outcome, Outcome::Skipped) {
+            self.report.computed += 1;
+            if search.private {
+                self.report.from_log += 1;
+            }
+        }
+        let resp = self.record(
+            Endpoint::Aggregate,
+            &search.label,
+            Source::Computed,
+            outcome,
+            elapsed,
+        );
+        let Some(resp) = resp else {
+            return;
+        };
+        if search.example() {
+            self.report.examples_warm += 1;
+        }
+        if let Some(coverage) = baseline_ref(resp).await {
+            self.query(Endpoint::Coverage, &search.label, &coverage, search.private)
+                .await;
+        }
+    }
+
+    /// Wait while every visitor slot is taken (within the budget), so the
+    /// warm-up's search doesn't slow visitors' down further.
+    async fn give_way(&mut self) {
+        let started = Instant::now();
+        while self.state.flights.free_slots() == 0 {
+            let left = self.deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            tokio::time::sleep(GIVE_WAY_POLL.min(left)).await;
+        }
+        self.report.gave_way += started.elapsed();
     }
 }
 
@@ -302,29 +532,42 @@ fn kind(e: &ApiError) -> &'static str {
     }
 }
 
-/// The coverage link (`cube.baseline_ref`) in an aggregate response, which
-/// the web app fetches next.
+/// Only the part of an aggregate response the warm-up reads.
+#[derive(Deserialize)]
+struct Linked {
+    cube: LinkedCube,
+}
+
+#[derive(Deserialize)]
+struct LinkedCube {
+    baseline_ref: Option<String>,
+}
+
+/// The coverage link (`cube.baseline_ref`) in an aggregate response body,
+/// which the web app fetches next.
+fn coverage_link(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Linked>(body)
+        .ok()?
+        .cube
+        .baseline_ref
+}
+
+/// [`coverage_link`] in an aggregate response.
 async fn baseline_ref(resp: Response) -> Option<String> {
     let bytes = axum::body::to_bytes(resp.into_body(), MAX_BODY)
         .await
         .ok()?;
-    let body: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    body["cube"]["baseline_ref"].as_str().map(str::to_owned)
+    coverage_link(&bytes)
 }
 
 /// Limit on reading the search log for the warm-up.
 const LOG_READ_LIMIT: Duration = Duration::from_secs(30);
 
 /// The most frequent recent searches in the search log, as canonical
-/// aggregate query strings, leaving out those in `skip` (the examples).
-/// Empty without a search log, with `prewarm_top_searches` at 0, or when
-/// reading takes longer than the time left.
-async fn from_log(
-    state: &AppState,
-    snap: &Snapshot,
-    skip: &[String],
-    left: Duration,
-) -> Vec<String> {
+/// aggregate query strings, most frequent first, with room for the
+/// examples among them. Empty without a search log, with
+/// `prewarm_top_searches` at 0, or when reading takes longer than `left`.
+async fn ranked(state: &AppState, snap: &Snapshot, left: Duration) -> Vec<String> {
     let n = state.config.prewarm_top_searches;
     let Some(log) = state.search_log.as_deref().filter(|_| n > 0) else {
         return Vec::new();
@@ -333,16 +576,11 @@ async fn from_log(
         log.store().as_ref(),
         chrono::Utc::now().date_naive(),
         state.config.prewarm_log_days,
-        // Room for the examples it may contain.
-        n + skip.len(),
+        n + examples().len(),
         snap.refdata.bounds(),
     );
     match tokio::time::timeout(left.min(LOG_READ_LIMIT), read).await {
-        Ok(top) => top
-            .into_iter()
-            .filter(|key| !skip.contains(key))
-            .take(n)
-            .collect(),
+        Ok(top) => top,
         Err(_) => {
             tracing::warn!("warm-up: reading the search log timed out; skipping its searches");
             Vec::new()
@@ -350,10 +588,26 @@ async fn from_log(
     }
 }
 
+/// The order the examples are warmed in, as indexes into `canonical` (each
+/// example's canonical query, if it parses): those in `ranked` (most
+/// searched first) in its order, then the rest in their own order.
+pub fn order(canonical: &[Option<String>], ranked: &[String]) -> Vec<usize> {
+    let rank = |i: usize| {
+        canonical[i]
+            .as_ref()
+            .and_then(|c| ranked.iter().position(|r| r == c))
+    };
+    let mut order: Vec<usize> = (0..canonical.len()).collect();
+    // Stable: unranked examples keep the file's order.
+    order.sort_by_key(|&i| rank(i).map_or((1, 0), |r| (0, r)));
+    order
+}
+
 /// Warm the caches for `snap`'s version: the places layer, then each example
 /// search and its coverage cube, as the web app requests them, then the most
 /// frequent searches from the search log the same way while the budget
-/// lasts. Logs one line for the run and records `api.prewarm_*`.
+/// lasts. After a start, searches a cache holds are read, not computed.
+/// Logs one line for the run and records `api.prewarm_*`.
 pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -> Report {
     let started = Instant::now();
     let version = snap.refdata.version().to_owned();
@@ -362,25 +616,21 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
     let mut run = Run {
         state,
         snap: snap.clone(),
+        v: v.clone(),
+        trigger,
         deadline,
-        report: Report::default(),
+        report: Report {
+            examples: examples().len(),
+            ..Report::default()
+        },
     };
     run.query(Endpoint::Places, "", &format!("/v1/places?v={v}"), false)
         .await;
-    for ex in examples() {
-        let uri = format!("/v1/aggregate?{}&v={v}", ex.aggregate);
-        let Some(resp) = run.query(Endpoint::Aggregate, &ex.id, &uri, false).await else {
-            continue;
-        };
-        if let Some(coverage) = baseline_ref(resp).await {
-            run.query(Endpoint::Coverage, &ex.id, &coverage, false)
-                .await;
-        }
-    }
+
     let bounds = snap.refdata.bounds();
-    let warmed: Vec<String> = examples()
+    let canonical: Vec<Option<String>> = examples()
         .iter()
-        .filter_map(|ex| {
+        .map(|ex| {
             let raw = RawParams::parse(&ex.aggregate).ok()?;
             SearchRequest::from_raw(&raw, bounds)
                 .ok()
@@ -388,22 +638,41 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
         })
         .collect();
     let left = deadline.saturating_duration_since(Instant::now());
-    let top = if left.is_zero() {
+    let ranked = if left.is_zero() {
         Vec::new()
     } else {
-        from_log(state, &snap, &warmed, left).await
+        ranked(state, &snap, left).await
     };
-    run.report.from_log = top.len();
-    for (rank, key) in top.iter().enumerate() {
-        let label = format!("search-log-{}", rank + 1);
-        let uri = format!("/v1/aggregate?{key}&v={v}");
-        let Some(resp) = run.query(Endpoint::Aggregate, &label, &uri, true).await else {
-            continue;
-        };
-        if let Some(coverage) = baseline_ref(resp).await {
-            run.query(Endpoint::Coverage, &label, &coverage, true).await;
-        }
+    let key = |canonical: &str| routes::aggregate_key(&version, canonical);
+    let mut searches: Vec<Search> = order(&canonical, &ranked)
+        .into_iter()
+        .map(|i| Search {
+            label: examples()[i].id.clone(),
+            query: examples()[i].aggregate.clone(),
+            key: canonical[i].as_deref().map(key),
+            private: false,
+        })
+        .collect();
+    let logged: Vec<&String> = ranked
+        .iter()
+        .filter(|k| !canonical.iter().any(|c| c.as_ref() == Some(*k)))
+        .take(state.config.prewarm_top_searches)
+        .collect();
+    searches.extend(logged.into_iter().enumerate().map(|(rank, k)| Search {
+        label: format!("search-log-{}", rank + 1),
+        query: k.clone(),
+        key: Some(key(k)),
+        private: true,
+    }));
+
+    let pending: Vec<&Search> = match trigger {
+        Trigger::Startup => run.load_cached(&searches).await,
+        Trigger::Publish => searches.iter().collect(),
+    };
+    for search in pending {
+        run.compute(search).await;
     }
+
     let mut report = run.report;
     report.elapsed = started.elapsed();
     tracing::info!(
@@ -415,6 +684,11 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
         failed = report.failed,
         skipped = report.skipped,
         from_log = report.from_log,
+        examples = report.examples,
+        examples_warm = report.examples_warm,
+        cached = report.cached,
+        computed = report.computed,
+        gave_way_ms = report.gave_way.as_millis() as u64,
         ms = report.elapsed.as_millis() as u64,
         "warm-up finished"
     );
@@ -441,5 +715,35 @@ mod tests {
             assert!(raw.get("v").is_none(), "{}: `v` is added per version", e.id);
             SearchRequest::from_raw(&raw, bounds).unwrap_or_else(|err| panic!("{}: {err}", e.id));
         }
+    }
+
+    fn some(keys: &[&str]) -> Vec<Option<String>> {
+        keys.iter().map(|k| Some((*k).to_owned())).collect()
+    }
+
+    #[test]
+    fn the_most_searched_examples_come_first_then_the_files_order() {
+        let canonical = some(&["a", "b", "c", "d", "e"]);
+        let ranked: Vec<String> = ["d", "x", "b"].iter().map(|s| (*s).to_owned()).collect();
+        assert_eq!(order(&canonical, &ranked), vec![3, 1, 0, 2, 4]);
+    }
+
+    #[test]
+    fn without_a_search_log_the_files_order_stands() {
+        let mut canonical = some(&["a", "b", "c"]);
+        canonical[1] = None;
+        assert_eq!(order(&canonical, &[]), vec![0, 1, 2]);
+        assert_eq!(order(&canonical, &["c".to_owned()]), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn the_coverage_link_is_read_without_the_rest() {
+        let body = br#"{"total":{"hits":3},"cube":{"cells":[1,2],"baseline_ref":"/v1/coverage?bucket=year"}}"#;
+        assert_eq!(
+            coverage_link(body).as_deref(),
+            Some("/v1/coverage?bucket=year")
+        );
+        assert_eq!(coverage_link(br#"{"cube":{"baseline_ref":null}}"#), None);
+        assert_eq!(coverage_link(b"not json"), None);
     }
 }

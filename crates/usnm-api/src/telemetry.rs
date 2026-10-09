@@ -67,6 +67,9 @@ pub struct Metrics {
     prewarm_duration: Histogram<f64>,
     /// Warm-up queries by `outcome` (ok, timeout, error, skipped).
     prewarm_queries: Counter<u64>,
+    /// Time of one warm-up query that ran, by `endpoint` and `source`
+    /// (cache, computed).
+    prewarm_query_duration: Histogram<f64>,
     /// Valid page views from the web app, by `outcome` (forwarded, bot,
     /// opted_out, other_origin, dropped, off).
     beacons: Counter<u64>,
@@ -125,6 +128,13 @@ impl Metrics {
             prewarm_queries: meter
                 .u64_counter("api.prewarm_queries")
                 .with_description("Cache warm-up queries by outcome (ok, timeout, error, skipped)")
+                .build(),
+            prewarm_query_duration: meter
+                .f64_histogram("api.prewarm_query_seconds")
+                .with_unit("s")
+                .with_description(
+                    "One cache warm-up query that ran, by endpoint and source (cache, computed)",
+                )
                 .build(),
             beacons: meter
                 .u64_counter("api.beacons")
@@ -206,6 +216,21 @@ impl Metrics {
 
     pub(crate) fn reload(&self, outcome: &'static str) {
         self.reloads.add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+
+    pub(crate) fn prewarm_query(
+        &self,
+        endpoint: &'static str,
+        source: &'static str,
+        elapsed: Duration,
+    ) {
+        self.prewarm_query_duration.record(
+            elapsed.as_secs_f64(),
+            &[
+                KeyValue::new("endpoint", endpoint),
+                KeyValue::new("source", source),
+            ],
+        );
     }
 
     pub(crate) fn prewarm(&self, trigger: &'static str, report: &crate::prewarm::Report) {

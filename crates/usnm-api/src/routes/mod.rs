@@ -6,7 +6,7 @@ mod hits;
 mod meta;
 
 pub use aggregate::aggregate;
-pub(crate) use aggregate::aggregate_in;
+pub(crate) use aggregate::{aggregate_in, cache_key as aggregate_key};
 pub use beacon::beacon;
 pub(crate) use beacon::is_bot;
 pub use coverage::coverage;
@@ -120,6 +120,24 @@ async fn read_persisted(store: &dyn ObjectStore, path: &str) -> Option<Vec<u8>> 
             None
         }
     }
+}
+
+/// The warm-up's read of a response a cache already holds (06 §6.5): the
+/// in-process cache's body for `key`, else the persistent cache's, which is
+/// then kept in process. `None` when neither holds it. Nothing is computed
+/// and no metric recorded: a warm-up isn't a visitor.
+pub(crate) async fn read_cached(
+    state: &AppState,
+    serving: &str,
+    key: &str,
+) -> Option<Arc<Vec<u8>>> {
+    if let Some(body) = state.cache.get(key).await {
+        return Some(body);
+    }
+    let store = state.responses.as_ref()?;
+    let body = Arc::new(read_persisted(store.as_ref(), &persisted_path(serving, key)).await?);
+    state.cache.insert(key.to_owned(), body.clone()).await;
+    Some(body)
 }
 
 /// Compress and store a computed body in the background; failures only log.
