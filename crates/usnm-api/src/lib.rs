@@ -28,7 +28,7 @@ pub mod prewarm;
 pub mod ratelimit;
 pub mod refdata;
 mod routes;
-pub mod searcher_caches;
+pub mod searcher_metrics;
 pub mod searchlog;
 pub mod site;
 pub mod status;

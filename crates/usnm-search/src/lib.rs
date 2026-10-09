@@ -21,6 +21,7 @@ pub mod memory;
 pub mod plan;
 pub mod quickwit;
 pub mod snippet;
+pub mod thread_metrics;
 
 /// One indexed page, as stored in the engine (05 §5.5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,7 +4,7 @@ use usnm_api::config::{BackendKind, Config};
 use usnm_api::searchlog::{LogConfig, SearchLog};
 use usnm_api::status::PipelineSource;
 use usnm_api::{
-    app, searcher_caches, spawn_background, spawn_startup_warm_up, telemetry, AppState, Engine,
+    app, searcher_metrics, spawn_background, spawn_startup_warm_up, telemetry, AppState, Engine,
     Loader,
 };
 use usnm_search::quickwit::QuickwitBackend;
@@ -129,14 +129,15 @@ async fn serve(
         &state,
         &opentelemetry::global::meter(telemetry::SERVICE.name),
     );
-    // The searcher sidecar's caches (#125), read over localhost.
+    // The searcher sidecar's caches, thread pools and runtimes (#125,
+    // #251), read over localhost.
     if let Some(qw) = searcher.filter(|_| !state.config.searcher_metrics_interval.is_zero()) {
-        searcher_caches::spawn(
+        searcher_metrics::spawn(
             state.config.searcher_metrics_interval,
             &opentelemetry::global::meter(telemetry::SERVICE.name),
             move || {
                 let qw = qw.clone();
-                async move { qw.cache_metrics().await.map_err(|e| e.to_string()) }
+                async move { qw.searcher_metrics().await.map_err(|e| e.to_string()) }
             },
         );
     }

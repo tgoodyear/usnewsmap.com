@@ -17,6 +17,7 @@ use usnm_core::time::BucketSpec;
 
 use crate::cache_metrics::{self, CacheReport};
 use crate::snippet::{matched_in, page_snippets};
+use crate::thread_metrics::{self, ThreadReport};
 use crate::{
     ja_snippets, rank, Capabilities, CubeCell, Hit, HitSort, HitsPage, HitsQuery, IndexSet,
     KeyCount, PlaceSummary, SearchBackend, SearchError, Summary,
@@ -31,6 +32,23 @@ pub const MAX_PAPERS: u32 = 10_000;
 const MAX_LANGUAGES: u32 = 200;
 /// Limit on reading the searcher's metrics, which it renders from memory.
 const METRICS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What one read of the searcher's metrics found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearcherMetrics {
+    pub caches: CacheReport,
+    pub threads: ThreadReport,
+}
+
+impl SearcherMetrics {
+    /// Both reports from one Prometheus text.
+    pub fn parse(text: &str) -> Self {
+        Self {
+            caches: cache_metrics::parse(text),
+            threads: thread_metrics::parse(text),
+        }
+    }
+}
 
 pub struct QuickwitBackend {
     base_url: String,
@@ -60,9 +78,10 @@ impl QuickwitBackend {
         self
     }
 
-    /// The searcher's cache metrics, from its Prometheus endpoint
-    /// (`GET /metrics`). Never waits longer than `METRICS_TIMEOUT`.
-    pub async fn cache_metrics(&self) -> Result<CacheReport, SearchError> {
+    /// The searcher's cache, thread pool and runtime metrics, from its
+    /// Prometheus endpoint (`GET /metrics`). Never waits longer than
+    /// `METRICS_TIMEOUT`.
+    pub async fn searcher_metrics(&self) -> Result<SearcherMetrics, SearchError> {
         let resp = self
             .client
             .get(format!("{}/metrics", self.base_url))
@@ -76,7 +95,7 @@ impl QuickwitBackend {
                 "quickwit /metrics returned {status}"
             )));
         }
-        Ok(cache_metrics::parse(&resp.text().await.map_err(map_err)?))
+        Ok(SearcherMetrics::parse(&resp.text().await.map_err(map_err)?))
     }
 
     async fn search(
