@@ -19,7 +19,8 @@ use crate::text::{fold, MAX_TOKEN_CHARS};
 use unicode_normalization::UnicodeNormalization;
 
 /// Bumped whenever the folding changes: the index and the API must agree.
-pub const FOLD_VERSION: u32 = 1;
+/// 2: Latin runs keep `½` and the like as one word (#168).
+pub const FOLD_VERSION: u32 = 2;
 
 /// Characters a Japanese query run may have (a run is one phrase).
 pub const MAX_JA_RUN_CHARS: usize = 32;

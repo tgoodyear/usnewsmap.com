@@ -22,8 +22,9 @@
 
 use crate::text::{fold, MAX_TOKEN_CHARS};
 
-/// Bumped whenever [`WORDS`] or the token rules change.
-pub const VERSION: u32 = 1;
+/// Bumped whenever [`WORDS`] or the token rules change. 2: a character
+/// whose compatibility form holds a separator (`½`) is its own word (#168).
+pub const VERSION: u32 = 2;
 
 /// The position of a word the analyzer drops. Not a word: words are
 /// alphanumeric.

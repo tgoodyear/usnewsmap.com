@@ -660,6 +660,10 @@ async fn common_word_phrases(
         r#""cross of the gold""#,
         r#""cross of gold" -silver"#,
         r#""cross of gold" OR "the friends of free""#,
+        // Fractions are one word in the pairs as in `text` (#168).
+        r#""½ higher at 61¼""#,
+        r#""at 61¼ and oats""#,
+        r#""1/2 lower at 20¾""#,
         // In American Stories' headlines only.
         r#""orator of the platte""#,
         r#""the boy orator""#,
