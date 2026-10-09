@@ -131,10 +131,13 @@ var quickwitContainer = {
     // split opening run on the main tokio runtime, ceil(cpus / 3) threads: 1.
     // Cold searches used 2.2 of 3.75 vCPU with those defaults. QW_NUM_CPUS is
     // its own CPU count (rounded up from k8s syntax), which sizes the
-    // small_tasks pool; it doesn't size the search pool.
+    // small_tasks pool; it doesn't size the search pool. With 4 search and 2
+    // runtime threads, the runtime was 96 to 99% busy through a cold-search
+    // test while the search pool sat idle (#251, ops/queries/searcher-threads.kql),
+    // so the runtime gets 4 too. The pools share the quota: an idle pool uses none.
     { name: 'QW_NUM_CPUS', value: '4' }
     { name: 'RAYON_NUM_THREADS', value: '4' }
-    { name: 'QW_TOKIO_RUNTIME_NUM_THREADS', value: '2' }
+    { name: 'QW_TOKIO_RUNTIME_NUM_THREADS', value: '4' }
     // The image sets QW_LISTEN_ADDRESS=0.0.0.0, which overrides the config's
     // listen_address, and Quickwit refuses 0.0.0.0 without an advertise
     // address ("listen address `0.0.0.0` is unspecified"). Pin it here.
