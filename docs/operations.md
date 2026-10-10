@@ -114,10 +114,10 @@ Build it in an environment's registry, which records the digest in the file:
 
 ```sh
 scripts/build-quickwit.sh --env prod              # ACR Tasks, about an hour; the build log follows
-scripts/build-quickwit.sh --env dev --from prod   # or import prod's build, same digest, in seconds
+scripts/build-quickwit.sh --env dev --from prod   # or import prod's build (same digest, no build)
 ```
 
-If the build outlives your `az` session, it still finishes: run the same command again once it has, and it records the tag's digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it, which the jobs pick up at their next execution. The sidecar and the init container move with `scripts/provision.sh <env>`, run once publish has finished.
+If your `az` session expires during the build, ACR still finishes it. Once it has, run the same command again: it finds the tag and records its digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it, which the jobs pick up at their next execution. The sidecar and the init container move with `scripts/provision.sh <env>`, run once publish has finished.
 
 **A new patch, or a Quickwit upgrade:**
 
@@ -126,7 +126,7 @@ If the build outlives your `az` session, it still finishes: run the same command
 3. `scripts/build-quickwit.sh --env prod`, then commit, merge and provision, as above.
 4. Re-run the cold-search test (`scripts/load-cold-searches.py`) and read [the searcher's threads](#searcher-threads).
 
-**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and run `scripts/provision.sh <env>` once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn the pooling off in the searcher alone, without a new image, set `QW_AZURE_POOL=false` on the sidecar (`infra/modules/containerapp.bicep`) and provision.
+**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and run `scripts/provision.sh <env>` once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn pooling off in the searcher alone, without a new image, set `QW_AZURE_POOL=false` on the sidecar (`infra/modules/containerapp.bicep`) and provision.
 
 ## Cache warm-up
 
