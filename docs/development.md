@@ -75,3 +75,5 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 ## Checks
 
 The formatting, lint, test and build commands CI runs are listed in [CONTRIBUTING.md](../CONTRIBUTING.md). The web app's end-to-end tests are described in [`web/README.md`](../web/README.md).
+
+Run `npm run format` in `web/` before pushing. It runs Prettier (pinned in `web/package.json`) from the repository root, with the root's `.prettierrc.json` and `.prettierignore`: it formats the web app's TypeScript, JavaScript, CSS, HTML and JSON (not `package-lock.json`, build output or `web/src/examples.json`, which keeps each example's view on one line) and every Markdown file in the repository but the reports under `docs/reports/` (pandoc builds their PDFs, and sizes table columns from the Markdown's layout). In Markdown it keeps prose lines and code blocks as written. It leaves data JSON outside `web/`, YAML, Bicep, Rust and Python alone. `npm run format:check` is the check CI runs. Where Prettier's layout would change how a Markdown block renders, wrap the block in `<!-- prettier-ignore-start -->` and `<!-- prettier-ignore-end -->`.

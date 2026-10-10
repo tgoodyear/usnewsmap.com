@@ -75,7 +75,11 @@ export function Tooltip({ note, children }: { note: string; children: ReactNode 
         role="tooltip"
         className="tooltip__body"
         hidden={!open}
-        style={open && at ? { left: at.left, top: at.top, maxWidth: `min(${WIDTH}px, calc(100vw - ${2 * EDGE}px))` } : undefined}
+        style={
+          open && at
+            ? { left: at.left, top: at.top, maxWidth: `min(${WIDTH}px, calc(100vw - ${2 * EDGE}px))` }
+            : undefined
+        }
       >
         {note}
       </span>

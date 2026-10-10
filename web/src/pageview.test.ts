@@ -43,7 +43,9 @@ describe("referrerOrigin", () => {
 describe("utmTags", () => {
   it("reads the three tags, lowercased and capped, and nothing else", () => {
     expect(
-      utmTags("?q=zebrasecret&utm_source=NewsLetter&utm_medium=Email&utm_campaign=Fall%202026&utm_term=gold&from=1896-01-01"),
+      utmTags(
+        "?q=zebrasecret&utm_source=NewsLetter&utm_medium=Email&utm_campaign=Fall%202026&utm_term=gold&from=1896-01-01",
+      ),
     ).toEqual({ utm_source: "newsletter", utm_medium: "email", utm_campaign: "fall 2026" });
     expect(utmTags("")).toEqual({});
     expect(utmTags("?utm_source=&utm_medium=%20")).toEqual({});

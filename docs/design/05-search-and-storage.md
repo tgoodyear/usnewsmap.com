@@ -4,16 +4,16 @@ This is the most consequential decision in the design. The legacy system's singl
 
 ## 5.1 Workload characterization
 
-| Query | Description | Share of traffic | Shape |
-|-------|-------------|------------------|-------|
-| **Q1 Aggregate** | Text query + date range (+ filters) → total hits; counts per place × time bucket; counts per time bucket; first match date per place | ~70% | Full-text match, then **nested aggregation** over *all* matches: `terms(place_id, size≤5,000) → histogram(bucket)` and `min(day)` |
-| **Q2 Hits** | Same query restricted to one place (or title), sorted by date, paginated 50 at a time, with highlighted snippets | ~25% | Top-N by a sort field + snippet generation |
-| **Q3 Lookup** | Page metadata by `doc_id` | ~5% | Point read (usually served from Parquet or reference data, not the engine) |
-| **Ingest** | Append-mostly; periodic batch replacement (OCR reprocessing); rare full rebuilds | Offline | Bulk |
+| Query            | Description                                                                                                                          | Share of traffic | Shape                                                                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **Q1 Aggregate** | Text query + date range (+ filters) → total hits; counts per place × time bucket; counts per time bucket; first match date per place | ~70%             | Full-text match, then **nested aggregation** over _all_ matches: `terms(place_id, size≤5,000) → histogram(bucket)` and `min(day)` |
+| **Q2 Hits**      | Same query restricted to one place (or title), sorted by date, paginated 50 at a time, with highlighted snippets                     | ~25%             | Top-N by a sort field + snippet generation                                                                                        |
+| **Q3 Lookup**    | Page metadata by `doc_id`                                                                                                            | ~5%              | Point read (usually served from Parquet or reference data, not the engine)                                                        |
+| **Ingest**       | Append-mostly; periodic batch replacement (OCR reprocessing); rare full rebuilds                                                     | Offline          | Bulk                                                                                                                              |
 
 **Characteristics that drive the choice:**
 
-- **Relevance ranking barely matters.** Results are sorted by **date**, and the map needs **counts**. What matters is how fast the engine can *aggregate over millions of matches*, not BM25 quality.
+- **Relevance ranking barely matters.** Results are sorted by **date**, and the map needs **counts**. What matters is how fast the engine can _aggregate over millions of matches_, not BM25 quality.
 - **Phrase and proximity are essential.** The index must store term **positions**.
 - **Queries are deterministic and data changes weekly at most**, so caching by URL is extremely effective.
 - **Traffic is low with spikes.** A fixed-cost engine sized for spikes is wasted most of the month.
@@ -21,18 +21,18 @@ This is the most consequential decision in the design. The legacy system's singl
 
 ## 5.2 Requirements matrix
 
-| # | Requirement | Weight |
-|---|-------------|--------|
-| R1 | Phrase and proximity search with positions over ~1 TB | Must |
-| R2 | Nested aggregation *place × time bucket* over all matches, GA (not preview) | Must |
-| R3 | Date range filtering that prunes efficiently | Must |
-| R4 | Sort by date + paginate + highlight snippets | Must |
-| R5 | Fuzzy term matching (OCR tolerance) | Should |
-| R6 | Steady-state cost that fits the **< $80/mo total** budget (search compute + index storage ideally ≤ $50) | Must |
-| R7 | **No IaaS VMs** (no VMs, VM Scale Sets, AKS or Batch pools); managed or containerized on Azure PaaS; low operational effort | Must |
-| R8 | Re-index from the lake in ≤ 24 h | Should |
-| R9 | Azure-native support and SLA | Nice |
-| R10 | Path to vector/semantic search | Nice |
+| #   | Requirement                                                                                                                 | Weight |
+| --- | --------------------------------------------------------------------------------------------------------------------------- | ------ |
+| R1  | Phrase and proximity search with positions over ~1 TB                                                                       | Must   |
+| R2  | Nested aggregation _place × time bucket_ over all matches, GA (not preview)                                                 | Must   |
+| R3  | Date range filtering that prunes efficiently                                                                                | Must   |
+| R4  | Sort by date + paginate + highlight snippets                                                                                | Must   |
+| R5  | Fuzzy term matching (OCR tolerance)                                                                                         | Should |
+| R6  | Steady-state cost that fits the **< $80/mo total** budget (search compute + index storage ideally ≤ $50)                    | Must   |
+| R7  | **No IaaS VMs** (no VMs, VM Scale Sets, AKS or Batch pools); managed or containerized on Azure PaaS; low operational effort | Must   |
+| R8  | Re-index from the lake in ≤ 24 h                                                                                            | Should |
+| R9  | Azure-native support and SLA                                                                                                | Nice   |
+| R10 | Path to vector/semantic search                                                                                              | Nice   |
 
 ## 5.3 Options evaluated
 
@@ -46,20 +46,21 @@ This is the most consequential decision in the design. The legacy system's singl
   3. accept the preview API for this one call.
 - **Cost (list price, pay-as-you-go, East US; confirm in the Azure pricing calculator):**
 
-  | Config | Storage | Approx. monthly |
-  |--------|---------|-----------------|
-  | L1 × 1 partition × 1 replica (no SLA) | 2 TB | **~$2,800** |
-  | L1 × 1 × 2 replicas (read SLA) | 2 TB | **~$5,600** |
-  | S3 × 1 × 1 (tight fit at 1 TB) | 1 TB | ~$1,960 |
-  | S3 × 2 × 1 | 2 TB | ~$3,900 |
+  | Config                                | Storage | Approx. monthly |
+  | ------------------------------------- | ------- | --------------- |
+  | L1 × 1 partition × 1 replica (no SLA) | 2 TB    | **~$2,800**     |
+  | L1 × 1 × 2 replicas (read SLA)        | 2 TB    | **~$5,600**     |
+  | S3 × 1 × 1 (tight fit at 1 TB)        | 1 TB    | ~$1,960         |
+  | S3 × 2 × 1                            | 2 TB    | ~$3,900         |
 
   Storage-optimized (L) tiers also have **higher query latency** by design, which matters for large aggregations.
+
 - **Preview features are acceptable** to the maintainer, so the preview hierarchical facets would satisfy R2. Cost is the blocker: the cheapest tier that fits the index (S3 or L1) is about $2–2.8k/month, **25–35× the lean budget**. The preview **Serverless Developer** tier caps an index at 1 GB, so it can't hold the corpus.
 - **Verdict:** Functionally strong and the least operations work, but far outside the budget. **This is the recommended alternative if the budget allows** (about $35–70k per year), or if semantic search (R10) becomes a priority.
 
-### Option B: Quickwit on Azure Container Apps, index on Azure Blob ✅ *recommended*
+### Option B: Quickwit on Azure Container Apps, index on Azure Blob ✅ _recommended_
 
-- **What:** Quickwit is a Rust search engine built on **Tantivy**, relicensed to **Apache-2.0** after Datadog acquired it in January 2025. It **decouples compute from storage**: index *splits* live on **Azure Blob Storage**, and stateless searchers read them directly, using hotcache footers and a local split cache.
+- **What:** Quickwit is a Rust search engine built on **Tantivy**, relicensed to **Apache-2.0** after Datadog acquired it in January 2025. It **decouples compute from storage**: index _splits_ live on **Azure Blob Storage**, and stateless searchers read them directly, using hotcache footers and a local split cache.
 - **Fit:** Elasticsearch-compatible aggregations (**terms → histogram/date_histogram nesting, min/max, cardinality** are GA). Phrase queries with slop (positions have to be enabled per field). Boolean queries, snippets and sorting on fast fields. Time-partitioned splits prune date-range queries well, and publication date is a natural timestamp. Ingest API, delete tasks, and a file-backed metastore on Blob (no database needed). The file-backed metastore allows **one writer only**; serving searchers open it read-only and poll for changes ([08 §8.4.1](08-azure-infrastructure.md#841-quickwit-metastore-one-writer-many-readers)).
 - **Azure PaaS usage:** Container Apps (managed, KEDA autoscaling, managed identity, managed OTel agent), Blob Storage (Hot), and Container Apps Jobs for indexing. There are no VMs and no Kubernetes to operate.
 - **Cost:** Index on Blob Hot at about **$20 per TB-month**. The lean profile runs Quickwit as a sidecar next to the API in one always-warm Container Apps replica. It started at 1 vCPU / 2 GiB (roughly **$15–45 per month** at idle rates) moved to 2 vCPU / 4 GiB in October 2026 so that uncached searches across the full date range finish sooner, and to 3.75 vCPU / 7.5 GiB (about $95 a month idle for the replica) on 9 October 2026, when the American Stories index made searches CPU-bound (#251). The growth profile uses a 4 vCPU / 8 GiB searcher at about $100–300. Ingest compute is paid only while jobs run, on Spot for the backfill.
@@ -94,14 +95,14 @@ This is the most consequential decision in the design. The legacy system's singl
 
 ### Scoring summary
 
-| | R1 | R2 | R3 | R4 | R5 | R6 cost | R7 ops | R9 | R10 | Result |
-|---|---|---|---|---|---|---|---|---|---|---|
-| A AI Search | ✅ | ✅ (preview OK) | ✅ | ✅ | ✅ | ❌ $2–5.6k | ✅✅ | ✅ | ✅ | Growth-profile alternative |
-| **B Quickwit/ACA/Blob** | ✅ | ✅ | ✅ | ✅ | ⚠️ validate | ✅ ~$25–65 | ✅ | ⚠️ OSS | ⚠️ | **Recommended** |
-| C Cosmos DB | ⚠️ | ❌ | ✅ | ⚠️ | ⚠️ | ⚠️ | ✅✅ | ✅ | ✅ | Future user data |
-| D Elastic on Azure | ✅ | ✅ | ✅ | ✅ | ✅ | ❌/⚠️ | ✅ | ✅ | ✅ | Fallback |
-| E PostgreSQL | ❌ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ✅ | ✅ | ✅ | Rejected |
-| F Embedded Tantivy | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ⚠️ | Offline only |
+|                         | R1  | R2              | R3  | R4  | R5          | R6 cost    | R7 ops | R9     | R10 | Result                     |
+| ----------------------- | --- | --------------- | --- | --- | ----------- | ---------- | ------ | ------ | --- | -------------------------- |
+| A AI Search             | ✅  | ✅ (preview OK) | ✅  | ✅  | ✅          | ❌ $2–5.6k | ✅✅   | ✅     | ✅  | Growth-profile alternative |
+| **B Quickwit/ACA/Blob** | ✅  | ✅              | ✅  | ✅  | ⚠️ validate | ✅ ~$25–65 | ✅     | ⚠️ OSS | ⚠️  | **Recommended**            |
+| C Cosmos DB             | ⚠️  | ❌              | ✅  | ⚠️  | ⚠️          | ⚠️         | ✅✅   | ✅     | ✅  | Future user data           |
+| D Elastic on Azure      | ✅  | ✅              | ✅  | ✅  | ✅          | ❌/⚠️      | ✅     | ✅     | ✅  | Fallback                   |
+| E PostgreSQL            | ❌  | ✅              | ✅  | ⚠️  | ⚠️          | ⚠️         | ✅     | ✅     | ✅  | Rejected                   |
+| F Embedded Tantivy      | ✅  | ✅              | ✅  | ✅  | ✅          | ✅         | ❌     | ❌     | ⚠️  | Offline only               |
 
 **Decision gate (Spike S-2):** index a **1M-page sample** into Quickwit running at the lean size (1 vCPU / 2 GiB sidecar), and repeat at 2 vCPU / 4 GiB. Run the benchmark query set (§5.8) and project the results to 23M pages. **Accept the lean size if** p95 for Q1 is ≤ 2 s on typical queries and ≤ 15 s on the high-frequency set, and the correctness checks pass. **Otherwise** move to 2 vCPU / 4 GiB (still under $80), and if that fails, revisit the budget. A comparison run on AI Search S1 is optional; it is informative, but unaffordable at full scale.
 
@@ -125,27 +126,27 @@ pub trait SearchBackend: Send + Sync {
 
 The same logical fields exist in both engines. **Integer bucket fields** are used for all time aggregation. This avoids calendar edge cases before 1970 and makes week, month and year bucketing exact and engine-independent.
 
-| Field | Type | Indexed | Fast/Facet/Sort | Stored | Purpose |
-|-------|------|---------|-----------------|--------|---------|
-| `doc_id` | keyword | key | ✅ | ✅ | Identity |
-| `text` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | Search. LoC's text, or with `--ja-latin` the Latin-script text of our Japanese OCR on the pages the snapshot's `ja_latin.json` lists (04 §4.8, #203) |
-| `text_cg` | text (positions) | ✅ tokenizer `whitespace` | – | – | Phrases holding common words (§5.5.3) |
-| `text_as` | text (positions) | ✅ analyzer `usnm_text` | – | ✅ (for snippets) | American Stories' text of the page, searched with `text` (§5.5.4) |
-| `text_as_cg` | text (positions) | ✅ tokenizer `whitespace` | – | – | `text_as`'s common-word pairs (§5.5.3, §5.5.4) |
-| `date` | date | ✅ | ✅ | ✅ | Quickwit timestamp field (pre-1970 confirmed in S-2) |
-| `day` | u32 | ✅ | ✅ sort | ✅ | Days since 1700-01-01; day/week buckets; range filter; hit order |
-| `sort_key` | u64 | – | ✅ sort | – | `title ordinal << 32 \| edition << 16 \| seq`: stable hit order within a day (Quickwit can't sort on text, §5.5.1) |
-| `ym` | u32 | ✅ | ✅ | – | `year*12 + (month-1)`; month buckets |
-| `year` | u16 | ✅ | ✅ | – | Year buckets |
-| `decade` | u16 | ✅ | – (split tag) | – | Only in versions laid out by decade (§5.5.5): the split partition, and the tag a date-limited search prunes splits on |
-| `place_id` | keyword | ✅ | ✅ facet | ✅ | Map aggregation |
-| `place_shard` | u8 | ✅ | ✅ | – | `place ordinal mod 8`, used to shard large cube aggregations (§5.7) |
-| `lccn` | keyword | ✅ | ✅ | ✅ | Title filter and hits |
-| `state` | keyword | ✅ | ✅ | – | Filter and choropleth |
-| `language` | keyword[] | ✅ | ✅ | – | Filter |
-| `front_page` | bool | ✅ | ✅ | – | Filter |
-| `edition`, `seq` | u16 | – | – | ✅ | Link building |
-| `batch` | keyword | ✅ | – | – | Delete-by-batch on reprocessing |
+| Field            | Type             | Indexed                   | Fast/Facet/Sort | Stored            | Purpose                                                                                                                                              |
+| ---------------- | ---------------- | ------------------------- | --------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `doc_id`         | keyword          | key                       | ✅              | ✅                | Identity                                                                                                                                             |
+| `text`           | text (positions) | ✅ analyzer `usnm_text`   | –               | ✅ (for snippets) | Search. LoC's text, or with `--ja-latin` the Latin-script text of our Japanese OCR on the pages the snapshot's `ja_latin.json` lists (04 §4.8, #203) |
+| `text_cg`        | text (positions) | ✅ tokenizer `whitespace` | –               | –                 | Phrases holding common words (§5.5.3)                                                                                                                |
+| `text_as`        | text (positions) | ✅ analyzer `usnm_text`   | –               | ✅ (for snippets) | American Stories' text of the page, searched with `text` (§5.5.4)                                                                                    |
+| `text_as_cg`     | text (positions) | ✅ tokenizer `whitespace` | –               | –                 | `text_as`'s common-word pairs (§5.5.3, §5.5.4)                                                                                                       |
+| `date`           | date             | ✅                        | ✅              | ✅                | Quickwit timestamp field (pre-1970 confirmed in S-2)                                                                                                 |
+| `day`            | u32              | ✅                        | ✅ sort         | ✅                | Days since 1700-01-01; day/week buckets; range filter; hit order                                                                                     |
+| `sort_key`       | u64              | –                         | ✅ sort         | –                 | `title ordinal << 32 \| edition << 16 \| seq`: stable hit order within a day (Quickwit can't sort on text, §5.5.1)                                   |
+| `ym`             | u32              | ✅                        | ✅              | –                 | `year*12 + (month-1)`; month buckets                                                                                                                 |
+| `year`           | u16              | ✅                        | ✅              | –                 | Year buckets                                                                                                                                         |
+| `decade`         | u16              | ✅                        | – (split tag)   | –                 | Only in versions laid out by decade (§5.5.5): the split partition, and the tag a date-limited search prunes splits on                                |
+| `place_id`       | keyword          | ✅                        | ✅ facet        | ✅                | Map aggregation                                                                                                                                      |
+| `place_shard`    | u8               | ✅                        | ✅              | –                 | `place ordinal mod 8`, used to shard large cube aggregations (§5.7)                                                                                  |
+| `lccn`           | keyword          | ✅                        | ✅              | ✅                | Title filter and hits                                                                                                                                |
+| `state`          | keyword          | ✅                        | ✅              | –                 | Filter and choropleth                                                                                                                                |
+| `language`       | keyword[]        | ✅                        | ✅              | –                 | Filter                                                                                                                                               |
+| `front_page`     | bool             | ✅                        | ✅              | –                 | Filter                                                                                                                                               |
+| `edition`, `seq` | u16              | –                         | –               | ✅                | Link building                                                                                                                                        |
+| `batch`          | keyword          | ✅                        | –               | –                 | Delete-by-batch on reprocessing                                                                                                                      |
 
 **Analyzer `usnm_text`:** a Unicode word tokenizer, then lowercase, then ASCII folding, then removal of tokens longer than 40 characters (OCR garbage). **No stemming and no stop words.** Historical exactness matters, and stop words are needed for phrases such as "cross of gold".
 
@@ -184,18 +185,18 @@ indexing_settings:
 
 **What spike S-2 settled, and how it's checked.** CI's `quickwit` job loads the fixture base and delta into Quickwit 0.9.1, stops the writer, and serves them from a read-only polling searcher configured like production. `crates/usnm-search/tests/quickwit_parity.rs` then compares the Quickwit backend with the in-memory reference backend. It covers 15 query shapes × 6 filter sets × 4 bucket units: summaries, full cubes, place-shard partitions of the cube, hit pages and snippets.
 
-| Item | Finding on 0.9.1 | Consequence |
-|------|------------------|-------------|
-| Tokenizer | `type: simple` plus `remove_long`, `lower_caser` and `ascii_folding` filters is accepted as written | As §5.5 |
-| Pre-1970 dates | `datetime` with `%Y-%m-%d` input stores and returns 1890s dates correctly, and `date` works as the timestamp field. But every timestamp range on it (`start_timestamp`/`end_timestamp`, `date:[…]`, Elasticsearch `range`) matches **no page before April 1972**, with no error: Quickwit rewrites the range with bounds in nanoseconds, which it only reads for 1972 to 2242 (#158, October 2026) | Buckets and date filters use the integer fields (`day`, `ym`, `year`). **Never filter on `date`**, and never send timestamps |
-| Multi-index search | One request over base + delta returns exact counts and aggregations | Versions are explicit index lists (08 §8.4.1) |
-| Nested aggregations | `terms(place_id) > histogram(day / ym / year)` and the `place_shard` split match the reference exactly | §5.7 as designed |
-| Sorting | Quickwit **can't sort on text fields**, so `doc_id` can't be the tiebreak. A leading `-` in `sort_by` means **ascending** | Hits sort by `-day,-sort_key` (oldest first) or `day,sort_key` (newest first). `sort_key` = `title ordinal << 32 \| edition << 16 \| seq`, a numeric stand-in for (title, edition, page) |
-| Snippets | `snippet_fields` is a comma-separated string, not an array. Fragments come back HTML-escaped with `<b>` highlights, one short fragment per field | Since #126 the API builds snippets from the stored `text` instead (06 §6.3.4), and the parity test compares them with the memory backend's exactly |
-| Score sort | `sort_by: _score` works with `fieldnorms: false`: on the fixtures it orders pages by how often they mention the word, with one inversion where the two indexes meet (rare words are weighted per split). `_score,-day` breaks ties oldest first; a third field (`-sort_key`) is refused ("sort by field must be up to 2 fields") | `sort=relevant` on `/v1/hits` (#126) |
-| Phrases, slop, prefix | Exact phrases (stop words included), `"a b"~n` and `word*` match the reference | As §5.6 |
+| Item                   | Finding on 0.9.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Consequence                                                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tokenizer              | `type: simple` plus `remove_long`, `lower_caser` and `ascii_folding` filters is accepted as written                                                                                                                                                                                                                                                                                                                                                                             | As §5.5                                                                                                                                                                                                 |
+| Pre-1970 dates         | `datetime` with `%Y-%m-%d` input stores and returns 1890s dates correctly, and `date` works as the timestamp field. But every timestamp range on it (`start_timestamp`/`end_timestamp`, `date:[…]`, Elasticsearch `range`) matches **no page before April 1972**, with no error: Quickwit rewrites the range with bounds in nanoseconds, which it only reads for 1972 to 2242 (#158, October 2026)                                                                              | Buckets and date filters use the integer fields (`day`, `ym`, `year`). **Never filter on `date`**, and never send timestamps                                                                            |
+| Multi-index search     | One request over base + delta returns exact counts and aggregations                                                                                                                                                                                                                                                                                                                                                                                                             | Versions are explicit index lists (08 §8.4.1)                                                                                                                                                           |
+| Nested aggregations    | `terms(place_id) > histogram(day / ym / year)` and the `place_shard` split match the reference exactly                                                                                                                                                                                                                                                                                                                                                                          | §5.7 as designed                                                                                                                                                                                        |
+| Sorting                | Quickwit **can't sort on text fields**, so `doc_id` can't be the tiebreak. A leading `-` in `sort_by` means **ascending**                                                                                                                                                                                                                                                                                                                                                       | Hits sort by `-day,-sort_key` (oldest first) or `day,sort_key` (newest first). `sort_key` = `title ordinal << 32 \| edition << 16 \| seq`, a numeric stand-in for (title, edition, page)                |
+| Snippets               | `snippet_fields` is a comma-separated string, not an array. Fragments come back HTML-escaped with `<b>` highlights, one short fragment per field                                                                                                                                                                                                                                                                                                                                | Since #126 the API builds snippets from the stored `text` instead (06 §6.3.4), and the parity test compares them with the memory backend's exactly                                                      |
+| Score sort             | `sort_by: _score` works with `fieldnorms: false`: on the fixtures it orders pages by how often they mention the word, with one inversion where the two indexes meet (rare words are weighted per split). `_score,-day` breaks ties oldest first; a third field (`-sort_key`) is refused ("sort by field must be up to 2 fields")                                                                                                                                                | `sort=relevant` on `/v1/hits` (#126)                                                                                                                                                                    |
+| Phrases, slop, prefix  | Exact phrases (stop words included), `"a b"~n` and `word*` match the reference                                                                                                                                                                                                                                                                                                                                                                                                  | As §5.6                                                                                                                                                                                                 |
 | Wildcards inside words | An unquoted word with `?` or `*` is a wildcard query matched against the index's words: `text:convent?on` and `text:conve*tion` match the reference. Quickwit's own snippets have no fragment at all for a wildcard or prefix query (`text:convent?on`, `text:silve*`; checked on 0.9.1, October 2026): it highlights only the terms a query lists, and wildcard and prefix queries list none. In a phrase the wildcards don't work (`text:"con*tion speaker"` matches nothing) | Allowed after at least 5 letters, as for a prefix, and refused inside quotes (06 §6.4, #124). The API marks the matched words in its own snippets, which the parity test checks on the Quickwit backend |
-| **Fuzzy terms** | **Not supported.** `term~1` parses but silently matches nothing, and the Elasticsearch-compatible API has no fuzzy query either | The Quickwit backend reports `fuzzy: false` and returns 422 for fuzzy queries rather than wrong counts. F-21 needs another approach; see [10 R-15](10-roadmap-and-risks.md#103-risk-register) |
+| **Fuzzy terms**        | **Not supported.** `term~1` parses but silently matches nothing, and the Elasticsearch-compatible API has no fuzzy query either                                                                                                                                                                                                                                                                                                                                                 | The Quickwit backend reports `fuzzy: false` and returns 422 for fuzzy queries rather than wrong counts. F-21 needs another approach; see [10 R-15](10-roadmap-and-risks.md#103-risk-register)           |
 
 Still open in S-2: the 1M-page benchmark (§5.8, latency and memory at the sidecar size, split cache) and managed-identity Blob auth against a real account (08 §8.2).
 
@@ -285,31 +286,32 @@ A cold search opens every split of every index it names, even one limited to a s
 - **Rollout.** `current.json` records `decades: 1`, and so does the build record's `features`. The API names decades only at its own version, so an API with another bucketing (a new `VERSION`) prunes nothing on older versions rather than skip splits it needs, and dropping the key from `current.json` turns the clause off without a rebuild.
 - **Measured locally** (Quickwit 0.9.1 on 8 cores, `crates/usnm-ingest/tests/decade_measure.rs`): 3,000,000 synthetic pages in archive order (batches of titles, each title's pages by date, decades weighted like production), about 1.7 KB of text each, with a 2 s commit timeout so that, as in production (120 s, about 23,000 pages), the writer cuts splits before the 30,000-page target:
 
-  | | No decades | Partitioned, archive order | Partitioned, a decade at a time |
-  |---|---|---|---|
-  | Writer's peak memory | 1,058 MiB | 1,931 MiB | 1,514 MiB |
-  | Splits cut before merging (median pages) | 288 (10,039) | 1,538 (1,714) | 492 (5,022) |
-  | Merges (pages merged) | 85 (3.0M) | 213 (5.3M) | 105 (3.0M) |
-  | Splits when sealed | 86 | 87 | 111 |
-  | Sending + merge wait | 324 s + 34 s | 417 s + 384 s | 452 s + 78 s |
+  |                                          | No decades   | Partitioned, archive order | Partitioned, a decade at a time |
+  | ---------------------------------------- | ------------ | -------------------------- | ------------------------------- |
+  | Writer's peak memory                     | 1,058 MiB    | 1,931 MiB                  | 1,514 MiB                       |
+  | Splits cut before merging (median pages) | 288 (10,039) | 1,538 (1,714)              | 492 (5,022)                     |
+  | Merges (pages merged)                    | 85 (3.0M)    | 213 (5.3M)                 | 105 (3.0M)                      |
+  | Splits when sealed                       | 86           | 87                         | 111                             |
+  | Sending + merge wait                     | 324 s + 34 s | 417 s + 384 s              | 452 s + 78 s                    |
 
   Partitioning in archive order cuts each commit into a split per decade: 5× the splits, 1.8× the pages merged, 11× the merge wait and 1.8× the writer's memory (all partitions of a commit share the one indexing heap, but each has its own split to build, package and upload). A decade at a time keeps the merges to one pass over the pages, like today, and the memory at 1.4×. It leaves about 1.5 more splits per decade than no decades (merges join only splits of one decade): at production's scale about 20 more than the about 800 a full-range search opens, against about 8× fewer for a year's search. The files held at most 304,000 pages (378 MB compressed). Sending was slower here because the test's generator and the order's files share the 8 cores with the writer, which indexes these small pages about 50× faster than production's: in production the writer's ingest queue (about 2 minutes of pages) keeps it busy while the release fills the next decade's file. Measure the rate on the first partitioned rebuild (`release progress`) against the 48 h replica timeout.
+
 - **Checked in CI.** The parity tests (`searches_by_decade_match_the_reference_backend`, `searches_by_decade_open_only_their_decades_splits`) check that searches naming their decades return the reference's pages and target only those decades' splits, on the fixtures moved over four decades (`fixtures/decades.rs`), and the pipeline test `releases_a_base_laid_out_by_decade_into_a_quickwit_writer_node` builds a partitioned base and a tagged delta on a real writer.
 
 ## 5.6 Query semantics
 
 The user-facing syntax is simple and matches LoC's modes. The API parses it into an AST (see [06](06-api-design.md)), then translates:
 
-| User intent | UI control / syntax | AST | Quickwit | AI Search (`queryType=full`) |
-|-------------|--------------------|-----|----------|------------------------------|
-| Exact phrase | mode = phrase, or `"cross of gold"` | `Phrase([cross,of,gold], slop 0)` | `text:"cross of gold"` | `text:"cross of gold"` |
-| All words | mode = all | `And[Term…]` | `text:a AND text:b` | `+a +b` |
-| Any word | mode = any | `Or[Term…]` | `text:a OR text:b` | `a b` (searchMode any) |
-| Near | mode = near, n = 5 | `Phrase(slop 5, unordered)` | `text:"a b"~5` | `"a b"~5` |
-| Exclude | `-word` | `Not(Term)` | `-text:word` | `-word` |
-| Fuzzy (OCR) | toggle "OCR-tolerant" | `Fuzzy(term, d=1 or 2)` | not supported in 0.9 (§5.5.1); refused | `term~1` |
-| Prefix | `word*` (≥ 5 letters) | `Prefix` | `text:word*` | `word*` |
-| Wildcard (OCR) | `presi?ent`, `washi*ton` (≥ 5 letters first) | `Term` with `wildcard` | `text:presi?ent` | `presi?ent` |
+| User intent    | UI control / syntax                          | AST                               | Quickwit                               | AI Search (`queryType=full`) |
+| -------------- | -------------------------------------------- | --------------------------------- | -------------------------------------- | ---------------------------- |
+| Exact phrase   | mode = phrase, or `"cross of gold"`          | `Phrase([cross,of,gold], slop 0)` | `text:"cross of gold"`                 | `text:"cross of gold"`       |
+| All words      | mode = all                                   | `And[Term…]`                      | `text:a AND text:b`                    | `+a +b`                      |
+| Any word       | mode = any                                   | `Or[Term…]`                       | `text:a OR text:b`                     | `a b` (searchMode any)       |
+| Near           | mode = near, n = 5                           | `Phrase(slop 5, unordered)`       | `text:"a b"~5`                         | `"a b"~5`                    |
+| Exclude        | `-word`                                      | `Not(Term)`                       | `-text:word`                           | `-word`                      |
+| Fuzzy (OCR)    | toggle "OCR-tolerant"                        | `Fuzzy(term, d=1 or 2)`           | not supported in 0.9 (§5.5.1); refused | `term~1`                     |
+| Prefix         | `word*` (≥ 5 letters)                        | `Prefix`                          | `text:word*`                           | `word*`                      |
+| Wildcard (OCR) | `presi?ent`, `washi*ton` (≥ 5 letters first) | `Term` with `wildcard`            | `text:presi?ent`                       | `presi?ent`                  |
 
 Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range and term filters on `day`, `state`, etc. They are never free text.
 
@@ -317,12 +319,12 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 
 **Bucket choice.** The API chooses the finest bucket that keeps the result cube bounded, unless the client pins one:
 
-| Date span | Default bucket | Max buckets |
-|-----------|----------------|-------------|
-| > 30 years | year | ~210 |
-| 3–30 years | month | 360 |
-| 4 months – 3 years | week | 157 |
-| ≤ 4 months | day | 122 |
+| Date span          | Default bucket | Max buckets |
+| ------------------ | -------------- | ----------- |
+| > 30 years         | year           | ~210        |
+| 3–30 years         | month          | 360         |
+| 4 months – 3 years | week           | 157         |
+| ≤ 4 months         | day            | 122         |
 
 **Queries issued for Q1** (Quickwit; AI Search in the growth profile issues the equivalent facet requests). Every query, the hits queries included, also excludes the copies of duplicated pages the version's `duplicates.json` lists (04 §4.7), one clause per batch: `NOT (batch:{batch} AND doc_id:IN [{ids}])`. The list is empty after a full release.
 
@@ -337,7 +339,7 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 
 **Searcher caches.** The sidecar also keeps split footers, fast-field data and per-split partial and predicate results in memory (`infra/quickwit/searcher.yaml`, 08 §8.4). The cube and summary queries of a repeated or similar search reuse them, so only the first search after a start or a publish pays for every split's footer. The API reports the caches' size, hits, misses and evictions (`api.searcher_cache_*`, 08 §8.1.2); the split footer cache is sized to hold every footer of the serving version.
 
-**Normalization** happens in the API from `reference/{index_version}/baselines_place_day` (pages *published* per place and day, rolled up to any bucket in memory):
+**Normalization** happens in the API from `reference/{index_version}/baselines_place_day` (pages _published_ per place and day, rolled up to any bucket in memory):
 `rel[place][bucket] = hits / baseline`, and nationally `rel[bucket] = Σhits / Σbaseline`. This replaces the legacy `globalFreq` table, stays correct as the corpus grows, and gives honest per-place rates.
 
 **High-frequency guardrails.** Terms such as `the` match almost every page. Protections:
@@ -349,14 +351,14 @@ Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range an
 
 ## 5.8 Benchmark query set (Spike S-2)
 
-| Class | Examples | Expected hits (23M corpus) |
-|-------|----------|----------------------------|
-| Rare phrase | `"cross of gold"` 1896; `"yellow jack"` 1878 | 10³–10⁴ |
-| Mid-frequency term | `scalawag`, `miscegenation`, `influenza` 1918 | 10⁴–10⁵ |
-| High-frequency term | `railroad`, `lincoln`, `war` | 10⁶–10⁷ |
-| Proximity | `"gold silver"~5` | 10⁵ |
-| Filtered | `influenza` state=GA front=true | 10³ |
-| Pathological | `the`, `a*` (rejected), 6-term OR | – |
+| Class               | Examples                                      | Expected hits (23M corpus) |
+| ------------------- | --------------------------------------------- | -------------------------- |
+| Rare phrase         | `"cross of gold"` 1896; `"yellow jack"` 1878  | 10³–10⁴                    |
+| Mid-frequency term  | `scalawag`, `miscegenation`, `influenza` 1918 | 10⁴–10⁵                    |
+| High-frequency term | `railroad`, `lincoln`, `war`                  | 10⁶–10⁷                    |
+| Proximity           | `"gold silver"~5`                             | 10⁵                        |
+| Filtered            | `influenza` state=GA front=true               | 10³                        |
+| Pathological        | `the`, `a*` (rejected), 6-term OR             | –                          |
 
 Metrics: p50, p95 and p99 latency (cold and warm); index size ÷ raw text; ingest pages/s; cost per 1,000 queries; count correctness against a DataFusion brute-force scan of the curated Parquet sample (must match exactly).
 
@@ -367,32 +369,33 @@ The design separates **document content** from **document state**:
 - **Content** is the page text and immutable metadata: large, written once per batch version, and read in bulk.
 - **State** is small and mutable: where each title, batch and page is in the pipeline, its errors, versions, index membership, geocoding review status, and coverage summaries. It changes often, needs atomic updates, and people ask questions of it ("which titles failed curation?", "which batches aren't in index v7?").
 
-| Data | Store | Why |
-|------|-------|-----|
-| **Page text + immutable metadata** (the corpus) | **Curated Parquet on Blob Storage (flat namespace), Cool tier** (~150–300 GB compressed; immutable attempt paths; versioning + soft delete) | The system of record for content ([ADR-0002](adr/0002-blob-data-lake-system-of-record.md)). Read in bulk for rebuilds, baselines and offline research. About $2–3/month |
-| **Document state** (per LCCN, per batch, per issue, per index run) | **Azure Cosmos DB for NoSQL, free tier** | Queryable, atomic partial updates (patch), optimistic concurrency, change feed. **$0** within the free tier ([ADR-0007](adr/0007-cosmos-document-state.md)) |
-| **Serving copy of text** (snippets) and **stored fields** | Inside the search index (Quickwit docstore on Blob Hot) | Hits and snippets come back in the same engine call |
-| **Reference data for the API** (titles, places, baselines, coverage) | Blob Hot, Parquet + zstd JSON, loaded into API memory. Built by the `stats` job from Parquet and the Cosmos `titles` container | The API's read path has no database dependency, so the site keeps serving if Cosmos is unavailable |
-| **Response cache** | Blob Hot `cache/{index_version}/` | Survives restarts |
-| **User data** (future: saved searches, collections) | Same Cosmos account (new containers) | Reuses the existing account and identity |
+| Data                                                                 | Store                                                                                                                                       | Why                                                                                                                                                                     |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Page text + immutable metadata** (the corpus)                      | **Curated Parquet on Blob Storage (flat namespace), Cool tier** (~150–300 GB compressed; immutable attempt paths; versioning + soft delete) | The system of record for content ([ADR-0002](adr/0002-blob-data-lake-system-of-record.md)). Read in bulk for rebuilds, baselines and offline research. About $2–3/month |
+| **Document state** (per LCCN, per batch, per issue, per index run)   | **Azure Cosmos DB for NoSQL, free tier**                                                                                                    | Queryable, atomic partial updates (patch), optimistic concurrency, change feed. **$0** within the free tier ([ADR-0007](adr/0007-cosmos-document-state.md))             |
+| **Serving copy of text** (snippets) and **stored fields**            | Inside the search index (Quickwit docstore on Blob Hot)                                                                                     | Hits and snippets come back in the same engine call                                                                                                                     |
+| **Reference data for the API** (titles, places, baselines, coverage) | Blob Hot, Parquet + zstd JSON, loaded into API memory. Built by the `stats` job from Parquet and the Cosmos `titles` container              | The API's read path has no database dependency, so the site keeps serving if Cosmos is unavailable                                                                      |
+| **Response cache**                                                   | Blob Hot `cache/{index_version}/`                                                                                                           | Survives restarts                                                                                                                                                       |
+| **User data** (future: saved searches, collections)                  | Same Cosmos account (new containers)                                                                                                        | Reuses the existing account and identity                                                                                                                                |
 
 ### 5.9.1 Cosmos DB state model
 
 One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth: true`, Entra ID data-plane RBAC), one database `usnm` with **shared throughput of 1,000 RU/s** (the free-tier allowance), and these containers:
 
-| Container | Partition key | Item (one per…) | Approx. count | Key fields |
-|-----------|---------------|-----------------|---------------|-----------|
-| `titles` | `/lccn` | newspaper title | ~4–5k | name, place history (date-ranged), `place_id`, geocode `{method, precision, review_status, override}`, languages, first/last issue, page counts by `ocr_source`, `status ∈ {discovered, curated, indexed, error}`, `last_error`, `updated_at` |
-| `batches` | `/batch` | LoC batch | ~3k | `versions_seen[]`, `current_version`, `status ∈ {discovered, queued, downloading, curated, indexed, failed}`, `attempts`, `source_sha256`, `pages`, `lccns[]`, `curated_path`, `indexed_in[]`, `lease {owner, until}` |
-| `issues` | `/lccn` | issue (lccn + date + edition) | ~3–4M | page count, empty-OCR pages, `batch`, `batch_version`, `ocr_source`, `indexed_in` (index version). Enables "what's missing for this title?" checks |
-| `index_runs` | `/index_version` | index build | tens | `status`, `full`, `indexes`, `new_index`, doc and page counts, `batch_count`, `batch_list` (the path of `reference/{index_version}/batches.json`), `started_at`, `published_at`, `previous_version`, `last_error` |
-| `ops` | `/kind` | misc | few | `current` pointer (mirrors `reference/current.json`), locks, the LoC download pacer, the running release's progress (`release-progress`), schedules |
+| Container    | Partition key    | Item (one per…)               | Approx. count | Key fields                                                                                                                                                                                                                                    |
+| ------------ | ---------------- | ----------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `titles`     | `/lccn`          | newspaper title               | ~4–5k         | name, place history (date-ranged), `place_id`, geocode `{method, precision, review_status, override}`, languages, first/last issue, page counts by `ocr_source`, `status ∈ {discovered, curated, indexed, error}`, `last_error`, `updated_at` |
+| `batches`    | `/batch`         | LoC batch                     | ~3k           | `versions_seen[]`, `current_version`, `status ∈ {discovered, queued, downloading, curated, indexed, failed}`, `attempts`, `source_sha256`, `pages`, `lccns[]`, `curated_path`, `indexed_in[]`, `lease {owner, until}`                         |
+| `issues`     | `/lccn`          | issue (lccn + date + edition) | ~3–4M         | page count, empty-OCR pages, `batch`, `batch_version`, `ocr_source`, `indexed_in` (index version). Enables "what's missing for this title?" checks                                                                                            |
+| `index_runs` | `/index_version` | index build                   | tens          | `status`, `full`, `indexes`, `new_index`, doc and page counts, `batch_count`, `batch_list` (the path of `reference/{index_version}/batches.json`), `started_at`, `published_at`, `previous_version`, `last_error`                             |
+| `ops`        | `/kind`          | misc                          | few           | `current` pointer (mirrors `reference/current.json`), locks, the LoC download pacer, the running release's progress (`release-progress`), schedules                                                                                           |
 
 **Index run items stay small.** A version's batch list carries every batch's curation record, about 500–650 bytes each, so ~3,000 batches come to ~1.5–2 MB, and Cosmos DB refuses items over 2 MB. The list is in the version's reference snapshot (`batches.json`, immutable and checksummed in the manifest like the rest), and the run item has only `batch_count` and `batch_list`, a few hundred bytes whatever the corpus size. Runs written before this carry the list inline as `batches`; the release reads either form, and the status page reads `batch_count` or the inline list's length, never the list.
 
 **Why issues and not pages?** Page-level state (23M items, ~12 GB) would fit the free tier's 25 GB, but writing it costs about 140M RU: roughly 38 hours of the whole free throughput. It would also duplicate what the Parquet files already record. Issue-level state (~3–4M items, ~2 GB) answers the practical questions (coverage gaps, reprocessing status) at about a sixth of the write cost. Page-level detail is always available by scanning Parquet.
 
 **Usage patterns:**
+
 - **Work claiming.** Batch workers (Container Apps Jobs or ACI Spot groups) take a batch with a conditional **patch** on the batch item (`lease.until < now` → set the owner, `status=downloading`), using its ETag. This also makes Cosmos the work queue: `queued` batches are claimed in order, and an expired lease makes a batch claimable again. No Storage Queue is needed, which saves a private endpoint.
 - **Commit order.** Cosmos transactions don't span containers, so a worker writes dependent items first (issue upserts, which are idempotent) and makes the batch's `status=curated` patch the **last** write, conditional on its lease. A crash at any point leaves the batch un-curated and retryable, never marked done with incomplete issue state.
 - **Progress and retries.** Every state transition is one patch (~10 RU). Failures record `last_error` and `attempts`, and a failed batch can be re-queued with a single query plus patch.
@@ -400,6 +403,7 @@ One account (**free tier**, provisioned throughput, NoSQL API, `disableLocalAuth
 - **Operator queries.** `SELECT * FROM b WHERE b.status = 'failed'`, "titles with county-precision geocodes awaiting review", "issues not in the current index". These run from the Data Explorer or a tiny admin CLI subcommand.
 
 **Throughput budget.**
+
 - A backfill writes ~3k batch transitions × ~5 plus ~3.5M issue upserts at ~8 RU each, about **30M RU in total**. At a throttled ~600 RU/s that takes ~14 hours, well within the ~4-day download-bound backfill.
 - Weekly increments use a few thousand RU.
 - The SDK retries 429s, and workers keep a client-side RU budget so the free throughput isn't exceeded.

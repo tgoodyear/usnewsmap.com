@@ -45,24 +45,13 @@ export function SortableTable<R>({
   const sorted = [...rows].sort((a, b) => {
     const x = col.value(a);
     const y = col.value(b);
-    const c =
-      typeof x === "number" && typeof y === "number"
-        ? x - y
-        : String(x).localeCompare(String(y));
+    const c = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y));
     // Ties keep a stable, alphabetical order whichever way the column sorts.
-    return (
-      (sort.desc ? -c : c) ||
-      String(name.value(a)).localeCompare(String(name.value(b)))
-    );
+    return (sort.desc ? -c : c) || String(name.value(a)).localeCompare(String(name.value(b)));
   });
   return (
     // Focusable so keyboard users can scroll a wide table on a narrow screen.
-    <div
-      className="table-scroll"
-      tabIndex={0}
-      role="region"
-      aria-label={caption}
-    >
+    <div className="table-scroll" tabIndex={0} role="region" aria-label={caption}>
       <table className="places status-table pages-table">
         <caption>{caption}</caption>
         <thead>
@@ -72,13 +61,7 @@ export function SortableTable<R>({
                 key={c.key}
                 scope="col"
                 className={c.numeric ? "num" : undefined}
-                aria-sort={
-                  sort.key === c.key
-                    ? sort.desc
-                      ? "descending"
-                      : "ascending"
-                    : "none"
-                }
+                aria-sort={sort.key === c.key ? (sort.desc ? "descending" : "ascending") : "none"}
               >
                 <button
                   type="button"
@@ -86,8 +69,7 @@ export function SortableTable<R>({
                   onClick={() =>
                     setSort({
                       key: c.key,
-                      desc:
-                        sort.key === c.key ? !sort.desc : c.numeric === true,
+                      desc: sort.key === c.key ? !sort.desc : c.numeric === true,
                     })
                   }
                 >
@@ -129,10 +111,7 @@ export function SortableTable<R>({
                     {f}
                   </th>
                 ) : (
-                  <td
-                    key={i}
-                    className={columns[i]?.numeric ? "num" : undefined}
-                  >
+                  <td key={i} className={columns[i]?.numeric ? "num" : undefined}>
                     {f}
                   </td>
                 ),
@@ -177,15 +156,8 @@ const STATE_COLUMNS: Column<StatePages>[] = [
   },
 ];
 
-export function StatesSection({
-  rows,
-  pages,
-}: {
-  rows: StatePages[];
-  pages: number;
-}) {
-  const sum = (f: (r: StatePages) => number) =>
-    rows.reduce((a, r) => a + f(r), 0);
+export function StatesSection({ rows, pages }: { rows: StatePages[]; pages: number }) {
+  const sum = (f: (r: StatePages) => number) => rows.reduce((a, r) => a + f(r), 0);
   return (
     <section aria-labelledby="by-state" className="status-subsection">
       <h3 id="by-state">Pages by state</h3>
@@ -197,8 +169,7 @@ export function StatesSection({
             {rows.length === 1
               ? "1 state or territory has pages in the published version."
               : `${count(rows.length)} states and territories have pages in the published version.`}{" "}
-            Each newspaper counts toward the state of the place it was published
-            in.
+            Each newspaper counts toward the state of the place it was published in.
           </p>
           <details className="status-table">
             <summary>Show the table of pages by state</summary>
@@ -208,13 +179,7 @@ export function StatesSection({
               rows={rows}
               rowKey={(r) => r.state}
               initial={{ key: "pages", desc: true }}
-              foot={[
-                "Total",
-                count(sum((r) => r.places)),
-                count(sum((r) => r.titles)),
-                count(pages),
-                "100.0%",
-              ]}
+              foot={["Total", count(sum((r) => r.places)), count(sum((r) => r.titles)), count(pages), "100.0%"]}
             />
           </details>
         </>
@@ -268,29 +233,20 @@ export function LanguagesSection({ data }: { data: ByLanguage }) {
             Languages are the ones LoC lists for each newspaper.{" "}
             {data.multilingual_titles > 0
               ? `${count(data.multilingual_titles)} ${data.multilingual_titles === 1 ? "newspaper lists" : "newspapers list"} more than one language${
-                  known && data.multilingual_pages !== null
-                    ? ` (${count(data.multilingual_pages)} pages)`
-                    : ""
+                  known && data.multilingual_pages !== null ? ` (${count(data.multilingual_pages)} pages)` : ""
                 }. Those count once in each of their languages, so the rows add up to more than ${known ? "all published pages" : "the number of newspapers"}.`
               : "Every newspaper lists one language or none."}
           </p>
           {!known && (
             <p className="notice" role="note">
-              The published version doesn&apos;t record pages per newspaper, so
-              this table has newspaper counts only. Page counts appear once a
-              newer search index goes live.
+              The published version doesn&apos;t record pages per newspaper, so this table has newspaper counts only.
+              Page counts appear once a newer search index goes live.
             </p>
           )}
           <details className="status-table">
-            <summary>
-              Show the table of {known ? "pages" : "newspapers"} by language
-            </summary>
+            <summary>Show the table of {known ? "pages" : "newspapers"} by language</summary>
             <SortableTable
-              caption={
-                known
-                  ? "Published pages by language"
-                  : "Published newspapers by language"
-              }
+              caption={known ? "Published pages by language" : "Published newspapers by language"}
               columns={languageColumns(known)}
               rows={data.rows}
               rowKey={(r) => (r.code === null ? "none" : `code:${r.code}`)}

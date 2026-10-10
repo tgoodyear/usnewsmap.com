@@ -13,7 +13,7 @@ describe("snippetSegments", () => {
   });
 
   it("never turns other markup into elements", () => {
-    const segs = snippetSegments('<img src=x onerror=alert(1)> <mark>&lt;script&gt;</mark>');
+    const segs = snippetSegments("<img src=x onerror=alert(1)> <mark>&lt;script&gt;</mark>");
     expect(segs.every((s) => typeof s.text === "string")).toBe(true);
     expect(segs[0]!.text).toContain("<img");
     expect(segs[1]).toEqual({ text: "<script>", mark: true });

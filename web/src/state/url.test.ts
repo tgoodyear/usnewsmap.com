@@ -79,9 +79,7 @@ describe("view URL", () => {
   });
 
   it("keeps near only in near mode", () => {
-    expect(serializeView({ ...DEFAULTS, q: "a b", mode: "near", near: 8 })).toBe(
-      "?q=a+b&mode=near&near=8",
-    );
+    expect(serializeView({ ...DEFAULTS, q: "a b", mode: "near", near: 8 })).toBe("?q=a+b&mode=near&near=8");
     expect(serializeView({ ...DEFAULTS, q: "a b", near: 8 })).toBe("?q=a+b");
   });
 });

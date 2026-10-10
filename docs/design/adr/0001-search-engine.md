@@ -6,7 +6,7 @@
 
 ## Context
 
-We need phrase and proximity search over about 23M OCR'd newspaper pages (roughly 450–800 GB of text). The primary query is a **nested aggregation**, *place × time bucket*, over **all** matches, not a ranked top-k. The legacy system used self-managed Solr, which is now ruled out by the "no servers" constraint ([ADR-0005](0005-sustainability-constraints.md)). The maintainer asked us to lean on Azure PaaS for document storage and retrieval.
+We need phrase and proximity search over about 23M OCR'd newspaper pages (roughly 450–800 GB of text). The primary query is a **nested aggregation**, _place × time bucket_, over **all** matches, not a ranked top-k. The legacy system used self-managed Solr, which is now ruled out by the "no servers" constraint ([ADR-0005](0005-sustainability-constraints.md)). The maintainer asked us to lean on Azure PaaS for document storage and retrieval.
 
 ## Decision
 
@@ -14,13 +14,13 @@ Use **Quickwit** (Apache-2.0, Rust/Tantivy) running on **Azure Container Apps**,
 
 ## Alternatives
 
-| Option | Why not chosen (now) |
-|--------|----------------------|
-| Azure AI Search (L1/S3) | Fits functionally and has the least operational work, but costs about **$2.8–5.6k/month** at our size (5–10× the budget), and nested facets (`place > year`) are **preview-only**. Kept as the alternative. |
-| Elastic Cloud on Azure (managed SaaS, no VMs of ours) | Full-featured, but a hot tier of about 1 TB runs ~$1.5–3k/month, and the frozen tier is too slow for interactive aggregations. Fallback. |
-| Cosmos DB full-text | GA BM25/phrase search, but RU cost for aggregating millions of matches is prohibitive. Reserved for future user data. |
-| PostgreSQL tsvector | A `tsvector` records at most 16,383 positions, so phrases on dense pages fail. |
-| Embedded Tantivy | Needs about 1 TB of local persistent disk, which means IaaS VMs or AKS, and that violates the no-VM constraint. Kept only for offline research builds. |
+| Option                                                | Why not chosen (now)                                                                                                                                                                                        |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Azure AI Search (L1/S3)                               | Fits functionally and has the least operational work, but costs about **$2.8–5.6k/month** at our size (5–10× the budget), and nested facets (`place > year`) are **preview-only**. Kept as the alternative. |
+| Elastic Cloud on Azure (managed SaaS, no VMs of ours) | Full-featured, but a hot tier of about 1 TB runs ~$1.5–3k/month, and the frozen tier is too slow for interactive aggregations. Fallback.                                                                    |
+| Cosmos DB full-text                                   | GA BM25/phrase search, but RU cost for aggregating millions of matches is prohibitive. Reserved for future user data.                                                                                       |
+| PostgreSQL tsvector                                   | A `tsvector` records at most 16,383 positions, so phrases on dense pages fail.                                                                                                                              |
+| Embedded Tantivy                                      | Needs about 1 TB of local persistent disk, which means IaaS VMs or AKS, and that violates the no-VM constraint. Kept only for offline research builds.                                                      |
 
 ## Consequences
 

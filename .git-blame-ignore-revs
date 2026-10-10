@@ -1,0 +1,5 @@
+# Commits that only reformat, for `git blame --ignore-revs-file .git-blame-ignore-revs`
+# (GitHub reads this file by default; locally, `git config blame.ignoreRevsFile .git-blame-ignore-revs`).
+
+# Prettier on web/ and Markdown (#262)
+ef86bc15b75062bb56fd57d6c421d0ac9e535e22
