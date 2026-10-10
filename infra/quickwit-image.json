@@ -1,0 +1,8 @@
+{
+  "environments": {},
+  "upstream": {
+    "digest": "sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f",
+    "image": "quickwit/quickwit",
+    "tag": "v0.9.1"
+  }
+}

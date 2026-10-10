@@ -147,8 +147,14 @@ var tags = {
 }
 var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
-// Quickwit v0.9.1, copied into the registry by CI with its digest unchanged.
-var quickwitDigest = 'sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
+// The Quickwit image (ADR-0013, 08 §8.6). An environment listed in
+// quickwit-image.json runs our build of Quickwit from its own registry,
+// pushed there by scripts/build-quickwit.sh; any other runs upstream
+// v0.9.1, which CI copies into the registry with its digest unchanged. CI
+// reads the same file for the ingest image's base.
+var quickwitPins = loadJsonContent('quickwit-image.json')
+var quickwitPin = any(quickwitPins.environments)[?env] ?? quickwitPins.upstream
+var quickwitUpstream = '${quickwitPins.upstream.image}:${quickwitPins.upstream.tag}@${quickwitPins.upstream.digest}'
 // Where the site is served: the API app's own hostname, and the domain and
 // www if there is one. The site calls the API on its own origin, so these
 // matter for the tiles account's CORS (and any cross-origin API caller).
@@ -355,9 +361,8 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     name: appName
     environmentId: containerEnv.outputs.id
     image: useAcr ? '${registry.outputs.loginServer}/usnewsmap-api:${imageTag}' : apiImage
-    quickwitImage: useAcr
-      ? '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
-      : 'quickwit/quickwit:v0.9.1@${quickwitDigest}'
+    // Without the registry, the public upstream image: ours is only in the registry.
+    quickwitImage: useAcr ? '${registry.outputs.loginServer}/${quickwitPin.image}@${quickwitPin.digest}' : quickwitUpstream
     registryServer: useAcr ? registry.outputs.loginServer : ''
     customDomains: customDomains
     identityId: identities.outputs.appId
@@ -466,7 +471,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     ingestProfile: ingestOnDedicated ? containerEnv.outputs.dedicatedProfileName : ''
     jaOcrImage: jaOcrJob ? '${registry.outputs.loginServer}/usnewsmap-ja-ocr:${imageTag}' : ''
     jaOcrReplicas: jaOcrReplicas
-    rootImage: '${registry.outputs.loginServer}/quickwit/quickwit@${quickwitDigest}'
+    rootImage: '${registry.outputs.loginServer}/${quickwitPin.image}@${quickwitPin.digest}'
     rawUrl: !empty(archiveAccountId)
       ? 'https://${archiveAccount}.blob.${environment().suffixes.storage}/raw'
       : (retainRaw ? '${storage.outputs.blobEndpoint}${rawStore!.outputs.container}' : '')

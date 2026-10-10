@@ -4,6 +4,13 @@
 # the ACI Spot backfill groups.
 # Dependencies build in their own layer (cargo-chef), keyed on the manifests
 # and lockfile only, so a code change recompiles just the workspace crates.
+# The Quickwit image the binary runs on, by digest. CI's publish passes the
+# environment's pin from infra/quickwit-image.json: our build of v0.9.1 in
+# that environment's registry (ADR-0013), or upstream's copy there. The
+# default is upstream v0.9.1 (the version spike S-2 validated), the same as
+# the file's `upstream`, so PR builds and local builds need no registry.
+ARG QUICKWIT_IMAGE=quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
+
 FROM rust:1-bookworm AS chef
 RUN cargo install cargo-chef --locked --version 0.1.78
 WORKDIR /src
@@ -24,8 +31,7 @@ COPY infra/quickwit ./infra/quickwit
 COPY catalog ./catalog
 RUN cargo build --release --locked -p usnm-ingest
 
-# Quickwit v0.9.1 (the version spike S-2 validated), pinned by digest.
-FROM quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
+FROM ${QUICKWIT_IMAGE}
 COPY --from=build /src/target/release/usnm-ingest /usr/local/bin/usnm-ingest
 # The commit the image was built from, for each version's build record (#161).
 # Set here, after the build, so a new commit doesn't rebuild the binary.

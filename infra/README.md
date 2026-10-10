@@ -158,6 +158,8 @@ The CI identity's rights are AcrPush on its registry, and a custom role, "usnm d
 
 Each stack deployment sets the API image to `USNM_IMAGE_TAG` again (default `main`, the newest build pushed from `main`, which is normally the one CI last rolled out).
 
+The Quickwit image (the searcher sidecar, and the base of the ingest image) is pinned by digest per environment in `infra/quickwit-image.json`: our build of v0.9.1, which `scripts/build-quickwit.sh` builds in the environment's registry, or for an environment the file doesn't list, upstream v0.9.1, which CI copies in ([operations](../docs/operations.md#the-quickwit-image), ADR-0013).
+
 ## Operating it
 
 Running the ingest jobs (the backfill, weekly releases and full rebuilds), the saved log queries and the search log are in [`docs/operations.md`](../docs/operations.md).

@@ -64,7 +64,7 @@ param backfillCron string = ''
 param scratchStorageName string = ''
 @description('The share\'s size in GiB: the release refuses to start with less than three quarters of it free.')
 param scratchGiB int = 0
-@description('An image that runs as root, to hand the share to the pipeline\'s user: the pinned Quickwit image.')
+@description('An image that runs as root, to hand the share to the pipeline\'s user: the pinned Quickwit image (the ingest image\'s base).')
 param rootImage string = ''
 @description('Seconds a release waits for its new index\'s merges before failing without publishing (08 §8.4). Budgeted under the 24 h replica timeout below.')
 @minValue(600)
@@ -151,7 +151,9 @@ var env = [
   { name: 'USNM_COSMOS_ENDPOINT', value: cosmosEndpoint }
   { name: 'USNM_CURATED_URL', value: '${storageBlobEndpoint}curated' }
   { name: 'USNM_REFERENCE_URL', value: '${storageBlobEndpoint}reference' }
-  // Selects id-usnm-ingest at the managed identity endpoint.
+  // Selects id-usnm-ingest at the managed identity endpoint, for the
+  // pipeline. The Quickwit writer it starts ignores it: Quickwit 0.9.1's
+  // managed identity credential asks for the system-assigned identity.
   { name: 'AZURE_CLIENT_ID', value: ingestClientId }
   { name: 'RUST_LOG', value: 'info' }
   // Traces and metrics to Application Insights, signed with the identity above.

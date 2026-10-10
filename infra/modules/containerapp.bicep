@@ -10,7 +10,9 @@
 // §8.4.1). Quickwit 0.9 authenticates to Blob with Azure's default credential
 // chain, which in Container Apps can only use the app's *system-assigned*
 // identity, so the app gets one with Blob Data Reader on `qw-index` only
-// (spike S-2). Needs indexes and a current.json published by the ingest jobs.
+// (spike S-2). Our build of Quickwit (ADR-0013) keeps that credential and
+// shares one of it, and one pooled HTTP client, across the process. Needs
+// indexes and a current.json published by the ingest jobs.
 
 param location string
 param tags object
@@ -30,8 +32,8 @@ param maxReplicas int = 2
 param trustedProxyHops int = 1
 @allowed(['fixtures', 'quickwit'])
 param searchBackend string = 'fixtures'
-@description('Quickwit image, pinned by digest (v0.9.1; the version spike S-2 validated).')
-param quickwitImage string = 'quickwit/quickwit:v0.9.1@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f'
+@description('Quickwit image for the searcher sidecar, pinned by digest: our build of v0.9.1 or upstream v0.9.1 (infra/quickwit-image.json, ADR-0013).')
+param quickwitImage string
 @description('Private registry the images come from (pulled with the app identity); empty for a public registry.')
 param registryServer string = ''
 @description('Application Insights connection string (names the ingestion endpoint; not a credential). Empty: the API exports no telemetry.')
@@ -62,7 +64,10 @@ var apiEnv = [
   { name: 'USNM_TRUSTED_PROXY_HOPS', value: string(trustedProxyHops) }
   // Read-only pipeline state for /v1/status (the name the ingest jobs use).
   { name: 'USNM_COSMOS_ENDPOINT', value: cosmosEndpoint }
-  // Selects the user-assigned identity at the managed identity endpoint.
+  // Selects the user-assigned identity at the managed identity endpoint, for
+  // the API's own clients. The sidecar doesn't get it, and wouldn't use it:
+  // Quickwit 0.9.1's managed identity credential ignores AZURE_CLIENT_ID and
+  // asks for the system-assigned identity (08 §8.2).
   { name: 'AZURE_CLIENT_ID', value: identityClientId }
 ]
 // Requests, traces and metrics go to Application Insights as id-usnm-app,
@@ -144,6 +149,10 @@ var apiContainer = {
 
 var quickwitContainer = {
   name: 'quickwit'
+  // Our build pools Blob connections and shares one token credential by
+  // default (ADR-0013), so it needs no setting of its own. QW_AZURE_POOL=false
+  // in env below would restore upstream's client (a new connection and TLS
+  // handshake per request) without a new image; upstream's image ignores it.
   image: quickwitImage
   // The image has no config for this role; write it from the environment.
   command: ['/bin/sh', '-c', 'printf \'%s\\n\' "$USNM_QW_CONFIG" > /tmp/node.yaml && exec quickwit run --config /tmp/node.yaml']
