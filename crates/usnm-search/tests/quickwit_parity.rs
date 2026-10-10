@@ -128,12 +128,17 @@ fn queries() -> Vec<(&'static str, Node)> {
             build("wheat ½", Some(Mode::Near), 2, 0).unwrap(),
         ),
         ("slash between digits", parse("1/2").unwrap()),
+        // Characters that fold to Japanese ones stay themselves (#241), as
+        // the analyzer has them: `b㊁` is one word.
+        ("circled ideograph", parse("㊀").unwrap()),
+        ("circled ideograph in a word", parse("b㊁").unwrap()),
     ]
 }
 
 /// Queries parsed with analyzer version 1, as the API parses them on an
 /// index built with it (#168): `½` folds to `1⁄2`, which Quickwit analyzes
-/// again into the phrase "1 2", as the memory backend does.
+/// again into the phrase "1 2", as the memory backend does. `㊀` folds to
+/// `一` and `b㊁` to `b二`, which the analyzer has on no page (#241).
 #[tokio::test]
 async fn version_1_queries_match_the_reference_backend() {
     let Some(qw) = quickwit() else {
@@ -146,7 +151,16 @@ async fn version_1_queries_match_the_reference_backend() {
     let f = filters("1895-01-01", "1897-12-31");
     let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
     let mut found = 0;
-    for q in ["½", "61¼", "1/2", "wheat ½", r#""closed ½ lower""#, "gold"] {
+    for q in [
+        "½",
+        "61¼",
+        "1/2",
+        "wheat ½",
+        r#""closed ½ lower""#,
+        "gold",
+        "㊀",
+        "b㊁",
+    ] {
         let node = parse_with(q, v1).unwrap();
         let want = sorted(mem.summary(&set, &node, &f, &spec).await.unwrap());
         let got = sorted(qw.summary(&set, &node, &f, &spec).await.expect(q));
@@ -729,6 +743,9 @@ async fn common_word_phrases(
         r#""½ higher at 61¼""#,
         r#""at 61¼ and oats""#,
         r#""1/2 lower at 20¾""#,
+        // So are `㊀` and `B㊁` from version 2 (#241). Version 1 has `一` and
+        // `b二` in the pairs, but `text` has neither.
+        r#""lots ㊀ and b㊁""#,
         // In American Stories' headlines only.
         r#""orator of the platte""#,
         r#""the boy orator""#,

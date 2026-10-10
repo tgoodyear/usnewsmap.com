@@ -136,9 +136,11 @@ def page_text(rng, topics):
 # A market report on some of one place's pages, in LoC's text only and
 # without drawing from either random stream, so no other text changes. Its
 # fractions are each one word in the index (`½`, `61¼`), and `1/2` is two
-# (#168); the two forms are on different pages.
+# (#168); the two forms are on different pages. The circled ideographs are
+# kept as they are, and `B㊁` is one word, not `b` and `二` (#241).
 MARKET = {3: "Wheat closed ½ higher at 61¼ and oats steady.",
-          4: "Oats closed 1/2 lower at 20¾ and wheat steady."}
+          4: "Oats closed 1/2 lower at 20¾ and wheat steady.",
+          5: "Auction lots ㊀ and B㊁ withdrawn."}
 
 
 def market(pid, d, seq):
