@@ -2428,8 +2428,8 @@ async fn japanese_ocr_with_nothing_to_index_waits() {
 /// the version holds yet, each counted once (the baselines had them since
 /// #139). A delta keeps the earlier ones, and hides one a new batch now has
 /// from LoC; with no new batch, new Latin text of ours gets a delta of its
-/// own, and OCR without any an overlay-only release; a full release without
-/// the setting leaves them out. A page curation had takes our text in place of
+/// own, and OCR with no Latin text gets an overlay-only release; a full
+/// release without the setting leaves them out. A page curation had takes our text in place of
 /// LoC's where ours reads more words (here, an empty one).
 #[tokio::test]
 async fn our_ocr_latin_text_reaches_the_main_index_once() {
@@ -2559,7 +2559,7 @@ async fn our_ocr_latin_text_reaches_the_main_index_once() {
     let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
     assert_eq!(
         record["latin"],
-        serde_json::json!({"added": 3, "pages": 3, "hidden": 0})
+        serde_json::json!({"added": 3, "pages": 3, "hidden": 0, "rule": usnm_ingest::ocr_ja::LATIN_VERSION})
     );
     // Counted once each: the three pages curation never had (90, 91 and the
     // late one, in no counts.json of this version).
@@ -2604,7 +2604,7 @@ async fn our_ocr_latin_text_reaches_the_main_index_once() {
     let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
     assert_eq!(
         record["latin"],
-        serde_json::json!({"added": 1, "pages": 4, "hidden": 0})
+        serde_json::json!({"added": 1, "pages": 4, "hidden": 0, "rule": usnm_ingest::ocr_ja::LATIN_VERSION})
     );
     let hidden = e.reference_json(&format!("{v}/duplicates.json")).await;
     assert_eq!(hidden, serde_json::json!([]));
@@ -2658,7 +2658,7 @@ async fn our_ocr_latin_text_reaches_the_main_index_once() {
     let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
     assert_eq!(
         record["latin"],
-        serde_json::json!({"added": 0, "pages": 4, "hidden": 1})
+        serde_json::json!({"added": 0, "pages": 4, "hidden": 1, "rule": usnm_ingest::ocr_ja::LATIN_VERSION})
     );
     // Every fixture page, and 90 to 93 once each.
     assert_eq!(v4.pages, (early_pages + late_pages) as u64 + 4);
@@ -2693,7 +2693,9 @@ async fn our_ocr_latin_text_reaches_the_main_index_once() {
 /// pages LoC ships without text that our OCR read Latin text on get a
 /// delta of just those pages, rather than waiting for LoC's next batch.
 /// Our text in place of LoC's (an empty page here) waits for a release
-/// that indexes the page's batch. Once published, nothing is left to release.
+/// that indexes the page's batch. Once published, nothing is left to
+/// release, and a run finds that out without reading the curated parts,
+/// though a page our OCR read is left out for a copy of LoC's.
 #[tokio::test]
 async fn our_latin_text_gets_a_delta_without_a_new_batch() {
     let e = env().await;
@@ -2714,6 +2716,12 @@ async fn our_latin_text_gets_a_delta_without_a_new_batch() {
         text,
         ocred_at: 1,
     };
+    // A page curation has with LoC's text, that our OCR read as missing
+    // from the batch's archive: no document of ours, ever.
+    let with_text = pages
+        .iter()
+        .find(|p| p.date < split && !p.text.is_empty())
+        .unwrap();
     put_overlay_part(
         &e,
         "ocr-ja/pages/a.parquet",
@@ -2721,6 +2729,15 @@ async fn our_latin_text_gets_a_delta_without_a_new_batch() {
             row(90, "missing", "Moritz Drug Co, 2001 Larimer Street"),
             row(91, "missing", "東京の新聞"),
             row(blank.seq, "empty", "The relocation center held a meeting"),
+            JaRow {
+                lccn: &with_text.lccn,
+                date: with_text.date,
+                seq: with_text.seq,
+                batch: "batch_fx_early",
+                loc_text: "missing",
+                text: "Larimer Street, Denver, Colorado",
+                ocred_at: 1,
+            },
         ],
     )
     .await;
@@ -2756,14 +2773,19 @@ async fn our_latin_text_gets_a_delta_without_a_new_batch() {
     let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
     assert_eq!(
         record["latin"],
-        serde_json::json!({"added": 1, "pages": 1, "hidden": 0})
+        serde_json::json!({"added": 1, "pages": 1, "hidden": 0, "rule": usnm_ingest::ocr_ja::LATIN_VERSION})
     );
     let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
     assert_eq!(
         manifest["build"]["features"]["ja_latin"],
         usnm_ingest::ocr_ja::LATIN_VERSION
     );
+    // With the curated parts gone, a run that read them would fail.
+    let parts = e.root.join("curated/pages");
+    let moved = e.root.join("parts-away");
+    std::fs::rename(&parts, &moved).unwrap();
     assert!(e.release_latin(8, false, true).await.is_none());
+    std::fs::rename(&moved, &parts).unwrap();
 }
 
 /// A page LoC had no text for, indexed with ours in its own document

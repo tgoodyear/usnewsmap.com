@@ -547,13 +547,18 @@ impl Release {
         // without text that no main index of the version holds yet still
         // gets a main index of its own (a delta of just those pages), so it
         // doesn't wait for LoC's next batch (#203). Pages with none of it
-        // can skip reading the curated parts below.
-        let latin_pending = self.ja_latin
+        // can skip reading the curated parts below, and so can a run whose
+        // published version already weighed every page of this overlay by
+        // this rule: those its main indexes don't hold were left out for a
+        // copy of LoC's, and with no new batch they still are.
+        let latin_pending = nothing_new
+            && self.ja_latin
             && overlay.pages.iter().any(|p| {
                 p.missing_from_curation()
                     && !latin_before.pages.contains_key(&p.key.doc_id())
                     && p.latin().is_some()
-            });
+            })
+            && !self.latin_settled(previous.as_ref(), &overlay).await?;
         // Decided before the duplicate-page plan, which reads every batch's
         // counts: a run with nothing to release returns without it.
         if nothing_new
@@ -1394,6 +1399,26 @@ impl Release {
         Ok(true)
     }
 
+    /// Whether the published version weighed every page of `overlay` for
+    /// our Latin text: it was built from the same overlay parts with
+    /// `--ja-latin` at this rule (its `ocr_ja.json` has `latin.rule`). A
+    /// release with the setting weighs them all; one before #203's
+    /// follow-up, overlay-only, weighed none and recorded no rule.
+    async fn latin_settled(
+        &self,
+        previous: Option<&IndexRun>,
+        overlay: &ocr_ja::Overlay,
+    ) -> anyhow::Result<bool> {
+        let prev = previous.expect("incremental has a previous version");
+        let path = format!("{}/{}", prev.index_version, ocr_ja::OCR_JA_FILE);
+        let Some(bytes) = self.reference.get(&path).await? else {
+            return Ok(false);
+        };
+        let record: Value = serde_json::from_slice(&bytes).context(path)?;
+        Ok(record["latin"]["rule"] == json!(ocr_ja::LATIN_VERSION)
+            && record["parts"] == serde_json::to_value(&overlay.parts)?)
+    }
+
     /// Whether the overlay's parts differ from the ones `version` was built
     /// from (its `ocr_ja.json`; none if it has none).
     async fn overlay_changed(
@@ -1592,7 +1617,7 @@ impl Release {
         // Which overlay parts the Japanese pages came from (only when there are any,
         // so a version without them has the same files as before).
         if !overlay.parts.is_empty() {
-            let record = json!({
+            let mut record = json!({
                 "fold": usnm_core::ja::FOLD_VERSION,
                 "index": ja.map(|(id, _)| id),
                 "indexed": ja.map_or(0, |(_, n)| *n),
@@ -1610,6 +1635,11 @@ impl Release {
                 "kinds": ocr_ja::kinds(&overlay.pages),
                 "parts": overlay.parts,
             });
+            // With the setting, every page of the overlay was weighed for
+            // our Latin text by this rule (`latin_settled`).
+            if self.ja_latin {
+                record["latin"]["rule"] = json!(ocr_ja::LATIN_VERSION);
+            }
             snapshot_files.push((ocr_ja::OCR_JA_FILE, serde_json::to_vec(&record)?));
         }
         // The pages the main indexes hold with our Latin text, for the API to
