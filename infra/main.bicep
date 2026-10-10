@@ -404,7 +404,8 @@ module archiveGrant 'modules/archive-grant.bicep' = if (!empty(archiveAccountId)
   name: 'archive-grant-${env}'
   params: {
     accountName: archiveAccount
-    grants: [{ container: 'raw', principalId: identities.outputs.ingestPrincipalId, role: 'contributor' }]
+    env: env
+    grants: [{ container: 'raw', principalId: identities.outputs.ingestPrincipalId, role: 'writer' }]
   }
 }
 

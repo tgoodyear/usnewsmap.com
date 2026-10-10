@@ -25,17 +25,25 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
 
 /// A prefix for one upload's block ids: Azure stages blocks by blob and id,
 /// so two uploads to the same blob at once must not share ids, or a commit
-/// could mix their blocks.
+/// could mix their blocks. Uploads can come from any worker in any
+/// environment (the archival account is shared), so the tag is random:
+/// hashes keyed by `RandomState` (seeded from the OS's randomness, so
+/// different on every host and process) over the time, process and a
+/// counter.
 fn upload_tag() -> String {
+    use std::hash::{BuildHasher, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
-    let mix = nanos
-        ^ (u64::from(std::process::id()) << 32)
-        ^ SEQ.fetch_add(1, Ordering::Relaxed).rotate_left(17);
-    format!("{mix:016x}")
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(nanos);
+    h.write_u32(std::process::id());
+    h.write_u64(SEQ.fetch_add(1, Ordering::Relaxed));
+    let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
+    h2.write_u64(h.finish());
+    format!("{:016x}{:016x}", h.finish(), h2.finish())
 }
 
 /// The `n`th block's id in upload `tag`: the same length for every block, base64.
