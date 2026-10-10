@@ -443,7 +443,7 @@ export function App() {
   );
   const sidePanel = !data ? null : (
     <>
-      {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
+      {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} resetKey={`${key}|${view.bucket}|${view.win}`} />}
       {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} trailing={view.win !== null} />}
       {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} trailing={view.win !== null} exact={exactMedians} status={medianStatus} />}
       {view.place && (

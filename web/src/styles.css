@@ -326,6 +326,10 @@ input, select {
 .info-tip__counts { display: block; margin-bottom: 6px; }
 .skew-list__empty, .skew-list__note { color: var(--muted); font-size: 0.9rem; margin: 4px 0; }
 .skew-list__note { margin-top: 14px; }
+/* Under each Clearest differences list: how many there are, and Show more / Show fewer. */
+.skew-list__count { color: var(--muted); font-size: 0.85rem; margin: 4px 0 0; }
+.skew-list__more { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 2px 0 0; }
+.skew-list__more .link-button { min-height: 24px; padding: 2px 0; }
 /* Median date lists while the exact days load. */
 .lists__loading { color: var(--muted); margin: 12px 0; }
 .lists--updating { opacity: 0.6; transition: opacity 150ms; }
