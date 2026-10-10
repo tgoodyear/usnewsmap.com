@@ -14,6 +14,7 @@ import { Searching } from "./components/Searching";
 import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
+import { usePrefetchPlaceHits } from "./components/placeHits";
 import { PlaceTable } from "./components/PlaceTable";
 import { NewspaperTable, paperRows } from "./components/NewspaperTable";
 import { languageMix } from "./lib/languages";
@@ -413,6 +414,36 @@ export function App() {
   const skewNotice = wantSkew && !skewModel ? skewStatus(prepared, skew.status, !!coverageFailed) : null;
   const shown = norm === "skew" ? skewRows : points;
   const clear = norm === "skew" ? clearest(skewListed) : null;
+
+  // The page lists of the places at each end of the side panel's lists,
+  // loaded in the background once the lists are final (#265): after the
+  // search's own answer (not a 202 or the last search's placeholder), the
+  // relative rate's fit or its unavailability, and the exact median days.
+  const listsFinal =
+    !!data &&
+    !!places.data &&
+    !agg.isPlaceholderData &&
+    !agg.isFetching &&
+    !updating &&
+    !view.place &&
+    (view.norm !== "skew" ||
+      norm === "skew" ||
+      typeof prepared === "string" ||
+      skew.status === "error" ||
+      !!coverageFailed) &&
+    (norm !== "when" || medianStatus === "exact" || medianStatus === "bucket");
+  usePrefetchPlaceHits(
+    params,
+    version,
+    view.sort,
+    !listsFinal
+      ? null
+      : norm === "skew"
+        ? { norm, rows: skewListed }
+        : norm === "when"
+          ? { norm, rows: visible, exact: medianStatus === "exact" ? exactMedians : null }
+          : { norm: "raw", rows: visible },
+  );
 
   // Phones show the legend and the place lists after the playback controls, in the DOM as well as
   // on screen, so the controls sit right under the map. They move, not the controls: the legend and

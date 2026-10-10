@@ -160,6 +160,12 @@ export interface GetOptions {
    * for a slot, or `null` when it is running (or its place isn't known).
    */
   onComputing?: (ahead: number | null) => void;
+  /**
+   * Asked when the API is busy (`503` busy) or rate limits the request
+   * (`429`): `true` gives up at once with that problem instead of waiting.
+   * For background requests, which shouldn't add to a busy API's queue.
+   */
+  giveUp?: () => boolean;
 }
 
 /** How many searches are ahead of a `202`'s search in the API's queue (06 §6.3.5). */
@@ -176,10 +182,11 @@ async function aheadOf(resp: Response): Promise<number | null> {
  * GET a JSON resource. A search the API is still computing (`202`), or
  * one it is too busy to start (`503` busy), is asked for again after the
  * Retry-After wait, for at most {@link MAX_COMPUTE_WAIT_MS}; so is a rate
- * limit (`429`) met while waiting. Aborting `signal` stops the waiting.
+ * limit (`429`) met while waiting, unless `giveUp` says not to. Aborting
+ * `signal` stops the waiting.
  */
 async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
-  const { signal, cache, onComputing } = opts;
+  const { signal, cache, onComputing, giveUp } = opts;
   const started = Date.now();
   let waiting = false;
   for (;;) {
@@ -195,7 +202,10 @@ async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
       onComputing?.(await aheadOf(resp));
     } else if (!resp.ok) {
       problem = await problemOf(resp);
-      if (problem.type === BUSY) {
+      // A background request leaves a busy API to visitors: it fails at once.
+      if ((problem.type === BUSY || resp.status === 429) && giveUp?.()) {
+        throw new ApiError(problem);
+      } else if (problem.type === BUSY) {
         // The API's queue is full: the same wait for the visitor.
         wait = retryAfter(resp);
         waiting = true;
@@ -219,10 +229,9 @@ async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
 async function getPinned<T extends { index_version: string }>(
   path: string,
   version: string,
-  signal?: AbortSignal,
-  onComputing?: (ahead: number | null) => void,
+  opts: GetOptions = {},
 ): Promise<T> {
-  const body = await getJson<T>(path, { signal, onComputing });
+  const body = await getJson<T>(path, opts);
   if (body.index_version !== version) throw new VersionChangedError(version, body.index_version);
   return body;
 }
@@ -296,13 +305,14 @@ export const api = {
   /** The pipeline status page's data; the API recomputes it at most once a minute. */
   status: (signal?: AbortSignal) => getJson<Status>("/v1/status", { signal, cache: "no-cache" }),
   places: (version: string, signal?: AbortSignal) =>
-    getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, signal),
+    getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, { signal }),
   /** `onComputing` is called while the API is still computing a large search. */
   aggregate: (p: SearchParams, version: string, signal?: AbortSignal, onComputing?: (ahead: number | null) => void) =>
-    getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, signal, onComputing),
+    getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, { signal, onComputing }),
   /** `ref` is the response's `baseline_ref`, already canonical and versioned. */
   coverage: (ref: string, version: string, signal?: AbortSignal) =>
-    getPinned<CoverageResponse>(ref.replace(/^\/(api\/)?v1\//, "/v1/"), version, signal),
+    getPinned<CoverageResponse>(ref.replace(/^\/(api\/)?v1\//, "/v1/"), version, { signal }),
+  /** `giveUp` as in {@link GetOptions}: for prefetching, which mustn't wait on a busy API. */
   hits: (
     p: SearchParams,
     version: string,
@@ -310,6 +320,7 @@ export const api = {
     sort: HitSort,
     cursor: string | null,
     signal?: AbortSignal,
+    giveUp?: () => boolean,
   ) => {
     const s = searchQuery(p, version);
     s.delete("bucket");
@@ -318,13 +329,13 @@ export const api = {
     // Oldest first is the API's default, and leaving it out keeps one URL per list.
     if (sort !== "oldest") s.set("sort", sort);
     if (cursor) s.set("cursor", cursor);
-    return getPinned<HitsResponse>(`/v1/hits?${s}`, version, signal);
+    return getPinned<HitsResponse>(`/v1/hits?${s}`, version, { signal, giveUp });
   },
   /** Matching pages per day for up to 20 places, for exact median dates. */
   days: (p: SearchParams, version: string, places: string[], signal?: AbortSignal) => {
     const s = searchQuery(p, version);
     s.delete("bucket");
     s.set("place", places.join(","));
-    return getPinned<DaysResponse>(`/v1/days?${s}`, version, signal);
+    return getPinned<DaysResponse>(`/v1/days?${s}`, version, { signal });
   },
 };

@@ -1,9 +1,10 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { api, ApiError, type SearchParams } from "../api/client";
+import { ApiError, type SearchParams } from "../api/client";
 import type { HitItem, HitSort } from "../api/types";
 import { AMERICAN_STORIES_BADGE, americanStoriesNote } from "../lib/matchSource";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
+import { placeHitsQuery } from "./placeHits";
 import { skewSentence, type SkewInfo } from "../lib/skewText";
 
 interface Props {
@@ -44,12 +45,8 @@ export function PlacePanel({
   synthetic,
   onClose,
 }: Props) {
-  const query = useInfiniteQuery({
-    queryKey: ["hits", version, params, placeId, sort],
-    queryFn: ({ pageParam, signal }) => api.hits(params, version, placeId, sort, pageParam, signal),
-    initialPageParam: null as string | null,
-    getNextPageParam: (last) => last.next_cursor,
-  });
+  // The same query as the prefetch after a search (#265): a prefetched list shows at once.
+  const query = useInfiniteQuery(placeHitsQuery(params, version, placeId, sort));
   const first = query.data?.pages[0];
   const items = query.data?.pages.flatMap((p) => p.items) ?? [];
   return (
