@@ -83,9 +83,11 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(a
 // looks stalled. The workspace writes this event to its own Operation table
 // (_LogOperation), which is free and not stopped by the cap: on 2026-10-07
 // the event arrived at 21:46 UTC, the minute logging stopped. Checked every
-// 15 minutes over the last 30, so a late row is still seen; resolved once
-// the event is out of the window. Severity 1: until the reset nothing else
-// can alert. Next: Usage by DataType for what filled it, then raise the cap
+// 15 minutes over the last 30, so a late row is still seen. Stateless, with
+// actions muted for 30 minutes so one event sends one email: the event marks
+// the moment the cap was reached, not the state, so a stateful rule would
+// report "resolved" 30 minutes later while ingestion is still stopped.
+// Severity 1: until the reset nothing else can alert. Next: Usage by DataType for what filled it, then raise the cap
 // for the day (dailyCapGb) or stop the job.
 var capReached = '''
 _LogOperation
@@ -107,7 +109,8 @@ resource capAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (!emp
     evaluationFrequency: 'PT15M'
     windowSize: 'PT30M'
     scopes: [workspace.id]
-    autoMitigate: true
+    autoMitigate: false
+    muteActionsDuration: 'PT30M'
     criteria: {
       allOf: [
         {

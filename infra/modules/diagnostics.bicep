@@ -9,7 +9,8 @@
 // - Blob reads (StorageRead): the public tiles and the index splits Quickwit
 //   range-reads on every search. Writes and deletes are the audit trail,
 //   in StorageBlobLogs on the Auxiliary plan (monitoring.bicep), outside
-//   the cap: bulk jobs write one row per blob.
+//   the cap: one row per write or delete request (PutBlob, or PutBlock
+//   for each block and PutBlockList), so bulk jobs write many.
 // - Cosmos DataPlaneRequests and the per-query/per-request statistics: every
 //   ingest write. Control-plane changes are the audit trail.
 // - Container Apps HTTP logs: every API request, with its query string (the
