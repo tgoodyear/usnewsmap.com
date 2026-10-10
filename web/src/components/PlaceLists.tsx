@@ -274,8 +274,8 @@ interface Ranked {
   key: string;
 }
 
-/** The two lists, by exact day when `exact` is given, else by bucket. */
-function rank(rows: ListRow[], exact: Map<string, number> | null | undefined): Ranked {
+/** The two Median date lists, by exact day when `exact` is given, else by bucket. */
+export function medianLists(rows: ListRow[], exact: Map<string, number> | null | undefined): Ranked {
   const { eligible } = medianExtremes(rows);
   const ranked = exact
     ? rows
@@ -311,7 +311,7 @@ export function WhenLists({
   // ("updating") they stay exactly as they were, not recomputed against the
   // new window from the old answer, until the fresh answer replaces them.
   const [shown, setShown] = useState<Ranked | null>(null);
-  const current = status === "updating" && shown ? null : rank(rows, status === "bucket" ? null : exact);
+  const current = status === "updating" && shown ? null : medianLists(rows, status === "bucket" ? null : exact);
   if (status === "exact" && current && current.key !== shown?.key) setShown(current);
   if (status === "loading") {
     return (
