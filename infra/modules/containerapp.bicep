@@ -79,16 +79,18 @@ var americanStoriesEnv = americanStoriesSearch
 // How long a start stays not ready (06 §6.6). In single-revision mode the
 // old revision keeps the traffic until the new one's replicas pass their
 // startup and readiness probes, so the API holds /readyz until its startup
-// warm-up ends: by default its cap is that warm-up's budget
-// (USNM_PREWARM_STARTUP_BUDGET_SECS, 300 s) plus READY_CAP_MARGIN_SECS (60 s)
-// in crates/usnm-api/src/config.rs. An app that scales to zero has no other
-// replica serving when one starts, and a visitor waits on it, so it keeps a
-// 60 s cap.
+// warm-up ends: the cap is that warm-up's budget plus 60 s (the API's own
+// default, READY_CAP_MARGIN_SECS in crates/usnm-api/src/config.rs). An app
+// that scales to zero has no other replica serving when one starts, and a
+// visitor waits on it, so it keeps a 60 s cap. Both settings are set here,
+// from the one budget, so the startup probe below always covers the cap.
+var startupWarmUpSecs = 300
 var holdReadyForWarmUp = minReplicas > 0
-var readyCapSecs = holdReadyForWarmUp ? 300 + 60 : 60
-var readyEnv = holdReadyForWarmUp
-  ? []
-  : [{ name: 'USNM_READY_CAP_SECS', value: string(readyCapSecs) }]
+var readyCapSecs = holdReadyForWarmUp ? startupWarmUpSecs + 60 : 60
+var readyEnv = [
+  { name: 'USNM_PREWARM_STARTUP_BUDGET_SECS', value: string(startupWarmUpSecs) }
+  { name: 'USNM_READY_CAP_SECS', value: string(readyCapSecs) }
+]
 // Loading the published version before the warm-up: the API retries while
 // the sidecar starts, which its own probe allows 300 s.
 var loadSecs = 420
@@ -123,7 +125,8 @@ var apiContainer = {
       periodSeconds: startupProbeSecs
       // /readyz allows the sidecar's health check 2 s.
       timeoutSeconds: 3
-      failureThreshold: (loadSecs + readyCapSecs) / startupProbeSecs
+      // Rounded up, so the window is never shorter than load plus cap.
+      failureThreshold: (loadSecs + readyCapSecs + startupProbeSecs - 1) / startupProbeSecs
     }
     {
       type: 'Liveness'

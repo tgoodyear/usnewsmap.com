@@ -24,6 +24,11 @@ pub struct RateLimit {
 /// budget, then counts what it warmed, which takes seconds.
 pub const READY_CAP_MARGIN_SECS: u64 = 60;
 
+/// The longest warm-up budget or readiness cap that can be set: a day. They
+/// are added to `Instant`s, where a value near `u64::MAX` seconds would
+/// panic. (The default cap, a day's budget plus the margin, is a little more.)
+pub const MAX_WARM_UP_SECS: u64 = 24 * 60 * 60;
+
 /// The shortest `USNM_ABANDON_AFTER_SECS`: the 2 s `Retry-After` of a `202`
 /// plus room for a slow network.
 pub const MIN_ABANDON_AFTER_SECS: u64 = 5;
@@ -151,6 +156,18 @@ impl Config {
                 v.parse().map_err(|_| format!("{k} must be a whole number"))
             })
         };
+        // A duration in seconds, at most `MAX_WARM_UP_SECS` when set.
+        let span = |k: &str, default: Duration| -> Result<Duration, String> {
+            match var(k) {
+                None => Ok(default),
+                Some(_) => match num(k, 0)? {
+                    s if s > MAX_WARM_UP_SECS => {
+                        Err(format!("{k} must be at most {MAX_WARM_UP_SECS}"))
+                    }
+                    s => Ok(Duration::from_secs(s)),
+                },
+            }
+        };
         let flag = |k: &str, default: bool| -> Result<bool, String> {
             var(k).map_or(Ok(default), |v| match v.to_ascii_lowercase().as_str() {
                 "true" => Ok(true),
@@ -191,7 +208,8 @@ impl Config {
                 Duration::from_millis(num("USNM_FIXTURE_SLOW_MS", 5000)?),
             )),
         };
-        let prewarm_startup_budget = num("USNM_PREWARM_STARTUP_BUDGET_SECS", 300)?;
+        let prewarm_startup_budget =
+            span("USNM_PREWARM_STARTUP_BUDGET_SECS", Duration::from_secs(300))?;
         Ok(Self {
             bind: var("USNM_BIND").unwrap_or_else(|| "0.0.0.0:8080".to_owned()),
             backend,
@@ -222,16 +240,16 @@ impl Config {
                 s => Duration::from_secs(s),
             },
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
-            prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 900)?),
-            prewarm_startup_budget: Duration::from_secs(prewarm_startup_budget),
+            prewarm_budget: span("USNM_PREWARM_BUDGET_SECS", Duration::from_secs(900))?,
+            prewarm_startup_budget,
             prewarm_top_searches: usize::try_from(num("USNM_PREWARM_TOP_SEARCHES", 20)?)
                 .map_err(|e| e.to_string())?,
             prewarm_log_days: num("USNM_PREWARM_LOG_DAYS", 28)?,
             prewarm_retry_first: Duration::from_secs(1),
-            ready_cap: Duration::from_secs(num(
+            ready_cap: span(
                 "USNM_READY_CAP_SECS",
-                prewarm_startup_budget.saturating_add(READY_CAP_MARGIN_SECS),
-            )?),
+                prewarm_startup_budget + Duration::from_secs(READY_CAP_MARGIN_SECS),
+            )?,
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
             cache_bytes: num("USNM_CACHE_MB", 256)? * 1024 * 1024,
             max_cells: usnm_core::cube::MAX_CELLS,
@@ -376,10 +394,24 @@ mod tests {
         // Empty, like unset, takes the default.
         assert_eq!(cap(&[("USNM_READY_CAP_SECS", "")]), Ok(secs(360)));
         assert!(cap(&[("USNM_READY_CAP_SECS", "six")]).is_err());
-        // Saturates rather than overflowing.
+        // Values `Instant` arithmetic can't take are refused, not saturated.
+        assert!(cap(&[("USNM_READY_CAP_SECS", &u64::MAX.to_string())]).is_err());
+        assert!(cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", &u64::MAX.to_string())]).is_err());
+        let day = MAX_WARM_UP_SECS.to_string();
         assert_eq!(
-            cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", &u64::MAX.to_string())]),
-            Ok(secs(u64::MAX))
+            cap(&[("USNM_READY_CAP_SECS", &day)]),
+            Ok(secs(MAX_WARM_UP_SECS))
+        );
+        assert!(cap(&[("USNM_READY_CAP_SECS", &(MAX_WARM_UP_SECS + 1).to_string())]).is_err());
+        assert!(cap(&[(
+            "USNM_PREWARM_BUDGET_SECS",
+            &(MAX_WARM_UP_SECS + 1).to_string()
+        )])
+        .is_err());
+        // The largest budget still gets its margin.
+        assert_eq!(
+            cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", &day)]),
+            Ok(secs(MAX_WARM_UP_SECS + READY_CAP_MARGIN_SECS))
         );
     }
 }
