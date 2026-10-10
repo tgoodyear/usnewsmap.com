@@ -102,6 +102,13 @@ impl Loader {
 /// before it serves or warms up.
 fn configure(config: &Config, snapshot: &mut Snapshot) {
     snapshot.refdata.american_stories_search = config.american_stories_search;
+    if snapshot.refdata.american_stories_setting_ignored() {
+        tracing::warn!(
+            version = snapshot.refdata.version(),
+            "USNM_AMERICAN_STORIES_SEARCH=false has no effect on this version: its indexes \
+             search LoC's and American Stories' text in one field (text_layout 2)"
+        );
+    }
 }
 
 pub struct AppState {
