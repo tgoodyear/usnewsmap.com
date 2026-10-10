@@ -480,6 +480,20 @@ test("the footer credits link to the NEH and Library of Congress newspaper progr
   await expect(footer.getByRole("link", { name: "NEH and Library of Congress" })).toHaveAttribute("href", "https://www.loc.gov/ndnp/");
 });
 
+test("every footer link is underlined, since it sits in running text (#212)", async ({ page }) => {
+  // axe's link-in-text-block caught "Pipeline status" and "Privacy" on the
+  // live site at 400 px but not on the fixtures, whose footer text is
+  // shorter; so check the cue itself, then axe at that width.
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto("/?q=cross%20of%20gold");
+  const links = page.getByRole("contentinfo").getByRole("link");
+  await expect(links).not.toHaveCount(0);
+  for (const link of await links.all()) {
+    await expect(link).toHaveCSS("text-decoration-line", "underline");
+  }
+  await expectAccessible(page);
+});
+
 test("the first and last mention open their pages, and a place's pages sort either way", async ({ page, request }) => {
   const search = "q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31";
   const agg = await (await request.get(`/v1/aggregate?${search}`)).json();
