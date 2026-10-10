@@ -727,6 +727,58 @@ mod shard_tests {
         );
     }
 
+    #[tokio::test]
+    async fn characters_that_fold_to_japanese_are_read_as_the_engine_reads_them() {
+        // Quickwit 0.9.1's `usnm_text` keeps `㊀` as it is, and `a㊀` as one
+        // token: the term `a㊀` finds only the page with `a㊀`, `a一` only
+        // the one with `a一`, `㊀` only the one with `㊀` (#241).
+        use usnm_core::text::Analyzer;
+        let texts = [
+            "Lot ㊀ sold",
+            "Item a㊀ held",
+            "Item a一 held",
+            "Plain 一 here",
+        ];
+        let docs: Vec<PageDoc> = (1..)
+            .zip(texts)
+            .map(|(i, t)| PageDoc {
+                text: t.into(),
+                ..doc(i, 1)
+            })
+            .collect();
+        let id = |i: u32| doc(i, 1).doc_id;
+        let mut b = MemoryBackend::new();
+        b.add_index("i", docs);
+        let f = Filters {
+            from: usnm_core::time::date_from_day(71_000),
+            to: usnm_core::time::date_from_day(71_300),
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+        };
+        let page = HitsQuery {
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        let hits = |a: Analyzer, q: &str| {
+            let (b, f, page) = (&b, &f, &page);
+            let set = IndexSet::new(vec!["i".into()]).with_analyzer(a);
+            let q = usnm_core::query::parse_with(q, a).unwrap();
+            async move { b.hits(&set, &q, f, page).await.unwrap().hits }
+        };
+        let ids = |h: Vec<crate::Hit>| h.into_iter().map(|h| h.doc_id).collect::<Vec<_>>();
+        // Version 2 keeps them, as the index has them.
+        assert_eq!(ids(hits(Analyzer::V2, "㊀").await), [id(1)]);
+        let a = hits(Analyzer::V2, "a㊀").await;
+        assert_eq!(a[0].snippets, ["Item <mark>a㊀</mark> held"]);
+        assert_eq!(ids(a), [id(2)]);
+        // Version 1 folds them to Japanese characters, which the engine
+        // finds only where they are printed: `a㊀` is the term `a一`.
+        assert_eq!(ids(hits(Analyzer::V1, "a㊀").await), [id(3)]);
+        assert_eq!(ids(hits(Analyzer::V1, "㊀").await), [id(4)]);
+    }
+
     #[test]
     fn a_version_1_word_with_spaces_matches_its_character() {
         // `ﷺ` folds to four words with `Analyzer::V1`; the pairs of an index
@@ -742,6 +794,7 @@ mod shard_tests {
         for q in [
             r#""cross of gold" -bryan (silver OR freed*) "gold silver"~3"#,
             r#"½ "wheat 61¼" Æsop ﷺ presi?ent 東京"#,
+            r#"㊀ "lot a㊀" abcd〸* 一"#,
         ] {
             let n = usnm_core::query::parse(q).unwrap();
             assert_eq!(as_analyzed(&n), n, "{q}");

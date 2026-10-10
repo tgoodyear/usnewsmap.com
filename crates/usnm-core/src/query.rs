@@ -1103,13 +1103,87 @@ mod tests {
                     continue;
                 }
                 assert_round_trips(&c.to_string(), a);
-                // Characters that fold to Japanese ones (`㊀` → `一`) split a
-                // Latin word only once folded (#241).
-                if ja::is_ja(c) || !has_ja(&folded) {
-                    assert_round_trips(&format!("\"a{c} b\""), a);
+                // Version 1 folds a character that isn't Japanese to a
+                // Japanese one (`㊀` is `一`): inside a Latin word that is
+                // the term `a一`, which reparses as `a 一` (#241). Version 2
+                // keeps it, as the index does.
+                if !ja::is_ja(c) && has_ja(&folded) {
+                    assert_eq!(a, Analyzer::V1, "{c:?} folds to {folded:?}");
+                    continue;
                 }
+                assert_round_trips(&format!("a{c}"), a);
+                assert_round_trips(&format!("\"a{c} b\""), a);
             }
         }
+    }
+
+    #[test]
+    fn characters_that_fold_to_japanese_round_trip_inside_latin_words() {
+        // `㊀` and the other characters that aren't Japanese but fold to a
+        // Japanese one stay themselves with version 2, as Quickwit's
+        // `usnm_text` has them: `a㊀` is one word, not the Latin `a` and the
+        // Japanese `一`, and it searches the main indexes (#241).
+        let v2 = Analyzer::V2;
+        assert_eq!(parse_with("a㊀", v2).unwrap(), term("a㊀"));
+        assert_eq!(parse_with("A㊀", v2).unwrap(), term("a㊀"));
+        assert_eq!(
+            parse_with(r#""a㊀ b""#, v2).unwrap(),
+            Node::Phrase {
+                terms: vec!["a㊀".into(), "b".into()],
+                slop: 0,
+            }
+        );
+        assert_eq!(parse_with("㊀", v2).unwrap(), term("㊀"));
+        assert!(!is_japanese(&parse_with("a㊀ ㊀", v2).unwrap()));
+        // `a一` is still the Latin `a` and the Japanese `一`.
+        assert_eq!(
+            parse_with("a一", v2).unwrap(),
+            Node::Phrase {
+                terms: vec!["a".into(), "一".into()],
+                slop: 0,
+            }
+        );
+        for c in crate::text::folding_to_japanese() {
+            for q in [
+                format!("{c}"),
+                format!("a{c}"),
+                format!("A{c}"),
+                format!(r#""a{c} b""#),
+                format!(r#""a{c} b"~3"#),
+                format!("{c}a{c} -b{c}"),
+                format!("(a{c} OR {c}) 東京"),
+                format!(r#""東京 a{c}""#),
+                format!("a{c}~1"),
+                format!("abcde{c}*"),
+                format!("abcde{c}?x"),
+            ] {
+                assert_round_trips(&q, v2);
+            }
+            for mode in [Mode::Phrase, Mode::All, Mode::Any, Mode::Near] {
+                let n = super::build(&format!("a{c} b {c}"), Some(mode), 2, 1, v2).unwrap();
+                assert_eq!(parse_with(&n.to_string(), v2).unwrap(), n, "{c} {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn version_1_folds_characters_to_japanese_as_before() {
+        // On an index built with version 1, `㊀` folds to `一`, as it did
+        // before #241: alone it is the Japanese `一`, which round-trips, and
+        // inside a Latin word the term `a一`, which reparses as the Latin
+        // `a` and the Japanese `一`.
+        let v1 = Analyzer::V1;
+        assert_eq!(parse_with("㊀", v1).unwrap(), term("一"));
+        assert!(is_japanese(&parse_with("㊀", v1).unwrap()));
+        assert_eq!(parse_with("a㊀", v1).unwrap(), term("a一"));
+        assert_eq!(
+            parse_with("a一", v1).unwrap(),
+            Node::Phrase {
+                terms: vec!["a".into(), "一".into()],
+                slop: 0,
+            }
+        );
+        assert_ne!(parse_with("a㊀", v1), parse_with("a㊀", Analyzer::V2));
     }
 
     #[test]
