@@ -92,6 +92,7 @@ var readyEnv = holdReadyForWarmUp
 // Loading the published version before the warm-up: the API retries while
 // the sidecar starts, which its own probe allows 300 s.
 var loadSecs = 420
+var startupProbeSecs = holdReadyForWarmUp ? 20 : 10
 
 var backendEnv = quickwit
   ? [
@@ -110,17 +111,19 @@ var apiContainer = {
     {
       // A start loads the published version (loadSecs), then warms the
       // caches: /readyz fails until the warm-up ends or the readiness cap
-      // (readyCapSecs) passes (06 §6.6). The probe allows both: 78 × 10 s =
-      // 780 s with the warm-up held, 48 × 10 s = 480 s without. Failing it
-      // restarts the container; liveness and readiness probing begin once it
-      // passes, and in single-revision mode the previous revision keeps the
-      // traffic until then.
+      // (readyCapSecs) passes (06 §6.6). The probe allows both: 39 × 20 s =
+      // 780 s with the warm-up held, 48 × 10 s = 480 s without. The longer
+      // period keeps the threshold within the 48 the app has run with (the
+      // API spec documents a lower maximum that Container Apps doesn't
+      // apply). Failing it restarts the container; liveness and readiness
+      // probing begin once it passes, and in single-revision mode the
+      // previous revision keeps the traffic until then.
       type: 'Startup'
       httpGet: { path: '/readyz', port: 8080 }
-      periodSeconds: 10
+      periodSeconds: startupProbeSecs
       // /readyz allows the sidecar's health check 2 s.
       timeoutSeconds: 3
-      failureThreshold: (loadSecs + readyCapSecs) / 10
+      failureThreshold: (loadSecs + readyCapSecs) / startupProbeSecs
     }
     {
       type: 'Liveness'
