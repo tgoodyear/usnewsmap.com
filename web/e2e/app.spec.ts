@@ -12,7 +12,18 @@ const STYLE = {
       data: {
         type: "Feature",
         properties: {},
-        geometry: { type: "Polygon", coordinates: [[[-125, 25], [-67, 25], [-67, 49], [-125, 49], [-125, 25]]] },
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [-125, 25],
+              [-67, 25],
+              [-67, 49],
+              [-125, 49],
+              [-125, 25],
+            ],
+          ],
+        },
       },
     },
   },
@@ -24,9 +35,7 @@ const STYLE = {
 
 test.beforeEach(async ({ page }) => {
   await page.route("https://tiles.openfreemap.org/**", (route) =>
-    route.request().url().includes("/styles/")
-      ? route.fulfill({ json: STYLE })
-      : route.fulfill({ status: 404 }),
+    route.request().url().includes("/styles/") ? route.fulfill({ json: STYLE }) : route.fulfill({ status: 404 }),
   );
 });
 
@@ -271,7 +280,9 @@ test("the status page shows the published version without the pipeline state", a
   await expect(page.getByRole("heading", { level: 2, name: "Right now" })).toBeVisible();
   await expect(page.getByText("What the pipeline is doing right now isn't available on this server.")).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 pages" })).toBeVisible();
-  await expect(page.getByRole("list").filter({ hasText: "Downloaded and processed" }).getByRole("listitem")).toHaveCount(4);
+  await expect(
+    page.getByRole("list").filter({ hasText: "Downloaded and processed" }).getByRole("listitem"),
+  ).toHaveCount(4);
   // No OCR report on the fixture API: no OCR section.
   await expect(page.getByRole("heading", { name: "OCR experiments" })).toBeHidden();
   // Operator details start collapsed.
@@ -305,33 +316,80 @@ test("the status page says what the pipeline is doing right now", async ({ page 
     ...base,
     pipeline: { available: true, read_at: iso(0) },
     activity: {
-      available: true, now: "titles", source: "job", since: iso(-65), run_started_at: iso(-66),
-      run: "1b2c3d", reported_at: iso(0), done: 342, total: 3464, percent: 9.9, eta: null,
-      paused_until: iso(45), index_version: null, merge: null, next_run: null,
-      last: { outcome: "failed", ended_at: iso(-300), step: "indexing", index_version: "pages-v2",
-              error: "error sending request: tcp connect error: Connection refused (os error 111)" },
+      available: true,
+      now: "titles",
+      source: "job",
+      since: iso(-65),
+      run_started_at: iso(-66),
+      run: "1b2c3d",
+      reported_at: iso(0),
+      done: 342,
+      total: 3464,
+      percent: 9.9,
+      eta: null,
+      paused_until: iso(45),
+      index_version: null,
+      merge: null,
+      next_run: null,
+      last: {
+        outcome: "failed",
+        ended_at: iso(-300),
+        step: "indexing",
+        index_version: "pages-v2",
+        error: "error sending request: tcp connect error: Connection refused (os error 111)",
+      },
     },
     backfill: {
-      available: true, total: 2997, by_status: { queued: 0, downloading: 0, curated: 2997, failed: 0 },
-      in_progress: 0, stale_leases: 0, retrying: 0, percent: 100, pages: 23_794_152, ok_pages: 23_768_831,
-      versions: { "01": 2997 }, newer_versions_pending: 0,
+      available: true,
+      total: 2997,
+      by_status: { queued: 0, downloading: 0, curated: 2997, failed: 0 },
+      in_progress: 0,
+      stale_leases: 0,
+      retrying: 0,
+      percent: 100,
+      pages: 23_794_152,
+      ok_pages: 23_768_831,
+      versions: { "01": 2997 },
+      newer_versions_pending: 0,
       throughput: { hours: [], rate_window_hours: 12, rate_per_hour: 0, remaining: 0, eta: null },
       loc: { next_slot: null, blocked_until: null, throttled: false },
-      in_progress_batches: [], recent: [], failed_batches: [], listed_limit: 100,
+      in_progress_batches: [],
+      recent: [],
+      failed_batches: [],
+      listed_limit: 100,
     },
     indexing: {
-      available: true, current_version: base.published.index_version,
-      writer: { held: false, holder: null, until: null }, release: null,
-      last_published_at: iso(-3 * 24 * 60), failed_runs: 1, failed_since_last_publish: 1, runs: [],
+      available: true,
+      current_version: base.published.index_version,
+      writer: { held: false, holder: null, until: null },
+      release: null,
+      last_published_at: iso(-3 * 24 * 60),
+      failed_runs: 1,
+      failed_since_last_publish: 1,
+      runs: [],
     },
     titles: {
       ...base.titles,
-      pipeline: { available: true, curated_titles: 4681, awaiting_sync: 3122, batches_waiting_for_titles: 1955,
-                  unpublished_batches: 2115, ready_for_release: 160, recurated_awaiting_full: 0 },
+      pipeline: {
+        available: true,
+        curated_titles: 4681,
+        awaiting_sync: 3122,
+        batches_waiting_for_titles: 1955,
+        unpublished_batches: 2115,
+        ready_for_release: 160,
+        recurated_awaiting_full: 0,
+      },
     },
     ocr_ja: {
-      available: true, running: true, targets: { pages: 11_000, issues: 1500 }, done: { pages: 3300, issues: 450 },
-      percent: 30, engine: "ndlocr-lite 636d1cf", started_at: iso(-180), updated_at: iso(-1), eta: iso(300),
+      available: true,
+      running: true,
+      targets: { pages: 11_000, issues: 1500 },
+      done: { pages: 3300, issues: 450 },
+      percent: 30,
+      engine: "ndlocr-lite 636d1cf",
+      started_at: iso(-180),
+      updated_at: iso(-1),
+      eta: iso(300),
     },
   };
   await page.route("**/v1/status", (route) => route.fulfill({ json: doc }));
@@ -341,8 +399,14 @@ test("the status page says what the pipeline is doing right now", async ({ page 
     /^Looking up newspaper details from the Library of Congress: 342 of 3,464 done \(9\.9%\)\. Paused until (?:[A-Z][a-z]{2} \d{1,2} at )?\d{1,2}:\d\d [AP]M \S+ because loc\.gov asked us to slow down\.$/,
   );
   await expect(page.getByRole("progressbar", { name: "342 of 3,464 newspapers looked up" })).toBeVisible();
-  await expect(page.getByText(/^The previous run stopped at .* because of an error while building the search index; nothing changed on the site\.$/)).toBeVisible();
-  await expect(page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 of 23,794,152 downloaded pages (under 0.1%)" })).toBeVisible();
+  await expect(
+    page.getByText(
+      /^The previous run stopped at .* because of an error while building the search index; nothing changed on the site\.$/,
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { level: 2, name: "Searchable now: 1,872 of 23,794,152 downloaded pages (under 0.1%)" }),
+  ).toBeVisible();
 
   // Four steps; the current one is marked, and its state is in words.
   const steps = page.locator("ol.steps > li");
@@ -431,9 +495,18 @@ test("About opens from the footer and keeps the search", async ({ page }) => {
     ["on GitHub", "https://github.com/tgoodyear/usnewsmap.com"],
     ["Claudio Saunt", "https://claudiosaunt.com/"],
     ["Steve Berry", "https://history.uga.edu/directory/people/stephen-berry"],
-    ["Slate", "https://web.archive.org/web/20190307100233/http://www.slate.com/blogs/the_vault/2016/03/07/us_news_map_interactive_lets_you_map_how_historical_newspapers_digitized.html"],
-    ["The Washington Post", "https://web.archive.org/web/20160616154229/https://www.washingtonpost.com/news/the-intersect/wp/2016/03/17/the-secret-pre-internet-history-of-viral-memes/"],
-    ["Chronicling America Data Challenge", "https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25"],
+    [
+      "Slate",
+      "https://web.archive.org/web/20190307100233/http://www.slate.com/blogs/the_vault/2016/03/07/us_news_map_interactive_lets_you_map_how_historical_newspapers_digitized.html",
+    ],
+    [
+      "The Washington Post",
+      "https://web.archive.org/web/20160616154229/https://www.washingtonpost.com/news/the-intersect/wp/2016/03/17/the-secret-pre-internet-history-of-viral-memes/",
+    ],
+    [
+      "Chronicling America Data Challenge",
+      "https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25",
+    ],
   ];
   for (const [name, href] of links) {
     const link = dialog.getByRole("link", { name, exact: true });
@@ -477,17 +550,41 @@ test("About closes on a backdrop click but not on a click inside its box", async
 test("the footer credits link to the NEH and Library of Congress newspaper program", async ({ page }) => {
   await page.goto("/");
   const footer = page.getByRole("contentinfo");
-  await expect(footer.getByRole("link", { name: "NEH and Library of Congress" })).toHaveAttribute("href", "https://www.loc.gov/ndnp/");
+  await expect(footer.getByRole("link", { name: "NEH and Library of Congress" })).toHaveAttribute(
+    "href",
+    "https://www.loc.gov/ndnp/",
+  );
+});
+
+test("every footer link is underlined, since it sits in running text (#212)", async ({ page }) => {
+  // axe's link-in-text-block caught "Pipeline status" and "Privacy" on the
+  // live site at 400 px but not on the fixtures, whose footer text is
+  // shorter; so check the cue itself, then axe at that width.
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto("/?q=cross%20of%20gold");
+  const links = page.getByRole("contentinfo").getByRole("link");
+  await expect(links).not.toHaveCount(0);
+  for (const link of await links.all()) {
+    await expect(link).toHaveCSS("text-decoration-line", "underline");
+  }
+  await expectAccessible(page);
 });
 
 test("the first and last mention open their pages, and a place's pages sort either way", async ({ page, request }) => {
   const search = "q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31";
   const agg = await (await request.get(`/v1/aggregate?${search}`)).json();
-  const { first, last } = agg.total as { first: { date: string; place_id: string; doc_id: string; seq: number; title: string }; last: { date: string; place_id: string; seq: number } };
+  const { first, last } = agg.total as {
+    first: { date: string; place_id: string; doc_id: string; seq: number; title: string };
+    last: { date: string; place_id: string; seq: number };
+  };
 
   await page.goto(`/?${search}&tab=table`);
   const mentions = page.locator(".mentions");
-  await expect(mentions).toContainText(new RegExp(`^First mention: \\w{3} \\d+, 1896, ${first.title}, Fixture City A \\(Chicago area\\), IL · Last: \\w{3} \\d+, 1896$`));
+  await expect(mentions).toContainText(
+    new RegExp(
+      `^First mention: \\w{3} \\d+, 1896, ${first.title}, Fixture City A \\(Chicago area\\), IL · Last: \\w{3} \\d+, 1896$`,
+    ),
+  );
   await expect(mentions.locator("time")).toHaveCount(2);
   await expectAccessible(page);
 
@@ -540,7 +637,9 @@ test("the table lists the newspapers with matches, and one can limit the search 
     "aria-pressed",
     "true",
   );
-  await expect(page.getByRole("group", { name: "Measure" }).getByRole("button", { name: "Relative rate" })).toBeDisabled();
+  await expect(
+    page.getByRole("group", { name: "Measure" }).getByRole("button", { name: "Relative rate" }),
+  ).toBeDisabled();
   await expect(page.getByRole("status").filter({ hasText: "Only pages from" })).toContainText(title);
   await expect(papers.locator("tbody tr")).toHaveCount(1);
   await expectAccessible(page);
@@ -588,12 +687,14 @@ test("the toolbar's buttons stay put whichever measure is chosen", async ({ page
   const where = async () =>
     JSON.stringify(
       await Promise.all(
-        [page.getByRole("button", { name: "Map", exact: true }), measure.getByRole("button", { name: "Pages" }), page.getByRole("button", { name: "Share" })].map(
-          async (b) => {
-            const box = (await b.boundingBox())!;
-            return [Math.round(box.x), Math.round(box.y)];
-          },
-        ),
+        [
+          page.getByRole("button", { name: "Map", exact: true }),
+          measure.getByRole("button", { name: "Pages" }),
+          page.getByRole("button", { name: "Share" }),
+        ].map(async (b) => {
+          const box = (await b.boundingBox())!;
+          return [Math.round(box.x), Math.round(box.y)];
+        }),
       ),
     );
   // Both sides of the 1100 px switch between the one-row and stacked toolbars, and between.
@@ -661,7 +762,9 @@ test("a page found only in American Stories' text is marked, and the page count 
   await expect(hits.first()).toBeVisible();
   // Only the first page, found only in American Stories' text, has a badge.
   const badge = hits.first().locator(".hit__meta .badge");
-  await expect(badge).toHaveText(/^American Stories OCR\. The Library of Congress text for this page doesn't contain the match\./);
+  await expect(badge).toHaveText(
+    /^American Stories OCR\. The Library of Congress text for this page doesn't contain the match\./,
+  );
   await expect(badge).toHaveAttribute("title", /The snippet comes from that text\./);
   await expect(panel.locator(".badge")).toHaveCount(1);
 

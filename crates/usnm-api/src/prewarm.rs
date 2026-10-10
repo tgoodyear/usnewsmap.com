@@ -69,12 +69,24 @@ const GIVE_WAY_POLL: Duration = Duration::from_millis(200);
 /// The home page's example searches, shared with the web app.
 const EXAMPLES_JSON: &str = include_str!("../../../web/src/examples.json");
 
+/// One entry of the examples file. Every field is declared, the ones the
+/// warm-up doesn't use too, and unknown ones are an error, so this module's
+/// tests fail on an entry the web app's `Example` (web/src/examples.ts)
+/// wouldn't have.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Example {
     pub id: String,
     /// The `/v1/aggregate` query string the web app sends for this example,
     /// without `v` (web/src/examples.test.ts checks it).
     pub aggregate: String,
+    /// The card's title and line of text on the home page.
+    pub title: String,
+    pub blurb: String,
+    /// The view a click opens (the web app's `Partial<ViewState>`).
+    pub view: serde_json::Map<String, serde_json::Value>,
+    /// The span of years the example belongs to, such as "1860-1877".
+    pub era: String,
 }
 
 static EXAMPLES: LazyLock<Vec<Example>> = LazyLock::new(|| {
@@ -715,6 +727,23 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+
+    #[test]
+    fn the_examples_file_has_exactly_the_declared_fields() {
+        // EXAMPLES logs and falls back to none on an error; parse it here
+        // so the error itself fails the test.
+        let ex: Vec<Example> = serde_json::from_str(EXAMPLES_JSON)
+            .unwrap_or_else(|e| panic!("web/src/examples.json: {e}"));
+        assert_eq!(ex.len(), examples().len());
+        let extra = r#"[{"id": "a", "aggregate": "q=a", "title": "A", "blurb": "B.",
+            "view": {"q": "a"}, "era": "1860-1877", "note": "x"}]"#;
+        let err = serde_json::from_str::<Vec<Example>>(extra).unwrap_err();
+        assert!(err.to_string().contains("unknown field `note`"), "{err}");
+        let missing = r#"[{"id": "a", "aggregate": "q=a", "title": "A", "blurb": "B.",
+            "view": {"q": "a"}}]"#;
+        let err = serde_json::from_str::<Vec<Example>>(missing).unwrap_err();
+        assert!(err.to_string().contains("missing field `era`"), "{err}");
+    }
 
     #[test]
     fn examples_are_valid_aggregate_queries() {

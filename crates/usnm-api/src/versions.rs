@@ -5,7 +5,9 @@
 //! `/v1/status` already makes, so this costs no extra reads). Each has its
 //! build record: `recorded` when the release wrote one, or `reconstructed`
 //! from `ops/index-history.json` for versions released before it did
-//! (`scripts/reconstruct-index-history.py`).
+//! (`scripts/reconstruct-index-history.py`; its shape is
+//! `ops/index-history.schema.json`, which `scripts/check-index-history.py`
+//! checks in CI).
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;

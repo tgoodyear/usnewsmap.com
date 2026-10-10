@@ -13,23 +13,14 @@ export const TERMS: [term: string, meaning: string][] = [
     "Downloaded and processed (step 1): the batch's archive was fetched, and each page's text, date and newspaper were stored.",
   ],
   ["Backfill", "Downloading and processing every batch the Library lists, not only new ones."],
-  [
-    "Titles-sync",
-    "Looking up newspaper details (step 2): each newspaper's name, place and languages, from loc.gov.",
-  ],
+  ["Titles-sync", "Looking up newspaper details (step 2): each newspaper's name, place and languages, from loc.gov."],
   ["Catalog", "The newspapers whose details are looked up."],
   [
     "OCR",
     "Optical character recognition: reading the text off a page image. We run it ourselves only on Japanese-language pages the Library ships without searchable text (see OCR experiments).",
   ],
-  [
-    "Release",
-    "Building a new version of the search index (step 3) and publishing it (step 4).",
-  ],
-  [
-    "Version",
-    "One published state of the search index. The site searches exactly one version at a time.",
-  ],
+  ["Release", "Building a new version of the search index (step 3) and publishing it (step 4)."],
+  ["Version", "One published state of the search index. The site searches exactly one version at a time."],
   [
     "Base and delta",
     "A full rebuild makes a base index; smaller updates add deltas on top. After 8 deltas the next update rebuilds the base.",

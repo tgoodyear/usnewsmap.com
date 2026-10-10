@@ -6,14 +6,52 @@
 // names.rs once #66 merges; crates/usnm-ingest/src/titles.rs before it).
 
 const NAMES: Record<string, string> = {
-  eng: "English", ger: "German", spa: "Spanish", fre: "French", ita: "Italian", pol: "Polish", cze: "Czech",
-  slo: "Slovak", slv: "Slovenian", lit: "Lithuanian", swe: "Swedish", nor: "Norwegian", dan: "Danish",
-  dut: "Dutch", fin: "Finnish", hun: "Hungarian", yid: "Yiddish", heb: "Hebrew", chi: "Chinese",
-  jpn: "Japanese", por: "Portuguese", rus: "Russian", ukr: "Ukrainian", gre: "Greek", rum: "Romanian",
-  hrv: "Croatian", srp: "Serbian", ara: "Arabic", arm: "Armenian", wel: "Welsh", ice: "Icelandic",
-  lat: "Latin", haw: "Hawaiian", chr: "Cherokee", cho: "Choctaw", dak: "Dakota", oji: "Ojibwa",
-  baq: "Basque", gle: "Irish", tgl: "Tagalog", kor: "Korean", est: "Estonian", lav: "Latvian",
-  bul: "Bulgarian", alb: "Albanian", mus: "Creek",
+  eng: "English",
+  ger: "German",
+  spa: "Spanish",
+  fre: "French",
+  ita: "Italian",
+  pol: "Polish",
+  cze: "Czech",
+  slo: "Slovak",
+  slv: "Slovenian",
+  lit: "Lithuanian",
+  swe: "Swedish",
+  nor: "Norwegian",
+  dan: "Danish",
+  dut: "Dutch",
+  fin: "Finnish",
+  hun: "Hungarian",
+  yid: "Yiddish",
+  heb: "Hebrew",
+  chi: "Chinese",
+  jpn: "Japanese",
+  por: "Portuguese",
+  rus: "Russian",
+  ukr: "Ukrainian",
+  gre: "Greek",
+  rum: "Romanian",
+  hrv: "Croatian",
+  srp: "Serbian",
+  ara: "Arabic",
+  arm: "Armenian",
+  wel: "Welsh",
+  ice: "Icelandic",
+  lat: "Latin",
+  haw: "Hawaiian",
+  chr: "Cherokee",
+  cho: "Choctaw",
+  dak: "Dakota",
+  oji: "Ojibwa",
+  baq: "Basque",
+  gle: "Irish",
+  tgl: "Tagalog",
+  kor: "Korean",
+  est: "Estonian",
+  lav: "Latvian",
+  bul: "Bulgarian",
+  alb: "Albanian",
+  mus: "Creek",
 };
 
 /**
@@ -66,7 +104,8 @@ export function languageCounts(counts: Record<string, number> | undefined, title
   const join = (xs: string[]) => (xs.length === 1 ? xs[0]! : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
   if (titles === 1) return `Its one paper is in ${join(entries.map((e) => e.name))}.`;
   const parts = entries.map(
-    ({ name, n }, i) => `${n.toLocaleString("en-US")}${i === 0 ? (n === 1 ? " is" : " are") : ""} in ${name} (${percent(n, titles)})`,
+    ({ name, n }, i) =>
+      `${n.toLocaleString("en-US")}${i === 0 ? (n === 1 ? " is" : " are") : ""} in ${name} (${percent(n, titles)})`,
   );
   const sentence = `Of its ${titles.toLocaleString("en-US")} papers, ${join(parts)}.`;
   const listed = entries.reduce((a, e) => a + e.n, 0);
@@ -90,6 +129,9 @@ export function languageMix(
   const more = langs.code.length - shown.length;
   if (more > 0) shown.push(`${more} more`);
   const list = shown.length === 1 ? shown[0]! : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
-  const where = papers === undefined ? "Matches" : `Matches in ${papers.toLocaleString("en-US")} ${papers === 1 ? "newspaper" : "newspapers"}`;
+  const where =
+    papers === undefined
+      ? "Matches"
+      : `Matches in ${papers.toLocaleString("en-US")} ${papers === 1 ? "newspaper" : "newspapers"}`;
   return `${where}: ${list}.`;
 }

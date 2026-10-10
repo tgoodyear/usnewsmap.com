@@ -17,7 +17,10 @@ export interface LanguageChoice {
  * The checklist: the catalog's languages in the API's order (most pages
  * first), then any chosen code the catalog doesn't list, so it can be cleared.
  */
-export function languageChoices(list: readonly MetaLanguage[] | undefined, chosen: readonly string[]): LanguageChoice[] {
+export function languageChoices(
+  list: readonly MetaLanguage[] | undefined,
+  chosen: readonly string[],
+): LanguageChoice[] {
   const out: LanguageChoice[] = (list ?? []).map((l) => ({
     code: l.code,
     name: languageName(l.code, l.name),

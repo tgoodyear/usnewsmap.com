@@ -24,11 +24,11 @@ The size of the gap (#135, `jaocr.py audit`): LoC's per-title "Pages (Full Text)
 
 Engine accuracy: 124 sampled Japanese pages from 17 titles, 1942–45, scored against 23 reference crops (bigram F1, old character forms folded to modern; 04 §4.8, #135; details in #128):
 
-| Engine | All crops | Typeset | Camp papers (hand-lettered mimeograph) | Crops where it scored highest |
-|--------|-----------|---------|----------------------------------------|-------------------------------|
-| NDLOCR-Lite (National Diet Library, CC BY 4.0, CPU only) | 77% | 83% | 72% | beat Azure on 19 of 23 |
-| Azure AI Document Intelligence Read | 61% | 72% | 49% | |
-| Tesseract `jpn_vert` | 26% | 40% | 11% | |
+| Engine                                                   | All crops | Typeset | Camp papers (hand-lettered mimeograph) | Crops where it scored highest |
+| -------------------------------------------------------- | --------- | ------- | -------------------------------------- | ----------------------------- |
+| NDLOCR-Lite (National Diet Library, CC BY 4.0, CPU only) | 77%       | 83%     | 72%                                    | beat Azure on 19 of 23        |
+| Azure AI Document Intelligence Read                      | 61%       | 72%     | 49%                                    |                               |
+| Tesseract `jpn_vert`                                     | 26%       | 40%     | 11%                                    |                               |
 
 **The references are not independently checked.** The reference transcriptions were machine-made, and one of them was checked against its scan (#135). So these figures measure agreement with a machine reference as much as accuracy, and the ranking between engines is better established than any one percentage. A Japanese reader should review a sample of the crops and of NDLOCR-Lite's output before anyone relies on the numbers; that review is on #135's list and hasn't happened.
 

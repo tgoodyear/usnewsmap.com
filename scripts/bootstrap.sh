@@ -256,7 +256,9 @@ done
 
 step "Checking"
 API_URL=$(aget API_URL) SITE=$(aget SITE_URL)
-curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "$API_URL/readyz" > /dev/null
+# A replica that has just started is not ready until its startup warm-up
+# ends (up to 360 s after loading where min replicas is above 0; 06 §6.6).
+curl -fsS --retry 90 --retry-delay 10 --retry-all-errors "$API_URL/readyz" > /dev/null
 echo "API  $API_URL  ready"
 curl -fsS --retry 10 --retry-delay 6 --retry-all-errors -o /dev/null "$SITE"
 echo "site $SITE  up"

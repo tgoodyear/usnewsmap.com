@@ -46,7 +46,9 @@ async function pinchOut(page: Page) {
 test("pinch zoom works while the timeline plays", async ({ page, isMobile }) => {
   test.skip(!isMobile, "touch gestures: the mobile project");
   // A day per step over a year, so playback runs well past the gesture.
-  await page.goto("/?q=%22cross+of+gold%22&from=1896-01-01&to=1896-12-31&bucket=day&t=1896-01-01&z=4.00&c=-96.000,38.500");
+  await page.goto(
+    "/?q=%22cross+of+gold%22&from=1896-01-01&to=1896-12-31&bucket=day&t=1896-01-01&z=4.00&c=-96.000,38.500",
+  );
   await expect(page.locator(".summary")).toContainText("places");
   await expect(page.locator(".maplibregl-canvas")).toBeVisible();
 
@@ -61,7 +63,10 @@ test("pinch zoom works while the timeline plays", async ({ page, isMobile }) => 
   await expect.poll(() => urlZoom(page)).toBeGreaterThan(5);
 });
 
-test("phones put the playback controls between the map and the legend, in reading order", async ({ page, isMobile }) => {
+test("phones put the playback controls between the map and the legend, in reading order", async ({
+  page,
+  isMobile,
+}) => {
   await page.goto("/?q=%22cross+of+gold%22&from=1896-06-01&to=1896-12-31&bucket=week");
   await expect(page.locator(".summary")).toContainText("places");
   const order = () =>

@@ -52,7 +52,8 @@ export function statePages(rows: ListRow[]): StateRow[] {
  */
 export function medianExtremes<R extends ListRow>(rows: R[]): { earliest: R[]; latest: R[]; eligible: number } {
   const usable = rows.filter((r) => r.value >= MIN_MEDIAN_PAGES && r.when !== undefined && !Number.isNaN(r.when));
-  const by = (dir: 1 | -1) => (a: R, b: R) => dir * (a.when! - b.when!) || b.value - a.value || a.name.localeCompare(b.name);
+  const by = (dir: 1 | -1) => (a: R, b: R) =>
+    dir * (a.when! - b.when!) || b.value - a.value || a.name.localeCompare(b.name);
   // With fewer than two lists' worth, split them so no place is in both,
   // even when places share a median.
   const n = Math.min(LIST_LENGTH, Math.ceil(usable.length / 2));
@@ -274,8 +275,8 @@ interface Ranked {
   key: string;
 }
 
-/** The two lists, by exact day when `exact` is given, else by bucket. */
-function rank(rows: ListRow[], exact: Map<string, number> | null | undefined): Ranked {
+/** The two Median date lists, by exact day when `exact` is given, else by bucket. */
+export function medianLists(rows: ListRow[], exact: Map<string, number> | null | undefined): Ranked {
   const { eligible } = medianExtremes(rows);
   const ranked = exact
     ? rows
@@ -311,7 +312,7 @@ export function WhenLists({
   // ("updating") they stay exactly as they were, not recomputed against the
   // new window from the old answer, until the fresh answer replaces them.
   const [shown, setShown] = useState<Ranked | null>(null);
-  const current = status === "updating" && shown ? null : rank(rows, status === "bucket" ? null : exact);
+  const current = status === "updating" && shown ? null : medianLists(rows, status === "bucket" ? null : exact);
   if (status === "exact" && current && current.key !== shown?.key) setShown(current);
   if (status === "loading") {
     return (
@@ -345,8 +346,8 @@ export function WhenLists({
         {status === "updating" ? "Updating for the new date…" : ""}
       </p>
       <p className="skew-list__note">
-        A place&apos;s median date is when half of its matching pages {scope(trailing)} had been printed. Only
-        places with at least {MIN_MEDIAN_PAGES} matching pages are listed.
+        A place&apos;s median date is when half of its matching pages {scope(trailing)} had been printed. Only places
+        with at least {MIN_MEDIAN_PAGES} matching pages are listed.
       </p>
     </ListsPanel>
   );

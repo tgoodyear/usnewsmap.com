@@ -107,10 +107,7 @@ const SKEW: Column[] = [
     label: "90% range",
     numeric: true,
     get: (r) => r.skew?.lower ?? nan,
-    show: (r) =>
-      r.skew
-        ? `${formatRange(r.skew)}${r.skew.dir === 0 ? " (not enough pages to tell)" : ""}`
-        : "",
+    show: (r) => (r.skew ? `${formatRange(r.skew)}${r.skew.dir === 0 ? " (not enough pages to tell)" : ""}` : ""),
   },
   {
     key: "languages",
@@ -155,9 +152,7 @@ export function PlaceTable({ rows, onSelect, selected, skew = false, share = tru
                 <button
                   type="button"
                   className="th-button"
-                  onClick={() =>
-                    setSort((s) => ({ key: c.key, desc: s.key === c.key ? !s.desc : c.numeric === true }))
-                  }
+                  onClick={() => setSort((s) => ({ key: c.key, desc: s.key === c.key ? !s.desc : c.numeric === true }))}
                 >
                   {c.label}
                 </button>

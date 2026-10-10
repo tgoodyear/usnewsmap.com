@@ -8,7 +8,7 @@ describe("hasJapanese", () => {
     }
   });
   it("leaves Latin text, digits and punctuation alone", () => {
-    for (const q of ["pearl harbor", "1941", "café", "\"cross of gold\"", "「」"]) {
+    for (const q of ["pearl harbor", "1941", "café", '"cross of gold"', "「」"]) {
       expect(hasJapanese(q), q).toBe(false);
     }
   });

@@ -1,13 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  api,
-  ApiError,
-  isPlain,
-  isRetryable,
-  MAX_COMPUTE_WAIT_MS,
-  searchQuery,
-  VersionChangedError,
-} from "./client";
+import { api, ApiError, isPlain, isRetryable, MAX_COMPUTE_WAIT_MS, searchQuery, VersionChangedError } from "./client";
 
 function respond(body: unknown, status = 200, type = "application/json") {
   vi.stubGlobal(
@@ -85,7 +77,7 @@ describe("searches the API is still computing", () => {
     const result = api.aggregate({ q: "radio" }, "v1", ctl.signal).catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(500);
     ctl.abort(new DOMException("changed", "AbortError"));
-    expect((await result as DOMException).name).toBe("AbortError");
+    expect(((await result) as DOMException).name).toBe("AbortError");
     await vi.advanceTimersByTimeAsync(10_000);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -138,6 +130,29 @@ describe("searches the API is still computing", () => {
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
+  it("a prefetch polls a 202 but gives up at once on a busy API or a rate limit", async () => {
+    vi.useFakeTimers();
+    for (const answer of [() => problem(503, "/errors/busy", "5"), () => problem(429, "/errors/rate-limited", "3")]) {
+      const fetch = sequence(computing, answer, ok);
+      const result = api
+        .hits({ q: "radio" }, "v1", "P1", "oldest", null, undefined, () => true)
+        .catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(2000);
+      const err = (await result) as ApiError;
+      expect(err).toBeInstanceOf(ApiError);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("a prefetch a visitor is now waiting on waits out a busy API like any request", async () => {
+    vi.useFakeTimers();
+    const fetch = sequence(() => problem(503, "/errors/busy", "5"), ok);
+    const result = api.hits({ q: "radio" }, "v1", "P1", "oldest", null, undefined, () => false);
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(result).resolves.toMatchObject({ index_version: "v1" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("a rate limit before any 202 is an error, as before", async () => {
     sequence(() => problem(429, "/errors/rate-limited", "3"));
     await expect(api.aggregate({ q: "radio" }, "v1")).rejects.toBeInstanceOf(ApiError);
@@ -163,7 +178,11 @@ describe("api client", () => {
   });
 
   it("turns problem+json into ApiError", async () => {
-    respond({ type: "/errors/query-syntax", title: "Query syntax error", status: 400, hint: "h" }, 400, "application/problem+json");
+    respond(
+      { type: "/errors/query-syntax", title: "Query syntax error", status: 400, hint: "h" },
+      400,
+      "application/problem+json",
+    );
     const err = await api.aggregate({ q: '"x' }, "v1").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).problem.hint).toBe("h");
@@ -188,9 +207,7 @@ describe("api client", () => {
     expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe("/v1/aggregate?q=gold&lang=ger%2Cspa&v=v1");
     respond({ index_version: "v1" });
     await api.hits({ q: "gold", mode: "all", lang: ["ger"] }, "v1", "P00006", "oldest", null);
-    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(
-      "/v1/hits?q=gold&lang=ger&v=v1&place=P00006&limit=20",
-    );
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe("/v1/hits?q=gold&lang=ger&v=v1&place=P00006&limit=20");
     respond({ index_version: "v1" });
     await api.hits({ q: "gold", mode: "all" }, "v1", "P00006", "newest", "abc");
     expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe(

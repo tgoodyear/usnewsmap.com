@@ -78,9 +78,7 @@ export function health(s: Status, now: number): Health {
   } else if (b.in_progress > 0) {
     parts.push(`Backfill running (${count(b.in_progress)} in progress)`);
   } else if (b.throughput.remaining > 0) {
-    parts.push(
-      `Backfill idle, ${count(b.throughput.remaining)} batches waiting`,
-    );
+    parts.push(`Backfill idle, ${count(b.throughput.remaining)} batches waiting`);
   } else {
     parts.push("All listed batches curated");
   }
@@ -93,9 +91,7 @@ export function health(s: Status, now: number): Health {
   if (b.available) {
     // Runs that failed before a later version published are history, not
     // a current problem. Older APIs without the field count every failure.
-    const runs = i.available
-      ? (i.failed_since_last_publish ?? i.failed_runs)
-      : 0;
+    const runs = i.available ? (i.failed_since_last_publish ?? i.failed_runs) : 0;
     const failed = b.by_status.failed + runs;
     if (failed > 0) {
       parts.push(`${count(failed)} ${failed === 1 ? "failure" : "failures"}`);

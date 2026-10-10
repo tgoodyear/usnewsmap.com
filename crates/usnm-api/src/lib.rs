@@ -321,8 +321,11 @@ async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> 
 }
 
 /// Warm up the serving version after a start, reporting not ready until it
-/// finishes or `config.ready_cap` passes. Past the cap the replica becomes
-/// ready and the warm-up carries on within its own budget.
+/// finishes or `config.ready_cap` passes. The default cap is past the
+/// warm-up's budget, so in a rollout the old revision keeps the traffic
+/// until this replica is warm. Past the cap (a hung warm-up, or a short cap
+/// set where nothing else serves) the replica becomes ready and the warm-up
+/// carries on within its own budget.
 pub fn spawn_startup_warm_up(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     state.warming.store(true, Ordering::Relaxed);
     tokio::spawn(async move {

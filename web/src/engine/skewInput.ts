@@ -102,7 +102,9 @@ export function prepareSkew(
   });
   return {
     version: agg.index_version,
-    search: [agg.index_version, agg.query.canonical, agg.bucket.unit, agg.bucket.from, agg.bucket.to, buckets].join("|"),
+    search: [agg.index_version, agg.query.canonical, agg.bucket.unit, agg.bucket.from, agg.bucket.to, buckets].join(
+      "|",
+    ),
     input: {
       spec: { unit: agg.bucket.unit, from: agg.bucket.from, to: agg.bucket.to },
       nationalHits: agg.series.hits,

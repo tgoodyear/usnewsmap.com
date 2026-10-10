@@ -165,7 +165,9 @@ describe("WhenLists while the exact days load", () => {
       ["Early", dayNumber("1895-01-03")],
       ["Later", dayNumber("1895-01-28")],
     ]);
-    const { rerender } = render(<WhenLists rows={rows} onSelect={() => {}} trailing={false} exact={first} status="exact" />);
+    const { rerender } = render(
+      <WhenLists rows={rows} onSelect={() => {}} trailing={false} exact={first} status="exact" />,
+    );
     expect(screen.getByText("Jan 3, 1895 · 10 pages")).toBeTruthy();
     // The window moved: new rows and the old answer recomputed differently, but nothing changes yet.
     const moved = [row("Early", "IL", 30, 0.1, "Jan 1895"), row("Later", "IL", 30, 0.1, "Jan 1895")];

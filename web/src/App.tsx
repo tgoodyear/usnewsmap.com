@@ -14,6 +14,7 @@ import { Searching } from "./components/Searching";
 import { Timeline } from "./components/Timeline";
 import { TimeDock } from "./components/TimeDock";
 import { PlacePanel } from "./components/PlacePanel";
+import { usePrefetchPlaceHits } from "./components/placeHits";
 import { PlaceTable } from "./components/PlaceTable";
 import { NewspaperTable, paperRows } from "./components/NewspaperTable";
 import { languageMix } from "./lib/languages";
@@ -27,7 +28,7 @@ import { americanStoriesOnlyNote } from "./lib/matchSource";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { PagesLists, WhenLists, exactMedian, medianCandidates, type MedianStatus } from "./components/PlaceLists";
-import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
+import { DownloadCsv, SkewLists, StateTable, clearest, useListLengths, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { MIN_PLACES, prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
 import { maxWindowExpected, scoreFrame } from "./engine/skewModel";
@@ -118,20 +119,14 @@ export function App() {
   useEffect(() => () => clearTimeout(urlWrite.current), [key]);
 
   // Prefix sums are built once per response; each frame is O(places).
-  const hitSums = useMemo(
-    () => (data ? prefixSums(data.cube, data.places.id.length, count) : null),
-    [data, count],
-  );
+  const hitSums = useMemo(() => (data ? prefixSums(data.cube, data.places.id.length, count) : null), [data, count]);
   const pageSums = useMemo(() => {
     if (!data || !coverage.data || coverage.data.count !== count) return null;
     const aligned = alignCube(coverage.data.pages, coverage.data.places, data.places.id);
     return prefixSums(aligned, data.places.id.length, count);
   }, [data, coverage.data, count]);
 
-  const features = useMemo(
-    () => new Map((places.data?.features ?? []).map((f) => [f.id, f])),
-    [places.data],
-  );
+  const features = useMemo(() => new Map((places.data?.features ?? []).map((f) => [f.id, f])), [places.data]);
 
   // Relative rate (doc 11): fitted once per search, off the main thread;
   // each frame is then scored from prefix sums.
@@ -160,10 +155,7 @@ export function App() {
           lastSkew?.prepared.search === prepared.search
         ? lastSkew
         : null;
-  const frame = useMemo(
-    () => (skewModel ? scoreFrame(skewModel.model, t, view.win) : null),
-    [skewModel, t, view.win],
-  );
+  const frame = useMemo(() => (skewModel ? scoreFrame(skewModel.model, t, view.win) : null), [skewModel, t, view.win]);
   const maxExpected = useMemo(
     () => (skewModel ? maxWindowExpected(skewModel.model.places, view.win) : 1),
     [skewModel, view.win],
@@ -293,10 +285,7 @@ export function App() {
     [data, setView, urlT, key],
   );
   const select = useCallback((id: string) => setView({ place: id }), [setView]);
-  const onViewport = useCallback(
-    (z: number, c: [number, number]) => setView({ z, c }),
-    [setView],
-  );
+  const onViewport = useCallback((z: number, c: [number, number]) => setView({ z, c }), [setView]);
   const search = (patch: Partial<ViewState>) => setView({ ...patch, t: "", place: "", sort: "oldest" }, true);
   const placeName = (id: string) => {
     const f = features.get(id);
@@ -333,7 +322,8 @@ export function App() {
         .filter(Boolean)
         .join(" ") || null
     : null;
-  const filteredPaper = view.lccn.length > 0 ? (papers.find((p) => view.lccn.includes(p.lccn))?.title ?? view.lccn.join(", ")) : null;
+  const filteredPaper =
+    view.lccn.length > 0 ? (papers.find((p) => view.lccn.includes(p.lccn))?.title ?? view.lccn.join(", ")) : null;
 
   const visible = points.filter((p) => p.value > 0);
   const pagesShown = visible.reduce((a, p) => a + p.value, 0);
@@ -377,7 +367,9 @@ export function App() {
     retry: false,
     // While the next set loads, the last answer for this same search stays (marked as updating).
     placeholderData: (prev, prevQuery) =>
-      prevQuery && JSON.stringify(prevQuery.queryKey.slice(1, 3)) === JSON.stringify([version, params]) ? prev : undefined,
+      prevQuery && JSON.stringify(prevQuery.queryKey.slice(1, 3)) === JSON.stringify([version, params])
+        ? prev
+        : undefined,
   });
   const fresh =
     !!dayCounts.data && !dayCounts.isPlaceholderData && candidatesKey !== "" && requestKey === candidatesKey;
@@ -405,28 +397,60 @@ export function App() {
   }, [data, daysSource, medianStatus, view.win, t, count]);
   const selected = points.find((p) => p.id === view.place);
   const updating = [agg.error, places.error, coverage.error].some((e) => e instanceof VersionChangedError);
-  const problem: Problem | null = updating || !agg.error
-    ? null
-    : agg.error instanceof ApiError
-      ? agg.error.problem
-      : {
-          type: "about:blank",
-          title: "The search failed",
-          status: 0,
-          detail: "The search service could not be reached or sent an unreadable response.",
-          hint: "Check your connection and try again.",
-        };
+  const problem: Problem | null =
+    updating || !agg.error
+      ? null
+      : agg.error instanceof ApiError
+        ? agg.error.problem
+        : {
+            type: "about:blank",
+            title: "The search failed",
+            status: 0,
+            detail: "The search service could not be reached or sent an unreadable response.",
+            hint: "Check your connection and try again.",
+          };
   const placesFailed = places.error && !(places.error instanceof VersionChangedError);
-  const coverageFailed =
-    view.norm === "skew" && coverage.error && !(coverage.error instanceof VersionChangedError);
+  const coverageFailed = view.norm === "skew" && coverage.error && !(coverage.error instanceof VersionChangedError);
   const skewNotice = wantSkew && !skewModel ? skewStatus(prepared, skew.status, !!coverageFailed) : null;
   const shown = norm === "skew" ? skewRows : points;
   const clear = norm === "skew" ? clearest(skewListed) : null;
 
+  // The page lists of the places at each end of the side panel's lists,
+  // loaded in the background once the lists are final (#265): after the
+  // search's own answer (not a 202 or the last search's placeholder), the
+  // relative rate's fit or its unavailability, and the exact median days.
+  const listsFinal =
+    !!data &&
+    !!places.data &&
+    !agg.isPlaceholderData &&
+    !agg.isFetching &&
+    !updating &&
+    !view.place &&
+    (view.norm !== "skew" ||
+      norm === "skew" ||
+      typeof prepared === "string" ||
+      skew.status === "error" ||
+      !!coverageFailed) &&
+    (norm !== "when" || medianStatus === "exact" || medianStatus === "bucket");
+  usePrefetchPlaceHits(
+    params,
+    version,
+    view.sort,
+    !listsFinal
+      ? null
+      : norm === "skew"
+        ? { norm, rows: skewListed }
+        : norm === "when"
+          ? { norm, rows: visible, exact: medianStatus === "exact" ? exactMedians : null }
+          : { norm: "raw", rows: visible },
+  );
+
   // Phones show the legend and the place lists after the playback controls, in the DOM as well as
   // on screen, so the controls sit right under the map. They move, not the controls: the legend and
-  // lists keep no state of their own, so a rotation across the breakpoint loses nothing.
+  // lists keep no state of their own, so a rotation across the breakpoint loses nothing. How many
+  // places the Clearest differences lists show is kept here for that reason.
   const narrow = useMediaQuery("(max-width: 640px)");
+  const [skewShown, setSkewShown] = useListLengths(`${key}|${view.bucket}|${view.win}|${norm}`);
   const legend = !data ? null : norm === "skew" && skewModel ? (
     <SkewLegend
       places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
@@ -443,9 +467,19 @@ export function App() {
   );
   const sidePanel = !data ? null : (
     <>
-      {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
+      {norm === "skew" && !view.place && (
+        <SkewLists rows={skewListed} onSelect={select} shown={skewShown} onShown={setSkewShown} />
+      )}
       {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} trailing={view.win !== null} />}
-      {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} trailing={view.win !== null} exact={exactMedians} status={medianStatus} />}
+      {norm === "when" && !view.place && (
+        <WhenLists
+          rows={visible}
+          onSelect={select}
+          trailing={view.win !== null}
+          exact={exactMedians}
+          status={medianStatus}
+        />
+      )}
       {view.place && (
         <PlacePanel
           params={params}
@@ -485,10 +519,7 @@ export function App() {
       {!view.q ? (
         <main className="empty">
           <h1>Where and when did America's newspapers print it?</h1>
-          <p>
-            Type a word or phrase to map every matching page from Chronicling America, then play it
-            through time.
-          </p>
+          <p>Type a word or phrase to map every matching page from Chronicling America, then play it through time.</p>
           <Examples
             order={EXAMPLE_ORDER}
             clicks={exampleClicks}
@@ -549,7 +580,10 @@ export function App() {
                   {view.norm === "raw" && view.tab === "map" && webgl && (
                     <label>
                       <span className="visually-hidden">Map layer</span>
-                      <select value={view.layer} onChange={(e) => setView({ layer: e.target.value as ViewState["layer"] })}>
+                      <select
+                        value={view.layer}
+                        onChange={(e) => setView({ layer: e.target.value as ViewState["layer"] })}
+                      >
                         <option value="points">Points</option>
                         <option value="heat">Heat</option>
                       </select>
@@ -564,12 +598,7 @@ export function App() {
                 </div>
                 <div className="segmented toolbar__view" role="group" aria-label="View">
                   {(["map", "table"] as const).map((tab) => (
-                    <button
-                      key={tab}
-                      type="button"
-                      aria-pressed={view.tab === tab}
-                      onClick={() => setView({ tab })}
-                    >
+                    <button key={tab} type="button" aria-pressed={view.tab === tab} onClick={() => setView({ tab })}>
                       {tab === "map" ? "Map" : "Table"}
                     </button>
                   ))}
@@ -605,19 +634,24 @@ export function App() {
                   first={data.total.first}
                   last={data.total.last ?? null}
                   placeName={placeName}
-                  hrefFor={(hit, sort) => `${window.location.pathname}${serializeView({ ...view, place: hit.place_id, sort })}`}
+                  hrefFor={(hit, sort) =>
+                    `${window.location.pathname}${serializeView({ ...view, place: hit.place_id, sort })}`
+                  }
                   onOpen={(hit, sort) => setView({ place: hit.place_id, sort })}
                 />
               )}
               {skewNotice && (
-                <p className={skewNotice.error ? "notice notice--error" : "notice"} role={skewNotice.error ? "alert" : "status"}>
+                <p
+                  className={skewNotice.error ? "notice notice--error" : "notice"}
+                  role={skewNotice.error ? "alert" : "status"}
+                >
                   {skewNotice.text}
                 </p>
               )}
               {data.total.hits === 0 ? (
                 <div className="notice" role="status">
-                  <strong>No pages match.</strong> Try “All words” instead of an exact phrase, widen the
-                  dates, or remove {view.lang.length > 0 ? "language or state filters" : "state filters"}.
+                  <strong>No pages match.</strong> Try “All words” instead of an exact phrase, widen the dates, or
+                  remove {view.lang.length > 0 ? "language or state filters" : "state filters"}.
                 </div>
               ) : (
                 // Busy is scoped to the stale map or table, not <main>: the status
@@ -861,4 +895,3 @@ function skewStatus(
   if (prepared === null) return { text: "Loading publication counts…", error: false };
   return { text: "Comparing places…", error: false };
 }
-

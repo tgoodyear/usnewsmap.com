@@ -21,12 +21,12 @@ Use **Rust** (axum, tokio, reqwest, serde, moka, utoipa, tracing/OpenTelemetry) 
 
 ## Alternatives
 
-| Option | Assessment |
-|--------|-----------|
-| .NET 10 Native AOT | Close second: best Azure SDKs and a larger maintainer pool. Cold start and memory are good with AOT. Choose this if the maintainers are .NET developers. |
-| Go | Good performance and a simple language, but no shared ecosystem with Quickwit/Tantivy, and weaker data tooling (Arrow/Parquet) than Rust. |
-| Python (FastAPI) | Best data ecosystem, but slow cold starts, higher memory, and slow post-processing without native extensions. It is still fine for ad-hoc notebooks against the lake. |
-| Node/TypeScript | Could share types with the SPA, but is weaker on CPU-heavy aggregation and has higher memory use. |
+| Option             | Assessment                                                                                                                                                            |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| .NET 10 Native AOT | Close second: best Azure SDKs and a larger maintainer pool. Cold start and memory are good with AOT. Choose this if the maintainers are .NET developers.              |
+| Go                 | Good performance and a simple language, but no shared ecosystem with Quickwit/Tantivy, and weaker data tooling (Arrow/Parquet) than Rust.                             |
+| Python (FastAPI)   | Best data ecosystem, but slow cold starts, higher memory, and slow post-processing without native extensions. It is still fine for ad-hoc notebooks against the lake. |
+| Node/TypeScript    | Could share types with the SPA, but is weaker on CPU-heavy aggregation and has higher memory use.                                                                     |
 
 ## Consequences
 

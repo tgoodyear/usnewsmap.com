@@ -145,7 +145,10 @@ export function parseView(search: string): ViewState {
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
-    norm: supportedNorm(oneOf(s.get("norm"), ["raw", "skew", "when"] as const, DEFAULTS.norm), parseLccns(s.get("lccn"))),
+    norm: supportedNorm(
+      oneOf(s.get("norm"), ["raw", "skew", "when"] as const, DEFAULTS.norm),
+      parseLccns(s.get("lccn")),
+    ),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
     sort: oneOf(s.get("sort"), ["oldest", "newest", "relevant"] as const, DEFAULTS.sort),
     tab: oneOf(s.get("tab"), ["map", "table"] as const, DEFAULTS.tab),

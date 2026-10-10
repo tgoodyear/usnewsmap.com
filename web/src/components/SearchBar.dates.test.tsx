@@ -10,7 +10,11 @@ afterEach(() => {
   delete (HTMLInputElement.prototype as { showPicker?: unknown }).showPicker;
 });
 
-const meta = { bounds: { from: "1736-01-01", to: "1963-12-31" }, limits: { max_query_chars: 256 }, ja: null } as unknown as Meta;
+const meta = {
+  bounds: { from: "1736-01-01", to: "1963-12-31" },
+  limits: { max_query_chars: 256 },
+  ja: null,
+} as unknown as Meta;
 
 function setup(view: Partial<ViewState> = {}) {
   const onSearch = vi.fn();
