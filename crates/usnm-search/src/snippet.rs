@@ -7,7 +7,7 @@
 use usnm_core::query::{Node, Term};
 use usnm_core::text::{fold, tokenize, MAX_TOKEN_CHARS, USNM_TEXT};
 
-use crate::memory::{as_analyzed, eval, term_matches};
+use crate::memory::{as_analyzed, eval, term_matches, word_matches};
 use crate::{mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES};
 
 /// Fragments per page.
@@ -95,7 +95,7 @@ fn matches(words: &[Word], patterns: &[Pattern]) -> Vec<(usize, usize)> {
                     if run
                         .iter()
                         .zip(terms)
-                        .all(|(w, t)| w.token.as_ref() == Some(t))
+                        .all(|(w, t)| w.token.as_deref().is_some_and(|tok| word_matches(t, tok)))
                     {
                         hits.push((run[0].start, run[terms.len() - 1].end));
                     }

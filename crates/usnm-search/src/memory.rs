@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use async_trait::async_trait;
 use usnm_core::params::Filters;
 use usnm_core::query::{wildcard_matches, Node, Term};
-use usnm_core::text::{tokenize, USNM_TEXT};
+use usnm_core::text::{fold, tokenize, Analyzer, USNM_TEXT};
 use usnm_core::time::BucketSpec;
 
 use crate::snippet::{matched_in, page_snippets};
@@ -55,8 +55,18 @@ impl Indexed {
 /// into several words (`1⁄2` with `Analyzer::V1`, #168) is then the phrase
 /// of them ("1 2"), and one the analyzer drops matches nothing. For a query
 /// parsed with the latest analyzer this changes nothing.
+///
+/// A word `Analyzer::V1` folded into words with spaces between them (`ﷺ`)
+/// stays whole: a phrase requires it through the pairs, where it is the
+/// page's one character, folded and run together ([`word_matches`]).
 pub fn as_analyzed(query: &Node) -> Node {
-    let words = |t: &str| tokenize(t, USNM_TEXT);
+    let words = |t: &str| {
+        if t.contains(char::is_whitespace) {
+            vec![t.to_owned()]
+        } else {
+            tokenize(t, USNM_TEXT)
+        }
+    };
     match query {
         Node::Term(t) if !t.prefix && !t.wildcard && t.fuzzy == 0 => {
             let w = words(&t.text);
@@ -373,7 +383,19 @@ pub(crate) fn term_matches(t: &Term, token: &str) -> bool {
     } else if t.fuzzy > 0 {
         levenshtein_within(&t.text, token, usize::from(t.fuzzy))
     } else {
-        token == t.text
+        word_matches(&t.text, token)
+    }
+}
+
+/// Whether a query's word matches a page's word, as `usnm_text` has it. A
+/// word with spaces in it is what `Analyzer::V1` folds one character into
+/// (`ﷺ`, four Arabic words); the pairs of an index built with it hold that
+/// character as those words run together, so it matches the character (#168).
+pub(crate) fn word_matches(word: &str, token: &str) -> bool {
+    if word.contains(char::is_whitespace) {
+        fold(token, Analyzer::V1) == word
+    } else {
+        token == word
     }
 }
 
@@ -394,11 +416,13 @@ fn phrase_starts<'a>(
             return true;
         };
         let end = (pos + budget + 1).min(tokens.len());
-        (pos..end).any(|i| tokens[i] == *first && from(rest, tokens, i + 1, budget - (i - pos)))
+        (pos..end).any(|i| {
+            word_matches(first, &tokens[i]) && from(rest, tokens, i + 1, budget - (i - pos))
+        })
     }
     tokens.iter().enumerate().filter_map(move |(i, t)| {
         let (first, rest) = terms.split_first()?;
-        (t == first && from(rest, tokens, i + 1, usize::from(slop))).then_some(i)
+        (word_matches(first, t) && from(rest, tokens, i + 1, usize::from(slop))).then_some(i)
     })
 }
 
@@ -701,6 +725,16 @@ mod shard_tests {
             hits.hits[0].snippets,
             ["Wheat closed <mark>½</mark> higher"]
         );
+    }
+
+    #[test]
+    fn a_version_1_word_with_spaces_matches_its_character() {
+        // `ﷺ` folds to four words with `Analyzer::V1`; the pairs of an index
+        // built with it hold the character, so a phrase finds it (#168).
+        let q = usnm_core::query::parse_with("\"of \u{fdfa} gold\"", Analyzer::V1).unwrap();
+        let q = as_analyzed(&q);
+        assert!(eval(&q, &tokenize("cross of \u{fdfa} gold", USNM_TEXT)));
+        assert!(!eval(&q, &tokenize("cross of gold", USNM_TEXT)));
     }
 
     #[test]
