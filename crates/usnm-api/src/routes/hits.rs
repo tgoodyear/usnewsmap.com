@@ -210,9 +210,6 @@ pub async fn hits(
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
     let req = rd.search_request(&raw)?;
-    // Before any cache, so a cached Congress response is never served once
-    // the version can't search Congress pages (#229).
-    rd.check_source(&req)?;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
             "OCR-tolerant (fuzzy) matching".into(),
@@ -284,6 +281,10 @@ pub async fn hits(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
+    // After a stale `v` is redirected, which tells the client the version
+    // changed, and before any cache, so a cached Congress response is never
+    // served once the version can't search Congress pages (#229).
+    rd.check_source(&req)?;
     let key = rd.search_key("hits", &canonical, &req.query);
     let st = state.clone();
     let snap2 = snap.clone();

@@ -704,6 +704,13 @@ pub async fn read_current(store: &dyn ObjectStore) -> Result<Current, String> {
                 s.series
             ));
         }
+        // Requests clamp their dates to these spans, which needs from ≤ to.
+        if let Some(s) = c.series.iter().find(|s| s.from > s.to) {
+            return Err(format!(
+                "current.json: Congress series `{}` ends before it starts",
+                s.series
+            ));
+        }
     }
     Ok(current)
 }

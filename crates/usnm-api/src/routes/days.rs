@@ -73,9 +73,6 @@ pub async fn days(
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
     let mut req = rd.search_request(&raw)?;
-    // Before any cache, so a cached Congress response is never served once
-    // the version can't search Congress pages (#229).
-    rd.check_source(&req)?;
     // Always by day, so any `bucket` shares one cache key and one URL.
     req.bucket = BucketUnit::Day;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
@@ -100,6 +97,10 @@ pub async fn days(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
+    // After a stale `v` is redirected, which tells the client the version
+    // changed, and before any cache, so a cached Congress response is never
+    // served once the version can't search Congress pages (#229).
+    rd.check_source(&req)?;
     let key = rd.search_key("days", &canonical, &req.query);
     let st = state.clone();
     let compute = async move {

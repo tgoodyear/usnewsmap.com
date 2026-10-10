@@ -2727,6 +2727,88 @@ async fn congress_searches_answer_422_where_they_cannot_run() {
     assert_eq!(st, StatusCode::BAD_REQUEST);
 }
 
+/// A stale `v` is redirected before a Congress search is refused, so a page
+/// pinned to a version with Congress pages learns that the version changed
+/// even when the new one can't search them.
+#[tokio::test]
+async fn a_stale_version_is_redirected_before_congress_is_refused() {
+    let plain = state_with(None).await;
+    let q = "q=gold&from=1895-01-01&to=1897-12-31&source=congress";
+    for path in [
+        format!("/v1/aggregate?{q}"),
+        format!("/v1/hits?{q}&place=PC001"),
+        format!("/v1/days?{q}&place=PC001"),
+    ] {
+        let (st, headers, body) = get(&plain, &format!("{path}&v=old-version")).await;
+        assert_eq!(st, StatusCode::TEMPORARY_REDIRECT, "{path}: {body}");
+        let location = header_str(&headers, header::LOCATION);
+        assert!(location.contains("&source=congress"), "{location}");
+        assert!(location.ends_with("&v=fixture-v1"), "{location}");
+        // The serving version refuses it, pinned to it or not.
+        for uri in [path.clone(), format!("{path}&v=fixture-v1")] {
+            let (st, _, body) = get(&plain, &uri).await;
+            assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{uri}: {body}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn current_json_congress_series_are_validated() {
+    use usnm_store::ObjectStore as _;
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::new(dir.path());
+    let base = json!({
+        "index_version": "v1", "indexes": ["pages-base-1"], "reference": "v1",
+        "bounds": {"from": "1895-01-01", "to": "1897-12-31"}, "published_at": "2026-10-05T00:00:00Z",
+    });
+    let with_series = |series: Value, indexes: Value| {
+        let mut v = base.clone();
+        v["congress"] = json!({"indexes": indexes, "series": [series]});
+        v
+    };
+    let globe =
+        |from: &str, to: &str| json!({"series": "globe", "pages": 3, "from": from, "to": to});
+    let read = |v: Value| {
+        let store = &store;
+        async move {
+            store
+                .put(
+                    "current.json",
+                    serde_json::to_vec(&v).unwrap(),
+                    "application/json",
+                )
+                .await
+                .unwrap();
+            usnm_api::refdata::read_current(store).await
+        }
+    };
+    let ok = globe("1833-12-02", "1873-03-03");
+    assert!(read(with_series(ok.clone(), json!(["congress-1"])))
+        .await
+        .is_ok());
+    // One day is a span.
+    let day = globe("1850-01-01", "1850-01-01");
+    assert!(read(with_series(day, json!(["congress-1"]))).await.is_ok());
+    // Requests clamp their dates to a series' span, so it can't run backwards.
+    let backwards = globe("1873-03-03", "1833-12-02");
+    let err = read(with_series(backwards, json!(["congress-1"])))
+        .await
+        .unwrap_err();
+    assert!(err.contains("ends before it starts"), "{err}");
+    let mut unknown = ok.clone();
+    unknown["series"] = json!("hansard");
+    let err = read(with_series(unknown, json!(["congress-1"])))
+        .await
+        .unwrap_err();
+    assert!(err.contains("unknown Congress series"), "{err}");
+    for bad in [json!([]), json!(["../escape"])] {
+        assert!(
+            read(with_series(ok.clone(), bad.clone())).await.is_err(),
+            "{bad}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn meta_lists_congress_series_and_its_place() {
     let s = congress_state().await;

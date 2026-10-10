@@ -187,9 +187,6 @@ pub(crate) async fn aggregate_in(
     }
     let snap = &ctx.snap;
     let req = snap.refdata.search_request(&raw)?;
-    // Before any cache, so a cached Congress response is never served once
-    // the version can't search Congress pages (#229).
-    snap.refdata.check_source(&req)?;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
             "OCR-tolerant (fuzzy) matching".into(),
@@ -201,6 +198,10 @@ pub(crate) async fn aggregate_in(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
+    // After a stale `v` is redirected, which tells the client the version
+    // changed, and before any cache, so a cached Congress response is never
+    // served once the version can't search Congress pages (#229).
+    snap.refdata.check_source(&req)?;
     let key = cache_key(&snap.refdata, &canonical, &req.query);
     let prefix = mount_prefix(uri.path(), "/aggregate").to_owned();
     let job = Job::search("aggregate", ctx.warm_up, ctx.timeout);
