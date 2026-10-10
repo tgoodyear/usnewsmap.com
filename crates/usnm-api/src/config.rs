@@ -19,6 +19,16 @@ pub struct RateLimit {
     pub burst: NonZeroU32,
 }
 
+/// The default readiness cap's margin over the startup warm-up's budget
+/// (`USNM_READY_CAP_SECS` unset): the warm-up stops its last query at the
+/// budget, then counts what it warmed, which takes seconds.
+pub const READY_CAP_MARGIN_SECS: u64 = 60;
+
+/// The longest warm-up budget or readiness cap that can be set: a day. They
+/// are added to `Instant`s, where a value near `u64::MAX` seconds would
+/// panic. (The default cap, a day's budget plus the margin, is a little more.)
+pub const MAX_WARM_UP_SECS: u64 = 24 * 60 * 60;
+
 /// The shortest `USNM_ABANDON_AFTER_SECS`: the 2 s `Retry-After` of a `202`
 /// plus room for a slow network.
 pub const MIN_ABANDON_AFTER_SECS: u64 = 5;
@@ -66,8 +76,9 @@ pub struct Config {
     /// meanwhile, so this only delays the swap.
     pub prewarm_budget: Duration,
     /// Warm-up after a start: the same limit. Kept shorter than
-    /// `prewarm_budget`, because past `ready_cap` the replica serves visitors
-    /// while it warms, and both share its search sidecar.
+    /// `prewarm_budget`, because by default the replica isn't ready until it
+    /// finishes (`ready_cap`), and with a short cap it serves visitors while
+    /// it warms, on the same search sidecar.
     pub prewarm_startup_budget: Duration,
     /// Warm-up: after the examples, this many of the most frequent searches
     /// in the search log (0 turns it off).
@@ -79,7 +90,11 @@ pub struct Config {
     /// replica warms up.
     pub prewarm_retry_first: Duration,
     /// After a start, `/readyz` reports ready once the warm-up finishes or
-    /// this much time passes, whichever is first.
+    /// this much time passes, whichever is first. By default the startup
+    /// warm-up's budget plus `READY_CAP_MARGIN_SECS`, so a rollout keeps the
+    /// old revision serving until the new replica is warm, and only a hung
+    /// warm-up reaches it. Where no other replica serves meanwhile (an app
+    /// that scales to zero), a short cap lets the first visitor in sooner.
     pub ready_cap: Duration,
     pub refresh_interval: Duration,
     pub cache_bytes: u64,
@@ -118,6 +133,10 @@ pub struct Config {
     /// metrics are read and reported (`crate::searcher_metrics`); zero turns
     /// it off. Quickwit backend only.
     pub searcher_metrics_interval: Duration,
+    /// Whether searches cover American Stories' text on a version built
+    /// with it (`USNM_AMERICAN_STORIES_SEARCH`, 05 §5.5.4). Off, the API
+    /// searches LoC's text alone, whatever `current.json` says.
+    pub american_stories_search: bool,
     /// End-to-end tests only, and only with the memory backend: an aggregate
     /// search whose query contains this term waits this long before it runs,
     /// to stand in for a cold search on the real corpus.
@@ -135,6 +154,25 @@ impl Config {
         let num = |k: &str, default: u64| -> Result<u64, String> {
             var(k).map_or(Ok(default), |v| {
                 v.parse().map_err(|_| format!("{k} must be a whole number"))
+            })
+        };
+        // A duration in seconds, at most `MAX_WARM_UP_SECS` when set.
+        let span = |k: &str, default: Duration| -> Result<Duration, String> {
+            match var(k) {
+                None => Ok(default),
+                Some(_) => match num(k, 0)? {
+                    s if s > MAX_WARM_UP_SECS => {
+                        Err(format!("{k} must be at most {MAX_WARM_UP_SECS}"))
+                    }
+                    s => Ok(Duration::from_secs(s)),
+                },
+            }
+        };
+        let flag = |k: &str, default: bool| -> Result<bool, String> {
+            var(k).map_or(Ok(default), |v| match v.to_ascii_lowercase().as_str() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => Err(format!("{k} must be true or false")),
             })
         };
         let backend = match var("USNM_BACKEND").as_deref().unwrap_or("memory") {
@@ -170,6 +208,8 @@ impl Config {
                 Duration::from_millis(num("USNM_FIXTURE_SLOW_MS", 5000)?),
             )),
         };
+        let prewarm_startup_budget =
+            span("USNM_PREWARM_STARTUP_BUDGET_SECS", Duration::from_secs(300))?;
         Ok(Self {
             bind: var("USNM_BIND").unwrap_or_else(|| "0.0.0.0:8080".to_owned()),
             backend,
@@ -200,16 +240,16 @@ impl Config {
                 s => Duration::from_secs(s),
             },
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
-            prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 900)?),
-            prewarm_startup_budget: Duration::from_secs(num(
-                "USNM_PREWARM_STARTUP_BUDGET_SECS",
-                300,
-            )?),
+            prewarm_budget: span("USNM_PREWARM_BUDGET_SECS", Duration::from_secs(900))?,
+            prewarm_startup_budget,
             prewarm_top_searches: usize::try_from(num("USNM_PREWARM_TOP_SEARCHES", 20)?)
                 .map_err(|e| e.to_string())?,
             prewarm_log_days: num("USNM_PREWARM_LOG_DAYS", 28)?,
             prewarm_retry_first: Duration::from_secs(1),
-            ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 60)?),
+            ready_cap: span(
+                "USNM_READY_CAP_SECS",
+                prewarm_startup_budget + Duration::from_secs(READY_CAP_MARGIN_SECS),
+            )?,
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
             cache_bytes: num("USNM_CACHE_MB", 256)? * 1024 * 1024,
             max_cells: usnm_core::cube::MAX_CELLS,
@@ -232,6 +272,7 @@ impl Config {
             search_log_url: var("USNM_SEARCH_LOG_URL"),
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
             searcher_metrics_interval: Duration::from_secs(num("USNM_SEARCHER_METRICS_SECS", 60)?),
+            american_stories_search: flag("USNM_AMERICAN_STORIES_SEARCH", true)?,
             fixture_slow,
         })
     }
@@ -250,7 +291,8 @@ mod tests {
         assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
         assert_eq!(c.prewarm_budget, Duration::from_secs(900));
         assert_eq!(c.prewarm_startup_budget, Duration::from_secs(300));
-        assert_eq!(c.ready_cap, Duration::from_secs(60));
+        // Past the startup warm-up's budget, so a start is ready when it's warm.
+        assert_eq!(c.ready_cap, Duration::from_secs(360));
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.ingest_cron.is_none());
         assert!(c.search_log_url.is_none());
@@ -263,6 +305,19 @@ mod tests {
         assert_eq!(c.prewarm_log_days, 28);
         assert!(c.fixture_slow.is_none());
         assert_eq!(c.searcher_metrics_interval, Duration::from_secs(60));
+        assert!(c.american_stories_search);
+        let american = |v: &str| {
+            let v = v.to_owned();
+            Config::from_lookup(move |k| (k == "USNM_AMERICAN_STORIES_SEARCH").then(|| v.clone()))
+                .map(|c| c.american_stories_search)
+        };
+        assert_eq!(american("false"), Ok(false));
+        assert_eq!(american("FALSE"), Ok(false));
+        assert_eq!(american("true"), Ok(true));
+        // Empty, like unset, takes the default.
+        assert_eq!(american(""), Ok(true));
+        assert!(american("off").is_err());
+        assert!(american("0").is_err());
         let off = Config::from_lookup(|k| (k == "USNM_SEARCHER_METRICS_SECS").then(|| "0".into()))
             .unwrap();
         assert_eq!(off.searcher_metrics_interval, Duration::ZERO);
@@ -300,5 +355,63 @@ mod tests {
             _ => None,
         })
         .is_err());
+    }
+
+    #[test]
+    fn ready_cap_follows_the_startup_budget_unless_set() {
+        let cap = |vars: &[(&str, &str)]| {
+            let vars: Vec<(String, String)> = vars
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
+            Config::from_lookup(move |k| {
+                vars.iter()
+                    .find(|(name, _)| name == k)
+                    .map(|(_, v)| v.clone())
+            })
+            .map(|c| c.ready_cap)
+        };
+        let secs = Duration::from_secs;
+        assert_eq!(cap(&[]), Ok(secs(300 + READY_CAP_MARGIN_SECS)));
+        // A longer or shorter warm-up moves the default with it.
+        assert_eq!(
+            cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", "120")]),
+            Ok(secs(180))
+        );
+        assert_eq!(
+            cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", "0")]),
+            Ok(secs(60))
+        );
+        // Set, it wins (an app that scales to zero keeps a short cap).
+        assert_eq!(cap(&[("USNM_READY_CAP_SECS", "60")]), Ok(secs(60)));
+        assert_eq!(
+            cap(&[
+                ("USNM_READY_CAP_SECS", "60"),
+                ("USNM_PREWARM_STARTUP_BUDGET_SECS", "900"),
+            ]),
+            Ok(secs(60))
+        );
+        // Empty, like unset, takes the default.
+        assert_eq!(cap(&[("USNM_READY_CAP_SECS", "")]), Ok(secs(360)));
+        assert!(cap(&[("USNM_READY_CAP_SECS", "six")]).is_err());
+        // Values `Instant` arithmetic can't take are refused, not saturated.
+        assert!(cap(&[("USNM_READY_CAP_SECS", &u64::MAX.to_string())]).is_err());
+        assert!(cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", &u64::MAX.to_string())]).is_err());
+        let day = MAX_WARM_UP_SECS.to_string();
+        assert_eq!(
+            cap(&[("USNM_READY_CAP_SECS", &day)]),
+            Ok(secs(MAX_WARM_UP_SECS))
+        );
+        assert!(cap(&[("USNM_READY_CAP_SECS", &(MAX_WARM_UP_SECS + 1).to_string())]).is_err());
+        assert!(cap(&[(
+            "USNM_PREWARM_BUDGET_SECS",
+            &(MAX_WARM_UP_SECS + 1).to_string()
+        )])
+        .is_err());
+        // The largest budget still gets its margin.
+        assert_eq!(
+            cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", &day)]),
+            Ok(secs(MAX_WARM_UP_SECS + READY_CAP_MARGIN_SECS))
+        );
     }
 }

@@ -98,6 +98,12 @@ impl Loader {
     }
 }
 
+/// Apply the settings that change how a version is searched to a snapshot
+/// before it serves or warms up.
+fn configure(config: &Config, snapshot: &mut Snapshot) {
+    snapshot.refdata.american_stories_search = config.american_stories_search;
+}
+
 pub struct AppState {
     pub config: Config,
     pub snapshot: ArcSwap<Snapshot>,
@@ -130,7 +136,8 @@ impl AppState {
         Self::with_loader(config, Snapshot { refdata, backend }, None)
     }
 
-    pub fn with_loader(config: Config, snapshot: Snapshot, loader: Option<Loader>) -> Self {
+    pub fn with_loader(config: Config, mut snapshot: Snapshot, loader: Option<Loader>) -> Self {
+        configure(&config, &mut snapshot);
         let cache = Cache::builder()
             .max_capacity(config.cache_bytes)
             .weigher(|k: &String, v: &Arc<Vec<u8>>| {
@@ -300,10 +307,13 @@ async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> 
     if next.index_version == state.snapshot.load().refdata.version() {
         return Ok(false);
     }
-    let snapshot = Arc::new(loader.load(next).await?);
+    let mut snapshot = loader.load(next).await?;
+    configure(&state.config, &mut snapshot);
+    let snapshot = Arc::new(snapshot);
     prewarm::run(state, snapshot.clone(), prewarm::Trigger::Publish).await;
     tracing::info!(
         version = snapshot.refdata.version(),
+        american_stories = snapshot.refdata.searches_american_stories(),
         "publishing new index version"
     );
     state.snapshot.store(snapshot);
@@ -311,8 +321,11 @@ async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> 
 }
 
 /// Warm up the serving version after a start, reporting not ready until it
-/// finishes or `config.ready_cap` passes. Past the cap the replica becomes
-/// ready and the warm-up carries on within its own budget.
+/// finishes or `config.ready_cap` passes. The default cap is past the
+/// warm-up's budget, so in a rollout the old revision keeps the traffic
+/// until this replica is warm. Past the cap (a hung warm-up, or a short cap
+/// set where nothing else serves) the replica becomes ready and the warm-up
+/// carries on within its own budget.
 pub fn spawn_startup_warm_up(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     state.warming.store(true, Ordering::Relaxed);
     tokio::spawn(async move {

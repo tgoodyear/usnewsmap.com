@@ -96,7 +96,7 @@ pub async fn days(
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
-    let key = format!("{serving}|days|{canonical}");
+    let key = rd.search_key("days", &canonical, &req.query);
     let st = state.clone();
     let compute = async move {
         let rd = &snap.refdata;

@@ -114,6 +114,8 @@ Each API start, and each publish before it swaps the new version in, warms the c
 scripts/logs.sh prod warm-up 2d                # per run: examples warm, cached, computed, skipped, ms
 ```
 
+A start isn't ready until its run ends, so in a rollout the old revision serves meanwhile and the new one takes visitors only once it's warm (06 §6.6); every prod start from 3 to 10 October 2026 used its whole 5-minute budget (`Ms` about 300000), but a start that finds everything cached is ready in seconds (below). A start still running at the readiness cap (6 minutes in prod, 1 minute where the app scales to zero) logs `warm-up still running at the readiness cap; reporting ready` and serves visitors while it finishes.
+
 Read `Warm` against `Examples` first: equal means every example's search was in the in-process cache when the run ended (it is counted then, so evictions show). Then:
 
 - **A start that read everything:** `Cached` is the examples plus the logged searches, `Computed` and `Skipped` are 0, and `Ms` is a few seconds. This is the usual start once a version and release have been warmed once.
@@ -140,7 +142,7 @@ curl -s https://api.usnewsmap.com/v1/status | jq .titles.pipeline   # awaiting_s
 az containerapp job start -n "$JOB" -g "$RG"
 ```
 
-A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. The job-failed alert leaves this stop out; the severity 3 *ingest not progressing* alert fires if no execution follows within 3 hours, or if 3 stops in a row leave as many titles as the first. `scripts/logs.sh prod ingest-endings` lists each execution's ending, and the stop's `command failed` line carries `outcome: titles_left`. Once titles-sync finishes, the same execution builds the base. Watch it:
+A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. The job-failed alert leaves this stop out; the severity 3 _ingest not progressing_ alert fires if no execution follows within 3 hours, or if 3 stops in a row leave as many titles as the first. `scripts/logs.sh prod ingest-endings` lists each execution's ending, and the stop's `command failed` line carries `outcome: titles_left`. Once titles-sync finishes, the same execution builds the base. Watch it:
 
 ```sh
 scripts/logs.sh prod release-progress 6h    # docs sent, rate, memory (quickwit_rss_mb), merges
@@ -187,9 +189,19 @@ The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #
    ```
 
    With no year marked yet, the run fails at its start, before curation and titles-sync (`--american-stories (USNM_AMERICAN_STORIES) is set, but the curated store has no finished year of American Stories' text`). Its log has `American Stories' text` (years, parts) near the start, then `American Stories' text for the batch` per batch (pages, `text_mb`: what the release holds in memory for the batch), and `American Stories' text indexed` (documents with the text, and those with only it) before the merges.
+
 3. Check the result: `current.json` has `american_stories: 1`; `reference/<version>/manifest.json` has `built_from.american_stories` and `build.features.american_stories`, and `american_stories.json` lists the parts read. On the site, a word from an American Stories headline finds pages, and a hit whose match is only there shows its snippet from that text.
 
-Keep `USNM_AMERICAN_STORIES` set afterwards: weekly deltas then write the text for their pages too. Clearing it makes the next release publish a version without `american_stories`, so searches leave the text out (the quick way to switch it off, without a rebuild); setting it again rebuilds in full. To switch it off at once, without a release, publish a `current.json` without the key (05 §5.5.4).
+Keep `USNM_AMERICAN_STORIES` set afterwards: weekly deltas then write the text for their pages too. Clearing it makes the next release publish a version without `american_stories`, so searches leave the text out; setting it again rebuilds in full.
+
+To stop searching the text at once, without a release (to time cold searches without it, #251, or if it costs too much), switch the API's setting off, and on again the same way:
+
+```sh
+scripts/settings.sh prod USNM_AMERICAN_STORIES_SEARCH false   # on again: true, or "" for the default
+scripts/provision.sh prod
+```
+
+The API then searches LoC's text alone, whatever `current.json` says (05 §5.5.4): no `matched_in`, no American Stories snippets or badge, no `total.american_stories_only`. The indexes keep the text, so switching back needs no rebuild. The provision changes the API container's settings, so Container Apps starts a new replica: it loads the version, runs the startup warm-up and reports ready when it ends (about 5 minutes) or the readiness cap passes (6 minutes in prod, `USNM_READY_CAP_SECS`, 06 §6.6), and the old replica serves until then. Responses computed in one state are cached under keys of their own (`…|american_stories=off` when off), so the first switch off finds none cached: the warm-up computes what its budget allows and other searches start cold. Switching back on finds the responses persisted before (in Blob) still there. Check the result in the replica's start-up log line `American Stories' text search (USNM_AMERICAN_STORIES_SEARCH)` (`setting`, `in_version`, `searched`) or in `/v1/meta` (`"american_stories"`). Browsers may keep a response they fetched in the other state for up to a day (06 §6.5).
 
 ## Japanese OCR: mixed pages and English text
 
@@ -303,7 +315,7 @@ scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925
 scripts/ja-ocr/quality-rows.sh prod <execution>    # its "american stories" rows
 ```
 
-It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ja-ocr/solo.py` still keeps a second replica out, as for `jaocr.py mixed`). A failed run raises *Japanese OCR or audit job failed* (severity 3), not the ingest alert.
+It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ja-ocr/solo.py` still keeps a second replica out, as for `jaocr.py mixed`). A failed run raises _Japanese OCR or audit job failed_ (severity 3), not the ingest alert.
 
 ### Indexing only where American Stories differs (`--diff`, #251)
 
@@ -426,13 +438,13 @@ An experimental Quickwit cluster on Container Apps (#238, #239), measured on a 1
 
 **The steps.** Each `usnm-qwcluster` step logs one `qwcluster report` line and stores the full report in `qw-bench/runs/`.
 
-| Step | Command | What it measures |
-|---|---|---|
-| `sample` | `sample --name N --pct P [--american-stories]` | Takes `P`% of the published version's pages (SHA-256 of `doc_id`, mod 10,000, below `P` × 100, as the OCR audit samples) as the documents a full release builds, with duplicate copies settled as the release does. Reads every curated part once. |
-| `load` | `load --sample N --index I [--split-docs 3000] [--senders 4]` | Creates `I` from `pages-index.yaml` with `split_num_docs_target` set and one ingest shard per indexer, sends the sample, and times sending, all documents committed, merges settled, and sealed. Also records documents by node, splits and footer sizes, and retries on 429 and 503. |
-| `bench` | `bench --label L --index I --sample N --expect-searchers K` | The 13 benchmark searches of `bench-cold-searches.py` and `load-cold-searches.py`, run as `/v1/aggregate` runs them (`plan::aggregate`) against node 0: `first`, `warm`, then concurrency 1, 2, 4 and 10, each with its windows a day further back. Reports median, p90, throughput, and each node's leaf searches and splits. |
-| `members` | `members` | The cluster as node 0 sees it: members, addresses, generations, services. |
-| `dump` | `dump [--hold-secs 600]` | Prints every stored report, for a log stream when Log Analytics is over its cap. |
+| Step      | Command                                                       | What it measures                                                                                                                                                                                                                                                                                                               |
+| --------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sample`  | `sample --name N --pct P [--american-stories]`                | Takes `P`% of the published version's pages (SHA-256 of `doc_id`, mod 10,000, below `P` × 100, as the OCR audit samples) as the documents a full release builds, with duplicate copies settled as the release does. Reads every curated part once.                                                                             |
+| `load`    | `load --sample N --index I [--split-docs 3000] [--senders 4]` | Creates `I` from `pages-index.yaml` with `split_num_docs_target` set and one ingest shard per indexer, sends the sample, and times sending, all documents committed, merges settled, and sealed. Also records documents by node, splits and footer sizes, and retries on 429 and 503.                                          |
+| `bench`   | `bench --label L --index I --sample N --expect-searchers K`   | The 13 benchmark searches of `bench-cold-searches.py` and `load-cold-searches.py`, run as `/v1/aggregate` runs them (`plan::aggregate`) against node 0: `first`, `warm`, then concurrency 1, 2, 4 and 10, each with its windows a day further back. Reports median, p90, throughput, and each node's leaf searches and splits. |
+| `members` | `members`                                                     | The cluster as node 0 sees it: members, addresses, generations, services.                                                                                                                                                                                                                                                      |
+| `dump`    | `dump [--hold-secs 600]`                                      | Prints every stored report, for a log stream when Log Analytics is over its cap.                                                                                                                                                                                                                                               |
 
 **Split target.** At the production 30,000 pages, a 1% sample makes about 8 splits, too few for a root to spread over three nodes the way production spreads about 800. The loader's default of 3,000 makes about 80 splits of a tenth the size. Per-split fixed costs then weigh more than in production, so a second index at 30,000 (`--split-docs 30000`) brackets the result.
 
@@ -599,5 +611,3 @@ scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE ""; scripts/provision.sh dev   # 
 ```
 
 The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (and `cache`, `copy`) with ratios to blob, and its bench rows name each run's mode. Compare the `r2` runs: if `nfs` cuts the main runtime's busy seconds per search and the probe's warm-up seconds as `copy` was meant to show, the Blob path (HTTP, TLS, the Azure client) is the main runtime's cost and an NFS share is a way around it in production; if it barely moves them, the cost is in decoding what a split needs. The flame graphs show which functions those seconds went to.
-
-

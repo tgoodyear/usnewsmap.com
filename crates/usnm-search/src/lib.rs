@@ -418,8 +418,7 @@ pub fn mark_html(segments: &[(bool, &str)]) -> String {
 /// query's positive words and phrases, HTML-escaped with `<mark>`. Folding is
 /// one character for one, so the marks land on the text as printed. An exact
 /// phrase is marked as a whole; a NEAR phrase's words are marked one by one;
-/// a prefix term marks each printed word that starts with it, and a fuzzy
-/// term each printed word within its edit distance.
+/// a prefix, wildcard or fuzzy term marks each printed word it matches.
 pub fn ja_snippets(printed: &str, query: &Node) -> Vec<String> {
     const CONTEXT: usize = 40;
     let tokens = usnm_core::ja::tokenize(printed);
@@ -427,17 +426,10 @@ pub fn ja_snippets(printed: &str, query: &Node) -> Vec<String> {
     let mut stack = vec![query];
     while let Some(node) = stack.pop() {
         match node {
-            Node::Term(t) if t.prefix => {
-                for tok in tokens.iter().filter(|tok| tok.starts_with(&t.text)) {
-                    phrases.push(vec![tok.clone()]);
-                }
-            }
-            // Fuzzy (memory backend only): mark the printed words within the distance.
-            Node::Term(t) if t.fuzzy > 0 => {
-                for tok in tokens
-                    .iter()
-                    .filter(|tok| memory::levenshtein_within(&t.text, tok, usize::from(t.fuzzy)))
-                {
+            // Prefix, wildcard (a Latin word in a Japanese query) and fuzzy
+            // (memory backend only) terms: mark each printed word they match.
+            Node::Term(t) if t.prefix || t.wildcard || t.fuzzy > 0 => {
+                for tok in tokens.iter().filter(|tok| memory::term_matches(t, tok)) {
                     phrases.push(vec![tok.clone()]);
                 }
             }

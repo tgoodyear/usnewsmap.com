@@ -28,7 +28,12 @@ describe("newspapers (#121)", () => {
   });
 
   it("lists the first 25, shows all on request, and limits the search to one paper", () => {
-    const rows = Array.from({ length: 30 }, (_, i) => ({ lccn: `sn${i}`, title: `Paper ${i}`, place: "Omaha, NE", hits: 30 - i }));
+    const rows = Array.from({ length: 30 }, (_, i) => ({
+      lccn: `sn${i}`,
+      title: `Paper ${i}`,
+      place: "Omaha, NE",
+      hits: 30 - i,
+    }));
     const onOnly = vi.fn();
     render(<NewspaperTable rows={rows} total={812} onOnly={onOnly} filename="x.csv" />);
     expect(screen.getByText(/812 newspapers have matching pages/)).toBeTruthy();

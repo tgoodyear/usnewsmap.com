@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  within,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ByLanguage, StatePages } from "../api/types";
 import { LanguagesSection, StatesSection } from "./PagesTables";
 
@@ -62,23 +56,15 @@ describe("StatesSection", () => {
     });
     const details = table.closest("details")!;
     expect(details.open).toBe(false);
-    expect(
-      screen
-        .getByText(/4 states and territories have pages/)
-        .closest("details"),
-    ).toBeNull();
+    expect(screen.getByText(/4 states and territories have pages/).closest("details")).toBeNull();
     fireEvent.click(screen.getByText("Show the table of pages by state"));
     expect(details.open).toBe(true);
   });
 
   it("lists states by pages with separators, shares and a total", () => {
     render(<StatesSection rows={STATES} pages={15003} />);
-    expect(
-      screen.getByRole("heading", { level: 3, name: "Pages by state" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/4 states and territories have pages/),
-    ).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "Pages by state" })).toBeTruthy();
+    expect(screen.getByText(/4 states and territories have pages/)).toBeTruthy();
     const table = screen.getByRole("table", {
       name: "Published pages by state",
     });
@@ -89,20 +75,12 @@ describe("StatesSection", () => {
       ["District of Columbia", "1", "1", "3", "under 0.1%"],
     ]);
     // Row headers name each row; column headers carry the sort.
-    expect(within(table).getAllByRole("rowheader")[0]!.textContent).toBe(
-      "Illinois",
-    );
+    expect(within(table).getAllByRole("rowheader")[0]!.textContent).toBe("Illinois");
     const pages = within(table).getByRole("columnheader", { name: "Pages" });
     expect(pages.getAttribute("aria-sort")).toBe("descending");
     expect(pages.getAttribute("scope")).toBe("col");
     const foot = table.querySelector("tfoot tr")!;
-    expect([...foot.children].map((c) => c.textContent)).toEqual([
-      "Total",
-      "5",
-      "6",
-      "15,003",
-      "100.0%",
-    ]);
+    expect([...foot.children].map((c) => c.textContent)).toEqual(["Total", "5", "6", "15,003", "100.0%"]);
   });
 
   it("sorts by any column, alphabetically or by number", () => {
@@ -115,11 +93,7 @@ describe("StatesSection", () => {
       "New York",
       "Virgin Islands",
     ]);
-    expect(
-      within(table)
-        .getByRole("columnheader", { name: "State" })
-        .getAttribute("aria-sort"),
-    ).toBe("ascending");
+    expect(within(table).getByRole("columnheader", { name: "State" }).getAttribute("aria-sort")).toBe("ascending");
     fireEvent.click(within(table).getByRole("button", { name: "State" }));
     expect(bodyRows(table)[0]![0]).toBe("Virgin Islands");
     // Numbers sort largest first on the first click; ties go alphabetically.
@@ -153,9 +127,7 @@ const LANGUAGES: ByLanguage = {
 describe("LanguagesSection", () => {
   it("keeps the table collapsed until opened", () => {
     render(<LanguagesSection data={LANGUAGES} />);
-    const details = screen
-      .getByRole("table", { name: "Published pages by language" })
-      .closest("details")!;
+    const details = screen.getByRole("table", { name: "Published pages by language" }).closest("details")!;
     expect(details.open).toBe(false);
     fireEvent.click(screen.getByText("Show the table of pages by language"));
     expect(details.open).toBe(true);
@@ -163,13 +135,10 @@ describe("LanguagesSection", () => {
 
   it("counts a bilingual newspaper in each language and says so", () => {
     render(<LanguagesSection data={LANGUAGES} />);
-    expect(
-      screen.getByRole("heading", { level: 3, name: "Pages by language" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/1 newspaper lists more than one language \(40 pages\)/)
-        .textContent,
-    ).toContain("the rows add up to more than all published pages");
+    expect(screen.getByRole("heading", { level: 3, name: "Pages by language" })).toBeTruthy();
+    expect(screen.getByText(/1 newspaper lists more than one language \(40 pages\)/).textContent).toContain(
+      "the rows add up to more than all published pages",
+    );
     const table = screen.getByRole("table", {
       name: "Published pages by language",
     });
@@ -189,9 +158,7 @@ describe("LanguagesSection", () => {
       rows: LANGUAGES.rows.map((r) => ({ ...r, pages: null, percent: null })),
     };
     render(<LanguagesSection data={old} />);
-    expect(screen.getByRole("note").textContent).toContain(
-      "Page counts appear once a newer search index goes live",
-    );
+    expect(screen.getByRole("note").textContent).toContain("Page counts appear once a newer search index goes live");
     const table = screen.getByRole("table", {
       name: "Published newspapers by language",
     });
@@ -200,11 +167,9 @@ describe("LanguagesSection", () => {
         .getAllByRole("columnheader")
         .map((h) => h.textContent?.replace(/ [↑↓]$/, "")),
     ).toEqual(["Language", "Newspapers"]);
-    expect(
-      within(table)
-        .getByRole("columnheader", { name: "Newspapers" })
-        .getAttribute("aria-sort"),
-    ).toBe("descending");
+    expect(within(table).getByRole("columnheader", { name: "Newspapers" }).getAttribute("aria-sort")).toBe(
+      "descending",
+    );
     expect(bodyRows(table)[0]).toEqual(["English", "3"]);
   });
 
@@ -227,10 +192,6 @@ describe("LanguagesSection", () => {
         .getByRole("columnheader", { name: /Newspapers/ })
         .getAttribute("aria-sort"),
     ).toBe("descending");
-    expect(bodyRows(table).map((r) => r[0])).toEqual([
-      "English",
-      "German",
-      "Not recorded",
-    ]);
+    expect(bodyRows(table).map((r) => r[0])).toEqual(["English", "German", "Not recorded"]);
   });
 });

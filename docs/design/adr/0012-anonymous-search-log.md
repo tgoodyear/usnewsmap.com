@@ -26,14 +26,14 @@ Two things make a naive log identifying on a small site:
 
 ## Alternatives
 
-| Option | Why not |
-|--------|---------|
-| Hour buckets | Joinable with `AppPageViews` time and location at this site's traffic |
-| Append straight to the permanent day file | The file order and the storage write logs would time each batch to within the flush interval, and retrying an append whose response was lost stores it twice |
-| One staging append blob per day | Retries duplicate records, and the day file could be written while another replica is still appending |
-| Hold a whole day in memory and write it once | Every restart, deploy and scale-in would flush early anyway, and a crash would lose up to a day |
-| Daily aggregates with k ≥ 5 only (the old plan) | Rare searches, the ones that show what people look for, would never be kept |
-| Application Insights custom events | The same store as page views, with their timestamps, and 90-day retention |
+| Option                                          | Why not                                                                                                                                                      |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Hour buckets                                    | Joinable with `AppPageViews` time and location at this site's traffic                                                                                        |
+| Append straight to the permanent day file       | The file order and the storage write logs would time each batch to within the flush interval, and retrying an append whose response was lost stores it twice |
+| One staging append blob per day                 | Retries duplicate records, and the day file could be written while another replica is still appending                                                        |
+| Hold a whole day in memory and write it once    | Every restart, deploy and scale-in would flush early anyway, and a crash would lose up to a day                                                              |
+| Daily aggregates with k ≥ 5 only (the old plan) | Rare searches, the ones that show what people look for, would never be kept                                                                                  |
+| Application Insights custom events              | The same store as page views, with their timestamps, and 90-day retention                                                                                    |
 
 ## Consequences
 

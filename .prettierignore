@@ -1,0 +1,23 @@
+# Prettier formats web/ (its code, styles, HTML and JSON) and Markdown
+# anywhere in the repo but docs/reports/ (#262). Everything else keeps the layout its own tools
+# give it: data JSON (catalog/, ops/, fixtures/, infra/workbooks/) is laid out
+# and key-sorted by its check tools, and YAML, Bicep, Rust and Python are not
+# Prettier's.
+*
+!*/
+!*.md
+!/web/**
+
+# Within web/: npm's lockfile, and what builds and test runs write.
+/web/package-lock.json
+/web/dist/
+/web/test-results/
+/web/playwright-report/
+# The example searches keep each example's view on one line, past 120
+# characters for a few. The API compiles the file in and its tests check it.
+/web/src/examples.json
+**/node_modules/
+
+# Reports: pandoc builds each one's PDF from its Markdown, and sizes a pipe
+# table's columns by the dashes in its separator row, which Prettier rewrites.
+/docs/reports/

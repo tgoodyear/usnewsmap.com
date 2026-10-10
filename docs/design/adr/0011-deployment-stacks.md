@@ -29,12 +29,12 @@ Azure **deployment stacks** track the resources a template deploys. They can del
 
 ## Alternatives
 
-| Option | Why not |
-|---|---|
-| azd with `alpha.deployment.stacks` | Alpha. The flag is per machine, not in the repository. `actionOnUnmanage` is documented for `azd down`, not for updates |
-| Incremental deployments plus cleanup steps in bootstrap | Every removal needs its own hand-written step, and nothing prevents manual deletes |
-| Complete-mode deployments | Resource-group scope only (this template is subscription scope), and no delete protection |
-| Resource locks | Protect against deletes, but don't remove resources that left the template, and block the template's own removals too |
+| Option                                                  | Why not                                                                                                                 |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| azd with `alpha.deployment.stacks`                      | Alpha. The flag is per machine, not in the repository. `actionOnUnmanage` is documented for `azd down`, not for updates |
+| Incremental deployments plus cleanup steps in bootstrap | Every removal needs its own hand-written step, and nothing prevents manual deletes                                      |
+| Complete-mode deployments                               | Resource-group scope only (this template is subscription scope), and no delete protection                               |
+| Resource locks                                          | Protect against deletes, but don't remove resources that left the template, and block the template's own removals too   |
 
 ## Consequences
 

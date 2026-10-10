@@ -12,9 +12,9 @@ The change or the experiment, in the order it happened. Decisions and the altern
 
 ## What we measured
 
-| What | Before | After | How |
-|------|--------|-------|-----|
-| … | … | … | the script, command or endpoint, and the environment (cold or warm, the job's 2 vCPU, a laptop) |
+| What | Before | After | How                                                                                             |
+| ---- | ------ | ----- | ----------------------------------------------------------------------------------------------- |
+| …    | …      | …     | the script, command or endpoint, and the environment (cold or warm, the job's 2 vCPU, a laptop) |
 
 Say what the numbers don't show as well as what they do.
 

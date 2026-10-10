@@ -41,7 +41,16 @@ describe("Tooltip", () => {
     const note = screen.getByRole("tooltip", { hidden: true });
     const text = note.parentElement!;
     let rect = { left: 100, bottom: 50 };
-    text.getBoundingClientRect = () => ({ ...rect, top: rect.bottom - 20, right: rect.left + 80, width: 80, height: 20, x: rect.left, y: rect.bottom - 20, toJSON: () => ({}) });
+    text.getBoundingClientRect = () => ({
+      ...rect,
+      top: rect.bottom - 20,
+      right: rect.left + 80,
+      width: 80,
+      height: 20,
+      x: rect.left,
+      y: rect.bottom - 20,
+      toJSON: () => ({}),
+    });
     window.innerWidth = 1024;
     fireEvent.focus(text);
     expect([note.style.left, note.style.top]).toEqual(["100px", "56px"]);

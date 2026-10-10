@@ -23,16 +23,17 @@ The maintainer made the rule foundational: **every authentication is by an Entra
    - Every grant is an Azure RBAC role assignment (or a Cosmos data-plane role assignment), scoped as narrowly as Azure allows.
 2. **No shared secrets of any kind.** That means no account keys, no connection strings with keys, no SAS (account, service or user-delegation), no workspace keys or instrumentation-key ingestion, no registry admin user or repository tokens, and no stored secrets in GitHub. If a service offers a switch to turn local auth off, it's off:
 
-   | Service | Setting |
-   |---|---|
-   | Storage (data, tiles) | `allowSharedKeyAccess: false` |
-   | Cosmos DB | `disableLocalAuth: true`, `disableKeyBasedMetadataWriteAccess: true` |
-   | Log Analytics | `features.disableLocalAuth: true` |
-   | Application Insights | `DisableLocalAuth: true` |
-   | Container Registry | `adminUserEnabled: false`, no anonymous pull |
+   | Service                    | Setting                                                                                          |
+   | -------------------------- | ------------------------------------------------------------------------------------------------ |
+   | Storage (data, tiles)      | `allowSharedKeyAccess: false`                                                                    |
+   | Cosmos DB                  | `disableLocalAuth: true`, `disableKeyBasedMetadataWriteAccess: true`                             |
+   | Log Analytics              | `features.disableLocalAuth: true`                                                                |
+   | Application Insights       | `DisableLocalAuth: true`                                                                         |
+   | Container Registry         | `adminUserEnabled: false`, no anonymous pull                                                     |
    | Container Apps environment | logs through a diagnostic setting (`appLogsConfiguration: azure-monitor`), not the workspace key |
 
    Short-lived tokens that Entra issues for a principal count as Entra authentication, because they carry that principal's RBAC. These are OAuth access tokens, and the registry refresh token that `az acr login` exchanges for an Entra token.
+
 3. **Enforced, not just configured.**
    - Azure Policy **denies** each "local auth on" setting above on the project resource groups (`infra/guardrails.bicep`).
    - CI fails any change that reintroduces a key pattern (`scripts/ci/no-shared-keys.sh`, in the `infra` job).
@@ -47,6 +48,7 @@ Static Web Apps has no Entra-only deploy path: every deploy path ends in the sit
 The Quickwit writer in `caj-usnm-ingest` needs more disk than a Container Apps replica has to merge an index into large splits (08 §8.4). Container Apps mounts Azure Files in two ways: SMB, which needs the account key in the environment's storage definition, and NFS, which has no authentication at all and is authorized by network. There is no Entra-authorized volume. The share is NFS, so it breaks rule 1 (every caller an Entra principal) without breaking rule 2 (no shared secrets): there is no key to leak, and shared key access is off on its account.
 
 What reaches it, and what that allows:
+
 - Only the VNet, through `pe-usnm-file`; public network access is disabled. The Container Apps environment has one subnet, so the API app's replicas can reach the share as well as the ingest job. NFS trusts the Unix ids a client presents, and root squash is off (the job's init container runs as root to hand a directory to the pipeline's user), so a compromised replica in the environment could read or change the writer's files.
 - The share holds only the writer's working data during a release: the write-ahead log, splits being built and merges, all from public LoC text. No secrets, and the writer removes the previous run's data when it starts.
 - The worst case is a compromised API replica changing an index while a release builds it. The release still checks the document count before it publishes, but not the content.

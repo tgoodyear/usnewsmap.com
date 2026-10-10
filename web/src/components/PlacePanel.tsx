@@ -1,9 +1,10 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { api, ApiError, type SearchParams } from "../api/client";
+import { ApiError, type SearchParams } from "../api/client";
 import type { HitItem, HitSort } from "../api/types";
 import { AMERICAN_STORIES_BADGE, americanStoriesNote } from "../lib/matchSource";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
+import { placeHitsQuery } from "./placeHits";
 import { skewSentence, type SkewInfo } from "../lib/skewText";
 
 interface Props {
@@ -32,13 +33,20 @@ const OCR_NOTE =
   "The Library of Congress has no searchable text for this page. We read it ourselves with NDLOCR-Lite, text-recognition software from Japan's National Diet Library. Expect some misread characters.";
 
 /** Place drill-down (F-03): pages by date or by mentions, with snippets and LoC links. */
-export function PlacePanel({ params, version, placeId, placeName, sort, onSort, windowHits, note, synthetic, onClose }: Props) {
-  const query = useInfiniteQuery({
-    queryKey: ["hits", version, params, placeId, sort],
-    queryFn: ({ pageParam, signal }) => api.hits(params, version, placeId, sort, pageParam, signal),
-    initialPageParam: null as string | null,
-    getNextPageParam: (last) => last.next_cursor,
-  });
+export function PlacePanel({
+  params,
+  version,
+  placeId,
+  placeName,
+  sort,
+  onSort,
+  windowHits,
+  note,
+  synthetic,
+  onClose,
+}: Props) {
+  // The same query as the prefetch after a search (#265): a prefetched list shows at once.
+  const query = useInfiniteQuery(placeHitsQuery(params, version, placeId, sort));
   const first = query.data?.pages[0];
   const items = query.data?.pages.flatMap((p) => p.items) ?? [];
   return (
@@ -64,7 +72,9 @@ export function PlacePanel({ params, version, placeId, placeName, sort, onSort, 
       </div>
       {query.error && (
         <p role="alert" className="notice notice--error">
-          {query.error instanceof ApiError ? (query.error.problem.hint ?? query.error.message) : "Could not load pages."}
+          {query.error instanceof ApiError
+            ? (query.error.problem.hint ?? query.error.message)
+            : "Could not load pages."}
         </p>
       )}
       <ol className="hits">
@@ -121,10 +131,12 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
       ))}
       {synthetic ? (
         <p className="hit__demo">Demo page: not a real Library of Congress page.</p>
-      ) : h.links.viewer && (
-        <a href={h.links.viewer} target="_blank" rel="noopener noreferrer">
-          {h.ocr ? "View the page image at the Library of Congress" : "View page at the Library of Congress"}
-        </a>
+      ) : (
+        h.links.viewer && (
+          <a href={h.links.viewer} target="_blank" rel="noopener noreferrer">
+            {h.ocr ? "View the page image at the Library of Congress" : "View page at the Library of Congress"}
+          </a>
+        )
       )}
     </li>
   );

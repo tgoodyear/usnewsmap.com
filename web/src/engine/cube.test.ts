@@ -4,7 +4,7 @@ import { alignCube, prefixSums, relative, windowQuantile, windowValues } from ".
 // A deterministic random sparse cube and a brute-force oracle.
 function randomCube(places: number, buckets: number, seed: number) {
   let s = seed;
-  const rnd = () => ((s = (s * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+  const rnd = () => (s = (s * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
   const cube = { p: [] as number[], b: [] as number[], h: [] as number[] };
   const dense = Array.from({ length: places }, () => new Array<number>(buckets).fill(0));
   for (let p = 0; p < places; p++)
@@ -82,7 +82,7 @@ describe("quantiles (#127)", () => {
 
   it("matches a brute-force median on random cubes", () => {
     let seed = 7;
-    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+    const rand = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
     for (let trial = 0; trial < 50; trial++) {
       const buckets = 1 + Math.floor(rand() * 20);
       const counts = Array.from({ length: buckets }, () => (rand() < 0.5 ? 0 : Math.floor(rand() * 5)));

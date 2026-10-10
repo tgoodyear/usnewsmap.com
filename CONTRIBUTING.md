@@ -6,7 +6,7 @@ The [design documents](docs/design/README.md) explain how the system works and w
 
 ## Run the checks
 
-CI runs the Rust checks when a pull request touches Rust code and the web checks when it touches the web app (`scripts/ci/changes.sh`). A pull request that only changes documentation (Markdown anywhere, or anything under `docs/`) runs none of this workflow's checks beyond the `changes` job itself; GitHub's CodeQL scan, configured in the repository settings, runs on every pull request. Run the ones that apply before you push:
+CI runs the Rust checks when a pull request touches Rust code and the web checks when it touches the web app (`scripts/ci/changes.sh`). A pull request that only changes documentation (Markdown anywhere, or anything under `docs/`) runs none of this workflow's checks beyond the `changes` job itself and, when it changes Markdown, the format check (`npm run format:check`); GitHub's CodeQL scan, configured in the repository settings, runs on every pull request. Run the ones that apply before you push:
 
 ```sh
 cargo fmt --all --check
@@ -17,6 +17,7 @@ cd web
 npm ci
 npm audit --audit-level=high
 npm run lint
+npm run format:check
 npm run typecheck
 npm test
 npm run build
@@ -27,12 +28,14 @@ The infrastructure checks, and the scan for shared keys, run on every pull reque
 ```sh
 scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh
+scripts/ci/check-workbooks.py
+python3 -m unittest scripts/ci/test_check_workbooks.py
 bicep build infra/main.bicep --stdout > /dev/null
 bicep build infra/guardrails.bicep --stdout > /dev/null
 AZURE_ENV_NAME=ci bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
-`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
+`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
 ## Rules
 

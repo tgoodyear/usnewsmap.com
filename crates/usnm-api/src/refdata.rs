@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use usnm_core::query::Node;
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
 use usnm_state::state::{
@@ -18,6 +19,11 @@ use usnm_state::state::{
     LANGUAGE_BASELINES_FILE, TITLE_PAGES_FILE,
 };
 use usnm_store::{is_safe_segment, ObjectStore};
+
+/// Appended to a search's cache key when `USNM_AMERICAN_STORIES_SEARCH`
+/// leaves out the version's American Stories text ([`RefData::search_key`]).
+/// A canonical query is form-encoded, so it never contains `|`.
+pub const AMERICAN_STORIES_OFF_KEY: &str = "|american_stories=off";
 
 /// The reference files the API loads from each snapshot.
 const FILES: [&str; 3] = ["places.json", "titles.json", "baselines.json"];
@@ -121,6 +127,10 @@ pub struct RefData {
     /// text, not LoC's (#203), from the snapshot's `ja_latin.json`: their
     /// hits are marked as our OCR. Empty for snapshots without it.
     pub ja_latin: HashMap<String, JaLatinPage>,
+    /// Whether searches cover American Stories' text when the version has
+    /// it (`USNM_AMERICAN_STORIES_SEARCH`, 05 §5.5.4). True when loaded; the
+    /// API sets it from its configuration before the snapshot serves.
+    pub american_stories_search: bool,
 }
 
 /// One copy of a page to hide: the document `doc_id` from `batch`.
@@ -299,6 +309,7 @@ impl RefData {
             duplicate_pages: None,
             hidden: Vec::new(),
             ja_latin: HashMap::new(),
+            american_stories_search: true,
         })
     }
 
@@ -306,14 +317,49 @@ impl RefData {
         &self.current.index_version
     }
 
+    /// Whether the version was built with American Stories' text at this
+    /// API's version: only such a version has `text_as` (05 §5.5.4).
+    pub fn has_american_stories(&self) -> bool {
+        self.current.american_stories == Some(usnm_core::american_stories::VERSION)
+    }
+
+    /// Whether searches cover American Stories' text: the version has it and
+    /// `USNM_AMERICAN_STORIES_SEARCH` doesn't switch it off.
+    pub fn searches_american_stories(&self) -> bool {
+        self.has_american_stories() && self.american_stories_search
+    }
+
+    /// Whether the setting leaves out the American Stories' text the version
+    /// has. Searches then answer as if it had none, and their cache keys say
+    /// so ([`Self::search_key`]).
+    pub fn american_stories_switched_off(&self) -> bool {
+        self.has_american_stories() && !self.american_stories_search
+    }
+
+    /// The response caches' key (in process and, hashed, in Blob, 06 §6.5)
+    /// for a search on `endpoint` for `query`, whose canonical parameters
+    /// are `canonical`: `{index_version}|{endpoint}|{canonical}`, with
+    /// [`AMERICAN_STORIES_OFF_KEY`] appended when American Stories' text is
+    /// switched off and `query` searches the main indexes, so responses
+    /// computed without it and with it never stand in for each other. A
+    /// Japanese query searches the Japanese pages, which have no American
+    /// Stories text, so its key never changes. With the setting on the key
+    /// is the same as before the setting existed, and responses cached then
+    /// still serve.
+    pub fn search_key(&self, endpoint: &str, canonical: &str, query: &Node) -> String {
+        let mut key = format!("{}|{endpoint}|{canonical}", self.version());
+        if self.american_stories_switched_off() && !usnm_core::query::is_japanese(query) {
+            key.push_str(AMERICAN_STORIES_OFF_KEY);
+        }
+        key
+    }
+
     pub fn index_set(&self) -> IndexSet {
         // Phrases search `text_cg` only when every index has it at this
         // API's version: an older version, or one built with another word
         // list, keeps them in `text` (05 §5.5.3).
         let grams = self.current.common_grams == Some(usnm_core::common_grams::VERSION);
-        // American Stories' text likewise: only a version built with it at
-        // this API's version has `text_as` (05 §5.5.4).
-        let american = self.current.american_stories == Some(usnm_core::american_stories::VERSION);
+        let american = self.searches_american_stories();
         // Date-limited searches name their decades, so Quickwit skips the
         // other decades' splits, only on a version laid out with this API's
         // decades (05 §5.5.5): another version has no `decade` field, or

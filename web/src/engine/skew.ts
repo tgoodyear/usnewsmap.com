@@ -321,8 +321,12 @@ export function fitPrior(counts: Counts[], phiIn: number): Prior {
   let lnAlpha = 0;
   for (let k = 0; k < 30; k++) {
     const before = [lnAlpha, lnMean] as const;
-    lnAlpha = goldenMax(Math.log(MIN_ALPHA), Math.log(MAX_ALPHA), (a) => nbLogLikelihood(o, e, Math.exp(a), Math.exp(lnMean)));
-    lnMean = goldenMax(Math.log(MIN_MEAN), Math.log(MAX_MEAN), (m) => nbLogLikelihood(o, e, Math.exp(lnAlpha), Math.exp(m)));
+    lnAlpha = goldenMax(Math.log(MIN_ALPHA), Math.log(MAX_ALPHA), (a) =>
+      nbLogLikelihood(o, e, Math.exp(a), Math.exp(lnMean)),
+    );
+    lnMean = goldenMax(Math.log(MIN_MEAN), Math.log(MAX_MEAN), (m) =>
+      nbLogLikelihood(o, e, Math.exp(lnAlpha), Math.exp(m)),
+    );
     if (Math.abs(lnAlpha - before[0]) < 1e-5 && Math.abs(lnMean - before[1]) < 1e-7) break;
   }
   const alpha = Math.min(Math.max(Math.exp(lnAlpha), MIN_ALPHA), MAX_ALPHA);
@@ -449,8 +453,8 @@ export function scoreGroups(
 // Special functions (the same algorithms and constants as the Rust).
 
 const LANCZOS = [
-  0.9999999999998099, 676.5203681218851, -1259.1392167224028, 771.3234287776531, -176.6150291621406,
-  12.507343278686905, -0.13857109526572012, 9.984369578019572e-6, 1.5056327351493116e-7,
+  0.9999999999998099, 676.5203681218851, -1259.1392167224028, 771.3234287776531, -176.6150291621406, 12.507343278686905,
+  -0.13857109526572012, 9.984369578019572e-6, 1.5056327351493116e-7,
 ];
 
 /** ln Gamma(x) for x > 0 (Lanczos, g = 7, n = 9). */
@@ -500,9 +504,15 @@ export function gammaP(a: number, x: number): number {
   return Math.min(Math.max(1 - front * h, 0), 1);
 }
 
-const NA = [-3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2, 1.38357751867269e2, -3.066479806614716e1, 2.506628277459239];
+const NA = [
+  -3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2, 1.38357751867269e2, -3.066479806614716e1,
+  2.506628277459239,
+];
 const NB = [-5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2, 6.680131188771972e1, -1.328068155288572e1];
-const NC = [-7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+const NC = [
+  -7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838, -2.549732539343734, 4.374664141464968,
+  2.938163982698783,
+];
 const ND = [7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996, 3.754408661907416];
 
 /** Inverse of the standard normal CDF (Acklam's rational approximation). */
