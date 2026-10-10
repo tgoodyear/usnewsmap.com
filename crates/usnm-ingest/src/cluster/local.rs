@@ -11,8 +11,8 @@
 //! only that index, so a node started on `file://{dir}` serves it.
 //!
 //! Splits are written to `{name}.part` and renamed when complete, so a
-//! container that restarts on the same replica (an `EmptyDir` survives it)
-//! skips the splits it already has.
+//! start that finds them there (on an NFS share, mode `nfs`, they outlive
+//! the replica) skips the splits it already has.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -22,6 +22,10 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use usnm_store::ObjectStore;
+
+/// Where the local-disk test's `nfs` mode mounts its NFS Azure Files share
+/// (infra/modules/searchcluster.bicep); a copy under it is that mode's.
+pub const NFS_MOUNT: &str = "/mnt/qwsearch";
 
 /// The per-index metastore file (`quickwit-metastore`'s `METASTORE_FILE_NAME`).
 pub const METASTORE_FILE: &str = "metastore.json";

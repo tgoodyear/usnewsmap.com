@@ -177,7 +177,7 @@ def assemble(reports):
             roots[label] = {"version": v and v.group(1), "commit": c and c.group(1),
                             "num_cpus": n and int(n.group(1))}
     out = []
-    for kind, r in reports:
+    for kind, r in dedupe(reports):
         if kind in ("bench_pass", "bench_probe", "bench_profile", "bench_root"):
             continue
         if kind == "bench":
@@ -199,6 +199,24 @@ def assemble(reports):
                                            if "searcher" in m.get("services", [])]))
         out.append((kind, r))
     return out
+
+
+def dedupe(reports):
+    """One report per (kind, name): a `dump` logs every stored report again,
+    so a run can appear twice. The later wins, unless it was cut short and
+    the earlier wasn't; order is kept by first appearance."""
+    def name(kind, r):
+        n = r.get("label") or r.get("index_id") or r.get("name") or ""
+        return f"{n}#{r.get('n')}" if kind == "bench_pass" else n
+    best, order = {}, []
+    for kind, r in reports:
+        key = (kind, name(kind, r))
+        if key not in best:
+            order.append(key)
+            best[key] = r
+        elif not (r.get("truncated") and not best[key].get("truncated")):
+            best[key] = r
+    return [(k[0], best[k]) for k in order]
 
 
 def version_of(b):
@@ -433,8 +451,11 @@ def pass_load(b, p, node, c):
     wall = p.get("wall_secs") or 0
     sampled = p.get("sampled", {}).get(node, {})
     version = version_of(b)
-    if b.get("variant") and version != "-":
-        version = f"{version} {b['variant']}"
+    # The mode the root was found in (bench `mode`, since #251's E4 mix-up),
+    # else the one the run was meant for.
+    label = b.get("mode") or b.get("variant")
+    if label and version != "-":
+        version = f"{version} {label}"
     return {
         "version": version,
         "busy_per_search": busy / n if n else None,

@@ -350,6 +350,46 @@ async fn sample_pools(
     }
 }
 
+/// How a searcher reads its splits, from its node config (`GET
+/// /api/v1/config`): `copy` or `nfs` (a `file://` metastore, on the NFS
+/// mount for `nfs`), `cache` (a split cache), `blob` otherwise. In October
+/// 2026 the local-disk test's `cache` and `copy` runs were served by the
+/// `blob` replica: the new revision found no room on the one-node E4
+/// profile and the old one kept the traffic, unnoticed (#251). A run whose
+/// `--variant` names a mode now checks it first.
+pub fn node_mode(config: &serde_json::Value) -> Option<&'static str> {
+    let metastore = config["metastore_uri"].as_str()?;
+    Some(if metastore.starts_with("file://") {
+        if metastore.contains(super::local::NFS_MOUNT) {
+            "nfs"
+        } else {
+            "copy"
+        }
+    } else if config["searcher_config"]["split_cache"].is_object() {
+        "cache"
+    } else {
+        "blob"
+    })
+}
+
+/// Modes `--variant` can name and [`node_mode`] tells apart.
+pub const MODES: &[&str] = &["blob", "cache", "copy", "nfs"];
+
+async fn root_mode(http: &reqwest::Client, root: &str) -> Option<&'static str> {
+    let v: serde_json::Value = http
+        .get(format!("{root}/api/v1/config"))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    node_mode(&v)
+}
+
 /// The root's Quickwit build (`GET /api/v1/version`), for telling the
 /// version comparison's runs apart (#251).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -476,6 +516,8 @@ pub struct Report {
     /// The root's Quickwit build; `None` if it didn't say.
     pub quickwit: Option<QuickwitBuild>,
     pub variant: Option<String>,
+    /// How the root reads its splits ([`node_mode`]).
+    pub mode: Option<String>,
     pub members: Vec<Member>,
     pub searchers: usize,
     pub started_at: DateTime<Utc>,
@@ -678,7 +720,16 @@ pub async fn run(label: &str, spec: &Spec) -> anyhow::Result<Report> {
         "bench start"
     );
     let quickwit = quickwit_build(&http, &spec.root).await;
-    tracing::info!(label, quickwit = ?quickwit, "bench root");
+    let mode = root_mode(&http, &spec.root).await;
+    tracing::info!(label, quickwit = ?quickwit, mode = ?mode, "bench root");
+    if let Some(v) = spec.variant.as_deref().filter(|v| MODES.contains(v)) {
+        if mode != Some(v) {
+            bail!(
+                "--variant {v}, but the root reads its splits as {}: is the new revision running? (az containerapp revision list)",
+                mode.unwrap_or("unknown")
+            );
+        }
+    }
     let started_at = Utc::now();
     let split_cache = match spec.wait_split_cache {
         Some(limit) => Some(wait_split_cache(&http, spec, &members_now, limit).await?),
@@ -711,6 +762,7 @@ pub async fn run(label: &str, spec: &Spec) -> anyhow::Result<Report> {
         american_stories: spec.american_stories,
         quickwit,
         variant: spec.variant.clone(),
+        mode: mode.map(str::to_owned),
         members: members_now,
         searchers,
         started_at,
@@ -1012,6 +1064,25 @@ mod tests {
             let line = serde_json::to_string(&v.to_string()).unwrap();
             assert!(line.len() < 8_000, "{k}: {} bytes", line.len());
         }
+    }
+
+    #[test]
+    fn tells_how_a_searcher_reads_its_splits() {
+        use serde_json::json;
+        let blob = json!({"metastore_uri": "azure://qw-cluster", "searcher_config": {"split_cache": null}});
+        assert_eq!(node_mode(&blob), Some("blob"));
+        let cache = json!({"metastore_uri": "azure://qw-cluster",
+            "searcher_config": {"split_cache": {"max_num_bytes": "40.0 GiB"}}});
+        assert_eq!(node_mode(&cache), Some("cache"));
+        assert_eq!(
+            node_mode(&json!({"metastore_uri": "file:///work/index"})),
+            Some("copy")
+        );
+        assert_eq!(
+            node_mode(&json!({"metastore_uri": "file:///mnt/qwsearch/usnm/index"})),
+            Some("nfs")
+        );
+        assert_eq!(node_mode(&json!({})), None);
     }
 
     #[test]

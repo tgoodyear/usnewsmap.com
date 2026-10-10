@@ -206,6 +206,9 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(by[("c1", "0.8.0-nightly")][7], "3.00")
         self.assertEqual(report.hit_mismatches(benches), [])
         self.assertEqual(len(report.probe_rows(benches)), 1)
+        # A local-disk run is grouped by the mode its root was found in.
+        b = dict(benches[0], variant="nfs", mode="blob")
+        self.assertEqual(report.compare_rows([b])[0][1], "0.9.1 blob")
 
     def test_salvages_a_line_cut_short(self):
         # October 2026: one line held a whole 0.9.1 run with its probe, and
@@ -239,6 +242,17 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(got[("bench", "cmp-v091-r1")]["truncated"])
         (k, b2), = report.assemble([(k, r) for (k, _), r in got.items()])
         self.assertEqual(report.version_of(b2), "0.9.1")
+        # A dump logs the stored report again, whole: it replaces the salvaged one.
+        whole = dict(full, probe=self.v091_bench()["probe"])
+        head = {k: v for k, v in whole.items() if k not in ("passes", "probe", "profile")}
+        head["passes_logged"] = 2
+        dumped = [("bench", head)] + [("bench_pass", {"label": "cmp-v091-r1", "n": n, "pass": p})
+                                      for n, p in enumerate(whole["passes"])]
+        dumped.append(("bench_probe", {"label": "cmp-v091-r1", "probe": whole["probe"]}))
+        both = report.assemble(report.parse_reports(rows) + dumped)
+        self.assertEqual(len(both), 1)
+        self.assertFalse(both[0][1].get("truncated"))
+        self.assertEqual(len(report.probe_rows([both[0][1]])), 1)
         # Cut inside the passes: nothing to salvage.
         self.assertIsNone(report.salvage(line[:600]))
         self.assertIsNone(report.salvage("not a report"))

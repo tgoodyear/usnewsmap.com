@@ -100,8 +100,8 @@ param searchClusterSearchThreads int = 0
 @description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher ca-usnm-qws-{i} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
 param searchCompareTags string = ''
 
-@description('Local-disk test (#251): blob, cache or copy runs a standalone 0.9.1 searcher, ca-usnm-qwl-0, on the E4 profile (needs dedicatedProfile), reading the search cluster\'s indexes from Blob, through a split cache on its disk, or from a copy of searchLocalIndex on its disk (docs/operations.md, "Local-disk test"). Empty: none.')
-@allowed(['', 'blob', 'cache', 'copy'])
+@description('Local-disk test (#251): a standalone 0.9.1 searcher, ca-usnm-qwl-0, reading the search cluster\'s indexes from Blob (blob) or a copy of searchLocalIndex on an NFS share (nfs), on Consumption at the API sidecar\'s 3.75 vCPU / 7.5 GiB, or through a split cache (cache) or from a copy (copy) on its own disk, on the E4 profile (needs dedicatedProfile) for the disk (docs/operations.md, "Local-disk test"). Empty: none.')
+@allowed(['', 'blob', 'cache', 'copy', 'nfs'])
 param searchLocalMode string = ''
 
 @description('Local-disk test: the index the copy mode copies.')
@@ -110,6 +110,10 @@ param searchLocalIndex string = ''
 @description('Local-disk test: the split cache in GiB (cache mode).')
 @minValue(1)
 param searchLocalCacheGib int = 40
+
+@description('Local-disk test, nfs mode: size in GiB of the NFS share qw-search, in the ingest scratch share\'s account (provisioned v2 SSD, about $0.10/GiB a month; 32 GiB at least). 64 holds the 1% index twice over with American Stories\' fields.')
+@minValue(32)
+param searchNfsGiB int = 64
 
 @description('Retain every batch archive curation downloads, byte for byte, in a `raw` container of this environment\'s own data account (Cold tier), and curate from it instead of LoC when it holds the listed archive. It goes with the environment: turning it off deletes the container. For a set that outlives environments use archiveAccountId. Production keeps none (ADR-0006).')
 param retainRaw bool = false
@@ -378,7 +382,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     cosmosName: cosmos.outputs.name
     dataStorageName: storage.outputs.name
     tilesStorageName: tiles.outputs.name
-    scratchStorageName: ingestScratch ? scratch!.outputs.accountName : ''
+    scratchStorageName: nfsAccount ? scratch!.outputs.accountName : ''
   }
 }
 
@@ -467,14 +471,19 @@ module rawStore 'modules/raw-store.bicep' = if (retainRaw) {
   }
 }
 
-module scratch 'modules/ingest-scratch.bicep' = if (ingestScratch) {
+// The local-disk test's nfs mode puts its share in the scratch account.
+var searchNfs = searchClusterOn && searchLocalMode == 'nfs'
+var nfsAccount = ingestScratch || searchNfs
+
+module scratch 'modules/ingest-scratch.bicep' = if (nfsAccount) {
   scope: rg
   name: 'ingest-scratch'
   params: {
     location: location
     tags: tags
     name: 'stusnms${suffix}'
-    sizeGiB: ingestScratchGiB
+    sizeGiB: ingestScratch ? ingestScratchGiB : 0
+    searchGiB: searchNfs ? searchNfsGiB : 0
     vnetId: network.outputs.vnetId
     vnetName: network.outputs.vnetName
     peSubnetId: network.outputs.peSubnetId
@@ -549,6 +558,7 @@ module searchClusterModule 'modules/searchcluster.bicep' = if (searchClusterOn) 
     localProfile: containerEnv.outputs.dedicatedProfileName
     localIndex: searchLocalIndex
     localCacheGib: searchLocalCacheGib
+    localNfsStorage: searchNfs ? scratch!.outputs.searchEnvStorageName : ''
     compareImages: map(
       filter(split(searchCompareTags, ','), t => !empty(trim(t))),
       t => '${registry.outputs.loginServer}/usnewsmap-ingest:${trim(t)}'

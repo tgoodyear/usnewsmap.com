@@ -91,14 +91,17 @@ param searchThreads int = 0
 @maxLength(4)
 param compareImages array = []
 
-@description('Local-disk test (#251): one standalone 0.9.1 searcher, ca-usnm-qwl-0, on the dedicated profile, reading the cluster\'s indexes from Blob (blob), through a split cache on its disk (cache), or from a copy of localIndex on its disk (copy). Empty: none.')
-@allowed(['', 'blob', 'cache', 'copy'])
+@description('Local-disk test (#251): one standalone 0.9.1 searcher, ca-usnm-qwl-0, reading the cluster\'s indexes from Blob (blob) or from a copy of localIndex on an NFS share (nfs), on Consumption, or through a split cache on its disk (cache) or from a copy on its disk (copy), on the dedicated profile. Empty: none.')
+@allowed(['', 'blob', 'cache', 'copy', 'nfs'])
 param localMode string = ''
 
-@description('The dedicated workload profile the local-disk searcher runs on (the environment\'s E4); empty: no local-disk searcher.')
+@description('The dedicated workload profile the cache and copy modes run on (the environment\'s E4); empty: those modes deploy nothing.')
 param localProfile string = ''
 
-@description('The index the local-disk searcher copies to its disk (localMode copy).')
+@description('The environment storage of the NFS share the nfs mode mounts (infra/modules/ingest-scratch.bicep, qw-search); empty: that mode deploys nothing.')
+param localNfsStorage string = ''
+
+@description('The index the local-disk searcher copies (localMode copy and nfs).')
 param localIndex string = ''
 
 @description('The local-disk searcher\'s split cache in GiB (localMode cache).')
@@ -321,21 +324,45 @@ resource clusterWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   }
 ]
 
-// Local-disk test (#251): one standalone searcher on the dedicated profile,
-// whose ephemeral storage is about 80 GiB (Microsoft, September 2026, in
-// microsoft/azure-container-apps#1779; the Consumption profile's is 8 GiB,
-// too small for a test index), the same node for all three modes. An E4
-// replica gets at most 3.25 vCPU / 26 GiB (infra/modules/ingestjobs.bicep):
-// 3.25 vCPU, against the API sidecar's 3.75, with the sidecar's thread
-// counts. Its disk is the container's own, under /work (the image's work
-// directory, owned by its user): the data directory and the split cache in
-// /work/qwdata, the copy in /work/index. A restart empties it.
-var localOn = !empty(localMode) && !empty(localProfile)
+// Local-disk test (#251): one standalone searcher, its splits read
+// - blob: from Blob, as the API's sidecar reads them;
+// - nfs: from a copy of the index on an NFS Azure Files share (qw-search,
+//   provisioned v2 SSD, through the private endpoint) mounted at
+//   /mnt/qwsearch, served as file://. The copy is made once, at the first
+//   start, and kept on the share;
+// - cache: through Quickwit's split cache on the replica's disk;
+// - copy: from a copy on the replica's disk, served as file://.
+// blob and nfs run on Consumption at the sidecar's 3.75 vCPU / 7.5 GiB (with
+// nfs's init container, 4 / 8 in all, the Consumption maximum): the shape
+// production searches with. cache and copy need more disk than Consumption's
+// 8 GiB a replica, so they run on the dedicated E4 profile, whose ephemeral
+// storage is about 80 GiB (Microsoft, September 2026, in
+// microsoft/azure-container-apps#1779): 3.25 vCPU / 24 GiB, an E4 replica's
+// most (infra/modules/ingestjobs.bicep), the disk under /work, emptied by a
+// restart.
+//
+// The E4 profile has one node: a new revision there can't start while the
+// old one holds it, and the old one keeps the traffic. In October 2026 the
+// cache and copy runs were served that way by the blob revision. Between two
+// E4 modes clear the mode and provision first; the bench's --variant checks
+// the mode it reaches (crates/usnm-ingest/src/cluster/bench.rs, node_mode).
+var localDedicated = localMode == 'cache' || localMode == 'copy'
+var localOn = !empty(localMode) && (!localDedicated || !empty(localProfile)) && (localMode != 'nfs' || !empty(localNfsStorage))
+var nfsMount = '/mnt/qwsearch'
+// The node's user (Dockerfile.ingest) owns this directory on the share.
+var nfsDir = '${nfsMount}/usnm'
+var localCopyFrom = '${storageBlobEndpoint}${clusterContainer}'
 var localModeArgs = localMode == 'cache'
   ? ['--split-cache-gib', string(localCacheGib)]
   : (localMode == 'copy'
-      ? ['--local-copy', localIndex, '--local-copy-from', '${storageBlobEndpoint}${clusterContainer}', '--local-dir', '/work/index']
-      : [])
+      ? ['--local-copy', localIndex, '--local-copy-from', localCopyFrom, '--local-dir', '/work/index']
+      : (localMode == 'nfs'
+          ? ['--local-copy', localIndex, '--local-copy-from', localCopyFrom, '--local-dir', '${nfsDir}/index']
+          : []))
+var localResources = localDedicated ? { cpu: json('3.25'), memory: '24Gi' } : { cpu: json('3.75'), memory: '7.5Gi' }
+// Root, to hand the share's directory to uid 10001 (as the ingest job's
+// scratch-owner does); Microsoft's registry, no sign-in.
+var nfsOwnerImage = 'mcr.microsoft.com/azurelinux/busybox:1.36'
 
 resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
   name: 'ca-usnm-qwl-0'
@@ -348,7 +375,7 @@ resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
   }
   properties: {
     environmentId: environmentId
-    workloadProfileName: localProfile
+    workloadProfileName: localDedicated ? localProfile : 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
       registries: [{ server: registryServer, identity: nodeIdentity.id }]
@@ -360,6 +387,18 @@ resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
       }
     }
     template: {
+      initContainers: localMode == 'nfs'
+        ? [
+            {
+              name: 'share-owner'
+              image: nfsOwnerImage
+              command: ['/bin/sh']
+              args: ['-c', 'mkdir -p ${nfsDir} && chown 10001:10001 ${nfsDir}']
+              resources: { cpu: json('0.25'), memory: '0.5Gi' }
+              volumeMounts: [{ volumeName: 'search-share', mountPath: nfsMount }]
+            }
+          ]
+        : null
       containers: [
         {
           name: 'qwnode'
@@ -385,17 +424,20 @@ resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
             '--search-threads'
             string(searchThreads > 0 ? searchThreads : 4)
           ], splitSearches > 0 ? ['--split-searches', string(splitSearches)] : [], localModeArgs)
-          resources: { cpu: json('3.25'), memory: '24Gi' }
+          resources: localResources
           env: [
-            { name: 'RUST_LOG', value: nodeRustLog }
+            // The wrapper's own lines too: the disk, the copy.
+            { name: 'RUST_LOG', value: '${nodeRustLog},usnm_ingest=info' }
           ]
-          // A copy of a test index takes minutes before Quickwit listens.
+          volumeMounts: localMode == 'nfs' ? [{ volumeName: 'search-share', mountPath: nfsMount }] : null
+          // A first copy of a test index takes minutes before Quickwit
+          // listens: up to an hour.
           probes: [
             {
               type: 'Startup'
               httpGet: { path: '/health/livez', port: 7280 }
-              periodSeconds: 5
-              failureThreshold: 240
+              periodSeconds: 10
+              failureThreshold: 360
             }
             {
               type: 'Liveness'
@@ -405,6 +447,7 @@ resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
           ]
         }
       ]
+      volumes: localMode == 'nfs' ? [{ name: 'search-share', storageType: 'NfsAzureFile', storageName: localNfsStorage }] : null
       scale: { minReplicas: 1, maxReplicas: 1 }
     }
   }

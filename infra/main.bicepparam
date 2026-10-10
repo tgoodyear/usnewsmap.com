@@ -43,6 +43,7 @@ param searchCompareTags = readEnvironmentVariable('USNM_SEARCH_COMPARE_TAGS', ''
 param searchLocalMode = readEnvironmentVariable('USNM_SEARCH_LOCAL_MODE', '')
 param searchLocalIndex = readEnvironmentVariable('USNM_SEARCH_LOCAL_INDEX', '')
 param searchLocalCacheGib = int(readEnvironmentVariable('USNM_SEARCH_LOCAL_CACHE_GIB', '40'))
+param searchNfsGiB = int(readEnvironmentVariable('USNM_SEARCH_NFS_GIB', '64'))
 param budgetStartDate = readEnvironmentVariable('USNM_BUDGET_START', '')
 param dnsZoneName = readEnvironmentVariable('USNM_DNS_ZONE', '')
 // Google Search Console domain verification, published at the apex next to SPF.
