@@ -36,22 +36,39 @@ export function clearest(rows: SkewRow[]): { above: SkewRow[]; below: SkewRow[] 
   };
 }
 
+/** How many places each Clearest differences list shows. */
+export interface ListLengths {
+  above: number;
+  below: number;
+}
+
+/**
+ * How many places each Clearest differences list shows, kept above the lists
+ * so they keep it when they move (phones put them after the playback
+ * controls, so a rotation remounts them). Both go back to the first few when
+ * `resetKey` changes: a new search, window or measure.
+ */
+export function useListLengths(resetKey: string): [ListLengths, (list: keyof ListLengths, n: number) => void] {
+  const [state, setState] = useState({ key: resetKey, above: LIST_LENGTH, below: LIST_LENGTH });
+  let current = state;
+  if (state.key !== resetKey) {
+    current = { key: resetKey, above: LIST_LENGTH, below: LIST_LENGTH };
+    setState(current);
+  }
+  return [current, (list, n) => setState((s) => ({ ...s, [list]: n }))];
+}
+
 interface ListsProps {
   rows: SkewRow[];
   onSelect: (id: string) => void;
-  /**
-   * The search and window the lists are for. When it changes, both lists go
-   * back to their first places. (A change of measure unmounts them.)
-   */
-  resetKey?: string;
+  /** How many places each list shows, from `useListLengths`. */
+  shown: ListLengths;
+  onShown: (list: keyof ListLengths, n: number) => void;
 }
 
 /** The side panel when no place is selected. */
-export function SkewLists({ rows, onSelect, resetKey = "" }: ListsProps) {
+export function SkewLists({ rows, onSelect, shown, onShown }: ListsProps) {
   const { above, below } = clearest(rows);
-  // How many places each list shows, for this search and window.
-  const [shown, setShown] = useState({ key: resetKey, above: LIST_LENGTH, below: LIST_LENGTH });
-  if (shown.key !== resetKey) setShown({ key: resetKey, above: LIST_LENGTH, below: LIST_LENGTH });
   return (
     <ListsPanel title="Clearest differences" label="Places that differ most clearly" className="skew-lists">
       <ClearList
@@ -59,7 +76,7 @@ export function SkewLists({ rows, onSelect, resetKey = "" }: ListsProps) {
         empty="No place is clearly above 1× in this window."
         items={above}
         limit={shown.above}
-        onLimit={(n) => setShown((s) => ({ ...s, above: n }))}
+        onLimit={(n) => onShown("above", n)}
         onSelect={onSelect}
       />
       <ClearList
@@ -67,7 +84,7 @@ export function SkewLists({ rows, onSelect, resetKey = "" }: ListsProps) {
         empty="No place is clearly below 1× in this window."
         items={below}
         limit={shown.below}
-        onLimit={(n) => setShown((s) => ({ ...s, below: n }))}
+        onLimit={(n) => onShown("below", n)}
         onSelect={onSelect}
       />
       <p className="skew-list__note">Ranked by the end of each place's 90% range nearest 1×.</p>
@@ -100,7 +117,8 @@ function ClearList({
   const countId = `${id}-count`;
   const visible = items.slice(0, Math.min(limit, MOST_SHOWN));
   const more = items.length > visible.length && visible.length < MOST_SHOWN;
-  const fewer = limit > LIST_LENGTH && items.length > LIST_LENGTH;
+  // Showing more than the first few: what aria-expanded says on both buttons.
+  const expanded = visible.length > LIST_LENGTH;
   const list = useRef<HTMLOListElement>(null);
   const moreButton = useRef<HTMLButtonElement>(null);
   // Where focus goes once the list has changed: after "Show more", the first
@@ -150,14 +168,14 @@ function ClearList({
           {count}
         </p>
       )}
-      {(more || fewer) && (
+      {(more || expanded) && (
         <p className="skew-list__more">
           {more && (
             <button
               type="button"
               className="link-button"
               ref={moreButton}
-              aria-expanded={false}
+              aria-expanded={expanded}
               aria-controls={listId}
               aria-describedby={`${headingId} ${countId}`}
               onClick={() => {
@@ -168,7 +186,7 @@ function ClearList({
               Show more
             </button>
           )}
-          {fewer && (
+          {expanded && (
             <button
               type="button"
               className="link-button"

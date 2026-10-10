@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MeasureToggle } from "./MeasureToggle";
 import { SkewLegend } from "./SkewLegend";
-import { clearest, LANGUAGE_EXPLAINER, skewCsv, SkewLists, StateTable, type SkewRow } from "./SkewPanels";
+import {
+  clearest,
+  LANGUAGE_EXPLAINER,
+  skewCsv,
+  SkewLists,
+  StateTable,
+  useListLengths,
+  type SkewRow,
+} from "./SkewPanels";
 import { PlaceTable } from "./PlaceTable";
 import type { SkewInfo } from "../lib/skewText";
 import { dayNumber } from "../lib/time";
@@ -20,6 +28,24 @@ const info = (estimate: number, lower: number, upper: number, extra: Partial<Ske
   ...extra,
 });
 const row = (id: string, s: SkewInfo): SkewRow => ({ id, name: `Place ${id}`, state: "AL", skew: s });
+
+// The lists as App renders them, with how many each shows kept above them.
+// `narrow` moves them, as a phone rotation does, which remounts them.
+function Lists({
+  rows,
+  onSelect = () => undefined,
+  resetKey = "",
+  narrow = false,
+}: {
+  rows: SkewRow[];
+  onSelect?: (id: string) => void;
+  resetKey?: string;
+  narrow?: boolean;
+}) {
+  const [shown, setShown] = useListLengths(resetKey);
+  const lists = <SkewLists rows={rows} onSelect={onSelect} shown={shown} onShown={setShown} />;
+  return narrow ? <div>{lists}</div> : <section>{lists}</section>;
+}
 
 describe("MeasureToggle", () => {
   afterEach(cleanup);
@@ -106,7 +132,7 @@ describe("lists, tables and export", () => {
     expect(above.map((r) => r.id)).toEqual(["a", "b"]);
     expect(below.map((r) => r.id)).toEqual(["d", "c"]);
     const onSelect = vi.fn();
-    render(<SkewLists rows={rows} onSelect={onSelect} />);
+    render(<Lists rows={rows} onSelect={onSelect} />);
     fireEvent.click(screen.getByRole("button", { name: "Place a, AL" }));
     expect(onSelect).toHaveBeenCalledWith("a");
     expect(screen.getByRole("complementary", { name: "Places that differ most clearly" })).toBeTruthy();
@@ -114,7 +140,7 @@ describe("lists, tables and export", () => {
   });
 
   it("explains a language label behind an info button", () => {
-    render(<SkewLists rows={rows} onSelect={() => undefined} />);
+    render(<Lists rows={rows} />);
     const info = screen.getByRole("button", { name: "What this means" });
     const tip = screen.getByRole("note", { hidden: true });
     expect(info.getAttribute("aria-expanded")).toBe("false");
@@ -130,7 +156,7 @@ describe("lists, tables and export", () => {
   it("says how many of a place's papers are in each language", () => {
     const counts = "Of its 4 papers, 3 are in German (75%) and 1 in English (25%).";
     const skew = info(0.1, 0.05, 0.2, { languages: "Papers in German and English", languageCounts: counts });
-    render(<SkewLists rows={[row("d", skew)]} onSelect={() => undefined} />);
+    render(<Lists rows={[row("d", skew)]} />);
     fireEvent.click(screen.getByRole("button", { name: "What this means" }));
     expect(screen.getByRole("note").textContent).toBe(counts + LANGUAGE_EXPLAINER);
   });
@@ -192,7 +218,7 @@ describe("Clearest differences: Show more", () => {
   const button = (el: HTMLElement, name: string) => within(el).queryByRole("button", { name });
 
   it("shows five, says how many there are, and adds the next five", () => {
-    render(<SkewLists rows={many(12)} onSelect={() => undefined} />);
+    render(<Lists rows={many(12)} />);
     expect(names(above())).toEqual(["Place up1, AL", "Place up2, AL", "Place up3, AL", "Place up4, AL", "Place up5, AL"]);
     expect(above().textContent).toContain("Showing 5 of 12.");
     const more = button(above(), "Show more")!;
@@ -208,6 +234,8 @@ describe("Clearest differences: Show more", () => {
     expect(above().textContent).toContain("Showing 10 of 12.");
     // Focus moves to the first place it added.
     expect(document.activeElement?.textContent).toBe("Place up6, AL");
+    // Both buttons say the list is expanded.
+    expect(button(above(), "Show more")!.getAttribute("aria-expanded")).toBe("true");
     const fewer = button(above(), "Show fewer")!;
     expect(fewer.getAttribute("aria-expanded")).toBe("true");
     expect(fewer.getAttribute("aria-controls")).toBe(list.id);
@@ -222,7 +250,7 @@ describe("Clearest differences: Show more", () => {
   });
 
   it("goes back to five with Show fewer, and focus stays on the list's button", () => {
-    render(<SkewLists rows={many(12)} onSelect={() => undefined} />);
+    render(<Lists rows={many(12)} />);
     fireEvent.click(button(above(), "Show more")!);
     fireEvent.click(button(above(), "Show more")!);
     fireEvent.click(button(above(), "Show fewer")!);
@@ -232,8 +260,16 @@ describe("Clearest differences: Show more", () => {
     expect(document.activeElement).toBe(button(above(), "Show more"));
   });
 
+  it("keeps how many each list shows when the lists move, as on a phone rotation", () => {
+    const { rerender } = render(<Lists rows={many(12, 12)} />);
+    fireEvent.click(button(above(), "Show more")!);
+    rerender(<Lists rows={many(12, 12)} narrow />);
+    expect(names(above())).toHaveLength(10);
+    expect(names(below())).toHaveLength(5);
+  });
+
   it("offers no button when the list has five places or fewer", () => {
-    render(<SkewLists rows={many(5, 2)} onSelect={() => undefined} />);
+    render(<Lists rows={many(5, 2)} />);
     expect(names(above())).toHaveLength(5);
     expect(names(below())).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
@@ -241,7 +277,7 @@ describe("Clearest differences: Show more", () => {
   });
 
   it("expands each list on its own", () => {
-    render(<SkewLists rows={many(8, 9)} onSelect={() => undefined} />);
+    render(<Lists rows={many(8, 9)} />);
     expect(below().textContent).toContain("Showing 5 of 9.");
     fireEvent.click(button(below(), "Show more")!);
     expect(names(below())).toHaveLength(9);
@@ -255,7 +291,7 @@ describe("Clearest differences: Show more", () => {
   });
 
   it("stops at 25 and points to the table", () => {
-    render(<SkewLists rows={many(40)} onSelect={() => undefined} />);
+    render(<Lists rows={many(40)} />);
     for (let i = 0; i < 4; i++) fireEvent.click(button(above(), "Show more")!);
     expect(names(above())).toHaveLength(25);
     expect(above().textContent).toContain("Showing 25 of 40. The table lists every place.");
@@ -264,20 +300,20 @@ describe("Clearest differences: Show more", () => {
   });
 
   it("goes back to five when the search or window changes, not when the date moves", () => {
-    const { rerender } = render(<SkewLists rows={many(12, 12)} onSelect={() => undefined} resetKey="q1|null" />);
+    const { rerender } = render(<Lists rows={many(12, 12)} resetKey="q1|null" />);
     fireEvent.click(button(above(), "Show more")!);
     fireEvent.click(button(below(), "Show more")!);
     // A new date in the same search and window: the rows change, the lists stay open.
-    rerender(<SkewLists rows={many(11, 12)} onSelect={() => undefined} resetKey="q1|null" />);
+    rerender(<Lists rows={many(11, 12)} resetKey="q1|null" />);
     expect(names(above())).toHaveLength(10);
     expect(above().textContent).toContain("Showing 10 of 11.");
     // A new window.
-    rerender(<SkewLists rows={many(11, 12)} onSelect={() => undefined} resetKey="q1|12" />);
+    rerender(<Lists rows={many(11, 12)} resetKey="q1|12" />);
     expect(names(above())).toHaveLength(5);
     expect(names(below())).toHaveLength(5);
     fireEvent.click(button(above(), "Show more")!);
     // A new search.
-    rerender(<SkewLists rows={many(11, 12)} onSelect={() => undefined} resetKey="q2|12" />);
+    rerender(<Lists rows={many(11, 12)} resetKey="q2|12" />);
     expect(names(above())).toHaveLength(5);
   });
 
@@ -286,7 +322,7 @@ describe("Clearest differences: Show more", () => {
       ...many(6),
       row("de", info(4, 1.5, 6, { languages: "Papers in German", languageCounts: "Of its 2 papers, 2 are in German." })),
     ];
-    render(<SkewLists rows={rows} onSelect={() => undefined} />);
+    render(<Lists rows={rows} />);
     expect(screen.queryByText("Papers in German")).toBeNull();
     fireEvent.click(button(above(), "Show more")!);
     const tip = within(above()).getByRole("button", { name: "What this means" });
