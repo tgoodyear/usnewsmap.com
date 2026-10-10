@@ -109,13 +109,15 @@ pub async fn enqueue(state: &State, list: &[ListedBatch]) -> anyhow::Result<Enqu
 
 /// Queue `list` again even where curated, for a re-curation (`enqueue
 /// --force`): a batch at the listed version that isn't being curated now
-/// goes back to `queued` with its attempts reset. Its published curation
-/// stays until the new one commits. Batches not yet known, or at another
-/// version, are enqueued as [`enqueue`] does.
+/// goes back to `queued` with its attempts reset and its source (URL,
+/// sha256, OCR source) as listed now. Its published curation stays until
+/// the new one commits. Batches not yet known, or at another version, are
+/// enqueued as [`enqueue`] does.
 pub async fn requeue(state: &State, list: &[ListedBatch]) -> anyhow::Result<EnqueueReport> {
     let mut report = EnqueueReport::default();
     for l in list {
         let (batch, version) = split_version(&l.name)?;
+        check_sha256(l)?;
         let mut done = false;
         for _ in 0..5 {
             let Some((mut b, etag)) = state.batch(&batch).await? else {
@@ -126,6 +128,9 @@ pub async fn requeue(state: &State, list: &[ListedBatch]) -> anyhow::Result<Enqu
             {
                 break;
             }
+            b.source_url = l.url.clone();
+            b.source_sha256 = l.sha256.clone();
+            b.ocr_source = listed_ocr_source(l);
             b.status = BatchStatus::Queued;
             b.attempts = 0;
             b.last_error = None;
@@ -156,8 +161,8 @@ enum Outcome {
     Conflict,
 }
 
-async fn enqueue_one(state: &State, l: &ListedBatch) -> anyhow::Result<Outcome> {
-    let (batch, version) = split_version(&l.name)?;
+/// A listed sha256 is 64 hex digits.
+fn check_sha256(l: &ListedBatch) -> anyhow::Result<()> {
     if let Some(sha) = &l.sha256 {
         anyhow::ensure!(
             sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -165,10 +170,20 @@ async fn enqueue_one(state: &State, l: &ListedBatch) -> anyhow::Result<Outcome> 
             l.name
         );
     }
-    let ocr_source = l
-        .ocr_source
+    Ok(())
+}
+
+/// The listing's OCR source, `ndnp-original` when it names none.
+fn listed_ocr_source(l: &ListedBatch) -> String {
+    l.ocr_source
         .clone()
-        .unwrap_or_else(|| "ndnp-original".into());
+        .unwrap_or_else(|| "ndnp-original".into())
+}
+
+async fn enqueue_one(state: &State, l: &ListedBatch) -> anyhow::Result<Outcome> {
+    let (batch, version) = split_version(&l.name)?;
+    check_sha256(l)?;
+    let ocr_source = listed_ocr_source(l);
     let Some((mut b, etag)) = state.batch(&batch).await? else {
         let fresh = Batch {
             id: batch.clone(),
@@ -632,6 +647,42 @@ mod tests {
         let r = enqueue(&s, &[listed("batch_a_ver01")]).await.unwrap();
         assert_eq!(r.unchanged, 1);
         assert_eq!(s.batch("batch_a").await.unwrap().unwrap().0.version, 2);
+    }
+
+    /// `enqueue --force` takes the source as listed now, not as first queued.
+    #[tokio::test]
+    async fn requeue_refreshes_the_listed_source() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        enqueue(&s, &[listed("batch_a_ver01")]).await.unwrap();
+        let (mut b, etag) = s.batch("batch_a").await.unwrap().unwrap();
+        b.status = BatchStatus::Failed;
+        b.attempts = 5;
+        s.replace_batch(&b, &etag).await.unwrap().unwrap();
+        let mut now = listed("batch_a_ver01");
+        now.url = "https://example.org/moved/batch_a_ver01.tar.bz2".into();
+        now.sha256 = Some("ab".repeat(32));
+        now.ocr_source = Some("loc-reocr".into());
+        let r = requeue(&s, std::slice::from_ref(&now)).await.unwrap();
+        assert_eq!(r.requeued, 1);
+        let (b, _) = s.batch("batch_a").await.unwrap().unwrap();
+        assert_eq!(
+            (
+                b.status,
+                b.attempts,
+                b.source_url,
+                b.source_sha256,
+                b.ocr_source
+            ),
+            (
+                BatchStatus::Queued,
+                0,
+                now.url.clone(),
+                now.sha256.clone(),
+                "loc-reocr".into()
+            )
+        );
+        now.sha256 = Some("not hex".into());
+        assert!(requeue(&s, &[now]).await.is_err());
     }
 
     #[tokio::test]
