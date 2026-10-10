@@ -246,8 +246,8 @@ pub fn app(state: Arc<AppState>) -> Router {
     router
         .layer(cors)
         .layer(CompressionLayer::new())
-        // One span and one log line per request with the route template,
-        // never the path or query: query strings carry search text (09 §9.4.2).
+        // One span per request with the route template, never the path or
+        // query: query strings carry search text (09 §9.4.2).
         .layer(middleware::from_fn_with_state(state, telemetry::track))
 }
 
