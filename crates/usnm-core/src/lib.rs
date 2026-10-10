@@ -9,6 +9,7 @@
 //! - [`decade`]: decade partitions, so date-limited searches skip splits (05 §5.5.5, #123)
 //! - [`ja`]: Japanese tokens and folding for our own OCR (04 §4.8, #139)
 //! - [`query`]: the user query language and its limits (06 §6.4)
+//! - [`query_language`]: the language of a query's words, for its baseline (06 §6.3.3, #237)
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
 //! - [`cube`]: the sparse place × bucket cube (06 §6.3.3)
 //! - [`names`]: LoC's language and state names (04 §4.6)
@@ -24,6 +25,7 @@ pub mod ja;
 pub mod names;
 pub mod params;
 pub mod query;
+pub mod query_language;
 pub mod skew;
 pub mod text;
 pub mod text_layout;

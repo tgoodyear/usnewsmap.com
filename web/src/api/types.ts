@@ -135,6 +135,14 @@ export interface AggregateResponse {
    * `total.hits` (#121). Absent from older APIs.
    */
   languages?: { code: string[]; hits: number[] };
+  /**
+   * Which pages `series.baseline` and `cube.baseline_ref` count (#237): those
+   * of titles that list any of `languages`, or every page when it's empty.
+   * `why` is `filter` (the `lang` parameter), `query_language` (the query's
+   * words are English or Japanese) or `all`. The hits are never filtered by
+   * it. Null when there are no baselines; absent from older APIs.
+   */
+  baseline?: { languages: string[]; why: "filter" | "query_language" | "all" } | null;
 }
 
 export interface CoverageResponse {
