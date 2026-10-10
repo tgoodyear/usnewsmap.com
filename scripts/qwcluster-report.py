@@ -37,6 +37,8 @@ import re
 import statistics
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -295,23 +297,49 @@ def span_of(since):
     return {"m": f"PT{n}M", "h": f"PT{n}H", "d": f"P{n}D"}[unit]
 
 
-def prices(region):
-    """Container Apps Consumption and Blob Hot LRS list prices for `region`."""
+def fetch_json(url, tries=6, sleep=time.sleep, opener=urllib.request.urlopen):
+    """GET `url` as JSON, retrying a refusal (429), a server error (5xx) or a
+    network failure with backoff: the `Retry-After` it gives, else 2, 4, 8,
+    16 and 32 s. The last failure is raised."""
+    for attempt in range(tries):
+        try:
+            with opener(url, timeout=60) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500 or attempt == tries - 1:
+                raise
+            after = e.headers.get("Retry-After") if e.headers else None
+            wait = float(after) if after and after.isdigit() else 2 ** (attempt + 1)
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == tries - 1:
+                raise
+            wait = 2 ** (attempt + 1)
+        sleep(min(wait, 60))
+    raise RuntimeError("unreachable")
+
+
+def prices(region, fetch=fetch_json):
+    """Container Apps Consumption and Blob Hot LRS list prices for `region`,
+    or None when the Retail Prices API won't answer (it rate-limits with 429,
+    October 2026): the report then leaves the costs out."""
     def items(flt):
         url = "https://prices.azure.com/api/retail/prices?" + urllib.parse.urlencode({"$filter": flt})
         out = []
         while url:
-            with urllib.request.urlopen(url, timeout=60) as resp:
-                v = json.load(resp)
+            v = fetch(url)
             out.extend(v.get("Items", []))
             url = v.get("NextPageLink")
         return out
 
-    aca = items(f"serviceName eq 'Azure Container Apps' and armRegionName eq '{region}' "
-                "and priceType eq 'Consumption'")
-    blob = items(f"serviceName eq 'Storage' and armRegionName eq '{region}' and skuName eq 'Hot LRS' "
-                 "and productName eq 'General Block Blob v2' and priceType eq 'Consumption'")
-    return pick_prices(aca, blob)
+    try:
+        aca = items(f"serviceName eq 'Azure Container Apps' and armRegionName eq '{region}' "
+                    "and priceType eq 'Consumption'")
+        blob = items(f"serviceName eq 'Storage' and armRegionName eq '{region}' and skuName eq 'Hot LRS' "
+                     "and productName eq 'General Block Blob v2' and priceType eq 'Consumption'")
+        return pick_prices(aca, blob)
+    except (urllib.error.URLError, TimeoutError, ValueError, SystemExit) as e:
+        print(f"warning: no list prices ({e}); the report leaves the costs out", file=sys.stderr)
+        return None
 
 
 def pick_prices(aca, blob):
@@ -588,8 +616,9 @@ def profile_rows(benches):
             continue
         total = pf["total_samples"]
         threads = pf.get("threads", {})
-        main = threads.get("main_runtime_thread", 0)
-        pool = threads.get("quickwit-search", 0)
+        # Linux keeps 15 characters of a thread name: `main_runtime_th`.
+        main = sum(n for t, n in threads.items() if t.startswith("main_runtime_th"))
+        pool = sum(n for t, n in threads.items() if t.startswith("quickwit-search"))
         top = ", ".join(f"{name} {100 * n / main:.0f}%" for name, n in pf.get("main_runtime_top", [])[:6]) if main else "-"
         rows.append([b["label"], total, fmt(100 * main / total, 0), fmt(100 * pool / total, 0),
                      fmt(100 * (total - main - pool) / total, 0), top])
@@ -697,9 +726,11 @@ def report(env, since, out, from_file=None):
                 m = app_metrics(sub, rg, app, r["started_at"], r["sealed_at"]) or {}
                 rows.append([r["index_id"], app, fmt(m.get("cpu_avg"), 2), fmt(m.get("cpu_max"), 2),
                              fmt(m.get("mem_max_mib"), 0), fmt(secs, 0)])
-            cost = (len(nodes) * replica_cost(p, vcpu, 2 * vcpu, secs, 0)
-                    + replica_cost(p, BENCH_VCPU, BENCH_GIB, secs, 0))
-            rows.append([r["index_id"], "run cost (nodes + bench job, all active)", "", "", "", f"${cost:.3f}"])
+            if p:
+                cost = (len(nodes) * replica_cost(p, vcpu, 2 * vcpu, secs, 0)
+                        + replica_cost(p, BENCH_VCPU, BENCH_GIB, secs, 0))
+                rows.append([r["index_id"], "run cost (nodes + bench job, all active)", "", "", "",
+                             f"${cost:.3f}"])
         md += ["### CPU and memory per node during each load", "",
                table(["index", "app", "vCPU avg", "vCPU max", "memory max MiB", "secs / cost"], rows), ""]
     if benches:
@@ -767,16 +798,22 @@ def report(env, since, out, from_file=None):
     now = datetime.datetime.now(datetime.timezone.utc)
     day_ago = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     idle_rows = []
-    for app in [f"ca-usnm-qw-{i}" for i in range(4)] + [f"ca-usnm-qws-{i}" for i in range(4)]:
+    for app in ([f"ca-usnm-qw-{i}" for i in range(4)] + [f"ca-usnm-qws-{i}" for i in range(4)]
+                + ["ca-usnm-qwl-0"]):
         m = app_metrics(sub, rg, app, day_ago, now.strftime("%Y-%m-%dT%H:%M:%SZ"))
         if m and m["minutes"]:
             idle_rows.append([app, m["minutes"], m["idle_minutes"], fmt(m["cpu_avg"], 3),
                               fmt(m["net_avg_bps"], 0)])
-    md += ["## Cost", "", "List prices: vCPU ${vcpu_active}/s active, ${vcpu_idle}/s idle; memory "
-           "${gib_active}/GiB-s active, ${gib_idle}/GiB-s idle; Blob Hot LRS ${blob_gb_month}/GB-month.".format(**p), ""]
+    md += ["## Cost", ""]
     if idle_rows:
         md += ["Idle check, last 24 h (a minute is idle under 0.01 vCPU and 1,000 bytes/s):", "",
                table(["app", "minutes", "idle minutes", "vCPU avg", "network bytes/s avg"], idle_rows), ""]
+    if not p:
+        md += ["No list prices: the Azure Retail Prices API didn't answer (after retries), so the costs "
+               "are left out. Run the report again later for them.", ""]
+        return finish(md, out)
+    md += ["List prices: vCPU ${vcpu_active}/s active, ${vcpu_idle}/s idle; memory "
+           "${gib_active}/GiB-s active, ${gib_idle}/GiB-s idle; Blob Hot LRS ${blob_gb_month}/GB-month.".format(**p), ""]
     sidecar = replica_cost(p, SIDECAR_VCPU, SIDECAR_GIB, 0, SECONDS_PER_MONTH)
     rows = [["today: API sidecar (2 vCPU / 4 GiB)", 1, f"${sidecar:.2f}",
              f"${replica_cost(p, SIDECAR_VCPU, SIDECAR_GIB, 0.1 * SECONDS_PER_MONTH, 0.9 * SECONDS_PER_MONTH):.2f}"]]
@@ -799,6 +836,10 @@ def report(env, since, out, from_file=None):
         md += [f"Storage: the sample index is {gb:.2f} GB (${gb * p['blob_gb_month']:.2f}/month); "
                f"scaled to 100% about {gb * scale:,.0f} GB (${gb * scale * p['blob_gb_month']:,.2f}/month) "
                "for a second index root. A cluster serving `qw-index` needs no extra storage.", ""]
+    finish(md, out)
+
+
+def finish(md, out):
     text = "\n".join(md)
     if out:
         with open(out, "w") as f:

@@ -55,6 +55,38 @@ class ReportTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             report.pick_prices([], blob)
 
+    def test_prices_retry_a_refusal_then_give_up_quietly(self):
+        import io
+        import urllib.error
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def refusal(after=None):
+            return urllib.error.HTTPError("u", 429, "Too Many Requests", {"Retry-After": after} if after else {}, None)
+
+        calls, waits = [], []
+        def opener(url, timeout):
+            calls.append(url)
+            if len(calls) < 3:
+                raise refusal("5" if len(calls) == 1 else None)
+            return Resp(b'{"Items": [1]}')
+        self.assertEqual(report.fetch_json("u", sleep=waits.append, opener=opener), {"Items": [1]})
+        self.assertEqual(waits, [5.0, 4])
+        # Not a refusal: no retry.
+        def gone(url, timeout):
+            raise urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        with self.assertRaises(urllib.error.HTTPError):
+            report.fetch_json("u", sleep=waits.append, opener=gone)
+        # Refused every time: prices() gives None and the report leaves costs out.
+        def always(url):
+            raise refusal()
+        self.assertIsNone(report.prices("eastus2", fetch=always))
+
     def test_summarizes_metrics_per_minute(self):
         def series(name, agg, values):
             return {"name": {"value": name}, "timeseries": [{"data": [
@@ -142,7 +174,7 @@ class ReportTest(unittest.TestCase):
              "split_cache": {"target_splits": 58, "splits": 58, "bytes": 7.5e9, "secs": 300.0, "complete": True},
              "probe": {"shift_days": 9, "sum": stats, "searches": [{"name": "a", "stats": stats}]},
              "profile": {"summary": {"total_samples": 1000,
-                                     "threads": {"main_runtime_thread": 600, "quickwit-search": 300},
+                                     "threads": {"main_runtime_th": 600, "quickwit-search": 300},
                                      "main_runtime_top": [["rustls::read", 300], ["memcpy", 60]]}},
              "passes": [{"name": "c1", "nodes": {"qwl-0": {"split_cache_hits": 900, "split_cache_misses": 3}}}]}
         p = report.probe_rows([b])[0]

@@ -323,8 +323,18 @@ async fn dump(store: &dyn ObjectStore) -> anyhow::Result<Vec<(String, serde_json
         let mut v: serde_json::Value =
             serde_json::from_slice(&bytes).with_context(|| path.clone())?;
         // As logged: a bench in its parts without each search's calls, a
-        // load without its per-poll series.
+        // load without its per-poll series. A bench's profile is summarized
+        // again from its stored flame graph, so a fix to the summary reaches
+        // earlier runs (October 2026: thread names cut to 15 characters).
         if kind == "bench" {
+            if let Some(dir) = path.strip_suffix("bench.json") {
+                if let Some(svg) = store.get(&format!("{dir}flamegraph.svg")).await? {
+                    let summary = cluster::flame::summarize(&String::from_utf8_lossy(&svg), 15);
+                    if v.get("profile").is_some_and(|p| p.is_object()) {
+                        v["profile"]["summary"] = serde_json::to_value(summary)?;
+                    }
+                }
+            }
             out.extend(
                 bench::log_parts(&v)
                     .into_iter()
@@ -773,7 +783,42 @@ mod tests {
             .put("runs/s1ix/other.txt", b"x".to_vec(), "text/plain")
             .await
             .unwrap();
+        // A run with a profile: its summary comes again from the stored graph.
+        let profiled = serde_json::json!({"label": "p1", "passes": [],
+            "profile": {"secs": 1.0, "searches": 1, "first_shift_days": 0, "summary": {"total_samples": 1}}});
+        store
+            .put(
+                "runs/p1/bench.json",
+                profiled.to_string().into_bytes(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let svg = concat!(
+            r#"<svg><g><title>all (10 samples, 100%)</title><rect y="100" fg:x="0" fg:w="10"/></g>"#,
+            r#"<g><title>main_runtime_th (10 samples, 100%)</title><rect y="84" fg:x="0" fg:w="10"/></g>"#,
+            r#"<g><title>rustls::read (10 samples, 100%)</title><rect y="68" fg:x="0" fg:w="10"/></g></svg>"#
+        );
+        store
+            .put(
+                "runs/p1/flamegraph.svg",
+                svg.as_bytes().to_vec(),
+                "image/svg+xml",
+            )
+            .await
+            .unwrap();
         let got = dump(store.as_ref()).await.unwrap();
+        let profile = got
+            .iter()
+            .find(|(k, v)| k == "bench_profile" && v["label"] == "p1")
+            .map(|(_, v)| v["profile"]["summary"].clone())
+            .unwrap();
+        assert_eq!(profile["total_samples"], 10);
+        assert_eq!(profile["main_runtime_top"][0][0], "rustls::read");
+        let got: Vec<_> = got
+            .into_iter()
+            .filter(|(_, v)| v["label"] != "p1")
+            .collect();
         let kinds: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(kinds, ["bench", "bench_pass", "load"]);
         assert_eq!(got[0].1["passes_logged"], 1);

@@ -36,9 +36,12 @@ pub struct Summary {
     pub search_pool_top: Vec<(String, u64)>,
 }
 
-/// The main runtime's thread name (`quickwit-cli/src/main.rs`).
-pub const MAIN_RUNTIME: &str = "main_runtime_thread";
-/// The search pool's (`quickwit-common/src/thread_pool`, `quickwit-{name}-{n}`).
+/// The main runtime's thread name (`main_runtime_thread`,
+/// `quickwit-cli/src/main.rs`) as the graph has it: Linux keeps 15
+/// characters of a thread's name, so `main_runtime_th`. Matched as a prefix.
+pub const MAIN_RUNTIME: &str = "main_runtime_th";
+/// The search pool's (`quickwit-search-{n}`, `quickwit-common/src/thread_pool`;
+/// the profiler drops the number).
 pub const SEARCH_POOL: &str = "quickwit-search";
 
 fn unescape(s: &str) -> String {
@@ -138,7 +141,7 @@ pub fn summarize(svg: &str, n: usize) -> Option<Summary> {
     }
     let top_of = |name: &str| {
         let mut all: BTreeMap<String, u64> = BTreeMap::new();
-        for t in threads_frames.iter().filter(|f| f.name == name) {
+        for t in threads_frames.iter().filter(|f| f.name.starts_with(name)) {
             for (k, v) in top_self(&frames, &rows, t, n * 4) {
                 *all.entry(k).or_default() += v;
             }
@@ -174,7 +177,7 @@ mod tests {
         let svg = [
             "<svg>".to_owned(),
             g("all", 100, 0, 100),
-            g("main_runtime_thread", 84, 0, 60),
+            g("main_runtime_th", 84, 0, 60),
             g("tokio::runtime::task", 68, 0, 60),
             g("rustls::conn::read&lt;T&gt;", 52, 0, 25),
             g("hyper::proto (h1)", 52, 25, 20),
@@ -186,7 +189,7 @@ mod tests {
         .concat();
         let s = summarize(&svg, 3).unwrap();
         assert_eq!(s.total_samples, 100);
-        assert_eq!(s.threads["main_runtime_thread"], 60);
+        assert_eq!(s.threads["main_runtime_th"], 60);
         assert_eq!(s.threads["quickwit-search"], 40);
         assert_eq!(
             s.main_runtime_top,

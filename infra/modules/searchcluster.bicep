@@ -431,13 +431,14 @@ resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
           ]
           volumeMounts: localMode == 'nfs' ? [{ volumeName: 'search-share', mountPath: nfsMount }] : null
           // A first copy of a test index takes minutes before Quickwit
-          // listens: up to an hour.
+          // listens: up to an hour (Container Apps allows at most 240
+          // failures; 240 at 15 s).
           probes: [
             {
               type: 'Startup'
               httpGet: { path: '/health/livez', port: 7280 }
-              periodSeconds: 10
-              failureThreshold: 360
+              periodSeconds: 15
+              failureThreshold: 240
             }
             {
               type: 'Liveness'
