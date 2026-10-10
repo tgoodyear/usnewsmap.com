@@ -169,7 +169,7 @@ pub(crate) async fn aggregate_in(
         return Err(ApiError::Unsupported("format other than json".into()));
     }
     let snap = &ctx.snap;
-    let req = SearchRequest::from_raw(&raw, snap.refdata.bounds())?;
+    let req = snap.refdata.search_request(&raw)?;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
             "OCR-tolerant (fuzzy) matching".into(),

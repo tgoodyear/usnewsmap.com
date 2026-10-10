@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::field::Empty;
 use tracing::Instrument;
-use usnm_core::text::TextStatus;
+use usnm_core::text::{Analyzer, TextStatus};
 use usnm_core::time::{date_from_day, day_number, ym_number};
 use usnm_store::ObjectStore;
 
@@ -166,17 +166,26 @@ pub struct Published {
     pub pages: u64,
 }
 
+/// How a release writes its main-index documents. Every main index of a
+/// version is written the same way: a delta as the indexes it adds to were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocFormat {
+    /// The page's decade partition too (05 §5.5.5).
+    pub decade: bool,
+    /// The analyzer that folds the common-word pairs (05 §5.5.3, #168).
+    pub analyzer: Analyzer,
+}
+
 /// One engine document for a curated page (05 §5.5), with American
 /// Stories' text when it has some (05 §5.5.4). A page LoC has no usable
 /// text for is a document only with American Stories' text; its `text` is
 /// then empty.
-/// With `decade`, the page's decade partition too (05 §5.5.5).
 pub fn page_doc(
     row: &CuratedRow,
     title: &Title,
     place: &Place,
     text_as: Option<&str>,
-    decade: bool,
+    format: DocFormat,
 ) -> Value {
     main_doc(
         &row.key,
@@ -185,7 +194,7 @@ pub fn page_doc(
         title,
         place,
         text_as,
-        decade,
+        format,
     )
 }
 
@@ -199,7 +208,7 @@ pub fn main_doc(
     title: &Title,
     place: &Place,
     text_as: Option<&str>,
-    decade: bool,
+    format: DocFormat,
 ) -> Value {
     let mut doc = json!({
         "doc_id": k.doc_id(),
@@ -218,14 +227,14 @@ pub fn main_doc(
         "sort_key": (u64::from(title.ordinal) << 32) | (u64::from(k.edition) << 16) | u64::from(k.seq),
         "date": k.date.to_string(),
         "batch": batch,
-        "text_cg": usnm_core::common_grams::index_text(text),
+        "text_cg": usnm_core::common_grams::index_text(text, format.analyzer),
         "text": text,
     });
     if let Some(t) = text_as {
-        doc["text_as_cg"] = usnm_core::common_grams::index_text(t).into();
+        doc["text_as_cg"] = usnm_core::common_grams::index_text(t, format.analyzer).into();
         doc["text_as"] = t.into();
     }
-    if decade {
+    if format.decade {
         doc["decade"] = usnm_core::decade::of_date(k.date).into();
     }
     doc
@@ -417,16 +426,19 @@ impl Release {
                 "search backend changed; building a full base"
             );
         }
-        // A delta's pages would have `text_cg` at this version while the
-        // indexes it adds to don't, or have another: rebuild them all, so
-        // every index in the version has the same pairs (05 §5.5.3).
-        let regramming =
-            previous.is_some() && previous_grams != Some(usnm_core::common_grams::VERSION);
+        // Every index of a version has its pairs, and folds its words, with
+        // one analyzer (05 §5.5.3, #168): a delta is built with the
+        // published version's, and only a full base moves to the latest.
+        // A version without pairs, or with ones this code doesn't know,
+        // can't take a delta: rebuild every index.
+        let published_analyzer = previous_grams.and_then(usnm_core::common_grams::analyzer);
+        let regramming = previous.is_some() && published_analyzer.is_none();
         if regramming {
             tracing::info!(
                 from = ?previous_grams,
                 to = usnm_core::common_grams::VERSION,
-                "common-word pairs changed; building a full base"
+                "the published version has no common-word pairs this release can add to; \
+                 building a full base"
             );
         }
         // The same for American Stories' text (05 §5.5.4): a version says it
@@ -452,6 +464,18 @@ impl Release {
                 .as_ref()
                 .is_none_or(|p| p.indexes.len() > MAX_DELTAS);
         let decades = self.decade_layout(full, previous_decades);
+        let analyzer = match published_analyzer {
+            Some(a) if !full => a,
+            _ => Analyzer::LATEST,
+        };
+        if analyzer != Analyzer::LATEST {
+            tracing::info!(
+                common_grams = usnm_core::common_grams::version(analyzer),
+                latest = usnm_core::common_grams::VERSION,
+                "a delta folds its words as the published version's indexes do; a full \
+                 rebuild (USNM_INGEST_FULL) moves the version to the latest analyzer"
+            );
+        }
         if let Some(why) = &self.titles_left {
             if full {
                 return Err(TitlesLeft(format!(
@@ -790,6 +814,7 @@ impl Release {
             american_stories: self.american_stories,
             ja_latin: self.ja_latin,
             decades,
+            analyzer,
         };
         let mut run = IndexRun {
             id: version.clone(),
@@ -840,6 +865,7 @@ impl Release {
                     &latin_curated,
                     &latin_owned,
                     decades,
+                    analyzer,
                     report,
                 )
                 .await?
@@ -848,7 +874,7 @@ impl Release {
             latin_after.pages.extend(replaced);
             let stories_record = stories.as_ref().zip(stories_record.as_ref());
             let ja = self
-                .build_ja_index(lease, sink, &version, &overlay, &catalog)
+                .build_ja_index(lease, sink, &version, &overlay, &catalog, analyzer)
                 .await?;
             // What it built in the end: the Japanese index can come out empty.
             built.ja_index = ja.is_some();
@@ -878,6 +904,7 @@ impl Release {
                     },
                     stories_record,
                     &build_info::record(&built),
+                    analyzer,
                 )
                 .await?;
             Ok::<_, anyhow::Error>((docs, bounds, ja, added))
@@ -915,9 +942,10 @@ impl Release {
             "published_at": published_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "previous_version": run.previous_version,
             "synthetic": self.synthetic,
-            // Every index in the version has `text_cg` at this version
-            // (a release that would mix them builds a full base, above).
-            "common_grams": usnm_core::common_grams::VERSION,
+            // Every index in the version has `text_cg` at this version, the
+            // one of its analyzer (a delta keeps the published version's,
+            // above), which the API parses queries with (#168).
+            "common_grams": usnm_core::common_grams::version(analyzer),
         });
         // Every index in the version has American Stories' text: this one was
         // built with it, and so was the published version it adds to (or the
@@ -932,12 +960,13 @@ impl Release {
         if decades.on() {
             pointer["decades"] = json!(usnm_core::decade::VERSION);
         }
-        // The Japanese pages' index (#139). An API without Japanese search
-        // ignores the field; one with it checks the fold version matches.
+        // The Japanese pages' index (#139), folded with the same analyzer
+        // as the main indexes. An API without Japanese search ignores the
+        // field; one with it folds Japanese queries as `fold` says.
         if let Some((id, pages)) = &ja {
             pointer["ja"] = json!({
                 "indexes": [id],
-                "fold": usnm_core::ja::FOLD_VERSION,
+                "fold": usnm_core::ja::fold_version(analyzer),
                 "pages": pages,
             });
         }
@@ -1162,6 +1191,7 @@ impl Release {
         latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
         latin_owned: &HashMap<String, String>,
         decades: Decades,
+        analyzer: Analyzer,
         report: &Reporter,
     ) -> anyhow::Result<(
         u64,
@@ -1181,6 +1211,10 @@ impl Release {
             bail!("titles missing from the catalog: {missing:?}");
         }
         sink.create(index_id, decades).await?;
+        let format = DocFormat {
+            decade: decades.on(),
+            analyzer,
+        };
         // A partitioned base's pages go out a decade at a time, through
         // files on the writer's scratch disk (`crate::decade_order`).
         let mut order = match decades {
@@ -1296,17 +1330,9 @@ impl Release {
                                     ocr_engine: p.ocr_engine.clone(),
                                 },
                             ));
-                            main_doc(
-                                &row.key,
-                                &row.batch,
-                                text,
-                                title,
-                                place,
-                                text_as,
-                                decades.on(),
-                            )
+                            main_doc(&row.key, &row.batch, text, title, place, text_as, format)
                         }
-                        None => page_doc(&row, title, place, text_as, decades.on()),
+                        None => page_doc(&row, title, place, text_as, format),
                     });
                     Ok(())
                 })
@@ -1344,7 +1370,7 @@ impl Release {
                 let place = catalog.place(&title.place_id).context("place")?;
                 // With the version's decade field, and a decade at a time
                 // in a partitioned base, like LoC's pages.
-                let d = ocr_ja::latin_doc(p, text, title, place, decades.on());
+                let d = ocr_ja::latin_doc(p, text, title, place, format);
                 match order.as_mut() {
                     Some(o) => o.add(sink, &d).await?,
                     None => sink.add(&d).await?,
@@ -1458,12 +1484,13 @@ impl Release {
         version: &str,
         overlay: &ocr_ja::Overlay,
         catalog: &Catalog,
+        analyzer: Analyzer,
     ) -> anyhow::Result<Option<(String, u64)>> {
         let mut docs = Vec::new();
         for p in overlay.pages.iter().filter(|p| p.indexable()) {
             let title = catalog.title(&p.key.lccn).context("title")?;
             let place = catalog.place(&title.place_id).context("place")?;
-            docs.push(ocr_ja::ja_doc(p, title, place));
+            docs.push(ocr_ja::ja_doc(p, title, place, analyzer));
         }
         if docs.is_empty() {
             return Ok(None);
@@ -1501,6 +1528,7 @@ impl Release {
         latin: &Latin<'_>,
         stories: Option<(&american_stories::Source, &american_stories::Record)>,
         build: &Value,
+        analyzer: Analyzer,
     ) -> anyhow::Result<((NaiveDate, NaiveDate), u64)> {
         let mut baselines: BTreeMap<String, BTreeMap<u32, u32>> = BTreeMap::new();
         // Every page counted once, by its title: the same pages as the
@@ -1630,7 +1658,7 @@ impl Release {
         // so a version without them has the same files as before).
         if !overlay.parts.is_empty() {
             let mut record = json!({
-                "fold": usnm_core::ja::FOLD_VERSION,
+                "fold": usnm_core::ja::fold_version(analyzer),
                 "index": ja.map(|(id, _)| id),
                 "indexed": ja.map_or(0, |(_, n)| *n),
                 "pages": overlay.pages.len(),

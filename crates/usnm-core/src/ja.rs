@@ -12,14 +12,35 @@
 //! Every fold maps one character to one character, so offsets in the folded
 //! text are offsets in the printed text: snippets show the forms as printed.
 //! Latin runs on a Japanese page fold exactly as the main index folds them
-//! ([`crate::text::fold`]), and a string with no Japanese tokenizes exactly
-//! as [`crate::text::tokenize`] does.
+//! ([`crate::text::fold`], with the same [`Analyzer`]), and a string with no
+//! Japanese tokenizes exactly as [`crate::text::tokenize`] does.
 
-use crate::text::{fold, MAX_TOKEN_CHARS};
+use crate::text::{fold, Analyzer, MAX_TOKEN_CHARS};
 use unicode_normalization::UnicodeNormalization;
 
-/// Bumped whenever the folding changes: the index and the API must agree.
-pub const FOLD_VERSION: u32 = 1;
+/// The latest version of the folding, which a full rebuild builds with:
+/// bumped whenever the folding changes, since the index and the API must
+/// agree (`current.json`'s `ja.fold`). 1: the first. 2: Latin runs keep `½`
+/// and the like as one word (#168, [`Analyzer::V2`]).
+pub const FOLD_VERSION: u32 = 2;
+
+/// The analyzer of fold version `version`, or `None` for a version this
+/// code doesn't know (a newer one).
+pub fn analyzer(version: u32) -> Option<Analyzer> {
+    match version {
+        1 => Some(Analyzer::V1),
+        2 => Some(Analyzer::V2),
+        _ => None,
+    }
+}
+
+/// The fold version an index built with `analyzer` records.
+pub fn fold_version(analyzer: Analyzer) -> u32 {
+    match analyzer {
+        Analyzer::V1 => 1,
+        Analyzer::V2 => 2,
+    }
+}
 
 /// Characters a Japanese query run may have (a run is one phrase).
 pub const MAX_JA_RUN_CHARS: usize = 32;
@@ -382,9 +403,10 @@ pub struct Token {
 }
 
 /// Split text into search tokens: one per Japanese character (folded), and
-/// Latin and digit runs folded as the main index folds them. With no Japanese
-/// in `text`, the token texts equal [`crate::text::tokenize`]'s.
-pub fn tokens(text: &str) -> Vec<Token> {
+/// Latin and digit runs folded as the main index folds them with `analyzer`.
+/// With no Japanese in `text`, the token texts equal
+/// [`crate::text::tokenize`]'s.
+pub fn tokens(text: &str, analyzer: Analyzer) -> Vec<Token> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -419,7 +441,7 @@ pub fn tokens(text: &str) -> Vec<Token> {
             while i < chars.len() && chars[i].is_alphanumeric() && !is_ja(chars[i]) {
                 i += 1;
             }
-            let t = fold(&chars[start..i].iter().collect::<String>());
+            let t = fold(&chars[start..i].iter().collect::<String>(), analyzer);
             if !t.is_empty() && t.chars().count() <= MAX_TOKEN_CHARS {
                 out.push(Token {
                     text: t,
@@ -434,14 +456,14 @@ pub fn tokens(text: &str) -> Vec<Token> {
 }
 
 /// The token texts of [`tokens`].
-pub fn tokenize(text: &str) -> Vec<String> {
-    tokens(text).into_iter().map(|t| t.text).collect()
+pub fn tokenize(text: &str, analyzer: Analyzer) -> Vec<String> {
+    tokens(text, analyzer).into_iter().map(|t| t.text).collect()
 }
 
 /// What a Japanese page's `text` field holds: its tokens joined by spaces, for
 /// Quickwit's `whitespace` tokenizer (which keeps positions, so phrases work).
-pub fn index_text(printed: &str) -> String {
-    tokenize(printed).join(" ")
+pub fn index_text(printed: &str, analyzer: Analyzer) -> String {
+    tokenize(printed, analyzer).join(" ")
 }
 
 /// Whether a string has any Japanese character.
@@ -451,8 +473,8 @@ pub fn has_ja(s: &str) -> bool {
 
 /// Where `phrases` (each a token sequence, as the query parser builds them)
 /// occur in `printed`, as character ranges, sorted and merged.
-pub fn find(printed: &str, phrases: &[Vec<String>]) -> Vec<(usize, usize)> {
-    let toks = tokens(printed);
+pub fn find(printed: &str, phrases: &[Vec<String>], analyzer: Analyzer) -> Vec<(usize, usize)> {
+    let toks = tokens(printed, analyzer);
     let mut hits = Vec::new();
     for phrase in phrases.iter().filter(|p| !p.is_empty()) {
         for w in toks.windows(phrase.len()) {
@@ -480,6 +502,7 @@ pub fn snippets(
     phrases: &[Vec<String>],
     context: usize,
     max: usize,
+    analyzer: Analyzer,
 ) -> Vec<Vec<(bool, String)>> {
     let chars: Vec<char> = printed
         .chars()
@@ -487,7 +510,7 @@ pub fn snippets(
         .collect();
     let mut out = Vec::new();
     let mut covered = 0;
-    let hits = find(printed, phrases);
+    let hits = find(printed, phrases, analyzer);
     let mut k = 0;
     while k < hits.len() && out.len() < max {
         let (s, _) = hits[k];
@@ -523,6 +546,8 @@ mod tests {
     use super::*;
     use crate::text;
 
+    const A: Analyzer = Analyzer::LATEST;
+
     #[test]
     fn the_fold_table_is_sorted_one_to_one_and_folds_to_modern_forms() {
         for w in OLD_TO_NEW.windows(2) {
@@ -552,30 +577,30 @@ mod tests {
 
     #[test]
     fn halfwidth_and_decomposed_voiced_kana_compose() {
-        assert_eq!(tokenize("ｶﾞｽ"), vec!["ガ", "ス"]);
-        assert_eq!(tokenize("ガス"), vec!["ガ", "ス"]);
-        assert_eq!(tokenize("か\u{3099}"), vec!["が"]);
-        assert_eq!(tokenize("ﾊﾟﾝ"), vec!["パ", "ン"]);
+        assert_eq!(tokenize("ｶﾞｽ", A), vec!["ガ", "ス"]);
+        assert_eq!(tokenize("ガス", A), vec!["ガ", "ス"]);
+        assert_eq!(tokenize("か\u{3099}", A), vec!["が"]);
+        assert_eq!(tokenize("ﾊﾟﾝ", A), vec!["パ", "ン"]);
         // The composed token covers both printed characters.
-        let t = tokens("ｶﾞｽ");
+        let t = tokens("ｶﾞｽ", A);
         assert_eq!((t[0].start, t[0].end, t[1].start), (0, 2, 2));
         // A stray mark is dropped.
-        assert_eq!(tokenize("\u{FF9E}ス"), vec!["ス"]);
+        assert_eq!(tokenize("\u{FF9E}ス", A), vec!["ス"]);
     }
 
     #[test]
     fn tokens_one_per_japanese_character_and_latin_runs_as_the_main_index() {
         assert_eq!(
-            tokenize("去年の大記事は何?やはり西歐大侵略戰"),
+            tokenize("去年の大記事は何?やはり西歐大侵略戰", A),
             "去 年 の 大 記 事 は 何 や は り 西 欧 大 侵 略 戦"
                 .split(' ')
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            tokenize("ROCKY Shimpo 新報 1945年"),
+            tokenize("ROCKY Shimpo 新報 1945年", A),
             vec!["rocky", "shimpo", "新", "報", "1945", "年"]
         );
-        let t = tokens("A去年");
+        let t = tokens("A去年", A);
         assert_eq!((t[1].start, t[1].end, t[1].ja), (1, 2, true));
     }
 
@@ -586,22 +611,38 @@ mod tests {
             "well-known 1896-97 Æsop ﬁne naïve",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa short",
             "Ñoño Łódź Straße 12th",
+            "Wheat ½ higher at 61¼ ﷺ Ŀa",
         ] {
-            assert_eq!(tokenize(s), text::tokenize(s), "{s}");
+            for a in Analyzer::ALL {
+                assert_eq!(tokenize(s, a), text::tokenize(s, a), "{s} {a:?}");
+            }
         }
+        // Each version folds a Latin run on a Japanese page as the main
+        // index of that version does (#168).
+        assert_eq!(index_text("小麦 ½", Analyzer::V2), "小 麦 ½");
+        assert_eq!(index_text("小麦 ½", Analyzer::V1), "小 麦 1\u{2044}2");
+    }
+
+    #[test]
+    fn fold_versions_name_their_analyzers() {
+        assert_eq!(analyzer(FOLD_VERSION), Some(Analyzer::LATEST));
+        for a in Analyzer::ALL {
+            assert_eq!(analyzer(fold_version(a)), Some(a));
+        }
+        assert_eq!(analyzer(FOLD_VERSION + 1), None);
     }
 
     #[test]
     fn index_text_is_space_separated_tokens() {
-        assert_eq!(index_text("西歐大\n侵略戰"), "西 欧 大 侵 略 戦");
+        assert_eq!(index_text("西歐大\n侵略戰", A), "西 欧 大 侵 略 戦");
     }
 
     #[test]
     fn finds_phrases_in_printed_text_through_folding() {
         let printed = "やはり西歐大侵略戰\n米國通信社";
-        let p = vec![tokenize("西欧"), tokenize("米国")];
-        assert_eq!(find(printed, &p), vec![(3, 5), (10, 12)]);
-        let s = snippets(printed, &[tokenize("侵略戦")], 3, 2);
+        let p = vec![tokenize("西欧", A), tokenize("米国", A)];
+        assert_eq!(find(printed, &p, A), vec![(3, 5), (10, 12)]);
+        let s = snippets(printed, &[tokenize("侵略戦", A)], 3, 2, A);
         assert_eq!(
             s,
             vec![vec![

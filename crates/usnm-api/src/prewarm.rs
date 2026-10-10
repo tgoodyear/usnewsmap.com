@@ -46,7 +46,7 @@ use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 use serde::Deserialize;
 
-use usnm_core::params::{RawParams, SearchRequest};
+use usnm_core::params::RawParams;
 
 use crate::error::ApiError;
 use crate::routes::{self, Ctx};
@@ -591,6 +591,7 @@ async fn ranked(state: &AppState, snap: &Snapshot, left: Duration) -> Vec<String
         state.config.prewarm_log_days,
         n + examples().len(),
         snap.refdata.bounds(),
+        snap.refdata.analyzers(),
     );
     match tokio::time::timeout(left.min(LOG_READ_LIMIT), read).await {
         Ok(top) => top,
@@ -640,12 +641,12 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
     run.query(Endpoint::Places, "", &format!("/v1/places?v={v}"), false)
         .await;
 
-    let bounds = snap.refdata.bounds();
     let canonical: Vec<Option<String>> = examples()
         .iter()
         .map(|ex| {
             let raw = RawParams::parse(&ex.aggregate).ok()?;
-            SearchRequest::from_raw(&raw, bounds)
+            snap.refdata
+                .search_request(&raw)
                 .ok()
                 .map(|r| r.canonical())
         })
@@ -660,7 +661,7 @@ pub async fn run(state: &Arc<AppState>, snap: Arc<Snapshot>, trigger: Trigger) -
     // same search; `None` if it doesn't parse (the handler says why).
     let key = |canonical: &str| {
         let raw = RawParams::parse(canonical).ok()?;
-        let req = SearchRequest::from_raw(&raw, bounds).ok()?;
+        let req = snap.refdata.search_request(&raw).ok()?;
         Some(routes::aggregate_key(&snap.refdata, canonical, &req.query))
     };
     let mut searches: Vec<Search> = order(&canonical, &ranked)
@@ -757,7 +758,12 @@ mod tests {
             let raw = RawParams::parse(&e.aggregate).unwrap();
             raw.reject_unknown(&[]).unwrap();
             assert!(raw.get("v").is_none(), "{}: `v` is added per version", e.id);
-            SearchRequest::from_raw(&raw, bounds).unwrap_or_else(|err| panic!("{}: {err}", e.id));
+            // Both analyzer versions, as the version served may have either.
+            for a in usnm_core::text::Analyzer::ALL {
+                let analyzers = usnm_core::text::Analyzers::all(a);
+                usnm_core::params::SearchRequest::from_raw(&raw, bounds, analyzers)
+                    .unwrap_or_else(|err| panic!("{}: {err} ({a:?})", e.id));
+            }
         }
     }
 
