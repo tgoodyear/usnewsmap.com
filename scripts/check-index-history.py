@@ -65,7 +65,12 @@ def problems(path: Path, validate) -> list[str]:
     except fastjsonschema.JsonSchemaValueException as e:
         return out + [f"schema: {e.message} (at {'/'.join(map(str, e.path))})"]
     for version, b in doc.items():
-        pushed, started = when(b["image"]["pushed_at"]), when(b["run_started_at"])
+        # The schema checks the form, not the calendar (2026-99-99 fits it).
+        try:
+            pushed, started = when(b["image"]["pushed_at"]), when(b["run_started_at"])
+        except ValueError as e:
+            out.append(f"{version}: not a real time: {e}")
+            continue
         if pushed > started:
             out.append(f"{version}: image pushed at {b['image']['pushed_at']}, after the run started at "
                        f"{b['run_started_at']}")

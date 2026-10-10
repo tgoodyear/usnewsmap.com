@@ -120,6 +120,14 @@ class Check(unittest.TestCase):
         self.assertEqual(got, ["pages-v20260928-1: image pushed at 2026-09-29T00:00:00Z, after the run started "
                                "at 2026-09-28T22:36:26.099785764Z"])
 
+    def test_a_time_the_calendar_doesnt_have(self):
+        got = self.broken(lambda e: e["image"].update(pushed_at="2026-99-99T00:00:00Z"))
+        self.assertEqual(len(got), 1, got)
+        self.assertTrue(got[0].startswith("pages-v20260928-1: not a real time: "), got)
+        got = self.broken(lambda e: e.update(run_started_at="2026-02-30T22:36:26.099785764Z"))
+        self.assertEqual(len(got), 1, got)
+        self.assertTrue(got[0].startswith("pages-v20260928-1: not a real time: "), got)
+
     def test_main_checks_the_given_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "h.json"
