@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Start one execution of an environment's Container Apps job with other
+# arguments, keeping the job's image, settings and replicas, and print the
+# execution's name.
+#
+#   scripts/start-job.sh dev INGEST_JOB enqueue --batches a_ver01,b_ver01
+#   scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
+#   scripts/start-job.sh dev SEARCH_CLUSTER_JOB bench --label n1 --index s1ix --sample dev1pct
+#
+# The second argument is the setting that names the job (INGEST_JOB,
+# BACKFILL_JOB, SEARCH_CLUSTER_JOB, ...: the stack's outputs). The rest
+# replaces the first container's arguments; its command stays. `az
+# containerapp job start --args` sends a container without the image or
+# settings, so this copies the job's template and swaps only the arguments
+# (as scripts/ja-ocr/start-quality.sh does). Needs az signed in to the
+# environment's subscription and jq.
+set -euo pipefail
+[ $# -ge 3 ] || { sed -n '2,16s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+ENV_NAME=$1
+SETTING=$2
+shift 2
+die() { echo "error: $*" >&2; exit 1; }
+cd "$(dirname "$0")/.."
+. scripts/lib/env.sh
+command -v jq > /dev/null || die "jq is needed to build the request"
+[ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME"
+[[ $SETTING =~ _JOB$ ]] || die "\"$SETTING\" isn't a job setting (INGEST_JOB, BACKFILL_JOB, SEARCH_CLUSTER_JOB, ...)"
+sub=$(aget AZURE_SUBSCRIPTION_ID)
+rg=$(aget AZURE_RESOURCE_GROUP)
+job=$(aget "$SETTING")
+[ -n "$job" ] || die "$SETTING isn't set for $ENV_NAME (is the job deployed? run scripts/provision.sh $ENV_NAME)"
+template=$(az containerapp job show -n "$job" -g "$rg" --subscription "$sub" --query properties.template -o json) ||
+  die "can't read $job (is az signed in to the environment's tenant?)"
+# `--args --`: the job's arguments are positional strings, not jq options.
+body=$(jq -c '{containers: [.containers[0] | .args = $ARGS.positional],
+  initContainers: (.initContainers // [])}' --args -- "$@" <<< "$template")
+az rest --method post \
+  --url "https://management.azure.com/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.App/jobs/$job/start?api-version=2025-01-01" \
+  --body "$body" --query name -o tsv

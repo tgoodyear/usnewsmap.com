@@ -201,6 +201,8 @@ jobs:
         run: scripts/ci/lint-bicep.sh
       - name: No shared-key authentication (ADR-0009)
         run: scripts/ci/no-shared-keys.sh
+      - name: The search cluster report's tests pass
+        run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # The workbooks are loaded as text, so Bicep doesn't parse them.
       - name: The workbook definitions parse and name the workspace placeholder
         run: |
@@ -208,6 +210,7 @@ jobs:
           python3 -m unittest -v scripts/ci/test_check_workbooks.py
       - run: bicep build infra/main.bicep --stdout > /dev/null
       - run: bicep build infra/guardrails.bicep --stdout > /dev/null
+      - run: bicep build infra/archive/main.bicep --stdout > /dev/null
       # The parameters bootstrap deploys the stack with (settings from the
       # environment; unset ones take their defaults).
       - run: bicep build-params infra/main.bicepparam --stdout > /dev/null

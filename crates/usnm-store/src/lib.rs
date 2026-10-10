@@ -6,9 +6,12 @@
 //! account keys or SAS. Development and tests use a local directory with the
 //! same layout.
 
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures::Stream;
 
 pub mod blob;
 pub mod credential;
@@ -16,6 +19,9 @@ pub mod local;
 
 pub use blob::BlobStore;
 pub use local::LocalStore;
+
+/// An object's chunks as they are read (`ObjectStore::get_stream`).
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, StoreError>> + Send>>;
 
 /// Largest object `get` will read into memory.
 pub const MAX_OBJECT_BYTES: u64 = 256 * 1024 * 1024;
@@ -68,6 +74,43 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     async fn modified(&self, path: &str) -> Result<Option<std::time::SystemTime>, StoreError> {
         let _ = path;
         Ok(None)
+    }
+
+    /// Read an object as a stream of chunks, however large; `None` if it
+    /// doesn't exist. The default reads it whole (`get`, so at most
+    /// [`MAX_OBJECT_BYTES`]); Blob Storage streams it.
+    async fn get_stream(&self, path: &str) -> Result<Option<ByteStream>, StoreError> {
+        Ok(self.get(path).await?.map(|b| {
+            let s: ByteStream = Box::pin(futures::stream::once(async move { Ok(Bytes::from(b)) }));
+            s
+        }))
+    }
+
+    /// Create or replace an object from `chunks` as they arrive, without
+    /// holding it whole, in access tier `tier` where the store has tiers
+    /// (`Cold` in Blob Storage). It becomes visible only if `commit` says
+    /// `true` once the chunks end; otherwise (`false`, or the sender
+    /// dropped) nothing is written and this fails. Returns its size. The
+    /// default buffers the object and `put`s it.
+    async fn put_stream(
+        &self,
+        path: &str,
+        content_type: &str,
+        tier: Option<&str>,
+        mut chunks: tokio::sync::mpsc::Receiver<Bytes>,
+        commit: tokio::sync::oneshot::Receiver<bool>,
+    ) -> Result<u64, StoreError> {
+        let _ = tier;
+        let mut body = Vec::new();
+        while let Some(c) = chunks.recv().await {
+            body.extend_from_slice(&c);
+        }
+        if commit.await != Ok(true) {
+            return Err(StoreError::Io(format!("`{path}`: upload abandoned")));
+        }
+        let n = body.len() as u64;
+        self.put(path, body, content_type).await?;
+        Ok(n)
     }
 
     /// The paths of the objects under `prefix` (a directory-like path

@@ -13,7 +13,48 @@ use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode, Url};
 
 use crate::credential::Credential;
-use crate::{validate_path, ObjectStore, StoreError, MAX_OBJECT_BYTES};
+use crate::{validate_path, ByteStream, ObjectStore, StoreError, MAX_OBJECT_BYTES};
+
+/// Bytes per block of a streamed upload (`put_stream`): 50,000 blocks of
+/// 8 MiB allow 390 GiB, and the largest batch archive is 3.8 GB.
+pub const BLOCK_BYTES: usize = 8 * 1024 * 1024;
+
+/// How long one streamed read or block may take: a whole archive is read
+/// in one response.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
+
+/// A prefix for one upload's block ids: Azure stages blocks by blob and id,
+/// so two uploads to the same blob at once must not share ids, or a commit
+/// could mix their blocks.
+fn upload_tag() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let mix = nanos
+        ^ (u64::from(std::process::id()) << 32)
+        ^ SEQ.fetch_add(1, Ordering::Relaxed).rotate_left(17);
+    format!("{mix:016x}")
+}
+
+/// The `n`th block's id in upload `tag`: the same length for every block, base64.
+fn block_id(tag: &str, n: usize) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(format!("{tag}{n:08}"))
+}
+
+/// The Put Block List body committing `ids` in order.
+fn block_list(ids: &[String]) -> String {
+    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?><BlockList>");
+    for id in ids {
+        xml.push_str("<Latest>");
+        xml.push_str(id);
+        xml.push_str("</Latest>");
+    }
+    xml.push_str("</BlockList>");
+    xml
+}
 
 /// Blob service REST API version (bearer tokens need 2017-11-09 or later).
 pub const API_VERSION: &str = "2023-11-03";
@@ -140,8 +181,123 @@ fn transport(op: &'static str, path: &str, e: reqwest::Error) -> StoreError {
     StoreError::Io(format!("{op} `{path}`: {}", e.without_url()))
 }
 
+impl BlobStore {
+    async fn put_block(&self, path: &str, id: &str, body: Vec<u8>) -> Result<(), StoreError> {
+        let resp = self
+            .request(Method::PUT, path)
+            .await?
+            .query(&[("comp", "block"), ("blockid", id)])
+            .header(CONTENT_LENGTH, body.len())
+            .timeout(STREAM_TIMEOUT)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| transport("put block", path, e))?;
+        match resp.status() {
+            StatusCode::CREATED => Ok(()),
+            s => Err(StoreError::Http {
+                op: "put block",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+}
+
 #[async_trait]
 impl ObjectStore for BlobStore {
+    async fn get_stream(&self, path: &str) -> Result<Option<ByteStream>, StoreError> {
+        use futures::StreamExt;
+        let resp = self
+            .request(Method::GET, path)
+            .await?
+            .timeout(STREAM_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| transport("get", path, e))?;
+        match resp.status() {
+            StatusCode::NOT_FOUND => Ok(None),
+            s if !s.is_success() => Err(StoreError::Http {
+                op: "get",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+            _ => {
+                let path = path.to_owned();
+                let s: ByteStream = Box::pin(
+                    resp.bytes_stream()
+                        .map(move |c| c.map_err(|e| transport("get", &path, e))),
+                );
+                Ok(Some(s))
+            }
+        }
+    }
+
+    /// Put Block for every [`BLOCK_BYTES`], then Put Block List with the
+    /// tier: blocks stay invisible (and are discarded within a week) unless
+    /// the list is committed.
+    async fn put_stream(
+        &self,
+        path: &str,
+        content_type: &str,
+        tier: Option<&str>,
+        mut chunks: tokio::sync::mpsc::Receiver<bytes::Bytes>,
+        commit: tokio::sync::oneshot::Receiver<bool>,
+    ) -> Result<u64, StoreError> {
+        validate_path(path)?;
+        let tag = upload_tag();
+        let mut ids = Vec::new();
+        let mut buf: Vec<u8> = Vec::with_capacity(BLOCK_BYTES);
+        let mut total = 0u64;
+        while let Some(c) = chunks.recv().await {
+            total += c.len() as u64;
+            let mut rest = &c[..];
+            while !rest.is_empty() {
+                let take = (BLOCK_BYTES - buf.len()).min(rest.len());
+                buf.extend_from_slice(&rest[..take]);
+                rest = &rest[take..];
+                if buf.len() == BLOCK_BYTES {
+                    let id = block_id(&tag, ids.len());
+                    let body = std::mem::replace(&mut buf, Vec::with_capacity(BLOCK_BYTES));
+                    self.put_block(path, &id, body).await?;
+                    ids.push(id);
+                }
+            }
+        }
+        if !buf.is_empty() {
+            let id = block_id(&tag, ids.len());
+            self.put_block(path, &id, buf).await?;
+            ids.push(id);
+        }
+        if commit.await != Ok(true) {
+            return Err(StoreError::Io(format!(
+                "`{path}`: upload abandoned; its blocks were not committed"
+            )));
+        }
+        let mut req = self
+            .request(Method::PUT, path)
+            .await?
+            .query(&[("comp", "blocklist")])
+            .header("x-ms-blob-content-type", content_type)
+            .header(CONTENT_TYPE, "application/xml");
+        if let Some(t) = tier {
+            req = req.header("x-ms-access-tier", t);
+        }
+        let resp = req
+            .body(block_list(&ids))
+            .send()
+            .await
+            .map_err(|e| transport("put block list", path, e))?;
+        match resp.status() {
+            StatusCode::CREATED => Ok(total),
+            s => Err(StoreError::Http {
+                op: "put block list",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+
     async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let resp = self
             .request(Method::GET, path)
@@ -346,6 +502,15 @@ impl ObjectStore for BlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uploads_never_share_block_ids() {
+        let (a, b) = (upload_tag(), upload_tag());
+        assert_ne!(a, b);
+        assert_ne!(block_id(&a, 0), block_id(&b, 0));
+        // Every id of an upload has the same length, as Azure requires.
+        assert_eq!(block_id(&a, 0).len(), block_id(&a, 49_999).len());
+    }
     use crate::credential::StaticToken;
 
     fn cred() -> Arc<Credential> {
