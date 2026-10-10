@@ -209,5 +209,8 @@ describe("api client", () => {
     expect(q({ q: "fever OR influenza", mode: "phrase" })).toBe("q=fever+OR+influenza&v=v");
     expect(isPlain("gold -silver")).toBe(false);
     expect(isPlain("gold-standard")).toBe(true);
+    expect(isPlain("pres?dent")).toBe(false);
+    expect(isPlain("who was president?")).toBe(true);
+    expect(q({ q: "pres?dent lincoln", mode: "phrase" })).toBe("q=pres%3Fdent+lincoln&v=v");
   });
 });

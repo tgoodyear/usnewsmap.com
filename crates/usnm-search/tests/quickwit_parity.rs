@@ -72,6 +72,11 @@ fn queries() -> Vec<(&'static str, Node)> {
         ("or", parse("(yellow OR orator)").unwrap()),
         ("not", parse("gold -standard").unwrap()),
         ("prefix", parse("silve*").unwrap()),
+        // Wildcards inside words (#124).
+        ("wildcard ?", parse("convent?on").unwrap()),
+        ("wildcard *", parse("conve*tion").unwrap()),
+        ("wildcards and", parse("railr*ad weath?r -cotton").unwrap()),
+        ("wildcard no match", parse("golde?s").unwrap()),
         (
             "mode any",
             build("bankers orator", Some(Mode::Any), 0, 0).unwrap(),
@@ -301,6 +306,37 @@ async fn american_stories_only_counts_the_hits_matched_only_there() {
     assert!(found > 0, "no page matched only in American Stories' text");
 }
 
+/// Quickwit 0.9.1's own snippets mark nothing for a wildcard (#124): it
+/// returns no fragment for `text:convent?on`. The hits' snippets don't come
+/// from Quickwit (#126), so the OCR variant a wildcard finds is still marked.
+#[tokio::test]
+async fn wildcard_hits_mark_the_words_they_match() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let f = filters("1895-01-01", "1897-12-31");
+    let page = HitsQuery {
+        limit: 20,
+        ..Default::default()
+    };
+    // Only the pages with the misread `conventlon`, in LoC's text (American
+    // Stories' text has `convention` on them, which `-convention` excludes).
+    let (_, set) = sets().remove(0);
+    let q = parse("convent?on -convention").unwrap();
+    let hits = qw.hits(&set, &q, &f, &page).await.expect("hits");
+    assert!(hits.total > 0);
+    for h in &hits.hits {
+        assert!(
+            h.snippets
+                .iter()
+                .any(|s| s.to_lowercase().contains("<mark>conventlon</mark>")),
+            "{:?}",
+            h.snippets
+        );
+    }
+}
+
 #[tokio::test]
 async fn hits_pages_match_the_reference_backend() {
     let Some(qw) = quickwit() else {
@@ -524,6 +560,7 @@ async fn japanese_searches_match_the_reference_backend() {
         ("or", parse("戦争 OR 選挙").unwrap()),
         ("not", parse("日本 -戦争").unwrap()),
         ("mixed latin", parse("denver 日本").unwrap()),
+        ("latin wildcard", parse("denve? 日本").unwrap()),
         ("punctuation", parse("東京、平和").unwrap()),
         ("near", build("米国 日本", Some(Mode::Near), 3, 0).unwrap()),
         ("any", build("戦争 選挙", Some(Mode::Any), 0, 0).unwrap()),

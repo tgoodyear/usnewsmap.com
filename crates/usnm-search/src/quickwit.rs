@@ -275,13 +275,14 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 // ------------------------------------------------------------ translation
 
 /// Quickwit query-language string for the AST. Terms are folded alphanumerics
-/// from our own parser, so they never need escaping. With `grams` (the
-/// indexes have `text_cg`, 05 §5.5.3), an exact phrase holding a common word
-/// searches `text_cg`, which never reads the common word's positions. Each
-/// of its other words is also required in `text`: that changes no match (a
-/// page with the phrase has the words) and gives the snippets on `text`
-/// their highlights. A word that folds to several (`ﷺ`) is left out of those:
-/// unquoted it would be several terms, and the pairs already require it.
+/// from our own parser, with at most the wildcards `?` and `*`, so they never
+/// need escaping. With `grams` (the indexes have `text_cg`, 05 §5.5.3), an
+/// exact phrase holding a common word searches `text_cg`, which never reads
+/// the common word's positions. Each of its other words is also required in
+/// `text`: that changes no match (a page with the phrase has the words) and
+/// gives the snippets on `text` their highlights. A word that folds to
+/// several (`ﷺ`) is left out of those: unquoted it would be several terms,
+/// and the pairs already require it.
 ///
 /// With `american_stories` (the indexes have `text_as` and `text_as_cg`,
 /// 05 §5.5.4), each term or phrase matches in either text: `(text:… OR
@@ -361,6 +362,8 @@ fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, Searc
             ));
         }
         Node::Term(t) if t.prefix => format!("{text}:{}*", t.text),
+        // With `?` or `*` in it (#124), an unquoted word is a wildcard query
+        // in Quickwit 0.9, matched against the index's words.
         Node::Term(t) => format!("{text}:{}", t.text),
         Node::Phrase { terms, slop } if *slop > 0 => {
             format!("{text}:\"{}\"~{slop}", terms.join(" "))
@@ -1088,6 +1091,16 @@ mod tests {
             query_string(&parse("gold~1").unwrap(), false, false),
             Err(SearchError::Unsupported(_))
         ));
+        // Wildcards inside a word go as typed, folded (#124).
+        assert_eq!(
+            query_string(&parse("Presi?ent washi*TON").unwrap(), false, false).unwrap(),
+            "(text:presi?ent AND text:washi*ton)"
+        );
+        // ...in either text when the version has American Stories' (#218).
+        assert_eq!(
+            query_string(&parse("presi?ent").unwrap(), false, true).unwrap(),
+            "(text:presi?ent OR text_as:presi?ent)"
+        );
     }
 
     #[test]
