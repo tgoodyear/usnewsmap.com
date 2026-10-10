@@ -528,6 +528,8 @@ async fn one_text_field_answers_as_both_texts_without_the_american_stories_only_
 async fn a_text_layout_this_api_does_not_know_is_not_loaded() {
     let store = LocalStore::new(data_dir());
     let mut current = refdata().await.current;
+    current.common_grams = Some(usnm_core::common_grams::VERSION);
+    current.american_stories = Some(usnm_core::american_stories::VERSION);
     for known in [None, Some(1), Some(2)] {
         current.text_layout = known;
         assert!(
@@ -535,9 +537,31 @@ async fn a_text_layout_this_api_does_not_know_is_not_loaded() {
             "{known:?}"
         );
     }
-    current.text_layout = Some(usnm_core::text_layout::TextLayout::LATEST.version() + 1);
-    let err = RefData::load_for(&store, current).await.unwrap_err();
+    let mut newer = current.clone();
+    newer.text_layout = Some(usnm_core::text_layout::TextLayout::LATEST.version() + 1);
+    let err = RefData::load_for(&store, newer).await.unwrap_err();
     assert!(err.contains("text_layout"), "{err}");
+    // One field for both texts holds words folded by the version's
+    // analyzer, and American Stories' text of its version: both must be
+    // ones the API knows, or queries would silently miss.
+    for (grams, stories) in [
+        (None, Some(usnm_core::american_stories::VERSION)),
+        (Some(usnm_core::common_grams::VERSION + 1), None),
+        (
+            Some(usnm_core::common_grams::VERSION),
+            Some(usnm_core::american_stories::VERSION + 1),
+        ),
+    ] {
+        let mut c = current.clone();
+        c.text_layout = Some(2);
+        c.common_grams = grams;
+        c.american_stories = stories;
+        let err = RefData::load_for(&store, c.clone()).await.unwrap_err();
+        assert!(err.contains("text_layout 2"), "{err}");
+        // A field per text still loads, as before.
+        c.text_layout = None;
+        assert!(RefData::load_for(&store, c).await.is_ok());
+    }
 }
 
 /// The persistent cache too: a response persisted with American Stories'

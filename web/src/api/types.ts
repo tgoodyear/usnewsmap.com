@@ -41,6 +41,11 @@ export interface Meta {
    * searches only it. Null or absent when the version has none.
    */
   ja?: { indexes: string[]; fold: number; pages: number } | null;
+  /**
+   * The main indexes' text fields (#285): 1, a searched field per text; 2,
+   * one field for both. Absent from older APIs.
+   */
+  text_layout?: 1 | 2;
 }
 
 export interface MetaLanguage {

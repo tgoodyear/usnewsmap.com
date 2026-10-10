@@ -294,12 +294,44 @@ impl RefData {
         // The fields a search names depend on the layout: one this API
         // doesn't know may not have them, so the loader keeps serving the
         // version it has (05 §5.5.6).
-        if TextLayout::from_version(current.text_layout).is_none() {
-            return Err(format!(
-                "current.json's text_layout {:?} isn't one this API knows (up to {})",
-                current.text_layout,
-                TextLayout::LATEST.version()
-            ));
+        match TextLayout::from_version(current.text_layout) {
+            None => {
+                return Err(format!(
+                    "current.json's text_layout {:?} isn't one this API knows (up to {})",
+                    current.text_layout,
+                    TextLayout::LATEST.version()
+                ))
+            }
+            // One field for both texts holds the words as the version's
+            // analyzer folded them, and American Stories' text if the
+            // version has any: queries folded by another analyzer would
+            // silently miss, and text of an unknown version would be
+            // searched without `matched_in` saying so. So both versions must
+            // be ones this API knows.
+            Some(TextLayout::Single) => {
+                if current
+                    .common_grams
+                    .and_then(usnm_core::common_grams::analyzer)
+                    .is_none()
+                {
+                    return Err(format!(
+                        "current.json's text_layout 2 needs a common_grams version this API \
+                         knows, not {:?}",
+                        current.common_grams
+                    ));
+                }
+                if current
+                    .american_stories
+                    .is_some_and(|v| v != usnm_core::american_stories::VERSION)
+                {
+                    return Err(format!(
+                        "current.json's text_layout 2 holds American Stories' text of version \
+                         {:?}, which this API doesn't know",
+                        current.american_stories
+                    ));
+                }
+            }
+            Some(TextLayout::Separate) => {}
         }
         let place_pages: HashMap<String, u64> = baselines
             .iter()

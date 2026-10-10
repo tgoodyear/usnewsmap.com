@@ -208,7 +208,7 @@ pub fn text_fields(layout: TextLayout, template: &str) -> anyhow::Result<String>
                     "# Both texts' words, one token per word as the release folds them,",
                     "# with 32 positions no query can match between the texts",
                     "# (usnm_core::text_layout::index_fields), and their common-word",
-                    "# pairs (05 §5.5.3), each text's made on its own.",
+                    "# pairs (05 §5.5.3), made separately for each text.",
                     "- { name: text_all, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
                     "- { name: text_all_cg, type: text, tokenizer: whitespace, record: position, stored: false, fieldnorms: false }",
                 ] {
