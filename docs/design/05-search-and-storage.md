@@ -152,7 +152,7 @@ The same logical fields exist in both engines. **Integer bucket fields** are use
 
 ### 5.5.1 Quickwit index config (validated in S-2)
 
-The config lives in [`infra/quickwit/pages-index.yaml`](../../infra/quickwit/pages-index.yaml). It is a template: the tooling substitutes `${INDEX_ID}` (`pages-base-20261001`, `pages-delta-20261008-1`, …) and `${INDEX_URI}` (`azure://qw-index/{id}`), so every base and delta shares one doc mapping. It has been checked against **Quickwit 0.9.1** (the pinned version) on the synthetic fixtures:
+The config lives in [`infra/quickwit/pages-index.yaml`](../../infra/quickwit/pages-index.yaml). It is a template: the tooling substitutes `${INDEX_ID}` (`pages-base-20261001`, `pages-delta-20261008-1`, …) and `${INDEX_URI}` (`azure://qw-index/{id}`), so every base and delta shares one doc mapping. It has been checked against **Quickwit 0.9.1** (the pinned version) on the synthetic fixtures. Production runs our build of 0.9.1 ([ADR-0013](adr/0013-quickwit-from-our-fork.md)): one commit that pools the Azure Blob client's connections, with the same index format, queries and aggregations, so the findings below hold for it. CI checks them on upstream's 0.9.1 release, on local files:
 
 ```yaml
 doc_mapping:

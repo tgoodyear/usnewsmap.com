@@ -68,6 +68,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    # Upstream's v0.9.1 release binary, not our build (ADR-0013): our one
+    # commit changes only the Azure Blob client, which these tests don't
+    # reach (they index and search local files), and building ours takes an
+    # hour with no binary published.
     env:
       QUICKWIT_VERSION: v0.9.1
       QUICKWIT_SHA256: ad67c2e2aab79e810906dfebec694aa50b07a001aaa75ce3ba7bc32d079f8185
@@ -168,6 +172,13 @@ jobs:
           cache-to: type=gha,scope=ingest,mode=max
       - name: The ingest image runs
         run: scripts/ci/check-ingest-image.sh usnm-ingest-check
+      # PR builds have no registry, so Dockerfile.ingest's default base is
+      # upstream's image; it must be the one infra/quickwit-image.json pins.
+      - name: Dockerfile.ingest's default Quickwit is the pinned upstream image
+        run: |
+          want=$(jq -r '.upstream | "\(.image):\(.tag)@\(.digest)"' infra/quickwit-image.json)
+          grep -qxF "ARG QUICKWIT_IMAGE=$want" Dockerfile.ingest ||
+            { echo "::error::Dockerfile.ingest's QUICKWIT_IMAGE default isn't $want"; exit 1; }
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -377,7 +388,6 @@ jobs:
       ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
       APP: ${{ vars.USNM_API_APP }}
       RG: ${{ vars.USNM_RESOURCE_GROUP }}
-      QUICKWIT: quickwit/quickwit@sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -397,6 +407,15 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - if: steps.head.outputs.current == 'true'
         run: az acr login --name "${ACR%%.*}"
+      # Before the ingest image, which is built on it: our Quickwit build if
+      # infra/quickwit-image.json lists this environment (it must be in the
+      # registry already), otherwise upstream's, copied in by digest.
+      - name: The registry has the pinned Quickwit image
+        id: quickwit
+        if: steps.head.outputs.current == 'true'
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: scripts/ci/quickwit-image.sh
       # As in `image`: Docker Hub base images through mirror.gcr.io.
       - if: steps.head.outputs.current == 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -420,7 +439,9 @@ jobs:
           file: Dockerfile.ingest
           push: true
           cache-from: type=gha,scope=ingest
-          build-args: USNM_GIT_SHA=${{ github.sha }}
+          build-args: |
+            USNM_GIT_SHA=${{ github.sha }}
+            QUICKWIT_IMAGE=${{ steps.quickwit.outputs.image }}
           tags: |
             ${{ env.ACR }}/usnewsmap-ingest:main
             ${{ env.ACR }}/usnewsmap-ingest:${{ github.sha }}
@@ -434,9 +455,6 @@ jobs:
           tags: |
             ${{ env.ACR }}/usnewsmap-ja-ocr:main
             ${{ env.ACR }}/usnewsmap-ja-ocr:${{ github.sha }}
-      - name: Copy the pinned Quickwit image into the registry, digest unchanged, unless it is there
-        if: steps.head.outputs.current == 'true'
-        run: scripts/ci/copy-quickwit.sh
       # The API app exists once the environment pulls from its registry
       # (bootstrap's second provision); until then only the images publish.
       - name: Roll the API onto this commit's image

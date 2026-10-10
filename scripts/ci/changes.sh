@@ -61,7 +61,8 @@ matches '^\.github/' && all "workflow changed"
 rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|scripts/(ci/|quickwit-fixtures\.sh))'
 # The web job also checks the format, so Prettier's config counts.
 web='^(web/|fixtures/|scripts/ci/|\.prettier(rc\.json|ignore)$)'
-image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$)"
+# The Quickwit pin is the ingest image's base, so a new one republishes it.
+image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$)"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 for part in rust web image fixtures; do
