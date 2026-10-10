@@ -33,8 +33,14 @@ fi
 
 az containerapp update -n "$APP" -g "$RG" --container-name api --image "$IMAGE" -o none
 
+# The update returns once the new revision is created, not when it's ready.
+# In single-revision mode the old revision serves until the new one passes
+# its startup and readiness probes, and with min replicas above 0 the API
+# stays not ready through its startup warm-up: loading plus up to 360 s,
+# within the startup probe's 780 s (infra/modules/containerapp.bicep). Wait
+# up to 15 minutes.
 latest="" ready=""
-for _ in $(seq 60); do
+for _ in $(seq 90); do
   revs=$(az containerapp show -n "$APP" -g "$RG" \
     --query "[properties.latestRevisionName, properties.latestReadyRevisionName]" -o tsv)
   latest=$(sed -n 1p <<< "$revs")

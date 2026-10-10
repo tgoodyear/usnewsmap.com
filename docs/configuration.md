@@ -22,10 +22,10 @@ The API (`usnm-api`) is configured with environment variables. Defaults suit loc
 | `USNM_REFRESH_SECS` | `600` | How often `current.json` is re-read for a newly published version |
 | `USNM_PREWARM_QUERY_SECS` | `60` | Cache warm-up before a version serves: limit on each query |
 | `USNM_PREWARM_BUDGET_SECS` | `900` | Cache warm-up before a publish swaps a version in: limit on the whole run; the rest is skipped |
-| `USNM_PREWARM_STARTUP_BUDGET_SECS` | `300` | The same limit for the warm-up after a start, which can go on past the readiness cap while the replica serves |
+| `USNM_PREWARM_STARTUP_BUDGET_SECS` | `300` | The same limit for the warm-up after a start. By default the replica isn't ready until it ends, so in a rollout the old revision serves meanwhile |
 | `USNM_PREWARM_TOP_SEARCHES` | `20` | Cache warm-up: after the examples, this many of the most frequent searches in the search log; the examples searched most go first (`0` turns both off) |
 | `USNM_PREWARM_LOG_DAYS` | `28` | Cache warm-up: how many days of the search log are counted, back from yesterday |
-| `USNM_READY_CAP_SECS` | `60` | After a start, `/readyz` reports ready once the warm-up ends or this much time passes |
+| `USNM_READY_CAP_SECS` | `USNM_PREWARM_STARTUP_BUDGET_SECS` + 60 (`360`) | After a start, `/readyz` reports ready once the warm-up ends or this much time passes; past it the replica serves while the warm-up finishes. The default lets a rollout move traffic only to a warm replica (06 §6.6). An app that scales to zero sets `60` (`infra/modules/containerapp.bicep`): a replica starting from zero has no other one serving, and the visitor who woke it waits for it |
 | `USNM_CACHE_MB` | `256` | In-process response cache size |
 | `USNM_RATE_PER_MIN` | `120` | Per-client token bucket refill rate on `/v1` (`0` disables) |
 | `USNM_RATE_BURST` | `40` | Per-client bucket size |

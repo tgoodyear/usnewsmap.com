@@ -28,7 +28,12 @@ fn data_dir() -> PathBuf {
 }
 
 fn config() -> Config {
-    let mut c = Config::from_lookup(|_| None).unwrap();
+    config_from(|_| None)
+}
+
+/// The test settings over the configuration `lookup` gives.
+fn config_from(lookup: impl Fn(&str) -> Option<String>) -> Config {
+    let mut c = Config::from_lookup(lookup).unwrap();
     c.data_dir = data_dir();
     c.reference_url = data_dir().display().to_string();
     c.rate_limit = None;
@@ -590,6 +595,35 @@ async fn not_ready_until_warm() {
     assert_eq!(readyz(&state).await, StatusCode::OK);
     // Ready means warm.
     assert_eq!(visit_examples(&state, &backend, "fixture-v1").await, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn by_default_not_ready_until_the_warm_up_ends() {
+    // The default cap is the startup budget plus a margin, so a warm-up that
+    // computes for its whole budget holds readiness to the end of it rather
+    // than to a fixed cap: a rollout keeps the old revision serving until
+    // this replica is warm (#265).
+    let dir = temp_reference("budget");
+    let mut cfg = config_from(|k| (k == "USNM_PREWARM_STARTUP_BUDGET_SECS").then(|| "1".into()));
+    assert_eq!(cfg.ready_cap, Duration::from_secs(61));
+    cfg.search_timeout = Duration::from_millis(200);
+    // Every query outlasts the budget.
+    let backend = Counting::new(Duration::from_secs(30), false);
+    let state = Arc::new(reloading_state(&dir, cfg, backend.clone()).await);
+
+    let started = Instant::now();
+    let warming = spawn_startup_warm_up(state.clone());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    // A 300 ms cap would have let visitors in by now.
+    assert_eq!(readyz(&state).await, StatusCode::SERVICE_UNAVAILABLE);
+    warming.await.unwrap();
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_secs(1) && waited < Duration::from_secs(5),
+        "{waited:?}"
+    );
+    assert_eq!(readyz(&state).await, StatusCode::OK);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

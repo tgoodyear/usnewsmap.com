@@ -19,6 +19,11 @@ pub struct RateLimit {
     pub burst: NonZeroU32,
 }
 
+/// The default readiness cap's margin over the startup warm-up's budget
+/// (`USNM_READY_CAP_SECS` unset): the warm-up stops its last query at the
+/// budget, then counts what it warmed, which takes seconds.
+pub const READY_CAP_MARGIN_SECS: u64 = 60;
+
 /// The shortest `USNM_ABANDON_AFTER_SECS`: the 2 s `Retry-After` of a `202`
 /// plus room for a slow network.
 pub const MIN_ABANDON_AFTER_SECS: u64 = 5;
@@ -66,8 +71,9 @@ pub struct Config {
     /// meanwhile, so this only delays the swap.
     pub prewarm_budget: Duration,
     /// Warm-up after a start: the same limit. Kept shorter than
-    /// `prewarm_budget`, because past `ready_cap` the replica serves visitors
-    /// while it warms, and both share its search sidecar.
+    /// `prewarm_budget`, because by default the replica isn't ready until it
+    /// finishes (`ready_cap`), and with a short cap it serves visitors while
+    /// it warms, on the same search sidecar.
     pub prewarm_startup_budget: Duration,
     /// Warm-up: after the examples, this many of the most frequent searches
     /// in the search log (0 turns it off).
@@ -79,7 +85,11 @@ pub struct Config {
     /// replica warms up.
     pub prewarm_retry_first: Duration,
     /// After a start, `/readyz` reports ready once the warm-up finishes or
-    /// this much time passes, whichever is first.
+    /// this much time passes, whichever is first. By default the startup
+    /// warm-up's budget plus `READY_CAP_MARGIN_SECS`, so a rollout keeps the
+    /// old revision serving until the new replica is warm, and only a hung
+    /// warm-up reaches it. Where no other replica serves meanwhile (an app
+    /// that scales to zero), a short cap lets the first visitor in sooner.
     pub ready_cap: Duration,
     pub refresh_interval: Duration,
     pub cache_bytes: u64,
@@ -181,6 +191,7 @@ impl Config {
                 Duration::from_millis(num("USNM_FIXTURE_SLOW_MS", 5000)?),
             )),
         };
+        let prewarm_startup_budget = num("USNM_PREWARM_STARTUP_BUDGET_SECS", 300)?;
         Ok(Self {
             bind: var("USNM_BIND").unwrap_or_else(|| "0.0.0.0:8080".to_owned()),
             backend,
@@ -212,15 +223,15 @@ impl Config {
             },
             prewarm_query_timeout: Duration::from_secs(num("USNM_PREWARM_QUERY_SECS", 60)?),
             prewarm_budget: Duration::from_secs(num("USNM_PREWARM_BUDGET_SECS", 900)?),
-            prewarm_startup_budget: Duration::from_secs(num(
-                "USNM_PREWARM_STARTUP_BUDGET_SECS",
-                300,
-            )?),
+            prewarm_startup_budget: Duration::from_secs(prewarm_startup_budget),
             prewarm_top_searches: usize::try_from(num("USNM_PREWARM_TOP_SEARCHES", 20)?)
                 .map_err(|e| e.to_string())?,
             prewarm_log_days: num("USNM_PREWARM_LOG_DAYS", 28)?,
             prewarm_retry_first: Duration::from_secs(1),
-            ready_cap: Duration::from_secs(num("USNM_READY_CAP_SECS", 60)?),
+            ready_cap: Duration::from_secs(num(
+                "USNM_READY_CAP_SECS",
+                prewarm_startup_budget.saturating_add(READY_CAP_MARGIN_SECS),
+            )?),
             refresh_interval: Duration::from_secs(num("USNM_REFRESH_SECS", 600)?.max(1)),
             cache_bytes: num("USNM_CACHE_MB", 256)? * 1024 * 1024,
             max_cells: usnm_core::cube::MAX_CELLS,
@@ -262,7 +273,8 @@ mod tests {
         assert_eq!(c.prewarm_query_timeout, Duration::from_secs(60));
         assert_eq!(c.prewarm_budget, Duration::from_secs(900));
         assert_eq!(c.prewarm_startup_budget, Duration::from_secs(300));
-        assert_eq!(c.ready_cap, Duration::from_secs(60));
+        // Past the startup warm-up's budget, so a start is ready when it's warm.
+        assert_eq!(c.ready_cap, Duration::from_secs(360));
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.ingest_cron.is_none());
         assert!(c.search_log_url.is_none());
@@ -325,5 +337,49 @@ mod tests {
             _ => None,
         })
         .is_err());
+    }
+
+    #[test]
+    fn ready_cap_follows_the_startup_budget_unless_set() {
+        let cap = |vars: &[(&str, &str)]| {
+            let vars: Vec<(String, String)> = vars
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
+            Config::from_lookup(move |k| {
+                vars.iter()
+                    .find(|(name, _)| name == k)
+                    .map(|(_, v)| v.clone())
+            })
+            .map(|c| c.ready_cap)
+        };
+        let secs = Duration::from_secs;
+        assert_eq!(cap(&[]), Ok(secs(300 + READY_CAP_MARGIN_SECS)));
+        // A longer or shorter warm-up moves the default with it.
+        assert_eq!(
+            cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", "120")]),
+            Ok(secs(180))
+        );
+        assert_eq!(
+            cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", "0")]),
+            Ok(secs(60))
+        );
+        // Set, it wins (an app that scales to zero keeps a short cap).
+        assert_eq!(cap(&[("USNM_READY_CAP_SECS", "60")]), Ok(secs(60)));
+        assert_eq!(
+            cap(&[
+                ("USNM_READY_CAP_SECS", "60"),
+                ("USNM_PREWARM_STARTUP_BUDGET_SECS", "900"),
+            ]),
+            Ok(secs(60))
+        );
+        // Empty, like unset, takes the default.
+        assert_eq!(cap(&[("USNM_READY_CAP_SECS", "")]), Ok(secs(360)));
+        assert!(cap(&[("USNM_READY_CAP_SECS", "six")]).is_err());
+        // Saturates rather than overflowing.
+        assert_eq!(
+            cap(&[("USNM_PREWARM_STARTUP_BUDGET_SECS", &u64::MAX.to_string())]),
+            Ok(secs(u64::MAX))
+        );
     }
 }
