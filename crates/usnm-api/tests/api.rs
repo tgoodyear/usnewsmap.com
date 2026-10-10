@@ -766,11 +766,11 @@ async fn wildcard_words_count_mark_and_refuse() {
     let all = ["pages-base-fixture", "pages-delta-fixture-1"];
     let (status, headers, body) = get(
         &s,
-        "/v1/aggregate?q=CON*%3FTION&from=1895-01-01&to=1897-12-31",
+        "/v1/aggregate?q=CONVE*%3FTION&from=1895-01-01&to=1897-12-31",
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let expected = oracle_count("con?*tion", "1895-01-01", "1897-12-31", &all);
+    let expected = oracle_count("conve?*tion", "1895-01-01", "1897-12-31", &all);
     assert!(expected > 0);
     assert_eq!(body["total"]["hits"], expected);
     assert_eq!(
@@ -778,12 +778,12 @@ async fn wildcard_words_count_mark_and_refuse() {
         oracle_count("convention", "1895-01-01", "1897-12-31", &all)
     );
     assert!(
-        header_str(&headers, header::CONTENT_LOCATION).contains("&q=con%3F*tion&"),
+        header_str(&headers, header::CONTENT_LOCATION).contains("&q=conve%3F*tion&"),
         "{}",
         header_str(&headers, header::CONTENT_LOCATION)
     );
 
-    let (status, _, page) = get(&s, "/v1/hits?q=silv%3Fr&place=P00001&limit=3").await;
+    let (status, _, page) = get(&s, "/v1/hits?q=silve%2Ar&place=P00001&limit=3").await;
     assert_eq!(status, StatusCode::OK, "{page}");
     let snippet = page["items"][0]["snippets"][0].as_str().unwrap();
     assert!(
@@ -792,10 +792,10 @@ async fn wildcard_words_count_mark_and_refuse() {
     );
 
     for (q, detail) in [
-        ("pr%3Fsident", "at least 3 letters"),
-        ("%2Agold", "at least 3 letters"),
-        ("%22pres%3Fdent+lincoln%22", "inside quotes"),
-        ("pres%3Fdent~1", "not both"),
+        ("pres%3Fdent", "wildcards must follow at least 5 letters"),
+        ("%2Agold", "wildcards must follow at least 5 letters"),
+        ("%22presi%3Fent+lincoln%22", "inside quotes"),
+        ("presi%3Fent~1", "not both"),
     ] {
         let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{q}");

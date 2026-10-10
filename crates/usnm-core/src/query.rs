@@ -12,7 +12,7 @@
 //! ```
 //!
 //! A `WILDCARD` is a word with `?` (exactly one character) or `*` (any run)
-//! inside it, after at least 3 letters (#124).
+//! inside it, after at least [`MIN_PREFIX_CHARS`] letters (#124).
 //!
 //! Only the parsed AST ever reaches a search backend; raw user syntax is never
 //! forwarded, which removes the legacy Solr injection risk structurally.
@@ -28,11 +28,11 @@ use crate::text::{fold, MAX_TOKEN_CHARS};
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_TERMS: usize = 12;
 pub const MAX_OR_BRANCHES: usize = 4;
-/// Letters a word needs before a trailing `*` (`influ*`). A prefix search
-/// walks every indexed word that starts with them, in every split: on the full
-/// index three letters cost 39 s (`inf*`) to over 120 s (`con*`) of searcher
-/// time per cold search (06 §6.4). Inner wildcards (#124) are meant to share
-/// this minimum.
+/// Letters a word needs before a trailing `*` (`influ*`) or before its first
+/// wildcard (`presi?ent`, #124). Either search walks every indexed word that
+/// starts with them, in every split: on the full index three letters cost
+/// 39 s (`inf*`) to over 120 s (`con*`) of searcher time per cold search
+/// (06 §6.4).
 pub const MIN_PREFIX_CHARS: usize = 5;
 pub const MAX_FUZZY: u8 = 2;
 pub const MAX_SLOP: u8 = 20;
@@ -1033,42 +1033,68 @@ mod tests {
 
     #[test]
     fn wildcards_inside_words() {
-        assert_eq!(parse("pres?dent").unwrap(), wild("pres?dent"));
-        assert_eq!(parse("Wash*TON").unwrap(), wild("wash*ton"));
-        assert_eq!(parse("Æso?").unwrap(), parse("aeso?").unwrap());
-        assert_eq!(parse("caf?é").unwrap(), wild("caf?e"));
+        assert_eq!(parse("presi?ent").unwrap(), wild("presi?ent"));
+        // `*` can stand for nothing, so a 6-letter word can hold one.
+        assert_eq!(parse("silve*r").unwrap(), wild("silve*r"));
+        assert_eq!(parse("WashI*TON").unwrap(), wild("washi*ton"));
+        assert_eq!(parse("cafet?ría").unwrap(), wild("cafet?ria"));
         // A trailing `*` alone is still a prefix; with a `?` it's a pattern.
         assert_eq!(parse("influ*").unwrap().to_string(), "influ*");
         assert!(matches!(parse("influ*").unwrap(), Node::Term(t) if t.prefix && !t.wildcard));
-        assert_eq!(parse("infl?e*").unwrap(), wild("infl?e*"));
+        assert_eq!(parse("influ?nz*").unwrap(), wild("influ?nz*"));
         // Runs of wildcards have one spelling, so one cache key.
-        assert_eq!(parse("wash*?ton").unwrap(), wild("wash?*ton"));
-        assert_eq!(parse("wash?**ton").unwrap(), wild("wash?*ton"));
+        assert_eq!(parse("washi*?ton").unwrap(), wild("washi?*ton"));
+        assert_eq!(parse("washi?**ton").unwrap(), wild("washi?*ton"));
         // A `?` that ends a word is punctuation, as before.
         assert_eq!(parse("president?").unwrap(), term("president"));
-        assert_eq!(parse("pres?dent?!").unwrap(), wild("pres?dent"));
+        assert_eq!(parse("pres?").unwrap(), term("pres"));
+        assert_eq!(parse("presi?ent?!").unwrap(), wild("presi?ent"));
         // The canonical form reparses to the same AST.
-        for q in ["pres?dent", "wash*ton OR lincoln", "-colo?r gold", "abc??"] {
+        for q in [
+            "presi?ent",
+            "washi*ton OR lincoln",
+            "-colou?r gold",
+            "abcde??f",
+        ] {
             let n = parse(q).unwrap();
             assert_eq!(parse(&n.to_string()).unwrap(), n, "{q}");
         }
         // `fuzzy` leaves wildcard terms alone; modes need plain words.
         assert_eq!(
-            build("pres?dent gold", None, 0, 1).unwrap().to_string(),
-            "gold~1 AND pres?dent"
+            build("presi?ent gold", None, 0, 1).unwrap().to_string(),
+            "gold~1 AND presi?ent"
         );
-        assert!(build("pres?dent", Some(Mode::Phrase), 0, 0).is_err());
+        assert!(build("presi?ent", Some(Mode::Phrase), 0, 0).is_err());
         assert!(is_plain("who was president?"));
+        assert!(!is_plain("presi?ent"));
         assert!(!is_plain("pres?dent"));
     }
 
     #[test]
-    fn wildcards_need_three_leading_letters_and_a_single_word() {
+    fn wildcards_need_five_leading_letters_and_a_single_word() {
         let err = |q: &str| parse(q).unwrap_err();
-        for q in ["*gold", "?old", "pr?sident", "go*d", "*", "ab*?"] {
-            assert!(err(q).message.contains("at least 3 letters"), "{q}");
+        // The same minimum as a prefix (#247), for the same reason: the
+        // engine walks every indexed word that starts with those letters.
+        let five = format!("wildcards must follow at least {MIN_PREFIX_CHARS} letters");
+        for q in [
+            "*gold",
+            "?old",
+            "pr?sident",
+            "pres?dent",
+            "wash*ton",
+            "go*d",
+            "*",
+        ] {
+            assert_eq!(err(q).message, five, "{q}");
         }
-        assert_eq!(err("gold pr?sident").position, Some(5));
+        // A word whose only wildcard is a trailing `*` is a prefix.
+        assert!(err("ab*?").message.contains("prefix searches"));
+        // Letters are counted after folding, like a prefix's: `Æ` is `ae`.
+        assert_eq!(parse("Æsop?s").unwrap(), wild("aesop?s"));
+        assert_eq!(err("ñoño?s").message, five);
+        assert_eq!(parse("ñoños?a").unwrap(), wild("nonos?a"));
+        assert_eq!(err("gold pres?dent").position, Some(5));
+        assert_eq!(err("gold (silver OR wash*ton)").position, Some(16));
         assert!(err("o'bri?n").message.contains("single word"));
         // No indexed word is longer than MAX_TOKEN_CHARS; `?` is one
         // character and `*` can be none.
@@ -1080,20 +1106,20 @@ mod tests {
             parse(&format!("{}*", long(40))).unwrap().to_string(),
             format!("{}*", long(40))
         );
-        assert!(err(&format!("abc?{}", long(37)))
+        assert!(err(&format!("abcde?{}", long(35)))
             .message
             .contains("longer than 40"));
         assert_eq!(
-            parse(&format!("abc?{}", long(36))).unwrap(),
-            wild(&format!("abc?{}", long(36)))
+            parse(&format!("abcde?{}", long(34))).unwrap(),
+            wild(&format!("abcde?{}", long(34)))
         );
         assert_eq!(
-            parse(&format!("abc*{}*", long(37))).unwrap(),
-            wild(&format!("abc*{}*", long(37)))
+            parse(&format!("abcde*{}*", long(35))).unwrap(),
+            wild(&format!("abcde*{}*", long(35)))
         );
-        assert!(err("pres?dent~1").message.contains("not both"));
+        assert!(err("presi?ent~1").message.contains("not both"));
         assert!(err("gold~1?").message.contains("not both"));
-        assert!(err(r#""pres?dent lincoln""#)
+        assert!(err(r#""presi?ent lincoln""#)
             .message
             .contains("inside quotes"));
         assert!(err(r#""cross of gol*""#).message.contains("inside quotes"));

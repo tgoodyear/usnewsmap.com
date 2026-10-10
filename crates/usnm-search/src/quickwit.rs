@@ -1093,8 +1093,13 @@ mod tests {
         ));
         // Wildcards inside a word go as typed, folded (#124).
         assert_eq!(
-            query_string(&parse("Pres?dent wash*TON").unwrap(), false, false).unwrap(),
-            "(text:pres?dent AND text:wash*ton)"
+            query_string(&parse("Presi?ent washi*TON").unwrap(), false, false).unwrap(),
+            "(text:presi?ent AND text:washi*ton)"
+        );
+        // ...in either text when the version has American Stories' (#218).
+        assert_eq!(
+            query_string(&parse("presi?ent").unwrap(), false, true).unwrap(),
+            "(text:presi?ent OR text_as:presi?ent)"
         );
     }
 

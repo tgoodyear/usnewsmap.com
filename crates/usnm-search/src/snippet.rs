@@ -296,14 +296,14 @@ mod tests {
     fn marks_each_word_a_wildcard_matches() {
         assert_eq!(
             snip(
-                "The President and the Presidency, the Presidents; pres",
-                "pres?dent*"
+                "The President and the Presidency, the Presidents; presi",
+                "presi?ent*"
             ),
-            ["The <mark>President</mark> and the Presidency, the <mark>Presidents</mark>; pres"]
+            ["The <mark>President</mark> and the Presidency, the <mark>Presidents</mark>; presi"]
         );
         assert_eq!(
-            snip("Washington, Washton, Wash. ton", "wash*ton"),
-            ["<mark>Washington</mark>, <mark>Washton</mark>, Wash. ton"]
+            snip("Washington, Washinton, Washi. ton", "washi*ton"),
+            ["<mark>Washington</mark>, <mark>Washinton</mark>, Washi. ton"]
         );
     }
 

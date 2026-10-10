@@ -420,10 +420,10 @@ mod tests {
         assert!(eval(&parse("mankimd~1").unwrap(), &t));
         assert!(!eval(&parse("mankxxd~1").unwrap(), &t));
         // Wildcards match whole words (#124).
-        assert!(eval(&parse("cruc?fy").unwrap(), &t));
-        assert!(eval(&parse("man*nd").unwrap(), &t));
-        assert!(!eval(&parse("man?nd").unwrap(), &t));
-        assert!(!eval(&parse("cro*ld").unwrap(), &t));
+        assert!(eval(&parse("cruci?y").unwrap(), &t));
+        assert!(eval(&parse("manki*d").unwrap(), &t));
+        assert!(!eval(&parse("manki??d").unwrap(), &t));
+        assert!(!eval(&parse("cross*ld").unwrap(), &t));
     }
 
     #[test]

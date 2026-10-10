@@ -194,7 +194,7 @@ indexing_settings:
 | Snippets | `snippet_fields` is a comma-separated string, not an array. Fragments come back HTML-escaped with `<b>` highlights, one short fragment per field | Since #126 the API builds snippets from the stored `text` instead (06 §6.3.4), and the parity test compares them with the memory backend's exactly |
 | Score sort | `sort_by: _score` works with `fieldnorms: false`: on the fixtures it orders pages by how often they mention the word, with one inversion where the two indexes meet (rare words are weighted per split). `_score,-day` breaks ties oldest first; a third field (`-sort_key`) is refused ("sort by field must be up to 2 fields") | `sort=relevant` on `/v1/hits` (#126) |
 | Phrases, slop, prefix | Exact phrases (stop words included), `"a b"~n` and `word*` match the reference | As §5.6 |
-| Wildcards inside words | An unquoted word with `?` or `*` is a wildcard query matched against the index's words: `text:silv?r` and `text:con*tion` match the reference. Quickwit doesn't highlight wildcard or prefix matches in its own snippets. In a phrase the wildcards don't work (`text:"con*tion speaker"` matches nothing) | Allowed after at least 3 letters and refused inside quotes (06 §6.4, #124). The API marks the matched words in its own snippets |
+| Wildcards inside words | An unquoted word with `?` or `*` is a wildcard query matched against the index's words: `text:convent?on` and `text:conve*tion` match the reference. Quickwit's own snippets have no fragment at all for a wildcard or prefix query (`text:convent?on`, `text:silve*`; checked on 0.9.1, October 2026): it highlights only the terms a query lists, and wildcard and prefix queries list none. In a phrase the wildcards don't work (`text:"con*tion speaker"` matches nothing) | Allowed after at least 5 letters, as for a prefix, and refused inside quotes (06 §6.4, #124). The API marks the matched words in its own snippets, which the parity test checks on the Quickwit backend |
 | **Fuzzy terms** | **Not supported.** `term~1` parses but silently matches nothing, and the Elasticsearch-compatible API has no fuzzy query either | The Quickwit backend reports `fuzzy: false` and returns 422 for fuzzy queries rather than wrong counts. F-21 needs another approach; see [10 R-15](10-roadmap-and-risks.md#103-risk-register) |
 
 Still open in S-2: the 1M-page benchmark (§5.8, latency and memory at the sidecar size, split cache) and managed-identity Blob auth against a real account (08 §8.2).
@@ -309,7 +309,7 @@ The user-facing syntax is simple and matches LoC's modes. The API parses it into
 | Exclude | `-word` | `Not(Term)` | `-text:word` | `-word` |
 | Fuzzy (OCR) | toggle "OCR-tolerant" | `Fuzzy(term, d=1 or 2)` | not supported in 0.9 (§5.5.1); refused | `term~1` |
 | Prefix | `word*` (≥ 5 letters) | `Prefix` | `text:word*` | `word*` |
-| Wildcard (OCR) | `pres?dent`, `wash*ton` (≥ 3 chars first) | `Term` with `wildcard` | `text:pres?dent` | `pres?dent` |
+| Wildcard (OCR) | `presi?ent`, `washi*ton` (≥ 5 letters first) | `Term` with `wildcard` | `text:presi?ent` | `presi?ent` |
 
 Filters (`from`, `to`, `state`, `lccn`, `language`, `front`) compile to range and term filters on `day`, `state`, etc. They are never free text.
 
