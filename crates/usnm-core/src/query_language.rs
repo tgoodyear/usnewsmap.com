@@ -13,11 +13,11 @@
 //!   has an English word ([`ENGLISH_WORDS`]), and its other words are
 //!   English, shared ([`SHARED_WORDS`]) or digits. A phrase or an `AND`
 //!   matches only pages with all its words, so one English word in it is
-//!   enough when the rest are words English uses too: "Mexican War"'s pages
-//!   must have "mexican". Excluded words (`-`, `NOT`) don't count. A prefix
-//!   (`influ*`) or wildcard (`presi?ent`) term makes it unsure, since it
-//!   matches words the lists can't vouch for; a fuzzy term (`railroad~1`) is
-//!   judged by its word.
+//!   enough when the rest are words English uses too: "John Brown"'s pages
+//!   must have "brown" ("john" is shared). Excluded words (`-`, `NOT`) don't
+//!   count. A prefix (`influ*`) or wildcard (`presi?ent`) term leaves the
+//!   language unknown, since it matches words the lists can't vouch for; a
+//!   fuzzy term (`railroad~1`) is judged by its word.
 //! - Otherwise the language is unknown and the baseline stays every page.
 //!
 //! The English words are at least as frequent in English as in each other
