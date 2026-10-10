@@ -23,6 +23,8 @@ describe("searchKey", () => {
 describe("Congress source (#229)", () => {
   it("counts the source as an option and keys the form on it", () => {
     expect(activeOptions({ ...DEFAULTS, source: "congress" })).toBe(1);
+    // The state and language filters a Congress search hides don't count.
+    expect(activeOptions({ ...DEFAULTS, source: "congress", state: ["GA"], lang: ["ger"] })).toBe(1);
     expect(searchKey({ ...DEFAULTS, q: "gold", source: "congress" })).not.toBe(searchKey({ ...DEFAULTS, q: "gold" }));
   });
 

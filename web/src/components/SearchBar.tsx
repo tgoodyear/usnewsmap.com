@@ -26,13 +26,16 @@ const MODES: { value: Mode; label: string }[] = [
 export function activeOptions(
   view: Pick<ViewState, "mode" | "from" | "to" | "state" | "lang"> & Partial<Pick<ViewState, "source">>,
 ): number {
+  // A Congress search hides the state and language filters and drops them
+  // on submit (#229), so they don't count.
+  const congress = (view.source ?? DEFAULTS.source) === "congress";
   return [
-    (view.source ?? DEFAULTS.source) !== DEFAULTS.source,
+    congress,
     view.mode !== DEFAULTS.mode,
     view.from !== DEFAULTS.from,
     view.to !== DEFAULTS.to,
-    view.state.length > 0,
-    view.lang.length > 0,
+    !congress && view.state.length > 0,
+    !congress && view.lang.length > 0,
   ].filter(Boolean).length;
 }
 
@@ -111,18 +114,21 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
   // the header is just the search box. They start open when a search already
   // uses one, so an active filter is never hidden. Wider screens always show
   // them (CSS hides the toggle).
-  const [open, setOpen] = useState(() => activeOptions(view) > 0);
+  // The switch shows only once /v1/meta lists Congress pages (#229), and
+  // the options count the source the form will actually search.
+  const congressAvailable = (meta?.congress?.series.length ?? 0) > 0;
+  const source = congressAvailable ? draft.source : "news";
+  const bounds = searchBounds(meta, source);
+  const [open, setOpen] = useState(
+    () => activeOptions({ ...view, source: congressAvailable ? view.source : "news" }) > 0,
+  );
   const active = activeOptions({
     ...draft,
+    source,
     from: fromText.trim(),
     to: toText.trim(),
     state: states.split(/[\s,]+/).filter(Boolean),
   });
-
-  // The switch shows only once /v1/meta lists Congress pages (#229).
-  const congressAvailable = (meta?.congress?.series.length ?? 0) > 0;
-  const source = congressAvailable ? draft.source : "news";
-  const bounds = searchBounds(meta, source);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();

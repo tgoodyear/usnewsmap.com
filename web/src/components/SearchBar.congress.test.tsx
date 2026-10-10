@@ -37,3 +37,25 @@ describe("SearchBar's name (#229)", () => {
     expect(screen.getByRole("search", { name: "Search newspapers" })).toBeTruthy();
   });
 });
+
+describe("SearchBar's options count (#229)", () => {
+  const toggle = () => screen.getByRole("button", { name: /^Options/ });
+
+  it("counts the source the form searches, not one /v1/meta doesn't offer", () => {
+    render(<SearchBar view={{ ...DEFAULTS, q: "gold", source: "congress" }} meta={meta} onSearch={() => {}} />);
+    expect(toggle().textContent).toBe("Options");
+  });
+
+  it("leaves out the filters a Congress search hides", () => {
+    render(
+      <SearchBar
+        view={{ ...DEFAULTS, q: "gold", state: ["GA"], lang: ["ger"] }}
+        meta={withCongress}
+        onSearch={() => {}}
+      />,
+    );
+    expect(toggle().textContent).toBe("Options (2)");
+    fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "congress" } });
+    expect(toggle().textContent).toBe("Options (1)");
+  });
+});
