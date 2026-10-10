@@ -5,9 +5,12 @@
 //
 // Everything with resource logs is covered, with every category, except
 // where a category would record each request and eat the workspace's daily
-// cap (1 GB in prod, 0.15 GB in dev; a normal prod day is about 80 MB):
+// cap (1 GB in prod, 0.15 GB in dev; a normal prod day is about 53 MB):
 // - Blob reads (StorageRead): the public tiles and the index splits Quickwit
-//   range-reads on every search. Writes and deletes are the audit trail.
+//   range-reads on every search. Writes and deletes are the audit trail,
+//   in StorageBlobLogs on the Auxiliary plan (monitoring.bicep), outside
+//   the cap: one row per write or delete request (PutBlob, or PutBlock
+//   for each block and PutBlockList), so bulk jobs write many.
 // - Cosmos DataPlaneRequests and the per-query/per-request statistics: every
 //   ingest write. Control-plane changes are the audit trail.
 // - Container Apps HTTP logs: every API request, with its query string (the
