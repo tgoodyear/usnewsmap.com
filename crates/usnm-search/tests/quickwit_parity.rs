@@ -131,6 +131,46 @@ fn queries() -> Vec<(&'static str, Node)> {
     ]
 }
 
+/// Queries parsed with analyzer version 1, as the API parses them on an
+/// index built with it (#168): `½` folds to `1⁄2`, which Quickwit analyzes
+/// again into the phrase "1 2", as the memory backend does.
+#[tokio::test]
+async fn version_1_queries_match_the_reference_backend() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let v1 = Analyzer::V1;
+    let set = IndexSet::new(INDEXES_V1.iter().map(|s| (*s).to_owned()).collect()).with_analyzer(v1);
+    let f = filters("1895-01-01", "1897-12-31");
+    let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
+    let mut found = 0;
+    for q in ["½", "61¼", "1/2", "wheat ½", r#""closed ½ lower""#, "gold"] {
+        let node = parse_with(q, v1).unwrap();
+        let want = sorted(mem.summary(&set, &node, &f, &spec).await.unwrap());
+        let got = sorted(qw.summary(&set, &node, &f, &spec).await.expect(q));
+        assert_eq!(got, want, "summary: {q}");
+        found += usize::from(want.total_hits > 0);
+        let page = HitsQuery {
+            limit: 20,
+            ..HitsQuery::default()
+        };
+        let want = mem.hits(&set, &node, &f, &page).await.unwrap();
+        let got = qw.hits(&set, &node, &f, &page).await.expect(q);
+        let ids = |h: &usnm_search::HitsPage| -> Vec<String> {
+            h.hits.iter().map(|h| h.doc_id.clone()).collect()
+        };
+        assert_eq!(ids(&got), ids(&want), "hits: {q}");
+        assert_eq!(
+            got.hits.iter().map(|h| &h.snippets).collect::<Vec<_>>(),
+            want.hits.iter().map(|h| &h.snippets).collect::<Vec<_>>(),
+            "snippets: {q}"
+        );
+    }
+    assert!(found >= 3, "only {found} queries matched the fixtures");
+}
+
 /// The main indexes searched in LoC's text alone, and in both texts
 /// (05 §5.5.4).
 fn sets() -> Vec<(&'static str, IndexSet)> {
@@ -671,7 +711,7 @@ async fn common_word_phrases(
     set: &IndexSet,
     grams: &IndexSet,
 ) -> usize {
-    let mut phrases = vec![
+    let phrases = [
         r#""cross of gold""#,
         r#""the friends of free""#,
         r#""of the railroad""#,
@@ -682,21 +722,18 @@ async fn common_word_phrases(
         r#""cross of the gold""#,
         r#""cross of gold" -silver"#,
         r#""cross of gold" OR "the friends of free""#,
+        // Fractions are one word in the pairs as in `text` from version 2
+        // (#168). Version 1 folds `½` to `1⁄2` in the pairs and the query,
+        // and `text` reads that as the phrase "1 2", as the memory backend
+        // does.
+        r#""½ higher at 61¼""#,
+        r#""at 61¼ and oats""#,
+        r#""1/2 lower at 20¾""#,
         // In American Stories' headlines only.
         r#""orator of the platte""#,
         r#""the boy orator""#,
         r#""quarantine at the port""#,
     ];
-    // Fractions are one word in the pairs as in `text` from version 2
-    // (#168). Version 1 folds `½` to `1⁄2`, which Quickwit's `text` reads as
-    // two words: the mismatch version 2 fixes, so not compared here.
-    if set.analyzer() >= Analyzer::V2 {
-        phrases.extend([
-            r#""½ higher at 61¼""#,
-            r#""at 61¼ and oats""#,
-            r#""1/2 lower at 20¾""#,
-        ]);
-    }
     let f = filters("1895-01-01", "1897-12-31");
     let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
     let all: Vec<u8> = (0..8).collect();

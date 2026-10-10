@@ -188,9 +188,11 @@ async fn queries_fold_as_the_served_version_was_built() {
     assert_eq!(rd.analyzers().ja, Analyzer::V2);
     assert_eq!(rd.ja_index_set().unwrap().analyzer(), Analyzer::V2);
 
-    // Through the API, on the memory backend, which folds the pages as
-    // the version's analyzer does: `½` finds the four market reports that
-    // print it on either version, and `1/2` the four that print that.
+    // Through the API, on the memory backend, which reads pages and
+    // queries as Quickwit does: `½` finds the four market reports that print
+    // it with version 2, and with version 1 (`1⁄2`, the phrase "1 2" to the
+    // engine) the four that print `1/2`, as before #168. `1/2` finds those
+    // on either.
     for (current, half) in [(v1, "1\u{2044}2"), (v2, "½")] {
         let mut rd = refdata().await;
         rd.current = current;

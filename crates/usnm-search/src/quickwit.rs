@@ -850,7 +850,7 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
 
 /// `indexes`: whether the search covered American Stories' text, whose
 /// snippets stand in when LoC's text has no match (05 §5.5.4), and the
-/// analyzer that folds the stored text for the snippets (#168).
+/// analyzer that folded a Japanese page's text, for its snippets (#168).
 pub fn parse_hits(
     resp: SearchResponse,
     query: &Node,
@@ -870,17 +870,11 @@ pub fn parse_hits(
         let text = d.text.as_deref().unwrap_or_default();
         let (snippets, snippet_source) = match &d.printed {
             Some(printed) => (ja_snippets(printed, query, analyzer), None),
-            None => page_snippets(
-                text,
-                d.text_as.as_deref(),
-                query,
-                american_stories,
-                analyzer,
-            ),
+            None => page_snippets(text, d.text_as.as_deref(), query, american_stories),
         };
         // Which texts match, from the same stored texts: no extra query.
         let matched_in = (american_stories && d.printed.is_none())
-            .then(|| matched_in(text, d.text_as.as_deref(), query, analyzer));
+            .then(|| matched_in(text, d.text_as.as_deref(), query));
         hits.push(Hit {
             snippets,
             snippet_source,

@@ -154,16 +154,7 @@ impl SearchRequest {
             .transpose()?;
         let near = raw.u8_in("near", query::MAX_SLOP)?.unwrap_or(0);
         let fuzzy = raw.u8_in("fuzzy", query::MAX_FUZZY)?.unwrap_or(0);
-        let mut query = query::build(q, mode, near, fuzzy, analyzers.main)?;
-        if analyzers.ja != analyzers.main && query::is_japanese(&query) {
-            // It searches the Japanese pages: their words, folded as they were.
-            if let Some(ja) = query::build(q, mode, near, fuzzy, analyzers.ja)
-                .ok()
-                .filter(query::is_japanese)
-            {
-                query = ja;
-            }
-        }
+        let query = parse_for(q, mode, near, fuzzy, analyzers)?;
 
         let date = |key: &str, default: NaiveDate| -> Result<NaiveDate, ParamError> {
             raw.get(key)
@@ -253,6 +244,30 @@ impl SearchRequest {
     }
 }
 
+/// The query's AST, parsed with the analyzer of the indexes it searches: a
+/// query that isn't Japanese under the main indexes' analyzer searches them;
+/// otherwise it is parsed with the Japanese pages' analyzer as well, and a
+/// query that is Japanese there searches them, with that parse (or its
+/// error). With one analyzer for both, one parse.
+fn parse_for(
+    q: &str,
+    mode: Option<Mode>,
+    near: u8,
+    fuzzy: u8,
+    analyzers: Analyzers,
+) -> Result<Node, QueryError> {
+    let main = query::build(q, mode, near, fuzzy, analyzers.main);
+    if analyzers.ja == analyzers.main || main.as_ref().is_ok_and(|n| !query::is_japanese(n)) {
+        return main;
+    }
+    match query::build(q, mode, near, fuzzy, analyzers.ja) {
+        Ok(ja) if query::is_japanese(&ja) => Ok(ja),
+        // Japanese with the main analyzer, refused with the Japanese one.
+        Err(e) if main.is_ok() => Err(e),
+        _ => main,
+    }
+}
+
 /// Parse a comma-separated list, validating and normalizing each item; sorted and deduplicated.
 fn list(
     value: Option<&str>,
@@ -314,6 +329,18 @@ mod tests {
             req_with("q=%C2%BD", mixed).query,
             req_with("q=%C2%BD", v2).query
         );
+        // A Japanese query the Japanese pages' analyzer refuses is refused,
+        // whichever analyzer the main indexes have: version 1 has `1⁄2`
+        // before the wildcard, which isn't one word.
+        let wild = "q=%E6%9D%B1%E4%BA%AC+18461%C2%BD*";
+        let raw = RawParams::parse(wild).unwrap();
+        assert!(SearchRequest::from_raw(&raw, bounds(), mixed).is_err());
+        assert!(SearchRequest::from_raw(&raw, bounds(), v1).is_err());
+        let reversed = Analyzers {
+            main: Analyzer::V1,
+            ja: Analyzer::V2,
+        };
+        assert_eq!(req_with(wild, reversed).query, req_with(wild, v2).query);
     }
 
     #[test]

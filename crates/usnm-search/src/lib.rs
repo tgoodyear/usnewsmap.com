@@ -73,9 +73,11 @@ pub struct PageDoc {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IndexSet {
     ids: Vec<String>,
-    /// The analyzer every index was built with (`usnm_core::text`): queries
-    /// are parsed with it, and the memory backend and snippets fold text
-    /// with it (#168).
+    /// The analyzer every index was built with (`usnm_core::text`, #168):
+    /// queries are parsed with it, and a Japanese page's snippets fold its
+    /// printed text with it. Pages' `text` is `usnm_text`'s whatever the
+    /// version, so the memory backend and the other snippets read it as
+    /// Quickwit does.
     analyzer: Analyzer,
     /// Every index has the `text_cg` field at a `usnm_core::common_grams`
     /// version the API supports, the one of [`IndexSet::analyzer`]

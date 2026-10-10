@@ -150,6 +150,11 @@ impl Analyzer {
     pub const ALL: [Self; 2] = [Self::V1, Self::V2];
 }
 
+/// The version whose [`tokenize`] is what Quickwit's `usnm_text` analyzer
+/// makes of a text, in every index version: pages' `text` and `text_as`, and
+/// the query terms Quickwit analyzes again (#168).
+pub const USNM_TEXT: Analyzer = Analyzer::V2;
+
 impl Default for Analyzer {
     /// [`Analyzer::LATEST`].
     fn default() -> Self {
