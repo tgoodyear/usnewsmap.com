@@ -252,18 +252,27 @@ async fn put_block_or_list(
     Query(q): Query<HashMap<String, String>>,
     h: HeaderMap,
     body: Bytes,
-) -> StatusCode {
+) -> Response {
     if !authorized(&h) {
-        return StatusCode::FORBIDDEN;
+        return StatusCode::FORBIDDEN.into_response();
     }
     let mut b = b.lock().unwrap();
     match q.get("comp").map(String::as_str) {
         Some("block") => {
             let id = q.get("blockid").unwrap().clone();
             b.staged.insert((p, id), body.to_vec());
-            StatusCode::CREATED
+            StatusCode::CREATED.into_response()
         }
         Some("blocklist") => {
+            // Create-only commits, as Azure answers them.
+            let create_only = h.get("if-none-match").is_some_and(|v| v == "*");
+            if create_only && b.committed.contains_key(&p) {
+                return (
+                    StatusCode::CONFLICT,
+                    [("x-ms-error-code", "BlobAlreadyExists")],
+                )
+                    .into_response();
+            }
             let xml = String::from_utf8(body.to_vec()).unwrap();
             let mut data = Vec::new();
             for id in xml.split("<Latest>").skip(1) {
@@ -277,9 +286,9 @@ async fn put_block_or_list(
                 header("x-ms-blob-content-type"),
             );
             b.committed.insert(p, entry);
-            StatusCode::CREATED
+            StatusCode::CREATED.into_response()
         }
-        _ => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_REQUEST.into_response(),
     }
 }
 
@@ -341,6 +350,24 @@ async fn streamed_uploads_commit_blocks_in_their_tier() {
         assert_eq!(ctype.as_deref(), Some("application/x-bzip2"));
         assert_eq!(b.staged.len(), 3);
     }
+
+    // Create-only: a second upload to the path fails and changes nothing.
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let (done, commit) = tokio::sync::oneshot::channel();
+    tx.send(bytes::Bytes::from_static(b"another"))
+        .await
+        .unwrap();
+    drop(tx);
+    done.send(true).unwrap();
+    let err = store
+        .put_stream("raw/b/b.tar.bz2", "application/x-bzip2", None, rx, commit)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, usnm_store::StoreError::AlreadyExists(_)),
+        "{err}"
+    );
+    assert_eq!(blocks.lock().unwrap().committed["raw/b/b.tar.bz2"].0, data);
 
     // Abandoned: the sender goes away without a commit.
     let (tx, rx) = tokio::sync::mpsc::channel(4);

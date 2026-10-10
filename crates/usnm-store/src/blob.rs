@@ -234,8 +234,9 @@ impl ObjectStore for BlobStore {
     }
 
     /// Put Block for every [`BLOCK_BYTES`], then Put Block List with the
-    /// tier: blocks stay invisible (and are discarded within a week) unless
-    /// the list is committed.
+    /// tier and `If-None-Match: *`: blocks stay invisible (and are discarded
+    /// within a week) unless the list is committed, and the commit fails if
+    /// a blob is already there, leaving that blob as it was.
     async fn put_stream(
         &self,
         path: &str,
@@ -278,6 +279,7 @@ impl ObjectStore for BlobStore {
             .request(Method::PUT, path)
             .await?
             .query(&[("comp", "blocklist")])
+            .header(IF_NONE_MATCH, "*")
             .header("x-ms-blob-content-type", content_type)
             .header(CONTENT_TYPE, "application/xml");
         if let Some(t) = tier {
@@ -288,9 +290,13 @@ impl ObjectStore for BlobStore {
             .send()
             .await
             .map_err(|e| transport("put block list", path, e))?;
-        match resp.status() {
-            StatusCode::CREATED => Ok(total),
-            s => Err(StoreError::Http {
+        match (resp.status(), error_code(&resp)) {
+            (StatusCode::CREATED, _) => Ok(total),
+            (StatusCode::CONFLICT, "BlobAlreadyExists")
+            | (StatusCode::PRECONDITION_FAILED, "ConditionNotMet") => {
+                Err(StoreError::AlreadyExists(path.into()))
+            }
+            (s, _) => Err(StoreError::Http {
                 op: "put block list",
                 path: path.into(),
                 status: s.as_u16(),

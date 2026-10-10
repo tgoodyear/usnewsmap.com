@@ -15,7 +15,7 @@ httpdate.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "process", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

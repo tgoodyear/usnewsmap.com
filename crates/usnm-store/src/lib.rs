@@ -44,6 +44,9 @@ pub enum StoreError {
     Credential(String),
     #[error("object `{0}` exceeds {MAX_OBJECT_BYTES} bytes")]
     TooLarge(String),
+    /// A create-only write found an object already there (`put_stream`).
+    #[error("object `{0}` already exists")]
+    AlreadyExists(String),
 }
 
 #[async_trait]
@@ -86,12 +89,14 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
         }))
     }
 
-    /// Create or replace an object from `chunks` as they arrive, without
-    /// holding it whole, in access tier `tier` where the store has tiers
-    /// (`Cold` in Blob Storage). It becomes visible only if `commit` says
-    /// `true` once the chunks end; otherwise (`false`, or the sender
-    /// dropped) nothing is written and this fails. Returns its size. The
-    /// default buffers the object and `put`s it.
+    /// Create an object from `chunks` as they arrive, without holding it
+    /// whole, in access tier `tier` where the store has tiers (`Cold` in
+    /// Blob Storage). It becomes visible only if `commit` says `true` once
+    /// the chunks end; otherwise (`false`, or the sender dropped) nothing is
+    /// written and this fails. Create-only, like `put_new`: if an object is
+    /// already at `path` it stays as it is and this fails with
+    /// [`StoreError::AlreadyExists`]. Returns its size. The default buffers
+    /// the object and `put_new`s it.
     async fn put_stream(
         &self,
         path: &str,
@@ -109,7 +114,9 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
             return Err(StoreError::Io(format!("`{path}`: upload abandoned")));
         }
         let n = body.len() as u64;
-        self.put(path, body, content_type).await?;
+        if !self.put_new(path, body, content_type).await? {
+            return Err(StoreError::AlreadyExists(path.into()));
+        }
         Ok(n)
     }
 

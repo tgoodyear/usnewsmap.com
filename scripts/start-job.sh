@@ -11,10 +11,14 @@
 # container's arguments; its command stays. `az containerapp job start
 # --args` sends a container without the image or settings, so this copies
 # the job's template and swaps only the arguments (as
-# scripts/ja-ocr/start-quality.sh does). Needs az signed in to the
-# environment's subscription and jq.
+# scripts/ja-ocr/start-quality.sh does). An execution's template has no
+# volumes (the API's JobExecutionTemplate takes containers and init
+# containers with image, command, args, env and resources only), so it
+# can't name the job's volumes or mounts: use it for commands that don't
+# need the ingest job's scratch share, such as enqueue, curate or
+# archive-copy. Needs az signed in to the environment's subscription and jq.
 set -euo pipefail
-[ $# -ge 3 ] || { sed -n '2,15s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# -ge 3 ] || { sed -n '2,19s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 ENV_NAME=$1
 SETTING=$2
 shift 2
@@ -30,9 +34,14 @@ job=$(aget "$SETTING")
 [ -n "$job" ] || die "$SETTING isn't set for $ENV_NAME (is the job deployed? run scripts/provision.sh $ENV_NAME)"
 template=$(az containerapp job show -n "$job" -g "$rg" --subscription "$sub" --query properties.template -o json) ||
   die "can't read $job (is az signed in to the environment's tenant?)"
-# `--args --`: the job's arguments are positional strings, not jq options.
-body=$(jq -c '{containers: [.containers[0] | .args = $ARGS.positional],
-  initContainers: (.initContainers // [])}' --args -- "$@" <<< "$template")
+volumes=$(jq -r '[.volumes[]?.name] | join(", ")' <<< "$template")
+[ -z "$volumes" ] ||
+  echo "note: $job mounts $volumes, which an execution can't name; don't rely on them in this one" >&2
+# Every container as the API takes it for an execution, the first with the
+# new arguments. `--args --`: they are positional strings, not jq options.
+body=$(jq -c 'def exec: {name, image, command, args, env, resources} | with_entries(select(.value != null));
+  {containers: ([.containers[0] | .args = $ARGS.positional] + .containers[1:] | map(exec)),
+   initContainers: ((.initContainers // []) | map(exec))}' --args -- "$@" <<< "$template")
 az rest --method post \
   --url "https://management.azure.com/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.App/jobs/$job/start?api-version=2025-01-01" \
   --body "$body" --query name -o tsv
