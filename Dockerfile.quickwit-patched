@@ -1,28 +1,30 @@
-# Quickwit v0.9.1 with our patches (quickwit/patches/*.patch) applied: a
-# drop-in replacement for quickwit/quickwit:v0.9.1, for the experiment in
-# #251 (pooled Azure blob connections). The stages, base images (by digest),
-# packages, features and layout are those of Quickwit's own Dockerfile at
-# the pinned commit, so the only difference from the official image is the
-# patches. Build context: the repository root.
+# Quickwit built from our fork, https://github.com/tgoodyear/quickwit, at
+# the tag `usnm-v0.9.1-pool1`: v0.9.1 plus one commit that gives the Azure
+# blob storage a pooled HTTP client and one shared token credential (#251).
+# A drop-in replacement for quickwit/quickwit:v0.9.1: the stages, base images
+# (by digest), packages, features and layout are those of Quickwit's own
+# Dockerfile at v0.9.1, so the only difference from the official image is
+# that commit. `QW_AZURE_POOL=false` at run time restores the old client.
+# Build context: the repository root.
 #
 #   az acr build -r <registry> -f Dockerfile.quickwit-patched \
 #     -t quickwit-patched:v0.9.1-pool1 --platform linux/amd64 --timeout 28800 .
 #
 # or the `quickwit-patched` workflow (.github/workflows/quickwit-patched.yml).
+# A new patch goes on the fork's `usnm/v0.9.1-pool` branch with a new
+# `usnm-*` tag (names that trigger none of Quickwit's own workflows); then
+# update the two ARGs below.
 
-# The commit tagged v0.9.1.
-ARG QW_COMMIT_HASH=962685f5a334f6c9d8516d2d7c1fdd08891b687c
+# The fork's commit tagged usnm-v0.9.1-pool1 (its parent is 962685f, v0.9.1).
+ARG QW_COMMIT_HASH=5fecc2cbf14bd0f3abee0f420820920a788e10a6
 
 FROM rust:bookworm@sha256:b5efaabfd787a695d2e46b37d3d9c54040e11f4c10bc2e714bbadbfcc0cd6c39 AS source
 ARG QW_COMMIT_HASH
 WORKDIR /src
 RUN git init -q . \
-    && git remote add origin https://github.com/quickwit-oss/quickwit.git \
+    && git remote add origin https://github.com/tgoodyear/quickwit.git \
     && git fetch -q --depth 1 origin "$QW_COMMIT_HASH" \
     && git checkout -q FETCH_HEAD
-COPY quickwit/patches /patches
-RUN for p in /patches/*.patch; do echo "applying $p" && git apply --verbose "$p" || exit 1; done
-
 
 FROM node:24@sha256:b2b2184ba9b78c022e1d6a7924ec6fba577adf28f15c9d9c457730cc4ad3807a AS ui-builder
 
@@ -90,7 +92,7 @@ LABEL org.opencontainers.image.title="Quickwit"
 LABEL maintainer="Quickwit, Inc. <hello@quickwit.io>"
 LABEL org.opencontainers.image.vendor="Quickwit, Inc."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
-LABEL org.opencontainers.image.description="Quickwit v0.9.1 with usnewsmap.com's quickwit/patches applied"
+LABEL org.opencontainers.image.description="Quickwit v0.9.1 from tgoodyear/quickwit tag usnm-v0.9.1-pool1"
 
 RUN apt-get -y update \
     && apt-get -y install ca-certificates \

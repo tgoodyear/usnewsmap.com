@@ -1,5 +1,5 @@
 name: quickwit-patched
-# Builds Quickwit v0.9.1 with quickwit/patches applied (Dockerfile.quickwit-patched)
+# Builds Quickwit from the tgoodyear/quickwit fork (Dockerfile.quickwit-patched)
 # and pushes it to the dev registry, for the experiment in #251. Manual only:
 # run it from the Actions tab or `gh workflow run` once this file is on main,
 # or, from a branch, push a tag `quickwit-patched/<image tag>`.
