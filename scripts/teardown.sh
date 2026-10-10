@@ -176,7 +176,8 @@ if [ "$stack" = true ]; then
   az stack sub delete -n "$STACK" --action-on-unmanage detachAll --yes --only-show-errors
 fi
 # Each step skips what an earlier, interrupted run already deleted.
-# A lookup that fails for any other reason than "not found" stops here.
+# A lookup that fails for any other reason than "not found" stops here. A
+# role scoped to a deleted group answers RoleDefinitionDoesNotExist.
 for g in $groups; do
   exists=$(az group exists -n "$g") || die "can't check resource group $g"
   [ "$exists" = true ] || continue
@@ -185,7 +186,7 @@ for g in $groups; do
 done
 for id in $roles; do
   if ! out=$(az resource show --ids "$id" -o none 2>&1); then
-    grep -qiE 'NotFound|could not be found' <<< "$out" || die "can't check $id: $out"
+    grep -qiE 'NotFound|could not be found|RoleDefinitionDoesNotExist' <<< "$out" || die "can't check $id: $out"
     continue
   fi
   az resource delete --ids "$id" -o none
