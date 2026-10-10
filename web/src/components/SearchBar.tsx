@@ -38,11 +38,18 @@ export function activeOptions(
 
 /**
  * What a query in Japanese script searches (#139): only the Japanese pages we
- * read ourselves, or nothing yet on a version without them. Null otherwise.
+ * read ourselves, or nothing yet on a version without them, or nothing in
+ * Congress pages (#229). Null otherwise.
  */
-export function japaneseHint(q: string, meta: Pick<Meta, "ja"> | undefined): string | null {
+export function japaneseHint(
+  q: string,
+  meta: Pick<Meta, "ja"> | undefined,
+  source: ViewState["source"] = "news",
+): string | null {
   // Before /v1/meta loads, it isn't known yet whether Japanese search is there.
   if (!hasJapanese(q) || !meta) return null;
+  // The API refuses a Japanese query in Congress pages, which are all English.
+  if (source === "congress") return "Japanese text can't be searched in Congress pages.";
   const ja = meta.ja;
   if (!ja) return "Searching Japanese text isn't available yet. It arrives with the next update.";
   return `Japanese searches cover only the ${ja.pages.toLocaleString("en-US")} Japanese-language pages we read ourselves. The Library of Congress has no searchable text for them.`;
@@ -160,7 +167,7 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
     });
   };
 
-  const jaHint = japaneseHint(draft.q, meta);
+  const jaHint = japaneseHint(draft.q, meta, source);
   // An input method (IME) uses Enter to confirm a word: that Enter mustn't
   // submit the search. Safari ends the composition before the keydown, so
   // keyCode 229 ("being composed") is checked too.
@@ -175,7 +182,8 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
       className={open ? "search search--open" : "search"}
       role="search"
       onSubmit={submit}
-      aria-label="Search newspapers"
+      // What the form searches: the switch's choice, or newspapers when there is no switch (#229).
+      aria-label={source === "congress" ? "Search Congress" : "Search newspapers"}
     >
       <label className="visually-hidden" htmlFor={`${id}-q`}>
         Word or phrase

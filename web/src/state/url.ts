@@ -146,6 +146,9 @@ export function parseView(search: string): ViewState {
   const num = (v: string | null | undefined) => (v === null || v === undefined || v.trim() === "" ? NaN : Number(v));
   const z = num(s.get("z"));
   const c = (s.get("c") ?? "").split(",").map(num);
+  // A Congress search has no newspapers to filter by, and its form hides the
+  // state and language filters, so a permalink's would hide every page (#229).
+  const congress = s.get("source") === "congress";
   return {
     q: (s.get("q") ?? "").slice(0, 256),
     mode: oneOf(s.get("mode"), MODES, DEFAULTS.mode),
@@ -153,15 +156,16 @@ export function parseView(search: string): ViewState {
     from: date("from"),
     to: date("to"),
     bucket: oneOf(s.get("bucket"), BUCKETS, DEFAULTS.bucket),
-    state: (s.get("state") ?? "")
-      .split(",")
-      .map((x) => x.trim().toUpperCase())
-      .filter((x) => /^[A-Z]{2}$/.test(x)),
-    lang: parseLangs(s.get("lang")),
-    // A Congress search has no newspapers to filter by.
-    lccn: s.get("source") === "congress" ? [] : parseLccns(s.get("lccn")),
+    state: congress
+      ? []
+      : (s.get("state") ?? "")
+          .split(",")
+          .map((x) => x.trim().toUpperCase())
+          .filter((x) => /^[A-Z]{2}$/.test(x)),
+    lang: congress ? [] : parseLangs(s.get("lang")),
+    lccn: congress ? [] : parseLccns(s.get("lccn")),
     source: oneOf(s.get("source"), ["news", "congress"] as const, DEFAULTS.source),
-    series: s.get("source") === "congress" ? parseSeries(s.get("series")) : [],
+    series: congress ? parseSeries(s.get("series")) : [],
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
@@ -192,8 +196,8 @@ export function serializeView(v: ViewState): string {
   put("from", v.from, "");
   put("to", v.to, "");
   put("bucket", v.bucket, DEFAULTS.bucket);
-  put("state", v.state.join(","), "");
-  put("lang", parseLangs(v.lang.join(",")).join(","), "");
+  put("state", v.source === "congress" ? "" : v.state.join(","), "");
+  put("lang", v.source === "congress" ? "" : parseLangs(v.lang.join(",")).join(","), "");
   put("lccn", v.source === "congress" ? "" : parseLccns(v.lccn.join(",")).join(","), "");
   put("source", v.source, DEFAULTS.source);
   if (v.source === "congress") put("series", parseSeries(v.series.join(",")).join(","), "");
@@ -219,8 +223,9 @@ export function searchParams(v: ViewState): SearchParams {
     from: v.from,
     to: v.to,
     bucket: v.bucket,
-    state: v.state,
-    lang: v.lang,
+    // Newspaper filters only: a Congress search sends none (#229).
+    state: v.source === "congress" ? [] : v.state,
+    lang: v.source === "congress" ? [] : v.lang,
     lccn: v.source === "congress" ? [] : v.lccn,
     // Only a Congress search names its source, so a newspaper search's
     // parameters, and the query keys built from them, are as before.

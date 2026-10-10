@@ -110,4 +110,25 @@ describe("Congress source (#229)", () => {
     expect(parseView("?q=gold&series=globe").series).toEqual([]);
     expect(parseView("?q=gold&source=senate").source).toBe("news");
   });
+
+  it("drops the state and language filters, which a Congress search hides", () => {
+    // From a shared link they would filter out every Congress page, unseen.
+    const v = parseView("?q=gold&source=congress&state=GA&lang=ger");
+    expect(v.state).toEqual([]);
+    expect(v.lang).toEqual([]);
+    expect(serializeView(v)).toBe("?q=gold&source=congress");
+    // Set in code, too.
+    const set = { ...v, state: ["GA"], lang: ["ger"] };
+    expect(serializeView(set)).toBe("?q=gold&source=congress");
+    expect(searchParams(set)).toMatchObject({ state: [], lang: [], lccn: [] });
+  });
+
+  it("keeps a newspaper search's parameters, keys and order as before", () => {
+    const v = parseView("?q=gold&state=ga&lang=ger&lccn=sn99000001");
+    expect(serializeView(v)).toBe("?q=gold&state=GA&lang=ger&lccn=sn99000001");
+    // App keys its queries on this JSON, so the examples' cached answers stay valid.
+    expect(JSON.stringify(searchParams(v))).toBe(
+      '{"q":"gold","mode":"phrase","near":5,"from":"","to":"","bucket":"auto","state":["GA"],"lang":["ger"],"lccn":["sn99000001"]}',
+    );
+  });
 });
