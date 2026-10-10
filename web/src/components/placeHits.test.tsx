@@ -169,6 +169,31 @@ describe("usePrefetchPlaceHits", () => {
     expect(fn).toHaveBeenCalledTimes(3);
   });
 
+  it("switching measures queues each measure once, through the same two requests at a time", async () => {
+    const { fn, calls } = heldFetch();
+    const view = renderPrefetch({ params, lists: pages });
+    await waitFor(() => expect(calls).toHaveLength(2));
+    // Median date while Pages is still loading: p1 to p3 are queued already, so only its other places are added.
+    view.rerender({ params, lists: { norm: "when", rows, exact: null } });
+    await settle();
+    expect(calls).toHaveLength(2);
+    // Back to Pages, with playback having moved its list: nothing new.
+    view.rerender({ params, lists: { norm: "raw", rows: rows.map((r, i) => ({ ...r, value: i })) } });
+    // p1 finds the API busy; the rest answer. Never more than two waiting at once.
+    for (let i = 0; i < calls.length; i++) {
+      expect(calls.length - i).toBeLessThanOrEqual(2);
+      calls[i]!.answer(i === 0 ? json({ type: "/errors/busy", title: "Busy", status: 503 }, 503) : hits(calls[i]!.place));
+      await settle();
+    }
+    await waitFor(() => expect(fn).toHaveBeenCalledTimes(6));
+    expect(calls.map((c) => c.place)).toEqual(["p1", "p2", "p3", "p10", "p9", "p8"]);
+    // Switching again asks for nothing, not even p1, which failed.
+    view.rerender({ params, lists: { norm: "when", rows, exact: null } });
+    view.rerender({ params, lists: pages });
+    await settle();
+    expect(fn).toHaveBeenCalledTimes(6);
+  });
+
   it("a new search cancels the last one's prefetching and starts its own", async () => {
     const { calls } = heldFetch();
     const view = renderPrefetch({ params, lists: pages });

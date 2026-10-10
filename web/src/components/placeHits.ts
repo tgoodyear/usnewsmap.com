@@ -72,41 +72,55 @@ function observed(client: QueryClient, queryKey: QueryKey): boolean {
   return (client.getQueryCache().find({ queryKey, exact: true })?.getObserversCount() ?? 0) > 0;
 }
 
-/**
- * Prefetch the page lists of `ids`, at most {@link MAX_IN_FLIGHT} at a time,
- * without retries. Returns a function that stops: no more are started, and
- * those in flight are cancelled unless a place panel is now showing one.
- */
-function prefetch(
-  client: QueryClient,
-  params: SearchParams,
-  version: string,
-  sort: HitSort,
-  ids: string[],
-): () => void {
+/** One search's prefetching: a queue that at most {@link MAX_IN_FLIGHT} requests work through. */
+interface Prefetcher {
+  /** Queue the page lists of `ids` not queued before. */
+  add: (ids: string[], sort: HitSort) => void;
+  /** Start no more, and cancel those in flight unless a place panel is now showing one. */
+  stop: () => void;
+}
+
+function prefetcher(client: QueryClient, params: SearchParams, version: string): Prefetcher {
   let stopped = false;
-  let next = 0;
+  let workers = 0;
+  const queue: { id: string; sort: HitSort }[] = [];
+  const queued = new Set<string>();
   const inFlight = new Set<QueryKey>();
   const worker = async () => {
-    while (!stopped && next < ids.length) {
-      const id = ids[next++]!;
-      // Once a panel shows this place, its request waits on a busy API as the panel's own would.
-      const query = placeHitsQuery(params, version, id, sort, () => !observed(client, query.queryKey));
-      inFlight.add(query.queryKey);
-      try {
-        // Already cached and fresh: no request. Failures are dropped; a panel opened later asks again.
-        await client.prefetchInfiniteQuery({ ...query, retry: false });
-      } finally {
-        inFlight.delete(query.queryKey);
+    workers++;
+    try {
+      while (!stopped && queue.length > 0) {
+        const { id, sort } = queue.shift()!;
+        // Once a panel shows this place, its request waits on a busy API as the panel's own would.
+        const query = placeHitsQuery(params, version, id, sort, () => !observed(client, query.queryKey));
+        inFlight.add(query.queryKey);
+        try {
+          // Already cached and fresh: no request. Failures are dropped, never retried; a panel opened later asks again.
+          await client.prefetchInfiniteQuery({ ...query, retry: false });
+        } finally {
+          inFlight.delete(query.queryKey);
+        }
       }
+    } finally {
+      workers--;
     }
   };
-  for (let i = 0; i < MAX_IN_FLIGHT; i++) void worker();
-  return () => {
-    stopped = true;
-    for (const queryKey of inFlight) {
-      if (!observed(client, queryKey)) void client.cancelQueries({ queryKey, exact: true });
-    }
+  return {
+    add: (ids, sort) => {
+      for (const id of ids) {
+        const key = JSON.stringify([id, sort]);
+        if (queued.has(key)) continue;
+        queued.add(key);
+        queue.push({ id, sort });
+      }
+      while (!stopped && workers < MAX_IN_FLIGHT && queue.length > 0) void worker();
+    },
+    stop: () => {
+      stopped = true;
+      for (const queryKey of inFlight) {
+        if (!observed(client, queryKey)) void client.cancelQueries({ queryKey, exact: true });
+      }
+    },
   };
 }
 
@@ -115,9 +129,10 @@ function prefetch(
  * the places at each end of them (#265), so opening one is instant and the
  * API's caches hold them for later visitors. `lists` is null until then:
  * while the search is computing, a place panel is open, or the lists still
- * depend on something loading. Once per search and measure, not per
- * playback step; a new search cancels what is left. Skipped when the
- * visitor's browser asks to save data.
+ * depend on something loading. Once per search and measure, from the lists
+ * as they first stand: not per playback step, and not again when the
+ * visitor switches back to a measure. A new search cancels what is left.
+ * Skipped when the visitor's browser asks to save data.
  */
 export function usePrefetchPlaceHits(
   params: SearchParams,
@@ -127,19 +142,24 @@ export function usePrefetchPlaceHits(
 ): void {
   const client = useQueryClient();
   const search = JSON.stringify([version, params]);
-  const run = useRef<{ key: string; stop: () => void } | null>(null);
+  const run = useRef<{ search: string; started: Set<string>; prefetcher: Prefetcher } | null>(null);
   // A new search, or leaving the page, stops the last one's prefetching.
   useEffect(
     () => () => {
-      run.current?.stop();
+      run.current?.prefetcher.stop();
       run.current = null;
     },
     [search],
   );
-  const key = JSON.stringify([search, sort, lists?.norm]);
   useEffect(() => {
-    if (!lists || run.current?.key === key || saveData()) return;
-    run.current?.stop();
-    run.current = { key, stop: prefetch(client, params, version, sort, placesToPrefetch(lists)) };
-  }, [client, key, lists, params, version, sort]);
+    if (!lists || saveData()) return;
+    if (run.current?.search !== search) {
+      run.current?.prefetcher.stop();
+      run.current = { search, started: new Set(), prefetcher: prefetcher(client, params, version) };
+    }
+    const measure = JSON.stringify([sort, lists.norm]);
+    if (run.current.started.has(measure)) return;
+    run.current.started.add(measure);
+    run.current.prefetcher.add(placesToPrefetch(lists), sort);
+  }, [client, search, lists, params, version, sort]);
 }
