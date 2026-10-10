@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
-use crate::{validate_path, ObjectStore, StoreError, MAX_OBJECT_BYTES};
+use bytes::Bytes;
+
+use crate::{validate_path, ByteStream, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
 #[derive(Debug, Clone)]
 pub struct LocalStore {
@@ -24,6 +26,20 @@ impl LocalStore {
 
 fn io(path: &Path, e: std::io::Error) -> StoreError {
     StoreError::Io(format!("{}: {e}", path.display()))
+}
+
+/// Bytes per chunk of a streamed read (`get_stream`).
+const READ_CHUNK: usize = 1024 * 1024;
+
+/// A temp file beside `full`, unique per process, thread and call.
+fn temp_path(full: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    full.with_file_name(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ))
 }
 
 #[async_trait]
@@ -92,6 +108,73 @@ impl ObjectStore for LocalStore {
         })
         .await
         .map_err(|e| StoreError::Io(e.to_string()))?
+    }
+
+    /// Reads the file in chunks, however large.
+    async fn get_stream(&self, path: &str) -> Result<Option<ByteStream>, StoreError> {
+        use tokio::io::AsyncReadExt;
+        validate_path(path)?;
+        let full = self.root.join(path);
+        let file = match tokio::fs::File::open(&full).await {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io(&full, e)),
+        };
+        let s = futures::stream::try_unfold((file, full), |(mut file, full)| async move {
+            let mut buf = Vec::with_capacity(READ_CHUNK);
+            let n = (&mut file)
+                .take(READ_CHUNK as u64)
+                .read_to_end(&mut buf)
+                .await
+                .map_err(|e| io(&full, e))?;
+            Ok((n > 0).then(|| (Bytes::from(buf), (file, full))))
+        });
+        Ok(Some(Box::pin(s)))
+    }
+
+    /// Writes the chunks to a temp file as they arrive, then hard-links it
+    /// into place on commit: the link fails if the object exists, so
+    /// creation is atomic and an existing object is never replaced.
+    async fn put_stream(
+        &self,
+        path: &str,
+        _content_type: &str,
+        _tier: Option<&str>,
+        mut chunks: tokio::sync::mpsc::Receiver<Bytes>,
+        commit: tokio::sync::oneshot::Receiver<bool>,
+    ) -> Result<u64, StoreError> {
+        use tokio::io::AsyncWriteExt;
+        validate_path(path)?;
+        let full = self.root.join(path);
+        let dir = full.parent().expect("validated paths have a parent");
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| io(dir, e))?;
+        let tmp = temp_path(&full);
+        let written = async {
+            let mut f = tokio::fs::File::create(&tmp)
+                .await
+                .map_err(|e| io(&tmp, e))?;
+            let mut n = 0u64;
+            while let Some(c) = chunks.recv().await {
+                f.write_all(&c).await.map_err(|e| io(&tmp, e))?;
+                n += c.len() as u64;
+            }
+            f.sync_all().await.map_err(|e| io(&tmp, e))?;
+            if commit.await != Ok(true) {
+                return Err(StoreError::Io(format!("`{path}`: upload abandoned")));
+            }
+            match tokio::fs::hard_link(&tmp, &full).await {
+                Ok(()) => Ok(n),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    Err(StoreError::AlreadyExists(path.into()))
+                }
+                Err(e) => Err(io(&full, e)),
+            }
+        }
+        .await;
+        let _ = tokio::fs::remove_file(&tmp).await;
+        written
     }
 
     async fn exists(&self, path: &str) -> Result<bool, StoreError> {
@@ -179,6 +262,66 @@ mod tests {
             ["log/d/1.jsonl", "log/d/2.jsonl"]
         );
         assert!(s.list("none").await.unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn stream_in(
+        s: &LocalStore,
+        path: &str,
+        data: &[u8],
+        commit: bool,
+    ) -> Result<u64, StoreError> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let (done, committed) = tokio::sync::oneshot::channel();
+        let feed = async {
+            for c in data.chunks(300_001) {
+                tx.send(Bytes::copy_from_slice(c)).await.unwrap();
+            }
+            drop(tx);
+            done.send(commit).unwrap();
+        };
+        let (written, ()) = tokio::join!(s.put_stream(path, "", None, rx, committed), feed);
+        written
+    }
+
+    /// Streamed writes are create-only and visible only once committed;
+    /// streamed reads come back in chunks, with no size limit.
+    #[tokio::test]
+    async fn streams_create_only_and_read_in_chunks() {
+        use futures::StreamExt;
+        let dir = std::env::temp_dir().join(format!("usnm-store-stream-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = LocalStore::new(&dir);
+        let data: Vec<u8> = (0..(READ_CHUNK * 2 + 777))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        assert!(matches!(
+            stream_in(&s, "raw/b/b.tar.bz2", b"partial", false).await,
+            Err(StoreError::Io(_))
+        ));
+        assert!(!s.exists("raw/b/b.tar.bz2").await.unwrap());
+        assert_eq!(
+            stream_in(&s, "raw/b/b.tar.bz2", &data, true).await.unwrap(),
+            data.len() as u64
+        );
+        assert!(matches!(
+            stream_in(&s, "raw/b/b.tar.bz2", b"another", true).await,
+            Err(StoreError::AlreadyExists(_))
+        ));
+        assert!(
+            s.list("raw").await.unwrap() == ["raw/b/b.tar.bz2"],
+            "no temp files left"
+        );
+        let mut chunks = 0;
+        let mut back = Vec::new();
+        let mut st = s.get_stream("raw/b/b.tar.bz2").await.unwrap().unwrap();
+        while let Some(c) = st.next().await {
+            back.extend_from_slice(&c.unwrap());
+            chunks += 1;
+        }
+        assert_eq!(back, data);
+        assert_eq!(chunks, 3);
+        assert!(s.get_stream("raw/none").await.unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
