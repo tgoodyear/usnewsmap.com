@@ -658,6 +658,98 @@ async fn lang_filter_keeps_exact_baselines() {
     assert!(body["series"]["baseline"].is_null());
 }
 
+/// Without `lang`, a query whose words are English is compared with the pages
+/// of titles that list English (#237), while its hits still count every
+/// matching page: the fixture's German (P00006) and Spanish (P00003) titles
+/// print the same English text, so they match but aren't in the baseline.
+#[tokio::test]
+async fn an_english_query_is_compared_with_english_pages() {
+    let s = state_with(None).await;
+    let (status, _, body) = get(&s, "/v1/aggregate?q=gold").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["baseline"],
+        json!({"languages": ["eng"], "why": "query_language"})
+    );
+    // P00001, P00002 (English and German), P00004 and P00005.
+    assert_eq!(body["total"]["baseline_pages"], 4 * 312);
+    let series: u64 = body["series"]["baseline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(series, 4 * 312);
+    // The canonical request has no `lang`: the choice follows from the query.
+    assert!(!body["query"]["canonical"]
+        .as_str()
+        .unwrap()
+        .contains("lang="));
+    let link = body["cube"]["baseline_ref"].as_str().unwrap().to_owned();
+    assert!(link.contains("lang=eng"), "{link}");
+    let (status, _, cov) = get(&s, &link).await;
+    assert_eq!(status, StatusCode::OK, "{cov}");
+    assert_eq!(
+        cov["places"],
+        json!(["P00001", "P00002", "P00004", "P00005"])
+    );
+    // The hits are not filtered: the German and Spanish titles' matches count.
+    let ids = body["places"]["id"].as_array().unwrap();
+    assert!(ids.contains(&json!("P00003")) && ids.contains(&json!("P00006")));
+    let (_, _, filtered) = get(&s, "/v1/aggregate?q=gold&lang=eng").await;
+    assert!(
+        body["total"]["hits"].as_u64().unwrap() > filtered["total"]["hits"].as_u64().unwrap(),
+        "{body}"
+    );
+    // A phrase of English words too.
+    let (_, _, body) = get(&s, "/v1/aggregate?q=%22cross+of+gold%22").await;
+    assert_eq!(body["baseline"]["languages"], json!(["eng"]));
+}
+
+/// An explicit `lang` decides the baseline, whatever the query's words.
+#[tokio::test]
+async fn a_language_filter_still_decides_the_baseline() {
+    let s = state_with(None).await;
+    let (status, _, body) = get(&s, "/v1/aggregate?q=gold&lang=ger").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["baseline"],
+        json!({"languages": ["ger"], "why": "filter"})
+    );
+    assert_eq!(body["total"]["baseline_pages"], 2 * 312);
+    let (_, _, body) = get(&s, "/v1/aggregate?q=convention&lang=eng,spa").await;
+    assert_eq!(
+        body["baseline"],
+        json!({"languages": ["eng", "spa"], "why": "filter"})
+    );
+    assert_eq!(body["total"]["baseline_pages"], 5 * 312);
+}
+
+/// A query the word lists can't call English keeps every page as its
+/// baseline: "convention" is as common in French, and a prefix matches
+/// words the lists can't vouch for.
+#[tokio::test]
+async fn a_query_of_uncertain_language_keeps_every_page() {
+    let s = state_with(None).await;
+    for q in ["convention", "silve*", "convention+OR+gold"] {
+        let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["total"]["hits"].as_u64().unwrap() > 0, "{q}");
+        assert_eq!(
+            body["baseline"],
+            json!({"languages": [], "why": "all"}),
+            "{q}"
+        );
+        assert_eq!(body["total"]["baseline_pages"], 6 * 312, "{q}");
+        let link = body["cube"]["baseline_ref"].as_str().unwrap();
+        assert!(!link.contains("lang="), "{link}");
+    }
+    // Filters without exact baselines have no baseline to describe.
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold&front=true").await;
+    assert!(body["baseline"].is_null());
+    assert!(body["series"]["baseline"].is_null());
+}
+
 /// A version published before baselines were kept per language serves the
 /// language filter without them, as it always did.
 #[tokio::test]
@@ -680,9 +772,13 @@ async fn lang_filter_on_an_older_snapshot_has_no_baseline() {
     let (status, headers, _) = get(&s, "/v1/coverage?lang=ger&v=pages-v-other").await;
     assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
-    // Searches without a language filter are unaffected.
+    // Searches without a language filter are unaffected: an English query
+    // keeps every page as its baseline, as before #237.
     let (_, _, body) = get(&s, "/v1/aggregate?q=gold").await;
-    assert!(body["cube"]["baseline_ref"].is_string());
+    let link = body["cube"]["baseline_ref"].as_str().unwrap();
+    assert!(!link.contains("lang="), "{link}");
+    assert_eq!(body["baseline"], json!({"languages": [], "why": "all"}));
+    assert_eq!(body["total"]["baseline_pages"], 6 * 312);
 }
 
 #[tokio::test]
@@ -1608,7 +1704,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f6")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f7")) else {
         return Vec::new();
     };
     entries
@@ -1639,7 +1735,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f6/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f7/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),
@@ -2340,6 +2436,10 @@ async fn japanese_queries_search_the_japanese_pages() {
         // The relative rate compares with pages of titles that list Japanese.
         let r = body["cube"]["baseline_ref"].as_str().unwrap();
         assert!(r.contains("lang=jpn"), "{r}");
+        assert_eq!(
+            body["baseline"],
+            json!({"languages": ["jpn"], "why": "query_language"})
+        );
     }
     // Hits: our OCR is marked, snippets show the printed form, and the LoC
     // viewer link has no highlight (LoC has no text for these pages).

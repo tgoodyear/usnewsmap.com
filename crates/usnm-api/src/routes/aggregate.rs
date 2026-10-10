@@ -11,7 +11,8 @@ use axum::response::Response;
 use serde::Serialize;
 use usnm_core::cube::{Cell, SparseCube};
 use usnm_core::params::{RawParams, SearchRequest};
-use usnm_core::query::{highlight_terms, is_japanese};
+use usnm_core::query::highlight_terms;
+use usnm_core::query_language::{baseline_languages, BaselineWhy};
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::plan::{self, Planned};
 
@@ -32,6 +33,9 @@ struct AggregateResponse {
     places: Places,
     papers: Papers,
     languages: Languages,
+    /// Which pages `series.baseline`, `total.baseline_pages` and
+    /// `cube.baseline_ref` count; `null` when they're `null` (#237).
+    baseline: Option<BaselineOut>,
     cube: CubeOut,
     /// True when buckets were coarsened to keep the cube under the cell cap.
     coarsened: bool,
@@ -114,6 +118,19 @@ struct Papers {
 struct Languages {
     code: Vec<String>,
     hits: Vec<u64>,
+}
+
+/// The pages a search is compared with (#237): those of titles that list
+/// any of `languages`, or every page when it's empty, and why. The hits are
+/// never filtered by it: without `lang` they count every matching page,
+/// including the few in titles catalogued in other languages.
+#[derive(Serialize)]
+struct BaselineOut {
+    languages: Vec<String>,
+    /// `filter` (the `lang` parameter), `query_language` (the query's words
+    /// are Japanese, or English by `usnm_core::query_language`) or `all`
+    /// (neither: every page).
+    why: &'static str,
 }
 
 #[derive(Serialize)]
@@ -313,13 +330,17 @@ async fn compute(
 
     let highlight = highlight_terms(&req.query).join(" ");
     let f = &req.filters;
-    // A Japanese query searches only pages of titles that list Japanese
-    // (#139), so its relative rate compares with those pages.
-    let langs: Vec<String> = if is_japanese(&req.query) && f.langs.is_empty() {
-        vec!["jpn".to_owned()]
-    } else {
-        f.langs.clone()
-    };
+    // Without `lang`, the baseline is the pages in the query's language when
+    // the query says what that is (#237): a Japanese query searches only
+    // pages of titles that list Japanese (#139), and an English one finds
+    // mostly English pages. The hits stay unfiltered: a `lang=eng` filter
+    // makes cold searches about 40% slower and prunes nothing.
+    let (mut langs, mut why) = baseline_languages(&req.query, &f.langs);
+    if why == BaselineWhy::QueryLanguage && langs == ["eng"] && !rd.has_baselines_for(&langs) {
+        // A version from before pages were counted per language: every page,
+        // as before, rather than no baseline at all.
+        (langs, why) = (Vec::new(), BaselineWhy::All);
+    }
     let baseline_exact = f.lccns.is_empty() && !f.front_only && rd.has_baselines_for(&langs);
     let baseline = baseline_exact.then(|| rd.national_baseline(&spec, &f.states, &langs));
     let baseline_ref = baseline_exact.then(|| {
@@ -389,6 +410,10 @@ async fn compute(
                     .collect(),
             }
         },
+        baseline: baseline_exact.then(|| BaselineOut {
+            languages: langs,
+            why: why.as_str(),
+        }),
         languages: Languages {
             code: agg
                 .summary
