@@ -108,7 +108,7 @@ jobs:
       - run: git diff --exit-code fixtures/data
 
   ops:
-    name: ops data (version snapshots)
+    name: ops data (version snapshots, index history)
     needs: changes
     if: needs.changes.outputs.ops == 'true'
     runs-on: ubuntu-latest
@@ -122,8 +122,12 @@ jobs:
           "$RUNNER_TEMP/ops/bin/pip" install --require-hashes --no-deps -r scripts/ci/requirements-ops.txt
       - name: Every snapshot matches ops/version-snapshots/schema.json
         run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-version-snapshots.py'
-      - name: The checker's tests pass
-        run: '"$RUNNER_TEMP/ops/bin/python" -m unittest -v scripts/test_check_version_snapshots.py'
+      - name: ops/index-history.json matches ops/index-history.schema.json, keys sorted
+        run: '"$RUNNER_TEMP/ops/bin/python" scripts/check-index-history.py'
+      - name: The checkers' tests pass
+        run: >-
+          "$RUNNER_TEMP/ops/bin/python" -m unittest -v
+          scripts/test_check_version_snapshots.py scripts/test_check_index_history.py
 
   image:
     name: container image builds
@@ -197,6 +201,11 @@ jobs:
         run: scripts/ci/lint-bicep.sh
       - name: No shared-key authentication (ADR-0009)
         run: scripts/ci/no-shared-keys.sh
+      # The workbooks are loaded as text, so Bicep doesn't parse them.
+      - name: The workbook definitions parse and name the workspace placeholder
+        run: |
+          scripts/ci/check-workbooks.py
+          python3 -m unittest -v scripts/ci/test_check_workbooks.py
       - run: bicep build infra/main.bicep --stdout > /dev/null
       - run: bicep build infra/guardrails.bicep --stdout > /dev/null
       # The parameters bootstrap deploys the stack with (settings from the

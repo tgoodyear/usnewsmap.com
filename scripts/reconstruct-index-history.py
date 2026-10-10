@@ -2,7 +2,10 @@
 """Reconstruct the build records of index versions released before #161.
 
     scripts/reconstruct-index-history.py prod --merge ops/index-history.json > /tmp/h.json \
-      && mv /tmp/h.json ops/index-history.json
+      && scripts/check-index-history.py /tmp/h.json && mv /tmp/h.json ops/index-history.json
+
+(scripts/check-index-history.py checks the output against
+ops/index-history.schema.json, as CI checks the committed file.)
 
 Releases record what built them since #161 (`build` in the version's
 manifest and its `index_runs` item). For the versions before that, this

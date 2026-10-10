@@ -22,7 +22,8 @@ export interface Example {
 
 // Preset searches (F-30). Each was checked against the real corpus for enough
 // pages and places to map (see the pull request that added it). The API reads
-// the same file at build time.
+// the same file at build time. The cast is unchecked here: examples.test.ts
+// checks every entry has exactly these fields, with the right types.
 export const EXAMPLES: Example[] = examples as Example[];
 
 /** How many examples the home page shows at first. */

@@ -77,3 +77,25 @@ scripts/local-azure/down.sh /tmp/usnm-azure             # data stays; up.sh on t
 The formatting, lint, test and build commands CI runs are listed in [CONTRIBUTING.md](../CONTRIBUTING.md). The web app's end-to-end tests are described in [`web/README.md`](../web/README.md).
 
 Run `npm run format` in `web/` before pushing. It runs Prettier (pinned in `web/package.json`) from the repository root, with the root's `.prettierrc.json` and `.prettierignore`: it formats the web app's TypeScript, JavaScript, CSS, HTML and JSON (not `package-lock.json`, build output or `web/src/examples.json`, which keeps each example's view on one line) and every Markdown file in the repository but the reports under `docs/reports/` (pandoc builds their PDFs, and sizes table columns from the Markdown's layout). In Markdown it keeps prose lines and code blocks as written. It leaves data JSON outside `web/`, YAML, Bicep, Rust and Python alone. `npm run format:check` is the check CI runs. Where Prettier's layout would change how a Markdown block renders, wrap the block in `<!-- prettier-ignore-start -->` and `<!-- prettier-ignore-end -->`.
+
+### JSON data files
+
+Each JSON data file in the repository has a spec and a check that CI runs:
+
+| File                                             | Spec and check                                                                                                                                                                                                                            |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalog/overrides/*.json`                       | Parsed into `deny_unknown_fields` structs in usnm-ingest, with per-field audit checks and sorted keys (`cargo test -p usnm-ingest`)                                                                                                       |
+| `ops/version-snapshots/*.json`                   | `ops/version-snapshots/schema.json`, checked by `scripts/check-version-snapshots.py` (CI job `ops`)                                                                                                                                       |
+| `ops/index-history.json`                         | `ops/index-history.schema.json` and sorted keys at every level, checked by `scripts/check-index-history.py` (CI job `ops`); run it on `scripts/reconstruct-index-history.py`'s output before replacing the file                           |
+| `web/src/examples.json`                          | `examples.test.ts` checks every entry has exactly the fields of `Example` (`web/src/examples.ts`) and a `view` of `ViewState` fields (`npm test`); the API's `prewarm::Example` rejects unknown fields (`cargo test -p usnm-api prewarm`) |
+| `infra/workbooks/*.json`                         | `scripts/ci/check-workbooks.py` (CI job `infra`): each file `infra/modules/workbooks.bicep` loads parses, has `version` and `items`, and names the module's workspace placeholder instead of a resource id                                |
+| `fixtures/data/**`, `fixtures/skew-vectors.json` | Regenerated and compared (`python3 fixtures/generate.py`, `cargo test -p usnm-core --test skew_vectors`)                                                                                                                                  |
+
+The Python checks need `fastjsonschema` (`scripts/ci/requirements-ops.txt`), except `check-workbooks.py`, which uses the standard library:
+
+```sh
+python3 -m venv /tmp/ops && /tmp/ops/bin/pip install --require-hashes --no-deps -r scripts/ci/requirements-ops.txt
+/tmp/ops/bin/python scripts/check-version-snapshots.py
+/tmp/ops/bin/python scripts/check-index-history.py
+/tmp/ops/bin/python -m unittest scripts/test_check_version_snapshots.py scripts/test_check_index_history.py
+```
