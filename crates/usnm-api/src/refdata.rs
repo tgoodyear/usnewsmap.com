@@ -296,7 +296,7 @@ impl RefData {
         // version it has (05 §5.5.6).
         if TextLayout::from_version(current.text_layout).is_none() {
             return Err(format!(
-                "current.json's text_layout {:?} is newer than this API knows ({})",
+                "current.json's text_layout {:?} isn't one this API knows (up to {})",
                 current.text_layout,
                 TextLayout::LATEST.version()
             ));
