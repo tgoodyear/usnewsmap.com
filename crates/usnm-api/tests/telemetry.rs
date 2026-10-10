@@ -378,29 +378,17 @@ async fn requests_are_exported_by_route_template_without_search_text() {
             &[("layer", "blob"), ("result", "miss")]
         ) >= 1.0
     );
-    assert_eq!(
-        total(
-            "api.requests",
-            &[("route", "/healthz"), ("status_class", "2xx")]
-        ),
-        1.0
-    );
-    assert_eq!(
-        total(
-            "api.requests",
-            &[("route", "/v1/aggregate"), ("status_class", "5xx")]
-        ),
-        1.0
-    );
     assert_eq!(total("api.rejected_queries", &[("reason", "syntax")]), 1.0);
     assert!(all.contains("api.backend_duration_seconds"), "{all}");
-    assert!(all.contains("api.request_duration_seconds"), "{all}");
+    // Request counts and durations are in AppRequests only (#231).
+    assert!(!all.contains("api.requests"), "{all}");
+    assert!(!all.contains("api.request_duration_seconds"), "{all}");
     assert_eq!(
         total("api.index_version", &[("index_version", "fixture-v1")]),
         1.0
     );
 
-    // One console line per request, the same fields, no probes, no search text.
+    // No search text in the console, and no line per request (#231).
     let console = String::from_utf8(console.0.lock().unwrap().clone()).unwrap();
     for secret in SECRETS {
         assert!(
@@ -408,39 +396,12 @@ async fn requests_are_exported_by_route_template_without_search_text() {
             "`{secret}` was logged: {console}"
         );
     }
-    let mut lines: Vec<(String, String, u64)> = console
+    let request_lines = console
         .lines()
         .map(|l| serde_json::from_str::<Value>(l).unwrap())
         .filter(|l| l["fields"]["message"] == "request")
-        .map(|l| {
-            assert_eq!(l["level"], "INFO");
-            assert!(l.get("span").is_none(), "{l}");
-            assert!(l["fields"]["ms"].is_u64(), "{l}");
-            (
-                l["fields"]["method"].as_str().unwrap().to_owned(),
-                l["fields"]["route"].as_str().unwrap().to_owned(),
-                l["fields"]["status"].as_u64().unwrap(),
-            )
-        })
-        .collect();
-    lines.sort();
-    let mut expected: Vec<(String, String, u64)> = [
-        ("/v1/aggregate", 200),
-        ("/v1/aggregate", 200),
-        ("/v1/aggregate", 200),
-        ("/v1/aggregate", 200),
-        ("/v1/aggregate", 202),
-        ("/v1/aggregate", 400),
-        ("/v1/aggregate", 503),
-        ("(no route)", 404),
-        ("/api/v1/meta", 200),
-        ("(site)", 200),
-    ]
-    .into_iter()
-    .map(|(r, s)| ("GET".to_owned(), r.to_owned(), s))
-    .collect();
-    expected.sort();
-    assert_eq!(lines, expected, "{console}");
+        .count();
+    assert_eq!(request_lines, 0, "{console}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

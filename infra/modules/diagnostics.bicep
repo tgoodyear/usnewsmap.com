@@ -14,9 +14,8 @@
 // - Cosmos DataPlaneRequests and the per-query/per-request statistics: every
 //   ingest write. Control-plane changes are the audit trail.
 // - Container Apps HTTP logs: every API request, with its query string (the
-//   search text, 09 §9.4.2). usnm-api reports each request itself: one
-//   console line (method, route template, status, milliseconds) and one
-//   Application Insights request, neither with the path or query.
+//   search text, 09 §9.4.2). usnm-api reports each request itself as one
+//   Application Insights request, without the path or query.
 //
 // Not covered, deliberately:
 // - Application Insights: workspace-based, so its telemetry is already in
