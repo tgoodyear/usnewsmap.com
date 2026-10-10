@@ -76,6 +76,26 @@ var scheduleEnv = empty(ingestCron) ? [] : [{ name: 'USNM_INGEST_CRON', value: i
 var americanStoriesEnv = americanStoriesSearch
   ? []
   : [{ name: 'USNM_AMERICAN_STORIES_SEARCH', value: 'false' }]
+// How long a start stays not ready (06 §6.6). In single-revision mode the
+// old revision keeps the traffic until the new one's replicas pass their
+// startup and readiness probes, so the API holds /readyz until its startup
+// warm-up ends: the cap is that warm-up's budget plus 60 s (the API's own
+// default, READY_CAP_MARGIN_SECS in crates/usnm-api/src/config.rs). An app
+// that scales to zero has no other replica serving when one starts, and a
+// visitor waits on it, so it keeps a 60 s cap. Both settings are set here,
+// from the one budget, so the startup probe below always covers the cap.
+var startupWarmUpSecs = 300
+var holdReadyForWarmUp = minReplicas > 0
+var readyCapSecs = holdReadyForWarmUp ? startupWarmUpSecs + 60 : 60
+var readyEnv = [
+  { name: 'USNM_PREWARM_STARTUP_BUDGET_SECS', value: string(startupWarmUpSecs) }
+  { name: 'USNM_READY_CAP_SECS', value: string(readyCapSecs) }
+]
+// Loading the published version before the warm-up: the API retries while
+// the sidecar starts, which its own probe allows 300 s.
+var loadSecs = 420
+var startupProbeSecs = holdReadyForWarmUp ? 20 : 10
+
 var backendEnv = quickwit
   ? [
       { name: 'USNM_BACKEND', value: 'quickwit' }
@@ -88,21 +108,25 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv)
+  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, readyEnv)
   probes: [
     {
-      // A start loads the published version (retrying while the sidecar
-      // starts, which its own probe allows 300 s), then warms the caches:
-      // /readyz fails until the warm-up ends or USNM_READY_CAP_SECS (60 s)
-      // passes (06 §6.6). 48 × 10 s = 480 s covers both. Liveness and
-      // readiness probing begin once this passes, and in single-revision
-      // mode the previous revision keeps the traffic until then.
+      // A start loads the published version (loadSecs), then warms the
+      // caches: /readyz fails until the warm-up ends or the readiness cap
+      // (readyCapSecs) passes (06 §6.6). The probe allows both: 39 × 20 s =
+      // 780 s with the warm-up held, 48 × 10 s = 480 s without. The longer
+      // period keeps the threshold within the 48 the app has run with (the
+      // API spec documents a lower maximum that Container Apps doesn't
+      // apply). Failing it restarts the container; liveness and readiness
+      // probing begin once it passes, and in single-revision mode the
+      // previous revision keeps the traffic until then.
       type: 'Startup'
       httpGet: { path: '/readyz', port: 8080 }
-      periodSeconds: 10
+      periodSeconds: startupProbeSecs
       // /readyz allows the sidecar's health check 2 s.
       timeoutSeconds: 3
-      failureThreshold: 48
+      // Rounded up, so the window is never shorter than load plus cap.
+      failureThreshold: (loadSecs + readyCapSecs + startupProbeSecs - 1) / startupProbeSecs
     }
     {
       type: 'Liveness'
