@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::char::is_combining_mark;
+
+use crate::ja::is_ja;
 use unicode_normalization::UnicodeNormalization;
 
 /// Tokens longer than this are OCR garbage and are not indexed.
@@ -139,7 +141,8 @@ pub enum Analyzer {
     V1,
     /// A character whose decomposition holds a separator stays itself
     /// (`½`, `61¼`), as the `usnm_text` analyzer has it, and `Ŀ` folds to
-    /// `l` (#168; common-word pairs 2, Japanese fold 2).
+    /// `l` (#168); so does one that isn't Japanese but decomposes into a
+    /// Japanese character (`㊀`, #241). Common-word pairs 2, Japanese fold 2.
     V2,
 }
 
@@ -189,9 +192,11 @@ impl Analyzers {
 /// ASCII folding filter does.
 ///
 /// From [`Analyzer::V2`], a character whose decomposition holds a separator
-/// stays itself, lowercased (see [`keeps_form`]): `½` is the token `½`, not
-/// `1⁄2`. So an alphanumeric token folds to an alphanumeric token, which
-/// tokenizes as itself (#168). [`Analyzer::V1`] decomposes it.
+/// or a Japanese character stays itself, lowercased (see [`keeps_form`]):
+/// `½` is the token `½`, not `1⁄2`, and `a㊀` is `a㊀`, not `a一`. So an
+/// alphanumeric token folds to an alphanumeric token, which tokenizes as
+/// itself, here and on a Japanese page (#168, #241). [`Analyzer::V1`]
+/// decomposes it.
 pub fn fold(token: &str, analyzer: Analyzer) -> String {
     let mut out = String::with_capacity(token.len());
     match analyzer {
@@ -223,10 +228,18 @@ pub fn fold(token: &str, analyzer: Analyzer) -> String {
 /// (`½` stays `½`): a query for it would miss the pages that have it, and its
 /// canonical form would reparse as a phrase (#168). Kept, the query term goes
 /// through the same analyzer as the page.
+///
+/// The same goes for a character that isn't Japanese but decomposes into a
+/// Japanese one: the Hangzhou numerals `〸 〹 〺`, the Kanbun marks `㆒`–`㆕`
+/// and the circled ideographs `㊀`–`㊉`. `usnm_text` keeps them (`a㊀` is one
+/// token, `㊀` another), where `a一` would be two words to the query parser
+/// and to a Japanese page's tokens, one Latin and one Japanese ([`crate::ja`]),
+/// so `"a㊀ b"` would reparse as a different search (#241).
 fn keeps_form(c: char) -> bool {
+    let ja = is_ja(c);
     c.is_alphanumeric()
         && c.nfkd()
-            .any(|d| !is_combining_mark(d) && !d.is_alphanumeric())
+            .any(|d| (!is_combining_mark(d) && !d.is_alphanumeric()) || (!ja && is_ja(d)))
 }
 
 /// Append compatibility-decomposed characters, without their combining
@@ -271,9 +284,20 @@ pub(crate) fn vulgar_fractions() -> impl Iterator<Item = char> {
         .chain(['\u{2189}'])
 }
 
+/// The characters that aren't Japanese but fold to a Japanese one with
+/// [`Analyzer::V1`] (#241): the Hangzhou numerals U+3038–U+303A, the Kanbun
+/// marks U+3192–U+3195 and the circled ideographs U+3280–U+3289.
+#[cfg(test)]
+pub(crate) fn folding_to_japanese() -> impl Iterator<Item = char> {
+    ('\u{3038}'..='\u{303A}')
+        .chain('\u{3192}'..='\u{3195}')
+        .chain('\u{3280}'..='\u{3289}')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ja;
 
     #[test]
     fn normalizes_ocr_text() {
@@ -352,6 +376,39 @@ mod tests {
     }
 
     #[test]
+    fn characters_that_fold_to_japanese_stay_themselves_from_version_2() {
+        // Quickwit 0.9.1's `usnm_text` keeps these as they are (its ASCII
+        // folding has no entry for them), and a Latin letter before one is
+        // the same token: `a㊀` is one word, which matches neither `a一` nor
+        // `㊀` (#241).
+        let v2 = Analyzer::V2;
+        assert_eq!(
+            tokenize("Lot ㊀ and A㊁, 〸 ㆒ 一", v2),
+            vec!["lot", "㊀", "and", "a㊁", "〸", "㆒", "一"]
+        );
+        let all: String = folding_to_japanese().collect();
+        assert_eq!(all.chars().count(), 17);
+        assert_eq!(fold(&all, v2), all);
+        // Version 1 folds them to the Japanese characters.
+        assert_eq!(
+            tokenize("Lot ㊀ and A㊁, 〸 ㆒", Analyzer::V1),
+            vec!["lot", "一", "and", "a二", "十", "一"]
+        );
+        // They are every character that isn't Japanese and folds to a
+        // Japanese one alone; `㈠` (`(一)`) holds a separator, so version 2
+        // kept it already (#168).
+        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+            let f1 = fold(&c.to_string(), Analyzer::V1);
+            let listed = folding_to_japanese().any(|x| x == c);
+            let to_ja = c.is_alphanumeric()
+                && !ja::is_ja(c)
+                && ja::has_ja(&f1)
+                && f1.chars().all(char::is_alphanumeric);
+            assert_eq!(listed, to_ja, "{c:?} folds to {f1:?}");
+        }
+    }
+
+    #[test]
     fn version_1_decomposes_fractions() {
         // The folding indexes built before #168 have: `½` is `1⁄2`.
         let v1 = Analyzer::V1;
@@ -426,7 +483,8 @@ mod tests {
         // With version 2, a word of one alphanumeric character folds to a
         // word that tokenizes as itself, so the query parser's canonical form
         // reparses the same. Version 1 breaks this for the characters it
-        // decomposes into separators (#168).
+        // decomposes into separators (#168), and on a Japanese page for the
+        // ones it folds to Japanese characters (#241).
         let v2 = Analyzer::V2;
         for c in (0..=0x10FFFF).filter_map(char::from_u32) {
             if !c.is_alphanumeric() {
@@ -437,6 +495,12 @@ mod tests {
             assert_eq!(fold(&f, v2), f, "{c:?} folds again");
             if !f.is_empty() {
                 assert_eq!(tokenize(&f, v2), vec![f.clone()], "{c:?}");
+                // A Japanese page tokenizes it as one Latin word too, as the
+                // query parser does (#241); a Japanese character has its
+                // own folding there.
+                if !ja::is_ja(c) {
+                    assert_eq!(ja::tokenize(&f, v2), vec![f.clone()], "{c:?}");
+                }
             }
             let f1 = fold(&c.to_string(), Analyzer::V1);
             if f1.chars().all(char::is_alphanumeric) && !f1.is_empty() {

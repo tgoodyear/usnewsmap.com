@@ -21,7 +21,9 @@ use unicode_normalization::UnicodeNormalization;
 /// The latest version of the folding, which a full rebuild builds with:
 /// bumped whenever the folding changes, since the index and the API must
 /// agree (`current.json`'s `ja.fold`). 1: the first. 2: Latin runs keep `½`
-/// and the like as one word (#168, [`Analyzer::V2`]).
+/// and the like as one word (#168, [`Analyzer::V2`]), and `㊀` and the other
+/// characters that fold to a Japanese one as themselves, so `a㊀` is one
+/// Latin word, not `a一` (#241).
 pub const FOLD_VERSION: u32 = 2;
 
 /// The analyzer of fold version `version`, or `None` for a version this
@@ -612,6 +614,7 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa short",
             "Ñoño Łódź Straße 12th",
             "Wheat ½ higher at 61¼ ﷺ Ŀa",
+            "Lot ㊀ and a㊁, 〸 ㆒",
         ] {
             for a in Analyzer::ALL {
                 assert_eq!(tokenize(s, a), text::tokenize(s, a), "{s} {a:?}");
@@ -621,6 +624,12 @@ mod tests {
         // index of that version does (#168).
         assert_eq!(index_text("小麦 ½", Analyzer::V2), "小 麦 ½");
         assert_eq!(index_text("小麦 ½", Analyzer::V1), "小 麦 1\u{2044}2");
+        // `㊀` isn't Japanese: version 2 keeps it, in a Latin run too, as the
+        // main index has it; version 1 folds it to `一`, so `a㊀` is the
+        // one token `a一`, which a query reads as two (#241).
+        assert_eq!(index_text("一 ㊀ a㊀ 〸", Analyzer::V2), "一 ㊀ a㊀ 〸");
+        assert_eq!(index_text("一 ㊀ a㊀ 〸", Analyzer::V1), "一 一 a一 十");
+        assert_eq!(tokenize("a一", Analyzer::V2), vec!["a", "一"]);
     }
 
     #[test]

@@ -859,10 +859,27 @@ fn strip_ansi(line: &str) -> String {
     out
 }
 
+/// Quickwit's own line for an ingest request it answered 429 or 503:
+/// `ERROR http_request{… url.path=/api/v1/<index>/ingest}:
+/// tower_http::trace::on_failure: response failed classification=Status
+/// code: 503 Service Unavailable …`. The pipeline logs each of those as a
+/// `Quickwit pushed back; retrying` warning, with the status (or fails with
+/// it), so forwarding Quickwit's copy only doubled the lines (#231). It
+/// stays in the tail and is still observed.
+fn is_pushback_echo(line: &str) -> bool {
+    line.contains("tower_http::trace::on_failure")
+        && line.contains("/ingest}")
+        && (line.contains("Status code: 429") || line.contains("Status code: 503"))
+}
+
 /// The level a writer line is forwarded at: warnings and errors, and the
 /// lines that say the node is up. `stderr` lines without a level (a panic,
-/// the CLI's final `Error: …`) are warnings at least.
+/// the CLI's final `Error: …`) are warnings at least. Quickwit's echo of a
+/// pushback isn't forwarded ([`is_pushback_echo`]).
 fn forward_level(line: &str, stderr: bool) -> Option<tracing::Level> {
+    if is_pushback_echo(line) {
+        return None;
+    }
     // `2026-09-29T00:20:17.017Z  WARN quickwit_config::…: peer seeds are empty`
     let level = line.split_whitespace().take(3).find_map(|w| match w {
         "ERROR" => Some(tracing::Level::ERROR),
@@ -1274,6 +1291,37 @@ mod tests {
         );
         assert_eq!(forward_level("some unlevelled stdout line", false), None);
         assert_eq!(forward_level("", true), None);
+    }
+
+    #[test]
+    fn pushback_echoes_are_not_forwarded() {
+        use tracing::Level;
+        // As the writer logged them in prod (October 2026).
+        let echo = |path: &str, status: &str| {
+            format!(
+                "2026-10-08T10:00:00.123Z ERROR http_request{{otel.kind=\"Server\" \
+                 http.request.method=POST url.path={path}}}: tower_http::trace::on_failure: \
+                 response failed classification=Status code: {status} latency=12 ms"
+            )
+        };
+        let ingest = "/api/v1/pages-base-20261008-1/ingest";
+        assert_eq!(
+            forward_level(&echo(ingest, "503 Service Unavailable"), false),
+            None
+        );
+        assert_eq!(
+            forward_level(&echo(ingest, "429 Too Many Requests"), false),
+            None
+        );
+        // Other failures are still forwarded: another status, another path.
+        assert_eq!(
+            forward_level(&echo(ingest, "500 Internal Server Error"), false),
+            Some(Level::ERROR)
+        );
+        assert_eq!(
+            forward_level(&echo("/health/readyz", "503 Service Unavailable"), false),
+            Some(Level::ERROR)
+        );
     }
 
     /// A writer that exits at startup: the error carries its last output.

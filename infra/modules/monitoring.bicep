@@ -46,6 +46,23 @@ resource blobLogsTable 'Microsoft.OperationalInsights/workspaces/tables@2025-07-
   }
 }
 
+// The control-plane audit trail kept a year (#231): Cosmos account and
+// database changes, and the registry's image pushes, pulls and deletes.
+// 30 days queryable as before, then long-term retention, read with a search
+// job. About 5 MB a month between them, so a year held costs well under a
+// cent a month ($0.02 per GB-month).
+resource auditTables 'Microsoft.OperationalInsights/workspaces/tables@2025-07-01' = [
+  for table in ['CDBControlPlaneRequests', 'ContainerRegistryRepositoryEvents']: {
+    parent: workspace
+    name: table
+    properties: {
+      plan: 'Analytics'
+      retentionInDays: 30
+      totalRetentionInDays: 365
+    }
+  }
+]
+
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: appInsightsName
   location: location
