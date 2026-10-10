@@ -1021,7 +1021,7 @@ mod tests {
                 format!("wheat {f} -corn"),
                 format!(r#""wheat {f} higher at 61{f}""#),
                 format!(r#""{f} cent"~3"#),
-                format!("61{f}*"),
+                format!("18461{f}*"),
                 format!("({f} OR 1/2) cent"),
             ] {
                 assert_round_trips(&q);
