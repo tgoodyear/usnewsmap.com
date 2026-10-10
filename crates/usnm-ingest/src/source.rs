@@ -107,6 +107,51 @@ pub async fn enqueue(state: &State, list: &[ListedBatch]) -> anyhow::Result<Enqu
     Ok(report)
 }
 
+/// Queue `list` again even where curated, for a re-curation (`enqueue
+/// --force`): a batch at the listed version that isn't being curated now
+/// goes back to `queued` with its attempts reset and its source (URL,
+/// sha256, OCR source) as listed now. Its published curation stays until
+/// the new one commits. Batches not yet known, or at another version, are
+/// enqueued as [`enqueue`] does.
+pub async fn requeue(state: &State, list: &[ListedBatch]) -> anyhow::Result<EnqueueReport> {
+    let mut report = EnqueueReport::default();
+    for l in list {
+        let (batch, version) = split_version(&l.name)?;
+        check_sha256(l)?;
+        let mut done = false;
+        for _ in 0..5 {
+            let Some((mut b, etag)) = state.batch(&batch).await? else {
+                break;
+            };
+            if b.version != version
+                || !matches!(b.status, BatchStatus::Curated | BatchStatus::Failed)
+            {
+                break;
+            }
+            b.source_url = l.url.clone();
+            b.source_sha256 = l.sha256.clone();
+            b.ocr_source = listed_ocr_source(l);
+            b.status = BatchStatus::Queued;
+            b.attempts = 0;
+            b.last_error = None;
+            b.updated_at = Utc::now();
+            if state.replace_batch(&b, &etag).await?.is_some() {
+                report.requeued += 1;
+                done = true;
+                break;
+            }
+        }
+        if !done {
+            let one = enqueue(state, std::slice::from_ref(l)).await?;
+            report.new += one.new;
+            report.new_version += one.new_version;
+            report.requeued += one.requeued;
+            report.unchanged += one.unchanged;
+        }
+    }
+    Ok(report)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
     New,
@@ -116,8 +161,8 @@ enum Outcome {
     Conflict,
 }
 
-async fn enqueue_one(state: &State, l: &ListedBatch) -> anyhow::Result<Outcome> {
-    let (batch, version) = split_version(&l.name)?;
+/// A listed sha256 is 64 hex digits.
+fn check_sha256(l: &ListedBatch) -> anyhow::Result<()> {
     if let Some(sha) = &l.sha256 {
         anyhow::ensure!(
             sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -125,10 +170,20 @@ async fn enqueue_one(state: &State, l: &ListedBatch) -> anyhow::Result<Outcome> 
             l.name
         );
     }
-    let ocr_source = l
-        .ocr_source
+    Ok(())
+}
+
+/// The listing's OCR source, `ndnp-original` when it names none.
+fn listed_ocr_source(l: &ListedBatch) -> String {
+    l.ocr_source
         .clone()
-        .unwrap_or_else(|| "ndnp-original".into());
+        .unwrap_or_else(|| "ndnp-original".into())
+}
+
+async fn enqueue_one(state: &State, l: &ListedBatch) -> anyhow::Result<Outcome> {
+    let (batch, version) = split_version(&l.name)?;
+    check_sha256(l)?;
+    let ocr_source = listed_ocr_source(l);
     let Some((mut b, etag)) = state.batch(&batch).await? else {
         let fresh = Batch {
             id: batch.clone(),
@@ -329,7 +384,14 @@ pub struct Download {
     /// cut short by the worker's watchdog), so the connection and the
     /// parser reading it don't outlive the attempt.
     pub task: AbortOnDrop,
+    /// The response headers worth keeping with a retained archive
+    /// (`last-modified`, `etag`, `content-length`, `content-type`); empty
+    /// for files and stores.
+    pub headers: std::collections::BTreeMap<String, String>,
 }
+
+/// Response headers recorded with a retained archive (`crate::raw`).
+const KEPT_HEADERS: [&str; 4] = ["last-modified", "etag", "content-length", "content-type"];
 
 /// Aborts a spawned task when dropped.
 pub struct AbortOnDrop(tokio::task::AbortHandle);
@@ -343,20 +405,30 @@ impl Drop for AbortOnDrop {
 /// Start streaming `url` (https, `file://` or a local path), retrying server
 /// and connection errors a few times.
 pub async fn open(url: &str) -> anyhow::Result<Download> {
-    open_with(url, 6).await
+    open_with(url, 6, None).await
 }
 
 /// [`open`] with a single request: for paced bulk downloads, where every
 /// request has to go through the pacer.
 pub async fn open_once(url: &str) -> anyhow::Result<Download> {
-    open_with(url, 1).await
+    open_with(url, 1, None).await
 }
 
-async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
-    enum Source {
-        File(tokio::fs::File),
-        Http(reqwest::Response),
-    }
+/// Where a [`Download`] reads from.
+enum Source {
+    File(tokio::fs::File),
+    Http(reqwest::Response),
+    Store(usnm_store::ByteStream),
+}
+
+/// [`open`] (`tries` requests at most), also sending every chunk, as read,
+/// to `tee`: a retained copy of the archive (`crate::raw`). A tee that stops
+/// taking chunks stops the download.
+pub async fn open_with(
+    url: &str,
+    tries: u32,
+    tee: Option<tokio::sync::mpsc::Sender<bytes::Bytes>>,
+) -> anyhow::Result<Download> {
     let source = match local_path(url) {
         Some(path) => Source::File(
             tokio::fs::File::open(path)
@@ -368,6 +440,32 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
     let size = match &source {
         Source::File(f) => f.metadata().await.ok().map(|m| m.len()),
         Source::Http(r) => r.content_length(),
+        Source::Store(_) => None,
+    };
+    Ok(spawn_download(source, url, size, tee))
+}
+
+/// Stream an archive already in a store (a retained copy, `crate::raw`),
+/// `size` bytes if known, as [`open`] streams a download.
+pub fn from_store(stream: usnm_store::ByteStream, name: &str, size: Option<u64>) -> Download {
+    spawn_download(Source::Store(stream), name, size, None)
+}
+
+fn spawn_download(
+    source: Source,
+    url: &str,
+    size: Option<u64>,
+    tee: Option<tokio::sync::mpsc::Sender<bytes::Bytes>>,
+) -> Download {
+    let headers = match &source {
+        Source::Http(r) => KEPT_HEADERS
+            .iter()
+            .filter_map(|k| {
+                let v = r.headers().get(*k)?.to_str().ok()?;
+                Some(((*k).to_owned(), v.to_owned()))
+            })
+            .collect(),
+        _ => Default::default(),
     };
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<bytes::Bytes>>(16);
     let (done, digest) = tokio::sync::oneshot::channel();
@@ -390,11 +488,10 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
                             break;
                         }
                         buf.truncate(n);
-                        hash.update(&buf);
+                        let chunk = bytes::Bytes::from(buf);
+                        hash.update(&chunk);
                         count(n);
-                        if tx.send(Ok(buf.into())).await.is_err() {
-                            bail!("reader stopped");
-                        }
+                        forward(&tx, tee.as_ref(), chunk).await?;
                     }
                 }
                 Source::Http(resp) => {
@@ -404,9 +501,15 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
                             chunk.with_context(|| format!("{url}: download interrupted"))?;
                         hash.update(&chunk);
                         count(chunk.len());
-                        if tx.send(Ok(chunk)).await.is_err() {
-                            bail!("reader stopped");
-                        }
+                        forward(&tx, tee.as_ref(), chunk).await?;
+                    }
+                }
+                Source::Store(mut stream) => {
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk.with_context(|| format!("{url}: read interrupted"))?;
+                        hash.update(&chunk);
+                        count(chunk.len());
+                        forward(&tx, tee.as_ref(), chunk).await?;
                     }
                 }
             }
@@ -424,7 +527,7 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
             }
         }
     });
-    Ok(Download {
+    Download {
         reader: ChannelReader {
             rx,
             current: bytes::Bytes::new(),
@@ -433,7 +536,26 @@ async fn open_with(url: &str, tries: u32) -> anyhow::Result<Download> {
         bytes,
         size,
         task: AbortOnDrop(task.abort_handle()),
-    })
+        headers,
+    }
+}
+
+/// One chunk to the tee (first: the retained copy must hold every byte the
+/// parser sees) and the reader.
+async fn forward(
+    tx: &tokio::sync::mpsc::Sender<std::io::Result<bytes::Bytes>>,
+    tee: Option<&tokio::sync::mpsc::Sender<bytes::Bytes>>,
+    chunk: bytes::Bytes,
+) -> anyhow::Result<()> {
+    if let Some(t) = tee {
+        if t.send(chunk.clone()).await.is_err() {
+            bail!("the archive's retained copy stopped taking data");
+        }
+    }
+    if tx.send(Ok(chunk)).await.is_err() {
+        bail!("reader stopped");
+    }
+    Ok(())
 }
 
 /// Blocking `Read` over chunks sent from an async task.
@@ -525,6 +647,42 @@ mod tests {
         let r = enqueue(&s, &[listed("batch_a_ver01")]).await.unwrap();
         assert_eq!(r.unchanged, 1);
         assert_eq!(s.batch("batch_a").await.unwrap().unwrap().0.version, 2);
+    }
+
+    /// `enqueue --force` takes the source as listed now, not as first queued.
+    #[tokio::test]
+    async fn requeue_refreshes_the_listed_source() {
+        let s = State::new(Arc::new(MemoryDocs::default()));
+        enqueue(&s, &[listed("batch_a_ver01")]).await.unwrap();
+        let (mut b, etag) = s.batch("batch_a").await.unwrap().unwrap();
+        b.status = BatchStatus::Failed;
+        b.attempts = 5;
+        s.replace_batch(&b, &etag).await.unwrap().unwrap();
+        let mut now = listed("batch_a_ver01");
+        now.url = "https://example.org/moved/batch_a_ver01.tar.bz2".into();
+        now.sha256 = Some("ab".repeat(32));
+        now.ocr_source = Some("loc-reocr".into());
+        let r = requeue(&s, std::slice::from_ref(&now)).await.unwrap();
+        assert_eq!(r.requeued, 1);
+        let (b, _) = s.batch("batch_a").await.unwrap().unwrap();
+        assert_eq!(
+            (
+                b.status,
+                b.attempts,
+                b.source_url,
+                b.source_sha256,
+                b.ocr_source
+            ),
+            (
+                BatchStatus::Queued,
+                0,
+                now.url.clone(),
+                now.sha256.clone(),
+                "loc-reocr".into()
+            )
+        );
+        now.sha256 = Some("not hex".into());
+        assert!(requeue(&s, &[now]).await.is_err());
     }
 
     #[tokio::test]
