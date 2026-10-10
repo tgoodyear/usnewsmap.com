@@ -154,6 +154,95 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(c, ["loc-cache-r2", "c1", "58/58", "7.5", "300", "900", "3"])
         self.assertEqual(report.probe_rows([{"label": "x", "passes": []}]), [])
 
+    def v091_bench(self, label="cmp-v091-r1"):
+        """A 0.9.1 bench with a probe, as the job logs it since #251 split its
+        lines: the root's version with its tag's `v`."""
+        node = {"main_busy_ms": 40000.0, "main_threads": 4.0, "download_bytes": 2e9, "leaf_splits": 58.0}
+        passes = [{"name": n, "concurrency": 1, "median_secs": 2.0, "p90_secs": 2.5, "wall_secs": 20.0,
+                   "failed": 0, "shift_days": i, "started_at": "2026-10-10T00:35:31Z",
+                   "searches": [{"name": "radio (month)", "pages": 10, "error": None}] * 10,
+                   "nodes": {"qws-0": node}, "sampled": {}} for i, n in enumerate(["first", "c1"])]
+        probe = {"shift_days": 6, "searches": [{"name": "radio (month)", "secs": 1.0, "stats": {}}],
+                 "sum": {"num_hits": 10, "localexec_num_splits": 58, "leaf_wall_time_microsecs": 1,
+                         "splits": {"warmup_microsecs": 1, "wait_for_cpu_pool_microsecs": 0,
+                                    "cpu_search_microsecs": 1, "wait_for_search_permit_microsecs": 0,
+                                    "download_num_bytes": 1}}}
+        full = {"label": label, "indexes": ["s1ixb"], "american_stories": False,
+                "quickwit": {"version": "v0.9.1", "commit": "962685f", "num_cpus": 4},
+                "members": [{"node_id": "qws-0", "services": ["searcher", "metastore"]}], "searchers": 1,
+                "started_at": "2026-10-10T00:35:31Z", "ended_at": "2026-10-10T00:37:59Z",
+                "passes": passes, "probe": probe, "profile": None, "split_cache": None, "variant": None}
+        return full
+
+    def nightly_bench(self, label="cmp-n2509-r1"):
+        b = self.v091_bench(label)
+        b["quickwit"] = {"version": "0.8.0-nightly", "commit": "eec5bbc", "num_cpus": 4}
+        b["probe"] = None
+        for p in b["passes"]:
+            p["nodes"]["qws-0"] = dict(p["nodes"]["qws-0"], main_busy_ms=120000.0)
+            p["median_secs"] = 6.0
+        return b
+
+    def test_a_tagged_version_with_a_probe_is_compared(self):
+        # As the job logs them now: in parts (crates/usnm-ingest/src/cluster/bench.rs, log_parts).
+        def parts(full):
+            head = {k: v for k, v in full.items() if k not in ("passes", "probe", "profile")}
+            head["passes_logged"] = len(full["passes"])
+            out = [("bench", head)]
+            out += [("bench_pass", {"label": full["label"], "n": n, "pass": p}) for n, p in enumerate(full["passes"])]
+            if full.get("probe"):
+                out.append(("bench_probe", {"label": full["label"], "probe": full["probe"]}))
+            return out
+        reports = report.assemble(parts(self.v091_bench()) + parts(self.nightly_bench()))
+        benches = [r for k, r in reports if k == "bench"]
+        self.assertEqual([len(b["passes"]) for b in benches], [2, 2])
+        self.assertEqual(benches[0]["probe"]["sum"]["localexec_num_splits"], 58)
+        self.assertEqual(report.version_of(benches[0]), "0.9.1")
+        rows = report.compare_rows(benches)
+        self.assertEqual(sorted({r[1] for r in rows}), ["0.8.0-nightly", "0.9.1"])
+        by = {(row[1], row[2]): row for row in report.compare_summary(benches)}
+        self.assertEqual(by[("c1", "0.9.1")][5], "1.00")
+        self.assertEqual(by[("c1", "0.8.0-nightly")][5], "3.00")
+        self.assertEqual(by[("c1", "0.8.0-nightly")][7], "3.00")
+        self.assertEqual(report.hit_mismatches(benches), [])
+        self.assertEqual(len(report.probe_rows(benches)), 1)
+
+    def test_salvages_a_line_cut_short(self):
+        # October 2026: one line held a whole 0.9.1 run with its probe, and
+        # Container Apps kept its first 16,346 characters.
+        full = self.v091_bench()
+        full["probe"]["searches"] = full["probe"]["searches"] * 600
+        line = json.dumps({"timestamp": "t", "level": "INFO", "fields": {
+            "message": "qwcluster report", "kind": "bench",
+            "report": json.dumps(full, sort_keys=True, separators=(",", ":"))}}, separators=(",", ":"))
+        raw = line[:16346]
+        with self.assertRaises(ValueError):
+            json.loads(raw)
+        kind, r = report.salvage(raw)
+        self.assertEqual(kind, "bench")
+        self.assertTrue(r["truncated"])
+        self.assertEqual([p["name"] for p in r["passes"]], ["first", "c1"])
+        self.assertNotIn("quickwit", r)
+        # Its build from the run's `bench root` line, its start from its first pass.
+        root = {"label": "cmp-v091-r1", "quickwit":
+                'Some(QuickwitBuild { version: Some("v0.9.1"), commit: Some("962685f"), num_cpus: Some(4) })'}
+        rows = [{"Kind": "", "Report": "", "Raw": raw},
+                {"Kind": "bench_root", "Report": json.dumps(root), "Raw": ""}]
+        (k, b), = report.assemble(report.parse_reports(rows))
+        self.assertEqual(b["quickwit"], {"version": "v0.9.1", "commit": "962685f", "num_cpus": 4})
+        self.assertEqual(b["started_at"], "2026-10-10T00:35:31Z")
+        self.assertEqual(b["searchers"], 1)
+        self.assertEqual(len(report.compare_rows([b])), 2)
+        # The same from a captured log stream.
+        root_line = json.dumps({"fields": {"message": "bench root", **root}})
+        got = dict(report.reports_from_lines(["2026-10-10T00:37:59Z " + raw, root_line]))
+        self.assertTrue(got[("bench", "cmp-v091-r1")]["truncated"])
+        (k, b2), = report.assemble([(k, r) for (k, _), r in got.items()])
+        self.assertEqual(report.version_of(b2), "0.9.1")
+        # Cut inside the passes: nothing to salvage.
+        self.assertIsNone(report.salvage(line[:600]))
+        self.assertIsNone(report.salvage("not a report"))
+
     def test_reads_reports_from_a_log_stream(self):
         load = fixture("load.json")["Report"]
         line = json.dumps({"timestamp": "t", "level": "INFO",

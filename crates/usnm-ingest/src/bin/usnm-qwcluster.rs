@@ -271,18 +271,20 @@ impl Command {
     }
 }
 
-/// `runs/{name}/{file}` in the bench store, and the report's log line.
+/// `runs/{name}/{file}` in the bench store, and the report's log lines.
 async fn keep(
     store: &dyn ObjectStore,
     name: &str,
     file: &str,
     full: &serde_json::Value,
-    summary: &serde_json::Value,
+    lines: &[(&str, serde_json::Value)],
 ) -> anyhow::Result<()> {
     if !usnm_store::is_safe_segment(name) {
         anyhow::bail!("`{name}` can't name a run");
     }
-    cluster::log_report(file.trim_end_matches(".json"), summary);
+    for (kind, line) in lines {
+        cluster::log_report(kind, line);
+    }
     store
         .put(
             &format!("runs/{name}/{file}"),
@@ -320,20 +322,18 @@ async fn dump(store: &dyn ObjectStore) -> anyhow::Result<Vec<(String, serde_json
         };
         let mut v: serde_json::Value =
             serde_json::from_slice(&bytes).with_context(|| path.clone())?;
-        // As logged: a bench without each search's calls, a load without
-        // its per-poll series.
+        // As logged: a bench in its parts without each search's calls, a
+        // load without its per-poll series.
         if kind == "bench" {
-            for p in v["passes"].as_array_mut().into_iter().flatten() {
-                for s in p["searches"].as_array_mut().into_iter().flatten() {
-                    if let Some(o) = s.as_object_mut() {
-                        o.remove("calls");
-                    }
-                }
-            }
+            out.extend(
+                bench::log_parts(&v)
+                    .into_iter()
+                    .map(|(k, part)| (k.to_owned(), part)),
+            );
         } else {
             v["rate"] = serde_json::json!([]);
+            out.push((kind.to_owned(), v));
         }
-        out.push((kind.to_owned(), v));
     }
     Ok(out)
 }
@@ -491,7 +491,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 &index,
                 "load.json",
                 &serde_json::to_value(&report)?,
-                &report.summary(),
+                &[("load", report.summary())],
             )
             .await
         }
@@ -613,7 +613,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 &label,
                 "bench.json",
                 &serde_json::to_value(&report)?,
-                &report.summary(),
+                &report.log_parts(),
             )
             .await
         }
@@ -775,9 +775,10 @@ mod tests {
             .unwrap();
         let got = dump(store.as_ref()).await.unwrap();
         let kinds: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(kinds, ["bench", "load"]);
-        assert!(got[0].1["passes"][0]["searches"][0].get("calls").is_none());
-        assert_eq!(got[1].1["rate"], serde_json::json!([]));
+        assert_eq!(kinds, ["bench", "bench_pass", "load"]);
+        assert_eq!(got[0].1["passes_logged"], 1);
+        assert!(got[1].1["pass"]["searches"][0].get("calls").is_none());
+        assert_eq!(got[2].1["rate"], serde_json::json!([]));
     }
 
     #[test]

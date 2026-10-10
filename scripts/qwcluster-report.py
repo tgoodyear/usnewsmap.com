@@ -33,6 +33,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -50,12 +51,20 @@ SIDECAR_VCPU, SIDECAR_GIB = 2.0, 4.0
 # The bench job (infra/modules/searchcluster.bicep).
 BENCH_VCPU, BENCH_GIB = 4.0, 8.0
 
+# Container Apps keeps about 16 KiB of a console line: a longer report line
+# arrives cut short and doesn't parse as JSON. Those rows come back whole in
+# Raw (salvage() reads what it can), with each bench's `bench root` line,
+# which names its Quickwit build.
 QUERY_REPORTS = """
 ContainerAppConsoleLogs
-| where Log has "qwcluster report"
+| where Log has "qwcluster report" or Log has "bench root"
 | extend j = parse_json(Log)
-| where tostring(j.fields.message) == "qwcluster report"
-| project TimeGenerated, Kind = tostring(j.fields.kind), Report = tostring(j.fields.report)
+| extend Message = tostring(j.fields.message)
+| where Message in ("qwcluster report", "bench root") or isempty(Message)
+| project TimeGenerated, Kind = iff(Message == "bench root", "bench_root", tostring(j.fields.kind)),
+    Report = case(Message == "bench root", tostring(pack("label", j.fields.label, "quickwit", j.fields.quickwit)),
+                  Message == "qwcluster report", tostring(j.fields.report), ""),
+    Raw = iff(isempty(Message), Log, "")
 | order by TimeGenerated asc
 """
 
@@ -100,22 +109,110 @@ def rows_of(v):
 
 
 def parse_reports(rows):
-    """`qwcluster report` rows as (kind, report dict), oldest first. A row
-    whose report doesn't parse (a line cut short) is skipped."""
+    """`qwcluster report` rows as (kind, report dict), oldest first. A line
+    cut short is salvaged if it can be (salvage()); otherwise skipped."""
     out = []
     for r in rows:
         try:
             out.append((r["Kind"], json.loads(r["Report"])))
         except (ValueError, TypeError, KeyError):
-            continue
+            got = salvage(r.get("Raw") or "")
+            if got:
+                out.append(got)
     return out
 
 
+# A bench report's keys in the order its line has them (serde_json writes an
+# object's keys sorted): those that can come after `passes`. A line cut short
+# in any of them still holds every pass.
+AFTER_PASSES = ("probe", "profile", "quickwit", "searchers", "split_cache", "started_at", "variant")
+
+
+def salvage(raw):
+    """(kind, report) from a `qwcluster report` line Container Apps cut short
+    (October 2026, #251: one line held a whole bench run with its probe),
+    when the cut came after the passes: the report up to the first key that
+    follows them, marked `truncated`. None otherwise."""
+    m = re.search(r'"kind":"([a-z_]+)"', raw)
+    start = raw.find('"report":"')
+    if not m or start < 0:
+        return None
+    body = raw[start + len('"report":"'):]
+    passes = body.find(',\\"passes\\":[')
+    if passes < 0:
+        return None
+    # The passes array's end: `]` then the next key. Keys inside a pass
+    # (its own `started_at`) follow a number or a string, never `]`.
+    cuts = [i for i in (body.find(f'],\\"{k}\\":', passes) for k in AFTER_PASSES) if i >= 0]
+    if not cuts:
+        return None
+    try:
+        report = json.loads(json.loads('"' + body[:min(cuts) + 1] + '"') + "}")
+    except ValueError:
+        return None
+    report["truncated"] = True
+    return m.group(1), report
+
+
+def assemble(reports):
+    """Reports as their lines carried them, put back together: a bench
+    logged in parts (`bench` with `passes_logged`, then `bench_pass`,
+    `bench_probe`, `bench_profile`) is one report again, and a bench whose
+    line was cut short gets its Quickwit build from its `bench root` line
+    and its start from its first pass."""
+    parts = {}
+    roots = {}
+    for kind, r in reports:
+        label = r.get("label")
+        if kind == "bench_pass":
+            parts.setdefault(label, {}).setdefault("passes", {})[r.get("n", 0)] = r.get("pass")
+        elif kind == "bench_probe":
+            parts.setdefault(label, {})["probe"] = r.get("probe")
+        elif kind == "bench_profile":
+            parts.setdefault(label, {})["profile"] = r.get("profile")
+        elif kind == "bench_root":
+            v = re.search(r'version: Some\("([^"]+)"\)', r.get("quickwit") or "")
+            c = re.search(r'commit: Some\("([^"]+)"\)', r.get("quickwit") or "")
+            n = re.search(r"num_cpus: Some\((\d+)\)", r.get("quickwit") or "")
+            roots[label] = {"version": v and v.group(1), "commit": c and c.group(1),
+                            "num_cpus": n and int(n.group(1))}
+    out = []
+    for kind, r in reports:
+        if kind in ("bench_pass", "bench_probe", "bench_profile", "bench_root"):
+            continue
+        if kind == "bench":
+            r = dict(r)
+            p = parts.get(r.get("label"), {})
+            if "passes" not in r and "passes_logged" in r:
+                got = p.get("passes", {})
+                r["passes"] = [got[n] for n in sorted(got)]
+                if len(r["passes"]) < r["passes_logged"]:
+                    r["truncated"] = True
+            for k in ("probe", "profile"):
+                if r.get(k) is None and p.get(k) is not None:
+                    r[k] = p[k]
+            if not r.get("quickwit") and r.get("label") in roots:
+                r["quickwit"] = roots[r["label"]]
+            if "started_at" not in r and r.get("passes"):
+                r["started_at"] = r["passes"][0].get("started_at")
+            r.setdefault("searchers", len([m for m in r.get("members", [])
+                                           if "searcher" in m.get("services", [])]))
+        out.append((kind, r))
+    return out
+
+
+def version_of(b):
+    """A bench's Quickwit version without the tag's `v` (`v0.9.1` is 0.9.1)."""
+    v = (b.get("quickwit") or {}).get("version") or "-"
+    return v[1:] if re.match(r"v\d", v) else v
+
+
 def reports_from_lines(lines):
-    """`qwcluster report` records from captured console output: JSON log
-    lines, bare or wrapped in a log stream's record (its `Log`), possibly
-    after a timestamp. The last record of each (kind, name) wins, so a
-    `dump` after the runs doesn't count them twice."""
+    """`qwcluster report` records (and benches' `bench root` lines) from
+    captured console output: JSON log lines, bare or wrapped in a log
+    stream's record (its `Log`), possibly after a timestamp; a line cut short
+    is salvaged if it can be. The last record of each (kind, name) wins, so
+    a `dump` after the runs doesn't count them twice."""
     found = {}
     for line in lines:
         start = line.find("{")
@@ -124,13 +221,23 @@ def reports_from_lines(lines):
         try:
             j = json.loads(line[start:])
         except ValueError:
+            got = salvage(line[start:]) if "qwcluster report" in line else None
+            if got:
+                found[(got[0], got[1].get("label", ""))] = got[1]
             continue
         if isinstance(j, dict) and "fields" not in j and isinstance(j.get("Log"), str):
             try:
                 j = json.loads(j["Log"][j["Log"].find("{"):])
             except ValueError:
+                got = salvage(j["Log"])
+                if got:
+                    found[(got[0], got[1].get("label", ""))] = got[1]
                 continue
         fields = j.get("fields", {}) if isinstance(j, dict) else {}
+        if fields.get("message") == "bench root":
+            found[("bench_root", fields.get("label", ""))] = {
+                "label": fields.get("label"), "quickwit": fields.get("quickwit")}
+            continue
         if fields.get("message") != "qwcluster report":
             continue
         try:
@@ -139,6 +246,8 @@ def reports_from_lines(lines):
             continue
         kind = fields.get("kind", "")
         name = r.get("label") or r.get("index_id") or r.get("name") or ""
+        if kind == "bench_pass":
+            name = f"{name}#{r.get('n')}"
         found[(kind, name)] = r
     return list(found.items())
 
@@ -292,7 +401,7 @@ def bench_rows(benches):
         for p in b["passes"]:
             leaf = ", ".join(f"{n} {int(c['leaf_splits'])}" for n, c in sorted(p["nodes"].items()))
             rows.append([
-                b["label"], b["searchers"], ",".join(b["indexes"]), p["name"], p["concurrency"],
+                b["label"], b.get("searchers", "-"), ",".join(b["indexes"]), p["name"], p["concurrency"],
                 fmt(p["median_secs"], 2), fmt(p["p90_secs"], 2), fmt(p["max_secs"], 2),
                 fmt(p["throughput"], 3), p["failed"], leaf,
                 "yes" if p["all_searchers_used"] else "no",
@@ -323,7 +432,7 @@ def pass_load(b, p, node, c):
     threads = c.get("main_threads") or 0
     wall = p.get("wall_secs") or 0
     sampled = p.get("sampled", {}).get(node, {})
-    version = (b.get("quickwit") or {}).get("version") or "-"
+    version = version_of(b)
     if b.get("variant") and version != "-":
         version = f"{version} {b['variant']}"
     return {
@@ -403,8 +512,8 @@ def hit_mismatches(benches):
     (index, pass, search, {version: pages})."""
     seen = {}
     for b in benches:
-        version = (b.get("quickwit") or {}).get("version")
-        if not version:
+        version = version_of(b)
+        if version == "-":
             continue
         for p in b["passes"]:
             for r in p.get("searches", []):
@@ -512,11 +621,11 @@ def report(env, since, out, from_file=None):
     span = span_of(since)
     if from_file:
         with open(from_file) as f:
-            reports = [(k, r) for (k, _), r in reports_from_lines(f)]
+            reports = assemble([(k, r) for (k, _), r in reports_from_lines(f)])
         release = []
     else:
         try:
-            reports = parse_reports(log_query(workspace, QUERY_REPORTS, span))
+            reports = assemble(parse_reports(log_query(workspace, QUERY_REPORTS, span)))
             release = log_query(workspace, QUERY_RELEASE, span)
         except subprocess.CalledProcessError as e:
             print(f"warning: Log Analytics query failed ({e.stderr.strip()[:200]}); "

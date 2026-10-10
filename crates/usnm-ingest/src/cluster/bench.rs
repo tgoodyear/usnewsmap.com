@@ -487,22 +487,67 @@ pub struct Report {
 }
 
 impl Report {
-    /// The report without each search's calls, for the job's log line.
-    pub fn summary(&self) -> serde_json::Value {
-        let mut v = serde_json::to_value(self).unwrap_or_default();
-        if let Some(passes) = v["passes"].as_array_mut() {
-            for p in passes {
-                if let Some(searches) = p["searches"].as_array_mut() {
-                    for s in searches {
-                        if let Some(o) = s.as_object_mut() {
-                            o.remove("calls");
-                        }
-                    }
-                }
+    /// The report's log lines ([`log_parts`]).
+    pub fn log_parts(&self) -> Vec<(&'static str, serde_json::Value)> {
+        log_parts(&serde_json::to_value(self).unwrap_or_default())
+    }
+}
+
+/// A bench report (`runs/{label}/bench.json`, or one just run) as the job's
+/// `qwcluster report` lines, without each search's calls. Container Apps
+/// keeps about 16 KiB of a console line, and one line with a whole run (its
+/// passes, the gRPC probe and the profile) passed that in October 2026
+/// (#251), so the report goes out in parts that each stay well under it:
+///
+/// - `bench`: the run without its passes, probe and profile, with
+///   `passes_logged`, the number of `bench_pass` lines that follow;
+/// - `bench_pass`: `{label, n, pass}`, one per pass, `n` from 0;
+/// - `bench_probe`: `{label, probe}`, when there is one;
+/// - `bench_profile`: `{label, profile}`, when there is one.
+///
+/// scripts/qwcluster-report.py puts them back together by label.
+pub fn log_parts(full: &serde_json::Value) -> Vec<(&'static str, serde_json::Value)> {
+    let mut head = full.clone();
+    let label = full["label"].clone();
+    let mut out = Vec::new();
+    let passes = head
+        .as_object_mut()
+        .and_then(|o| o.remove("passes"))
+        .and_then(|p| p.as_array().cloned())
+        .unwrap_or_default();
+    let take = |head: &mut serde_json::Value, key: &str| {
+        head.as_object_mut()
+            .and_then(|o| o.remove(key))
+            .filter(|v| !v.is_null())
+    };
+    let probe = take(&mut head, "probe");
+    let profile = take(&mut head, "profile");
+    head["passes_logged"] = serde_json::json!(passes.len());
+    out.push(("bench", head));
+    for (n, mut p) in passes.into_iter().enumerate() {
+        for s in p["searches"].as_array_mut().into_iter().flatten() {
+            if let Some(o) = s.as_object_mut() {
+                o.remove("calls");
             }
         }
-        v
+        out.push((
+            "bench_pass",
+            serde_json::json!({"label": label, "n": n, "pass": p}),
+        ));
     }
+    if let Some(probe) = probe {
+        out.push((
+            "bench_probe",
+            serde_json::json!({"label": label, "probe": probe}),
+        ));
+    }
+    if let Some(profile) = profile {
+        out.push((
+            "bench_profile",
+            serde_json::json!({"label": label, "profile": profile}),
+        ));
+    }
+    out
 }
 
 async fn pass(
@@ -921,6 +966,52 @@ mod tests {
         let small = (d("1895-01-01"), d("1897-12-31"));
         let r = request("q=x", Some(("1918-01-01", "1918-12-31")), small, 0).unwrap();
         assert_eq!((r.filters.from, r.filters.to), small);
+    }
+
+    /// The log lines of a run with a probe: none near Container Apps' 16
+    /// KiB, and together everything but the calls.
+    #[test]
+    fn a_report_is_logged_in_parts() {
+        let search = serde_json::json!({"name": "radio (month)", "secs": 1.5, "pages": 10,
+            "calls": vec![serde_json::json!({"kind": "summary", "secs": 1.0}); 20]});
+        let pass = serde_json::json!({"name": "first", "searches": vec![search; 13]});
+        let probe_search = serde_json::json!({"name": "radio (month)", "secs": 1.0,
+            "stats": grpc::SearchStats::default()});
+        let full = serde_json::json!({
+            "label": "cmp-v091-r1", "quickwit": {"version": "v0.9.1"},
+            "passes": vec![pass; 5],
+            "probe": {"shift_days": 6, "searches": vec![probe_search; 13], "sum": grpc::SearchStats::default()},
+            "profile": null,
+        });
+        let parts = log_parts(&full);
+        let kinds: Vec<&str> = parts.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            kinds,
+            [
+                "bench",
+                "bench_pass",
+                "bench_pass",
+                "bench_pass",
+                "bench_pass",
+                "bench_pass",
+                "bench_probe"
+            ]
+        );
+        assert_eq!(parts[0].1["passes_logged"], 5);
+        assert!(parts[0].1.get("passes").is_none() && parts[0].1.get("probe").is_none());
+        assert_eq!(parts[0].1["quickwit"]["version"], "v0.9.1");
+        assert_eq!(parts[2].1["n"], 1);
+        assert_eq!(parts[2].1["label"], "cmp-v091-r1");
+        assert!(parts[1].1["pass"]["searches"][0].get("calls").is_none());
+        assert_eq!(
+            parts[6].1["probe"]["searches"].as_array().unwrap().len(),
+            13
+        );
+        for (k, v) in &parts {
+            // Escaped once more inside the JSON log line: well under 16 KiB.
+            let line = serde_json::to_string(&v.to_string()).unwrap();
+            assert!(line.len() < 8_000, "{k}: {} bytes", line.len());
+        }
     }
 
     #[test]
