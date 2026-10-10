@@ -27,7 +27,7 @@ import { americanStoriesOnlyNote } from "./lib/matchSource";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { PagesLists, WhenLists, exactMedian, medianCandidates, type MedianStatus } from "./components/PlaceLists";
-import { DownloadCsv, SkewLists, StateTable, clearest, type SkewRow } from "./components/SkewPanels";
+import { DownloadCsv, SkewLists, StateTable, clearest, useListLengths, type SkewRow } from "./components/SkewPanels";
 import { hasWebGL2 } from "./lib/webgl";
 import { MIN_PLACES, prepareSkew, type Prepared, type Unavailable } from "./engine/skewInput";
 import { maxWindowExpected, scoreFrame } from "./engine/skewModel";
@@ -425,8 +425,10 @@ export function App() {
 
   // Phones show the legend and the place lists after the playback controls, in the DOM as well as
   // on screen, so the controls sit right under the map. They move, not the controls: the legend and
-  // lists keep no state of their own, so a rotation across the breakpoint loses nothing.
+  // lists keep no state of their own, so a rotation across the breakpoint loses nothing. How many
+  // places the Clearest differences lists show is kept here for that reason.
   const narrow = useMediaQuery("(max-width: 640px)");
+  const [skewShown, setSkewShown] = useListLengths(`${key}|${view.bucket}|${view.win}|${norm}`);
   const legend = !data ? null : norm === "skew" && skewModel ? (
     <SkewLegend
       places={frame ? frame.placePages.filter((p) => p > 0).length : 0}
@@ -443,7 +445,9 @@ export function App() {
   );
   const sidePanel = !data ? null : (
     <>
-      {norm === "skew" && !view.place && <SkewLists rows={skewListed} onSelect={select} />}
+      {norm === "skew" && !view.place && (
+        <SkewLists rows={skewListed} onSelect={select} shown={skewShown} onShown={setSkewShown} />
+      )}
       {norm === "raw" && !view.place && <PagesLists rows={visible} onSelect={select} trailing={view.win !== null} />}
       {norm === "when" && !view.place && <WhenLists rows={visible} onSelect={select} trailing={view.win !== null} exact={exactMedians} status={medianStatus} />}
       {view.place && (

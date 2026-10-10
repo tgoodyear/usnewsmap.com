@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { formatTimes } from "../lib/skewScale";
 import { formatExpected, formatRange, type SkewInfo } from "../lib/skewText";
 import { dateFromDay } from "../lib/time";
@@ -14,43 +14,143 @@ export interface SkewRow {
   lastDay?: number;
 }
 
+/** How many places each list shows at first, and how many more each "Show more" adds. */
 const LIST_LENGTH = 5;
+/**
+ * The most places a list shows, so an expanded list doesn't push the rest of
+ * the page off a phone's screen. The table has every place.
+ */
+const MOST_SHOWN = 25;
 
 /**
  * The places that differ most clearly (doc 11, 11.6): above 1 sorted by the
  * interval's lower bound, below 1 by its upper bound. Only places whose
- * interval excludes 1. Papers in other languages are named, not left out.
+ * interval excludes 1, all of them: the lists choose how many to show.
+ * Papers in other languages are named, not left out.
  */
 export function clearest(rows: SkewRow[]): { above: SkewRow[]; below: SkewRow[] } {
   const usable = rows.filter((r) => r.skew.dir !== 0);
   return {
-    above: usable
-      .filter((r) => r.skew.dir === 1)
-      .sort((a, b) => b.skew.lower - a.skew.lower)
-      .slice(0, LIST_LENGTH),
-    below: usable
-      .filter((r) => r.skew.dir === -1)
-      .sort((a, b) => a.skew.upper - b.skew.upper)
-      .slice(0, LIST_LENGTH),
+    above: usable.filter((r) => r.skew.dir === 1).sort((a, b) => b.skew.lower - a.skew.lower),
+    below: usable.filter((r) => r.skew.dir === -1).sort((a, b) => a.skew.upper - b.skew.upper),
   };
+}
+
+/** How many places each Clearest differences list shows. */
+export interface ListLengths {
+  above: number;
+  below: number;
+}
+
+/**
+ * How many places each Clearest differences list shows, kept above the lists
+ * so they keep it when they move (phones put them after the playback
+ * controls, so a rotation remounts them). Both go back to the first few when
+ * `resetKey` changes: a new search, window or measure.
+ */
+export function useListLengths(resetKey: string): [ListLengths, (list: keyof ListLengths, n: number) => void] {
+  const [state, setState] = useState({ key: resetKey, above: LIST_LENGTH, below: LIST_LENGTH });
+  let current = state;
+  if (state.key !== resetKey) {
+    current = { key: resetKey, above: LIST_LENGTH, below: LIST_LENGTH };
+    setState(current);
+  }
+  return [current, (list, n) => setState((s) => ({ ...s, [list]: n }))];
 }
 
 interface ListsProps {
   rows: SkewRow[];
   onSelect: (id: string) => void;
+  /** How many places each list shows, from `useListLengths`. */
+  shown: ListLengths;
+  onShown: (list: keyof ListLengths, n: number) => void;
 }
 
 /** The side panel when no place is selected. */
-export function SkewLists({ rows, onSelect }: ListsProps) {
+export function SkewLists({ rows, onSelect, shown, onShown }: ListsProps) {
   const { above, below } = clearest(rows);
-  const list = (items: SkewRow[], heading: string, empty: string) => (
+  return (
+    <ListsPanel title="Clearest differences" label="Places that differ most clearly" className="skew-lists">
+      <ClearList
+        heading="Most clearly above 1×"
+        empty="No place is clearly above 1× in this window."
+        items={above}
+        limit={shown.above}
+        onLimit={(n) => onShown("above", n)}
+        onSelect={onSelect}
+      />
+      <ClearList
+        heading="Most clearly below 1×"
+        empty="No place is clearly below 1× in this window."
+        items={below}
+        limit={shown.below}
+        onLimit={(n) => onShown("below", n)}
+        onSelect={onSelect}
+      />
+      <p className="skew-list__note">Ranked by the end of each place's 90% range nearest 1×.</p>
+    </ListsPanel>
+  );
+}
+
+/**
+ * One of the two lists: its first `limit` places, how many there are in all,
+ * and buttons to show the next ones or go back to the first few.
+ */
+function ClearList({
+  heading,
+  empty,
+  items,
+  limit,
+  onLimit,
+  onSelect,
+}: {
+  heading: string;
+  empty: string;
+  items: SkewRow[];
+  limit: number;
+  onLimit: (n: number) => void;
+  onSelect: (id: string) => void;
+}) {
+  const id = useId();
+  const listId = `${id}-list`;
+  const headingId = `${id}-heading`;
+  const countId = `${id}-count`;
+  const visible = items.slice(0, Math.min(limit, MOST_SHOWN));
+  const more = items.length > visible.length && visible.length < MOST_SHOWN;
+  // Showing more than the first few: what aria-expanded says on both buttons.
+  const expanded = visible.length > LIST_LENGTH;
+  const list = useRef<HTMLOListElement>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  // Where focus goes once the list has changed: after "Show more", the first
+  // place it added, so keyboard and screen reader users land on the new
+  // rows; after "Show fewer", which goes away, the "Show more" button.
+  const focusNext = useRef<number | "more" | null>(null);
+
+  useEffect(() => {
+    const next = focusNext.current;
+    if (next === null) return;
+    focusNext.current = null;
+    if (next === "more") moreButton.current?.focus();
+    else list.current?.children[next]?.querySelector("button")?.focus();
+  }, [limit]);
+
+  let count = "";
+  if (items.length > LIST_LENGTH) {
+    count =
+      visible.length === items.length
+        ? `Showing all ${items.length.toLocaleString("en-US")}.`
+        : `Showing ${visible.length} of ${items.length.toLocaleString("en-US")}.`;
+    if (visible.length === MOST_SHOWN && items.length > MOST_SHOWN) count += " The table lists every place.";
+  }
+
+  return (
     <section className="skew-list">
-      <h3>{heading}</h3>
+      <h3 id={headingId}>{heading}</h3>
       {items.length === 0 ? (
         <p className="skew-list__empty">{empty}</p>
       ) : (
-        <ol>
-          {items.map((r) => (
+        <ol id={listId} ref={list}>
+          {visible.map((r) => (
             <li key={r.id}>
               <button type="button" className="link-button" onClick={() => onSelect(r.id)}>
                 {r.name}, {r.state}
@@ -63,14 +163,47 @@ export function SkewLists({ rows, onSelect }: ListsProps) {
           ))}
         </ol>
       )}
+      {count && (
+        <p className="skew-list__count" id={countId}>
+          {count}
+        </p>
+      )}
+      {(more || expanded) && (
+        <p className="skew-list__more">
+          {more && (
+            <button
+              type="button"
+              className="link-button"
+              ref={moreButton}
+              aria-expanded={expanded}
+              aria-controls={listId}
+              aria-describedby={`${headingId} ${countId}`}
+              onClick={() => {
+                focusNext.current = visible.length;
+                onLimit(Math.min(visible.length + LIST_LENGTH, MOST_SHOWN));
+              }}
+            >
+              Show more
+            </button>
+          )}
+          {expanded && (
+            <button
+              type="button"
+              className="link-button"
+              aria-expanded={true}
+              aria-controls={listId}
+              aria-describedby={`${headingId} ${countId}`}
+              onClick={() => {
+                focusNext.current = "more";
+                onLimit(LIST_LENGTH);
+              }}
+            >
+              Show fewer
+            </button>
+          )}
+        </p>
+      )}
     </section>
-  );
-  return (
-    <ListsPanel title="Clearest differences" label="Places that differ most clearly" className="skew-lists">
-      {list(above, "Most clearly above 1×", "No place is clearly above 1× in this window.")}
-      {list(below, "Most clearly below 1×", "No place is clearly below 1× in this window.")}
-      <p className="skew-list__note">Ranked by the end of each place's 90% range nearest 1×.</p>
-    </ListsPanel>
   );
 }
 
