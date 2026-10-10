@@ -254,8 +254,11 @@ async function getPinned<T extends { index_version: string }>(
     // Redirected to a newer version that refused the request (a Congress
     // search on a version without Congress pages, #229): still a version
     // change, so the app reloads /v1/meta instead of showing the refusal.
+    // Only a refusal (4xx other than a rate limit): a search that ran out of
+    // time or found the API busy was already waited out, and isn't run again.
     if (err instanceof ApiError && err.version && err.version !== version) {
-      throw new VersionChangedError(version, err.version);
+      const { status } = err.problem;
+      if (status >= 400 && status < 500 && status !== 429) throw new VersionChangedError(version, err.version);
     }
     throw err;
   }

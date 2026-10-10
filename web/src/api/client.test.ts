@@ -198,6 +198,22 @@ describe("api client", () => {
     expect((direct as ApiError).version).toBeNull();
   });
 
+  it("keeps a timeout or rate limit after a followed 307 as the API's answer", async () => {
+    // Already waited out: turning it into a version change would run the search again.
+    const at = (resp: Response) =>
+      Object.defineProperties(resp, {
+        redirected: { value: true },
+        url: { value: "https://api.test/v1/aggregate?q=gold&v=v2" },
+      });
+    for (const failed of [problem(503, "/errors/backend-timeout"), problem(429, "/errors/rate-limited")]) {
+      sequence(() => at(failed));
+      const err = await api.aggregate({ q: "gold" }, "v1").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err).not.toBeInstanceOf(VersionChangedError);
+      expect((err as ApiError).version).toBe("v2");
+    }
+  });
+
   it("turns problem+json into ApiError", async () => {
     respond(
       { type: "/errors/query-syntax", title: "Query syntax error", status: 400, hint: "h" },
