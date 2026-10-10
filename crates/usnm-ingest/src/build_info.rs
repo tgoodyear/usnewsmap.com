@@ -42,6 +42,10 @@ pub struct Built {
     /// and of the version's main indexes, which all have the `decade` field
     /// or none does.
     pub decades: crate::sink::Decades,
+    /// The analyzer the run's indexes fold words with (#168): the latest for
+    /// a full base, the published version's for a delta. The record's
+    /// `common_grams` and `ja_fold` name it.
+    pub analyzer: usnm_core::text::Analyzer,
 }
 
 /// The index templates the run applies, by name.
@@ -84,8 +88,8 @@ pub fn summary(b: &Built) -> Value {
         writer["commit_timeout_secs"] = Value::from(b.writer.commit_timeout_secs);
     }
     let mut features = json!({
-        "common_grams": usnm_core::common_grams::VERSION,
-        "ja_fold": usnm_core::ja::FOLD_VERSION,
+        "common_grams": usnm_core::common_grams::version(b.analyzer),
+        "ja_fold": usnm_core::ja::fold_version(b.analyzer),
     });
     // Only for a version with it, as in its `current.json`.
     if b.american_stories {
@@ -123,7 +127,17 @@ mod tests {
             american_stories: false,
             ja_latin: false,
             decades: crate::sink::Decades::Off,
+            analyzer: usnm_core::text::Analyzer::LATEST,
         }
+    }
+
+    #[test]
+    fn records_the_analyzer_versions_the_run_built_with() {
+        let mut b = built(true, true);
+        b.analyzer = usnm_core::text::Analyzer::V1;
+        let v = summary(&b);
+        assert_eq!(v["features"]["common_grams"], 1);
+        assert_eq!(v["features"]["ja_fold"], 1);
     }
 
     #[test]

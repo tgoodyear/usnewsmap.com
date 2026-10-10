@@ -379,6 +379,8 @@ fn leaf_string(node: &Node, grams: bool, f: &TextFields) -> Result<String, Searc
                     terms
                         .iter()
                         .filter(|t| !usnm_core::common_grams::is_common(t))
+                        // A word `Analyzer::V1` folds to several (`ﷺ`) is
+                        // only required through the pairs.
                         .filter(|t| !t.contains(char::is_whitespace) && seen.insert(*t))
                         .map(|w| format!("{text}:{w}")),
                 );
@@ -846,13 +848,16 @@ pub fn parse_cube(resp: &SearchResponse, spec: &BucketSpec) -> Result<Vec<CubeCe
     Ok(cells)
 }
 
-/// `american_stories`: whether the search covered American Stories' text,
-/// whose snippets stand in when LoC's text has no match (05 §5.5.4).
+/// `indexes`: whether the search covered American Stories' text, whose
+/// snippets stand in when LoC's text has no match (05 §5.5.4), and the
+/// analyzer that folded a Japanese page's text, for its snippets (#168).
 pub fn parse_hits(
     resp: SearchResponse,
     query: &Node,
-    american_stories: bool,
+    indexes: &IndexSet,
 ) -> Result<HitsPage, SearchError> {
+    let american_stories = indexes.american_stories();
+    let analyzer = indexes.analyzer();
     let days = distinct(&resp)?;
     let mut hits = Vec::with_capacity(resp.hits.len());
     for d in resp.hits {
@@ -864,7 +869,7 @@ pub fn parse_hits(
         // folded tokens with spaces between them.
         let text = d.text.as_deref().unwrap_or_default();
         let (snippets, snippet_source) = match &d.printed {
-            Some(printed) => (ja_snippets(printed, query), None),
+            Some(printed) => (ja_snippets(printed, query, analyzer), None),
             None => page_snippets(text, d.text_as.as_deref(), query, american_stories),
         };
         // Which texts match, from the same stored texts: no extra query.
@@ -959,7 +964,7 @@ impl SearchBackend for QuickwitBackend {
         let resp = self
             .search(indexes, &hits_request(query, filters, indexes, page)?)
             .await?;
-        parse_hits(resp, query, indexes.american_stories())
+        parse_hits(resp, query, indexes)
     }
 
     async fn american_stories_only(
@@ -1014,6 +1019,7 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use usnm_core::query::parse;
+    use usnm_core::text::Analyzer;
     use usnm_core::time::BucketUnit;
 
     fn d(s: &str) -> NaiveDate {
@@ -1033,6 +1039,11 @@ mod tests {
 
     fn none() -> IndexSet {
         IndexSet::new(vec!["i".into()])
+    }
+
+    /// A set that searches American Stories' text or not.
+    fn stories(on: bool) -> IndexSet {
+        none().with_american_stories(on)
     }
 
     /// Answers every request with `status` and an empty JSON object.
@@ -1116,12 +1127,29 @@ mod tests {
             query_string(&parse(r#""the gold of the cross""#).unwrap(), true, false).unwrap(),
             "(text_cg:\"the_gold gold of_the the_cross cross\" AND text:gold AND text:cross)"
         );
-        // A word that folds to several is only required through the pairs.
-        let q = parse("\"of \u{fdfa} gold\"").unwrap();
-        let s = query_string(&q, true, false).unwrap();
+        // A character that decomposes into several words (`ﷺ`) or with a
+        // separator (`½`) is one word, as the analyzer has it (#168).
+        assert_eq!(
+            query_string(&parse("\"of \u{fdfa} gold\"").unwrap(), true, false).unwrap(),
+            "(text_cg:\"of_\u{fdfa} \u{fdfa} gold\" AND text:\u{fdfa} AND text:gold)"
+        );
+        assert_eq!(
+            query_string(&parse(r#""½ higher at 61¼""#).unwrap(), true, false).unwrap(),
+            "(text_cg:\"½ higher at_61¼ 61¼\" AND text:½ AND text:higher AND text:61¼)"
+        );
+        // On an index built with version 1 the query folds them as its pairs
+        // have them: `ﷺ` as its words run together, required only through
+        // the pairs, and `½` as `1⁄2`.
+        let v1 = |q: &str| usnm_core::query::parse_with(q, Analyzer::V1).unwrap();
+        let s = query_string(&v1("\"of \u{fdfa} gold\""), true, false).unwrap();
         assert!(s.starts_with("(text_cg:\"of_"), "{s}");
         assert!(s.ends_with(" AND text:gold)"), "{s}");
         assert_eq!(s.matches(" AND ").count(), 1, "{s}");
+        assert_eq!(
+            query_string(&v1(r#""½ higher at 61¼""#), true, false).unwrap(),
+            "(text_cg:\"1\u{2044}2 higher at_611\u{2044}4 611\u{2044}4\" AND text:1\u{2044}2 \
+             AND text:higher AND text:611\u{2044}4)"
+        );
         // Without the field, or for a phrase ending in a common word: `text`.
         assert_eq!(
             query_string(&parse(r#""cross of gold""#).unwrap(), false, false).unwrap(),
@@ -1382,7 +1410,12 @@ mod tests {
             ]
         }))
         .unwrap();
-        let page = parse_hits(resp, &usnm_core::query::parse("gold").unwrap(), false).unwrap();
+        let page = parse_hits(
+            resp,
+            &usnm_core::query::parse("gold").unwrap(),
+            &stories(false),
+        )
+        .unwrap();
         assert_eq!(
             page.hits[0].day,
             usnm_core::time::day_number(d("1896-07-10"))
@@ -1398,7 +1431,10 @@ mod tests {
         }))
         .unwrap();
         let q = usnm_core::query::parse("gold").unwrap();
-        assert_eq!(parse_hits(first, &q, false).unwrap().days, Some(2));
+        assert_eq!(
+            parse_hits(first, &q, &stories(false)).unwrap().days,
+            Some(2)
+        );
     }
 
     /// A hit says which texts the query matches only when the search covers
@@ -1423,7 +1459,7 @@ mod tests {
             .unwrap()
         };
         let q = usnm_core::query::parse("gold").unwrap();
-        let on = parse_hits(resp(), &q, true).unwrap();
+        let on = parse_hits(resp(), &q, &stories(true)).unwrap();
         let matched: Vec<_> = on.hits.iter().map(|h| h.matched_in.clone()).collect();
         assert_eq!(
             matched,
@@ -1433,7 +1469,7 @@ mod tests {
                 Some(vec!["loc"]),
             ]
         );
-        let off = parse_hits(resp(), &q, false).unwrap();
+        let off = parse_hits(resp(), &q, &stories(false)).unwrap();
         assert!(off.hits.iter().all(|h| h.matched_in.is_none()));
     }
 

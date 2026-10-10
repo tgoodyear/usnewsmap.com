@@ -44,10 +44,18 @@ fn main() -> anyhow::Result<()> {
                 let mut doc: serde_json::Value = serde_json::from_str(&line)?;
                 decades::shift(&mut doc);
                 if let Some(text) = doc["text"].as_str() {
-                    doc["text_cg"] = usnm_core::common_grams::index_text(text).into();
+                    doc["text_cg"] = usnm_core::common_grams::index_text(
+                        text,
+                        usnm_core::text::Analyzer::LATEST,
+                    )
+                    .into();
                 }
                 if let Some(text) = doc["text_as"].as_str() {
-                    doc["text_as_cg"] = usnm_core::common_grams::index_text(text).into();
+                    doc["text_as_cg"] = usnm_core::common_grams::index_text(
+                        text,
+                        usnm_core::text::Analyzer::LATEST,
+                    )
+                    .into();
                 }
                 serde_json::to_writer(&mut out, &doc)?;
                 out.write_all(b"\n")?;

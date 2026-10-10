@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use async_trait::async_trait;
 use usnm_core::params::Filters;
 use usnm_core::query::{wildcard_matches, Node, Term};
-use usnm_core::text::tokenize;
+use usnm_core::text::{fold, tokenize, Analyzer, USNM_TEXT};
 use usnm_core::time::BucketSpec;
 
 use crate::snippet::{matched_in, page_snippets};
@@ -18,6 +18,9 @@ use crate::{
 
 struct Indexed {
     doc: PageDoc,
+    /// The page's words as Quickwit indexes them: `usnm_text`'s tokens of
+    /// `text`, whatever analyzer version built the index (#168), or a
+    /// Japanese page's tokens as written (`whitespace`).
     tokens: Vec<String>,
     /// American Stories' text's tokens (05 §5.5.4), when the page has it.
     as_tokens: Option<Vec<String>>,
@@ -32,6 +35,55 @@ impl Indexed {
             out.extend(self.as_tokens.as_deref());
         }
         out
+    }
+
+    /// The query as the engine reads it on this page: analyzed again by
+    /// `usnm_text` ([`as_analyzed`]) on a main-index page, as it is on a
+    /// Japanese page, whose `whitespace` tokenizer keeps each term whole.
+    fn reads<'q>(&self, query: &'q Node, analyzed: &'q Node) -> &'q Node {
+        if self.doc.printed.is_some() {
+            query
+        } else {
+            analyzed
+        }
+    }
+}
+
+/// `query` as Quickwit reads it on `text` and `text_as`, whose `usnm_text`
+/// analyzer analyzes a query's words again: an exact term or a phrase's
+/// words become the words the analyzer makes of them. A term the API folded
+/// into several words (`1⁄2` with `Analyzer::V1`, #168) is then the phrase
+/// of them ("1 2"), and one the analyzer drops matches nothing. For a query
+/// parsed with the latest analyzer this changes nothing.
+///
+/// A word `Analyzer::V1` folded into words with spaces between them (`ﷺ`)
+/// stays whole: a phrase requires it through the pairs, where it is the
+/// page's one character, folded and run together ([`word_matches`]).
+pub fn as_analyzed(query: &Node) -> Node {
+    let words = |t: &str| {
+        if t.contains(char::is_whitespace) {
+            vec![t.to_owned()]
+        } else {
+            tokenize(t, USNM_TEXT)
+        }
+    };
+    match query {
+        Node::Term(t) if !t.prefix && !t.wildcard && t.fuzzy == 0 => {
+            let w = words(&t.text);
+            if w.len() == 1 && w[0] == t.text {
+                query.clone()
+            } else {
+                Node::Phrase { terms: w, slop: 0 }
+            }
+        }
+        Node::Term(_) => query.clone(),
+        Node::Phrase { terms, slop } => Node::Phrase {
+            terms: terms.iter().flat_map(|t| words(t)).collect(),
+            slop: *slop,
+        },
+        Node::And(c) => Node::And(c.iter().map(as_analyzed).collect()),
+        Node::Or(c) => Node::Or(c.iter().map(as_analyzed).collect()),
+        Node::Not(n) => Node::Not(Box::new(as_analyzed(n))),
     }
 }
 
@@ -55,9 +107,9 @@ impl MemoryBackend {
             tokens: if doc.printed.is_some() {
                 doc.text.split_whitespace().map(str::to_owned).collect()
             } else {
-                tokenize(&doc.text)
+                tokenize(&doc.text, USNM_TEXT)
             },
-            as_tokens: doc.text_as.as_deref().map(tokenize),
+            as_tokens: doc.text_as.as_deref().map(|t| tokenize(t, USNM_TEXT)),
             doc,
         }));
     }
@@ -77,6 +129,7 @@ impl MemoryBackend {
             selected.push(docs);
         }
         let (from, to) = (filters.from_day(), filters.to_day());
+        let analyzed = as_analyzed(query);
         Ok(selected.into_iter().flatten().filter(move |d| {
             let doc = &d.doc;
             doc.day >= from
@@ -87,7 +140,10 @@ impl MemoryBackend {
                     || doc.language.iter().any(|l| filters.langs.contains(l)))
                 && (!filters.front_only || doc.front_page)
                 && !indexes.hides(&doc.doc_id, &doc.batch)
-                && eval_texts(query, &d.texts(indexes.american_stories()))
+                && eval_texts(
+                    d.reads(query, &analyzed),
+                    &d.texts(indexes.american_stories()),
+                )
         }))
     }
 }
@@ -188,6 +244,7 @@ impl SearchBackend for MemoryBackend {
         filters: &Filters,
         page: &HitsQuery,
     ) -> Result<HitsPage, SearchError> {
+        let analyzed = as_analyzed(query);
         let mut docs: Vec<(usize, &PageDoc)> = self
             .matching(indexes, query, filters)?
             .filter(|d| page.place_id.as_ref().is_none_or(|p| &d.doc.place_id == p))
@@ -196,7 +253,7 @@ impl SearchBackend for MemoryBackend {
                 let mentions: usize = d
                     .texts(indexes.american_stories())
                     .into_iter()
-                    .map(|t| mentions(query, t))
+                    .map(|t| mentions(d.reads(query, &analyzed), t))
                     .sum();
                 (mentions, &d.doc)
             })
@@ -224,7 +281,7 @@ impl SearchBackend for MemoryBackend {
                 .take(page.limit)
                 .map(|(_, d)| {
                     let (snippets, snippet_source) = match &d.printed {
-                        Some(printed) => (ja_snippets(printed, query), None),
+                        Some(printed) => (ja_snippets(printed, query, indexes.analyzer()), None),
                         None => page_snippets(
                             &d.text,
                             d.text_as.as_deref(),
@@ -260,10 +317,12 @@ impl SearchBackend for MemoryBackend {
         filters: &Filters,
     ) -> Result<u64, SearchError> {
         let both = indexes.clone().with_american_stories(true);
+        let analyzed = as_analyzed(query);
         let only = self
             .matching(&both, query, filters)?
             .filter(|d| {
-                !eval(query, &d.tokens) && d.as_tokens.as_ref().is_some_and(|t| eval(query, t))
+                let q = d.reads(query, &analyzed);
+                !eval(q, &d.tokens) && d.as_tokens.as_ref().is_some_and(|t| eval(q, t))
             })
             .count();
         Ok(only as u64)
@@ -324,7 +383,19 @@ pub(crate) fn term_matches(t: &Term, token: &str) -> bool {
     } else if t.fuzzy > 0 {
         levenshtein_within(&t.text, token, usize::from(t.fuzzy))
     } else {
-        token == t.text
+        word_matches(&t.text, token)
+    }
+}
+
+/// Whether a query's word matches a page's word, as `usnm_text` has it. A
+/// word with spaces in it is what `Analyzer::V1` folds one character into
+/// (`ﷺ`, four Arabic words); the pairs of an index built with it hold that
+/// character as those words run together, so it matches the character (#168).
+pub(crate) fn word_matches(word: &str, token: &str) -> bool {
+    if word.contains(char::is_whitespace) {
+        fold(token, Analyzer::V1) == word
+    } else {
+        token == word
     }
 }
 
@@ -345,11 +416,13 @@ fn phrase_starts<'a>(
             return true;
         };
         let end = (pos + budget + 1).min(tokens.len());
-        (pos..end).any(|i| tokens[i] == *first && from(rest, tokens, i + 1, budget - (i - pos)))
+        (pos..end).any(|i| {
+            word_matches(first, &tokens[i]) && from(rest, tokens, i + 1, budget - (i - pos))
+        })
     }
     tokens.iter().enumerate().filter_map(move |(i, t)| {
         let (first, rest) = terms.split_first()?;
-        (t == first && from(rest, tokens, i + 1, usize::from(slop))).then_some(i)
+        (word_matches(first, t) && from(rest, tokens, i + 1, usize::from(slop))).then_some(i)
     })
 }
 
@@ -403,7 +476,7 @@ mod tests {
     use usnm_core::query::parse;
 
     fn toks(s: &str) -> Vec<String> {
-        tokenize(s)
+        tokenize(s, USNM_TEXT)
     }
 
     #[test]
@@ -592,6 +665,87 @@ mod shard_tests {
         let gold = usnm_core::query::parse("gold").unwrap();
         assert_eq!(b.american_stories_only(&on, &gold, &f).await.unwrap(), 1);
         assert_eq!(b.american_stories_only(&on, &q, &f).await.unwrap(), 0);
+    }
+
+    /// Pages are read as Quickwit's `usnm_text` reads them whatever the
+    /// analyzer version, and query terms analyzed again as it does (#168):
+    /// `½` is the word `½` with version 2, and with version 1 it is `1⁄2`,
+    /// which the engine reads as the phrase "1 2", so it finds the page that
+    /// prints `1/2`.
+    #[tokio::test]
+    async fn queries_are_read_as_the_engine_reads_them() {
+        use usnm_core::text::Analyzer;
+        let mut half = doc(1, 1);
+        half.text = "Wheat closed ½ higher".into();
+        let mut slash = doc(2, 1);
+        slash.text = "Oats closed 1/2 lower".into();
+        let mut b = MemoryBackend::new();
+        b.add_index("i", [half, slash]);
+        let (from, to) = (
+            usnm_core::time::date_from_day(71_000),
+            usnm_core::time::date_from_day(71_300),
+        );
+        let f = Filters {
+            from,
+            to,
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+        };
+        let page = HitsQuery {
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        let ids = |a: Analyzer, q: &str| {
+            let (b, f, page) = (&b, &f, &page);
+            let set = IndexSet::new(vec!["i".into()]).with_analyzer(a);
+            let q = usnm_core::query::parse_with(q, a).unwrap();
+            async move {
+                let hits = b.hits(&set, &q, f, page).await.unwrap();
+                hits.hits.into_iter().map(|h| h.doc_id).collect::<Vec<_>>()
+            }
+        };
+        let (half, slash) = (doc(1, 1).doc_id, doc(2, 1).doc_id);
+        assert_eq!(ids(Analyzer::V2, "½").await, std::slice::from_ref(&half));
+        assert_eq!(ids(Analyzer::V1, "½").await, std::slice::from_ref(&slash));
+        assert_eq!(
+            ids(Analyzer::V1, r#""closed ½ lower""#).await,
+            std::slice::from_ref(&slash)
+        );
+        for a in Analyzer::ALL {
+            assert_eq!(ids(a, "1/2").await, std::slice::from_ref(&slash), "{a:?}");
+            assert_eq!(ids(a, "wheat").await, std::slice::from_ref(&half), "{a:?}");
+        }
+        // Version 2 marks `½` in the snippet.
+        let set = IndexSet::new(vec!["i".into()]);
+        let q = usnm_core::query::parse("½").unwrap();
+        let hits = b.hits(&set, &q, &f, &page).await.unwrap();
+        assert_eq!(
+            hits.hits[0].snippets,
+            ["Wheat closed <mark>½</mark> higher"]
+        );
+    }
+
+    #[test]
+    fn a_version_1_word_with_spaces_matches_its_character() {
+        // `ﷺ` folds to four words with `Analyzer::V1`; the pairs of an index
+        // built with it hold the character, so a phrase finds it (#168).
+        let q = usnm_core::query::parse_with("\"of \u{fdfa} gold\"", Analyzer::V1).unwrap();
+        let q = as_analyzed(&q);
+        assert!(eval(&q, &tokenize("cross of \u{fdfa} gold", USNM_TEXT)));
+        assert!(!eval(&q, &tokenize("cross of gold", USNM_TEXT)));
+    }
+
+    #[test]
+    fn analyzing_again_changes_nothing_for_the_latest_analyzer() {
+        for q in [
+            r#""cross of gold" -bryan (silver OR freed*) "gold silver"~3"#,
+            r#"½ "wheat 61¼" Æsop ﷺ presi?ent 東京"#,
+        ] {
+            let n = usnm_core::query::parse(q).unwrap();
+            assert_eq!(as_analyzed(&n), n, "{q}");
+        }
     }
 
     #[tokio::test]

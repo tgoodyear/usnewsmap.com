@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use chrono::{NaiveDate, TimeZone, Utc};
 use serde_json::Value;
+use usnm_core::text::Analyzer;
 use usnm_core::time::date_from_day;
 use usnm_ingest::docs::MemoryDocs;
 use usnm_ingest::release::{Published, Release};
@@ -296,6 +297,11 @@ impl Env {
     /// American Stories' text, 05 §5.5.4) and returned without them, as the
     /// fixtures hold; the Japanese pages' index has none.
     fn index(&self, id: &str) -> BTreeMap<String, Value> {
+        self.index_as(id, Analyzer::LATEST)
+    }
+
+    /// [`Env::index`] for an index whose pairs `analyzer` folded (#168).
+    fn index_as(&self, id: &str, analyzer: Analyzer) -> BTreeMap<String, Value> {
         let mut docs = by_id(read_jsonl(
             &self.root.join(format!("reference/indexes/{id}.jsonl")),
         ));
@@ -311,12 +317,12 @@ impl Env {
                 .unwrap_or_else(|| panic!("{doc_id} has no text_cg"));
             let want = doc["text"]
                 .as_str()
-                .map(usnm_core::common_grams::index_text);
+                .map(|t| usnm_core::common_grams::index_text(t, analyzer));
             assert_eq!(pairs.as_str().map(str::to_owned), want, "{doc_id}");
             let as_pairs = doc.as_object_mut().unwrap().remove("text_as_cg");
             let want = doc["text_as"]
                 .as_str()
-                .map(usnm_core::common_grams::index_text);
+                .map(|t| usnm_core::common_grams::index_text(t, analyzer));
             assert_eq!(
                 as_pairs.as_ref().and_then(Value::as_str).map(str::to_owned),
                 want,
@@ -395,8 +401,111 @@ async fn a_version_without_these_common_word_pairs_is_rebuilt_in_full() {
         "a delta would mix indexes with and without the pairs"
     );
     assert_eq!(p2.indexes.len(), 1);
+    let mut pointer = e.reference_json("current.json").await;
+    assert_eq!(pointer["common_grams"], usnm_core::common_grams::VERSION);
+
+    // Pairs from a newer release than this code knows: rebuilt too.
+    pointer["common_grams"] = (usnm_core::common_grams::VERSION + 1).into();
+    e.reference
+        .put(
+            "current.json",
+            serde_json::to_vec(&pointer).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let p3 = e.release(15, false).await.unwrap();
+    assert!(p3.full, "pairs this release doesn't know");
     let pointer = e.reference_json("current.json").await;
     assert_eq!(pointer["common_grams"], usnm_core::common_grams::VERSION);
+}
+
+/// A delta on a version built with an older analyzer folds its words as
+/// that version's indexes do (#168): its pairs are at the published
+/// version's, which the pointer and the build record keep naming, so every
+/// index of the version tokenizes alike. A full rebuild moves the version
+/// to the latest.
+#[tokio::test]
+async fn a_delta_folds_its_words_as_the_published_version_does() {
+    let e = env().await;
+    let pages = fixture_pages();
+    // The market reports with fractions are on pages of March 1896.
+    let split = NaiveDate::from_ymd_opt(1896, 3, 1).unwrap();
+    let (early, late): (Vec<&Page>, Vec<&Page>) = pages.iter().partition(|p| p.date < split);
+    let base_archive = e.root.join("batch_fx_early_ver01.tar.gz");
+    let delta_archive = e.root.join("batch_fx_late_ver01.tar.bz2");
+    write_archive(&base_archive, &early, true, true);
+    write_archive(&delta_archive, &late, false, false);
+    let list = [listed("batch_fx_early_ver01", &base_archive, None)];
+    source::enqueue(&e.state, &list).await.unwrap();
+    e.worker("w1").run(None).await.unwrap();
+    assert!(e.release(1, false).await.unwrap().full);
+
+    // As if the base had been built before #168, with version 1.
+    let mut pointer = e.reference_json("current.json").await;
+    pointer["common_grams"] = 1.into();
+    e.reference
+        .put(
+            "current.json",
+            serde_json::to_vec(&pointer).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let list = [listed("batch_fx_late_ver01", &delta_archive, None)];
+    source::enqueue(&e.state, &list).await.unwrap();
+    e.worker("w2").run(None).await.unwrap();
+    let p2 = e.release(8, false).await.unwrap();
+    assert!(
+        !p2.full,
+        "a version with pairs this release knows takes a delta"
+    );
+    let delta = &p2.indexes[1];
+    // Every document's pairs are version 1's (`Env::index_as` checks).
+    let docs = e.index_as(delta, Analyzer::V1);
+    assert_eq!(
+        docs.len(),
+        loc_fixture("pages-delta-fixture-1").len() + {
+            let base = loc_fixture("pages-base-fixture");
+            base.values()
+                .filter(|d| d["date"].as_str().unwrap() >= "1896-03-01")
+                .count()
+        }
+    );
+    let raw = by_id(read_jsonl(
+        &e.root.join(format!("reference/indexes/{delta}.jsonl")),
+    ));
+    let market = &raw["sn99000001_1896-03-07_ed-1_seq-2"];
+    assert!(market["text"].as_str().unwrap().contains("½ higher at 61¼"));
+    let pairs = market["text_cg"].as_str().unwrap();
+    assert!(
+        pairs.contains("1\u{2044}2 higher at_611\u{2044}4 611\u{2044}4") && !pairs.contains('½'),
+        "{pairs}"
+    );
+    let pointer = e.reference_json("current.json").await;
+    assert_eq!(pointer["common_grams"], 1);
+    let manifest = e
+        .reference_json(&format!("{}/manifest.json", p2.index_version))
+        .await;
+    assert_eq!(manifest["build"]["features"]["common_grams"], 1);
+    assert_eq!(manifest["build"]["features"]["ja_fold"], 1);
+
+    // A full rebuild builds every index with the latest analyzer.
+    let p3 = e.release(15, true).await.unwrap();
+    assert!(p3.full);
+    let pointer = e.reference_json("current.json").await;
+    assert_eq!(pointer["common_grams"], usnm_core::common_grams::VERSION);
+    let docs = e.index(&p3.indexes[0]);
+    assert!(docs.contains_key("sn99000001_1896-03-07_ed-1_seq-2"));
+    let raw = by_id(read_jsonl(
+        &e.root
+            .join(format!("reference/indexes/{}.jsonl", p3.indexes[0])),
+    ));
+    let pairs = raw["sn99000001_1896-03-07_ed-1_seq-2"]["text_cg"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(pairs.contains("½ higher at_61¼ 61¼"), "{pairs}");
 }
 
 #[tokio::test]
@@ -2254,7 +2363,7 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
     assert_eq!(missing["printed"], "米國と日本の戰爭");
     assert_eq!(
         missing["text"],
-        usnm_core::ja::index_text("米國と日本の戰爭")
+        usnm_core::ja::index_text("米國と日本の戰爭", Analyzer::LATEST)
     );
     assert_eq!(missing["ocr_engine"], "ndlocr-lite test");
 
@@ -3394,7 +3503,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
     assert!(want > 0);
     assert_eq!(count("text_as:\"cross of gold\"".into()).await, want);
     // The pairs field, as the API queries a phrase with a common word.
-    let pairs = usnm_core::common_grams::index_text("cross of gold");
+    let pairs = usnm_core::common_grams::index_text("cross of gold", Analyzer::LATEST);
     assert_eq!(
         count(format!(
             "text_as_cg:\"{pairs}\" AND text_as:\"cross of gold\""

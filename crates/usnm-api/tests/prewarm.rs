@@ -16,6 +16,7 @@ use usnm_api::prewarm::{self, Trigger};
 use usnm_api::{app, reload_if_changed, spawn_startup_warm_up, AppState, Engine, Loader};
 use usnm_core::params::Filters;
 use usnm_core::query::Node;
+use usnm_core::text::Analyzers;
 use usnm_core::time::BucketSpec;
 use usnm_search::memory::MemoryBackend;
 use usnm_search::{
@@ -941,7 +942,12 @@ async fn the_most_searched_examples_are_warmed_first() {
     );
     let ex = prewarm::examples();
     let request = |e: &prewarm::Example| {
-        SearchRequest::from_raw(&RawParams::parse(&e.aggregate).unwrap(), bounds).unwrap()
+        SearchRequest::from_raw(
+            &RawParams::parse(&e.aggregate).unwrap(),
+            bounds,
+            Analyzers::default(),
+        )
+        .unwrap()
     };
     // The search log's record of a visitor running example `e`.
     let clicked = |e: &prewarm::Example| {
@@ -953,7 +959,7 @@ async fn the_most_searched_examples_are_warmed_first() {
         r.lang = req.filters.langs.clone();
         r.state = req.filters.states.clone();
         assert_eq!(
-            usnm_api::searchlog::canonical(&r, bounds),
+            usnm_api::searchlog::canonical(&r, bounds, Analyzers::default()),
             Some(req.canonical()),
             "{}",
             e.id
@@ -1060,7 +1066,7 @@ async fn a_starting_warm_up_gives_way_to_visitors() {
 /// the run ends: a cache too small for them all has evicted some.
 #[tokio::test]
 async fn examples_warm_counts_what_the_cache_still_holds() {
-    use usnm_core::params::{RawParams, SearchRequest};
+    use usnm_core::params::RawParams;
 
     let dir = temp_reference("evicted");
     let mut cfg = config();
@@ -1073,13 +1079,13 @@ async fn examples_warm_counts_what_the_cache_still_holds() {
     assert_eq!(report.computed, n, "{report:?}");
     assert_eq!(report.skipped, 0, "{report:?}");
 
-    let bounds = state.snapshot.load().refdata.bounds();
+    let snap = state.snapshot.load_full();
     state.cache.run_pending_tasks().await;
     let held = prewarm::examples()
         .iter()
         .filter(|e| {
             let raw = RawParams::parse(&e.aggregate).unwrap();
-            let canonical = SearchRequest::from_raw(&raw, bounds).unwrap().canonical();
+            let canonical = snap.refdata.search_request(&raw).unwrap().canonical();
             state
                 .cache
                 .contains_key(&format!("fixture-v1|aggregate|{canonical}"))

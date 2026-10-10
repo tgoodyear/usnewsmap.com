@@ -5,9 +5,9 @@
 //! (which its REST API can't lengthen) no longer decides what readers see.
 
 use usnm_core::query::{Node, Term};
-use usnm_core::text::{fold, tokenize, MAX_TOKEN_CHARS};
+use usnm_core::text::{fold, tokenize, MAX_TOKEN_CHARS, USNM_TEXT};
 
-use crate::memory::{eval, term_matches};
+use crate::memory::{as_analyzed, eval, term_matches, word_matches};
 use crate::{mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES};
 
 /// Fragments per page.
@@ -24,7 +24,8 @@ struct Word {
     end: usize,
 }
 
-/// The text's words as the `usnm_text` analyzer splits them, with positions.
+/// The text's words as the `usnm_text` analyzer splits and folds them, with
+/// positions.
 fn words(chars: &[char]) -> Vec<Word> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -38,7 +39,7 @@ fn words(chars: &[char]) -> Vec<Word> {
             i += 1;
         }
         let raw: String = chars[start..i].iter().collect();
-        let token = fold(&raw);
+        let token = fold(&raw, USNM_TEXT);
         // A dropped run keeps its position, so a phrase can't match across it.
         out.push(Word {
             token: (token.chars().count() <= MAX_TOKEN_CHARS).then_some(token),
@@ -94,7 +95,7 @@ fn matches(words: &[Word], patterns: &[Pattern]) -> Vec<(usize, usize)> {
                     if run
                         .iter()
                         .zip(terms)
-                        .all(|(w, t)| w.token.as_ref() == Some(t))
+                        .all(|(w, t)| w.token.as_deref().is_some_and(|tok| word_matches(t, tok)))
                     {
                         hits.push((run[0].start, run[terms.len() - 1].end));
                     }
@@ -143,13 +144,16 @@ fn word_end(chars: &[char], mut at: usize) -> usize {
 /// NEAR phrase's words one by one, prefix, wildcard and fuzzy terms on each
 /// word they match. Matches closer together than the context share a
 /// fragment, and fragments never overlap. Line breaks (columns) become spaces; a fragment
-/// that doesn't reach the text's start or end is marked with `…`.
+/// that doesn't reach the text's start or end is marked with `…`. The words
+/// are matched as the engine matches them: the text's as `usnm_text` reads
+/// them, the query's analyzed again ([`as_analyzed`]), so with any analyzer
+/// version the marks land on the words the engine found (#168).
 pub fn text_snippets(text: &str, query: &Node) -> Vec<String> {
     let chars: Vec<char> = text
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
         .collect();
-    let hits = matches(&words(&chars), &patterns(query));
+    let hits = matches(&words(&chars), &patterns(&as_analyzed(query)));
     let mut out = Vec::new();
     let mut covered = 0;
     let mut k = 0;
@@ -227,8 +231,9 @@ pub fn matched_in(text: &str, text_as: Option<&str>, query: &Node) -> Vec<&'stat
     let Some(text_as) = text_as else {
         return vec![MATCHED_IN_LOC];
     };
-    let loc = eval(query, &tokenize(text));
-    let american = eval(query, &tokenize(text_as));
+    let query = as_analyzed(query);
+    let loc = eval(&query, &tokenize(text, USNM_TEXT));
+    let american = eval(&query, &tokenize(text_as, USNM_TEXT));
     match (loc, american) {
         (true, false) => vec![MATCHED_IN_LOC],
         (false, true) => vec![SNIPPETS_FROM_AMERICAN_STORIES],
@@ -305,6 +310,18 @@ mod tests {
             snip("Washington, Washinton, Washi. ton", "washi*ton"),
             ["<mark>Washington</mark>, <mark>Washinton</mark>, Washi. ton"]
         );
+    }
+
+    #[test]
+    fn marks_what_the_engine_finds_for_a_version_1_query() {
+        // With analyzer version 1, `½` is `1⁄2`, which the engine reads as
+        // the phrase "1 2" (#168): the mark lands on `1/2`.
+        let q = usnm_core::query::parse_with("½", usnm_core::text::Analyzer::V1).unwrap();
+        assert_eq!(
+            text_snippets("Oats closed 1/2 lower", &q),
+            ["Oats closed <mark>1/2</mark> lower"]
+        );
+        assert!(text_snippets("Wheat closed ½ higher", &q).is_empty());
     }
 
     #[test]

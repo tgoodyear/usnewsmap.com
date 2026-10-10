@@ -14,8 +14,8 @@ use tower::ServiceExt;
 use usnm_api::config::Config;
 use usnm_api::refdata::RefData;
 use usnm_api::{app, reload_if_changed, AppState, Engine, Loader};
-use usnm_core::query::parse;
-use usnm_core::text::tokenize;
+use usnm_core::query::parse_with;
+use usnm_core::text::{tokenize, Analyzer};
 use usnm_core::time::{date_from_day, day_number};
 use usnm_search::memory::{eval, MemoryBackend};
 use usnm_search::PageDoc;
@@ -90,6 +90,15 @@ fn header_str(h: &axum::http::HeaderMap, name: header::HeaderName) -> &str {
     h.get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
 }
 
+/// The fixture version's analyzer: its `current.json` has no
+/// `common_grams`, as versions built before analyzer versions (#168).
+const FIXTURE: Analyzer = Analyzer::V1;
+
+/// [`usnm_core::query::parse`] as the API parses for the fixture version.
+fn parse(q: &str) -> Result<usnm_core::query::Node, usnm_core::query::QueryError> {
+    parse_with(q, FIXTURE)
+}
+
 /// Independent brute-force count over the fixture files.
 fn oracle_count(q: &str, from: &str, to: &str, indexes: &[&str]) -> u64 {
     let node = parse(q).unwrap();
@@ -100,7 +109,7 @@ fn oracle_count(q: &str, from: &str, to: &str, indexes: &[&str]) -> u64 {
     indexes
         .iter()
         .flat_map(|i| load_docs(i))
-        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text, FIXTURE)))
         .count() as u64
 }
 
@@ -131,6 +140,70 @@ async fn searches_name_their_decades_only_on_a_version_laid_out_with_them() {
         assert_eq!(status, StatusCode::OK, "{a}");
         let (_, _, b) = get(&off, q).await;
         assert_eq!(a["total"], b["total"], "{q}");
+    }
+}
+
+/// Queries are folded with the analyzer the served version was built with
+/// (#168): on a version with common-word pairs 2, `½` is the word `½`, as
+/// Quickwit's `text` has it; on one with pairs 1, or none, it is `1⁄2`, as
+/// those versions' pairs have it. Phrases search the pairs on either, and
+/// the Japanese pages fold as their own version says.
+#[tokio::test]
+async fn queries_fold_as_the_served_version_was_built() {
+    use usnm_api::refdata::JaIndexes;
+    use usnm_core::params::RawParams;
+    use usnm_core::text::Analyzers;
+    let canonical = |rd: &RefData, q: &str| {
+        let raw = RawParams::parse(&format!("q={q}")).unwrap();
+        rd.search_request(&raw).unwrap().query.to_string()
+    };
+    let mut rd = refdata().await;
+    // The fixture version predates the pairs: version 1, phrases in `text`.
+    assert_eq!(rd.analyzers(), Analyzers::all(Analyzer::V1));
+    assert!(!rd.index_set().common_grams());
+    assert_eq!(canonical(&rd, "%C2%BD"), "1\u{2044}2");
+    rd.current.common_grams = Some(1);
+    assert!(rd.index_set().common_grams());
+    assert_eq!(rd.index_set().analyzer(), Analyzer::V1);
+    assert_eq!(canonical(&rd, "%C2%BD"), "1\u{2044}2");
+    let v1 = rd.current.clone();
+    rd.current.common_grams = Some(2);
+    assert!(rd.index_set().common_grams());
+    assert_eq!(rd.index_set().analyzer(), Analyzer::V2);
+    assert_eq!(canonical(&rd, "%C2%BD"), "½");
+    let v2 = rd.current.clone();
+    // Pairs this API doesn't know: phrases stay in `text`.
+    rd.current.common_grams = Some(usnm_core::common_grams::VERSION + 1);
+    assert!(!rd.index_set().common_grams());
+    assert_eq!(rd.index_set().analyzer(), Analyzer::LATEST);
+    // The Japanese pages fold as `ja.fold` says.
+    rd.current = v1.clone();
+    rd.current.ja = Some(JaIndexes {
+        indexes: vec!["pages-ja-fixture".into()],
+        fold: 1,
+        pages: 52,
+    });
+    assert_eq!(rd.ja_index_set().unwrap().analyzer(), Analyzer::V1);
+    rd.current.ja.as_mut().unwrap().fold = 2;
+    assert_eq!(rd.analyzers().ja, Analyzer::V2);
+    assert_eq!(rd.ja_index_set().unwrap().analyzer(), Analyzer::V2);
+
+    // Through the API, on the memory backend, which reads pages and
+    // queries as Quickwit does: `½` finds the four market reports that print
+    // it with version 2, and with version 1 (`1⁄2`, the phrase "1 2" to the
+    // engine) the four that print `1/2`, as before #168. `1/2` finds those
+    // on either.
+    for (current, half) in [(v1, "1\u{2044}2"), (v2, "½")] {
+        let mut rd = refdata().await;
+        rd.current = current;
+        let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+        for (q, want) in [("%C2%BD", 4), ("1%2F2", 4)] {
+            let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["total"]["hits"], want, "{q} {half}");
+        }
+        let (_, _, body) = get(&s, "/v1/aggregate?q=%C2%BD").await;
+        assert_eq!(body["query"]["ast"], half, "{body}");
     }
 }
 
@@ -949,7 +1022,7 @@ async fn days_per_place_match_brute_force() {
             .iter()
             .flat_map(|i| load_docs(i))
             .filter(|d| d.place_id == id && d.day >= from && d.day <= to)
-            .filter(|d| eval(&node, &tokenize(&d.text)))
+            .filter(|d| eval(&node, &tokenize(&d.text, FIXTURE)))
         {
             *expected.entry(d.day).or_default() += 1;
         }
@@ -1119,7 +1192,7 @@ async fn newspapers_and_languages_match_brute_force() {
     for d in ["pages-base-fixture", "pages-delta-fixture-1"]
         .iter()
         .flat_map(|i| load_docs(i))
-        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text, FIXTURE)))
     {
         *papers.entry(d.lccn.clone()).or_default() += 1;
         for l in d.language {
@@ -1174,7 +1247,7 @@ async fn distinct_days_match_brute_force() {
     let docs: Vec<PageDoc> = ["pages-base-fixture", "pages-delta-fixture-1"]
         .iter()
         .flat_map(|i| load_docs(i))
-        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text, FIXTURE)))
         .collect();
     let days = |place: Option<&str>| {
         docs.iter()
@@ -1279,7 +1352,7 @@ async fn first_and_last_mentions_match_brute_force() {
         let (f, t) = (day(from), day(to));
         let matching: Vec<&PageDoc> = docs
             .iter()
-            .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+            .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text, FIXTURE)))
             .collect();
         let first = matching.iter().copied().min_by_key(|d| (d.day, d.sort_key));
         let last = matching.iter().copied().max_by_key(|d| (d.day, d.sort_key));
@@ -2229,7 +2302,7 @@ async fn ja_state_with(cfg: Config, american_stories: bool) -> Arc<AppState> {
     let mut refdata = refdata().await;
     refdata.current.ja = Some(usnm_api::refdata::JaIndexes {
         indexes: vec!["pages-ja-fixture".into()],
-        fold: usnm_core::ja::FOLD_VERSION,
+        fold: usnm_core::ja::fold_version(FIXTURE),
         pages: 52,
     });
     if american_stories {
@@ -2251,9 +2324,9 @@ async fn japanese_queries_search_the_japanese_pages() {
     let s = ja_state().await;
     let docs = load_docs("pages-ja-fixture");
     let printed_has = |w: &str| {
-        let q = vec![usnm_core::ja::tokenize(w)];
+        let q = vec![usnm_core::ja::tokenize(w, FIXTURE)];
         docs.iter()
-            .filter(|d| !usnm_core::ja::find(d.printed.as_deref().unwrap(), &q).is_empty())
+            .filter(|d| !usnm_core::ja::find(d.printed.as_deref().unwrap(), &q, FIXTURE).is_empty())
             .count() as u64
     };
     let war = printed_has("戰爭");
