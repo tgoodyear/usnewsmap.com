@@ -54,6 +54,10 @@ configured=$(aget USNM_GITHUB_REPO)
 [ -n "$REPO" ] || REPO=${configured:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}
 [ -z "$configured" ] || [ "$REPO" = "$configured" ] ||
   die "environment $ENV_NAME is deployed from $configured, not $REPO"
+# An environment using the archival account has a private endpoint to it,
+# which its delete lock can keep from being deleted with the group.
+[ -z "$(aget USNM_ARCHIVE_ACCOUNT)" ] ||
+  die "$ENV_NAME uses the archival account (USNM_ARCHIVE_ACCOUNT). First: scripts/archive-store.sh unlock; scripts/settings.sh $ENV_NAME USNM_ARCHIVE_ACCOUNT \"\"; scripts/provision.sh $ENV_NAME; scripts/archive-store.sh deploy"
 # What the stack manages, saved before it's detached so an interrupted
 # teardown can be run again and pick up where it stopped.
 resume="$(dirname "$ENV_FILE")/teardown-$SUBSCRIPTION.ids"

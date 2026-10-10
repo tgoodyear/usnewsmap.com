@@ -78,6 +78,8 @@ param jaOcrImage string = ''
 @minValue(1)
 @maxValue(8)
 param jaOcrReplicas int = 2
+@description('Where curation retains the batch archives it downloads (the `raw` container URL, `retainRaw`); empty keeps none.')
+param rawUrl string = ''
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the
 // ingest-job-failed alert reports as a failure. Curation stops claiming at a
@@ -155,6 +157,8 @@ var env = [
   // Traces and metrics to Application Insights, signed with the identity above.
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
 ]
+// Both jobs curate: with a raw store, they keep each archive they download.
+var rawEnv = empty(rawUrl) ? [] : [{ name: 'USNM_RAW_URL', value: rawUrl }]
 
 resource ingest 'Microsoft.App/jobs@2025-01-01' = {
   name: 'caj-usnm-ingest-${jobNameSuffix}'
@@ -215,7 +219,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             partitionDecade ? ['--partition-decade'] : []
           )
           resources: ingestResources
-          env: concat(env, scratchEnv, writerTuningEnv, [
+          env: concat(env, rawEnv, scratchEnv, writerTuningEnv, [
             { name: 'QW_AZURE_STORAGE_ACCOUNT', value: storageAccountName }
             { name: 'USNM_MERGE_TIMEOUT_SECS', value: string(mergeTimeoutSecs) }
           ])
@@ -260,7 +264,7 @@ resource backfill 'Microsoft.App/jobs@2025-01-01' = {
           args: ['curate', '--enqueue', '--max-runtime-secs', string(backfillMaxRuntimeSecs)]
           // bzip2 decoding is single-threaded: one vCPU per worker.
           resources: { cpu: json('1.0'), memory: '2Gi' }
-          env: env
+          env: concat(env, rawEnv)
         }
       ]
     }

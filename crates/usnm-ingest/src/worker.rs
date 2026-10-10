@@ -40,6 +40,7 @@ use usnm_store::ObjectStore;
 use crate::archive;
 use crate::curated::{CuratedRow, PartWriter};
 use crate::heartbeat::{self, mb, BatchProgress, Heartbeat, Stage};
+use crate::raw;
 use crate::source;
 use crate::state::{Batch, BatchStatus, Curated, Issue, Lease, State};
 use crate::telemetry;
@@ -123,6 +124,10 @@ pub struct Worker {
     /// When to stop claiming batches and waiting for download slots
     /// (`curate --max-runtime-secs`); `None` runs until the queue is empty.
     pub deadline: Option<tokio::time::Instant>,
+    /// Where archives are retained (`USNM_RAW_URL`, [`crate::raw`]): each
+    /// download is kept there, and a batch already there is read from it
+    /// instead of LoC. `None` keeps nothing (production, ADR-0006).
+    pub raw: Option<Arc<dyn ObjectStore>>,
 }
 
 /// Pages per (lccn → day → pages), stored beside the parts.
@@ -287,9 +292,15 @@ impl Worker {
         // batch waits for a download slot.
         let mut wait_secs = 0.0;
         let mut granted = !self.past_deadline();
+        // A retained copy is read from the raw store: no download slot.
+        let retained = if granted {
+            self.retained(batch, &name).await?
+        } else {
+            None
+        };
         if granted {
             if let Some(interval) = self.fetch_interval {
-                if source::local_path(&batch.source_url).is_none() {
+                if source::local_path(&batch.source_url).is_none() && retained.is_none() {
                     let waiting = Instant::now();
                     let wait = self
                         .wait_for_fetch_slot(interval, &name)
@@ -342,7 +353,9 @@ impl Worker {
             if !self.renew_lease(batch).await? {
                 bail!("lost the lease while waiting for a download slot; another worker has the batch");
             }
-            let (c, t) = self.curate_timed(batch, &name, &progress).await?;
+            let (c, t) = self
+                .curate_timed(batch, &name, &progress, retained.clone())
+                .await?;
             let (pages, parts) = (c.pages, c.parts.len());
             progress.set_stage(Stage::Committing);
             let commit_started = Instant::now();
@@ -455,26 +468,55 @@ impl Worker {
     /// Curate the claimed version of `b` into a new attempt path.
     pub async fn curate(&self, b: &Batch) -> anyhow::Result<Curated> {
         let name = format!("{}_ver{:02}", b.batch, b.version);
-        self.curate_timed(b, &name, &BatchProgress::new())
+        let retained = self.retained(b, &name).await?;
+        self.curate_timed(b, &name, &BatchProgress::new(), retained)
             .await
             .map(|(c, _)| c)
     }
 
-    /// Curate `b` (logged as `name`), reporting to `progress` as it goes.
+    /// The batch's retained archive, when there is a raw store and it holds
+    /// the listed one.
+    async fn retained(&self, b: &Batch, name: &str) -> anyhow::Result<Option<raw::Manifest>> {
+        match &self.raw {
+            Some(r) => raw::find(r.as_ref(), name, b.source_sha256.as_deref()).await,
+            None => Ok(None),
+        }
+    }
+
+    /// Curate `b` (logged as `name`), reporting to `progress` as it goes,
+    /// from its `retained` archive if there is one.
     async fn curate_timed(
         &self,
         b: &Batch,
         name: &str,
         progress: &Arc<BatchProgress>,
+        retained: Option<raw::Manifest>,
     ) -> anyhow::Result<(Curated, Timings)> {
         let started = Instant::now();
-        // Paced: one request per slot, and a failed attempt is retried later
-        // through the pacer. Unpaced: retry server errors straight away.
-        let download = if self.fetch_interval.is_some() {
-            source::open_once(&b.source_url).await?
-        } else {
-            source::open(&b.source_url).await?
+        let mut upload = None;
+        let download = match (&self.raw, &retained) {
+            (Some(r), Some(m)) => raw::open(r.as_ref(), m).await?,
+            _ => {
+                // Retained as it downloads, when there is a raw store.
+                let tee = self.raw.as_ref().map(|r| {
+                    let path = format!("{name}/{}", raw::archive_name(name, &b.source_url));
+                    let (tee, u) = raw::start(r.clone(), &path);
+                    upload = Some(u);
+                    tee
+                });
+                // Paced: one request per slot, and a failed attempt is retried
+                // later through the pacer. Unpaced: retry server errors straight away.
+                let tries = if self.fetch_interval.is_some() { 1 } else { 6 };
+                source::open_with(&b.source_url, tries, tee).await?
+            }
         };
+        let headers = download.headers.clone();
+        tracing::info!(
+            batch = name,
+            source = if retained.is_some() { "raw" } else { "loc" },
+            retaining = upload.as_ref().map(raw::Upload::path),
+            "archive source"
+        );
         progress.track_download(download.bytes.clone());
         progress.set_stage(Stage::Downloading);
         tracing::info!(
@@ -506,11 +548,51 @@ impl Worker {
         };
         if let Some(want) = &b.source_sha256 {
             if !want.eq_ignore_ascii_case(&sha) {
+                if let Some(u) = upload {
+                    u.abandon();
+                }
                 bail!("archive sha256 {sha} does not match the published {want}");
             }
         }
+        if let Some(m) = &retained {
+            if !m.sha256.eq_ignore_ascii_case(&sha) {
+                bail!(
+                    "the retained archive `{}` reads as sha256 {sha}, not its recorded {}",
+                    m.path,
+                    m.sha256
+                );
+            }
+        }
         if w.pages == 0 {
+            if let Some(u) = upload {
+                u.abandon();
+            }
             bail!("the archive holds no pages");
+        }
+        // The archive checked out: commit its retained copy, then record it,
+        // before the batch can be marked curated.
+        if let (Some(u), Some(r)) = (upload, &self.raw) {
+            let path = u.path().to_owned();
+            let bytes = u.commit().await?;
+            raw::record_once(
+                r.as_ref(),
+                &raw::Manifest {
+                    batch: name.to_owned(),
+                    path: path.clone(),
+                    source_url: b.source_url.clone(),
+                    bytes,
+                    sha256: sha.clone(),
+                    fetched_at: Utc::now(),
+                    headers,
+                },
+            )
+            .await?;
+            tracing::info!(
+                batch = name,
+                path,
+                archive_mb = mb(bytes),
+                "archive retained"
+            );
         }
         tracing::info!(
             batch = name,
@@ -819,6 +901,7 @@ mod tests {
             fetch_interval: None,
             batch_limit: std::time::Duration::from_millis(500),
             deadline: None,
+            raw: None,
         };
         let run = tokio::time::timeout(std::time::Duration::from_secs(30), w.run(None));
         assert_eq!(
@@ -854,6 +937,7 @@ mod tests {
             fetch_interval: None,
             batch_limit: BATCH_LIMIT,
             deadline: None,
+            raw: None,
         }
     }
 
@@ -923,6 +1007,7 @@ mod tests {
             fetch_interval: None,
             batch_limit: BATCH_LIMIT,
             deadline: None,
+            raw: None,
         };
         let (b, _) = w.claim().await.unwrap().unwrap();
         let c = w.curate(&b).await.unwrap();

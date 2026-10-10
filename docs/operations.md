@@ -353,3 +353,67 @@ scripts/searches.sh prod 30      # searches per day, top queries, queries that f
 ```
 
 The data account is reachable only through its private endpoint, so run `searches.sh` from a network that reaches it. The first day file appears an hour after the first full UTC day with the log deployed.
+
+## Archival storage
+
+Production keeps no batch archives (ADR-0006): LoC is the source of record. The archival account keeps everything we download from outside Azure, so re-curation, benchmarks and other environments never download it again: LoC's batch archives and batch lists now, other sources later. Benchmarks are one use.
+
+**The account** (`infra/archive/`) is its own deployment stack, `usnm-archive`, in its own group, `rg-usnm-archive`, outside every environment's stack. An environment's provision or teardown can't delete it. It is StorageV2, Entra only (no keys, no SAS), with no public network access, versioning, 14-day soft delete, a lifecycle rule that moves `raw/` and `sets/` to the Cold tier, and a `CanNotDelete` lock. Its stack detaches what leaves the template rather than deleting it, and denies deletes outside the stack except of the lock and of private endpoint connections. Deploy it once:
+
+```sh
+scripts/archive-store.sh deploy --subscription <id>     # prints the account's resource id
+```
+
+**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, Blob Data Contributor on `raw` for `id-usnm-ingest`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
+
+```sh
+scripts/archive-store.sh unlock
+scripts/settings.sh dev USNM_ARCHIVE_ACCOUNT ""
+scripts/provision.sh dev
+scripts/archive-store.sh deploy        # the lock back
+```
+
+**What curation does with it:**
+
+- **Every archive it downloads is kept** byte for byte as fetched, at `raw/{batch}/{archive file}`. It is written in 8 MiB blocks as it streams (never held whole) at the Cold tier. Once the archive's sha256 checks out, the upload is committed and `raw/{batch}/manifest.json` records the source URL, bytes, sha256, the time and LoC's response headers (`last-modified`, `etag`, `content-length`, `content-type`). Only then is the batch marked curated. A download that fails its checksum leaves nothing.
+- **A batch already kept is curated from the copy,** not LoC, when its manifest's sha256 is the one LoC lists (or LoC lists none). It needs no download slot, and the copy is checked again as it's read. The `archive source` line says which (`source: raw` or `loc`), and `archive retained` logs each new copy.
+- **Batch lists are kept too:** each remote list an `enqueue` or `run` reads goes to `raw/listings/{time}-{sha}.json`. Titles-sync keeps the fields it uses from each title record in the environment's `reference/raw/titles.json`. Nothing else is downloaded from outside Azure.
+
+To keep the archives of batches curated before, queue them again with `--force` (only curated or failed batches at the listed version; one being curated is left alone), then run the backfill job. A re-curation writes a new attempt and replaces the batch's curation when it commits.
+
+Stopping a curate run mid-batch leaves its batches leased for up to 2 hours (the curate worker's lease, set in `crates/usnm-ingest/src/main.rs`; the 45-minute `BATCH_LIMIT` is a running batch's own limit): `--force` leaves a leased batch alone and a new run skips it until the lease runs out. A batch whose runs are stopped repeatedly can reach the attempt cap (5) and be marked failed at its next claim; `enqueue --force` resets its attempts. Found on the dev 1% run (October 2026): after a stopped run, 8 batches needed two more passes.
+
+```sh
+scripts/start-job.sh dev INGEST_JOB enqueue --batches "$B" --force
+scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
+```
+
+**An environment's own `raw` container** (`USNM_RETAIN_RAW true`) does the same inside the environment's data account. It goes with the environment, and turning the setting off deletes it, so it suits a short trial. `USNM_ARCHIVE_ACCOUNT` takes precedence when both are set. To move archives kept there into the archival account, with both settings on, run the copy in the ingest job. It streams each archive, checks it against its manifest, and skips those already there:
+
+```sh
+scripts/start-job.sh dev INGEST_JOB archive-copy \
+  --from "$(az storage account show -n "$(scripts/settings.sh dev STORAGE_ACCOUNT)" --query primaryEndpoints.blob -o tsv)raw" \
+  --batches "$B"
+```
+
+Then clear `USNM_RETAIN_RAW` and provision. That deletes the environment's own container, so check the copy's `archives copied` line first.
+
+**Cost** (East US 2 list prices, October 2026): Cold storage is $0.0036 per GB-month, so the 1% set's 23.8 GB is about $0.09 a month. Reading it all back once costs about $0.71 ($0.03 per GB retrieved), and writing it about $0.05 (about 2,900 blocks at $0.18 per 10,000 writes). Cold has a 90-day early-deletion minimum. Each environment's endpoint is about $7.30 a month ($0.01 an hour).
+
+### Sample sets
+
+A set packages a sample of the corpus for reuse in `sets/{name}/`, built once and never replaced (build `-v2` instead). The builder comes with the search cluster experiment's tooling (#240); this account holds the container and the layout below is what it writes. A build first claims the name with `building.json`, so two builds never write the same objects. A build that fails keeps its name, so the retry is the next version:
+
+- `raw.tar`: the set's LoC batch archives as kept in `raw/`, with their manifests. It's a plain tar, since the archives are bzip2 already. Curate it offline, or extract it into another raw store.
+- `docs.ndjson.zst`: the sample's documents exactly as the release builds them (`text`, `text_cg`, every field; `text_as` and `text_as_cg` only when the manifest says `american_stories`). It's one zstd stream, so it can be loaded into any Quickwit 0.9 index created from `infra/quickwit/pages-index.yaml`.
+- `manifest.json`, written last: name and version, how the batches were chosen, the batch list with each archive's bytes and sha256, page and document counts, each file's bytes and sha256, the corpus bounds, the common-word pairs' and American Stories' versions, the index config's sha256, the builder's commit and `created_at`.
+
+**From a container or a laptop with access** (Storage Blob Data Reader on `sets`, and a network path to the account: an environment's VNet, or a private endpoint of your own; public access is off):
+
+```sh
+az storage blob download --auth-mode login --account-name <archive account> -c sets -n loc-1pct-v1/docs.ndjson.zst -f docs.ndjson.zst
+zstd -dc docs.ndjson.zst | split -C 8m - chunk-        # request bodies under Quickwit's 10 MiB limit
+for f in chunk-*; do curl -sf -XPOST "$QW/api/v1/$INDEX/ingest" --data-binary @"$f"; done
+```
+
+Check each file against the manifest's sha256 (`shasum -a 256`). `tar -xf raw.tar` gives `{batch}/{archive}` and `{batch}/manifest.json`, the layout of `raw/`.

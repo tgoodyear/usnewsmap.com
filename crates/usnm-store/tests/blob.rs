@@ -232,3 +232,141 @@ async fn list_follows_markers_and_strips_the_store_prefix() {
     assert!(bad.exists("log/d/1.jsonl").await.is_err());
     assert!(bad.list("log").await.is_err());
 }
+
+/// Staged blocks, committed blobs and their tiers, for Put Block and Put
+/// Block List.
+/// A committed blob: its bytes, access tier and content type.
+type Committed = (Vec<u8>, Option<String>, Option<String>);
+
+#[derive(Default)]
+struct Blocks {
+    staged: HashMap<(String, String), Vec<u8>>,
+    committed: HashMap<String, Committed>,
+}
+
+type SharedBlocks = Arc<Mutex<Blocks>>;
+
+async fn put_block_or_list(
+    State(b): State<SharedBlocks>,
+    Path(p): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    h: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
+    if !authorized(&h) {
+        return StatusCode::FORBIDDEN;
+    }
+    let mut b = b.lock().unwrap();
+    match q.get("comp").map(String::as_str) {
+        Some("block") => {
+            let id = q.get("blockid").unwrap().clone();
+            b.staged.insert((p, id), body.to_vec());
+            StatusCode::CREATED
+        }
+        Some("blocklist") => {
+            let xml = String::from_utf8(body.to_vec()).unwrap();
+            let mut data = Vec::new();
+            for id in xml.split("<Latest>").skip(1) {
+                let id = id.split("</Latest>").next().unwrap().to_owned();
+                data.extend(b.staged.get(&(p.clone(), id)).unwrap());
+            }
+            let header = |k: &str| h.get(k).map(|v| v.to_str().unwrap().to_owned());
+            let entry = (
+                data,
+                header("x-ms-access-tier"),
+                header("x-ms-blob-content-type"),
+            );
+            b.committed.insert(p, entry);
+            StatusCode::CREATED
+        }
+        _ => StatusCode::BAD_REQUEST,
+    }
+}
+
+async fn serve_blocks() -> (String, SharedBlocks) {
+    let blocks: SharedBlocks = Arc::default();
+    let app = Router::new()
+        .route("/c/big/object", get(chunked))
+        .route("/c/{*p}", axum::routing::put(put_block_or_list))
+        // 8 MiB blocks, past axum's 2 MB default.
+        .layer(axum::extract::DefaultBodyLimit::disable())
+        .with_state(blocks.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://127.0.0.1:{}", addr.port()), blocks)
+}
+
+/// A streamed upload is cut into blocks and committed, in its tier, only
+/// when told to; an abandoned one leaves nothing visible.
+#[tokio::test]
+async fn streamed_uploads_commit_blocks_in_their_tier() {
+    let (base, blocks) = serve_blocks().await;
+    let cred = Arc::new(Credential::new(StaticToken("secret-token".into())));
+    let store = BlobStore::new(&format!("{base}/c"), cred).unwrap();
+    let data: Vec<u8> = (0..(usnm_store::blob::BLOCK_BYTES * 2 + 12345))
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let (done, commit) = tokio::sync::oneshot::channel();
+    let upload = {
+        let store = BlobStore::new(
+            &format!("{base}/c"),
+            Arc::new(Credential::new(StaticToken("secret-token".into()))),
+        )
+        .unwrap();
+        tokio::spawn(async move {
+            store
+                .put_stream(
+                    "raw/b/b.tar.bz2",
+                    "application/x-bzip2",
+                    Some("Cold"),
+                    rx,
+                    commit,
+                )
+                .await
+        })
+    };
+    for c in data.chunks(1_000_003) {
+        tx.send(bytes::Bytes::copy_from_slice(c)).await.unwrap();
+    }
+    drop(tx);
+    done.send(true).unwrap();
+    assert_eq!(upload.await.unwrap().unwrap(), data.len() as u64);
+    {
+        let b = blocks.lock().unwrap();
+        let (body, tier, ctype) = &b.committed["raw/b/b.tar.bz2"];
+        assert_eq!(body, &data);
+        assert_eq!(tier.as_deref(), Some("Cold"));
+        assert_eq!(ctype.as_deref(), Some("application/x-bzip2"));
+        assert_eq!(b.staged.len(), 3);
+    }
+
+    // Abandoned: the sender goes away without a commit.
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    let (done, commit) = tokio::sync::oneshot::channel::<bool>();
+    tx.send(bytes::Bytes::from_static(b"partial"))
+        .await
+        .unwrap();
+    drop(tx);
+    drop(done);
+    let err = store
+        .put_stream("raw/x/x.tar.bz2", "application/x-bzip2", None, rx, commit)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("abandoned"), "{err}");
+    assert!(!blocks
+        .lock()
+        .unwrap()
+        .committed
+        .contains_key("raw/x/x.tar.bz2"));
+
+    // A streamed read has no size limit.
+    use futures::StreamExt;
+    let mut s = store.get_stream("big/object").await.unwrap().unwrap();
+    let mut n = 0u64;
+    while let Some(c) = s.next().await {
+        n += c.unwrap().len() as u64;
+    }
+    assert!(n > usnm_store::MAX_OBJECT_BYTES);
+}
