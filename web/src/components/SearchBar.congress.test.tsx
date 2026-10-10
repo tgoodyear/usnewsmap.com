@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { Meta } from "../api/types";
 import { DEFAULTS } from "../state/url";
@@ -56,6 +56,27 @@ describe("SearchBar's options count (#229)", () => {
     );
     expect(toggle().textContent).toBe("Options (2)");
     fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "congress" } });
+    expect(toggle().textContent).toBe("Options (1)");
+  });
+});
+
+describe("SearchBar before /v1/meta has loaded (#229)", () => {
+  const congressLink = { ...DEFAULTS, q: "gold", source: "congress" as const };
+
+  it("keeps a Congress link's source, so an early submit searches Congress", () => {
+    const onSearch = vi.fn();
+    render(<SearchBar view={congressLink} meta={undefined} onSearch={onSearch} />);
+    expect(screen.getByRole("search", { name: "Search Congress" })).toBeTruthy();
+    fireEvent.submit(screen.getByRole("search"));
+    expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({ source: "congress", state: [], lang: [] }));
+  });
+
+  it("opens a Congress link's options, and keeps them open once /v1/meta lists Congress", () => {
+    const { rerender } = render(<SearchBar view={congressLink} meta={undefined} onSearch={() => {}} />);
+    const toggle = () => screen.getByRole("button", { name: /^Options/ });
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    rerender(<SearchBar view={congressLink} meta={withCongress} onSearch={() => {}} />);
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
     expect(toggle().textContent).toBe("Options (1)");
   });
 });

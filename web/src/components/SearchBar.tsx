@@ -115,13 +115,14 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
   // uses one, so an active filter is never hidden. Wider screens always show
   // them (CSS hides the toggle).
   // The switch shows only once /v1/meta lists Congress pages (#229), and
-  // the options count the source the form will actually search.
+  // the options count the source the form will actually search. Until
+  // /v1/meta has loaded the URL's source stands, so a Congress link opened
+  // cold still searches Congress and opens with its options shown.
   const congressAvailable = (meta?.congress?.series.length ?? 0) > 0;
-  const source = congressAvailable ? draft.source : "news";
+  const searchable = (s: ViewState["source"]) => (!meta || congressAvailable ? s : "news");
+  const source = searchable(draft.source);
   const bounds = searchBounds(meta, source);
-  const [open, setOpen] = useState(
-    () => activeOptions({ ...view, source: congressAvailable ? view.source : "news" }) > 0,
-  );
+  const [open, setOpen] = useState(() => activeOptions({ ...view, source: searchable(view.source) }) > 0);
   const active = activeOptions({
     ...draft,
     source,
