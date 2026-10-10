@@ -14,6 +14,7 @@ cd web && npm ci && npm run dev  # http://localhost:5173
 | Script | What |
 |--------|------|
 | `npm run lint` / `typecheck` / `test` | ESLint, `tsc` (TypeScript 7), Vitest unit tests (engine, URL state, dates, snippets) |
+| `npm run format` / `format:check` | Prettier, from the repo root: this app and the repo's Markdown ([development guide](../docs/development.md#checks)) |
 | `npm run build` | Production build into `dist/`. The API image also runs `node scripts/precompress.mjs dist` for brotli and gzip copies |
 | `npm run e2e` | Playwright end-to-end tests with axe accessibility checks. By default against `vite preview` and a running API. With `PW_BASE_URL` (as CI does), against an API serving the build (`USNM_SITE_DIR=web/dist cargo run -p usnm-api`). Set `PW_CHROMIUM_PATH` to use an existing Chromium |
 

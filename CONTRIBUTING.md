@@ -6,7 +6,7 @@ The [design documents](docs/design/README.md) explain how the system works and w
 
 ## Run the checks
 
-CI runs the Rust checks when a pull request touches Rust code and the web checks when it touches the web app (`scripts/ci/changes.sh`). A pull request that only changes documentation (Markdown anywhere, or anything under `docs/`) runs none of this workflow's checks beyond the `changes` job itself; GitHub's CodeQL scan, configured in the repository settings, runs on every pull request. Run the ones that apply before you push:
+CI runs the Rust checks when a pull request touches Rust code and the web checks when it touches the web app (`scripts/ci/changes.sh`). A pull request that only changes documentation (Markdown anywhere, or anything under `docs/`) runs none of this workflow's checks beyond the `changes` job itself and, when it changes Markdown, the format check (`npm run format:check`); GitHub's CodeQL scan, configured in the repository settings, runs on every pull request. Run the ones that apply before you push:
 
 ```sh
 cargo fmt --all --check
@@ -17,6 +17,7 @@ cd web
 npm ci
 npm audit --audit-level=high
 npm run lint
+npm run format:check
 npm run typecheck
 npm test
 npm run build
