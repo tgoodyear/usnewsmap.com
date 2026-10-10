@@ -110,6 +110,14 @@ pub struct Record {
     pub lccn: Vec<String>,
     pub lang: Vec<String>,
     pub front: bool,
+    /// The corpus searched when it isn't the newspapers (#229): `congress`
+    /// or `all`. Absent for newspaper searches, so their records are as
+    /// before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus: Option<String>,
+    /// The Congress series filter (#229); absent when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub series: Vec<String>,
     /// The bucket asked for (`year`, `month`, `week` or `day`).
     pub bucket: String,
     /// Pages matched (`total.hits`); `null` when unknown (imports).
@@ -234,6 +242,9 @@ impl Entry {
             lccn: f.lccns.clone(),
             lang: f.langs.clone(),
             front: f.front_only,
+            corpus: (s.req.source != usnm_core::params::Source::News)
+                .then(|| s.req.source.as_str().to_owned()),
+            series: f.series.clone(),
             bucket: s.req.bucket.as_str().to_owned(),
             pages: pages(&self.body),
             index_version: Some(s.index_version.clone()),

@@ -83,6 +83,9 @@ impl Loader {
                 if let Some(ja) = &refdata.current.ja {
                     ids.extend(ja.indexes.iter().cloned());
                 }
+                if let Some(c) = &refdata.current.congress {
+                    ids.extend(c.indexes.iter().cloned());
+                }
                 tokio::task::spawn_blocking(move || memory_backend(&dir, &ids))
                     .await
                     .map_err(|e| e.to_string())??
@@ -94,6 +97,13 @@ impl Loader {
         if let Some(ja) = refdata.ja_index_set() {
             backend.prepare(&ja).await.map_err(|e| e.to_string())?;
         }
+        // And its Congress index, when it has one (#229).
+        if let Some(congress) = refdata.congress_index_set() {
+            backend
+                .prepare(&congress)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Snapshot { refdata, backend })
     }
 }
@@ -102,6 +112,7 @@ impl Loader {
 /// before it serves or warms up.
 fn configure(config: &Config, snapshot: &mut Snapshot) {
     snapshot.refdata.american_stories_search = config.american_stories_search;
+    snapshot.refdata.congress_search = config.congress_search;
 }
 
 pub struct AppState {

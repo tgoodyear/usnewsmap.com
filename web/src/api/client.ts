@@ -249,6 +249,10 @@ export interface SearchParams {
   /** Newspaper languages (catalog codes); any of them (07 §7.9). */
   lang?: string[];
   front?: boolean;
+  /** The corpus searched (#229): newspapers unless this says `congress`. */
+  source?: "news" | "congress";
+  /** Congress series to search; empty means all of them. */
+  series?: string[];
 }
 
 /**
@@ -293,6 +297,10 @@ export function searchQuery(p: SearchParams, version: string): URLSearchParams {
   if (p.lccn?.length) s.set("lccn", p.lccn.join(","));
   if (p.lang?.length) s.set("lang", p.lang.join(","));
   if (p.front) s.set("front", "true");
+  // Newspapers are the default and stay out of the URL, as in the API's own
+  // canonical form, so newspaper searches keep their cache keys (#229).
+  if (p.source && p.source !== "news") s.set("source", p.source);
+  if (p.source === "congress" && p.series?.length) s.set("series", p.series.join(","));
   // Pin to the version the page loaded, so every response comes from one snapshot.
   s.set("v", version);
   return s;

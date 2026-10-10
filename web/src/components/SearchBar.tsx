@@ -23,8 +23,11 @@ const MODES: { value: Mode; label: string }[] = [
 ];
 
 /** How many search options differ from the defaults (shown on the toggle). */
-export function activeOptions(view: Pick<ViewState, "mode" | "from" | "to" | "state" | "lang">): number {
+export function activeOptions(
+  view: Pick<ViewState, "mode" | "from" | "to" | "state" | "lang"> & Partial<Pick<ViewState, "source">>,
+): number {
   return [
+    (view.source ?? DEFAULTS.source) !== DEFAULTS.source,
     view.mode !== DEFAULTS.mode,
     view.from !== DEFAULTS.from,
     view.to !== DEFAULTS.to,
@@ -47,9 +50,39 @@ export function japaneseHint(q: string, meta: Pick<Meta, "ja"> | undefined): str
 
 /** Identity of the search in the URL; remount the form when it changes. */
 export function searchKey(view: ViewState): string {
-  return [view.q, view.mode, view.near, view.from, view.to, view.state.join(), view.lang.join(), view.lccn.join()].join(
-    "|",
-  );
+  return [
+    view.q,
+    view.mode,
+    view.near,
+    view.from,
+    view.to,
+    view.state.join(),
+    view.lang.join(),
+    view.lccn.join(),
+    view.source,
+    view.series.join(),
+  ].join("|");
+}
+
+/**
+ * The dates a search can cover: the newspapers' bounds, or for a Congress
+ * search the span of the Congress series (#229), which runs past the
+ * newspapers at both ends.
+ */
+export function searchBounds(
+  meta: Pick<Meta, "bounds" | "congress"> | undefined,
+  source: ViewState["source"],
+): { from: string; to: string } | undefined {
+  const series = meta?.congress?.series ?? [];
+  if (source === "congress" && series.length > 0) {
+    return {
+      from: series.map((s) => s.from).reduce((a, b) => (a < b ? a : b)),
+      to: series.map((s) => s.to).reduce((a, b) => (a > b ? a : b)),
+    };
+  }
+  const lo = meta?.bounds.from;
+  const hi = meta?.bounds.to;
+  return lo && hi ? { from: lo, to: hi } : undefined;
 }
 
 export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
@@ -79,9 +112,10 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
     state: states.split(/[\s,]+/).filter(Boolean),
   });
 
-  const lo = meta?.bounds.from;
-  const hi = meta?.bounds.to;
-  const bounds = lo && hi ? { from: lo, to: hi } : undefined;
+  // The switch shows only once /v1/meta lists Congress pages (#229).
+  const congressAvailable = (meta?.congress?.series.length ?? 0) > 0;
+  const source = congressAvailable ? draft.source : "news";
+  const bounds = searchBounds(meta, source);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -117,7 +151,12 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
         .split(/[\s,]+/)
         .map((s) => s.toUpperCase())
         .filter((s) => /^[A-Z]{2}$/.test(s)),
-      lang: draft.lang,
+      // Congress pages are all English and printed in Washington for now,
+      // and belong to no newspaper: those filters apply to newspapers only.
+      lang: source === "congress" ? [] : draft.lang,
+      ...(source === "congress" ? { state: [], lccn: [] } : {}),
+      source,
+      series: source === "congress" ? draft.series : [],
     });
   };
 
@@ -234,17 +273,31 @@ export function SearchBar({ view, meta, onSearch, busy = false }: Props) {
           bounds={bounds}
           inputRef={toRef}
         />
-        <label className="search__state">
-          <span>States</span>
-          <input
-            placeholder="e.g. GA, SC"
-            value={states}
-            onChange={(e) => setStates(e.target.value)}
-            pattern="^\s*([A-Za-z]{2}([\s,]+|$))*$"
-            title="Two-letter state codes, separated by commas"
-          />
-        </label>
-        {languages.length > 0 && (
+        {congressAvailable && (
+          <label className="search__source">
+            <span>Search</span>
+            <select
+              value={source}
+              onChange={(e) => setDraft({ ...draft, source: e.target.value as ViewState["source"] })}
+            >
+              <option value="news">Newspapers</option>
+              <option value="congress">Congress</option>
+            </select>
+          </label>
+        )}
+        {source === "news" && (
+          <label className="search__state">
+            <span>States</span>
+            <input
+              placeholder="e.g. GA, SC"
+              value={states}
+              onChange={(e) => setStates(e.target.value)}
+              pattern="^\s*([A-Za-z]{2}([\s,]+|$))*$"
+              title="Two-letter state codes, separated by commas"
+            />
+          </label>
+        )}
+        {source === "news" && languages.length > 0 && (
           <LanguageFilter
             id={id}
             choices={languages}

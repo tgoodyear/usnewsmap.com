@@ -218,3 +218,13 @@ LoC has no searchable text for its Japanese-language pages, so we read them ours
 Progress of the OCR itself is on the status page's "OCR experiments" section (§7.10).
 
 **Tests.** `lib/japanese.test.ts`, `components/SearchBar.ime.test.tsx` (the note, `aria-describedby`, the IME Enter), `components/PlacePanel.test.tsx` (the badge and link) and `e2e/app.spec.ts` (the note on the fixture API, with axe).
+
+## 7.12 Congress pages (#229)
+
+When `/v1/meta` lists Congress series (`congress`), the search options gain a **Search** switch: Newspapers or Congress. It stays hidden otherwise, so nothing changes on a version without Congress pages. The view keeps `source=congress` (and a `series` filter) in the URL, and leaves them out for newspapers, so existing links and the examples' cache keys are unchanged (`state/url.ts`, `api/client.ts`).
+
+- Under Congress the state and language filters are hidden (every Congress page is English and placed at Washington for now), the newspaper filter is dropped, and the dates are bounded by the Congress series' span.
+- The relative rate falls back to Pages: Congress pages have no baselines yet.
+- Congress pages sit at one place, `PC001`, which comes from `/v1/meta` (`lib/congress.ts`), not `/v1/places`.
+
+Still to come with the first source: the series filter's control, the timeline-first view, the Both view and the hit list's grouping of a document's pages (#229 design §3).

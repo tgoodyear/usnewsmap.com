@@ -41,6 +41,28 @@ export interface Meta {
    * searches only it. Null or absent when the version has none.
    */
   ja?: { indexes: string[]; fold: number; pages: number } | null;
+  /**
+   * The Congress pages (#229), searched with `source=congress`: their series
+   * and the one place they all sit at for now. Null or absent when the
+   * version has none, or the API's setting leaves them off.
+   */
+  congress?: CongressMeta | null;
+}
+
+/** A Congress series in `/v1/meta` (#229). */
+export interface CongressSeriesMeta {
+  series: CongressSeries;
+  pages: number;
+  from: string;
+  to: string;
+}
+
+export type CongressSeries = "annals" | "register" | "globe" | "serialset";
+
+export interface CongressMeta {
+  series: CongressSeriesMeta[];
+  /** Washington, DC, kept apart from DC's newspapers' place. */
+  place: { id: string; name: string; lat: number; lon: number };
 }
 
 export interface MetaLanguage {

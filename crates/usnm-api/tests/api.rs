@@ -2522,3 +2522,203 @@ async fn current_json_japanese_index_ids_are_validated() {
         );
     }
 }
+
+// ---- Congress pages (#229, phase 0) ----
+
+const CONGRESS: &str = "congress-fixture";
+
+/// The fixture version with the Congress fixture index named in its pointer.
+async fn congress_state_with(cfg: Config) -> Arc<AppState> {
+    let mut backend = fixture_backend();
+    backend.add_index(CONGRESS, load_docs(CONGRESS));
+    let mut refdata = refdata().await;
+    let d = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+    let series = |name: &str, pages: u64, from: &str, to: &str| usnm_api::refdata::CongressSeries {
+        series: name.into(),
+        pages,
+        from: d(from),
+        to: d(to),
+    };
+    refdata.current.congress = Some(usnm_api::refdata::CongressIndexes {
+        indexes: vec![CONGRESS.into()],
+        common_grams: refdata.current.common_grams,
+        series: vec![
+            series("annals", 20, "1820-02-01", "1820-03-29"),
+            series("register", 21, "1832-12-10", "1833-02-27"),
+            series("globe", 78, "1850-01-07", "1850-09-30"),
+            series("serialset", 72, "1896-02-03", "1897-11-29"),
+        ],
+    });
+    Arc::new(AppState::new(cfg, Arc::new(backend), refdata))
+}
+
+async fn congress_state() -> Arc<AppState> {
+    congress_state_with(config()).await
+}
+
+/// Congress fixture pages whose text holds `phrase`, by brute force.
+fn congress_oracle(phrase: &str, from: &str, to: &str, series: Option<&str>) -> u64 {
+    let needle = format!(" {phrase} ");
+    load_docs(CONGRESS)
+        .iter()
+        .filter(|d| {
+            let date = usnm_core::time::date_from_day(d.day).to_string();
+            date.as_str() >= from
+                && date.as_str() <= to
+                && series.is_none_or(|s| d.congress.series.as_deref() == Some(s))
+                && format!(" {} ", d.text).contains(&needle)
+        })
+        .count() as u64
+}
+
+#[tokio::test]
+async fn congress_searches_count_congress_pages_at_their_own_place() {
+    let s = congress_state().await;
+    // 1850 is before the fixture newspapers' first year (1895): a Congress
+    // search is clamped to the Congress series' dates, not the newspapers'.
+    let (st, _, body) = get(
+        &s,
+        "/v1/aggregate?q=%22fugitive+slave%22&from=1850-01-01&to=1850-12-31&bucket=month&source=congress",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let want = congress_oracle("fugitive slave", "1850-01-01", "1850-12-31", None);
+    assert!(want > 0);
+    assert_eq!(body["total"]["hits"], want);
+    assert_eq!(body["places"]["id"], json!(["PC001"]));
+    assert_eq!(body["bucket"]["from"], "1850-01-01");
+    // No Congress baselines yet, and no newspapers.
+    assert!(body["series"]["baseline"].is_null());
+    assert!(body["baseline"].is_null());
+    assert_eq!(body["total"]["papers"], 0);
+    assert_eq!(body["papers"]["lccn"], json!([]));
+    assert!(body["query"]["canonical"]
+        .as_str()
+        .unwrap()
+        .ends_with("&source=congress&to=1850-12-31"));
+}
+
+#[tokio::test]
+async fn the_series_filter_counts_one_series() {
+    let s = congress_state().await;
+    let q = "/v1/aggregate?q=gold&mode=phrase&from=1789-01-01&to=1994-12-31&bucket=year&source=congress";
+    let (st, _, all) = get(&s, q).await;
+    assert_eq!(st, StatusCode::OK, "{all}");
+    let (_, _, serial) = get(&s, &format!("{q}&series=serialset")).await;
+    let (_, _, globe) = get(&s, &format!("{q}&series=globe")).await;
+    let want = |series| congress_oracle("gold", "1789-01-01", "1994-12-31", series);
+    assert_eq!(all["total"]["hits"], want(None));
+    assert_eq!(serial["total"]["hits"], want(Some("serialset")));
+    assert_eq!(globe["total"]["hits"], want(Some("globe")));
+    assert!(want(Some("serialset")) > 0);
+}
+
+#[tokio::test]
+async fn newspaper_searches_never_see_congress_pages() {
+    let s = congress_state().await;
+    let (st, _, body) = get(
+        &s,
+        "/v1/aggregate?q=%22free+silver%22&from=1896-01-01&to=1896-12-31&bucket=month",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["total"]["hits"],
+        oracle_count(
+            "\"free silver\"",
+            "1896-01-01",
+            "1896-12-31",
+            &["pages-base-fixture", "pages-delta-fixture-1"]
+        )
+    );
+    assert!(!body["places"]["id"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("PC001")));
+    assert!(!body["query"]["canonical"]
+        .as_str()
+        .unwrap()
+        .contains("source"));
+    // `source=news` is the same search, under the same cache key.
+    let (_, _, explicit) = get(
+        &s,
+        "/v1/aggregate?q=%22free+silver%22&from=1896-01-01&to=1896-12-31&bucket=month&source=news",
+    )
+    .await;
+    assert_eq!(explicit["query"]["canonical"], body["query"]["canonical"]);
+}
+
+#[tokio::test]
+async fn congress_hits_carry_their_series_citation_and_link() {
+    let s = congress_state().await;
+    let (st, _, body) = get(
+        &s,
+        "/v1/hits?q=%22fugitive+slave%22&from=1850-01-01&to=1850-12-31&source=congress&place=PC001&limit=5",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    for it in items {
+        assert_eq!(it["place_id"], "PC001");
+        assert_eq!(it["congress"]["series"], "globe");
+        assert_eq!(it["congress"]["congress"], 31);
+        assert!(it["title"].as_str().unwrap().starts_with("Fixture Globe"));
+        assert!(it["links"]["viewer"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://example.org/fixture/congress/globe/"));
+        assert!(it["snippets"][0].as_str().unwrap().contains("<mark>"));
+    }
+    // A newspaper search still refuses the Congress place.
+    let (st, _, _) = get(&s, "/v1/hits?q=gold&place=PC001").await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn congress_searches_answer_422_where_they_cannot_run() {
+    let unsupported = |st: StatusCode, body: &Value| {
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["type"], "/errors/unsupported");
+    };
+    let s = congress_state().await;
+    // Both at once needs two result blocks, which come in phase 1.
+    let (st, _, body) = get(&s, "/v1/aggregate?q=gold&source=all").await;
+    unsupported(st, &body);
+    // Congress pages have no Japanese.
+    let (st, _, body) = get(&s, "/v1/aggregate?q=%E6%97%A5%E6%9C%AC&source=congress").await;
+    unsupported(st, &body);
+    // A version without a Congress set.
+    let plain = state_with(None).await;
+    let (st, _, body) = get(&plain, "/v1/aggregate?q=gold&source=congress").await;
+    unsupported(st, &body);
+    // Switched off by the setting.
+    let mut cfg = config();
+    cfg.congress_search = false;
+    let off = congress_state_with(cfg).await;
+    let (st, _, body) = get(&off, "/v1/aggregate?q=gold&source=congress").await;
+    unsupported(st, &body);
+    let (_, _, meta) = get(&off, "/v1/meta").await;
+    assert!(meta["congress"].is_null());
+    // Newspaper-only filters are refused under Congress.
+    let (st, _, _) = get(&s, "/v1/aggregate?q=gold&source=congress&front=true").await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn meta_lists_congress_series_and_its_place() {
+    let s = congress_state().await;
+    let (st, _, meta) = get(&s, "/v1/meta").await;
+    assert_eq!(st, StatusCode::OK);
+    let series: Vec<&str> = meta["congress"]["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["series"].as_str().unwrap())
+        .collect();
+    assert_eq!(series, ["annals", "register", "globe", "serialset"]);
+    assert_eq!(meta["congress"]["place"]["id"], "PC001");
+    // A version without Congress pages says so.
+    let (_, _, plain) = get(&state_with(None).await, "/v1/meta").await;
+    assert!(plain["congress"].is_null());
+}

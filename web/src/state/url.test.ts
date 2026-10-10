@@ -83,3 +83,31 @@ describe("view URL", () => {
     expect(serializeView({ ...DEFAULTS, q: "a b", near: 8 })).toBe("?q=a+b");
   });
 });
+
+describe("Congress source (#229)", () => {
+  it("leaves newspapers out of the URL and the search", () => {
+    const v = parseView("?q=gold");
+    expect(v.source).toBe("news");
+    expect(serializeView(v)).toBe("?q=gold");
+    expect(searchParams(v)).not.toHaveProperty("source");
+    expect(parseView("?q=gold&source=news")).toEqual(v);
+  });
+
+  it("round-trips a Congress search with its series, sorted and known only", () => {
+    const v = parseView("?q=gold&source=congress&series=serialset,globe,record,globe");
+    expect(v.source).toBe("congress");
+    expect(v.series).toEqual(["globe", "serialset"]);
+    expect(serializeView(v)).toBe("?q=gold&source=congress&series=globe%2Cserialset");
+    expect(searchParams(v)).toMatchObject({ source: "congress", series: ["globe", "serialset"], lccn: [] });
+  });
+
+  it("drops what a Congress search can't use", () => {
+    // No newspapers to filter by, and no baselines for a relative rate yet.
+    const v = parseView("?q=gold&source=congress&lccn=sn99000001&norm=skew");
+    expect(v.lccn).toEqual([]);
+    expect(v.norm).toBe("raw");
+    // A series without the Congress source means nothing.
+    expect(parseView("?q=gold&series=globe").series).toEqual([]);
+    expect(parseView("?q=gold&source=senate").source).toBe("news");
+  });
+});

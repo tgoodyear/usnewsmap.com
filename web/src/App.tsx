@@ -36,6 +36,7 @@ import { maxWindowExpected, scoreFrame } from "./engine/skewModel";
 import { useSkewModel } from "./engine/useSkew";
 import { skewInfo } from "./lib/skewText";
 import { Brand } from "./components/Brand";
+import { congressFeature } from "./lib/congress";
 
 const MapView = lazy(() => import("./components/MapView"));
 const webgl = typeof document !== "undefined" && hasWebGL2();
@@ -127,7 +128,14 @@ export function App() {
     return prefixSums(aligned, data.places.id.length, count);
   }, [data, coverage.data, count]);
 
-  const features = useMemo(() => new Map((places.data?.features ?? []).map((f) => [f.id, f])), [places.data]);
+  // Congress pages sit at one place of their own, which /v1/meta names
+  // rather than /v1/places, so newspaper places stay as they are (#229).
+  const congressPlace = meta.data?.congress?.place;
+  const features = useMemo(() => {
+    const byId = new Map((places.data?.features ?? []).map((f) => [f.id, f]));
+    if (congressPlace) byId.set(congressPlace.id, congressFeature(congressPlace));
+    return byId;
+  }, [places.data, congressPlace]);
 
   // Relative rate (doc 11): fitted once per search, off the main thread;
   // each frame is then scored from prefix sums.

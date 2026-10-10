@@ -14,6 +14,16 @@ export type Layer = "points" | "heat";
  * published (`norm=rel`) was removed; its permalinks open on Pages.
  */
 export type Norm = "raw" | "skew" | "when";
+export type Source = "news" | "congress";
+
+/** The Congress series the API knows (`CONGRESS_SERIES` in usnm_core::params). */
+export const CONGRESS_SERIES = ["annals", "globe", "register", "serialset"] as const;
+
+/** Congress series from a URL: known names only, sorted, no repeats. */
+export function parseSeries(v: string | null): string[] {
+  const known: readonly string[] = CONGRESS_SERIES;
+  return [...new Set((v ?? "").split(",").map((x) => x.trim().toLowerCase()))].filter((x) => known.includes(x)).sort();
+}
 export type Tab = "map" | "table";
 
 export interface ViewState {
@@ -28,6 +38,10 @@ export interface ViewState {
   lang: string[];
   /** Newspapers (LCCNs), lowercase, sorted, no repeats: the API's `lccn` filter (#121). */
   lccn: string[];
+  /** The corpus searched (#229): the newspapers, or the debates and documents of Congress. */
+  source: Source;
+  /** Congress series (`globe`, `serialset`, ...), sorted, no repeats; only with `source` congress. */
+  series: string[];
   /** Scrubber position (ISO date); empty = end of range. */
   t: string;
   /** Trailing window in buckets; null = cumulative. */
@@ -53,6 +67,8 @@ export const DEFAULTS: ViewState = {
   state: [],
   lang: [],
   lccn: [],
+  source: "news",
+  series: [],
   t: "",
   win: null,
   layer: "points",
@@ -105,8 +121,9 @@ export function parseLccns(v: string | null): string[] {
  * kept per newspaper (06 §6.3.3): under a newspaper filter it is Pages,
  * whether the view came from a click or a shared link.
  */
-export function supportedNorm(norm: Norm, lccn: readonly string[]): Norm {
-  return norm === "skew" && lccn.length > 0 ? "raw" : norm;
+export function supportedNorm(norm: Norm, lccn: readonly string[], source: Source = "news"): Norm {
+  // Congress pages have no baselines yet (#229), so no relative rate either.
+  return norm === "skew" && (lccn.length > 0 || source !== "news") ? "raw" : norm;
 }
 
 function oneOf<T extends string>(v: string | null, allowed: readonly T[], d: T): T {
@@ -141,13 +158,17 @@ export function parseView(search: string): ViewState {
       .map((x) => x.trim().toUpperCase())
       .filter((x) => /^[A-Z]{2}$/.test(x)),
     lang: parseLangs(s.get("lang")),
-    lccn: parseLccns(s.get("lccn")),
+    // A Congress search has no newspapers to filter by.
+    lccn: s.get("source") === "congress" ? [] : parseLccns(s.get("lccn")),
+    source: oneOf(s.get("source"), ["news", "congress"] as const, DEFAULTS.source),
+    series: s.get("source") === "congress" ? parseSeries(s.get("series")) : [],
     t: date("t"),
     win: s.get("win") === "cum" || s.get("win") === null ? null : int(s.get("win"), 1, 1000),
     layer: oneOf(s.get("layer"), ["points", "heat"] as const, DEFAULTS.layer),
     norm: supportedNorm(
       oneOf(s.get("norm"), ["raw", "skew", "when"] as const, DEFAULTS.norm),
       parseLccns(s.get("lccn")),
+      oneOf(s.get("source"), ["news", "congress"] as const, DEFAULTS.source),
     ),
     place: /^[A-Za-z0-9_-]{1,32}$/.test(s.get("place") ?? "") ? (s.get("place") as string) : "",
     sort: oneOf(s.get("sort"), ["oldest", "newest", "relevant"] as const, DEFAULTS.sort),
@@ -173,11 +194,13 @@ export function serializeView(v: ViewState): string {
   put("bucket", v.bucket, DEFAULTS.bucket);
   put("state", v.state.join(","), "");
   put("lang", parseLangs(v.lang.join(",")).join(","), "");
-  put("lccn", parseLccns(v.lccn.join(",")).join(","), "");
+  put("lccn", v.source === "congress" ? "" : parseLccns(v.lccn.join(",")).join(","), "");
+  put("source", v.source, DEFAULTS.source);
+  if (v.source === "congress") put("series", parseSeries(v.series.join(",")).join(","), "");
   put("t", v.t, "");
   if (v.win !== null) s.set("win", String(v.win));
   put("layer", v.layer, DEFAULTS.layer);
-  put("norm", supportedNorm(v.norm, v.lccn), DEFAULTS.norm);
+  put("norm", supportedNorm(v.norm, v.lccn, v.source), DEFAULTS.norm);
   put("place", v.place, "");
   put("sort", v.sort, DEFAULTS.sort);
   put("tab", v.tab, DEFAULTS.tab);
@@ -198,7 +221,10 @@ export function searchParams(v: ViewState): SearchParams {
     bucket: v.bucket,
     state: v.state,
     lang: v.lang,
-    lccn: v.lccn,
+    lccn: v.source === "congress" ? [] : v.lccn,
+    // Only a Congress search names its source, so a newspaper search's
+    // parameters, and the query keys built from them, are as before.
+    ...(v.source === "congress" ? { source: v.source, series: v.series } : {}),
   };
 }
 

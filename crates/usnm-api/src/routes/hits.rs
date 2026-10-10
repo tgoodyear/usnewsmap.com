@@ -16,7 +16,7 @@ use usnm_core::query::highlight_terms;
 use usnm_core::time::date_from_day;
 use usnm_search::{Hit, HitSort, HitsQuery};
 
-use super::{cached, no_japanese, uses_fuzzy, with_timeout, Job};
+use super::{cached, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
 use crate::refdata::RefData;
 use crate::{version, AppState};
@@ -84,7 +84,29 @@ pub(crate) struct Item {
     /// (#139), and the main index's pages with our OCR's Latin text (#203).
     #[serde(skip_serializing_if = "Option::is_none")]
     ocr: Option<Ocr>,
+    /// A Congress page's series and citation (#229). Its `title` is the
+    /// document's or volume's, its `lccn` empty, and its viewer link the
+    /// page in its source (GovInfo, UNT or Congress.gov).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    congress: Option<CongressOut>,
     links: Links,
+}
+
+#[derive(Serialize)]
+struct CongressOut {
+    series: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    citation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    congress: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chamber: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    printed_page: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_id: Option<String>,
 }
 
 /// Who made a page's text when it isn't LoC's OCR.
@@ -114,6 +136,34 @@ impl Item {
                 engine: Some(p.ocr_engine.clone()),
             }),
         };
+        if let Some(series) = h.congress.series.clone() {
+            let c = h.congress;
+            return Item {
+                date: date_from_day(h.day).to_string(),
+                title: c.title,
+                // Its source's viewer can't highlight our words either.
+                links: Links { viewer: c.link },
+                ocr,
+                congress: Some(CongressOut {
+                    series,
+                    citation: c.citation,
+                    congress: c.congress,
+                    session: c.session,
+                    chamber: c.chamber,
+                    printed_page: c.printed_page,
+                    package_id: c.package_id,
+                }),
+                doc_id: h.doc_id,
+                lccn: h.lccn,
+                place_id: h.place_id,
+                edition: h.edition,
+                seq: h.seq,
+                front_page: h.front_page,
+                snippets: h.snippets,
+                snippet_source: h.snippet_source,
+                matched_in: h.matched_in,
+            };
+        }
         Item {
             date: date_from_day(h.day).to_string(),
             title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),
@@ -125,6 +175,7 @@ impl Item {
                     .map(|k| k.viewer_url(ocr.is_none().then_some(highlight))),
             },
             ocr,
+            congress: None,
             doc_id: h.doc_id,
             lccn: h.lccn,
             place_id: h.place_id,
@@ -157,7 +208,10 @@ pub async fn hits(
     let place = raw.get("place").map(str::to_owned);
     let title = match (&place, req.filters.lccns.as_slice()) {
         (Some(p), _) => {
-            if rd.place(p).is_none() {
+            // Congress pages sit at their own reserved place, which isn't in
+            // the newspapers' catalog (#229).
+            let congress_place = req.source.congress() && p == crate::refdata::CONGRESS_PLACE;
+            if rd.place(p).is_none() && !congress_place {
                 return Err(ApiError::NotFound(format!("unknown place `{p}`")));
             }
             None
@@ -238,7 +292,7 @@ pub async fn hits(
             &st,
             st.config.compute_cap,
             snap2.backend.hits(
-                &rd.index_set_for(&req.query).ok_or_else(no_japanese)?,
+                &rd.index_set_for_request(&req)?,
                 &req.query,
                 &req.filters,
                 &page,

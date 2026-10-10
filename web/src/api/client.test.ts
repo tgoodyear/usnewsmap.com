@@ -231,3 +231,14 @@ describe("api client", () => {
     expect(q({ q: "pres?dent lincoln", mode: "phrase" })).toBe("q=pres%3Fdent+lincoln&v=v");
   });
 });
+
+describe("searchQuery and the Congress source (#229)", () => {
+  it("sends a source only for Congress, with its series", () => {
+    const q = (p: Parameters<typeof searchQuery>[0]) => searchQuery(p, "v").toString();
+    expect(q({ q: "gold", mode: "all", source: "news", series: ["globe"] })).toBe("q=gold&v=v");
+    expect(q({ q: "gold", mode: "all", source: "congress" })).toBe("q=gold&source=congress&v=v");
+    expect(q({ q: "gold", mode: "all", source: "congress", series: ["globe", "serialset"] })).toBe(
+      "q=gold&source=congress&series=globe%2Cserialset&v=v",
+    );
+  });
+});

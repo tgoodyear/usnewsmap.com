@@ -63,7 +63,41 @@ pub struct Current {
     /// deltas tag their splits with theirs. Absent for versions without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decades: Option<u32>,
+    /// The Congress index set (#229), when the version has one: the
+    /// Congressional Globe, the Serial Set, the Annals and the Register,
+    /// searched only with `source=congress`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub congress: Option<CongressIndexes>,
 }
+
+/// `current.json`'s `congress`: the Congress pages' index set (#229).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CongressIndexes {
+    pub indexes: Vec<String>,
+    /// The `usnm_core::common_grams` version the set was built with. A
+    /// Congress search parses its query once, with the main indexes'
+    /// analyzer, so the set is searched only when this matches the main
+    /// indexes' `common_grams` (the release rebuilds it with them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_grams: Option<u32>,
+    /// Each series the set holds, with its pages and dates.
+    #[serde(default)]
+    pub series: Vec<CongressSeries>,
+}
+
+/// One Congress series in a version: `globe`, `serialset`, `annals` or
+/// `register` (`usnm_core::params::CONGRESS_SERIES`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CongressSeries {
+    pub series: String,
+    pub pages: u64,
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+}
+
+/// The reserved place every Congress page sits at for now (#229 design §3):
+/// Washington, DC, apart from DC's newspapers' place.
+pub const CONGRESS_PLACE: &str = "PC001";
 
 /// `current.json`'s `ja`: the index of the Japanese pages we OCR ourselves.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -135,6 +169,10 @@ pub struct RefData {
     /// it (`USNM_AMERICAN_STORIES_SEARCH`, 05 §5.5.4). True when loaded; the
     /// API sets it from its configuration before the snapshot serves.
     pub american_stories_search: bool,
+    /// Whether `source=congress` searches the version's Congress index set
+    /// (`USNM_CONGRESS_SEARCH`, #229). True when loaded; the API sets it
+    /// from its configuration before the snapshot serves.
+    pub congress_search: bool,
 }
 
 /// One copy of a page to hide: the document `doc_id` from `batch`.
@@ -329,6 +367,7 @@ impl RefData {
             hidden: Vec::new(),
             ja_latin: HashMap::new(),
             american_stories_search: true,
+            congress_search: true,
         })
     }
 
@@ -354,7 +393,32 @@ impl RefData {
     /// A search request's parameters, parsed for this version: dates within
     /// its bounds, words folded as its indexes were.
     pub fn search_request(&self, raw: &RawParams) -> Result<SearchRequest, ParamError> {
-        SearchRequest::from_raw(raw, self.bounds(), self.analyzers())
+        SearchRequest::from_raw(raw, self.bounds_for(raw.get("source")), self.analyzers())
+    }
+
+    /// The dates a search's `from` and `to` are clamped to (#229): the
+    /// newspapers' bounds, the Congress series' for `source=congress`
+    /// (1789 to 1994 in full, past the newspapers at both ends), and the
+    /// span of both for `source=all`. An unknown `source` gets the
+    /// newspapers' bounds and is refused when the request is parsed.
+    pub fn bounds_for(&self, source: Option<&str>) -> (NaiveDate, NaiveDate) {
+        let news = self.bounds();
+        let Some(congress) = self.congress_bounds() else {
+            return news;
+        };
+        match source {
+            Some("congress") => congress,
+            Some("all") => (news.0.min(congress.0), news.1.max(congress.1)),
+            _ => news,
+        }
+    }
+
+    /// The earliest and latest dates of the version's Congress series.
+    pub fn congress_bounds(&self) -> Option<(NaiveDate, NaiveDate)> {
+        let series = &self.current.congress.as_ref()?.series;
+        let from = series.iter().map(|s| s.from).min()?;
+        let to = series.iter().map(|s| s.to).max()?;
+        Some((from, to))
     }
 
     /// Whether the version was built with American Stories' text at this
@@ -431,6 +495,50 @@ impl RefData {
             .ja
             .as_ref()
             .map(|j| IndexSet::new(j.indexes.clone()).with_analyzer(self.analyzers().ja))
+    }
+
+    /// The Congress index set (#229), when the version has one built with
+    /// the main indexes' analyzer and `USNM_CONGRESS_SEARCH` leaves it on.
+    pub fn congress_index_set(&self) -> Option<IndexSet> {
+        let c = self.current.congress.as_ref()?;
+        if !self.congress_search || c.common_grams != self.current.common_grams {
+            return None;
+        }
+        let grams = c
+            .common_grams
+            .and_then(usnm_core::common_grams::analyzer)
+            .is_some();
+        Some(
+            IndexSet::new(c.indexes.clone())
+                .with_analyzer(self.analyzers().main)
+                .with_common_grams(grams),
+        )
+    }
+
+    /// The indexes a request searches (#229): the newspapers' for
+    /// `source=news` (main or Japanese by the query, [`Self::index_set_for`]),
+    /// the Congress set for `source=congress`. Both at once (`source=all`)
+    /// answers 422 until the API returns two result blocks.
+    pub fn index_set_for_request(
+        &self,
+        req: &usnm_core::params::SearchRequest,
+    ) -> Result<IndexSet, crate::error::ApiError> {
+        use crate::error::ApiError::Unsupported;
+        use usnm_core::params::Source;
+        match req.source {
+            Source::News => self
+                .index_set_for(&req.query)
+                .ok_or_else(crate::routes::no_japanese),
+            Source::Congress if usnm_core::query::is_japanese(&req.query) => {
+                Err(Unsupported("Japanese text search of Congress pages".into()))
+            }
+            Source::Congress => self
+                .congress_index_set()
+                .ok_or_else(|| Unsupported("Searching Congress pages".into())),
+            Source::All => Err(Unsupported(
+                "Searching newspapers and Congress together".into(),
+            )),
+        }
     }
 
     /// The indexes a query searches: a query with a Japanese word searches
@@ -527,10 +635,12 @@ fn add_series(out: &mut [u64], series: &[(u32, u32)], spec: &BucketSpec) {
 pub async fn read_current(store: &dyn ObjectStore) -> Result<Current, String> {
     let current: Current = parse("current.json", &fetch(store, "current.json").await?)?;
     let ja = current.ja.iter().flat_map(|j| &j.indexes);
+    let congress = current.congress.iter().flat_map(|c| &c.indexes);
     for id in [&current.index_version, &current.reference]
         .into_iter()
         .chain(&current.indexes)
         .chain(ja)
+        .chain(congress)
     {
         if !is_safe_segment(id) {
             return Err(format!("current.json: `{id}` is not a valid id"));
@@ -541,6 +651,21 @@ pub async fn read_current(store: &dyn ObjectStore) -> Result<Current, String> {
     }
     if current.ja.as_ref().is_some_and(|j| j.indexes.is_empty()) {
         return Err("current.json names a Japanese index set with no indexes".into());
+    }
+    if let Some(c) = &current.congress {
+        if c.indexes.is_empty() {
+            return Err("current.json names a Congress index set with no indexes".into());
+        }
+        if let Some(s) = c
+            .series
+            .iter()
+            .find(|s| !usnm_core::params::CONGRESS_SERIES.contains(&s.series.as_str()))
+        {
+            return Err(format!(
+                "current.json: unknown Congress series `{}`",
+                s.series
+            ));
+        }
     }
     Ok(current)
 }

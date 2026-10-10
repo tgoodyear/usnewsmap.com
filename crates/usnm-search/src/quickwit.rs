@@ -427,6 +427,11 @@ pub fn filter_clauses(filters: &Filters) -> Vec<String> {
     if filters.front_only {
         out.push("front_page:true".into());
     }
+    // Only Congress pages have a series (#229); usnm_core::params refuses
+    // `series` on a newspaper search.
+    if !filters.series.is_empty() {
+        out.push(set("series", &filters.series));
+    }
     out
 }
 
@@ -667,6 +672,9 @@ pub struct StoredHit {
     pub ocr_source: Option<String>,
     #[serde(default)]
     pub ocr_engine: Option<String>,
+    /// A Congress page's stored fields (congress-index.yaml, #229).
+    #[serde(flatten)]
+    pub congress: crate::CongressFields,
 }
 
 impl StoredHit {
@@ -881,6 +889,7 @@ pub fn parse_hits(
             matched_in,
             ocr_source: d.ocr_source,
             ocr_engine: d.ocr_engine,
+            congress: d.congress,
             front_page: d.seq == 1,
             day,
             doc_id: d.doc_id,
@@ -1026,6 +1035,18 @@ mod tests {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
     }
 
+    #[test]
+    fn series_filter_is_a_term_set_and_absent_by_default() {
+        let mut f = filters();
+        assert!(!filter_clauses(&f).iter().any(|c| c.starts_with("series")));
+        f.front_only = false;
+        f.series = vec!["globe".into(), "serialset".into()];
+        assert_eq!(
+            filter_clauses(&f).last().map(String::as_str),
+            Some("series:IN [globe serialset]")
+        );
+    }
+
     fn filters() -> Filters {
         Filters {
             from: d("1896-06-01"),
@@ -1034,6 +1055,7 @@ mod tests {
             lccns: vec![],
             langs: vec![],
             front_only: true,
+            series: Vec::new(),
         }
     }
 

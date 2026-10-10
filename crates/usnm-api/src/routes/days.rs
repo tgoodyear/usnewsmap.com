@@ -12,7 +12,7 @@ use usnm_core::params::RawParams;
 use usnm_core::time::BucketUnit;
 use usnm_search::plan::{self, PlannedDays};
 
-use super::{cached, no_japanese, uses_fuzzy, with_timeout, Job};
+use super::{cached, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
 use crate::{version, AppState};
 
@@ -100,7 +100,7 @@ pub async fn days(
     let st = state.clone();
     let compute = async move {
         let rd = &snap.refdata;
-        let indexes = rd.index_set_for(&req.query).ok_or_else(no_japanese)?;
+        let indexes = rd.index_set_for_request(&req)?;
         let t = Instant::now();
         let planned = with_timeout(
             &st,
