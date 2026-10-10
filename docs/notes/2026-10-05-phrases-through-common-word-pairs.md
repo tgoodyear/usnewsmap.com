@@ -8,18 +8,18 @@ One search cost four to five times the rest. In the cold-search benchmark (06 §
 
 The capture of the live version before the rebuild shows the same thing. `scripts/compare-versions.py capture` asked `pages-v20261003-1` the ten benchmark searches, the home page's 50 examples and three Japanese ones on 5 October 2026. The slowest, by the backend's own timing (which is the time when the result was computed, possibly earlier than the capture if a cache answered):
 
-| Search | Hits | Backend time |
-|--------|------|--------------|
-| bench: `"cross of gold"` 1896 | 1,592 | 57.6 s |
-| example: standard-oil | 354,285 | 50.8 s |
-| example: cross-of-gold (June–December 1896) | 1,583 | 44.8 s |
-| example: civil-service-reform | 58,720 | 32.3 s |
-| example: new-deal | 104,511 | 19.6 s |
-| bench: `"yellow jack"` 1878 | 536 | 16.7 s |
-| bench: `gold` near `silver` | 1,408,756 | 16.0 s |
-| most other examples | | 4–15 s |
+| Search                                      | Hits      | Backend time |
+| ------------------------------------------- | --------- | ------------ |
+| bench: `"cross of gold"` 1896               | 1,592     | 57.6 s       |
+| example: standard-oil                       | 354,285   | 50.8 s       |
+| example: cross-of-gold (June–December 1896) | 1,583     | 44.8 s       |
+| example: civil-service-reform               | 58,720    | 32.3 s       |
+| example: new-deal                           | 104,511   | 19.6 s       |
+| bench: `"yellow jack"` 1878                 | 536       | 16.7 s       |
+| bench: `gold` near `silver`                 | 1,408,756 | 16.0 s       |
+| most other examples                         |           | 4–15 s       |
 
-Only the "cross of gold" searches hold a word on the common-word list. The other slow phrases (`standard oil`, `civil service reform`, `new deal`) don't, so the pairs don't explain them; see *What is left*.
+Only the "cross of gold" searches hold a word on the common-word list. The other slow phrases (`standard oil`, `civil service reform`, `new deal`) don't, so the pairs don't explain them; see _What is left_.
 
 ## What we did
 
@@ -40,26 +40,26 @@ The list, `usnm_core::common_grams::WORDS`, is 89 words: the function words on a
 
 **Setup** (from #154, where the measurements were reported): 90,745 real Chronicling America OCR pages from 11 random LoC batches (2.6 GB of text, about one production split), indexed with Quickwit 0.9.1 once without `text_cg` and once with it; the searcher pinned to 2 CPUs with its result cache off; each search run cold, with the OS cache dropped first; medians of 3 runs; bytes read from disk and wall time per search. The commands themselves aren't in the repository, so the PR description is the record of the procedure, and rerunning it means setting it up again from that description.
 
-| Phrase | Read from disk, `text` → `text_cg` | Time |
-|--------|-----------------------------------|------|
-| cross of gold | 17.3 MB → 0.6 MB (31× less) | 3.0× faster |
-| secretary of war | 17.5 → 0.8 MB (22×) | 3.2× |
-| united states of america | 17.8 → 1.1 MB (16×) | 2.3× |
-| in the city of new york | 52.6 → 4.6 MB (11×) | 3.8× |
-| board of trade | 17.5 → 0.8 MB (22×) | 2.7× |
-| the president | 21.4 → 0.8 MB (28×) | 6.5× |
-| for sale | 4.1 → 0.9 MB (4×) | 2.1× |
+| Phrase                   | Read from disk, `text` → `text_cg` | Time        |
+| ------------------------ | ---------------------------------- | ----------- |
+| cross of gold            | 17.3 MB → 0.6 MB (31× less)        | 3.0× faster |
+| secretary of war         | 17.5 → 0.8 MB (22×)                | 3.2×        |
+| united states of america | 17.8 → 1.1 MB (16×)                | 2.3×        |
+| in the city of new york  | 52.6 → 4.6 MB (11×)                | 3.8×        |
+| board of trade           | 17.5 → 0.8 MB (22×)                | 2.7×        |
+| the president            | 21.4 → 0.8 MB (28×)                | 6.5×        |
+| for sale                 | 4.1 → 0.9 MB (4×)                  | 2.1×        |
 
 Hit counts were identical for every phrase. Index size 4.8 GB against 3.0 GB (1.6×); indexing 273 s against 143 s (1.9×). Over the corpus that is about +0.35 TB on Blob Hot, about +$7 a month (05 §5.5.3).
 
 **Docstore blocks** (#160, same pages, Quickwit 0.9.1): cold (OS cache dropped), a page of 50 hits, median of 5:
 
-| Query | 1 MB blocks | 128 KB blocks |
-|-------|-------------|---------------|
-| `text:gold` | 67 ms | 18 ms |
-| `text:silver AND text:bryan` | 57 ms | 19 ms |
-| `text:fever` | 51 ms | 19 ms |
-| Index size | 2.6 GB | 2.8 GB (+8%) |
+| Query                        | 1 MB blocks | 128 KB blocks |
+| ---------------------------- | ----------- | ------------- |
+| `text:gold`                  | 67 ms       | 18 ms         |
+| `text:silver AND text:bryan` | 57 ms       | 19 ms         |
+| `text:fever`                 | 51 ms       | 19 ms         |
+| Index size                   | 2.6 GB      | 2.8 GB (+8%)  |
 
 What the numbers don't show: both were measured on 11 batches on local disk, where times are mostly CPU, not on the job's searcher against Blob, where bytes read dominate. The 11–31× drop in bytes is the better guide to production; the times are a prediction. The live before/after is the next capture.
 

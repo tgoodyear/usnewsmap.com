@@ -83,9 +83,7 @@ export function TimeDock({ unit, from, count, t, window, onSeek, onWindow }: Pro
   const label = bucketLabel(unit, bucketStart(unit, from, t));
   // A permalink may carry any valid window; show it alongside the presets.
   const windowOptions =
-    window !== null && !WINDOWS.includes(window)
-      ? [...WINDOWS, window].sort((a, b) => (a ?? 0) - (b ?? 0))
-      : WINDOWS;
+    window !== null && !WINDOWS.includes(window) ? [...WINDOWS, window].sort((a, b) => (a ?? 0) - (b ?? 0)) : WINDOWS;
   return (
     <div className="dock" role="group" aria-label="Playback">
       <button

@@ -33,7 +33,18 @@ const OCR_NOTE =
   "The Library of Congress has no searchable text for this page. We read it ourselves with NDLOCR-Lite, text-recognition software from Japan's National Diet Library. Expect some misread characters.";
 
 /** Place drill-down (F-03): pages by date or by mentions, with snippets and LoC links. */
-export function PlacePanel({ params, version, placeId, placeName, sort, onSort, windowHits, note, synthetic, onClose }: Props) {
+export function PlacePanel({
+  params,
+  version,
+  placeId,
+  placeName,
+  sort,
+  onSort,
+  windowHits,
+  note,
+  synthetic,
+  onClose,
+}: Props) {
   // The same query as the prefetch after a search (#265): a prefetched list shows at once.
   const query = useInfiniteQuery(placeHitsQuery(params, version, placeId, sort));
   const first = query.data?.pages[0];
@@ -61,7 +72,9 @@ export function PlacePanel({ params, version, placeId, placeName, sort, onSort, 
       </div>
       {query.error && (
         <p role="alert" className="notice notice--error">
-          {query.error instanceof ApiError ? (query.error.problem.hint ?? query.error.message) : "Could not load pages."}
+          {query.error instanceof ApiError
+            ? (query.error.problem.hint ?? query.error.message)
+            : "Could not load pages."}
         </p>
       )}
       <ol className="hits">
@@ -118,10 +131,12 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
       ))}
       {synthetic ? (
         <p className="hit__demo">Demo page: not a real Library of Congress page.</p>
-      ) : h.links.viewer && (
-        <a href={h.links.viewer} target="_blank" rel="noopener noreferrer">
-          {h.ocr ? "View the page image at the Library of Congress" : "View page at the Library of Congress"}
-        </a>
+      ) : (
+        h.links.viewer && (
+          <a href={h.links.viewer} target="_blank" rel="noopener noreferrer">
+            {h.ocr ? "View the page image at the Library of Congress" : "View page at the Library of Congress"}
+          </a>
+        )
       )}
     </li>
   );

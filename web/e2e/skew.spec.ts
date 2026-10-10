@@ -45,7 +45,10 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
   const legend = page.locator(".legend");
   await expect(legend).toContainText("Relative rate");
   // The explanation is behind the legend's info button.
-  const note = legend.getByText("compared with the other 5 places with pages in this window, in 6 states, over the same months", { exact: false });
+  const note = legend.getByText(
+    "compared with the other 5 places with pages in this window, in 6 states, over the same months",
+    { exact: false },
+  );
   await expect(note).toBeHidden();
   await legend.getByRole("button", { name: "About this legend" }).click();
   await expect(note).toBeVisible();
@@ -110,7 +113,11 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
 
 test("a selected place says how its rate compares", async ({ page }) => {
   await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=skew&tab=table");
-  await page.getByRole("table", { name: /Relative rate of each place/ }).locator("tbody th button").first().click();
+  await page
+    .getByRole("table", { name: /Relative rate of each place/ })
+    .locator("tbody th button")
+    .first()
+    .click();
   const panel = page.locator(".panel__skew");
   await expect(panel).toContainText(/pages? matched where .* expected from its .* pages?\./);
   await expect(panel).toContainText(/the other places \(.* to .*×\)/);

@@ -20,28 +20,28 @@ Nine index runs started in a week (28 September to 5 October 2026), five of whic
 
 The nine runs. Build records from `ops/index-history.json` (all reconstructed; `common_grams` and `ja_fold` are the feature versions); outcomes, pages and publish times from the `/v1/status` reading recorded in #161 on 5 October 2026 at 17:04 UTC, when `pages-v20261005-1` was still building. A failed run published nothing; its version name was never served.
 
-| Run | Started (UTC) | Kind | Commit | Features | Pages | Outcome |
-|-----|---------------|------|--------|----------|------:|---------|
-| pages-v20260928-1 | 2026-09-28 22:36 | full | d8b9c30 | none | 2,747,479 | failed |
-| pages-v20260928-2 | 2026-09-28 22:49 | full | d8b9c30 | none | 2,747,479 | failed |
-| pages-v20260929-1 | 2026-09-29 00:06 | full | 4d2ddc5 | none | 2,747,479 | published 2026-09-29 00:42 |
-| pages-v20260929-2 | 2026-09-29 01:46 | delta | c6a2e34 | none | 2,819,396 | published 2026-09-29 01:48 |
-| pages-v20260929-3 | 2026-09-29 09:09 | delta | 5394beb | none | 5,263,258 | published 2026-09-29 10:10 |
-| pages-v20260929-4 | 2026-09-29 13:48 | delta | 6d3e8d3 | none | 6,557,925 | published 2026-09-29 14:23 |
-| pages-v20261002-1 | 2026-10-02 14:09 | full | 6792a15 | none | 7,850,528 | failed |
-| pages-v20261003-1 | 2026-10-03 13:33 | full | bfa2baf | none | 23,722,885 | published 2026-10-04 00:46 |
-| pages-v20261005-1 | 2026-10-05 17:00 | full | 307beb5 | common_grams 1, ja_fold 1 | 23,691,405 | building at that reading |
+| Run               | Started (UTC)    | Kind  | Commit  | Features                  |      Pages | Outcome                    |
+| ----------------- | ---------------- | ----- | ------- | ------------------------- | ---------: | -------------------------- |
+| pages-v20260928-1 | 2026-09-28 22:36 | full  | d8b9c30 | none                      |  2,747,479 | failed                     |
+| pages-v20260928-2 | 2026-09-28 22:49 | full  | d8b9c30 | none                      |  2,747,479 | failed                     |
+| pages-v20260929-1 | 2026-09-29 00:06 | full  | 4d2ddc5 | none                      |  2,747,479 | published 2026-09-29 00:42 |
+| pages-v20260929-2 | 2026-09-29 01:46 | delta | c6a2e34 | none                      |  2,819,396 | published 2026-09-29 01:48 |
+| pages-v20260929-3 | 2026-09-29 09:09 | delta | 5394beb | none                      |  5,263,258 | published 2026-09-29 10:10 |
+| pages-v20260929-4 | 2026-09-29 13:48 | delta | 6d3e8d3 | none                      |  6,557,925 | published 2026-09-29 14:23 |
+| pages-v20261002-1 | 2026-10-02 14:09 | full  | 6792a15 | none                      |  7,850,528 | failed                     |
+| pages-v20261003-1 | 2026-10-03 13:33 | full  | bfa2baf | none                      | 23,722,885 | published 2026-10-04 00:46 |
+| pages-v20261005-1 | 2026-10-05 17:00 | full  | 307beb5 | common_grams 1, ja_fold 1 | 23,691,405 | building at that reading   |
 
 All of them ran Quickwit 0.9.1 and ingest 0.1.0. The `pages` template's checksum changed four times in nine runs (at `pages-v20260929-1`, `pages-v20261002-1`, `pages-v20261003-1` and `pages-v20261005-1`), which is the kind of change the record exists to show. `pages-v20261005-1` is the first with a `pages-ja` template too, and the first with common-word pairs and the Japanese fold, so it is the first that can answer a Japanese query.
 
 The first capture, `pages-v20261003-1`, taken 5 October 2026 at 17:34 UTC:
 
-| | |
-|---|---|
-| Searches | 63: 60 answered `200`, the three Japanese ones `422` (no Japanese index in that version) |
-| Pages in the baseline over the benchmark's full window | 23,722,885 (the `yellow fever` benchmark, 1736-09-03 to 1963-12-31) |
-| Slowest searches | `"cross of gold"` 1896 57.6 s, standard-oil 50.8 s, cross-of-gold 44.8 s, civil-service-reform 32.3 s |
-| Typical example search | 4–15 s backend time |
+|                                                        |                                                                                                       |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Searches                                               | 63: 60 answered `200`, the three Japanese ones `422` (no Japanese index in that version)              |
+| Pages in the baseline over the benchmark's full window | 23,722,885 (the `yellow fever` benchmark, 1736-09-03 to 1963-12-31)                                   |
+| Slowest searches                                       | `"cross of gold"` 1896 57.6 s, standard-oil 50.8 s, cross-of-gold 44.8 s, civil-service-reform 32.3 s |
+| Typical example search                                 | 4–15 s backend time                                                                                   |
 
 The timing in a capture is the backend's own, recorded when the result was computed, so a search that a cache answered shows the time of an earlier computation.
 

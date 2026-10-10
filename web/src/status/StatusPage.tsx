@@ -1,14 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, API_BASE } from "../api/client";
-import type {
-  Backfill,
-  HourBin,
-  Indexing,
-  OcrJa,
-  Status,
-  TitlesPipeline,
-} from "../api/types";
+import type { Backfill, HourBin, Indexing, OcrJa, Status, TitlesPipeline } from "../api/types";
 import { TITLES } from "../route";
 import { count, health, relative, span, when } from "./format";
 import {
@@ -59,8 +52,7 @@ export default function StatusPage() {
         <h1>Pipeline status</h1>
         {status.error && (
           <p className="notice notice--error" role="alert">
-            The status could not be loaded{s ? "; showing the last copy" : ""}.
-            It is retried every 30 seconds.
+            The status could not be loaded{s ? "; showing the last copy" : ""}. It is retried every 30 seconds.
           </p>
         )}
         {!s && !status.error && <p role="status">Loading…</p>}
@@ -73,19 +65,11 @@ export default function StatusPage() {
       </main>
       <footer className="credits">
         <a href="/">Search</a> · Newspaper pages from{" "}
-        <a
-          href="https://chroniclingamerica.loc.gov/"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
+        <a href="https://chroniclingamerica.loc.gov/" target="_blank" rel="noopener noreferrer">
           Chronicling America
         </a>{" "}
         (
-        <a
-          href="https://www.loc.gov/ndnp/"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
+        <a href="https://www.loc.gov/ndnp/" target="_blank" rel="noopener noreferrer">
           NEH and Library of Congress
         </a>
         ). <a href="/privacy">Privacy</a>
@@ -101,29 +85,19 @@ function RightNow({ s, now }: { s: Status; now: number }) {
     <section aria-labelledby="right-now" className="status-section status-now">
       <h2 id="right-now">Right now</h2>
       <p className="status-now__line">{line.text}</p>
-      {line.progress && (
-        <Bar
-          value={line.progress.done}
-          max={line.progress.total}
-          label={line.progress.label}
-        />
-      )}
+      {line.progress && <Bar value={line.progress.done} max={line.progress.total} label={line.progress.label} />}
       {line.notes.map((n) => (
         <p key={n} className="status-now__note">
           {n}
         </p>
       ))}
       <p className="status-meta">
-        Checked{" "}
-        <time dateTime={s.generated_at}>{relative(s.generated_at, now)}</time>
+        Checked <time dateTime={s.generated_at}>{relative(s.generated_at, now)}</time>
         {s.pipeline.read_at && s.stale && (
           <>
             {" "}
-            · <span className="badge badge--problem">Out of date</span>: the
-            pipeline couldn&apos;t be read, so this shows what it was doing{" "}
-            <time dateTime={s.pipeline.read_at}>
-              {relative(s.pipeline.read_at, now)}
-            </time>
+            · <span className="badge badge--problem">Out of date</span>: the pipeline couldn&apos;t be read, so this
+            shows what it was doing <time dateTime={s.pipeline.read_at}>{relative(s.pipeline.read_at, now)}</time>
           </>
         )}{" "}
         · this page refreshes every 30 s
@@ -141,10 +115,7 @@ function RightNow({ s, now }: { s: Status; now: number }) {
 function Headline({ s }: { s: Status }) {
   const h = headline(s);
   return (
-    <section
-      aria-labelledby="searchable-now"
-      className="status-section status-headline"
-    >
+    <section aria-labelledby="searchable-now" className="status-section status-headline">
       <h2 id="searchable-now" className="status-headline__text">
         {h.text}
       </h2>
@@ -157,10 +128,7 @@ function Headline({ s }: { s: Status }) {
         />
       )}
       <p>
-        {h.sub}{" "}
-        {h.share !== null &&
-          h.share < 1 &&
-          "The rest are downloaded and on their way through the steps below."}
+        {h.sub} {h.share !== null && h.share < 1 && "The rest are downloaded and on their way through the steps below."}
       </p>
     </section>
   );
@@ -190,9 +158,7 @@ function Steps({ s, now }: { s: Status; now: number }) {
                   {st.title}
                 </h3>
                 <p className="step__state">
-                  <span className={`step-badge step-badge--${st.state}`}>
-                    {STATE_LABEL[st.state]}
-                  </span>{" "}
+                  <span className={`step-badge step-badge--${st.state}`}>{STATE_LABEL[st.state]}</span>{" "}
                   <span className="step__detail">{st.detail}</span>
                 </p>
                 <p className="step__explain">{st.explain}</p>
@@ -212,9 +178,8 @@ function Searchable({ s }: { s: Status }) {
     <section aria-labelledby="whats-searchable" className="status-section">
       <h2 id="whats-searchable">What&apos;s searchable now</h2>
       <p>
-        The site searches the update that went live {localDate(lastUpdate(s))}:{" "}
-        {count(p.pages)} pages from {count(p.titles)} newspapers in{" "}
-        {count(p.places)} places, dated {longDate(p.bounds.from)} to{" "}
+        The site searches the update that went live {localDate(lastUpdate(s))}: {count(p.pages)} pages from{" "}
+        {count(p.titles)} newspapers in {count(p.places)} places, dated {longDate(p.bounds.from)} to{" "}
         {longDate(p.bounds.to)}
         {p.batches !== null && `, from ${count(p.batches)} batches`}.
       </p>
@@ -248,15 +213,13 @@ function OcrAudit({ audit, s }: { audit: NonNullable<ReturnType<typeof ocrAudit>
     <section aria-labelledby="ocr-audit" className="status-subsection">
       <h3 id="ocr-audit">OCR quality audit</h3>
       <p>
-        We check how readable the Library of Congress&apos;s text is. For a sample of pages, we detect
-        each page&apos;s language and count how often that language&apos;s 20 most common words are misread
-        by one letter (&quot;tbe&quot; for &quot;the&quot;, &quot;ift&quot; for German &quot;ist&quot;)
-        instead of read correctly. The table calls this the misread rate.
+        We check how readable the Library of Congress&apos;s text is. For a sample of pages, we detect each page&apos;s
+        language and count how often that language&apos;s 20 most common words are misread by one letter
+        (&quot;tbe&quot; for &quot;the&quot;, &quot;ift&quot; for German &quot;ist&quot;) instead of read correctly. The
+        table calls this the misread rate.
       </p>
       <p className="status-ocr__line">{audit.text}</p>
-      {audit.progress && (
-        <Bar value={audit.progress.done} max={audit.progress.total} label={audit.progress.label} />
-      )}
+      {audit.progress && <Bar value={audit.progress.done} max={audit.progress.total} label={audit.progress.label} />}
       {audit.agreement && <p>{audit.agreement}</p>}
       {rows.length > 0 && (
         <Table
@@ -291,26 +254,17 @@ function JapaneseOcr({
   return (
     <>
       <p>
-        The Library of Congress has no searchable text for its Japanese-language
-        pages. We read those page images ourselves with NDLOCR-Lite,
-        text-recognition software from Japan&apos;s National Diet Library. This
-        runs apart from the steps above.
+        The Library of Congress has no searchable text for its Japanese-language pages. We read those page images
+        ourselves with NDLOCR-Lite, text-recognition software from Japan&apos;s National Diet Library. This runs apart
+        from the steps above.
       </p>
       <p className="status-ocr__line">{line.text}</p>
-      {line.progress && (
-        <Bar
-          value={line.progress.done}
-          max={line.progress.total}
-          label={line.progress.label}
-        />
-      )}
+      {line.progress && <Bar value={line.progress.done} max={line.progress.total} label={line.progress.label} />}
       <p>{line.searchable}</p>
       {o && (
         <p className="status-meta">
           Last report <Time iso={o.updated_at} now={now} />
-          {o.engine && (
-            <> · {o.engine.replace(/^(\S+ [0-9a-f]{7})[0-9a-f]+$/, "$1")}</>
-          )}
+          {o.engine && <> · {o.engine.replace(/^(\S+ [0-9a-f]{7})[0-9a-f]+$/, "$1")}</>}
         </p>
       )}
     </>
@@ -326,8 +280,7 @@ function Technical({ s, now }: { s: Status; now: number }) {
       <details className="status-technical">
         <summary>Show the pipeline&apos;s own numbers and terms</summary>
         <p className="status-note">
-          These use the pipeline&apos;s internal names; the terms are explained
-          first. Summary: {h.parts.join(" · ")}.
+          These use the pipeline&apos;s internal names; the terms are explained first. Summary: {h.parts.join(" · ")}.
         </p>
         {s.error && (
           <p className="notice notice--error" role="note">
@@ -349,17 +302,12 @@ function Technical({ s, now }: { s: Status; now: number }) {
         <TitlesSection s={s} />
         <h3>Raw response</h3>
         <p>
-          The page reads <a href={`${API_BASE}/v1/status`}>/v1/status</a> (JSON,
-          schema {s.schema}). The API reads the pipeline state at most once a
-          minute.
+          The page reads <a href={`${API_BASE}/v1/status`}>/v1/status</a> (JSON, schema {s.schema}). The API reads the
+          pipeline state at most once a minute.
         </p>
         <details>
           <summary>Raw response</summary>
-          <pre
-            className="status-json"
-            tabIndex={0}
-            aria-label="Raw /v1/status response"
-          >
+          <pre className="status-json" tabIndex={0} aria-label="Raw /v1/status response">
             {JSON.stringify(s, null, 2)}
           </pre>
         </details>
@@ -391,18 +339,10 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
                     : "nothing running",
               ],
               ["Execution", a.run ?? "–"],
-              [
-                "Execution started",
-                <Time key="r" iso={a.run_started_at} now={now} />,
-              ],
+              ["Execution started", <Time key="r" iso={a.run_started_at} now={now} />],
               ["Step started", <Time key="s" iso={a.since} now={now} />],
               ["Last report", <Time key="p" iso={a.reported_at} now={now} />],
-              [
-                "Progress",
-                a.done !== null && a.total !== null
-                  ? `${count(a.done)} of ${count(a.total)}`
-                  : "–",
-              ],
+              ["Progress", a.done !== null && a.total !== null ? `${count(a.done)} of ${count(a.total)}` : "–"],
               ["Estimated finish", <Time key="e" iso={a.eta} now={now} />],
               ["Paused until", <Time key="u" iso={a.paused_until} now={now} />],
               [
@@ -411,16 +351,12 @@ function ActivityDetails({ s, now }: { s: Status; now: number }) {
                   ? `${a.merge.step}: ${count(a.merge.splits)} splits, ${a.merge.merges_running} running, ${a.merge.merges_queued} queued`
                   : "–",
               ],
-              [
-                "Next scheduled run",
-                a.next_run ? localDate(a.next_run) : "none",
-              ],
+              ["Next scheduled run", a.next_run ? localDate(a.next_run) : "none"],
             ]}
           />
           {a.last && (
             <p>
-              <strong>Last run:</strong> {a.last.outcome.replace("_", " ")}{" "}
-              <Time iso={a.last.ended_at} now={now} />
+              <strong>Last run:</strong> {a.last.outcome.replace("_", " ")} <Time iso={a.last.ended_at} now={now} />
               {a.last.index_version && (
                 <>
                   {" "}
@@ -448,15 +384,7 @@ function Unavailable({ reason }: { reason: string }) {
   );
 }
 
-function Bar({
-  value,
-  max,
-  label,
-}: {
-  value: number;
-  max: number;
-  label: string;
-}) {
+function Bar({ value, max, label }: { value: number; max: number; label: string }) {
   const pct = max > 0 ? Math.min(100, (100 * value) / max) : 0;
   return (
     <div
@@ -500,12 +428,7 @@ function Table({
   if (rows.length === 0) return <p className="status-empty">{empty}</p>;
   return (
     // Focusable so keyboard users can scroll a wide table on a narrow screen.
-    <div
-      className="table-scroll"
-      tabIndex={0}
-      role="region"
-      aria-label={caption}
-    >
+    <div className="table-scroll" tabIndex={0} role="region" aria-label={caption}>
       <table className="places status-table">
         <caption>{caption}</caption>
         <thead>
@@ -545,11 +468,7 @@ function BackfillSection({ s, now }: { s: Status; now: number }) {
   return (
     <section aria-labelledby="backfill" className="status-subsection">
       <h3 id="backfill">Downloads (backfill: curating batches)</h3>
-      {!b.available ? (
-        <Unavailable reason={b.reason} />
-      ) : (
-        <BackfillBody b={b} now={now} />
-      )}
+      {!b.available ? <Unavailable reason={b.reason} /> : <BackfillBody b={b} now={now} />}
     </section>
   );
 }
@@ -571,19 +490,10 @@ function BackfillBody({ b, now }: { b: Backfill; now: number }) {
           ["Stopped workers' leases", count(b.stale_leases)],
           ["Pages curated", count(b.pages)],
           ["Pages with text", count(b.ok_pages)],
-          [
-            `Rate (last ${t.rate_window_hours} h)`,
-            `${t.rate_per_hour} batches/h`,
-          ],
+          [`Rate (last ${t.rate_window_hours} h)`, `${t.rate_per_hour} batches/h`],
           [
             "Estimated finish",
-            t.eta ? (
-              <Time iso={t.eta} now={now} />
-            ) : t.remaining ? (
-              "unknown (no recent rate)"
-            ) : (
-              "done"
-            ),
+            t.eta ? <Time iso={t.eta} now={now} /> : t.remaining ? "unknown (no recent rate)" : "done",
           ],
           ["Newer versions waiting", count(b.newer_versions_pending)],
         ]}
@@ -592,16 +502,15 @@ function BackfillBody({ b, now }: { b: Backfill; now: number }) {
         <strong>LoC downloads:</strong>{" "}
         {b.loc.throttled && b.loc.blocked_until ? (
           <>
-            <span className="badge badge--attention">Throttled</span> LoC
-            refused downloads; every worker waits until{" "}
+            <span className="badge badge--attention">Throttled</span> LoC refused downloads; every worker waits until{" "}
             {when(b.loc.blocked_until)} (
             <Time iso={b.loc.blocked_until} now={now} />
             ).
           </>
         ) : b.loc.next_slot ? (
           <>
-            paced across all workers (LoC allows 10 bulk downloads per 10
-            minutes); next slot <Time iso={b.loc.next_slot} now={now} />.
+            paced across all workers (LoC allows 10 bulk downloads per 10 minutes); next slot{" "}
+            <Time iso={b.loc.next_slot} now={now} />.
           </>
         ) : (
           "no download is waiting for a slot."
@@ -619,8 +528,7 @@ function BackfillBody({ b, now }: { b: Backfill; now: number }) {
           <Time key="s" iso={a.since} now={now} />,
           a.lease_expired ? (
             <span key="l">
-              <span className="badge badge--attention">Expired</span>{" "}
-              <Time iso={a.lease_until} now={now} />
+              <span className="badge badge--attention">Expired</span> <Time iso={a.lease_until} now={now} />
             </span>
           ) : (
             <Time key="l" iso={a.lease_until} now={now} />
@@ -660,10 +568,7 @@ const H = 120;
 function Throughput({ hours }: { hours: HourBin[] }) {
   const max = Math.max(1, ...hours.map((h) => h.batches));
   const total = hours.reduce((a, h) => a + h.batches, 0);
-  const peak = hours.reduce(
-    (p, h) => (h.batches > p.batches ? h : p),
-    hours[0] ?? { start: "", batches: 0, pages: 0 },
-  );
+  const peak = hours.reduce((p, h) => (h.batches > p.batches ? h : p), hours[0] ?? { start: "", batches: 0, pages: 0 });
   const bw = W / Math.max(hours.length, 1);
   const summary =
     total === 0
@@ -675,22 +580,10 @@ function Throughput({ hours }: { hours: HourBin[] }) {
         <span className="throughput__max" aria-hidden="true">
           {max}
         </span>
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          preserveAspectRatio="none"
-          role="img"
-          aria-label={summary}
-        >
-          <line
-            className="throughput__base"
-            x1={0}
-            x2={W}
-            y1={H - 0.5}
-            y2={H - 0.5}
-          />
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label={summary}>
+          <line className="throughput__base" x1={0} x2={W} y1={H - 0.5} y2={H - 0.5} />
           {hours.map((h, i) => {
-            const bh =
-              h.batches > 0 ? Math.max(2, (h.batches / max) * (H - 4)) : 0;
+            const bh = h.batches > 0 ? Math.max(2, (h.batches / max) * (H - 4)) : 0;
             return (
               <rect
                 key={h.start}
@@ -767,11 +660,7 @@ function IndexingSection({ s, now }: { s: Status; now: number }) {
           : `Each release adds a delta; after ${p.max_deltas}, the next release rebuilds a single base index.`}
       </p>
       <Bar value={p.deltas} max={p.max_deltas} label={deltaLabel} />
-      {!i.available ? (
-        <Unavailable reason={i.reason} />
-      ) : (
-        <IndexingBody i={i} now={now} />
-      )}
+      {!i.available ? <Unavailable reason={i.reason} /> : <IndexingBody i={i} now={now} />}
     </section>
   );
 }
@@ -784,16 +673,10 @@ function IndexingBody({ i, now }: { i: Indexing; now: number }) {
       {r ? (
         <>
           <p className="status-lead">
-            Building <code>{r.index_version}</code>: {count(r.docs_sent)} of{" "}
-            {count(r.docs_expected)} pages sent ({r.percent}%),{" "}
-            {count(Math.round(r.mb_sent))} MB. Updated{" "}
-            <Time iso={r.updated_at} now={now} />.
+            Building <code>{r.index_version}</code>: {count(r.docs_sent)} of {count(r.docs_expected)} pages sent (
+            {r.percent}%), {count(Math.round(r.mb_sent))} MB. Updated <Time iso={r.updated_at} now={now} />.
           </p>
-          <Bar
-            value={r.docs_sent}
-            max={r.docs_expected}
-            label={`Release ${r.percent}% done`}
-          />
+          <Bar value={r.docs_sent} max={r.docs_expected} label={`Release ${r.percent}% done`} />
         </>
       ) : (
         <p>
@@ -804,40 +687,24 @@ function IndexingBody({ i, now }: { i: Indexing; now: number }) {
       )}
       <Stats
         items={[
-          [
-            "Pipeline's current version",
-            i.current_version ? <code key="c">{i.current_version}</code> : "–",
-          ],
+          ["Pipeline's current version", i.current_version ? <code key="c">{i.current_version}</code> : "–"],
           [
             "Writer lock",
             i.writer.held ? (
               <span key="w">
-                held by {i.writer.holder}, until{" "}
-                <Time iso={i.writer.until} now={now} />
+                held by {i.writer.holder}, until <Time iso={i.writer.until} now={now} />
               </span>
             ) : (
               "free"
             ),
           ],
-          [
-            "Failed runs since the last publish",
-            count(i.failed_since_last_publish ?? i.failed_runs),
-          ],
+          ["Failed runs since the last publish", count(i.failed_since_last_publish ?? i.failed_runs)],
           ["Failed runs (recent history)", count(i.failed_runs)],
         ]}
       />
       <Table
         caption="Recent index runs"
-        head={[
-          "Version",
-          "Kind",
-          "Status",
-          "Batches",
-          "Pages indexed",
-          "Started",
-          "Took",
-          "Error",
-        ]}
+        head={["Version", "Kind", "Status", "Batches", "Pages indexed", "Started", "Took", "Error"]}
         empty="No index runs recorded."
         rows={i.runs.map((run) => [
           <code key="v">{run.index_version}</code>,
@@ -861,8 +728,7 @@ function IndexingBody({ i, now }: { i: Indexing; now: number }) {
  * a narrow screen. */
 export function ErrorText({ text }: { text: string | null | undefined }) {
   if (!text) return <>–</>;
-  if (text.length <= ERROR_PREVIEW)
-    return <span className="status-error">{text}</span>;
+  if (text.length <= ERROR_PREVIEW) return <span className="status-error">{text}</span>;
   return (
     <details className="status-error">
       <summary>{`${text.slice(0, ERROR_PREVIEW).trimEnd()}…`}</summary>
@@ -892,23 +758,13 @@ function TitlesSection({ s }: { s: Status }) {
       <h3 id="titles">Newspaper catalog (titles-sync)</h3>
       <Stats
         items={[
-          [
-            "Newspapers in the catalog",
-            t.catalog.available ? count(t.catalog.titles) : "not available",
-          ],
-          [
-            "Places in the catalog",
-            t.catalog.available ? count(t.catalog.places) : "not available",
-          ],
+          ["Newspapers in the catalog", t.catalog.available ? count(t.catalog.titles) : "not available"],
+          ["Places in the catalog", t.catalog.available ? count(t.catalog.places) : "not available"],
           ["Newspapers published", count(t.published_titles)],
           ["Places published", count(t.published_places)],
         ]}
       />
-      {!t.pipeline.available ? (
-        <Unavailable reason={t.pipeline.reason} />
-      ) : (
-        <TitlesBody t={t.pipeline} />
-      )}
+      {!t.pipeline.available ? <Unavailable reason={t.pipeline.reason} /> : <TitlesBody t={t.pipeline} />}
     </section>
   );
 }
@@ -921,21 +777,14 @@ function TitlesBody({ t }: { t: TitlesPipeline }) {
         items={[
           ["Newspapers in curated batches", count(t.curated_titles)],
           ["Waiting for titles-sync", opt(t.awaiting_sync)],
-          [
-            "Batches held back for missing titles",
-            opt(t.batches_waiting_for_titles),
-          ],
+          ["Batches held back for missing titles", opt(t.batches_waiting_for_titles)],
           ["Curated batches not yet published", opt(t.unpublished_batches)],
           ["Ready for the next release", opt(t.ready_for_release)],
-          [
-            "Re-curated, waiting for a full release",
-            opt(t.recurated_awaiting_full),
-          ],
+          ["Re-curated, waiting for a full release", opt(t.recurated_awaiting_full)],
         ]}
       />
       <p className="status-note">
-        A release only takes batches whose newspapers are all in the catalog;
-        titles-sync adds them from LoC.
+        A release only takes batches whose newspapers are all in the catalog; titles-sync adds them from LoC.
       </p>
     </>
   );

@@ -63,7 +63,10 @@ export function placesToPrefetch(lists: ListsShown): string[] {
     const { above, below } = clearest(lists.rows);
     return alternate(above.slice(0, n), below.slice(0, n));
   }
-  if (lists.norm === "raw") return mostPages(lists.rows).slice(0, n).map((r) => r.id);
+  if (lists.norm === "raw")
+    return mostPages(lists.rows)
+      .slice(0, n)
+      .map((r) => r.id);
   const { earliest, latest } = medianLists(lists.rows, lists.exact);
   return alternate(earliest.slice(0, n), latest.slice(0, n));
 }

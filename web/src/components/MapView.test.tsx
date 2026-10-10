@@ -25,7 +25,11 @@ class FakeMap {
 vi.mock("maplibre-gl", () => ({ Map: FakeMap, NavigationControl: class {}, setWorkerUrl: () => {} }));
 vi.mock("maplibre-gl/dist/maplibre-gl.css", () => ({}));
 vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({ default: "" }));
-vi.mock("@deck.gl/mapbox", () => ({ MapboxOverlay: class { setProps() {} } }));
+vi.mock("@deck.gl/mapbox", () => ({
+  MapboxOverlay: class {
+    setProps() {}
+  },
+}));
 vi.mock("@deck.gl/layers", () => ({ ScatterplotLayer: class {} }));
 vi.mock("@deck.gl/aggregation-layers", () => ({ HeatmapLayer: class {} }));
 

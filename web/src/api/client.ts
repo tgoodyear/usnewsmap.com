@@ -126,10 +126,13 @@ async function fetchBy(
 ): Promise<Response> {
   const ctl = new AbortController();
   let late = false;
-  const timer = setTimeout(() => {
-    late = true;
-    ctl.abort();
-  }, Math.max(0, deadline - Date.now()));
+  const timer = setTimeout(
+    () => {
+      late = true;
+      ctl.abort();
+    },
+    Math.max(0, deadline - Date.now()),
+  );
   const stop = () => ctl.abort(signal!.reason);
   if (signal?.aborted) stop();
   else signal?.addEventListener("abort", stop, { once: true });
@@ -304,12 +307,7 @@ export const api = {
   places: (version: string, signal?: AbortSignal) =>
     getPinned<PlacesResponse>(`/v1/places?v=${encodeURIComponent(version)}`, version, { signal }),
   /** `onComputing` is called while the API is still computing a large search. */
-  aggregate: (
-    p: SearchParams,
-    version: string,
-    signal?: AbortSignal,
-    onComputing?: (ahead: number | null) => void,
-  ) =>
+  aggregate: (p: SearchParams, version: string, signal?: AbortSignal, onComputing?: (ahead: number | null) => void) =>
     getPinned<AggregateResponse>(`/v1/aggregate?${searchQuery(p, version)}`, version, { signal, onComputing }),
   /** `ref` is the response's `baseline_ref`, already canonical and versioned. */
   coverage: (ref: string, version: string, signal?: AbortSignal) =>

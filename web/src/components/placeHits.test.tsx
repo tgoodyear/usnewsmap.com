@@ -21,8 +21,20 @@ const info = (lower: number, upper: number): SkewInfo => ({
   languages: null,
   languageCounts: null,
 });
-const skewRow = (id: string, lower: number, upper: number): SkewRow => ({ id, name: id, state: "AL", skew: info(lower, upper) });
-const listRow = (id: string, value: number, when = 0.5): ListRow => ({ id, name: id, state: "AL", value, when, whenLabel: "" });
+const skewRow = (id: string, lower: number, upper: number): SkewRow => ({
+  id,
+  name: id,
+  state: "AL",
+  skew: info(lower, upper),
+});
+const listRow = (id: string, value: number, when = 0.5): ListRow => ({
+  id,
+  name: id,
+  state: "AL",
+  value,
+  when,
+  whenLabel: "",
+});
 
 /** Ten places by pages: p1 has the most; p1 is also the earliest median, p10 the latest. */
 const rows = Array.from({ length: 10 }, (_, i) => listRow(`p${i + 1}`, 100 - i, i / 10));
@@ -182,7 +194,9 @@ describe("usePrefetchPlaceHits", () => {
     // p1 finds the API busy; the rest answer. Never more than two waiting at once.
     for (let i = 0; i < calls.length; i++) {
       expect(calls.length - i).toBeLessThanOrEqual(2);
-      calls[i]!.answer(i === 0 ? json({ type: "/errors/busy", title: "Busy", status: 503 }, 503) : hits(calls[i]!.place));
+      calls[i]!.answer(
+        i === 0 ? json({ type: "/errors/busy", title: "Busy", status: 503 }, 503) : hits(calls[i]!.place),
+      );
       await settle();
     }
     await waitFor(() => expect(fn).toHaveBeenCalledTimes(6));
@@ -265,7 +279,9 @@ describe("usePrefetchPlaceHits", () => {
     renderPrefetch({ params, lists: pages });
     await waitFor(() => expect(calls).toHaveLength(2));
     calls[0]!.answer(json({ type: "/errors/busy", title: "Busy", status: 503 }, 503, { "retry-after": "1" }));
-    calls[1]!.answer(json({ type: "/errors/rate-limited", title: "Slow down", status: 429 }, 429, { "retry-after": "1" }));
+    calls[1]!.answer(
+      json({ type: "/errors/rate-limited", title: "Slow down", status: 429 }, 429, { "retry-after": "1" }),
+    );
     await waitFor(() => expect(calls).toHaveLength(3));
     calls[2]!.answer(hits("p3"));
     // Well past the Retry-After: neither is asked for again.

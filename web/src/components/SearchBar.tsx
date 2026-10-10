@@ -47,16 +47,9 @@ export function japaneseHint(q: string, meta: Pick<Meta, "ja"> | undefined): str
 
 /** Identity of the search in the URL; remount the form when it changes. */
 export function searchKey(view: ViewState): string {
-  return [
-    view.q,
-    view.mode,
-    view.near,
-    view.from,
-    view.to,
-    view.state.join(),
-    view.lang.join(),
-    view.lccn.join(),
-  ].join("|");
+  return [view.q, view.mode, view.near, view.from, view.to, view.state.join(), view.lang.join(), view.lccn.join()].join(
+    "|",
+  );
 }
 
 export function SearchBar({ view, meta, onSearch, busy = false }: Props) {

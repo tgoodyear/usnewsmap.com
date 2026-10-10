@@ -102,7 +102,9 @@ describe("SkewLegend", () => {
   it("says what was compared and over what, without the index version", () => {
     const { container } = render(<SkewLegend places={398} states={42} unit="month" />);
     const text = container.textContent ?? "";
-    expect(text).toContain("compared with the other 397 places with pages in this window, in 42 states, over the same months");
+    expect(text).toContain(
+      "compared with the other 397 places with pages in this window, in 42 states, over the same months",
+    );
     expect(text).toContain("1× is the same rate");
     expect(text).not.toContain("Index");
     expect(text).not.toMatch(/[—]/);
@@ -113,7 +115,9 @@ describe("SkewLegend", () => {
     expect(container.textContent).toContain("No other place has pages in this window");
     cleanup();
     const two = render(<SkewLegend places={2} states={1} unit="year" />);
-    expect(two.container.textContent).toContain("the other 1 place with pages in this window, in 1 state, over the same years");
+    expect(two.container.textContent).toContain(
+      "the other 1 place with pages in this window, in 1 state, over the same years",
+    );
   });
 });
 
@@ -175,12 +179,35 @@ describe("lists, tables and export", () => {
   });
 
   it("tables places and states with expected counts and ranges", () => {
-    const tableRows = rows.map((r) => ({ ...r, precision: "city", position: [0, 0] as [number, number], value: 10, rel: 0.1, firstDay: 0, lastDay: 0 }));
+    const tableRows = rows.map((r) => ({
+      ...r,
+      precision: "city",
+      position: [0, 0] as [number, number],
+      value: 10,
+      rel: 0.1,
+      firstDay: 0,
+      lastDay: 0,
+    }));
     render(<PlaceTable skew rows={tableRows} onSelect={() => undefined} selected="" />);
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
-    expect(headers).toEqual(["Place", "State", "Pages published", "Matched", "Expected", "Relative rate", "90% range", "Languages"]);
+    expect(headers).toEqual([
+      "Place",
+      "State",
+      "Pages published",
+      "Matched",
+      "Expected",
+      "Relative rate",
+      "90% range",
+      "Languages",
+    ]);
     // Sorted by relative rate, highest first.
-    expect(screen.getAllByRole("rowheader").map((h) => h.textContent)).toEqual(["Place b", "Place a", "Place e", "Place c", "Place d"]);
+    expect(screen.getAllByRole("rowheader").map((h) => h.textContent)).toEqual([
+      "Place b",
+      "Place a",
+      "Place e",
+      "Place c",
+      "Place d",
+    ]);
     expect(screen.getByText("0.60 to 1.8× (not enough pages to tell)")).toBeTruthy();
     cleanup();
     render(<StateTable rows={[{ state: "AL", skew: info(2, 1.5, 2.5) }]} />);
@@ -219,7 +246,13 @@ describe("Clearest differences: Show more", () => {
 
   it("shows five, says how many there are, and adds the next five", () => {
     render(<Lists rows={many(12)} />);
-    expect(names(above())).toEqual(["Place up1, AL", "Place up2, AL", "Place up3, AL", "Place up4, AL", "Place up5, AL"]);
+    expect(names(above())).toEqual([
+      "Place up1, AL",
+      "Place up2, AL",
+      "Place up3, AL",
+      "Place up4, AL",
+      "Place up5, AL",
+    ]);
     expect(above().textContent).toContain("Showing 5 of 12.");
     const more = button(above(), "Show more")!;
     expect(more.tagName).toBe("BUTTON");
@@ -320,7 +353,10 @@ describe("Clearest differences: Show more", () => {
   it("keeps the language notes working on the places it adds", () => {
     const rows = [
       ...many(6),
-      row("de", info(4, 1.5, 6, { languages: "Papers in German", languageCounts: "Of its 2 papers, 2 are in German." })),
+      row(
+        "de",
+        info(4, 1.5, 6, { languages: "Papers in German", languageCounts: "Of its 2 papers, 2 are in German." }),
+      ),
     ];
     render(<Lists rows={rows} />);
     expect(screen.queryByText("Papers in German")).toBeNull();

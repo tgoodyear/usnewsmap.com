@@ -38,8 +38,8 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           <a href="https://www.loc.gov/ndnp/" {...ext}>
             NEH and Library of Congress
           </a>{" "}
-          collection of digitized American newspapers, and maps every matching page by where and when
-          it was printed. Play the timeline to watch a word or a story move across the country.
+          collection of digitized American newspapers, and maps every matching page by where and when it was printed.
+          Play the timeline to watch a word or a story move across the country.
         </p>
         <p>
           The site was launched in 2016 by the{" "}
@@ -85,7 +85,10 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
             The Washington Post
           </a>{" "}
           and won a prize in the{" "}
-          <a href="https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25" {...ext}>
+          <a
+            href="https://web.archive.org/web/20170126055934/https://www.neh.gov/news/press-release/2016-07-25"
+            {...ext}
+          >
             Chronicling America Data Challenge
           </a>
           . Georgia Tech's{" "}
@@ -102,9 +105,8 @@ export const About = forwardRef<HTMLDialogElement>(function About(_, ref) {
           show it tracing William Jennings Bryan's "Cross of Gold" from Chicago to both coasts.
         </p>
         <p>
-          The newspaper text comes from optical character recognition, so scanning errors mean some
-          pages are missed and some matches are wrong. Each result links to the full page image at the
-          Library of Congress.
+          The newspaper text comes from optical character recognition, so scanning errors mean some pages are missed and
+          some matches are wrong. Each result links to the full page image at the Library of Congress.
         </p>
         <p>
           US News Map is maintained by{" "}

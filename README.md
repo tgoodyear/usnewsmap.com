@@ -39,16 +39,16 @@ cd web && npm ci && npm run dev       # terminal 2: the site on http://localhost
 
 ## Repository layout
 
-| Path | What |
-|------|------|
-| `crates/` | The Rust workspace: `usnm-core` (domain types and the query language), `usnm-search` (search backends), `usnm-store` (Blob Storage), `usnm-api` (the API, which also serves the site) and `usnm-ingest` (the pipeline) |
-| `web/` | The web app: React, MapLibre GL and deck.gl ([README](web/README.md)) |
-| `infra/` | The Azure infrastructure in Bicep, one deployment stack per environment, and the Quickwit configs ([README](infra/README.md)) |
-| `ja-ocr/` | The Japanese OCR job (Python, NDLOCR-Lite) |
-| `scripts/` | Stand an environment up, deploy and tear it down; read its logs; local Azure stand-ins; load tests |
-| `fixtures/` | A small synthetic corpus for development and tests ([README](fixtures/README.md)) |
-| `ops/` | Saved log queries and the history of published index versions |
-| `docs/` | Guides, the design documents and the technical notes ([index](docs/README.md)) |
+| Path        | What                                                                                                                                                                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crates/`   | The Rust workspace: `usnm-core` (domain types and the query language), `usnm-search` (search backends), `usnm-store` (Blob Storage), `usnm-api` (the API, which also serves the site) and `usnm-ingest` (the pipeline) |
+| `web/`      | The web app: React, MapLibre GL and deck.gl ([README](web/README.md))                                                                                                                                                  |
+| `infra/`    | The Azure infrastructure in Bicep, one deployment stack per environment, and the Quickwit configs ([README](infra/README.md))                                                                                          |
+| `ja-ocr/`   | The Japanese OCR job (Python, NDLOCR-Lite)                                                                                                                                                                             |
+| `scripts/`  | Stand an environment up, deploy and tear it down; read its logs; local Azure stand-ins; load tests                                                                                                                     |
+| `fixtures/` | A small synthetic corpus for development and tests ([README](fixtures/README.md))                                                                                                                                      |
+| `ops/`      | Saved log queries and the history of published index versions                                                                                                                                                          |
+| `docs/`     | Guides, the design documents and the technical notes ([index](docs/README.md))                                                                                                                                         |
 
 ## Documentation
 
