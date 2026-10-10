@@ -39,13 +39,13 @@ The API app (`ca-usnm-{env}`) serves the built SPA from its own image. `USNM_SIT
 
 ## Alternatives
 
-| Option | Why not |
-|---|---|
-| Keep Static Web Apps, rotate the token after every deploy | Still a shared secret, and concurrent deploys race the rotation |
-| Static Web Apps `zipdeploy` or the Azure-access-token mode | Undocumented, reported not to work, and unsupported |
-| A separate small static-file app in the same environment | Separate releases and availability, but about $4–14/month with a warm replica, or a cold start when it scales to zero |
-| Blob static website plus Front Door Standard | Entra-only uploads, but about $35–40/month (half the budget), and SPA rewrites need rules-engine configuration |
-| App Service B1 | About $13/month, and another plan to run |
+| Option                                                     | Why not                                                                                                               |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Keep Static Web Apps, rotate the token after every deploy  | Still a shared secret, and concurrent deploys race the rotation                                                       |
+| Static Web Apps `zipdeploy` or the Azure-access-token mode | Undocumented, reported not to work, and unsupported                                                                   |
+| A separate small static-file app in the same environment   | Separate releases and availability, but about $4–14/month with a warm replica, or a cold start when it scales to zero |
+| Blob static website plus Front Door Standard               | Entra-only uploads, but about $35–40/month (half the budget), and SPA rewrites need rules-engine configuration        |
+| App Service B1                                             | About $13/month, and another plan to run                                                                              |
 
 ## Consequences
 

@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { AggregateResponse, CoverageResponse, PlaceFeature } from "../api/types";
 import { MIN_PLACES, prepareSkew } from "./skewInput";
 
-const feature = (id: string, state: string, languages?: string[], titles: Record<string, number> = {}): PlaceFeature => ({
+const feature = (
+  id: string,
+  state: string,
+  languages?: string[],
+  titles: Record<string, number> = {},
+): PlaceFeature => ({
   type: "Feature",
   id,
   geometry: { type: "Point", coordinates: [0, 0] },

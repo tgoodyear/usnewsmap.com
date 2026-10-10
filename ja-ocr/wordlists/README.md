@@ -5,10 +5,10 @@ them for most languages; these files cover languages it has no list for (`LOCAL_
 the 5,000 most frequent words, most frequent first, one per line, folded as `quality.py` folds a page's
 words. Rebuild them with `scripts/ja-ocr/build-wordlists.py <code>`.
 
-| File | Language | Source | License | Built |
-|---|---|---|---|---|
-| `haw.txt` | Hawaiian | [Hawaiian Corpus Project](https://github.com/dohliam/hawaiian-corpus) frequency list (`data/freqlist_haw.txt`, 96,140 words from Ulukau texts) | CC0 | 6 October 2026 |
-| `yi.txt` | Yiddish | Article pages of [Yiddish Wikipedia](https://yi.wikipedia.org/) and [Yiddish Wikisource](https://yi.wikisource.org/) (the `latest` dumps: about 3.5 million and 2.4 million words) | CC BY-SA 4.0 (Wikimedia contributors); this list is derived from them and shared under the same license | 6 October 2026 |
+| File      | Language | Source                                                                                                                                                                             | License                                                                                                 | Built          |
+| --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------- |
+| `haw.txt` | Hawaiian | [Hawaiian Corpus Project](https://github.com/dohliam/hawaiian-corpus) frequency list (`data/freqlist_haw.txt`, 96,140 words from Ulukau texts)                                     | CC0                                                                                                     | 6 October 2026 |
+| `yi.txt`  | Yiddish  | Article pages of [Yiddish Wikipedia](https://yi.wikipedia.org/) and [Yiddish Wikisource](https://yi.wikisource.org/) (the `latest` dumps: about 3.5 million and 2.4 million words) | CC BY-SA 4.0 (Wikimedia contributors); this list is derived from them and shared under the same license | 6 October 2026 |
 
 Folding:
 

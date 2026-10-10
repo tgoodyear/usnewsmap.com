@@ -140,7 +140,7 @@ curl -s https://api.usnewsmap.com/v1/status | jq .titles.pipeline   # awaiting_s
 az containerapp job start -n "$JOB" -g "$RG"
 ```
 
-A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. The job-failed alert leaves this stop out; the severity 3 *ingest not progressing* alert fires if no execution follows within 3 hours, or if 3 stops in a row leave as many titles as the first. `scripts/logs.sh prod ingest-endings` lists each execution's ending, and the stop's `command failed` line carries `outcome: titles_left`. Once titles-sync finishes, the same execution builds the base. Watch it:
+A full run releases only once titles-sync has fetched every title the listing and the curated batches name (titles LoC doesn't have excepted; a failed fetch counts as left); a base built without them would leave their batches out. With titles to fetch (about 4.5 s each, plus 65 minutes for each time LoC blocks), the first execution may spend its 8 hours on titles-sync and then fail with `titles-sync reached its deadline with N of M titles left … nothing was released` (or `LoC rate limited titles-sync …`). That is expected: start the job again, and it continues where it stopped. The job-failed alert leaves this stop out; the severity 3 _ingest not progressing_ alert fires if no execution follows within 3 hours, or if 3 stops in a row leave as many titles as the first. `scripts/logs.sh prod ingest-endings` lists each execution's ending, and the stop's `command failed` line carries `outcome: titles_left`. Once titles-sync finishes, the same execution builds the base. Watch it:
 
 ```sh
 scripts/logs.sh prod release-progress 6h    # docs sent, rate, memory (quickwit_rss_mb), merges
@@ -187,6 +187,7 @@ The release indexes American Stories' text beside LoC's (04 §4.9, 05 §5.5.4, #
    ```
 
    With no year marked yet, the run fails at its start, before curation and titles-sync (`--american-stories (USNM_AMERICAN_STORIES) is set, but the curated store has no finished year of American Stories' text`). Its log has `American Stories' text` (years, parts) near the start, then `American Stories' text for the batch` per batch (pages, `text_mb`: what the release holds in memory for the batch), and `American Stories' text indexed` (documents with the text, and those with only it) before the merges.
+
 3. Check the result: `current.json` has `american_stories: 1`; `reference/<version>/manifest.json` has `built_from.american_stories` and `build.features.american_stories`, and `american_stories.json` lists the parts read. On the site, a word from an American Stories headline finds pages, and a hit whose match is only there shows its snippet from that text.
 
 Keep `USNM_AMERICAN_STORIES` set afterwards: weekly deltas then write the text for their pages too. Clearing it makes the next release publish a version without `american_stories`, so searches leave the text out; setting it again rebuilds in full.
@@ -312,7 +313,7 @@ scripts/ja-ocr/start-quality.sh prod american-stories --year 1865 --year 1925
 scripts/ja-ocr/quality-rows.sh prod <execution>    # its "american stories" rows
 ```
 
-It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ja-ocr/solo.py` still keeps a second replica out, as for `jaocr.py mixed`). A failed run raises *Japanese OCR or audit job failed* (severity 3), not the ingest alert.
+It writes `audit/american-stories-<version>-<execution>.json`. It runs on the one-replica audit job, `caj-usnm-jaone-<env>` (`ja-ocr/solo.py` still keeps a second replica out, as for `jaocr.py mixed`). A failed run raises _Japanese OCR or audit job failed_ (severity 3), not the ingest alert.
 
 ### Indexing only where American Stories differs (`--diff`, #251)
 

@@ -22,12 +22,12 @@ Every app/job → storage/Cosmos path already used managed identities, with keys
 
 ## Alternatives
 
-| Option | Why not |
-|--------|---------|
-| Identity-only (previous lean design) | Cheapest (−$17/mo), but data services reachable from the internet (with a valid token) at all times |
+| Option                                                          | Why not                                                                                                                                                |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Identity-only (previous lean design)                            | Cheapest (−$17/mo), but data services reachable from the internet (with a valid token) at all times                                                    |
 | Always private, backfill on VNet-integrated Container Apps Jobs | No public window ever, but the backfill costs ~$150–250 instead of ~$25–50, and full re-indexes cost more each time. Kept as the growth-profile option |
-| IP allow-lists | ACI Spot egress IPs are unknowable, and a Consumption environment's outbound IPs can change; brittle |
-| Azure Monitor Private Link Scope for telemetry | Adds cost and complexity for low-sensitivity telemetry; growth profile |
+| IP allow-lists                                                  | ACI Spot egress IPs are unknowable, and a Consumption environment's outbound IPs can change; brittle                                                   |
+| Azure Monitor Private Link Scope for telemetry                  | Adds cost and complexity for low-sensitivity telemetry; growth profile                                                                                 |
 
 ## Consequences
 

@@ -76,21 +76,14 @@ describe("status formatting", () => {
   it("says when the pipeline can't be seen", () => {
     const h = health(status(), NOW);
     expect(h.level).toBe("unknown");
-    expect(h.parts).toEqual([
-      "Pipeline state not available",
-      "last release 2 h ago",
-    ]);
+    expect(h.parts).toEqual(["Pipeline state not available", "last release 2 h ago"]);
   });
 
   it("summarizes a running backfill", () => {
     const h = health(status({ backfill }), NOW);
     expect(h).toEqual({
       level: "ok",
-      parts: [
-        "Backfill running (2 in progress)",
-        "last release 2 h ago",
-        "no failures",
-      ],
+      parts: ["Backfill running (2 in progress)", "last release 2 h ago", "no failures"],
     });
   });
 
@@ -108,9 +101,7 @@ describe("status formatting", () => {
     expect(h.level).toBe("attention");
     expect(h.parts[0]).toMatch(/^Downloads paused by LoC until /);
     expect(h.parts.at(-1)).toBe("2 failures");
-    expect(health(status({ backfill, stale: true }), NOW).level).toBe(
-      "problem",
-    );
+    expect(health(status({ backfill, stale: true }), NOW).level).toBe("problem");
   });
 
   it("doesn't count index runs a later publish superseded", () => {
@@ -128,9 +119,7 @@ describe("status formatting", () => {
     expect(h.level).toBe("ok");
     expect(h.parts.at(-1)).toBe("no failures");
     const unresolved = { ...indexing, failed_since_last_publish: 1 };
-    expect(
-      health(status({ backfill, indexing: unresolved }), NOW).parts.at(-1),
-    ).toBe("1 failure");
+    expect(health(status({ backfill, indexing: unresolved }), NOW).parts.at(-1)).toBe("1 failure");
   });
 });
 

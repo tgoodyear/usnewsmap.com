@@ -17,7 +17,6 @@ import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 
-
 interface Props {
   points: MapPoint[];
   layer: Layer;
@@ -242,8 +241,12 @@ export default function MapView(props: Props) {
                 !p.skew || p.skew.pages <= 0
                   ? 0
                   : p.precision === "city"
-                    ? p.id === selected ? 3 : 1
-                    : p.id === selected ? 4.5 : 2.5,
+                    ? p.id === selected
+                      ? 3
+                      : 1
+                    : p.id === selected
+                      ? 4.5
+                      : 2.5,
               updateTriggers: {
                 getRadius: [maxValue, points],
                 getFillColor: [points],
@@ -253,35 +256,35 @@ export default function MapView(props: Props) {
             }),
           ]
         : layer === "heat"
-        ? [
-            new HeatmapLayer<MapPoint>({
-              id: "heat",
-              data: points,
-              getPosition: (p) => p.position,
-              getWeight: (p) => p.value,
-              radiusPixels: 40,
-            }),
-          ]
-        : [
-            new ScatterplotLayer<MapPoint>({
-              id: "points",
-              data: points,
-              stroked: true,
-              radiusUnits: "pixels",
-              lineWidthUnits: "pixels",
-              // Area ∝ hits, so radius ∝ √hits (perceptually honest).
-              getRadius: (p) => radiusOf(p.value, maxValue),
-              getFillColor: (p) => (p.precision === "city" ? pointColor(p, norm, maxValue) : [0, 0, 0, 0]),
-              getLineColor: (p) => (p.id === selected ? [20, 20, 20, 255] : pointColor(p, norm, maxValue)),
-              getLineWidth: (p) => (p.value <= 0 ? 0 : p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5),
-              updateTriggers: {
-                getRadius: [maxValue],
-                getFillColor: [maxValue, norm, points],
-                getLineColor: [maxValue, selected, norm, points],
-                getLineWidth: [selected, points],
-              },
-            }),
-          ];
+          ? [
+              new HeatmapLayer<MapPoint>({
+                id: "heat",
+                data: points,
+                getPosition: (p) => p.position,
+                getWeight: (p) => p.value,
+                radiusPixels: 40,
+              }),
+            ]
+          : [
+              new ScatterplotLayer<MapPoint>({
+                id: "points",
+                data: points,
+                stroked: true,
+                radiusUnits: "pixels",
+                lineWidthUnits: "pixels",
+                // Area ∝ hits, so radius ∝ √hits (perceptually honest).
+                getRadius: (p) => radiusOf(p.value, maxValue),
+                getFillColor: (p) => (p.precision === "city" ? pointColor(p, norm, maxValue) : [0, 0, 0, 0]),
+                getLineColor: (p) => (p.id === selected ? [20, 20, 20, 255] : pointColor(p, norm, maxValue)),
+                getLineWidth: (p) => (p.value <= 0 ? 0 : p.id === selected ? 3 : p.precision === "city" ? 1 : 2.5),
+                updateTriggers: {
+                  getRadius: [maxValue],
+                  getFillColor: [maxValue, norm, points],
+                  getLineColor: [maxValue, selected, norm, points],
+                  getLineWidth: [selected, points],
+                },
+              }),
+            ];
     // No attribute transitions: deck.gl runs them on the GPU with transform
     // feedback and reads buffers back, which stalls every playback step.
     o.setProps({ layers });

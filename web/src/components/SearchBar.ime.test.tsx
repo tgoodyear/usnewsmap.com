@@ -11,7 +11,13 @@ const meta = (ja: Meta["ja"]) =>
 
 describe("SearchBar with Japanese", () => {
   it("says what a Japanese query searches", () => {
-    render(<SearchBar view={{ ...DEFAULTS, q: "東京" }} meta={meta({ indexes: ["pages-ja-x"], fold: 1, pages: 11058 })} onSearch={() => {}} />);
+    render(
+      <SearchBar
+        view={{ ...DEFAULTS, q: "東京" }}
+        meta={meta({ indexes: ["pages-ja-x"], fold: 1, pages: 11058 })}
+        onSearch={() => {}}
+      />,
+    );
     const box = screen.getByRole("searchbox");
     const hint = screen.getByRole("note");
     expect(hint.textContent).toBe(
@@ -26,7 +32,9 @@ describe("SearchBar with Japanese", () => {
   });
 
   it("says when Japanese search isn't there yet, and nothing for other queries", () => {
-    const { rerender } = render(<SearchBar view={{ ...DEFAULTS, q: "真珠湾" }} meta={meta(null)} onSearch={() => {}} />);
+    const { rerender } = render(
+      <SearchBar view={{ ...DEFAULTS, q: "真珠湾" }} meta={meta(null)} onSearch={() => {}} />,
+    );
     expect(screen.getByRole("note").textContent).toMatch(/isn't available yet/);
     rerender(<SearchBar key="b" view={{ ...DEFAULTS, q: "pearl harbor" }} meta={meta(null)} onSearch={() => {}} />);
     expect(screen.queryByRole("note")).toBeNull();

@@ -52,11 +52,7 @@ export function windowValues(
  * response's place list) onto the aggregate's place order. Places with no
  * hits are dropped; places with no coverage get no cells.
  */
-export function alignCube(
-  cube: SparseCube,
-  cubePlaces: string[],
-  targetPlaces: string[],
-): SparseCube {
+export function alignCube(cube: SparseCube, cubePlaces: string[], targetPlaces: string[]): SparseCube {
   const index = new Map(targetPlaces.map((id, i) => [id, i]));
   const map = cubePlaces.map((id) => index.get(id) ?? -1);
   const out: SparseCube = { p: [], b: [], h: [] };

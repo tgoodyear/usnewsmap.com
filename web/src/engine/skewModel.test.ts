@@ -5,7 +5,7 @@ import { buildSkew, maxWindowExpected, scoreFrame, unitSums, windowCounts } from
 // A random sparse place × bucket table and a brute-force oracle.
 function random(places: number, buckets: number, seed: number) {
   let s = seed;
-  const rnd = () => ((s = (s * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+  const rnd = () => (s = (s * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
   const cells = { p: [] as number[], b: [] as number[], pages: [] as number[], hits: [] as number[] };
   const nh = new Array<number>(buckets).fill(0);
   const np = new Array<number>(buckets).fill(0);
@@ -74,7 +74,9 @@ describe("relative-rate playback", () => {
     const f = scoreFrame(m, 4, 3);
     expect(f.places).toHaveLength(20);
     expect(f.states).toHaveLength(4);
-    const pages0 = only(cells, 2, 5).pages.filter((_, i) => only(cells, 2, 5).p[i] === 0).reduce((a, x) => a + x, 0);
+    const pages0 = only(cells, 2, 5)
+      .pages.filter((_, i) => only(cells, 2, 5).p[i] === 0)
+      .reduce((a, x) => a + x, 0);
     expect(f.placePages[0]).toBe(pages0);
     expect(f.statePages.reduce((a, x) => a + x, 0)).toBe(f.placePages.reduce((a, x) => a + x, 0));
   });

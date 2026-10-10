@@ -11,23 +11,23 @@ cargo run -p usnm-api            # from the repo root; serves :8080
 cd web && npm ci && npm run dev  # http://localhost:5173
 ```
 
-| Script | What |
-|--------|------|
-| `npm run lint` / `typecheck` / `test` | ESLint, `tsc` (TypeScript 7), Vitest unit tests (engine, URL state, dates, snippets) |
-| `npm run format` / `format:check` | Prettier, from the repo root: this app and the repo's Markdown ([development guide](../docs/development.md#checks)) |
-| `npm run build` | Production build into `dist/`. The API image also runs `node scripts/precompress.mjs dist` for brotli and gzip copies |
-| `npm run e2e` | Playwright end-to-end tests with axe accessibility checks. By default against `vite preview` and a running API. With `PW_BASE_URL` (as CI does), against an API serving the build (`USNM_SITE_DIR=web/dist cargo run -p usnm-api`). Set `PW_CHROMIUM_PATH` to use an existing Chromium |
+| Script                                | What                                                                                                                                                                                                                                                                                   |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run lint` / `typecheck` / `test` | ESLint, `tsc` (TypeScript 7), Vitest unit tests (engine, URL state, dates, snippets)                                                                                                                                                                                                   |
+| `npm run format` / `format:check`     | Prettier, from the repo root: this app and the repo's Markdown ([development guide](../docs/development.md#checks))                                                                                                                                                                    |
+| `npm run build`                       | Production build into `dist/`. The API image also runs `node scripts/precompress.mjs dist` for brotli and gzip copies                                                                                                                                                                  |
+| `npm run e2e`                         | Playwright end-to-end tests with axe accessibility checks. By default against `vite preview` and a running API. With `PW_BASE_URL` (as CI does), against an API serving the build (`USNM_SITE_DIR=web/dist cargo run -p usnm-api`). Set `PW_CHROMIUM_PATH` to use an existing Chromium |
 
 TypeScript 7 ships no compiler API yet, so it is installed side by side with TypeScript 6, as [the TypeScript team recommends](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/): `@typescript/native` is TypeScript 7 and provides `tsc`, and `typescript` is an alias for `@typescript/typescript6`, which typescript-eslint imports. Drop the alias once typescript-eslint supports TypeScript 7's API (expected with 7.1).
 
 Build-time settings:
 
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `VITE_API_BASE` | same origin | API origin. Production leaves it empty: the API serves the site |
-| `VITE_BASEMAP_STYLE` | OpenFreeMap Positron | MapLibre style URL. `none` gives a plain background (offline and tests). The self-hosted PMTiles style replaces the default once the tiles are published |
-| `VITE_PAGE_VIEWS` | unset | `1` sends page views from any origin (to try `POST /v1/beacon` against a local API), `0` never. Unset, only a production build on `https://usnewsmap.com` sends them |
-| `USNM_API_ORIGIN` | `http://127.0.0.1:8080` | API the dev and preview servers proxy `/v1` to |
+| Variable             | Default                 | Meaning                                                                                                                                                              |
+| -------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_API_BASE`      | same origin             | API origin. Production leaves it empty: the API serves the site                                                                                                      |
+| `VITE_BASEMAP_STYLE` | OpenFreeMap Positron    | MapLibre style URL. `none` gives a plain background (offline and tests). The self-hosted PMTiles style replaces the default once the tiles are published             |
+| `VITE_PAGE_VIEWS`    | unset                   | `1` sends page views from any origin (to try `POST /v1/beacon` against a local API), `0` never. Unset, only a production build on `https://usnewsmap.com` sends them |
+| `USNM_API_ORIGIN`    | `http://127.0.0.1:8080` | API the dev and preview servers proxy `/v1` to                                                                                                                       |
 
 ## How it works
 

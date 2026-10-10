@@ -12,10 +12,7 @@ export interface PaperRow {
 }
 
 /** The aggregate's newspapers as rows, with place names joined. */
-export function paperRows(
-  papers: AggregateResponse["papers"],
-  placeName: (id: string) => string,
-): PaperRow[] {
+export function paperRows(papers: AggregateResponse["papers"], placeName: (id: string) => string): PaperRow[] {
   if (!papers) return [];
   return papers.lccn.map((lccn, i) => {
     const place = papers.place_id[i];

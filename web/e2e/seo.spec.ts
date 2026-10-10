@@ -110,13 +110,7 @@ function robotsGroups(body: string): Map<string, string[]> {
 }
 
 // The user-initiated fetchers of AI assistants, acting for a person (not crawlers).
-const AI_USER_AGENTS = [
-  "Claude-User",
-  "ChatGPT-User",
-  "Perplexity-User",
-  "MistralAI-User",
-  "Google-Agent",
-];
+const AI_USER_AGENTS = ["Claude-User", "ChatGPT-User", "Perplexity-User", "MistralAI-User", "Google-Agent"];
 
 test("robots.txt keeps crawlers off the API and names the sitemap", async ({ request }) => {
   const res = await request.get("/robots.txt");
