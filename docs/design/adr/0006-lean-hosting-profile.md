@@ -20,7 +20,7 @@ The maintainer set a target of **under $80/month**. The first design (Front Door
    - raw LoC archives are **not retained**, because LoC is the source of record and checksums are kept in the Cosmos batch state.
 5. **Free tiers:**
    - GitHub Container Registry instead of ACR;
-   - Log Analytics: dev is kept within the free 5 GB/month by a 150 MB daily cap. Prod's normal days (about 80 MB) also fit the free allowance, but since October 2026 its cap is 1 GB a day, so a bulk job can't stop all logging; that cap is a burst-cost ceiling (about 30 GB in a month at the cap), not a guarantee of the free tier;
+   - Log Analytics: dev is kept within the free 5 GB/month by a 150 MB daily cap. Prod's normal days (about 53 MB) also fit the free allowance, but since October 2026 its cap is 1 GB a day, so a bulk job can't stop all logging; that cap is a burst-cost ceiling (about 30 GB in a month at the cap), not a guarantee of the free tier. The blob write logs, which the bulk jobs multiply, are on the Auxiliary plan ($0.15/GB), which the cap doesn't apply to (08 §8.1.1);
    - no Key Vault until a secret exists;
    - the Container Apps free monthly grant covers the jobs.
 6. **Offline compute on Spot:**
