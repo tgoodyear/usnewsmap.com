@@ -5,6 +5,11 @@ import type { HitSort } from "../api/types";
 import { medianLists, mostPages, type ListRow } from "./PlaceLists";
 import { clearest, type SkewRow } from "./SkewPanels";
 
+/** The search as `/v1/hits` asks it: a page list doesn't depend on the time bucket, which isn't sent. */
+function hitsSearch(params: SearchParams): SearchParams {
+  return { ...params, bucket: undefined };
+}
+
 /**
  * A place's page list as the place panel loads it. Prefetching uses the same
  * query key and the same request, so a prefetched list is the panel's
@@ -19,7 +24,8 @@ export function placeHitsQuery(
   giveUp?: () => boolean,
 ) {
   return infiniteQueryOptions({
-    queryKey: ["hits", version, params, placeId, sort],
+    // Without the bucket, as the request is: another bucket of the same search reuses the list.
+    queryKey: ["hits", version, hitsSearch(params), placeId, sort],
     queryFn: ({ pageParam, signal }) => api.hits(params, version, placeId, sort, pageParam, signal, giveUp),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next_cursor,
@@ -141,7 +147,8 @@ export function usePrefetchPlaceHits(
   lists: ListsShown | null,
 ): void {
   const client = useQueryClient();
-  const search = JSON.stringify([version, params]);
+  // Another bucket is the same search here: its page lists are the same requests.
+  const search = JSON.stringify([version, hitsSearch(params)]);
   const run = useRef<{ search: string; started: Set<string>; prefetcher: Prefetcher } | null>(null);
   // A new search, or leaving the page, stops the last one's prefetching.
   useEffect(

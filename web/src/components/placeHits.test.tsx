@@ -194,6 +194,40 @@ describe("usePrefetchPlaceHits", () => {
     expect(fn).toHaveBeenCalledTimes(6);
   });
 
+  it("another time bucket is the same search: nothing is asked again, and the panel finds the list", async () => {
+    const { fn, calls } = heldFetch();
+    const view = renderPrefetch({ params, lists: pages });
+    await waitFor(() => expect(calls).toHaveLength(2));
+    const byYear = { ...params, bucket: "year" };
+    view.rerender({ params: byYear, lists: null });
+    await settle();
+    expect(calls.map((c) => c.signal?.aborted)).toEqual([false, false]);
+    calls[0]!.answer(hits("p1"));
+    calls[1]!.answer(hits("p2"));
+    await waitFor(() => expect(calls).toHaveLength(3));
+    calls[2]!.answer(hits("p3"));
+    view.rerender({ params: byYear, lists: pages });
+    await settle();
+    expect(fn).toHaveBeenCalledTimes(3);
+    render(
+      <PlacePanel
+        params={byYear}
+        version="v1"
+        placeId="p1"
+        placeName="Town p1"
+        sort="oldest"
+        onSort={() => undefined}
+        windowHits={7}
+        synthetic={false}
+        onClose={() => undefined}
+      />,
+      { wrapper: view.wrapper },
+    );
+    expect(screen.getByText("7 pages in this search")).toBeTruthy();
+    await settle();
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
   it("a new search cancels the last one's prefetching and starts its own", async () => {
     const { calls } = heldFetch();
     const view = renderPrefetch({ params, lists: pages });
