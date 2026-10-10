@@ -31,9 +31,12 @@ export class VersionChangedError extends Error {
 
 export class ApiError extends Error {
   readonly problem: Problem;
-  constructor(problem: Problem) {
+  /** The version the API answered at, when it redirected a stale `v` there first. */
+  readonly version: string | null;
+  constructor(problem: Problem, version: string | null = null) {
     super(problem.detail ?? problem.title);
     this.problem = problem;
+    this.version = version;
   }
 }
 
@@ -96,6 +99,19 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     };
     signal?.addEventListener("abort", stop, { once: true });
   });
+}
+
+/**
+ * The `v` a followed redirect ended at: the API redirects a stale `v` to the
+ * serving version (06 §6.5), which may then refuse the request.
+ */
+function redirectedTo(resp: Response): string | null {
+  if (!resp.redirected) return null;
+  try {
+    return new URL(resp.url).searchParams.get("v");
+  } catch {
+    return null;
+  }
 }
 
 async function problemOf(resp: Response): Promise<Problem> {
@@ -204,7 +220,7 @@ async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
       problem = await problemOf(resp);
       // A background request leaves a busy API to visitors: it fails at once.
       if ((problem.type === BUSY || resp.status === 429) && giveUp?.()) {
-        throw new ApiError(problem);
+        throw new ApiError(problem, redirectedTo(resp));
       } else if (problem.type === BUSY) {
         // The API's queue is full: the same wait for the visitor.
         wait = retryAfter(resp);
@@ -220,7 +236,7 @@ async function getJson<T>(path: string, opts: GetOptions = {}): Promise<T> {
       await sleep(wait, signal);
       continue;
     }
-    if (problem) throw new ApiError(problem);
+    if (problem) throw new ApiError(problem, redirectedTo(resp));
     return (await resp.json()) as T;
   }
 }
@@ -231,7 +247,18 @@ async function getPinned<T extends { index_version: string }>(
   version: string,
   opts: GetOptions = {},
 ): Promise<T> {
-  const body = await getJson<T>(path, opts);
+  let body: T;
+  try {
+    body = await getJson<T>(path, opts);
+  } catch (err) {
+    // Redirected to a newer version that refused the request (a Congress
+    // search on a version without Congress pages, #229): still a version
+    // change, so the app reloads /v1/meta instead of showing the refusal.
+    if (err instanceof ApiError && err.version && err.version !== version) {
+      throw new VersionChangedError(version, err.version);
+    }
+    throw err;
+  }
   if (body.index_version !== version) throw new VersionChangedError(version, body.index_version);
   return body;
 }

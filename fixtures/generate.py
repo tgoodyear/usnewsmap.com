@@ -141,6 +141,12 @@ CONGRESS_FILLER = (
 CONGRESS_STATES = ["MO", "SC", "CA", "IL", "NY", "GA"]
 
 
+def ordinal(n):
+    """1st, 2nd, 3rd, 4th, 11th, 12th, 13th, 21st, 22nd, …"""
+    suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 def congress_docs():
     """The Congress fixture pages, from their own random stream."""
     rng = random.Random(229)
@@ -167,7 +173,7 @@ def congress_docs():
                     "sort_key": (CONGRESS_SERIES.index(series) << 56) | (unit << 24) | seq,
                     "text": text,
                     "series": series,
-                    "title": f"Fixture {series.title()}, {congress}th Congress, session {session}",
+                    "title": f"Fixture {series.title()}, {ordinal(congress)} Congress, session {session}",
                     "citation": f"Fixture {series} {congress}-{session} p. {unit * 10 + seq}",
                     "congress": congress, "session": session, "chamber": chamber,
                     "printed_page": str(unit * 10 + seq),
