@@ -464,7 +464,8 @@ impl Release {
         }
         // An incremental release with no new batches still publishes when our
         // Japanese OCR has changed (04 §4.8): same main indexes, a new
-        // Japanese index and snapshot.
+        // Japanese index and snapshot. With `--ja-latin` and Latin text of
+        // ours that no main index holds yet, a delta of just those pages.
         let mut nothing_new = false;
         let (scope, version_batches, catalog, mut indexes) = if full {
             let all: Vec<RunBatch> = curated
@@ -534,33 +535,6 @@ impl Release {
                 "Japanese OCR overlay"
             );
         }
-        // Decided before the duplicate-page plan, which reads every batch's
-        // counts: a run with nothing to release returns without it.
-        let overlay_only = nothing_new;
-        if overlay_only {
-            let prev = previous
-                .as_ref()
-                .expect("incremental has a previous version");
-            if !self.overlay_changed(&prev.index_version, &overlay).await? {
-                tracing::info!(
-                    "no newly curated batches with catalogued titles, and no new Japanese OCR; \
-                     nothing to release"
-                );
-                return Ok(None);
-            }
-            // The run records the Japanese index as the index it wrote, so
-            // there must be one: OCR that changed without a page to index waits.
-            if !overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
-                tracing::info!(
-                    "the Japanese OCR changed but has no page to index; nothing to release"
-                );
-                return Ok(None);
-            }
-            tracing::info!(
-                "no newly curated batches; releasing the new Japanese OCR on the same indexes"
-            );
-        }
-
         // Of the pages of our OCR that curation never had, and of the pages
         // a main index of the version holds with our OCR's Latin text
         // (#203), the ones some batch of the version has in its curated
@@ -569,6 +543,25 @@ impl Release {
             Some(prev) if !full => self.previous_latin(&prev.index_version).await?,
             _ => JaLatin::default(),
         };
+        // With no newly curated batches, our Latin text of pages LoC ships
+        // without text that no main index of the version holds yet still
+        // gets a main index of its own (a delta of just those pages), so it
+        // doesn't wait for LoC's next batch (#203). Pages with none of it
+        // can skip reading the curated parts below.
+        let latin_pending = self.ja_latin
+            && overlay.pages.iter().any(|p| {
+                p.missing_from_curation()
+                    && !latin_before.pages.contains_key(&p.key.doc_id())
+                    && p.latin().is_some()
+            });
+        // Decided before the duplicate-page plan, which reads every batch's
+        // counts: a run with nothing to release returns without it.
+        if nothing_new
+            && !latin_pending
+            && !self.overlay_releasable(previous.as_ref(), &overlay).await?
+        {
+            return Ok(None);
+        }
         let curated_keys = {
             let mut wanted: BTreeSet<String> = overlay
                 .pages
@@ -580,13 +573,13 @@ impl Release {
             self.curated_keys(&version_batches, &wanted).await?
         };
         // The Latin text this release's main index adds: the pages no main
-        // index of the version holds yet. None without a new main index. A
-        // copy with LoC's text supersedes ours; one without doesn't, and
-        // gets no document (`latin_owned`), unless an index the version
-        // keeps may hold it as a document already: with American Stories'
-        // text, a copy without LoC's is one when that text covers it.
+        // index of the version holds yet. A copy with LoC's text supersedes
+        // ours; one without doesn't, and gets no document (`latin_owned`),
+        // unless an index the version keeps may hold it as a document
+        // already: with American Stories' text, a copy without LoC's is one
+        // when that text covers it.
         let scope_names: BTreeSet<&str> = scope.iter().map(|b| b.batch.as_str()).collect();
-        let latin_new: Vec<(&ocr_ja::JaPage, String)> = if self.ja_latin && !overlay_only {
+        let latin_new: Vec<(&ocr_ja::JaPage, String)> = if self.ja_latin {
             overlay
                 .pages
                 .iter()
@@ -608,11 +601,29 @@ impl Release {
         } else {
             Vec::new()
         };
+        // An incremental release with no new batches and no such pages
+        // publishes only a new Japanese index and snapshot, on the same
+        // main indexes.
+        let overlay_only = nothing_new && latin_new.is_empty();
+        if overlay_only
+            && latin_pending
+            && !self.overlay_releasable(previous.as_ref(), &overlay).await?
+        {
+            return Ok(None);
+        }
+        if nothing_new && !overlay_only {
+            tracing::info!(
+                pages = latin_new.len(),
+                "no newly curated batches; releasing our OCR's Latin text of pages LoC ships \
+                 without text in a delta of its own. Our text in place of LoC's waits for a \
+                 release that indexes the page's batch"
+            );
+        }
         // Pages curation had that our OCR read Latin text on: a batch this
         // release indexes takes ours in place of LoC's text where ours reads
-        // more words (#203).
+        // more words (#203). A release with no new batches indexes none.
         let latin_curated: HashMap<String, (&ocr_ja::JaPage, String)> =
-            if self.ja_latin && !overlay_only {
+            if self.ja_latin && !nothing_new {
                 overlay
                     .pages
                     .iter()
@@ -1352,6 +1363,35 @@ impl Release {
         progress.snapshot().log(None);
         progress::report(&self.state, version, &progress.snapshot()).await;
         Ok((docs, record, replaced))
+    }
+
+    /// Whether a release with no newly curated batches and no Latin text
+    /// to add publishes the overlay on the published main indexes (04
+    /// §4.8): when our Japanese OCR has changed and has a page to index.
+    /// Logs why not.
+    async fn overlay_releasable(
+        &self,
+        previous: Option<&IndexRun>,
+        overlay: &ocr_ja::Overlay,
+    ) -> anyhow::Result<bool> {
+        let prev = previous.expect("incremental has a previous version");
+        if !self.overlay_changed(&prev.index_version, overlay).await? {
+            tracing::info!(
+                "no newly curated batches with catalogued titles, and no new Japanese OCR; \
+                 nothing to release"
+            );
+            return Ok(false);
+        }
+        // The run records the Japanese index as the index it wrote, so
+        // there must be one: OCR that changed without a page to index waits.
+        if !overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
+            tracing::info!("the Japanese OCR changed but has no page to index; nothing to release");
+            return Ok(false);
+        }
+        tracing::info!(
+            "no newly curated batches; releasing the new Japanese OCR on the same indexes"
+        );
+        Ok(true)
     }
 
     /// Whether the overlay's parts differ from the ones `version` was built
