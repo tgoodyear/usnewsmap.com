@@ -9,16 +9,16 @@ The legacy API returned a **random sample of 500 hits** per request, kept per-us
 
 ## Decision
 
-- One `GET /v1/aggregate` returns **complete** counts as a sparse *place × bucket* cube, together with the national series and the first appearance per place.
+- One `GET /v1/aggregate` returns **complete** counts as a sparse _place × bucket_ cube, together with the national series and the first appearance per place.
 - The **browser** computes cumulative, trailing-window, relative and first-appearance views from prefix sums in O(places) per frame.
 - All reads are **GET with canonical URLs**, immutable per `index_version`, and cached in the browser, in process and in a persistent Blob cache (plus Front Door in the growth profile).
 - There are no sessions, cookies or per-user server state.
 
 ## Alternatives
 
-- *Keep server-side playback state*: rejected (latency, cost, fragility).
-- *Return raw hits and aggregate in the browser*: rejected, because millions of hits can't be shipped to the client.
-- *GraphQL*: rejected, because POST-by-default and flexible shapes defeat CDN caching, and the query surface is small.
+- _Keep server-side playback state_: rejected (latency, cost, fragility).
+- _Return raw hits and aggregate in the browser_: rejected, because millions of hits can't be shipped to the client.
+- _GraphQL_: rejected, because POST-by-default and flexible shapes defeat CDN caching, and the query surface is small.
 
 ## Consequences
 

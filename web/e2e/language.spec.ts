@@ -71,10 +71,7 @@ test("choose a language: URL, results, reload and accessibility", async ({ page 
   await expect(page).toHaveURL(/[?&]lang=ger(&|$)/);
   await expect(placeRows(page)).toHaveCount(2);
   const names = await placeRows(page).locator("th").allTextContents();
-  expect(names.map((n) => n.replace(/^Fixture \w+ \w+ \((.*)\)$/, "$1")).sort()).toEqual([
-    "Nebraska",
-    "New York area",
-  ]);
+  expect(names.map((n) => n.replace(/^Fixture \w+ \w+ \((.*)\)$/, "$1")).sort()).toEqual(["Nebraska", "New York area"]);
   await expect(page.locator(".summary")).not.toHaveText(before ?? "");
   // Baselines count only German-language pages, so the share of pages published stays.
   await expect(page.getByRole("columnheader", { name: "Share of pages published" })).toBeVisible();
@@ -113,7 +110,9 @@ test("relative rate under a language filter compares only those languages' pages
 
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download CSV" }).click();
-  const lines = readFileSync(await (await download).path(), "utf8").trim().split("\n");
+  const lines = readFileSync(await (await download).path(), "utf8")
+    .trim()
+    .split("\n");
   expect(lines[0]).toBe("place_id,name,state,pages,hits,expected,estimate,lower,upper,languages,first_seen,last_seen");
   expect(lines).toHaveLength(6);
   expect(errors).toEqual([]);

@@ -10,12 +10,12 @@ They sit between the other two kinds of document:
 
 ## Notes
 
-| Date | Note | Topic | Measured on |
-|------|------|-------|-------------|
-| 2026-10-05 | [Corpus coverage: what is searchable, what is counted, what is missing](2026-10-05-corpus-coverage.md) | coverage | pages-v20260929-4, pages-v20261003-1 |
-| 2026-10-05 | [Japanese pages: OCR of the pages LoC ships without text](2026-10-05-japanese-ocr.md) | ocr | sample of 23 crops, 1942–45 |
-| 2026-10-05 | [Phrases with common words, and the index layout around them](2026-10-05-phrases-through-common-word-pairs.md) | indexing | 90,745 pages (11 batches); pages-v20261003-1 |
-| 2026-10-05 | [Index versions: what built each one, and comparing them](2026-10-05-index-versions-and-what-built-them.md) | indexing, operations | pages-v20260928-1 to pages-v20261005-1 |
+| Date       | Note                                                                                                           | Topic                | Measured on                                  |
+| ---------- | -------------------------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------- |
+| 2026-10-05 | [Corpus coverage: what is searchable, what is counted, what is missing](2026-10-05-corpus-coverage.md)         | coverage             | pages-v20260929-4, pages-v20261003-1         |
+| 2026-10-05 | [Japanese pages: OCR of the pages LoC ships without text](2026-10-05-japanese-ocr.md)                          | ocr                  | sample of 23 crops, 1942–45                  |
+| 2026-10-05 | [Phrases with common words, and the index layout around them](2026-10-05-phrases-through-common-word-pairs.md) | indexing             | 90,745 pages (11 batches); pages-v20261003-1 |
+| 2026-10-05 | [Index versions: what built each one, and comparing them](2026-10-05-index-versions-and-what-built-them.md)    | indexing, operations | pages-v20260928-1 to pages-v20261005-1       |
 
 Topics: `indexing` (index schema, splits, the search engine), `ocr` (text we produce ourselves), `coverage` (what is in the corpus, the baselines and the no-data layer), `operations` (the pipeline, deploys, cost).
 

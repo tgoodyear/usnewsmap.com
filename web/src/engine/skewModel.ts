@@ -71,7 +71,8 @@ export function unitSums(
   buckets: number,
 ): UnitSums {
   const idx: number[] = [];
-  for (let i = 0; i < cells.p.length; i++) if (cells.p[i]! < units && cells.b[i]! < buckets && cells.p[i]! >= 0) idx.push(i);
+  for (let i = 0; i < cells.p.length; i++)
+    if (cells.p[i]! < units && cells.b[i]! < buckets && cells.p[i]! >= 0) idx.push(i);
   idx.sort((a, b) => cells.p[a]! - cells.p[b]! || cells.b[a]! - cells.b[b]! || a - b);
   const start = new Int32Array(units + 1);
   const bucket = new Int32Array(idx.length);

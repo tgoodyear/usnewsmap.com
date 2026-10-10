@@ -113,7 +113,8 @@ describe("shared vectors: special functions", () => {
     for (const [a, x, v] of vectors.special.gamma_p) near(gammaP(a, x), v, tol.special, `gammaP(${a}, ${x})`);
     for (const [p, a, v] of vectors.special.gamma_quantile)
       near(gammaQuantile(p, a), v, tol.special, `gammaQuantile(${p}, ${a})`);
-    for (const [p, v] of vectors.special.normal_quantile) near(normalQuantile(p), v, tol.special, `normalQuantile(${p})`);
+    for (const [p, v] of vectors.special.normal_quantile)
+      near(normalQuantile(p), v, tol.special, `normalQuantile(${p})`);
   });
 });
 
@@ -169,9 +170,7 @@ describe("shared vectors: searches", () => {
 
   it("the cases exercise every direction", () => {
     const dirs = new Set(
-      vectors.cases.flatMap((c) =>
-        c.expected.places.map((s) => direction({ ...s, lift: s.lift }) as number),
-      ),
+      vectors.cases.flatMap((c) => c.expected.places.map((s) => direction({ ...s, lift: s.lift }) as number)),
     );
     expect([...dirs].sort()).toEqual([-1, 0, 1]);
   });

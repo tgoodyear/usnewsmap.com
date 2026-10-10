@@ -9,7 +9,7 @@ The legacy system treated Solr as the only copy of the processed corpus and fetc
 
 ## Decision
 
-Store the corpus in **Azure Blob Storage** (StorageV2, flat namespace; HNS/ADLS Gen2 is deliberately *not* enabled because it rules out blob versioning) in three layers:
+Store the corpus in **Azure Blob Storage** (StorageV2, flat namespace; HNS/ADLS Gen2 is deliberately _not_ enabled because it rules out blob versioning) in three layers:
 
 - **raw**: only small title-metadata snapshots in the lean profile. Bulk archives are streamed and not retained (LoC is the source of record); the growth profile may retain them in Cold
 - **curated**: normalized page-level Parquet, one row per page, partitioned by year and batch
@@ -19,9 +19,9 @@ Store the corpus in **Azure Blob Storage** (StorageV2, flat namespace; HNS/ADLS 
 
 ## Alternatives
 
-- *Engine as the only store* (legacy): rejected, because rebuilds depend on the source staying available and engine migrations become painful.
-- *Cosmos DB as the document store*: rejected. Paying RU and storage costs for a read-mostly corpus of about 1 TB that is scanned in bulk makes no sense.
-- *Azure SQL / PostgreSQL*: rejected. Bulk columnar scans (for baselines and rebuilds) are cheaper and simpler with Parquet.
+- _Engine as the only store_ (legacy): rejected, because rebuilds depend on the source staying available and engine migrations become painful.
+- _Cosmos DB as the document store_: rejected. Paying RU and storage costs for a read-mostly corpus of about 1 TB that is scanned in bulk makes no sense.
+- _Azure SQL / PostgreSQL_: rejected. Bulk columnar scans (for baselines and rebuilds) are cheaper and simpler with Parquet.
 
 ## Consequences
 

@@ -20,7 +20,11 @@ afterEach(cleanup);
 
 describe("Hit", () => {
   it("marks a page whose text is our own OCR and links to LoC's page image", () => {
-    render(<ul><Hit h={{ ...page, ocr: { source: "usnm-ndlocr-lite", engine: "ndlocr-lite 636d1cf" } }} synthetic={false} /></ul>);
+    render(
+      <ul>
+        <Hit h={{ ...page, ocr: { source: "usnm-ndlocr-lite", engine: "ndlocr-lite 636d1cf" } }} synthetic={false} />
+      </ul>,
+    );
     const badge = screen.getByText(/^Our OCR/);
     expect(badge.getAttribute("title")).toMatch(/no searchable text for this page/);
     // The explanation is in the text too, for screen readers and touch screens.
@@ -29,7 +33,11 @@ describe("Hit", () => {
   });
 
   it("shows a LoC page as before", () => {
-    render(<ul><Hit h={page} synthetic={false} /></ul>);
+    render(
+      <ul>
+        <Hit h={page} synthetic={false} />
+      </ul>,
+    );
     expect(screen.queryByText(/^Our OCR/)).toBeNull();
     expect(screen.queryByText(/^American Stories OCR/)).toBeNull();
     expect(screen.getByRole("link").textContent).toBe("View page at the Library of Congress");
@@ -43,7 +51,9 @@ describe("Hit", () => {
     );
     const badge = screen.getByText(/^American Stories OCR/);
     expect(badge.closest(".hit__meta")).not.toBeNull();
-    expect(badge.getAttribute("title")).toMatch(/^The Library of Congress text for this page doesn't contain the match\./);
+    expect(badge.getAttribute("title")).toMatch(
+      /^The Library of Congress text for this page doesn't contain the match\./,
+    );
     expect(badge.getAttribute("title")).toMatch(/The snippet comes from that text\./);
     expect(badge.textContent).toBe(`American Stories OCR. ${badge.getAttribute("title")}`);
     expect(screen.getByRole("link").textContent).toBe("View page at the Library of Congress");
@@ -51,7 +61,11 @@ describe("Hit", () => {
 
   it("adds nothing when the page matched in LoC's text, alone or with American Stories'", () => {
     for (const matched_in of [["loc"], ["loc", "american_stories"]] as const) {
-      render(<ul><Hit h={{ ...page, matched_in: [...matched_in] }} synthetic={false} /></ul>);
+      render(
+        <ul>
+          <Hit h={{ ...page, matched_in: [...matched_in] }} synthetic={false} />
+        </ul>,
+      );
       expect(screen.queryByText(/^American Stories OCR/)).toBeNull();
       expect(document.querySelectorAll(".badge")).toHaveLength(0);
       cleanup();

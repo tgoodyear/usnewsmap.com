@@ -260,11 +260,21 @@ export function StateTable({ rows }: StateTableProps) {
         <thead>
           <tr>
             <th scope="col">State</th>
-            <th scope="col" className="num">Pages published</th>
-            <th scope="col" className="num">Matched</th>
-            <th scope="col" className="num">Expected</th>
-            <th scope="col" className="num">Relative rate</th>
-            <th scope="col" className="num">90% range</th>
+            <th scope="col" className="num">
+              Pages published
+            </th>
+            <th scope="col" className="num">
+              Matched
+            </th>
+            <th scope="col" className="num">
+              Expected
+            </th>
+            <th scope="col" className="num">
+              Relative rate
+            </th>
+            <th scope="col" className="num">
+              90% range
+            </th>
           </tr>
         </thead>
         <tbody>

@@ -195,8 +195,7 @@ export interface Problem {
 }
 
 /** A `/v1/status` section that needs the pipeline state: its data, or why there is none. */
-export type Section<T> =
-  ({ available: true } & T) | { available: false; reason: string };
+export type Section<T> = ({ available: true } & T) | { available: false; reason: string };
 
 export interface HourBin {
   start: string;
@@ -341,21 +340,9 @@ export interface ByLanguage {
 }
 
 /** What the pipeline is doing at this moment (`activity.now`). */
-export type Now =
-  | "listing"
-  | "downloading"
-  | "titles"
-  | "indexing"
-  | "merging"
-  | "publishing"
-  | "idle";
+export type Now = "listing" | "downloading" | "titles" | "indexing" | "merging" | "publishing" | "idle";
 
-export type LastOutcome =
-  | "published"
-  | "nothing_new"
-  | "titles_left"
-  | "failed"
-  | "stopped";
+export type LastOutcome = "published" | "nothing_new" | "titles_left" | "failed" | "stopped";
 
 /** `activity`: the "Right now" line's data (06 §6.3.6). */
 export interface Activity {

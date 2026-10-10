@@ -28,11 +28,11 @@
 
 The backfill, against LoC's listing of 2,997 batches, 23.7M pages and 2.47 TB of archives (04 §4.1.1):
 
-| When | Where measured | Batches | Pages | Notes |
-|------|----------------|---------|-------|-------|
-| 29 Sep 2026, `pages-v20260929-4` | the snapshot (11 §11.2) | 882 | 6,557,925 | 398 places in 42 states and territories; 1,217 titles, 195 places with exactly one; no pages yet from HI, ME, MT, NV, NM, ND, RI, SD, VT, PR, VI |
-| 30 Sep 2026 13:30 UTC | `/v1/status` | 66.0% curated | 15,788,248 curated, 15,766,980 with usable text | 0.13% without text: in the denominator, can't match |
-| 5 Oct 2026, `pages-v20261003-1` | the capture, `yellow fever` 1736-09-03 to 1963-12-31 (the benchmark's window) | | 23,722,885 in the baseline | matches LoC's listed total; 1,632 places had a `railroad` hit |
+| When                             | Where measured                                                                | Batches       | Pages                                           | Notes                                                                                                                                            |
+| -------------------------------- | ----------------------------------------------------------------------------- | ------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 29 Sep 2026, `pages-v20260929-4` | the snapshot (11 §11.2)                                                       | 882           | 6,557,925                                       | 398 places in 42 states and territories; 1,217 titles, 195 places with exactly one; no pages yet from HI, ME, MT, NV, NM, ND, RI, SD, VT, PR, VI |
+| 30 Sep 2026 13:30 UTC            | `/v1/status`                                                                  | 66.0% curated | 15,788,248 curated, 15,766,980 with usable text | 0.13% without text: in the denominator, can't match                                                                                              |
+| 5 Oct 2026, `pages-v20261003-1`  | the capture, `yellow fever` 1736-09-03 to 1963-12-31 (the benchmark's window) |               | 23,722,885 in the baseline                      | matches LoC's listed total; 1,632 places had a `railroad` hit                                                                                    |
 
 What limited the pace was LoC's download limit, not CPU: 10 bulk requests per 10 minutes per IP. The first production backfill ran 8 workers at about 140 downloads an hour, was tolerated for about 90 minutes, then refused almost everything for over an hour. Workers now take download slots 75 s apart from one shared Cosmos item, and a `429` pauses all of them for an hour: about 48 batches an hour, about 2.5 days for the corpus with 4 workers (04 §4.4).
 

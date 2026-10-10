@@ -106,5 +106,8 @@ export function parseDateEntry(text: string, edge: Edge, bounds?: DateBounds): D
   if (!bounds) return { ok: true, iso: edge === "from" ? start : end };
   if (end < bounds.from || start > bounds.to) return { ok: false, error: rangeError(bounds) };
   // ISO dates compare as strings.
-  return { ok: true, iso: edge === "from" ? (start < bounds.from ? bounds.from : start) : end > bounds.to ? bounds.to : end };
+  return {
+    ok: true,
+    iso: edge === "from" ? (start < bounds.from ? bounds.from : start) : end > bounds.to ? bounds.to : end,
+  };
 }
