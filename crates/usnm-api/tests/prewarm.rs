@@ -306,7 +306,7 @@ async fn visit_examples(state: &Arc<AppState>, backend: &Counting, version: &str
 }
 
 fn persisted(dir: &Path, version: &str) -> usize {
-    std::fs::read_dir(dir.join(version).join("f6"))
+    std::fs::read_dir(dir.join(version).join("f7"))
         .map(|d| d.count())
         .unwrap_or(0)
 }

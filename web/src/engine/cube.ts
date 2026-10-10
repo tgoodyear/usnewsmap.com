@@ -67,7 +67,11 @@ export function alignCube(cube: SparseCube, cubePlaces: string[], targetPlaces: 
   return out;
 }
 
-/** hits / pages per place; 0 where nothing was published. */
+/**
+ * hits / pages per place; 0 where nothing was published and nothing matched,
+ * NaN (unknown) where pages matched but none are in the baseline: an English
+ * search's matches in a place whose papers are all in other languages (#237).
+ */
 export function relative(
   hits: Float64Array,
   pages: Float64Array,
@@ -75,7 +79,7 @@ export function relative(
 ): Float64Array {
   for (let i = 0; i < hits.length; i++) {
     const d = pages[i]!;
-    out[i] = d > 0 ? hits[i]! / d : 0;
+    out[i] = d > 0 ? hits[i]! / d : hits[i]! > 0 ? Number.NaN : 0;
   }
   return out;
 }
