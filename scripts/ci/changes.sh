@@ -11,8 +11,10 @@
 # Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
 # to publish images), for a change to the workflows themselves, and whenever
 # the changed files can't be worked out; everything but ops, which runs only
-# when its own files change (the snapshots, their schema and checker,
-# compare-versions.py, its requirements, or ci.yml, which defines the job).
+# when its own files change (the snapshots, the index history, their schemas,
+# checkers and writers, its requirements, or ci.yml, which defines the job).
+# The infra job (code) checks the workbook definitions, so any change to
+# infra/workbooks/ runs it.
 set -euo pipefail
 out=${GITHUB_OUTPUT:-/dev/stdout}
 # Known only once the changed files are; "run everything" keeps them.
@@ -49,8 +51,9 @@ matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
 if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwit/'; then
   provision=true
 fi
-# The index version snapshots must match their schema (and what writes them).
-matches '^(ops/version-snapshots/|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions)\.py$|scripts/ci/requirements-ops\.txt$|\.github/workflows/ci\.yml$)' && ops=true
+# The index version snapshots and the index history must match their schemas
+# (and what writes them).
+matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history)\.py$|scripts/ci/requirements-ops\.txt$|\.github/workflows/ci\.yml$)' && ops=true
 matches '^\.github/' && all "workflow changed"
 # The Rust build and tests: the crates, the files compiled into binaries
 # (index config, place overrides, the example searches the API warms, the

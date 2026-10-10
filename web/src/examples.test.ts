@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { searchQuery } from "./api/client";
+import type { Example } from "./examples";
 import {
   EXAMPLE_ORDER,
   EXAMPLES,
@@ -10,7 +11,9 @@ import {
   setsOf,
   shuffle,
 } from "./examples";
+import raw from "./examples.json";
 import { DEFAULTS, isIsoDate, parseView, searchParams, serializeView } from "./state/url";
+import type { ViewState } from "./state/url";
 
 /** Sorted `key=value` pairs, so parameter order doesn't matter. */
 function pairs(query: URLSearchParams | string): string[] {
@@ -37,6 +40,88 @@ describe("examples", () => {
       sent.delete("v");
       expect(pairs(ex.aggregate), ex.id).toEqual(pairs(sent));
     }
+  });
+});
+
+// The shape of web/src/examples.json, which examples.ts imports with a cast
+// and the API reads too (crates/usnm-api/src/prewarm.rs, which rejects
+// unknown fields). Typed as a record of `Example`'s keys, so adding a field
+// to the interface without listing it here fails to compile.
+const FIELDS: Record<keyof Example, "string" | "view"> = {
+  aggregate: "string",
+  blurb: "string",
+  era: "string",
+  id: "string",
+  title: "string",
+  view: "view",
+};
+
+/** The `ViewState` keys whose default is null: their type isn't in DEFAULTS. */
+type NullByDefault = { [K in keyof ViewState]: null extends ViewState[K] ? K : never }[keyof ViewState];
+const isNumber = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+const NULLABLE: Record<NullByDefault, (v: unknown) => boolean> = {
+  c: (v) => Array.isArray(v) && v.length === 2 && v.every(isNumber),
+  win: isNumber,
+  z: isNumber,
+};
+
+/** Whether `v` has the type of the view field `key`, judged by its default. */
+function viewValueOk(key: keyof ViewState, v: unknown): boolean {
+  const d = DEFAULTS[key];
+  if (d === null) return v === null || NULLABLE[key as NullByDefault](v);
+  if (Array.isArray(d)) return Array.isArray(v) && v.every((x) => typeof x === "string");
+  return typeof v === typeof d;
+}
+
+/** What is wrong with the shape of one entry of examples.json. */
+function shapeProblems(entry: unknown): string[] {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return ["not an object"];
+  const out: string[] = [];
+  const e = entry as Record<string, unknown>;
+  for (const k of Object.keys(FIELDS)) if (!(k in e)) out.push(`missing ${k}`);
+  for (const [k, v] of Object.entries(e)) {
+    const kind = FIELDS[k as keyof Example];
+    if (!kind) out.push(`unknown field ${k}`);
+    else if (kind === "string" && typeof v !== "string") out.push(`${k} is not a string`);
+    else if (kind === "view") {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) {
+        out.push("view is not an object");
+        continue;
+      }
+      for (const [vk, vv] of Object.entries(v)) {
+        if (!Object.hasOwn(DEFAULTS, vk)) out.push(`view: unknown field ${vk}`);
+        else if (!viewValueOk(vk as keyof ViewState, vv)) out.push(`view.${vk} has the wrong type`);
+      }
+    }
+  }
+  return out;
+}
+
+describe("examples.json", () => {
+  it("holds exactly the Example fields, with views of ViewState fields", () => {
+    const entries: unknown[] = raw;
+    expect(entries.length).toBeGreaterThan(0);
+    entries.forEach((entry, i) => {
+      const id = (entry as { id?: unknown } | null)?.id;
+      expect(shapeProblems(entry), `entry ${i} (${String(id)})`).toEqual([]);
+    });
+  });
+
+  it("would catch a missing field, an extra one, or a wrong view", () => {
+    const good = raw[0]!;
+    expect(shapeProblems(good)).toEqual([]);
+    const noEra: Record<string, unknown> = { ...good };
+    delete noEra.era;
+    expect(shapeProblems(noEra)).toEqual(["missing era"]);
+    expect(shapeProblems({ ...good, note: "x" })).toEqual(["unknown field note"]);
+    expect(shapeProblems({ ...good, title: 1 })).toEqual(["title is not a string"]);
+    expect(shapeProblems({ ...good, view: [] })).toEqual(["view is not an object"]);
+    expect(shapeProblems({ ...good, view: { query: "x" } })).toEqual(["view: unknown field query"]);
+    expect(shapeProblems({ ...good, view: { lang: "ger" } })).toEqual(["view.lang has the wrong type"]);
+    expect(shapeProblems({ ...good, view: { near: "5" } })).toEqual(["view.near has the wrong type"]);
+    expect(shapeProblems({ ...good, view: { c: [1] } })).toEqual(["view.c has the wrong type"]);
+    expect(shapeProblems({ ...good, view: { z: 4, c: [-90, 40], win: null } })).toEqual([]);
+    expect(shapeProblems(null)).toEqual(["not an object"]);
   });
 });
 

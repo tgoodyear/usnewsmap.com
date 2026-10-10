@@ -28,12 +28,14 @@ The infrastructure checks, and the scan for shared keys, run on every pull reque
 ```sh
 scripts/ci/lint-bicep.sh
 scripts/ci/no-shared-keys.sh
+scripts/ci/check-workbooks.py
+python3 -m unittest scripts/ci/test_check_workbooks.py
 bicep build infra/main.bicep --stdout > /dev/null
 bicep build infra/guardrails.bicep --stdout > /dev/null
 AZURE_ENV_NAME=ci bicep build-params infra/main.bicepparam --stdout > /dev/null
 ```
 
-`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
+`scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
 ## Rules
 
