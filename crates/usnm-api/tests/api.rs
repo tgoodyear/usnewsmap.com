@@ -2799,6 +2799,7 @@ async fn congress_responses_cached_before_the_switch_goes_off_are_refused() {
     s.snapshot.store(Arc::new(usnm_api::Snapshot {
         refdata,
         backend: serving.backend.clone(),
+        congress_dropped: false,
     }));
     for uri in &uris {
         let (st, _, body) = get(&s, uri).await;
@@ -2914,5 +2915,60 @@ async fn a_broken_congress_index_never_holds_back_the_newspapers() {
         )
         .await;
     assert!(read.is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A Congress set dropped at load comes back at the next refresh of the same
+/// version once it can be loaded, without republishing anything else; until
+/// then the refresh changes nothing (#229).
+#[tokio::test]
+async fn a_dropped_congress_set_comes_back_at_the_next_refresh() {
+    let dir = temp_data_dir("congress-retry");
+    let pointer = dir.join("current.json");
+    let mut current: Value =
+        serde_json::from_str(&std::fs::read_to_string(&pointer).unwrap()).unwrap();
+    current["congress"] = json!({
+        "indexes": ["congress-late"],
+        "series": [{"series": "globe", "pages": 78, "from": "1850-01-07", "to": "1850-09-30"}],
+    });
+    std::fs::write(&pointer, current.to_string()).unwrap();
+    let loader = || Loader {
+        reference: Arc::new(LocalStore::new(&dir)),
+        engine: Engine::Memory {
+            indexes_dir: dir.join("indexes"),
+        },
+        congress_search: true,
+    };
+    let snapshot = loader().snapshot().await.unwrap();
+    assert!(snapshot.congress_dropped);
+    let s = Arc::new(AppState::with_loader(config(), snapshot, Some(loader())));
+    let congress =
+        "/v1/aggregate?q=%22fugitive+slave%22&from=1850-01-01&to=1850-12-31&source=congress";
+
+    // Still missing: the refresh keeps the snapshot as it is.
+    let before = Arc::as_ptr(&s.snapshot.load_full());
+    assert!(!reload_if_changed(&s).await.unwrap());
+    assert_eq!(Arc::as_ptr(&s.snapshot.load_full()), before);
+    let (st, _, _) = get(&s, congress).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // The index arrives: the next refresh brings the Congress pages back.
+    std::fs::copy(
+        dir.join("indexes").join(format!("{CONGRESS}.jsonl")),
+        dir.join("indexes").join("congress-late.jsonl"),
+    )
+    .unwrap();
+    assert!(reload_if_changed(&s).await.unwrap());
+    assert!(!s.snapshot.load_full().congress_dropped);
+    let (st, _, body) = get(&s, congress).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["total"]["hits"],
+        congress_oracle("fugitive slave", "1850-01-01", "1850-12-31", None)
+    );
+    let (_, _, meta) = get(&s, "/v1/meta").await;
+    assert_eq!(meta["congress"]["place"]["id"], "PC001");
+    // Nothing left to bring back: the next refresh is a no-op again.
+    assert!(!reload_if_changed(&s).await.unwrap());
     let _ = std::fs::remove_dir_all(&dir);
 }

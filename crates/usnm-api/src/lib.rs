@@ -46,6 +46,12 @@ use refdata::{Current, RefData};
 pub struct Snapshot {
     pub refdata: RefData,
     pub backend: Arc<dyn SearchBackend>,
+    /// The version names a Congress set this API would search, but it
+    /// couldn't be loaded or prepared, so the snapshot serves without it
+    /// (#229). A refresh of the same version tries it again
+    /// ([`reload_if_changed`]), so a one-off engine error doesn't turn
+    /// Congress search off on this replica for the version's whole life.
+    pub congress_dropped: bool,
 }
 
 /// How a snapshot's search backend is obtained.
@@ -117,6 +123,7 @@ impl Loader {
         }
         // Its Congress index, when it has one, goes live only when it's
         // searchable, but never holds back the newspapers (#229).
+        let mut congress_dropped = false;
         if let Some(congress) = congress {
             let ready = match congress_loaded {
                 Ok(()) => backend.prepare(&congress).await.map_err(|e| e.to_string()),
@@ -129,9 +136,14 @@ impl Loader {
                     "the Congress index set isn't searchable; serving the version without it"
                 );
                 refdata.current.congress = None;
+                congress_dropped = true;
             }
         }
-        Ok(Snapshot { refdata, backend })
+        Ok(Snapshot {
+            refdata,
+            backend,
+            congress_dropped,
+        })
     }
 }
 
@@ -171,7 +183,15 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config, backend: Arc<dyn SearchBackend>, refdata: RefData) -> Self {
-        Self::with_loader(config, Snapshot { refdata, backend }, None)
+        Self::with_loader(
+            config,
+            Snapshot {
+                refdata,
+                backend,
+                congress_dropped: false,
+            },
+            None,
+        )
     }
 
     pub fn with_loader(config: Config, mut snapshot: Snapshot, loader: Option<Loader>) -> Self {
@@ -345,8 +365,26 @@ pub async fn reload_if_changed(state: &Arc<AppState>) -> Result<bool, String> {
 
 async fn reload(state: &Arc<AppState>, loader: &Loader) -> Result<bool, String> {
     let next = loader.current().await?;
-    if next.index_version == state.snapshot.load().refdata.version() {
-        return Ok(false);
+    let serving = state.snapshot.load_full();
+    if next.index_version == serving.refdata.version() {
+        // The same version: worth another load only to bring back a Congress
+        // set it dropped (#229). It goes live only if that set is searchable
+        // now, and without a warm-up: the version's newspaper searches are
+        // already warm, under the same keys.
+        if !serving.congress_dropped {
+            return Ok(false);
+        }
+        let mut snapshot = loader.load(next).await?;
+        if snapshot.congress_dropped {
+            return Ok(false);
+        }
+        configure(&state.config, &mut snapshot);
+        tracing::info!(
+            version = snapshot.refdata.version(),
+            "the Congress index set is searchable now"
+        );
+        state.snapshot.store(Arc::new(snapshot));
+        return Ok(true);
     }
     let mut snapshot = loader.load(next).await?;
     configure(&state.config, &mut snapshot);
