@@ -1,5 +1,11 @@
 {
-  "environments": {},
+  "environments": {
+    "prod": {
+      "digest": "sha256:e1207a2a3f08267b9731ed1a400ec12c7a725413b859fcff7caecd0206cd097b",
+      "image": "quickwit/quickwit-usnm",
+      "tag": "v0.9.1-pool1"
+    }
+  },
   "upstream": {
     "digest": "sha256:3e0f079eb57dd5563f36a457e9a7a2963ff882316d6c77e3180ac3c59767a68f",
     "image": "quickwit/quickwit",
