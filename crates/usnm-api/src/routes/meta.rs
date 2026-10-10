@@ -48,8 +48,11 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
         // The Japanese pages we OCR (#139): searched by queries with Japanese words.
         "ja": c.ja,
         // Whether searches cover American Stories' text (05 §5.5.4): the
-        // version has it and `USNM_AMERICAN_STORIES_SEARCH` leaves it on.
+        // version has it and `USNM_AMERICAN_STORIES_SEARCH` leaves it on,
+        // or it shares one field with LoC's (05 §5.5.6).
         "american_stories": rd.searches_american_stories(),
+        // A searched field per text (1) or one for both (2), 05 §5.5.6.
+        "text_layout": rd.text_layout().version(),
         "languages": filter_languages(rd),
         "capabilities": snap.backend.capabilities(),
         "limits": {

@@ -17,3 +17,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0011](0011-deployment-stacks.md)               | One deployment stack per environment (delete on removal, deny deletes), without azd                                    | Accepted                                |
 | [0012](0012-anonymous-search-log.md)            | Keep an anonymous search log indefinitely: day buckets, shuffled day files, no identifiers                             | Accepted                                |
 | [0013](0013-quickwit-from-our-fork.md)          | We build Quickwit from our fork: v0.9.1 plus a pooled Azure Blob client                                                | Accepted                                |
+| [0014](0014-one-searched-text-field.md)         | One searched text field for LoC's and American Stories' text, behind a version flag                                    | Accepted (behind a setting)             |

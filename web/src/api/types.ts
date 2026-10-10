@@ -104,7 +104,9 @@ export interface AggregateResponse {
     /**
      * Matching pages that match in American Stories' text but not in LoC's
      * (#218): the pages whose `matched_in` is `["american_stories"]`. Only
-     * when the version searches American Stories' text.
+     * when the version searches American Stories' text in fields of its own:
+     * absent on a version with one field for both texts (`text_layout` 2,
+     * #285), where the hits still carry `matched_in`.
      */
     american_stories_only?: number;
   };
