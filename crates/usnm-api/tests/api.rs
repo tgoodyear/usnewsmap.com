@@ -1663,6 +1663,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
         engine: Engine::Memory {
             indexes_dir: dir.join("indexes"),
         },
+        congress_search: true,
     };
     let snapshot = loader.snapshot().await.unwrap();
     let s = Arc::new(AppState::with_loader(config(), snapshot, Some(loader)));
@@ -2531,6 +2532,16 @@ const CONGRESS: &str = "congress-fixture";
 async fn congress_state_with(cfg: Config) -> Arc<AppState> {
     let mut backend = fixture_backend();
     backend.add_index(CONGRESS, load_docs(CONGRESS));
+    Arc::new(AppState::new(
+        cfg,
+        Arc::new(backend),
+        congress_refdata().await,
+    ))
+}
+
+/// The fixture version's reference data, its pointer naming the Congress
+/// fixture index and its series.
+async fn congress_refdata() -> RefData {
     let mut refdata = refdata().await;
     let d = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
     let series = |name: &str, pages: u64, from: &str, to: &str| usnm_api::refdata::CongressSeries {
@@ -2549,7 +2560,7 @@ async fn congress_state_with(cfg: Config) -> Arc<AppState> {
             series("serialset", 72, "1896-02-03", "1897-11-29"),
         ],
     });
-    Arc::new(AppState::new(cfg, Arc::new(backend), refdata))
+    refdata
 }
 
 async fn congress_state() -> Arc<AppState> {
@@ -2657,10 +2668,16 @@ async fn congress_hits_carry_their_series_citation_and_link() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{body}");
+    // The Congress place isn't in the newspapers' catalog, but is echoed.
+    assert_eq!(
+        body["place"],
+        json!({"id": "PC001", "name": "Congress", "state": "DC"})
+    );
     let items = body["items"].as_array().unwrap();
     assert!(!items.is_empty());
     for it in items {
         assert_eq!(it["place_id"], "PC001");
+        assert_eq!(it["front_page"], false);
         assert_eq!(it["congress"]["series"], "globe");
         assert_eq!(it["congress"]["congress"], 31);
         assert!(it["title"].as_str().unwrap().starts_with("Fixture Globe"));
@@ -2669,6 +2686,11 @@ async fn congress_hits_carry_their_series_citation_and_link() {
             .unwrap()
             .starts_with("https://example.org/fixture/congress/globe/"));
         assert!(it["snippets"][0].as_str().unwrap().contains("<mark>"));
+        // Who made the text goes with the citation, not in `ocr`, which
+        // the site shows as our Japanese OCR.
+        assert!(it.get("ocr").is_none(), "{it}");
+        assert_eq!(it["congress"]["text_source"], "fixture");
+        assert!(it["congress"].get("text_engine").is_none(), "{it}");
     }
     // A newspaper search still refuses the Congress place.
     let (st, _, _) = get(&s, "/v1/hits?q=gold&place=PC001").await;
@@ -2718,7 +2740,179 @@ async fn meta_lists_congress_series_and_its_place() {
         .collect();
     assert_eq!(series, ["annals", "register", "globe", "serialset"]);
     assert_eq!(meta["congress"]["place"]["id"], "PC001");
+    assert_eq!(meta["congress"]["place"]["name"], "Congress");
     // A version without Congress pages says so.
     let (_, _, plain) = get(&state_with(None).await, "/v1/meta").await;
     assert!(plain["congress"].is_null());
+}
+
+#[tokio::test]
+async fn days_take_the_congress_place_for_congress_searches_only() {
+    let s = congress_state().await;
+    let (st, _, body) = get(
+        &s,
+        "/v1/days?q=%22fugitive+slave%22&from=1850-01-01&to=1850-12-31&source=congress&place=PC001",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["places"][0]["id"], "PC001");
+    let hits: u64 = body["places"][0]["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h.as_u64().unwrap())
+        .sum();
+    let want = congress_oracle("fugitive slave", "1850-01-01", "1850-12-31", None);
+    assert!(want > 0);
+    assert_eq!(hits, want);
+    // A newspaper search doesn't know the place.
+    let (st, _, _) = get(&s, "/v1/days?q=gold&place=PC001").await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _, _) = get(&s, "/v1/days?q=gold&place=PC001&source=news").await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+/// Switching Congress search off refuses Congress searches before any
+/// cache is asked, so responses cached while it was on aren't served.
+#[tokio::test]
+async fn congress_responses_cached_before_the_switch_goes_off_are_refused() {
+    let s = congress_state().await;
+    let range = "q=%22fugitive+slave%22&from=1850-01-01&to=1850-12-31&source=congress";
+    let uris = [
+        format!("/v1/aggregate?{range}"),
+        format!("/v1/hits?{range}&place=PC001"),
+        format!("/v1/days?{range}&place=PC001"),
+    ];
+    let mut keys = Vec::new();
+    for uri in &uris {
+        let (st, _, body) = get(&s, uri).await;
+        assert_eq!(st, StatusCode::OK, "{uri}: {body}");
+        if let Some(canonical) = body["query"]["canonical"].as_str() {
+            keys.push(format!("fixture-v1|aggregate|{canonical}"));
+        }
+    }
+    assert!(s.cache.contains_key(&keys[0]), "{keys:?}");
+    // The same version, switched off.
+    let serving = s.snapshot.load_full();
+    let mut refdata = congress_refdata().await;
+    refdata.congress_search = false;
+    s.snapshot.store(Arc::new(usnm_api::Snapshot {
+        refdata,
+        backend: serving.backend.clone(),
+    }));
+    for uri in &uris {
+        let (st, _, body) = get(&s, uri).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{uri}: {body}");
+        assert_eq!(body["type"], "/errors/unsupported");
+    }
+    // Still cached: only refused.
+    assert!(s.cache.contains_key(&keys[0]));
+    // Newspaper searches answer as before.
+    let (st, _, _) = get(&s, "/v1/aggregate?q=fever").await;
+    assert_eq!(st, StatusCode::OK);
+}
+
+/// Without series a Congress set has no dates of its own, so a Congress
+/// search would be clamped to the newspapers': refused instead.
+#[tokio::test]
+async fn a_congress_set_without_series_is_not_searched() {
+    let mut backend = fixture_backend();
+    backend.add_index(CONGRESS, load_docs(CONGRESS));
+    let mut refdata = congress_refdata().await;
+    if let Some(c) = refdata.current.congress.as_mut() {
+        c.series.clear();
+    }
+    let s = Arc::new(AppState::new(config(), Arc::new(backend), refdata));
+    let (st, _, body) = get(
+        &s,
+        "/v1/aggregate?q=%22fugitive+slave%22&from=1850-01-01&to=1850-12-31&source=congress",
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["type"], "/errors/unsupported");
+    let (_, _, meta) = get(&s, "/v1/meta").await;
+    assert!(meta["congress"].is_null());
+}
+
+/// A state loaded from `dir` as the API loads one, with Congress search on
+/// or off.
+async fn loaded_state(dir: &std::path::Path, congress_search: bool) -> Arc<AppState> {
+    let loader = Loader {
+        reference: Arc::new(LocalStore::new(dir)),
+        engine: Engine::Memory {
+            indexes_dir: dir.join("indexes"),
+        },
+        congress_search,
+    };
+    let snapshot = loader.snapshot().await.unwrap();
+    let mut cfg = config();
+    cfg.congress_search = congress_search;
+    Arc::new(AppState::with_loader(cfg, snapshot, None))
+}
+
+/// A Congress index that can't be loaded only takes the Congress pages out
+/// of a version: its newspapers still publish. Switched off, the Congress
+/// index isn't read at all.
+#[tokio::test]
+async fn a_broken_congress_index_never_holds_back_the_newspapers() {
+    let dir = temp_data_dir("congress-load");
+    let pointer = dir.join("current.json");
+    let mut current: Value =
+        serde_json::from_str(&std::fs::read_to_string(&pointer).unwrap()).unwrap();
+    current["congress"] = json!({
+        "indexes": ["congress-missing"],
+        "series": [{"series": "globe", "pages": 78, "from": "1850-01-07", "to": "1850-09-30"}],
+    });
+    std::fs::write(&pointer, current.to_string()).unwrap();
+    let congress =
+        "/v1/aggregate?q=%22fugitive+slave%22&from=1850-01-01&to=1850-12-31&source=congress";
+    for on in [true, false] {
+        let s = loaded_state(&dir, on).await;
+        let (st, _, body) = get(&s, "/v1/aggregate?q=fever").await;
+        assert_eq!(st, StatusCode::OK, "{on}: {body}");
+        assert!(body["total"]["hits"].as_u64().unwrap() > 0);
+        let (st, _, body) = get(&s, congress).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{on}: {body}");
+        let (_, _, meta) = get(&s, "/v1/meta").await;
+        assert!(meta["congress"].is_null(), "{on}");
+    }
+
+    // With its index there, the version searches its Congress pages too.
+    current["congress"]["indexes"] = json!([CONGRESS]);
+    std::fs::write(&pointer, current.to_string()).unwrap();
+    let s = loaded_state(&dir, true).await;
+    let (st, _, body) = get(&s, congress).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["total"]["hits"],
+        congress_oracle("fugitive slave", "1850-01-01", "1850-12-31", None)
+    );
+    // Switched off, the index was never loaded.
+    let s = loaded_state(&dir, false).await;
+    let filters = usnm_core::params::Filters {
+        from: chrono::NaiveDate::from_ymd_opt(1789, 1, 1).unwrap(),
+        to: chrono::NaiveDate::from_ymd_opt(1994, 12, 31).unwrap(),
+        states: vec![],
+        lccns: vec![],
+        langs: vec![],
+        front_only: false,
+        series: vec![],
+    };
+    let page = usnm_search::HitsQuery {
+        limit: 1,
+        ..Default::default()
+    };
+    let read = s
+        .snapshot
+        .load_full()
+        .backend
+        .hits(
+            &usnm_search::IndexSet::new(vec![CONGRESS.into()]),
+            &parse("slave").unwrap(),
+            &filters,
+            &page,
+        )
+        .await;
+    assert!(read.is_err());
+    let _ = std::fs::remove_dir_all(&dir);
 }

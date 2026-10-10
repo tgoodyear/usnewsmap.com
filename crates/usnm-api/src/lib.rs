@@ -60,6 +60,11 @@ pub enum Engine {
 pub struct Loader {
     pub reference: Arc<dyn ObjectStore>,
     pub engine: Engine,
+    /// `USNM_CONGRESS_SEARCH` ([`Config::congress_search`], #229), applied
+    /// before a version's Congress index set is loaded or prepared, so
+    /// switching it off keeps a broken Congress index from holding back the
+    /// newspapers.
+    pub congress_search: bool,
 }
 
 impl Loader {
@@ -74,35 +79,57 @@ impl Loader {
     }
 
     pub async fn load(&self, current: Current) -> Result<Snapshot, String> {
-        let refdata = RefData::load_for(self.reference.as_ref(), current).await?;
-        let backend: Arc<dyn SearchBackend> = match &self.engine {
-            Engine::Shared(b) => b.clone(),
-            Engine::Memory { indexes_dir } => {
-                let dir = indexes_dir.clone();
-                let mut ids = refdata.current.indexes.clone();
-                if let Some(ja) = &refdata.current.ja {
-                    ids.extend(ja.indexes.iter().cloned());
-                }
-                if let Some(c) = &refdata.current.congress {
-                    ids.extend(c.indexes.iter().cloned());
-                }
-                tokio::task::spawn_blocking(move || memory_backend(&dir, &ids))
+        let mut refdata = RefData::load_for(self.reference.as_ref(), current).await?;
+        // The setting applies before the Congress set is loaded or prepared,
+        // which only the set the version will search is (#229).
+        refdata.congress_search = self.congress_search;
+        let congress = refdata.congress_index_set();
+        let (backend, congress_loaded): (Arc<dyn SearchBackend>, Result<(), String>) =
+            match &self.engine {
+                Engine::Shared(b) => (b.clone(), Ok(())),
+                Engine::Memory { indexes_dir } => {
+                    let dir = indexes_dir.clone();
+                    let mut ids = refdata.current.indexes.clone();
+                    if let Some(ja) = &refdata.current.ja {
+                        ids.extend(ja.indexes.iter().cloned());
+                    }
+                    let congress_ids = congress
+                        .as_ref()
+                        .map(|c| c.ids().to_vec())
+                        .unwrap_or_default();
+                    tokio::task::spawn_blocking(move || {
+                        let mut backend = usnm_search::memory::MemoryBackend::new();
+                        add_memory_indexes(&mut backend, &dir, &ids)?;
+                        // On their own: a Congress index that won't load
+                        // leaves the newspapers' (#229).
+                        let congress = add_memory_indexes(&mut backend, &dir, &congress_ids);
+                        Ok::<_, String>((Arc::new(backend) as Arc<dyn SearchBackend>, congress))
+                    })
                     .await
                     .map_err(|e| e.to_string())??
-            }
-        };
+                }
+            };
         let set = refdata.index_set();
         backend.prepare(&set).await.map_err(|e| e.to_string())?;
         // A version goes live only with its Japanese index searchable too.
         if let Some(ja) = refdata.ja_index_set() {
             backend.prepare(&ja).await.map_err(|e| e.to_string())?;
         }
-        // And its Congress index, when it has one (#229).
-        if let Some(congress) = refdata.congress_index_set() {
-            backend
-                .prepare(&congress)
-                .await
-                .map_err(|e| e.to_string())?;
+        // Its Congress index, when it has one, goes live only when it's
+        // searchable, but never holds back the newspapers (#229).
+        if let Some(congress) = congress {
+            let ready = match congress_loaded {
+                Ok(()) => backend.prepare(&congress).await.map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = ready {
+                tracing::warn!(
+                    version = refdata.version(),
+                    error = %e,
+                    "the Congress index set isn't searchable; serving the version without it"
+                );
+                refdata.current.congress = None;
+            }
         }
         Ok(Snapshot { refdata, backend })
     }
@@ -275,10 +302,13 @@ async fn rate_limit(State(state): State<Arc<AppState>>, req: Request, next: Next
     next.run(req).await
 }
 
-/// An in-memory backend holding exactly the named JSONL indexes.
-fn memory_backend(dir: &std::path::Path, ids: &[String]) -> Result<Arc<dyn SearchBackend>, String> {
+/// Add the named JSONL indexes to an in-memory backend.
+fn add_memory_indexes(
+    backend: &mut usnm_search::memory::MemoryBackend,
+    dir: &std::path::Path,
+    ids: &[String],
+) -> Result<(), String> {
     use std::io::BufRead;
-    let mut backend = usnm_search::memory::MemoryBackend::new();
     for id in ids {
         let path = dir.join(format!("{id}.jsonl"));
         let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -293,7 +323,7 @@ fn memory_backend(dir: &std::path::Path, ids: &[String]) -> Result<Arc<dyn Searc
         tracing::info!(index = %id, docs = docs.len(), "loaded memory index");
         backend.add_index(id, docs);
     }
-    Ok(Arc::new(backend))
+    Ok(())
 }
 
 /// If `current.json` names a different version than the one serving, build

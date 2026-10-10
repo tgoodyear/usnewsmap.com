@@ -883,6 +883,9 @@ pub fn parse_hits(
         // Which texts match, from the same stored texts: no extra query.
         let matched_in = (american_stories && d.printed.is_none())
             .then(|| matched_in(text, d.text_as.as_deref(), query));
+        // A Congress unit's first page is no front page (#229), as its
+        // document says and the memory backend reads.
+        let front_page = d.seq == 1 && !d.congress.is_congress();
         hits.push(Hit {
             snippets,
             snippet_source,
@@ -890,7 +893,7 @@ pub fn parse_hits(
             ocr_source: d.ocr_source,
             ocr_engine: d.ocr_engine,
             congress: d.congress,
-            front_page: d.seq == 1,
+            front_page,
             day,
             doc_id: d.doc_id,
             lccn: d.lccn,
@@ -1457,6 +1460,32 @@ mod tests {
             parse_hits(first, &q, &stories(false)).unwrap().days,
             Some(2)
         );
+    }
+
+    /// A Congress page's stored fields come back with it, and the first page
+    /// of its unit is no front page (#229).
+    #[test]
+    fn decodes_congress_hits() {
+        let resp: SearchResponse = serde_json::from_value(json!({
+            "num_hits": 1,
+            "hits": [
+                {"doc_id": "fixture-globe-0001_p1", "date": "1850-01-07T00:00:00Z",
+                 "place_id": "PC001", "lccn": "", "edition": 1, "seq": 1,
+                 "text": "the gold of california", "series": "globe",
+                 "title": "Fixture Globe", "citation": "Cong. Globe p. 1", "congress": 31,
+                 "link": "https://example.org/p1", "ocr_source": "unt"}
+            ]
+        }))
+        .unwrap();
+        let q = usnm_core::query::parse("gold").unwrap();
+        let hit = &parse_hits(resp, &q, &stories(false)).unwrap().hits[0];
+        assert!(!hit.front_page);
+        assert_eq!((hit.seq, hit.place_id.as_str()), (1, "PC001"));
+        assert_eq!(hit.congress.series.as_deref(), Some("globe"));
+        assert_eq!(hit.congress.congress, Some(31));
+        assert_eq!(hit.congress.link.as_deref(), Some("https://example.org/p1"));
+        assert_eq!(hit.ocr_source.as_deref(), Some("unt"));
+        assert_eq!(hit.snippets, vec!["the <mark>gold</mark> of california"]);
     }
 
     /// A hit says which texts the query matches only when the search covers

@@ -621,12 +621,17 @@ const MAX_DISTINCT: usize = 50_000;
 /// The cache key part of the search a record describes: the canonical query
 /// string `/v1/aggregate` computes it under (06 §6.3.1), for the corpus
 /// `bounds` and the `analyzers` of the version serving now. `None` if it no
-/// longer parses.
+/// longer parses, and for a search of Congress pages (`corpus` or `series`
+/// set), which isn't warmed yet (#229).
 pub fn canonical(
     r: &Record,
     bounds: (NaiveDate, NaiveDate),
     analyzers: Analyzers,
 ) -> Option<String> {
+    // Its other fields alone would rebuild a newspaper search.
+    if r.corpus.is_some() || !r.series.is_empty() {
+        return None;
+    }
     let mut s = form_urlencoded::Serializer::new(String::new());
     // The canonical query, without a mode, parses to the same search
     // (`Node`'s Display is its canonical rendering).
@@ -651,7 +656,8 @@ pub fn canonical(
 /// The `n` searches made most often in the `days` days before `today`
 /// (UTC), from the day files: canonical aggregate query strings, most
 /// frequent first, ties in canonical order, so the result depends only on
-/// the files. Searches that matched no pages are fast anyway and left out.
+/// the files. Searches that matched no pages are fast anyway and left out,
+/// as are searches of Congress pages, which aren't warmed yet (#229).
 /// At most [`MAX_DISTINCT`] different searches are counted.
 /// A day file that can't be read is logged with its day and skipped; no
 /// search text is ever logged.
@@ -1016,6 +1022,47 @@ mod tests {
                 "{query}"
             );
         }
+    }
+
+    /// Congress searches (#229) aren't warmed yet: their records give no
+    /// key, rather than the newspaper search their other fields describe.
+    #[test]
+    fn congress_searches_give_no_cache_key() {
+        let body = Arc::new(br#"{"total":{"hits":3}}"#.to_vec());
+        let record = |query: &str| {
+            let raw = RawParams::parse(query).unwrap();
+            let req = SearchRequest::from_raw(&raw, bounds(), Analyzers::default()).unwrap();
+            Entry::new(
+                at("2026-09-29T12:00:00Z"),
+                Search::new(&raw, &req, "v"),
+                body.clone(),
+            )
+            .record()
+        };
+        for query in [
+            "q=gold&source=congress&from=1850-01-01&to=1850-12-31",
+            "q=gold&source=congress&series=globe",
+            "q=gold&source=all",
+        ] {
+            let r = record(query);
+            assert!(r.corpus.is_some(), "{query}");
+            assert_eq!(
+                canonical(&r, bounds(), Analyzers::default()),
+                None,
+                "{query}"
+            );
+        }
+        // A series alone marks one too.
+        let mut r = record("q=gold");
+        r.series = vec!["globe".into()];
+        assert_eq!(canonical(&r, bounds(), Analyzers::default()), None);
+        // A newspaper search's key is as before.
+        let r = record("q=gold&from=1896-01-01&to=1896-12-31");
+        assert_eq!((r.corpus.as_deref(), r.series.len()), (None, 0));
+        assert_eq!(
+            canonical(&r, bounds(), Analyzers::default()).as_deref(),
+            Some("bucket=week&from=1896-01-01&q=gold&to=1896-12-31")
+        );
     }
 
     fn line(q: &str, pages: u64) -> String {

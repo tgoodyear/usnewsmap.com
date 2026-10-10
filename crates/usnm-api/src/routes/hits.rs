@@ -18,7 +18,7 @@ use usnm_search::{Hit, HitSort, HitsQuery};
 
 use super::{cached, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
-use crate::refdata::RefData;
+use crate::refdata::{RefData, CONGRESS_PLACE, CONGRESS_PLACE_NAME};
 use crate::{version, AppState};
 
 pub const MAX_LIMIT: usize = 50;
@@ -107,6 +107,13 @@ struct CongressOut {
     printed_page: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_id: Option<String>,
+    /// Who made the page's text: `govinfo`, `unt`, our OCR
+    /// (`usnm-tesseract`) or `fixture`. Not `ocr`, which the site shows as
+    /// our Japanese OCR (#229).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_engine: Option<String>,
 }
 
 /// Who made a page's text when it isn't LoC's OCR.
@@ -124,18 +131,6 @@ struct Links {
 impl Item {
     /// `highlight` is the query's highlight terms, for the LoC viewer link.
     pub(crate) fn new(h: Hit, rd: &RefData, highlight: &str) -> Self {
-        // A Japanese page says so itself; a main-index page with our Latin
-        // text is in the snapshot's list.
-        let ocr = match h.ocr_source {
-            Some(source) => Some(Ocr {
-                source,
-                engine: h.ocr_engine,
-            }),
-            None => rd.ja_latin.get(&h.doc_id).map(|p| Ocr {
-                source: p.ocr_source.clone(),
-                engine: Some(p.ocr_engine.clone()),
-            }),
-        };
         if let Some(series) = h.congress.series.clone() {
             let c = h.congress;
             return Item {
@@ -143,7 +138,8 @@ impl Item {
                 title: c.title,
                 // Its source's viewer can't highlight our words either.
                 links: Links { viewer: c.link },
-                ocr,
+                // Who made its text goes with the citation (#229).
+                ocr: None,
                 congress: Some(CongressOut {
                     series,
                     citation: c.citation,
@@ -152,6 +148,8 @@ impl Item {
                     chamber: c.chamber,
                     printed_page: c.printed_page,
                     package_id: c.package_id,
+                    text_source: h.ocr_source,
+                    text_engine: h.ocr_engine,
                 }),
                 doc_id: h.doc_id,
                 lccn: h.lccn,
@@ -164,6 +162,18 @@ impl Item {
                 matched_in: h.matched_in,
             };
         }
+        // A Japanese page says so itself; a main-index page with our Latin
+        // text is in the snapshot's list.
+        let ocr = match h.ocr_source {
+            Some(source) => Some(Ocr {
+                source,
+                engine: h.ocr_engine,
+            }),
+            None => rd.ja_latin.get(&h.doc_id).map(|p| Ocr {
+                source: p.ocr_source.clone(),
+                engine: Some(p.ocr_engine.clone()),
+            }),
+        };
         Item {
             date: date_from_day(h.day).to_string(),
             title: rd.titles.get(&h.lccn).map(|t| t.name.clone()),
@@ -200,6 +210,9 @@ pub async fn hits(
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
     let req = rd.search_request(&raw)?;
+    // Before any cache, so a cached Congress response is never served once
+    // the version can't search Congress pages (#229).
+    rd.check_source(&req)?;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
             "OCR-tolerant (fuzzy) matching".into(),
@@ -208,10 +221,8 @@ pub async fn hits(
     let place = raw.get("place").map(str::to_owned);
     let title = match (&place, req.filters.lccns.as_slice()) {
         (Some(p), _) => {
-            // Congress pages sit at their own reserved place, which isn't in
-            // the newspapers' catalog (#229).
-            let congress_place = req.source.congress() && p == crate::refdata::CONGRESS_PLACE;
-            if rd.place(p).is_none() && !congress_place {
+            // Congress pages sit at their own reserved place (#229).
+            if !rd.knows_place(p, req.source) {
                 return Err(ApiError::NotFound(format!("unknown place `{p}`")));
             }
             None
@@ -309,14 +320,20 @@ pub async fn hits(
         Ok::<_, ApiError>(HitsResponse {
             index_version: rd.version().to_owned(),
             synthetic: rd.current.synthetic,
-            place: place
-                .as_deref()
-                .and_then(|p| rd.place(p))
-                .map(|p| PlaceOut {
+            place: place.as_deref().and_then(|p| match rd.place(p) {
+                Some(p) => Some(PlaceOut {
                     id: p.id.clone(),
                     name: p.name.clone(),
                     state: p.state.clone(),
                 }),
+                // The Congress place isn't in the newspapers' catalog (#229).
+                None if req.source.congress() && p == CONGRESS_PLACE => Some(PlaceOut {
+                    id: CONGRESS_PLACE.to_owned(),
+                    name: CONGRESS_PLACE_NAME.to_owned(),
+                    state: "DC".to_owned(),
+                }),
+                None => None,
+            }),
             title: title
                 .as_deref()
                 .and_then(|t| rd.titles.get(t))

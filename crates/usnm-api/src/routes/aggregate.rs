@@ -187,6 +187,9 @@ pub(crate) async fn aggregate_in(
     }
     let snap = &ctx.snap;
     let req = snap.refdata.search_request(&raw)?;
+    // Before any cache, so a cached Congress response is never served once
+    // the version can't search Congress pages (#229).
+    snap.refdata.check_source(&req)?;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
             "OCR-tolerant (fuzzy) matching".into(),

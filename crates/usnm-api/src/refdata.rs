@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use usnm_core::params::{ParamError, RawParams, SearchRequest};
+use usnm_core::params::{ParamError, RawParams, SearchRequest, Source};
 use usnm_core::query::Node;
 use usnm_core::text::{Analyzer, Analyzers};
 use usnm_core::time::{day_number, BucketSpec};
@@ -98,6 +98,10 @@ pub struct CongressSeries {
 /// The reserved place every Congress page sits at for now (#229 design §3):
 /// Washington, DC, apart from DC's newspapers' place.
 pub const CONGRESS_PLACE: &str = "PC001";
+
+/// The Congress place's name in `/v1/meta` and `/v1/hits`, which the site
+/// shows as "{name}, {state}": "Congress, DC" (#229).
+pub const CONGRESS_PLACE_NAME: &str = "Congress";
 
 /// `current.json`'s `ja`: the index of the Japanese pages we OCR ourselves.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -352,6 +356,15 @@ impl RefData {
                 "the Japanese index was folded differently from this API; Japanese searches may miss"
             );
         }
+        if current
+            .congress
+            .as_ref()
+            .is_some_and(|c| c.series.is_empty())
+        {
+            tracing::warn!(
+                "the Congress index set lists no series, so no dates; Congress searches answer 422"
+            );
+        }
         Ok(Self {
             current,
             places,
@@ -498,10 +511,17 @@ impl RefData {
     }
 
     /// The Congress index set (#229), when the version has one built with
-    /// the main indexes' analyzer and `USNM_CONGRESS_SEARCH` leaves it on.
+    /// the main indexes' analyzer, with the series that date its searches,
+    /// and `USNM_CONGRESS_SEARCH` leaves it on.
     pub fn congress_index_set(&self) -> Option<IndexSet> {
         let c = self.current.congress.as_ref()?;
-        if !self.congress_search || c.common_grams != self.current.common_grams {
+        // Without series a Congress search has no dates of its own
+        // ([`Self::congress_bounds`]) and would be clamped to the
+        // newspapers': refused instead.
+        if !self.congress_search
+            || c.series.is_empty()
+            || c.common_grams != self.current.common_grams
+        {
             return None;
         }
         let grams = c
@@ -524,7 +544,6 @@ impl RefData {
         req: &usnm_core::params::SearchRequest,
     ) -> Result<IndexSet, crate::error::ApiError> {
         use crate::error::ApiError::Unsupported;
-        use usnm_core::params::Source;
         match req.source {
             Source::News => self
                 .index_set_for(&req.query)
@@ -539,6 +558,18 @@ impl RefData {
                 "Searching newspapers and Congress together".into(),
             )),
         }
+    }
+
+    /// Refuse a request this version can't search before any cache is asked
+    /// (#229): a Congress response cached while `USNM_CONGRESS_SEARCH` was on
+    /// isn't served once it's off, and a refused search takes no flight,
+    /// Blob read or search slot. A newspaper search passes without building
+    /// anything; its index set is still chosen in the computation.
+    pub fn check_source(&self, req: &SearchRequest) -> Result<(), crate::error::ApiError> {
+        if req.source == Source::News {
+            return Ok(());
+        }
+        self.index_set_for_request(req).map(|_| ())
     }
 
     /// The indexes a query searches: a query with a Japanese word searches
@@ -558,6 +589,13 @@ impl RefData {
 
     pub fn place(&self, id: &str) -> Option<&Place> {
         self.place_index.get(id).map(|&i| &self.places[i])
+    }
+
+    /// Whether a search on `source` can name the place `id`: a newspaper
+    /// place, or the reserved Congress place, which isn't in the
+    /// newspapers' catalog, when the search covers Congress pages (#229).
+    pub fn knows_place(&self, id: &str, source: Source) -> bool {
+        self.place(id).is_some() || (source.congress() && id == CONGRESS_PLACE)
     }
 
     /// Whether the baselines are exact under a language filter: always with

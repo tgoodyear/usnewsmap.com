@@ -1211,7 +1211,14 @@ async fn congress_searches_match_the_reference_backend() {
                 let got = qw.hits(set, q, f, &page).await.expect(&ctx);
                 assert_eq!(got.total, want.total, "hits total: {ctx}");
                 let key = |h: &usnm_search::Hit| {
-                    (h.doc_id.clone(), h.snippets.clone(), h.congress.clone())
+                    (
+                        h.doc_id.clone(),
+                        h.snippets.clone(),
+                        h.congress.clone(),
+                        h.front_page,
+                        h.seq,
+                        h.place_id.clone(),
+                    )
                 };
                 assert_eq!(
                     got.hits.iter().map(key).collect::<Vec<_>>(),

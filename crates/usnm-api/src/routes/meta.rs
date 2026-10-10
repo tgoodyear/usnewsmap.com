@@ -58,7 +58,7 @@ pub async fn meta(State(state): State<Arc<AppState>>) -> Response {
             "series": cg.series,
             "place": {
                 "id": crate::refdata::CONGRESS_PLACE,
-                "name": "Congress (Washington, DC)",
+                "name": crate::refdata::CONGRESS_PLACE_NAME,
                 "lat": 38.8899,
                 "lon": -77.0091,
             },

@@ -73,6 +73,9 @@ pub async fn days(
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
     let mut req = rd.search_request(&raw)?;
+    // Before any cache, so a cached Congress response is never served once
+    // the version can't search Congress pages (#229).
+    rd.check_source(&req)?;
     // Always by day, so any `bucket` shares one cache key and one URL.
     req.bucket = BucketUnit::Day;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
@@ -81,7 +84,8 @@ pub async fn days(
         ));
     }
     let places = place_ids(raw.get("place"))?;
-    if let Some(p) = places.iter().find(|p| rd.place(p).is_none()) {
+    // Congress pages sit at their own reserved place (#229).
+    if let Some(p) = places.iter().find(|p| !rd.knows_place(p, req.source)) {
         return Err(ApiError::NotFound(format!("unknown place `{p}`")));
     }
 
