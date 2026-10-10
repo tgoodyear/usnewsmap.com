@@ -2788,6 +2788,63 @@ async fn our_latin_text_gets_a_delta_without_a_new_batch() {
     std::fs::rename(&moved, &parts).unwrap();
 }
 
+/// The setting turned on where every page our OCR read Latin text on is
+/// left out for a copy of LoC's (#203): one overlay-only release records
+/// that the overlay was weighed, and later runs release nothing without
+/// reading the curated parts.
+#[tokio::test]
+async fn latin_text_with_nothing_to_add_is_weighed_once() {
+    let e = env().await;
+    let (early, _, _, _) = curate_early_and_late(&e).await;
+    curate(&e, early).await;
+    let pages = fixture_pages();
+    let split = NaiveDate::from_ymd_opt(1897, 7, 1).unwrap();
+    let with_text = pages
+        .iter()
+        .find(|p| p.date < split && !p.text.is_empty())
+        .unwrap();
+    let row = |seq, text| JaRow {
+        lccn: &with_text.lccn,
+        date: with_text.date,
+        seq,
+        batch: "batch_fx_early",
+        loc_text: "missing",
+        text,
+        ocred_at: 1,
+    };
+    put_overlay_part(
+        &e,
+        "ocr-ja/pages/a.parquet",
+        &[
+            row(with_text.seq, "Larimer Street, Denver, Colorado"),
+            row(91, "東京の新聞"),
+        ],
+    )
+    .await;
+    let v1 = e.release_latin(5, true, false).await.expect("base");
+    let v2 = e.release_latin(6, false, true).await.expect("overlay-only");
+    assert_eq!(v2.indexes, v1.indexes);
+    assert_eq!(v2.pages, v1.pages);
+    let v = &v2.index_version;
+    let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
+    assert_eq!(
+        record["latin"],
+        serde_json::json!({"added": 0, "pages": 0, "hidden": 0, "rule": usnm_ingest::ocr_ja::LATIN_VERSION})
+    );
+    assert!(e
+        .reference
+        .get(&format!("{v}/ja_latin.json"))
+        .await
+        .unwrap()
+        .is_none());
+    // With the curated parts gone, a run that read them would fail.
+    let parts = e.root.join("curated/pages");
+    let moved = e.root.join("parts-away");
+    std::fs::rename(&parts, &moved).unwrap();
+    assert!(e.release_latin(7, false, true).await.is_none());
+    std::fs::rename(&moved, &parts).unwrap();
+}
+
 /// A page LoC had no text for, indexed with ours in its own document
 /// (#203), that a later batch ships with LoC's text: the later copy wins,
 /// and the snapshot hides ours, so the page counts once.

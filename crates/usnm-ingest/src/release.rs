@@ -610,11 +610,23 @@ impl Release {
         // publishes only a new Japanese index and snapshot, on the same
         // main indexes.
         let overlay_only = nothing_new && latin_new.is_empty();
-        if overlay_only
-            && latin_pending
-            && !self.overlay_releasable(previous.as_ref(), &overlay).await?
-        {
-            return Ok(None);
+        // Every page was weighed and none added (each left out for a copy
+        // of LoC's): an overlay-only release, once, so its `ocr_ja.json`
+        // records `latin.rule` and later runs skip the curated parts. The
+        // run records the Japanese index as the index it wrote, so there
+        // must be one.
+        if overlay_only && latin_pending {
+            if !overlay.pages.iter().any(ocr_ja::JaPage::indexable) {
+                tracing::info!(
+                    "no newly curated batches and no Latin text of ours to add, and the \
+                     Japanese OCR has no page to index; nothing to release"
+                );
+                return Ok(None);
+            }
+            tracing::info!(
+                "no newly curated batches and no Latin text of ours to add; releasing the \
+                 Japanese OCR on the same indexes, which records that every page was weighed"
+            );
         }
         if nothing_new && !overlay_only {
             tracing::info!(
