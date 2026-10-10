@@ -1,0 +1,111 @@
+# Quickwit v0.9.1 with our patches (quickwit/patches/*.patch) applied: a
+# drop-in replacement for quickwit/quickwit:v0.9.1, for the experiment in
+# #251 (pooled Azure blob connections). The stages, base images (by digest),
+# packages, features and layout are those of Quickwit's own Dockerfile at
+# the pinned commit, so the only difference from the official image is the
+# patches. Build context: the repository root.
+#
+#   az acr build -r <registry> -f Dockerfile.quickwit-patched \
+#     -t quickwit-patched:v0.9.1-pool1 --platform linux/amd64 --timeout 28800 .
+#
+# or the `quickwit-patched` workflow (.github/workflows/quickwit-patched.yml).
+
+# The commit tagged v0.9.1.
+ARG QW_COMMIT_HASH=962685f5a334f6c9d8516d2d7c1fdd08891b687c
+
+FROM rust:bookworm@sha256:b5efaabfd787a695d2e46b37d3d9c54040e11f4c10bc2e714bbadbfcc0cd6c39 AS source
+ARG QW_COMMIT_HASH
+WORKDIR /src
+RUN git init -q . \
+    && git remote add origin https://github.com/quickwit-oss/quickwit.git \
+    && git fetch -q --depth 1 origin "$QW_COMMIT_HASH" \
+    && git checkout -q FETCH_HEAD
+COPY quickwit/patches /patches
+RUN for p in /patches/*.patch; do echo "applying $p" && git apply --verbose "$p" || exit 1; done
+
+
+FROM node:24@sha256:b2b2184ba9b78c022e1d6a7924ec6fba577adf28f15c9d9c457730cc4ad3807a AS ui-builder
+
+COPY --from=source /src/quickwit/quickwit-ui /quickwit/quickwit-ui
+
+WORKDIR /quickwit/quickwit-ui
+
+RUN touch .gitignore_for_build_directory \
+    && NODE_ENV=production make install build
+
+
+FROM rust:bookworm@sha256:b5efaabfd787a695d2e46b37d3d9c54040e11f4c10bc2e714bbadbfcc0cd6c39 AS bin-builder
+
+ARG CARGO_FEATURES=release-feature-set
+ARG CARGO_PROFILE=release
+# The commit date of v0.9.1. `quickwit --version` and the build records
+# (usnm-ingest's build_info) show the tag, so the patched build is told apart.
+ARG QW_COMMIT_DATE=2026-09-22T16:38:29Z
+ARG QW_COMMIT_HASH
+ARG QW_COMMIT_TAGS=v0.9.1-pool1
+ARG LAMBDA_ZIP_PATH
+# Parallel rustc jobs; lower it if the builder runs out of memory.
+ARG CARGO_BUILD_JOBS=
+
+ENV QW_COMMIT_DATE=$QW_COMMIT_DATE
+ENV QW_COMMIT_HASH=$QW_COMMIT_HASH
+ENV QW_COMMIT_TAGS=$QW_COMMIT_TAGS
+ENV LAMBDA_ZIP_PATH=$LAMBDA_ZIP_PATH
+
+RUN apt-get -y update \
+    && apt-get -y install ca-certificates \
+    clang \
+    cmake \
+    libssl-dev \
+    llvm \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# The source tree without .git, as upstream copies it, so the build takes the
+# commit details from the variables above.
+COPY --from=source /src/quickwit /quickwit
+COPY --from=source /src/config/quickwit.yaml /quickwit/config/quickwit.yaml
+COPY --from=ui-builder /quickwit/quickwit-ui/build /quickwit/quickwit-ui/build
+
+WORKDIR /quickwit
+
+RUN rustup toolchain install
+
+RUN echo "Building workspace with feature(s) '$CARGO_FEATURES' and profile '$CARGO_PROFILE'" \
+    && if [ -n "$CARGO_BUILD_JOBS" ]; then export CARGO_BUILD_JOBS; else unset CARGO_BUILD_JOBS; fi \
+    && RUSTFLAGS="--cfg tokio_unstable" \
+    cargo build \
+    -p quickwit-cli \
+    --features $CARGO_FEATURES \
+    --bin quickwit \
+    $(test "$CARGO_PROFILE" = "release" && echo "--release") \
+    && echo "Copying binaries to /quickwit/bin" \
+    && mkdir -p /quickwit/bin \
+    && find target/$CARGO_PROFILE -maxdepth 1 -perm /a+x -type f -exec mv {} /quickwit/bin \;
+
+
+FROM debian:bookworm-slim@sha256:e899040a73d36e2b36fa33216943539d9957cba8172b858097c2cabcdb20a3e2 AS quickwit
+
+LABEL org.opencontainers.image.title="Quickwit"
+LABEL maintainer="Quickwit, Inc. <hello@quickwit.io>"
+LABEL org.opencontainers.image.vendor="Quickwit, Inc."
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.description="Quickwit v0.9.1 with usnewsmap.com's quickwit/patches applied"
+
+RUN apt-get -y update \
+    && apt-get -y install ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /quickwit
+RUN mkdir config qwdata
+COPY --from=bin-builder /quickwit/bin/quickwit /usr/local/bin/quickwit
+COPY --from=bin-builder /quickwit/config/quickwit.yaml /quickwit/config/quickwit.yaml
+
+ENV QW_CONFIG=/quickwit/config/quickwit.yaml
+ENV QW_DATA_DIR=/quickwit/qwdata
+ENV QW_LISTEN_ADDRESS=0.0.0.0
+
+RUN quickwit --version
+
+ENTRYPOINT ["quickwit"]

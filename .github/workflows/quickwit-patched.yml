@@ -1,0 +1,92 @@
+name: quickwit-patched
+# Builds Quickwit v0.9.1 with quickwit/patches applied (Dockerfile.quickwit-patched)
+# and pushes it to the dev registry, for the experiment in #251. Manual only:
+# run it from the Actions tab or `gh workflow run` once this file is on main,
+# or, from a branch, push a tag `quickwit-patched/<image tag>`.
+#
+# ACR Tasks' default agent (2 vCPU, memory unpublished) is too small for a
+# Quickwit release build to be dependable; Quickwit builds its official
+# image on this same runner type.
+run-name: quickwit-patched (${{ inputs.tag || github.ref_name }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag in the dev registry (quickwit-patched:<tag>)"
+        required: true
+        default: v0.9.1-pool1
+  push:
+    tags: ["quickwit-patched/*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quickwit-patched
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build and push (dev)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    # The dev CI identity (id-usnm-ci-dev) trusts this repository's `dev`
+    # GitHub Environment, whose variables name the registry and identity.
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACR: ${{ vars.USNM_ACR_LOGIN_SERVER }}
+    steps:
+      - name: Image tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag=${INPUT_TAG:-${GITHUB_REF_NAME#quickwit-patched/}}
+          [[ $tag =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "::error::bad image tag: $tag"; exit 1; }
+          [ -n "$ACR" ] || { echo "::error::the dev environment has no USNM_ACR_LOGIN_SERVER variable"; exit 1; }
+          echo "image=$ACR/quickwit-patched:$tag" >> "$GITHUB_OUTPUT"
+      # As Quickwit's own image build does: the release build needs the room.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/local/lib/android /usr/share/dotnet /usr/share/swift
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.USNM_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: az acr login --name "${ACR%%.*}"
+      # Docker Hub base images through Google's mirror of it (08 §8.6).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: build
+        with:
+          context: .
+          file: Dockerfile.quickwit-patched
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tag.outputs.image }}
+      - name: Summary
+        env:
+          IMAGE: ${{ steps.tag.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Pushed"
+            echo
+            echo "\`$IMAGE\` (\`$DIGEST\`)"
+            echo
+            echo "Ingest image on it: \`--build-arg QUICKWIT_IMAGE=$IMAGE@$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
