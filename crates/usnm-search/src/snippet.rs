@@ -5,7 +5,7 @@
 //! (which its REST API can't lengthen) no longer decides what readers see.
 
 use usnm_core::query::{Node, Term};
-use usnm_core::text::{fold, tokenize, MAX_TOKEN_CHARS};
+use usnm_core::text::{fold, tokenize, Analyzer, MAX_TOKEN_CHARS};
 
 use crate::memory::{eval, term_matches};
 use crate::{mark_html, MATCHED_IN_LOC, SNIPPETS_FROM_AMERICAN_STORIES};
@@ -24,8 +24,9 @@ struct Word {
     end: usize,
 }
 
-/// The text's words as the `usnm_text` analyzer splits them, with positions.
-fn words(chars: &[char]) -> Vec<Word> {
+/// The text's words as the `usnm_text` analyzer splits them, with positions,
+/// folded by `analyzer`.
+fn words(chars: &[char], analyzer: Analyzer) -> Vec<Word> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
@@ -38,7 +39,7 @@ fn words(chars: &[char]) -> Vec<Word> {
             i += 1;
         }
         let raw: String = chars[start..i].iter().collect();
-        let token = fold(&raw);
+        let token = fold(&raw, analyzer);
         // A dropped run keeps its position, so a phrase can't match across it.
         out.push(Word {
             token: (token.chars().count() <= MAX_TOKEN_CHARS).then_some(token),
@@ -143,13 +144,14 @@ fn word_end(chars: &[char], mut at: usize) -> usize {
 /// NEAR phrase's words one by one, prefix, wildcard and fuzzy terms on each
 /// word they match. Matches closer together than the context share a
 /// fragment, and fragments never overlap. Line breaks (columns) become spaces; a fragment
-/// that doesn't reach the text's start or end is marked with `…`.
-pub fn text_snippets(text: &str, query: &Node) -> Vec<String> {
+/// that doesn't reach the text's start or end is marked with `…`. The text's
+/// words are folded by `analyzer`, the one the query was parsed with.
+pub fn text_snippets(text: &str, query: &Node, analyzer: Analyzer) -> Vec<String> {
     let chars: Vec<char> = text
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
         .collect();
-    let hits = matches(&words(&chars), &patterns(query));
+    let hits = matches(&words(&chars, analyzer), &patterns(query));
     let mut out = Vec::new();
     let mut covered = 0;
     let mut k = 0;
@@ -199,11 +201,12 @@ pub fn page_snippets(
     text_as: Option<&str>,
     query: &Node,
     american_stories: bool,
+    analyzer: Analyzer,
 ) -> (Vec<String>, Option<&'static str>) {
-    let loc = text_snippets(text, query);
+    let loc = text_snippets(text, query, analyzer);
     match text_as {
         Some(text_as) if loc.is_empty() && american_stories => {
-            let other = text_snippets(text_as, query);
+            let other = text_snippets(text_as, query, analyzer);
             if other.is_empty() {
                 (loc, None)
             } else {
@@ -223,12 +226,17 @@ pub fn page_snippets(
 /// without `loc` is one a search of LoC's text alone doesn't find: the
 /// pages `/v1/aggregate` counts in `total.american_stories_only`. Both
 /// backends use it.
-pub fn matched_in(text: &str, text_as: Option<&str>, query: &Node) -> Vec<&'static str> {
+pub fn matched_in(
+    text: &str,
+    text_as: Option<&str>,
+    query: &Node,
+    analyzer: Analyzer,
+) -> Vec<&'static str> {
     let Some(text_as) = text_as else {
         return vec![MATCHED_IN_LOC];
     };
-    let loc = eval(query, &tokenize(text));
-    let american = eval(query, &tokenize(text_as));
+    let loc = eval(query, &tokenize(text, analyzer));
+    let american = eval(query, &tokenize(text_as, analyzer));
     match (loc, american) {
         (true, false) => vec![MATCHED_IN_LOC],
         (false, true) => vec![SNIPPETS_FROM_AMERICAN_STORIES],
@@ -259,7 +267,7 @@ mod tests {
     use usnm_core::query::parse;
 
     fn snip(text: &str, q: &str) -> Vec<String> {
-        text_snippets(text, &parse(q).unwrap())
+        text_snippets(text, &parse(q).unwrap(), Analyzer::LATEST)
     }
 
     #[test]
@@ -371,11 +379,11 @@ mod tests {
         let american = "BRYAN AT CHICAGO the boy orator spoke";
         // Off: LoC's text only.
         assert_eq!(
-            page_snippets(loc, Some(american), &q, false),
+            page_snippets(loc, Some(american), &q, false, Analyzer::LATEST),
             (Vec::new(), None)
         );
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true),
+            page_snippets(loc, Some(american), &q, true, Analyzer::LATEST),
             (
                 vec!["<mark>BRYAN</mark> AT CHICAGO the boy orator spoke".to_owned()],
                 Some(SNIPPETS_FROM_AMERICAN_STORIES)
@@ -384,22 +392,25 @@ mod tests {
         // A match in LoC's text keeps its snippets.
         let q = parse("orator").unwrap();
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true),
+            page_snippets(loc, Some(american), &q, true, Analyzer::LATEST),
             (vec!["the boy <mark>orator</mark> spoke".to_owned()], None)
         );
         // Nothing in either text, or no second text.
         let q = parse("silver").unwrap();
         assert_eq!(
-            page_snippets(loc, Some(american), &q, true),
+            page_snippets(loc, Some(american), &q, true, Analyzer::LATEST),
             (Vec::new(), None)
         );
-        assert_eq!(page_snippets(loc, None, &q, true), (Vec::new(), None));
+        assert_eq!(
+            page_snippets(loc, None, &q, true, Analyzer::LATEST),
+            (Vec::new(), None)
+        );
     }
 
     #[test]
     fn matched_in_names_the_texts_that_match_the_whole_query() {
         let m = |q: &str, loc: &str, american: Option<&str>| {
-            matched_in(loc, american, &parse(q).unwrap())
+            matched_in(loc, american, &parse(q).unwrap(), Analyzer::LATEST)
         };
         let loc = "a cross of goid, said the boy orator";
         let american = "BRYAN AT CHICAGO a cross of gold, said the boy oratar";

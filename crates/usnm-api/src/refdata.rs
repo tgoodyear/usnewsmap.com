@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use usnm_core::params::{ParamError, RawParams, SearchRequest};
 use usnm_core::query::Node;
+use usnm_core::text::{Analyzer, Analyzers};
 use usnm_core::time::{day_number, BucketSpec};
 use usnm_search::IndexSet;
 use usnm_state::state::{
@@ -47,8 +49,9 @@ pub struct Current {
     /// The Japanese pages' index (#139, 04 §4.8), when the version has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ja: Option<JaIndexes>,
-    /// The `usnm_core::common_grams::VERSION` every index was built with
-    /// (05 §5.5.3); absent for versions without `text_cg`.
+    /// The `usnm_core::common_grams` version every index was built with
+    /// (05 §5.5.3), which names their analyzer (#168); absent for versions
+    /// without `text_cg`, whose analyzer is version 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub common_grams: Option<u32>,
     /// The `usnm_core::american_stories::VERSION` every index was built
@@ -66,7 +69,8 @@ pub struct Current {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct JaIndexes {
     pub indexes: Vec<String>,
-    /// The `usnm_core::ja::FOLD_VERSION` the index was built with.
+    /// The `usnm_core::ja` fold version the index was built with, which
+    /// names its analyzer (#168).
     pub fold: u32,
     #[serde(default)]
     pub pages: u64,
@@ -286,14 +290,29 @@ impl RefData {
             .map(|(id, series)| (id.clone(), series.iter().map(|&(_, n)| u64::from(n)).sum()))
             .collect();
         let pages = place_pages.values().sum();
-        if let Some(ja) = &current.ja {
-            if ja.fold != usnm_core::ja::FOLD_VERSION {
-                tracing::warn!(
-                    index_fold = ja.fold,
-                    api_fold = usnm_core::ja::FOLD_VERSION,
-                    "the Japanese index was folded differently from this API; Japanese searches may miss"
-                );
-            }
+        // Queries are folded as each index was built (#168): only a version
+        // newer than this API's can't be.
+        if let Some(v) = current
+            .common_grams
+            .filter(|v| usnm_core::common_grams::analyzer(*v).is_none())
+        {
+            tracing::warn!(
+                index_common_grams = v,
+                api_common_grams = usnm_core::common_grams::VERSION,
+                "the indexes were built with common-word pairs this API doesn't know; phrases \
+                 search `text`, and words this API folds differently may miss"
+            );
+        }
+        if let Some(ja) = current
+            .ja
+            .as_ref()
+            .filter(|ja| usnm_core::ja::analyzer(ja.fold).is_none())
+        {
+            tracing::warn!(
+                index_fold = ja.fold,
+                api_fold = usnm_core::ja::FOLD_VERSION,
+                "the Japanese index was folded differently from this API; Japanese searches may miss"
+            );
         }
         Ok(Self {
             current,
@@ -315,6 +334,27 @@ impl RefData {
 
     pub fn version(&self) -> &str {
         &self.current.index_version
+    }
+
+    /// The analyzers the version's indexes were built with, from
+    /// `common_grams` and `ja.fold` (#168): version 1 where they're absent
+    /// (built before either existed), and this API's latest for a version it
+    /// doesn't know.
+    pub fn analyzers(&self) -> Analyzers {
+        let main = match self.current.common_grams {
+            None => Analyzer::V1,
+            Some(v) => usnm_core::common_grams::analyzer(v).unwrap_or(Analyzer::LATEST),
+        };
+        let ja = self.current.ja.as_ref().map_or(main, |ja| {
+            usnm_core::ja::analyzer(ja.fold).unwrap_or(Analyzer::LATEST)
+        });
+        Analyzers { main, ja }
+    }
+
+    /// A search request's parameters, parsed for this version: dates within
+    /// its bounds, words folded as its indexes were.
+    pub fn search_request(&self, raw: &RawParams) -> Result<SearchRequest, ParamError> {
+        SearchRequest::from_raw(raw, self.bounds(), self.analyzers())
     }
 
     /// Whether the version was built with American Stories' text at this
@@ -355,10 +395,15 @@ impl RefData {
     }
 
     pub fn index_set(&self) -> IndexSet {
-        // Phrases search `text_cg` only when every index has it at this
-        // API's version: an older version, or one built with another word
-        // list, keeps them in `text` (05 §5.5.3).
-        let grams = self.current.common_grams == Some(usnm_core::common_grams::VERSION);
+        // Phrases search `text_cg` when every index has it at a version this
+        // API knows: the query's words are then folded with that version's
+        // analyzer, as the pairs were (#168). A version without the pairs,
+        // or with a newer one, keeps them in `text` (05 §5.5.3).
+        let grams = self
+            .current
+            .common_grams
+            .and_then(usnm_core::common_grams::analyzer)
+            .is_some();
         let american = self.searches_american_stories();
         // Date-limited searches name their decades, so Quickwit skips the
         // other decades' splits, only on a version laid out with this API's
@@ -369,6 +414,7 @@ impl RefData {
                 ..=usnm_core::decade::of_date(self.current.bounds.to)
         });
         IndexSet::new(self.current.indexes.clone())
+            .with_analyzer(self.analyzers().main)
             .with_common_grams(grams)
             .with_american_stories(american)
             .with_decades(decades)
@@ -384,7 +430,7 @@ impl RefData {
         self.current
             .ja
             .as_ref()
-            .map(|j| IndexSet::new(j.indexes.clone()))
+            .map(|j| IndexSet::new(j.indexes.clone()).with_analyzer(self.analyzers().ja))
     }
 
     /// The indexes a query searches: a query with a Japanese word searches

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use async_trait::async_trait;
 use usnm_core::params::Filters;
 use usnm_core::query::{wildcard_matches, Node, Term};
-use usnm_core::text::tokenize;
+use usnm_core::text::{tokenize, Analyzer};
 use usnm_core::time::BucketSpec;
 
 use crate::snippet::{matched_in, page_snippets};
@@ -16,20 +16,45 @@ use crate::{
     KeyCount, PageDoc, PlaceSummary, SearchBackend, SearchError, Summary,
 };
 
+/// A text's tokens as each analyzer folds them (#168): one list when they
+/// all agree, as on most pages.
+struct Tokens(Vec<Vec<String>>);
+
+impl Tokens {
+    fn of(text: &str) -> Self {
+        let mut all: Vec<Vec<String>> = Analyzer::ALL.iter().map(|&a| tokenize(text, a)).collect();
+        if all.iter().all(|t| *t == all[0]) {
+            all.truncate(1);
+        }
+        Self(all)
+    }
+
+    /// Tokens no analyzer changes.
+    fn same(tokens: Vec<String>) -> Self {
+        Self(vec![tokens])
+    }
+
+    fn get(&self, analyzer: Analyzer) -> &[String] {
+        // `Analyzer::ALL` lists the versions in order, from 0.
+        self.0.get(analyzer as usize).unwrap_or(&self.0[0])
+    }
+}
+
 struct Indexed {
     doc: PageDoc,
-    tokens: Vec<String>,
+    tokens: Tokens,
     /// American Stories' text's tokens (05 §5.5.4), when the page has it.
-    as_tokens: Option<Vec<String>>,
+    as_tokens: Option<Tokens>,
 }
 
 impl Indexed {
     /// The token streams a search reads: LoC's text, and American Stories'
-    /// when the index set searches it.
-    fn texts(&self, american_stories: bool) -> Vec<&[String]> {
-        let mut out = vec![self.tokens.as_slice()];
-        if american_stories {
-            out.extend(self.as_tokens.as_deref());
+    /// when the index set searches it, folded by the set's analyzer.
+    fn texts(&self, indexes: &IndexSet) -> Vec<&[String]> {
+        let a = indexes.analyzer();
+        let mut out = vec![self.tokens.get(a)];
+        if indexes.american_stories() {
+            out.extend(self.as_tokens.as_ref().map(|t| t.get(a)));
         }
         out
     }
@@ -53,11 +78,11 @@ impl MemoryBackend {
             // `whitespace` tokenizer, pages-ja-index.yaml); folding them again
             // would strip dakuten (が → か).
             tokens: if doc.printed.is_some() {
-                doc.text.split_whitespace().map(str::to_owned).collect()
+                Tokens::same(doc.text.split_whitespace().map(str::to_owned).collect())
             } else {
-                tokenize(&doc.text)
+                Tokens::of(&doc.text)
             },
-            as_tokens: doc.text_as.as_deref().map(tokenize),
+            as_tokens: doc.text_as.as_deref().map(Tokens::of),
             doc,
         }));
     }
@@ -87,7 +112,7 @@ impl MemoryBackend {
                     || doc.language.iter().any(|l| filters.langs.contains(l)))
                 && (!filters.front_only || doc.front_page)
                 && !indexes.hides(&doc.doc_id, &doc.batch)
-                && eval_texts(query, &d.texts(indexes.american_stories()))
+                && eval_texts(query, &d.texts(indexes))
         }))
     }
 }
@@ -194,7 +219,7 @@ impl SearchBackend for MemoryBackend {
             .filter(|d| page.lccn.as_ref().is_none_or(|l| &d.doc.lccn == l))
             .map(|d| {
                 let mentions: usize = d
-                    .texts(indexes.american_stories())
+                    .texts(indexes)
                     .into_iter()
                     .map(|t| mentions(query, t))
                     .sum();
@@ -223,17 +248,19 @@ impl SearchBackend for MemoryBackend {
                 .skip(page.offset)
                 .take(page.limit)
                 .map(|(_, d)| {
+                    let analyzer = indexes.analyzer();
                     let (snippets, snippet_source) = match &d.printed {
-                        Some(printed) => (ja_snippets(printed, query), None),
+                        Some(printed) => (ja_snippets(printed, query, analyzer), None),
                         None => page_snippets(
                             &d.text,
                             d.text_as.as_deref(),
                             query,
                             indexes.american_stories(),
+                            analyzer,
                         ),
                     };
                     let matched_in = (indexes.american_stories() && d.printed.is_none())
-                        .then(|| matched_in(&d.text, d.text_as.as_deref(), query));
+                        .then(|| matched_in(&d.text, d.text_as.as_deref(), query, analyzer));
                     Hit {
                         doc_id: d.doc_id.clone(),
                         day: d.day,
@@ -260,10 +287,12 @@ impl SearchBackend for MemoryBackend {
         filters: &Filters,
     ) -> Result<u64, SearchError> {
         let both = indexes.clone().with_american_stories(true);
+        let a = indexes.analyzer();
         let only = self
             .matching(&both, query, filters)?
             .filter(|d| {
-                !eval(query, &d.tokens) && d.as_tokens.as_ref().is_some_and(|t| eval(query, t))
+                !eval(query, d.tokens.get(a))
+                    && d.as_tokens.as_ref().is_some_and(|t| eval(query, t.get(a)))
             })
             .count();
         Ok(only as u64)
@@ -403,7 +432,7 @@ mod tests {
     use usnm_core::query::parse;
 
     fn toks(s: &str) -> Vec<String> {
-        tokenize(s)
+        tokenize(s, Analyzer::LATEST)
     }
 
     #[test]
@@ -592,6 +621,51 @@ mod shard_tests {
         let gold = usnm_core::query::parse("gold").unwrap();
         assert_eq!(b.american_stories_only(&on, &gold, &f).await.unwrap(), 1);
         assert_eq!(b.american_stories_only(&on, &q, &f).await.unwrap(), 0);
+    }
+
+    /// Each index set's pages are folded by its analyzer, as its queries
+    /// are (#168): `½` is a word of its own with version 2, and `1⁄2` with
+    /// version 1, which finds the same page.
+    #[tokio::test]
+    async fn pages_fold_as_the_index_sets_analyzer_does() {
+        let mut half = doc(1, 1);
+        half.text = "Wheat closed ½ higher".into();
+        let mut slash = doc(2, 1);
+        slash.text = "Oats closed 1/2 lower".into();
+        let mut b = MemoryBackend::new();
+        b.add_index("i", [half, slash]);
+        let (from, to) = (
+            usnm_core::time::date_from_day(71_000),
+            usnm_core::time::date_from_day(71_300),
+        );
+        let f = Filters {
+            from,
+            to,
+            states: vec![],
+            lccns: vec![],
+            langs: vec![],
+            front_only: false,
+        };
+        let page = HitsQuery {
+            limit: 10,
+            ..HitsQuery::default()
+        };
+        for a in Analyzer::ALL {
+            let set = IndexSet::new(vec!["i".into()]).with_analyzer(a);
+            let hits = |q: &str| {
+                let (b, f, page, set) = (&b, &f, &page, set.clone());
+                let q = usnm_core::query::parse_with(q, a).unwrap();
+                async move { b.hits(&set, &q, f, page).await.unwrap() }
+            };
+            let found = hits("½").await;
+            assert_eq!(found.total, 1, "{a:?}");
+            assert_eq!(
+                found.hits[0].snippets,
+                ["Wheat closed <mark>½</mark> higher"],
+                "{a:?}"
+            );
+            assert_eq!(hits("1/2").await.hits[0].doc_id, doc(2, 1).doc_id, "{a:?}");
+        }
     }
 
     #[tokio::test]

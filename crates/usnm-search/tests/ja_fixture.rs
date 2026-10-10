@@ -9,6 +9,7 @@ use chrono::NaiveDate;
 use usnm_core::ja;
 use usnm_core::params::Filters;
 use usnm_core::query::parse;
+use usnm_core::text::Analyzer;
 use usnm_search::memory::MemoryBackend;
 use usnm_search::{HitsQuery, IndexSet, PageDoc, SearchBackend};
 
@@ -45,7 +46,10 @@ fn fixture_text_is_the_rust_tokenization_of_the_printed_text() {
     assert!(docs.len() > 40);
     for d in &docs {
         let printed = d.printed.as_deref().expect("printed");
-        assert_eq!(d.text, ja::index_text(printed), "{}", d.doc_id);
+        // The fixture has nothing the analyzer versions fold differently.
+        for a in Analyzer::ALL {
+            assert_eq!(d.text, ja::index_text(printed, a), "{} {a:?}", d.doc_id);
+        }
         assert_eq!(d.ocr_source.as_deref(), Some("usnm-ndlocr-lite"));
         assert_eq!(d.ocr_engine.as_deref(), Some("ndlocr-lite 636d1cf"));
     }
@@ -75,9 +79,9 @@ async fn japanese_words_match_through_folding_and_snippets_show_the_printed_text
 
     // 戦争 (modern) and 戰爭 (as printed) are the same search.
     let printed_has = |w: &str| {
-        let q = vec![ja::tokenize(w)];
+        let q = vec![ja::tokenize(w, Analyzer::LATEST)];
         docs.iter()
-            .filter(|d| !ja::find(d.printed.as_deref().unwrap(), &q).is_empty())
+            .filter(|d| !ja::find(d.printed.as_deref().unwrap(), &q, Analyzer::LATEST).is_empty())
             .count() as u64
     };
     let war = printed_has("戰爭");
@@ -121,15 +125,27 @@ async fn japanese_words_match_through_folding_and_snippets_show_the_printed_text
         .hits
         .iter()
         .any(|h| h.snippets.iter().any(|s| s.contains("<mark>Denver</mark>"))));
-    let fz =
-        usnm_core::query::build("denvr 東京", Some(usnm_core::query::Mode::Any), 0, 1).unwrap();
+    let fz = usnm_core::query::build(
+        "denvr 東京",
+        Some(usnm_core::query::Mode::Any),
+        0,
+        1,
+        Analyzer::LATEST,
+    )
+    .unwrap();
     let fz = mem.hits(&set, &fz, &f, &page).await.unwrap();
     assert!(fz
         .hits
         .iter()
         .any(|h| h.snippets.iter().any(|s| s.contains("<mark>Denver</mark>"))));
-    let near =
-        usnm_core::query::build("米国 日本", Some(usnm_core::query::Mode::Near), 3, 0).unwrap();
+    let near = usnm_core::query::build(
+        "米国 日本",
+        Some(usnm_core::query::Mode::Near),
+        3,
+        0,
+        Analyzer::LATEST,
+    )
+    .unwrap();
     let near = mem.hits(&set, &near, &f, &page).await.unwrap();
     assert!(near.total > 0);
     assert!(near

@@ -30,6 +30,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use usnm_core::ids::PageKey;
 use usnm_core::ja;
+use usnm_core::text::Analyzer;
 use usnm_core::time::{day_number, ym_number};
 use usnm_store::ObjectStore;
 
@@ -229,8 +230,8 @@ pub fn read_part(bytes: Bytes, path: &str) -> anyhow::Result<Vec<JaPage>> {
 }
 
 /// The engine document for a Japanese page: the fields of the main index's
-/// `page_doc`, with `text` the folded tokens of `printed`.
-pub fn ja_doc(page: &JaPage, title: &Title, place: &Place) -> Value {
+/// `page_doc`, with `text` the tokens of `printed` folded by `analyzer`.
+pub fn ja_doc(page: &JaPage, title: &Title, place: &Place, analyzer: Analyzer) -> Value {
     let k = &page.key;
     let printed = page.printed.as_deref().unwrap_or_default();
     json!({
@@ -249,7 +250,7 @@ pub fn ja_doc(page: &JaPage, title: &Title, place: &Place) -> Value {
         "sort_key": (u64::from(title.ordinal) << 32) | (u64::from(k.edition) << 16) | u64::from(k.seq),
         "date": k.date.to_string(),
         "batch": page.batch,
-        "text": ja::index_text(printed),
+        "text": ja::index_text(printed, analyzer),
         "printed": printed,
         "ocr_source": page.ocr_source,
         "ocr_engine": page.ocr_engine,
@@ -352,10 +353,16 @@ pub fn better_than_locs(ours: &str, locs: Option<&str>) -> bool {
 
 /// The main-index document of a page curation never had (#203): the main
 /// index's fields ([`crate::release::main_doc`]) with `latin` as its text.
-/// With `decade`, the page's decade partition too (05 §5.5.5), as every
-/// main-index document of a version laid out by decade has.
-pub fn latin_doc(page: &JaPage, latin: &str, title: &Title, place: &Place, decade: bool) -> Value {
-    crate::release::main_doc(&page.key, &page.batch, latin, title, place, None, decade)
+/// Written in the release's `format`, as every main-index document of the
+/// version is (its decade partition, 05 §5.5.5, and its analyzer, #168).
+pub fn latin_doc(
+    page: &JaPage,
+    latin: &str,
+    title: &Title,
+    place: &Place,
+    format: crate::release::DocFormat,
+) -> Value {
+    crate::release::main_doc(&page.key, &page.batch, latin, title, place, None, format)
 }
 
 /// What our OCR found on a page: `japanese` (at least 20 characters, half of

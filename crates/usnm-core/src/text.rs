@@ -120,51 +120,114 @@ fn collapse_whitespace(s: &str) -> String {
     out
 }
 
+/// A version of the text analysis this code does on its side of the index:
+/// the folding of words ([`fold`], [`tokenize`]), which the query parser, the
+/// memory backend, snippets, the common-word pairs (`text_cg`, 05 §5.5.3) and
+/// the Japanese pages' index (`crate::ja`) all use. An index is built with
+/// one, and a published version records it (`current.json`'s
+/// `common_grams` and `ja.fold`, [`crate::common_grams::analyzer`] and
+/// [`crate::ja::analyzer`]); the API parses queries for it with the same one,
+/// so a version keeps searching the way it was built until a full rebuild
+/// switches it to [`Analyzer::LATEST`] (05 §5.5.3).
+///
+/// Quickwit's `usnm_text` analyzer on `text` is the same in every version:
+/// only our side changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Analyzer {
+    /// Every character folds through its compatibility decomposition, so
+    /// `½` is `1⁄2` (common-word pairs 1, Japanese fold 1).
+    V1,
+    /// A character whose decomposition holds a separator stays itself
+    /// (`½`, `61¼`), as the `usnm_text` analyzer has it, and `Ŀ` folds to
+    /// `l` (#168; common-word pairs 2, Japanese fold 2).
+    V2,
+}
+
+impl Analyzer {
+    /// What a full rebuild builds with.
+    pub const LATEST: Self = Self::V2;
+    /// Every version this code can build and search, oldest first.
+    pub const ALL: [Self; 2] = [Self::V1, Self::V2];
+}
+
+impl Default for Analyzer {
+    /// [`Analyzer::LATEST`].
+    fn default() -> Self {
+        Self::LATEST
+    }
+}
+
+/// The analyzers a published version's indexes were built with: its main
+/// indexes' (`current.json`'s `common_grams`) and its Japanese pages'
+/// (`ja.fold`). A release builds both with one, so they differ only in a
+/// version that was put together otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Analyzers {
+    pub main: Analyzer,
+    pub ja: Analyzer,
+}
+
+impl Analyzers {
+    /// Both indexes built with `analyzer`.
+    pub fn all(analyzer: Analyzer) -> Self {
+        Self {
+            main: analyzer,
+            ja: analyzer,
+        }
+    }
+}
+
 /// Lowercase + ASCII-fold one token (`Ñoño` → `nono`, `ſ` → `s`, `Æsop` → `aesop`).
 ///
 /// Decomposable letters lose their diacritics via NFKD; letters with no
 /// decomposition (`æ œ ø ł ß đ ð þ ı`) are transliterated the way Lucene's
 /// ASCII folding filter does.
 ///
-/// A character whose decomposition holds a separator stays itself, lowercased
-/// (see [`keeps_form`]): `½` is the token `½`, not `1⁄2`. So an alphanumeric
-/// token folds to an alphanumeric token, which tokenizes as itself (#168).
-pub fn fold(token: &str) -> String {
+/// From [`Analyzer::V2`], a character whose decomposition holds a separator
+/// stays itself, lowercased (see [`keeps_form`]): `½` is the token `½`, not
+/// `1⁄2`. So an alphanumeric token folds to an alphanumeric token, which
+/// tokenizes as itself (#168). [`Analyzer::V1`] decomposes it.
+pub fn fold(token: &str, analyzer: Analyzer) -> String {
     let mut out = String::with_capacity(token.len());
-    for c in token.chars() {
-        if c.is_ascii() {
-            out.push(c.to_ascii_lowercase());
-        } else if matches!(c, 'Ŀ' | 'ŀ') {
-            // `L·`: ASCII folding drops the middle dot.
-            out.push('l');
-        } else if keeps_form(c) {
-            out.extend(c.to_lowercase());
-        } else {
-            fold_decomposed(c, &mut out);
+    match analyzer {
+        Analyzer::V1 => push_folded(token.nfkd(), &mut out),
+        Analyzer::V2 => {
+            for c in token.chars() {
+                if c.is_ascii() {
+                    out.push(c.to_ascii_lowercase());
+                } else if matches!(c, 'Ŀ' | 'ŀ') {
+                    // `L·`: ASCII folding drops the middle dot.
+                    out.push('l');
+                } else if keeps_form(c) {
+                    out.extend(c.to_lowercase());
+                } else {
+                    push_folded(c.nfkd(), &mut out);
+                }
+            }
         }
     }
     out
 }
 
 /// Whether `c` folds as itself rather than through its compatibility
-/// decomposition: an alphanumeric character that decomposes into a separator
-/// as well, such as the vulgar fractions (`½` is `1⁄2`, with U+2044 FRACTION
-/// SLASH), `⒈` (`1.`), `⑴` (`(1)`) or `ﷺ` (four Arabic words). Decomposed,
-/// such a character would be several words where the `usnm_text` analyzer,
-/// which splits text before it folds, has one token (`½` stays `½`): a query
-/// for it would miss the pages that have it, and its canonical form would
-/// reparse as a phrase (#168). Kept, the query term goes through the same
-/// analyzer as the page.
+/// decomposition, from [`Analyzer::V2`]: an alphanumeric character that
+/// decomposes into a separator as well, such as the vulgar fractions (`½` is
+/// `1⁄2`, with U+2044 FRACTION SLASH), `⒈` (`1.`), `⑴` (`(1)`) or `ﷺ` (four
+/// Arabic words). Decomposed, such a character would be several words where
+/// the `usnm_text` analyzer, which splits text before it folds, has one token
+/// (`½` stays `½`): a query for it would miss the pages that have it, and its
+/// canonical form would reparse as a phrase (#168). Kept, the query term goes
+/// through the same analyzer as the page.
 fn keeps_form(c: char) -> bool {
     c.is_alphanumeric()
         && c.nfkd()
             .any(|d| !is_combining_mark(d) && !d.is_alphanumeric())
 }
 
-/// Append `c` folded through its compatibility decomposition.
-fn fold_decomposed(c: char, out: &mut String) {
-    for c in c
-        .nfkd()
+/// Append compatibility-decomposed characters, without their combining
+/// marks, lowercased and transliterated.
+fn push_folded(decomposed: impl Iterator<Item = char>, out: &mut String) {
+    for c in decomposed
         .filter(|c| !is_combining_mark(*c))
         .flat_map(char::to_lowercase)
     {
@@ -185,11 +248,12 @@ fn fold_decomposed(c: char, out: &mut String) {
     }
 }
 
-/// Split into folded index tokens, exactly as the `usnm_text` analyzer does.
-pub fn tokenize(text: &str) -> Vec<String> {
+/// Split into folded index tokens, exactly as the `usnm_text` analyzer does
+/// (with [`Analyzer::V1`], except that it decomposes `½` and the like).
+pub fn tokenize(text: &str, analyzer: Analyzer) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(fold)
+        .map(|t| fold(t, analyzer))
         .filter(|t| t.chars().count() <= MAX_TOKEN_CHARS)
         .collect()
 }
@@ -235,20 +299,31 @@ mod tests {
     }
 
     #[test]
+    fn analyzers_are_listed_in_order() {
+        // Oldest first, numbered from 0, so `a as usize` indexes `ALL`.
+        for (i, a) in Analyzer::ALL.iter().enumerate() {
+            assert_eq!(*a as usize, i);
+        }
+        assert_eq!(Analyzer::ALL.last(), Some(&Analyzer::LATEST));
+    }
+
+    #[test]
     fn tokenizes_like_the_analyzer() {
-        assert_eq!(
-            tokenize("Crucify mankind upon a CROSS of Gold! Café—ſo"),
-            vec!["crucify", "mankind", "upon", "a", "cross", "of", "gold", "cafe", "so"]
-        );
-        assert_eq!(
-            tokenize("Æsop Œuvre Søren Łódź Straße Þór Đakovo"),
-            vec!["aesop", "oeuvre", "soren", "lodz", "strasse", "thor", "dakovo"]
-        );
-        assert!(tokenize("Æsop Œuvre Søren Łódź Straße")
-            .iter()
-            .all(|t| t.is_ascii()));
-        let long = "x".repeat(41);
-        assert!(tokenize(&long).is_empty());
+        for a in Analyzer::ALL {
+            assert_eq!(
+                tokenize("Crucify mankind upon a CROSS of Gold! Café—ſo", a),
+                vec!["crucify", "mankind", "upon", "a", "cross", "of", "gold", "cafe", "so"]
+            );
+            assert_eq!(
+                tokenize("Æsop Œuvre Søren Łódź Straße Þór Đakovo", a),
+                vec!["aesop", "oeuvre", "soren", "lodz", "strasse", "thor", "dakovo"]
+            );
+            assert!(tokenize("Æsop Œuvre Søren Łódź Straße", a)
+                .iter()
+                .all(|t| t.is_ascii()));
+            let long = "x".repeat(41);
+            assert!(tokenize(&long, a).is_empty());
+        }
     }
 
     #[test]
@@ -256,33 +331,111 @@ mod tests {
         // Quickwit 0.9.1's `usnm_text` keeps `½` as one token (its ASCII
         // folding has no entry for it) and splits at `/`, U+2044 FRACTION
         // SLASH and U+2215 DIVISION SLASH (#168).
+        let v2 = Analyzer::V2;
         assert_eq!(
-            tokenize("Wheat ½ higher at 61¼; oats 1/2, 1⁄2 and 1∕2"),
+            tokenize("Wheat ½ higher at 61¼; oats 1/2, 1⁄2 and 1∕2", v2),
             vec![
                 "wheat", "½", "higher", "at", "61¼", "oats", "1", "2", "1", "2", "and", "1", "2"
             ]
         );
         for f in vulgar_fractions() {
-            assert_eq!(fold(&f.to_string()), f.to_string(), "{f:?}");
+            assert_eq!(fold(&f.to_string(), v2), f.to_string(), "{f:?}");
         }
         // Other characters that decompose into a separator stay whole too,
         // and `Ŀ` folds as ASCII folding has it.
-        assert_eq!(tokenize("⒈ ⑴ Ŀ ŀ ﷺ"), vec!["⒈", "⑴", "l", "l", "ﷺ"]);
+        assert_eq!(tokenize("⒈ ⑴ Ŀ ŀ ﷺ", v2), vec!["⒈", "⑴", "l", "l", "ﷺ"]);
+    }
+
+    #[test]
+    fn version_1_decomposes_fractions() {
+        // The folding indexes built before #168 have: `½` is `1⁄2`.
+        let v1 = Analyzer::V1;
+        assert_eq!(fold("½", v1), "1\u{2044}2");
+        assert_eq!(fold("61¼", v1), "611\u{2044}4");
+        assert_eq!(fold("Ŀ", v1), "l\u{b7}");
+        assert_eq!(
+            tokenize("Wheat ½ higher at 61¼; oats 1/2", v1),
+            vec![
+                "wheat",
+                "1\u{2044}2",
+                "higher",
+                "at",
+                "611\u{2044}4",
+                "oats",
+                "1",
+                "2"
+            ]
+        );
+    }
+
+    /// `fold` as it was before analyzer versions (#168): what
+    /// [`Analyzer::V1`] must keep doing, for the indexes built with it.
+    fn fold_before_versions(token: &str) -> String {
+        let mut out = String::new();
+        for c in token
+            .nfkd()
+            .filter(|c| !is_combining_mark(*c))
+            .flat_map(char::to_lowercase)
+        {
+            match c {
+                'ſ' => out.push('s'),
+                'æ' => out.push_str("ae"),
+                'œ' => out.push_str("oe"),
+                'ø' => out.push('o'),
+                'ł' => out.push('l'),
+                'ß' => out.push_str("ss"),
+                'đ' | 'ð' => out.push('d'),
+                'þ' => out.push_str("th"),
+                'ı' => out.push('i'),
+                'ŋ' => out.push_str("ng"),
+                'ħ' => out.push('h'),
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn version_1_folds_every_character_as_before() {
+        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+            let s = c.to_string();
+            assert_eq!(fold(&s, Analyzer::V1), fold_before_versions(&s), "{c:?}");
+        }
+        for s in ["Ñoño Æsop ½ 61¼ Ŀa ﷺ ⑴", "a\u{301}\u{323}b", "가각"] {
+            assert_eq!(fold(s, Analyzer::V1), fold_before_versions(s), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn version_2_differs_only_on_the_characters_it_keeps() {
+        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+            let s = c.to_string();
+            if !keeps_form(c) && !matches!(c, 'Ŀ' | 'ŀ') {
+                assert_eq!(fold(&s, Analyzer::V2), fold(&s, Analyzer::V1), "{c:?}");
+            }
+        }
     }
 
     #[test]
     fn every_folded_word_is_one_token() {
-        // A word of one alphanumeric character folds to a word that tokenizes
-        // as itself, so the query parser's canonical form reparses the same.
+        // With version 2, a word of one alphanumeric character folds to a
+        // word that tokenizes as itself, so the query parser's canonical form
+        // reparses the same. Version 1 breaks this for the characters it
+        // decomposes into separators (#168).
+        let v2 = Analyzer::V2;
         for c in (0..=0x10FFFF).filter_map(char::from_u32) {
             if !c.is_alphanumeric() {
                 continue;
             }
-            let f = fold(&c.to_string());
+            let f = fold(&c.to_string(), v2);
             assert!(f.chars().all(char::is_alphanumeric), "{c:?} folds to {f:?}");
-            assert_eq!(fold(&f), f, "{c:?} folds again");
+            assert_eq!(fold(&f, v2), f, "{c:?} folds again");
             if !f.is_empty() {
-                assert_eq!(tokenize(&f), vec![f.clone()], "{c:?}");
+                assert_eq!(tokenize(&f, v2), vec![f.clone()], "{c:?}");
+            }
+            let f1 = fold(&c.to_string(), Analyzer::V1);
+            if f1.chars().all(char::is_alphanumeric) && !f1.is_empty() {
+                assert_eq!(tokenize(&f1, Analyzer::V1), vec![f1.clone()], "{c:?}");
             }
         }
     }

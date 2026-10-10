@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ja::{self, has_ja, tokenize, MAX_JA_RUN_CHARS};
-use crate::text::{fold, MAX_TOKEN_CHARS};
+use crate::text::{fold, Analyzer, MAX_TOKEN_CHARS};
 
 pub const MAX_QUERY_CHARS: usize = 256;
 pub const MAX_TERMS: usize = 12;
@@ -116,8 +116,15 @@ impl Mode {
 }
 
 /// Build the AST for a request: `q` in the query language, optionally combined
-/// by `mode` when `q` is a plain word list, with `fuzzy` applied to exact terms.
-pub fn build(q: &str, mode: Option<Mode>, near: u8, fuzzy: u8) -> Result<Node, QueryError> {
+/// by `mode` when `q` is a plain word list, with `fuzzy` applied to exact terms,
+/// its words folded by `analyzer`: the one the searched index was built with.
+pub fn build(
+    q: &str,
+    mode: Option<Mode>,
+    near: u8,
+    fuzzy: u8,
+    analyzer: Analyzer,
+) -> Result<Node, QueryError> {
     let q = q.trim();
     if q.is_empty() {
         return Err(QueryError::new("query is empty"));
@@ -132,28 +139,28 @@ pub fn build(q: &str, mode: Option<Mode>, near: u8, fuzzy: u8) -> Result<Node, Q
     }
     let plain = is_plain(q);
     let node = match mode {
-        None | Some(Mode::All) => parse(q)?,
+        None | Some(Mode::All) => parse_with(q, analyzer)?,
         Some(m) if !plain => {
             return Err(QueryError::new(format!(
                 "mode={} needs a plain list of words; use mode=all with query syntax",
                 m.as_str()
             )))
         }
-        Some(Mode::Phrase) => phrase(tokenize(q), 0)?,
+        Some(Mode::Phrase) => phrase(tokenize(q, analyzer), 0)?,
         Some(Mode::Near) => {
             if near == 0 || near > MAX_SLOP {
                 return Err(QueryError::new(format!("near must be 1–{MAX_SLOP}")));
             }
-            phrase(tokenize(q), near)?
+            phrase(tokenize(q, analyzer), near)?
         }
         Some(Mode::Any) => {
             // A Japanese word is a phrase of characters, not one alternative per character.
             let mut terms: Vec<Node> = Vec::new();
             for w in q.split_whitespace() {
                 if has_ja(w) {
-                    terms.push(word(w, 0, 0)?);
+                    terms.push(word(w, 0, 0, analyzer)?);
                 } else {
-                    terms.extend(tokenize(w).into_iter().map(exact));
+                    terms.extend(tokenize(w, analyzer).into_iter().map(exact));
                 }
             }
             match terms.len() {
@@ -168,14 +175,22 @@ pub fn build(q: &str, mode: Option<Mode>, near: u8, fuzzy: u8) -> Result<Node, Q
     Ok(node)
 }
 
-/// Parse the query language.
+/// Parse the query language with the latest analyzer
+/// ([`Analyzer::LATEST`]), for tests and tools. A search parses with the
+/// analyzer of the index it searches ([`build`], [`parse_with`]).
 pub fn parse(input: &str) -> Result<Node, QueryError> {
+    parse_with(input, Analyzer::LATEST)
+}
+
+/// Parse the query language, folding words with `analyzer`.
+pub fn parse_with(input: &str, analyzer: Analyzer) -> Result<Node, QueryError> {
     let tokens = lex(input)?;
     let mut p = Parser {
         tokens,
         pos: 0,
         depth: 0,
         input_len: input.chars().count(),
+        analyzer,
     };
     let node = p.or_expr()?;
     if let Some(t) = p.peek() {
@@ -351,6 +366,7 @@ struct Parser {
     depth: usize,
     /// Input length in characters, for "expected more input" errors.
     input_len: usize,
+    analyzer: Analyzer,
 }
 
 impl Parser {
@@ -433,10 +449,9 @@ impl Parser {
             Tok::Phrase { text, .. } if text.split_whitespace().any(has_wildcard) => Err(
                 QueryError::at("wildcards (* and ?) don't work inside quotes", t.pos),
             ),
-            Tok::Phrase { text, slop } => {
-                phrase(tokenize(&text), slop).map_err(|e| QueryError::at(e.message, t.pos))
-            }
-            Tok::Word { text, fuzzy } => word(&text, fuzzy, t.pos),
+            Tok::Phrase { text, slop } => phrase(tokenize(&text, self.analyzer), slop)
+                .map_err(|e| QueryError::at(e.message, t.pos)),
+            Tok::Word { text, fuzzy } => word(&text, fuzzy, t.pos, self.analyzer),
             Tok::RParen => Err(QueryError::at("unexpected ')'", t.pos)),
             Tok::And | Tok::Or | Tok::Not | Tok::Minus => Err(QueryError::at(
                 "operator is missing a word before or after it",
@@ -446,14 +461,14 @@ impl Parser {
     }
 }
 
-fn word(text: &str, fuzzy: u8, pos: usize) -> Result<Node, QueryError> {
+fn word(text: &str, fuzzy: u8, pos: usize, analyzer: Analyzer) -> Result<Node, QueryError> {
     if has_ja(text) {
-        return ja_word(text, fuzzy, has_wildcard(text), pos);
+        return ja_word(text, fuzzy, has_wildcard(text), pos, analyzer);
     }
     if has_wildcard(text) {
-        return wildcard_word(text, pos);
+        return wildcard_word(text, pos, analyzer);
     }
-    let tokens = tokenize(text);
+    let tokens = tokenize(text, analyzer);
     match tokens.len() {
         0 => Err(QueryError::at("word has no searchable characters", pos)),
         1 => Ok(Node::Term(Term {
@@ -492,7 +507,7 @@ fn has_wildcard(word: &str) -> bool {
 /// walk all of them. A run of wildcards is written as its `?`s, then one `*`
 /// if it has any, so `wash*?ton` and `wash?**ton` are one query (and one
 /// cache key). A word whose only wildcard is a trailing `*` is a prefix.
-fn wildcard_word(text: &str, pos: usize) -> Result<Node, QueryError> {
+fn wildcard_word(text: &str, pos: usize, analyzer: Analyzer) -> Result<Node, QueryError> {
     let chars: Vec<char> = wildcard_span(text).chars().collect();
     let mut pattern = String::new();
     // Folded letters before the first wildcard.
@@ -512,8 +527,9 @@ fn wildcard_word(text: &str, pos: usize) -> Result<Node, QueryError> {
                 pattern.push('*');
             }
         } else {
-            // A letter can fold to more than letters (`½` is `1⁄2`).
-            let folded = fold(&run.iter().collect::<String>());
+            // A letter can fold to more than letters (`½` is `1⁄2` with
+            // `Analyzer::V1`).
+            let folded = fold(&run.iter().collect::<String>(), analyzer);
             if !run.iter().all(|c| c.is_alphanumeric())
                 || !folded.chars().all(char::is_alphanumeric)
             {
@@ -597,7 +613,13 @@ pub fn wildcard_matches(pattern: &str, token: &str) -> bool {
 /// phrase of its characters, and the runs are ANDed. Wildcard and fuzzy
 /// matching work on whole words, which Japanese text doesn't mark, so they're
 /// refused.
-fn ja_word(text: &str, fuzzy: u8, wildcard: bool, pos: usize) -> Result<Node, QueryError> {
+fn ja_word(
+    text: &str,
+    fuzzy: u8,
+    wildcard: bool,
+    pos: usize,
+    analyzer: Analyzer,
+) -> Result<Node, QueryError> {
     if fuzzy > 0 || wildcard {
         return Err(QueryError::at(
             "wildcard (* and ?) and fuzzy (~) searches aren't available for Japanese",
@@ -607,7 +629,7 @@ fn ja_word(text: &str, fuzzy: u8, wildcard: bool, pos: usize) -> Result<Node, Qu
     // Voicing marks stay in the run, so a decomposed か+゙ composes to が.
     let runs: Vec<Node> = text
         .split(|c: char| !c.is_alphanumeric() && !ja::is_voicing_mark(c))
-        .map(tokenize)
+        .map(|run| tokenize(run, analyzer))
         .filter(|t| !t.is_empty())
         .map(|t| phrase(t, 0))
         .collect::<Result<_, _>>()
@@ -849,14 +871,20 @@ fn join(f: &mut fmt::Formatter<'_>, children: &[Node], sep: &str) -> fmt::Result
     Ok(())
 }
 
-/// Fold a user string the same way terms are folded (for display/highlighting).
-pub fn fold_text(s: &str) -> String {
-    fold(s)
+/// Fold a user string the same way terms are folded with `analyzer` (for
+/// display/highlighting).
+pub fn fold_text(s: &str, analyzer: Analyzer) -> String {
+    fold(s, analyzer)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`super::build`] with the latest analyzer.
+    fn build(q: &str, mode: Option<Mode>, near: u8, fuzzy: u8) -> Result<Node, QueryError> {
+        super::build(q, mode, near, fuzzy, Analyzer::LATEST)
+    }
 
     fn term(t: &str) -> Node {
         exact(t.to_owned())
@@ -993,26 +1021,31 @@ mod tests {
         assert_eq!(parse(&n.to_string()).unwrap(), n);
     }
 
-    fn assert_round_trips(q: &str) {
-        let n = parse(q).unwrap_or_else(|e| panic!("{q:?}: {e}"));
+    fn assert_round_trips(q: &str, a: Analyzer) {
+        let n = parse_with(q, a).unwrap_or_else(|e| panic!("{q:?}: {e}"));
         let canonical = n.to_string();
-        assert_eq!(parse(&canonical).as_ref(), Ok(&n), "{q:?} → {canonical:?}");
-        assert_eq!(parse(&canonical).unwrap().to_string(), canonical, "{q:?}");
+        let again = parse_with(&canonical, a);
+        assert_eq!(again.as_ref(), Ok(&n), "{q:?} → {canonical:?} ({a:?})");
+        assert_eq!(again.unwrap().to_string(), canonical, "{q:?} ({a:?})");
     }
 
     #[test]
     fn fractions_are_one_word_and_round_trip() {
         // `½` is one word, as the index has it, not the phrase "1 2" (#168).
-        assert_eq!(parse("½").unwrap(), term("½"));
-        assert_eq!(parse("3½").unwrap(), term("3½"));
-        assert_eq!(parse("½").unwrap().to_string(), "½");
-        // A slash, fraction slash or division slash separates, as in the index.
+        let v2 = Analyzer::V2;
+        assert_eq!(parse_with("½", v2).unwrap(), term("½"));
+        assert_eq!(parse_with("3½", v2).unwrap(), term("3½"));
+        assert_eq!(parse_with("½", v2).unwrap().to_string(), "½");
+        // A slash, fraction slash or division slash separates, as in the
+        // index, with either version.
         let one_two = Node::Phrase {
             terms: vec!["1".into(), "2".into()],
             slop: 0,
         };
-        for q in ["1/2", "1⁄2", "1∕2", r#""1 2""#] {
-            assert_eq!(parse(q).unwrap(), one_two, "{q}");
+        for a in Analyzer::ALL {
+            for q in ["1/2", "1⁄2", "1∕2", r#""1 2""#] {
+                assert_eq!(parse_with(q, a).unwrap(), one_two, "{q} {a:?}");
+            }
         }
         for f in crate::text::vulgar_fractions() {
             for q in [
@@ -1024,26 +1057,57 @@ mod tests {
                 format!("18461{f}*"),
                 format!("({f} OR 1/2) cent"),
             ] {
-                assert_round_trips(&q);
+                assert_round_trips(&q, v2);
             }
             for mode in [Mode::Phrase, Mode::All, Mode::Any, Mode::Near] {
-                let n = build(&format!("wheat {f} 1/2"), Some(mode), 2, 0).unwrap();
-                assert_eq!(parse(&n.to_string()).unwrap(), n, "{f} {mode:?}");
+                let n = super::build(&format!("wheat {f} 1/2"), Some(mode), 2, 0, v2).unwrap();
+                assert_eq!(parse_with(&n.to_string(), v2).unwrap(), n, "{f} {mode:?}");
             }
         }
     }
 
     #[test]
-    fn every_alphanumeric_word_round_trips() {
-        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
-            if !c.is_alphanumeric() || parse(&c.to_string()).is_err() {
-                continue;
+    fn version_1_parses_fractions_as_before() {
+        // On an index built with version 1, a query folds `½` to `1⁄2`, as
+        // it did before #168: the term the index's pairs have. Its
+        // canonical form reparses as the phrase "1 2" (the bug version 2
+        // fixes), so `½` doesn't round-trip there.
+        let v1 = Analyzer::V1;
+        assert_eq!(parse_with("½", v1).unwrap(), term("1\u{2044}2"));
+        assert_eq!(parse_with("3½", v1).unwrap(), term("31\u{2044}2"));
+        assert_eq!(
+            parse_with(r#""wheat ½ higher""#, v1).unwrap(),
+            Node::Phrase {
+                terms: vec!["wheat".into(), "1\u{2044}2".into(), "higher".into()],
+                slop: 0,
             }
-            assert_round_trips(&c.to_string());
-            // Characters that fold to Japanese ones (`㊀` → `一`) split a
-            // Latin word only once folded (#241).
-            if ja::is_ja(c) || !has_ja(&fold(&c.to_string())) {
-                assert_round_trips(&format!("\"a{c} b\""));
+        );
+        assert_ne!(parse_with("½", v1), parse_with("½", Analyzer::V2));
+        // Wildcards after a fraction need a single word, which `1⁄2` isn't.
+        assert!(parse_with("18461½*", v1).is_err());
+        assert!(parse_with("18461½*", Analyzer::V2).is_ok());
+    }
+
+    #[test]
+    fn every_alphanumeric_word_round_trips() {
+        for a in Analyzer::ALL {
+            for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+                if !c.is_alphanumeric() || parse_with(&c.to_string(), a).is_err() {
+                    continue;
+                }
+                // Version 1 decomposes some characters into separators
+                // (`½` is `1⁄2`), which reparse as several words (#168).
+                let folded = fold(&c.to_string(), a);
+                if !folded.chars().all(char::is_alphanumeric) {
+                    assert_eq!(a, Analyzer::V1, "{c:?} folds to {folded:?}");
+                    continue;
+                }
+                assert_round_trips(&c.to_string(), a);
+                // Characters that fold to Japanese ones (`㊀` → `一`) split a
+                // Latin word only once folded (#241).
+                if ja::is_ja(c) || !has_ja(&folded) {
+                    assert_round_trips(&format!("\"a{c} b\""), a);
+                }
             }
         }
     }

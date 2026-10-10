@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use usnm_core::params::Filters;
-use usnm_core::query::{build, parse, Mode, Node};
+use usnm_core::query::{parse, parse_with, Mode, Node, QueryError};
+use usnm_core::text::Analyzer;
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::memory::MemoryBackend;
 use usnm_search::quickwit::QuickwitBackend;
@@ -20,6 +21,10 @@ use usnm_search::{
 };
 
 const INDEXES: [&str; 2] = ["pages-base-fixture", "pages-delta-fixture-1"];
+/// The same pages with their common-word pairs at version 1
+/// (`Analyzer::V1`), as the indexes built before #168 have them; the ones
+/// above have the latest (`scripts/quickwit-fixtures.sh`).
+const INDEXES_V1: [&str; 2] = ["pages-base-fixture-cg1", "pages-delta-fixture-1-cg1"];
 /// The Japanese pages (#139), searched on their own.
 const JA_INDEX: &str = "pages-ja-fixture";
 
@@ -33,8 +38,10 @@ fn quickwit() -> Option<QuickwitBackend> {
 fn memory() -> MemoryBackend {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/indexes");
     let mut m = MemoryBackend::new();
-    for id in INDEXES.iter().chain([&JA_INDEX]) {
-        let file = std::fs::File::open(dir.join(format!("{id}.jsonl"))).expect("fixture");
+    let files = INDEXES.iter().chain(&INDEXES).chain([&JA_INDEX]);
+    let ids = INDEXES.iter().chain(&INDEXES_V1).chain([&JA_INDEX]);
+    for (file, id) in files.zip(ids) {
+        let file = std::fs::File::open(dir.join(format!("{file}.jsonl"))).expect("fixture");
         let docs: Vec<PageDoc> = std::io::BufReader::new(file)
             .lines()
             .map(|l| serde_json::from_str(&l.expect("line")).expect("doc"))
@@ -42,6 +49,11 @@ fn memory() -> MemoryBackend {
         m.add_index(id, docs);
     }
     m
+}
+
+/// [`usnm_core::query::build`] with the latest analyzer.
+fn build(q: &str, mode: Option<Mode>, near: u8, fuzzy: u8) -> Result<Node, QueryError> {
+    usnm_core::query::build(q, mode, near, fuzzy, Analyzer::LATEST)
 }
 
 fn d(s: &str) -> NaiveDate {
@@ -622,7 +634,9 @@ async fn japanese_searches_match_the_reference_backend() {
 
 /// Phrases holding common words search `text_cg` (05 §5.5.3) when the
 /// indexes have it: the counts, cubes, edges and hits must be exactly the
-/// exact phrase's, which the reference backend finds word by word.
+/// exact phrase's, which the reference backend finds word by word. For each
+/// analyzer version the API supports: the indexes built with version 1 have
+/// its pairs, and queries on them are parsed with it (#168).
 #[tokio::test]
 async fn phrases_through_common_word_pairs_match_the_reference_backend() {
     let Some(qw) = quickwit() else {
@@ -630,26 +644,34 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
         return;
     };
     let mem = memory();
-    let ids: Vec<String> = INDEXES.iter().map(|s| (*s).to_owned()).collect();
-    let mut matched = 0;
-    // LoC's text alone, then both texts through both texts' pairs (05 §5.5.4).
-    for american_stories in [false, true] {
-        let set = IndexSet::new(ids.clone()).with_american_stories(american_stories);
-        let grams = set.clone().with_common_grams(true);
-        matched += common_word_phrases(&qw, &mem, &set, &grams).await;
+    for (analyzer, indexes) in [(Analyzer::V2, INDEXES), (Analyzer::V1, INDEXES_V1)] {
+        let ids: Vec<String> = indexes.iter().map(|s| (*s).to_owned()).collect();
+        let mut matched = 0;
+        // LoC's text alone, then both texts through both texts' pairs (05 §5.5.4).
+        for american_stories in [false, true] {
+            let set = IndexSet::new(ids.clone())
+                .with_analyzer(analyzer)
+                .with_american_stories(american_stories);
+            let grams = set.clone().with_common_grams(true);
+            matched += common_word_phrases(&qw, &mem, &set, &grams).await;
+        }
+        assert!(
+            matched >= 10,
+            "only {matched} phrases matched the fixtures ({analyzer:?})"
+        );
     }
-    assert!(matched >= 10, "only {matched} phrases matched the fixtures");
 }
 
 /// How many of the phrases matched: Quickwit through the pairs (`grams`)
-/// against the memory backend on the same texts (`set`).
+/// against the memory backend on the same texts (`set`), parsed with the
+/// sets' analyzer.
 async fn common_word_phrases(
     qw: &QuickwitBackend,
     mem: &MemoryBackend,
     set: &IndexSet,
     grams: &IndexSet,
 ) -> usize {
-    let phrases = [
+    let mut phrases = vec![
         r#""cross of gold""#,
         r#""the friends of free""#,
         r#""of the railroad""#,
@@ -660,22 +682,32 @@ async fn common_word_phrases(
         r#""cross of the gold""#,
         r#""cross of gold" -silver"#,
         r#""cross of gold" OR "the friends of free""#,
-        // Fractions are one word in the pairs as in `text` (#168).
-        r#""½ higher at 61¼""#,
-        r#""at 61¼ and oats""#,
-        r#""1/2 lower at 20¾""#,
         // In American Stories' headlines only.
         r#""orator of the platte""#,
         r#""the boy orator""#,
         r#""quarantine at the port""#,
     ];
+    // Fractions are one word in the pairs as in `text` from version 2
+    // (#168). Version 1 folds `½` to `1⁄2`, which Quickwit's `text` reads as
+    // two words: the mismatch version 2 fixes, so not compared here.
+    if set.analyzer() >= Analyzer::V2 {
+        phrases.extend([
+            r#""½ higher at 61¼""#,
+            r#""at 61¼ and oats""#,
+            r#""1/2 lower at 20¾""#,
+        ]);
+    }
     let f = filters("1895-01-01", "1897-12-31");
     let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
     let all: Vec<u8> = (0..8).collect();
     let mut matched = 0;
     for p in phrases {
-        let q = parse(p).unwrap();
-        let ctx = format!("{p} / american stories {}", set.american_stories());
+        let q = parse_with(p, set.analyzer()).unwrap();
+        let ctx = format!(
+            "{p} / american stories {} / {:?}",
+            set.american_stories(),
+            set.analyzer()
+        );
         let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
         let got = sorted(qw.summary(grams, &q, &f, &spec).await.expect(&ctx));
         assert_eq!(got, want, "summary: {ctx}");
