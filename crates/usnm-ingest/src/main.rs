@@ -307,8 +307,8 @@ enum Command {
         /// Delete the listed indexes. Without it nothing is deleted.
         #[arg(long)]
         delete: bool,
-        /// The Quickwit node on the index store: `--quickwit-url` or
-        /// `--quickwit-bin` (with its metastore and index root).
+        /// The Quickwit node on the index store: `--quickwit-bin` (with its
+        /// metastore and index root), or for a dry run `--quickwit-url`.
         #[command(flatten)]
         target: IndexTarget,
     },
@@ -836,9 +836,7 @@ async fn prune(
     delete: bool,
     t: &IndexTarget,
 ) -> anyhow::Result<usnm_ingest::prune::Report> {
-    if t.index_dir.is_some() {
-        bail!("prune needs a Quickwit node: --quickwit-url or --quickwit-bin");
-    }
+    prune_target(delete, t)?;
     let reference = usnm_store::open(&cli.reference)?;
     // Before the lock and the node: refuse at once without a published version.
     usnm_ingest::prune::kept(reference.as_ref(), state).await?;
@@ -872,6 +870,24 @@ async fn prune(
     let report = result?;
     unlocked?;
     Ok(report)
+}
+
+/// Which nodes prune may use. Deleting needs a node it started
+/// (`--quickwit-bin`): when the writer lock can't be renewed it stops that
+/// node, which ends a delete under way. A node at `--quickwit-url` isn't
+/// its to stop, and Quickwit carries on with a delete whose caller went
+/// away, so that one is for dry runs.
+fn prune_target(delete: bool, t: &IndexTarget) -> anyhow::Result<()> {
+    if t.index_dir.is_some() {
+        bail!("prune needs a Quickwit node: --quickwit-bin, or --quickwit-url for a dry run");
+    }
+    if delete && t.quickwit_url.is_some() && t.quickwit_bin.is_none() {
+        bail!(
+            "prune --delete needs --quickwit-bin: it stops its own node if the writer lock \
+             is lost, and can't stop a node at --quickwit-url"
+        );
+    }
+    Ok(())
 }
 
 fn root(t: &IndexTarget) -> anyhow::Result<&str> {
@@ -1530,6 +1546,28 @@ mod tests {
             "delete"
         ])
         .is_err());
+    }
+
+    #[test]
+    fn prune_deletes_only_through_a_node_it_started() {
+        let target = |args: &[&str]| {
+            let mut all = vec!["usnm-ingest", "--curated", "c", "--reference", "r", "prune"];
+            all.extend_from_slice(args);
+            match Cli::try_parse_from(all).unwrap().command {
+                Command::Prune { target, .. } => target,
+                _ => panic!("not a prune"),
+            }
+        };
+        let url = target(&["--quickwit-url", "http://127.0.0.1:7280"]);
+        assert!(prune_target(false, &url).is_ok());
+        let err = prune_target(true, &url).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("needs --quickwit-bin"),
+            "{err:#}"
+        );
+        let bin = target(&["--quickwit-bin", "/usr/local/bin/quickwit"]);
+        assert!(prune_target(true, &bin).is_ok());
+        assert!(prune_target(false, &target(&["--index-dir", "x"])).is_err());
     }
 
     #[test]
