@@ -185,6 +185,7 @@ pub fn request(
     window: Option<(&str, &str)>,
     bounds: (NaiveDate, NaiveDate),
     shift: u32,
+    analyzer: usnm_core::text::Analyzer,
 ) -> anyhow::Result<SearchRequest> {
     let (lo, hi) = bounds;
     let (mut start, mut end) = match window {
@@ -205,9 +206,7 @@ pub fn request(
     let end = (end - shift).max(start);
     let qs = format!("{query}&from={start}&to={end}");
     let raw = RawParams::parse(&qs).map_err(|e| anyhow::anyhow!("{qs}: {e}"))?;
-    // The bench's indexes are loaded from samples of the published version,
-    // built with the latest analyzer (a full release).
-    SearchRequest::from_raw(&raw, bounds, usnm_core::text::Analyzers::default())
+    SearchRequest::from_raw(&raw, bounds, usnm_core::text::Analyzers::all(analyzer))
         .map_err(|e| anyhow::anyhow!("{qs}: {e}"))
 }
 
@@ -443,6 +442,9 @@ pub struct Spec {
     pub indexes: Vec<String>,
     pub american_stories: bool,
     pub bounds: (NaiveDate, NaiveDate),
+    /// The analyzer the sample's documents were built with (its manifest's
+    /// `common_grams`): queries are parsed and searched with it.
+    pub analyzer: usnm_core::text::Analyzer,
     /// Concurrency levels after `first` and `warm`.
     pub levels: Vec<usize>,
     /// Days every level's windows start shifted back (then one more per pass).
@@ -605,10 +607,14 @@ async fn pass(
 ) -> anyhow::Result<Pass> {
     let indexes = IndexSet::new(spec.indexes.clone())
         .with_common_grams(true)
+        .with_analyzer(spec.analyzer)
         .with_american_stories(spec.american_stories);
     let mut jobs = Vec::new();
     for (n, q, w) in SEARCHES {
-        jobs.push((n.to_string(), request(q, *w, spec.bounds, shift)?));
+        jobs.push((
+            n.to_string(),
+            request(q, *w, spec.bounds, shift, spec.analyzer)?,
+        ));
     }
     let before = members::counters(http, members_now, None).await;
     let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -840,11 +846,12 @@ async fn probe(spec: &Spec, members_now: &[Member], shift: u32) -> anyhow::Resul
     let http = grpc::client(spec.timeout)?;
     let indexes = IndexSet::new(spec.indexes.clone())
         .with_common_grams(true)
+        .with_analyzer(spec.analyzer)
         .with_american_stories(spec.american_stories);
     let mut out = Vec::new();
     let mut sum = grpc::SearchStats::default();
     for (name, q, w) in SEARCHES {
-        let req = request(q, *w, spec.bounds, shift)?;
+        let req = request(q, *w, spec.bounds, shift, spec.analyzer)?;
         let body = usnm_search::quickwit::summary_request(
             &req.query,
             &req.filters,
@@ -929,13 +936,17 @@ async fn profile(
     let t = std::time::Instant::now();
     let indexes = IndexSet::new(spec.indexes.clone())
         .with_common_grams(true)
+        .with_analyzer(spec.analyzer)
         .with_american_stories(spec.american_stories);
     let backend = QuickwitBackend::new(&spec.root, spec.timeout)?;
     let (mut shift, mut searches) = (first_shift, 0);
     while t.elapsed().as_secs() < duration {
         let mut jobs = Vec::new();
         for (n, q, w) in SEARCHES {
-            jobs.push((n.to_string(), request(q, *w, spec.bounds, shift)?));
+            jobs.push((
+                n.to_string(),
+                request(q, *w, spec.bounds, shift, spec.analyzer)?,
+            ));
         }
         let done: Vec<SearchResult> = stream::iter(jobs)
             .map(|(n, req)| {
@@ -978,6 +989,7 @@ async fn profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use usnm_core::text::Analyzer;
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
@@ -987,7 +999,8 @@ mod tests {
     fn every_search_parses_as_the_api_would() {
         let bounds = (d("1770-01-01"), d("1963-12-31"));
         for (name, q, w) in SEARCHES {
-            let r = request(q, *w, bounds, 0).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let r = request(q, *w, bounds, 0, Analyzer::LATEST)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
             if let Some((a, b)) = w {
                 assert_eq!(r.filters.from, d(a), "{name}");
                 assert_eq!(r.filters.to, d(b), "{name}");
@@ -995,10 +1008,12 @@ mod tests {
                 assert_eq!((r.filters.from, r.filters.to), bounds, "{name}");
             }
         }
-        let front = request(SEARCHES[11].1, None, bounds, 0).unwrap();
+        let front = request(SEARCHES[11].1, None, bounds, 0, Analyzer::LATEST).unwrap();
         assert!(front.filters.front_only && front.filters.states == ["GA"]);
         assert_eq!(
-            request(SEARCHES[0].1, None, bounds, 0).unwrap().bucket,
+            request(SEARCHES[0].1, None, bounds, 0, Analyzer::LATEST)
+                .unwrap()
+                .bucket,
             BucketUnit::Month
         );
     }
@@ -1006,20 +1021,34 @@ mod tests {
     #[test]
     fn windows_shift_back_and_stay_in_the_corpus() {
         let bounds = (d("1770-01-01"), d("1963-12-31"));
-        let r = request("q=x", Some(("1896-01-01", "1896-12-31")), bounds, 3).unwrap();
+        let r = request(
+            "q=x",
+            Some(("1896-01-01", "1896-12-31")),
+            bounds,
+            3,
+            Analyzer::LATEST,
+        )
+        .unwrap();
         assert_eq!(
             (r.filters.from, r.filters.to),
             (d("1895-12-29"), d("1896-12-28"))
         );
         // The whole corpus keeps its start and loses its last days.
-        let r = request("q=x", None, bounds, 3).unwrap();
+        let r = request("q=x", None, bounds, 3, Analyzer::LATEST).unwrap();
         assert_eq!(
             (r.filters.from, r.filters.to),
             (d("1770-01-01"), d("1963-12-28"))
         );
         // A window outside a small corpus becomes the corpus.
         let small = (d("1895-01-01"), d("1897-12-31"));
-        let r = request("q=x", Some(("1918-01-01", "1918-12-31")), small, 0).unwrap();
+        let r = request(
+            "q=x",
+            Some(("1918-01-01", "1918-12-31")),
+            small,
+            0,
+            Analyzer::LATEST,
+        )
+        .unwrap();
         assert_eq!((r.filters.from, r.filters.to), small);
     }
 

@@ -570,10 +570,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             store,
         } => {
             let store = usnm_store::open(&store)?;
-            let (bounds, american_stories) = match (&sample, &set) {
+            let (bounds, american_stories, common_grams) = match (&sample, &set) {
                 (Some(sample), _) => {
                     let m = sample::manifest(store.as_ref(), &format!("sample/{sample}")).await?;
-                    (m.bounds, m.american_stories)
+                    (m.bounds, m.american_stories, m.common_grams)
                 }
                 (None, Some(name)) => {
                     let sets = usnm_store::open(
@@ -581,7 +581,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                             .context("--set needs the archival sets (USNM_ARCHIVE_SETS_URL)")?,
                     )?;
                     let m = set::manifest(sets.as_ref(), name).await?;
-                    (m.bounds, m.american_stories)
+                    (m.bounds, m.american_stories, m.common_grams)
                 }
                 (None, None) => anyhow::bail!("name a --sample or a --set"),
             };
@@ -594,6 +594,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 indexes: index,
                 american_stories: american_stories || force_american_stories,
                 bounds: (date(&bounds.0)?, date(&bounds.1)?),
+                analyzer: usnm_core::common_grams::analyzer(common_grams).with_context(|| {
+                    format!("the sample's common-word pairs, version {common_grams}, are newer than this tool")
+                })?,
                 levels,
                 offset,
                 pause: Duration::from_secs(pause),

@@ -4554,6 +4554,7 @@ async fn a_two_node_cluster_indexes_and_searches_a_sample() {
         indexes: vec!["sample-2ix".into()],
         american_stories: true,
         bounds,
+        analyzer: usnm_core::common_grams::analyzer(m.common_grams).unwrap(),
         levels: vec![1, 4],
         offset: 0,
         pause: Duration::ZERO,

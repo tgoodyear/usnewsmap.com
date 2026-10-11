@@ -356,7 +356,9 @@ pub async fn build(
         cut: spec.cut,
         rule: "sha256(doc_id)[0..8] big-endian mod 10000 < cut".into(),
         american_stories: spec.american_stories,
-        common_grams: usnm_core::common_grams::VERSION,
+        // The pairs' version the documents were built with: the published
+        // version's, which bench parses queries for.
+        common_grams: usnm_core::common_grams::version(published.analyzer),
         bounds: published.bounds,
         batches: 0,
         pages_read: 0,
