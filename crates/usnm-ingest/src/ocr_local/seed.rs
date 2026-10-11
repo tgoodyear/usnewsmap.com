@@ -842,17 +842,22 @@ async fn fetched_pages(
         let l = message_language(r.lang.as_deref(), langs)?;
         filter.languages.contains(&l).then_some(l)
     };
+    let batches = opts.batch_set();
     let rows = prefetch::decode_where(Bytes::from(bytes), |r| {
-        prefetch::set_of(r) == prefetch::Set::Keep && language(r).is_some()
+        prefetch::set_of(r) == prefetch::Set::Keep
+            && (batches.is_empty() || batches.contains(&r.batch))
+            && language(r).is_some()
     })
     .with_context(|| format!("reading {path}"))?;
     let rows = prefetch::keep_order(rows);
 
+    // The newest by the store's creation time: a node chose the name.
     let lists = out.list_info(&fetched::dir(mv)).await?;
     let newest = lists
         .iter()
-        .filter_map(|o| fetched::stamp_of(&o.path).map(|s| (s, o)))
-        .max_by(|a, b| a.0.cmp(b.0))
+        .filter(|o| fetched::stamp_of(&o.path).is_some())
+        .filter_map(|o| o.created.map(|c| (c, o)))
+        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.path.cmp(&b.1.path)))
         .map(|(_, o)| o.clone())
         .with_context(|| {
             format!(
@@ -1170,6 +1175,9 @@ pub(super) async fn seed(
         let skips = Skips::load(curated, stores.reference, &version).await?;
         let none = Vec::new();
         let mut ur: Option<UnitReport> = None;
+        // The manifest holds one copy of each page (the copy the version
+        // keeps); a page listed twice is still queued once.
+        let mut seen: HashSet<String> = HashSet::new();
         for (row, language) in pages {
             if slots == 0 {
                 break;
@@ -1188,7 +1196,9 @@ pub(super) async fn seed(
                 })
             } else if skips.ja_latin.pages.contains_key(doc_id) {
                 Some("ja_latin")
-            } else if skips.hidden.contains(&(doc_id.clone(), row.batch.clone())) {
+            } else if skips.hidden.contains(&(doc_id.clone(), row.batch.clone()))
+                || !seen.insert(doc_id.clone())
+            {
                 Some("duplicate")
             } else {
                 match by_name.get(row.batch.as_str()) {

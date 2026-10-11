@@ -36,6 +36,9 @@ pub const PREFIX: &str = "fetched";
 pub const MAX_BYTES: usize = 128 << 20;
 /// The most pages a list may hold: more than both sets of a manifest.
 pub const MAX_PAGES: usize = 8_000_000;
+/// The most bytes a list's columns may decompress to (about 60 bytes a
+/// page at [`MAX_PAGES`]).
+pub const MAX_UNCOMPRESSED: i64 = 512 << 20;
 
 /// A page whose full-size scan is on the scan server.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -64,11 +67,13 @@ pub fn path(manifest: &str, node: &str, stamp: &str) -> String {
     format!("{}/{node}.{stamp}.parquet", dir(manifest))
 }
 
-/// The stamp of a list's path, for picking the newest.
-pub fn stamp_of(path: &str) -> Option<&str> {
+/// The time in a list's path (`YYYYMMDDTHHMMSSZ`), checked as a UTC time.
+/// The seeder picks the newest list by the store's creation time, not by
+/// this name, which a node chose.
+pub fn stamp_of(path: &str) -> Option<chrono::NaiveDateTime> {
     let name = path.rsplit('/').next()?.strip_suffix(".parquet")?;
     let (_, stamp) = name.rsplit_once('.')?;
-    (stamp.len() == 16 && stamp.as_bytes()[8] == b'T' && stamp.ends_with('Z')).then_some(stamp)
+    chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%dT%H%M%SZ").ok()
 }
 
 fn schema() -> SchemaRef {
@@ -133,7 +138,11 @@ pub fn decode(bytes: Bytes) -> anyhow::Result<List> {
     if bytes.len() > MAX_BYTES {
         bail!("fetched list: {} bytes, more than {MAX_BYTES}", bytes.len());
     }
+    let file = bytes.clone();
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+    // A node wrote it: bound what decoding allocates before decoding.
+    usnm_overlay::check_uncompressed(&file, builder.metadata(), MAX_UNCOMPRESSED)
+        .context("fetched list")?;
     let meta = builder.metadata().file_metadata();
     let kv = |k: &str| {
         meta.key_value_metadata()
@@ -226,7 +235,11 @@ mod tests {
             p,
             "fetched/pages-v20261010-2/usnm-ocr-node2-arcs-prod.20261012T010500Z.parquet"
         );
-        assert_eq!(stamp_of(&p), Some("20261012T010500Z"));
+        assert_eq!(
+            stamp_of(&p).map(|t| t.to_string()),
+            Some("2026-10-12 01:05:00".into())
+        );
         assert_eq!(stamp_of("fetched/v/node.parquet"), None);
+        assert_eq!(stamp_of("fetched/v/node.99999999T999999Z.parquet"), None);
     }
 }
