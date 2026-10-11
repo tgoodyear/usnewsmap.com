@@ -278,6 +278,8 @@ async fn sample_batch(s: Arc<Shared>, b: RunBatch) -> anyhow::Result<BatchSample
             crate::release::DocFormat {
                 decade: false,
                 analyzer: s.analyzer,
+                // Separate fields, as the template the cluster loads has.
+                text: usnm_core::text_layout::TextLayout::Separate,
             },
         );
         serde_json::to_writer(&mut out.lines, &doc)?;
