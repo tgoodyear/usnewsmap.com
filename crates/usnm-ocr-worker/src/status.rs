@@ -74,6 +74,19 @@ impl std::fmt::Debug for Tracker {
     }
 }
 
+/// A journal file's identity: its device and inode, which change when the
+/// file is replaced, so the dashboard reads a new one from the start.
+#[cfg(unix)]
+fn journal_id(m: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!("{}-{}", m.dev(), m.ino())
+}
+
+#[cfg(not(unix))]
+fn journal_id(_: &std::fs::Metadata) -> String {
+    String::new()
+}
+
 /// The short form of an engine tag for the routes: its `profile=`, else
 /// the tag.
 fn profile(tag: &str) -> String {
@@ -217,6 +230,10 @@ impl Tracker {
                 hour.add(c);
             }
         }
+        let journal = self
+            .journal
+            .as_ref()
+            .and_then(|(p, _)| std::fs::metadata(p).ok());
         let mut in_flight: Vec<InFlight> = i.in_flight.values().cloned().collect();
         in_flight.sort_by_key(|p| p.started_at);
         WorkerStatus {
@@ -242,11 +259,8 @@ impl Tracker {
             last_day: day,
             since_start: i.since_start,
             recent: i.recent.iter().cloned().collect(),
-            journal_bytes: self
-                .journal
-                .as_ref()
-                .and_then(|(p, _)| std::fs::metadata(p).ok())
-                .map_or(0, |m| m.len()),
+            journal_bytes: journal.as_ref().map_or(0, |m| m.len()),
+            journal_id: journal.as_ref().map_or_else(String::new, journal_id),
         }
     }
 
@@ -408,6 +422,7 @@ mod tests {
         assert_eq!(s.routes["deu"], "frak2021");
         assert_eq!(s.recent.len(), 1);
         assert!(s.journal_bytes > 0);
+        assert!(!s.journal_id.is_empty());
         t.end(page("sn1_1890-01-01_ed-1_seq-2", "failed", "loc"));
 
         let (code, body) = get(t.clone(), "192.168.0.105", "/journal?from=0").await;
