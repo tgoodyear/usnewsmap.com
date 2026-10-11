@@ -1188,8 +1188,8 @@ async fn congress_searches_match_the_reference_backend() {
                     f.from = spec.from;
                     f.to = spec.to;
                     let ctx = format!("{sname} / {qname} / {fname} / {:?}", spec.unit);
-                    let want = sorted(mem.summary(set, q, &f, &spec).await.unwrap());
-                    let got = sorted(qw.summary(set, q, &f, &spec).await.expect(&ctx));
+                    let want = mem.summary(set, q, &f, &spec).await.unwrap();
+                    let got = qw.summary(set, q, &f, &spec).await.expect(&ctx);
                     assert_eq!(got, want, "summary: {ctx}");
                     nonzero += usize::from(want.total_hits > 0);
                     let shards: Vec<u8> = (0..8).collect();
