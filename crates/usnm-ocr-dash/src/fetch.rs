@@ -95,7 +95,18 @@ pub struct Plan {
     pub keep: Vec<PlanRow>,
     pub pos: HashMap<Box<str>, u32>,
     pub buffer_pages: u64,
+    /// The buffer set's pages, as hashes of their doc_ids (a buffer set
+    /// can run to millions of pages).
+    pub buffer: HashSet<u64>,
     pub group_pages: [u64; 6],
+}
+
+/// A doc_id's hash, for [`Plan::buffer`].
+pub fn doc_hash(doc_id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    doc_id.hash(&mut h);
+    h.finish()
 }
 
 fn iso(lang: &str) -> &str {
@@ -108,14 +119,15 @@ impl Plan {
     pub fn load(path: &Path) -> anyhow::Result<Plan> {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let sha256 = prefetch::sha256(&bytes);
-        let mut buffer_pages = 0;
+        let mut buffer = HashSet::new();
         let rows = decode_where(Bytes::from(bytes), |r| {
             let keep = set_of(r) == Set::Keep;
             if !keep {
-                buffer_pages += 1;
+                buffer.insert(doc_hash(&r.doc_id));
             }
             keep
         })?;
+        let buffer_pages = buffer.len() as u64;
         let rows = prefetch::select(
             rows,
             &prefetch::Options {
@@ -133,6 +145,7 @@ impl Plan {
             path: path.to_owned(),
             sha256,
             buffer_pages,
+            buffer,
             ..Plan::default()
         };
         for r in &rows {
@@ -348,8 +361,10 @@ impl Fetch {
             Err(e) => {
                 tracing::warn!(error = format!("{e:#}"), "can't read the manifest");
                 self.plan_error = Some(format!("{e:#}"));
-                if self.plan.as_ref().is_some_and(|p| p.path != want) {
-                    self.plan = None;
+                // The plan held is no longer the fetcher's: drop it rather
+                // than mix it with the new status and index.
+                if self.plan.take().is_some() {
+                    self.reset_index();
                 }
             }
         }
@@ -378,11 +393,18 @@ impl Fetch {
 
     fn add_fetch(&mut self, line: IndexLine) {
         self.events.push_back((line.fetched_at, line.bytes));
-        let group = self.plan.as_ref().and_then(|p| {
-            p.pos
-                .get(line.doc_id.as_str())
-                .map(|i| p.keep[*i as usize].group)
-        });
+        // A page of neither set (an older manifest's, or before the
+        // manifest is read) counts in the rates only.
+        let set = self
+            .plan
+            .as_ref()
+            .and_then(|p| match p.pos.get(line.doc_id.as_str()) {
+                Some(i) => Some(Some(p.keep[*i as usize].group)),
+                None => p.buffer.contains(&doc_hash(&line.doc_id)).then_some(None),
+            });
+        let Some(group) = set else {
+            return;
+        };
         if !self.fetched.insert(line.doc_id.into()) {
             return;
         }
@@ -533,7 +555,8 @@ mod tests {
             format!(
                 "{{\"doc_id\":\"sn4_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{old}\",\"bytes\":100}}\n\
                  {{\"doc_id\":\"sn1_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{at}\",\"bytes\":7}}\n\
-                 {{\"doc_id\":\"sn4_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{at}\",\"bytes\":100}}\n"
+                 {{\"doc_id\":\"sn4_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{at}\",\"bytes\":100}}\n\
+                 {{\"doc_id\":\"sn9_1890-01-01_ed-1_seq-1\",\"fetched_at\":\"{at}\",\"bytes\":5}}\n"
             ),
         )
         .unwrap();
@@ -551,8 +574,10 @@ mod tests {
         assert_eq!(f.groups[0].pages, 1);
         assert_eq!(f.groups[0].bytes, 100);
         assert_eq!(f.buffer.pages, 1);
-        assert_eq!(f.since(now - Duration::hours(1)).pages, 2);
-        assert_eq!(f.since(now - Duration::days(1)).bytes, 207);
+        // An older manifest's page is in the rates, not in either set.
+        assert_eq!(f.buffer.bytes, 7);
+        assert_eq!(f.since(now - Duration::hours(1)).pages, 3);
+        assert_eq!(f.since(now - Duration::days(1)).bytes, 212);
         assert_eq!(f.current_group(), Some(0));
         assert!(f.dead.contains("sn3_1890-01-01_ed-1_seq-1"));
         assert_eq!(f.holds_since(now - Duration::hours(1)), 1);

@@ -179,7 +179,9 @@ impl Nodes {
         }
         let mut done = Vec::new();
         if status.journal_bytes > offset {
-            let body = get(client, &format!("{url}/journal?from={offset}")).await?;
+            // A prefix at most MAX_BODY long, so a dashboard far behind
+            // still moves on a chunk at a time.
+            let body = get_prefix(client, &format!("{url}/journal?from={offset}")).await?;
             if let Some(end) = body.iter().rposition(|b| *b == b'\n') {
                 offset += end as u64 + 1;
                 for l in String::from_utf8_lossy(&body[..end]).lines() {
@@ -278,6 +280,20 @@ impl Nodes {
 }
 
 async fn get(client: &reqwest::Client, url: &str) -> anyhow::Result<Vec<u8>> {
+    let (body, whole) = read(client, url).await?;
+    if !whole {
+        bail!("the answer is over {MAX_BODY} bytes");
+    }
+    Ok(body)
+}
+
+/// The first MAX_BODY bytes at most.
+async fn get_prefix(client: &reqwest::Client, url: &str) -> anyhow::Result<Vec<u8>> {
+    Ok(read(client, url).await?.0)
+}
+
+/// The body up to MAX_BODY, and whether that was all of it.
+async fn read(client: &reqwest::Client, url: &str) -> anyhow::Result<(Vec<u8>, bool)> {
     let mut resp = client
         .get(url)
         .timeout(Duration::from_secs(5))
@@ -294,11 +310,12 @@ async fn get(client: &reqwest::Client, url: &str) -> anyhow::Result<Vec<u8>> {
         .map_err(|e| anyhow::anyhow!("{}", e.without_url()))?
     {
         if body.len() + chunk.len() > MAX_BODY {
-            bail!("the answer is over {MAX_BODY} bytes");
+            body.extend_from_slice(&chunk[..MAX_BODY - body.len()]);
+            return Ok((body, false));
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(body)
+    Ok((body, true))
 }
 
 #[cfg(test)]
@@ -407,6 +424,28 @@ mod tests {
         assert_eq!(again.nodes[0].journal_id, "j2");
         let o = again.ocred["sn1_1890-01-01_ed-1_seq-3"];
         assert_eq!(again.names[o.language as usize], "deu");
+    }
+
+    #[tokio::test]
+    async fn a_journal_far_ahead_is_copied_a_chunk_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut text = String::new();
+        let mut n = 0;
+        while text.len() <= MAX_BODY * 2 {
+            n += 1;
+            text.push_str(&line(&format!("sn1_1890-01-01_ed-1_seq-{n}"), "done"));
+        }
+        let url = fake_worker(Arc::new(Mutex::new(("j1".to_owned(), text)))).await;
+        let client = reqwest::Client::new();
+        let mut nodes =
+            Nodes::open(dir.path().to_owned(), &[("node1".to_owned(), url.clone())]).unwrap();
+        poll(&mut nodes, &client, &url).await;
+        assert!(nodes.nodes[0].error.is_none());
+        assert!(nodes.ocred.len() > 1 && nodes.ocred.len() < n);
+        for _ in 0..3 {
+            poll(&mut nodes, &client, &url).await;
+        }
+        assert_eq!(nodes.ocred.len(), n);
     }
 
     #[tokio::test]
