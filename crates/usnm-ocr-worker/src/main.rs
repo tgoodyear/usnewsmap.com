@@ -1,5 +1,6 @@
 //! `usnm-ocr-worker`: see the crate's README.
 
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -14,6 +15,7 @@ use usnm_ocr_worker::message::{OcrMessage, Reason};
 use usnm_ocr_worker::prefetch;
 use usnm_ocr_worker::publish;
 use usnm_ocr_worker::queue::{self, BULK, PRIORITY};
+use usnm_ocr_worker::status::{self, About, Tracker};
 use usnm_ocr_worker::telemetry::{self, Metrics};
 use usnm_ocr_worker::worker::{check_node_id, Config, ScanSource, Worker};
 
@@ -192,6 +194,18 @@ enum Command {
         publish_fetched: Option<String>,
         #[arg(long, env = "USNM_OCR_PUBLISH_EVERY_SECS", default_value_t = 1800, value_parser = clap::value_parser!(u64).range(60..))]
         publish_every_secs: u64,
+        /// Serve this worker's status to the LAN dashboard here
+        /// (`0.0.0.0:8381`): `GET /status` and `GET /journal`. Unset: none.
+        #[arg(long, env = "USNM_OCR_STATUS_LISTEN")]
+        status_listen: Option<SocketAddr>,
+        /// The only addresses the status is served to (the dashboard's),
+        /// comma-separated.
+        #[arg(long, env = "USNM_OCR_STATUS_ALLOW", value_delimiter = ',')]
+        status_allow: Vec<IpAddr>,
+        /// The journal of finished pages (doc_id, language, engine tag,
+        /// times, outcome; no text), appended to across restarts.
+        #[arg(long, env = "USNM_OCR_STATUS_JOURNAL")]
+        status_journal: Option<PathBuf>,
         #[command(flatten)]
         engine: EngineArgs,
     },
@@ -440,6 +454,9 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             shutdown_grace_secs,
             publish_fetched,
             publish_every_secs,
+            status_listen,
+            status_allow,
+            status_journal,
             engine,
         } => {
             check_node_id(&node_id)?;
@@ -470,31 +487,60 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     "--page-timeout-secs is over 80% of --visibility-secs; slow pages will be abandoned"
                 );
             }
+            let scan_cache_url = scan_cache_url.filter(|u| !u.is_empty());
+            let scans: Arc<dyn ScanSource> = {
+                let cfg = LocConfig {
+                    api_gap: Duration::from_millis(api_gap_ms),
+                    tile_gap: Duration::from_millis(tile_gap_ms),
+                    ..LocConfig::default()
+                };
+                let iiif_root = cfg.iiif_root.clone();
+                let loc: Arc<dyn ScanSource> = Arc::new(LocClient::new(cfg)?);
+                match scan_cache_url.as_deref() {
+                    Some(url) => {
+                        tracing::info_span!("ocr_worker_start")
+                            .in_scope(|| tracing::info!(url, "reading prefetched scans first"));
+                        Arc::new(CachedScans::new(url, iiif_root, loc)?)
+                    }
+                    None => loc,
+                }
+            };
+            let engine = engine.engine().await?;
+            let tracker = Arc::new(Tracker::new(
+                About {
+                    node_id: cfg.node_id.clone(),
+                    version: VERSION.clone(),
+                    concurrency: u32::try_from(cfg.concurrency).unwrap_or(u32::MAX),
+                    engine: engine.source().to_owned(),
+                    scan_cache_url: scan_cache_url.clone(),
+                },
+                status_journal.filter(|p| !p.as_os_str().is_empty()),
+                Some(scans.clone()),
+            )?);
+            let stop = stop_signal();
+            if let Some(listen) = status_listen {
+                anyhow::ensure!(
+                    !status_allow.is_empty(),
+                    "--status-listen needs --status-allow (the dashboard's address)"
+                );
+                let (tracker, stop) = (tracker.clone(), stop.clone());
+                tokio::spawn(async move {
+                    if let Err(e) = status::serve(listen, tracker, status_allow, stop).await {
+                        tracing::info_span!("ocr_status").in_scope(|| {
+                            tracing::warn!(error = format!("{e:#}"), "the status server stopped")
+                        });
+                    }
+                });
+            }
             let worker = Arc::new(Worker {
                 queue: queue::open(&queue_url)?,
                 out: usnm_store::open(&out_url)?,
-                scans: {
-                    let cfg = LocConfig {
-                        api_gap: Duration::from_millis(api_gap_ms),
-                        tile_gap: Duration::from_millis(tile_gap_ms),
-                        ..LocConfig::default()
-                    };
-                    let iiif_root = cfg.iiif_root.clone();
-                    let loc: Arc<dyn ScanSource> = Arc::new(LocClient::new(cfg)?);
-                    match scan_cache_url.filter(|u| !u.is_empty()) {
-                        Some(url) => {
-                            tracing::info_span!("ocr_worker_start")
-                                .in_scope(|| tracing::info!(url, "reading prefetched scans first"));
-                            Arc::new(CachedScans::new(&url, iiif_root, loc)?)
-                        }
-                        None => loc,
-                    }
-                },
-                engine: engine.engine().await?,
+                scans,
+                engine,
                 cfg,
                 metrics: Metrics::global(),
+                tracker,
             });
-            let stop = stop_signal();
             if let Some(opts) = publish {
                 tracing::info_span!("ocr_worker_start").in_scope(|| {
                     tracing::info!(

@@ -138,6 +138,15 @@ Each message is a request (`ocr_page`) carrying its page id, queue, reason and l
 
 Metrics are sent every 30 s and once more at shutdown.
 
+## Status for the LAN dashboard
+
+With `--status-listen 0.0.0.0:8381` (`USNM_OCR_STATUS_LISTEN`) and `--status-allow <dashboard address>` (`USNM_OCR_STATUS_ALLOW`), `run` serves its status to `usnm-ocrdash` (12 §12.2.5) and refuses every other address:
+
+- `GET /status`: the node id, version, engine, concurrency, scan server, any LoC hold, the pages in flight (doc_id, language, queue, stage, start), pages by outcome and scan source over the last hour and day and since the start, the latest finished pages, and each language's engine profile from its last page done.
+- `GET /journal?from=<offset>`: `--status-journal` (`USNM_OCR_STATUS_JOURNAL`) from a byte offset, whole lines only, at most 1 MiB. Each line is one finished page: doc_id, language, engine tag, queue, reason, times, outcome, scan source, whether its output was uploaded, and a failure's kind. The file is appended to across restarts.
+
+Neither holds page text. `scripts/ocr-node/install-worker.sh --status-allow <address>` writes the settings, and the node's nftables drops the port from anyone else.
+
 ## Building for AlmaLinux 9
 
 CI builds the worker on AlmaLinux 9 (`ocr-worker-el9` in `.github/workflows/ci.yml`), fails if it needs a glibc symbol newer than EL9's 2.34, runs it on AlmaLinux 10, and reads a rendered line through the Tesseract image with `check-engine`. On `main` it publishes the binary and the image as an attested GitHub release, `ocr-worker-<yyyymmdd>-<sha7>`, which `scripts/ocr-node/install-worker.sh` verifies and installs ([operations](../../docs/operations.md#on-prem-ocr-nodes)). The binary uses rustls and has no OpenSSL dependency. To build one by hand, use an EL9 container, not a newer distribution:

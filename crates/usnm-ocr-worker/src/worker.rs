@@ -20,6 +20,7 @@ use crate::engine::{set_alto_source, Engine, EngineError};
 use crate::loc::{FetchError, LocClient, Scan};
 use crate::message::{self, Cause, DeadLetter, OcrMessage};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
+use crate::status::{Completion, Tracker};
 use crate::telemetry::{page_attrs, Metrics};
 
 /// Where a page's scan comes from (loc.gov, or a stand-in in tests).
@@ -164,6 +165,27 @@ pub struct Worker {
     pub engine: Arc<dyn Engine>,
     pub cfg: Config,
     pub metrics: Metrics,
+    /// What this worker is on and has finished, for the LAN dashboard.
+    pub tracker: Arc<Tracker>,
+}
+
+/// How a message ended, for the tracker.
+struct Ended {
+    outcome: &'static str,
+    engine: String,
+    uploaded: bool,
+    error_kind: Option<&'static str>,
+}
+
+impl Ended {
+    fn not_done(outcome: &'static str, error_kind: &'static str) -> Self {
+        Ended {
+            outcome,
+            engine: String::new(),
+            uploaded: false,
+            error_kind: Some(error_kind),
+        }
+    }
 }
 
 impl Worker {
@@ -348,12 +370,33 @@ impl Worker {
             outcome = Empty,
             otel.status_code = Empty,
         );
-        self.handle_in(msg, received, &span)
+        let page = message::decode(&msg.text)
+            .ok()
+            .map(|(m, k)| (k.doc_id(), m.language, m.reason.as_str().to_owned()));
+        let queue = msg.queue.clone();
+        if let Some((doc_id, language, _)) = &page {
+            self.tracker.begin(doc_id, language, &queue);
+        }
+        let ended = self
+            .handle_in(msg, received, &span)
             .instrument(span.clone())
             .await;
+        if let Some((doc_id, language, reason)) = page {
+            self.tracker.end(Completion {
+                doc_id,
+                language,
+                engine: ended.engine,
+                queue,
+                reason,
+                outcome: ended.outcome.into(),
+                uploaded: ended.uploaded,
+                error_kind: ended.error_kind.map(Into::into),
+                ..Completion::default()
+            });
+        }
     }
 
-    async fn handle_in(&self, msg: Received, received: Instant, span: &tracing::Span) {
+    async fn handle_in(&self, msg: Received, received: Instant, span: &tracing::Span) -> Ended {
         let decoded = message::decode(&msg.text);
         if let Ok((m, key)) = &decoded {
             span.record("page", tracing::field::display(key));
@@ -370,7 +413,7 @@ impl Worker {
             self.dead_letter(&msg, Cause::DequeueCount, None, &why, valid)
                 .await;
             outcome("dead_lettered");
-            return;
+            return Ended::not_done("dead_lettered", "dequeue_count");
         }
         let (m, key) = match decoded {
             Ok(v) => v,
@@ -379,7 +422,7 @@ impl Worker {
                 self.dead_letter(&msg, Cause::Invalid, Some(e.kind()), &why, None)
                     .await;
                 outcome("dead_lettered");
-                return;
+                return Ended::not_done("dead_lettered", "invalid");
             }
         };
         let deadline = received + self.cfg.budget();
@@ -392,6 +435,12 @@ impl Worker {
         );
         match self.process(&m, &key, deadline).await {
             Ok(done) => {
+                let ended = Ended {
+                    outcome: "done",
+                    engine: done.engine.clone(),
+                    uploaded: true,
+                    error_kind: None,
+                };
                 self.metrics.pages_done.add(1, &attrs);
                 outcome("done");
                 tracing::info!(
@@ -414,11 +463,13 @@ impl Worker {
                         );
                     }
                 }
+                ended
             }
             Err(Failure::Permanent(e)) => {
                 self.dead_letter(&msg, Cause::Permanent, None, &e, Some(&m))
                     .await;
                 outcome("dead_lettered");
+                Ended::not_done("dead_lettered", "permanent")
             }
             Err(Failure::Transient(kind, e)) => {
                 let mut attrs = attrs;
@@ -429,6 +480,7 @@ impl Worker {
                     page, error = %e, kind, dequeue_count = msg.dequeue_count,
                     "page failed; it reappears when its visibility runs out"
                 );
+                Ended::not_done("failed", kind)
             }
             Err(Failure::Abandoned) => {
                 let mut attrs = attrs;
@@ -440,6 +492,7 @@ impl Worker {
                     budget_secs = self.cfg.budget().as_secs(),
                     "page abandoned: out of time, nothing written; it reappears for another node"
                 );
+                Ended::not_done("abandoned", "budget")
             }
         }
     }
@@ -478,6 +531,9 @@ impl Worker {
                 ],
             );
             let scan = scan?;
+            let doc_id = key.doc_id();
+            self.tracker.scanned(&doc_id, scan.from_cache);
+            self.tracker.stage(&doc_id, "ocr");
             let scan_sha256 = crate::prefetch::sha256(&scan.jpeg);
             if scan.from_cache {
                 tracing::debug!(doc_id = %key.doc_id(), "scan read from the cache");
@@ -545,6 +601,7 @@ impl Worker {
         // The uploads are cut off at the deadline too: past it the message
         // may be with another node already. An ALTO without its part is
         // harmless; parts are only read with their ALTO.
+        self.tracker.stage(&key.doc_id(), "upload");
         let (alto_path, part_path) =
             tokio::time::timeout_at(deadline.into(), self.write_output(key, alto, part))
                 .await
@@ -713,6 +770,7 @@ mod tests {
                 ..Config::default()
             },
             metrics: Metrics::global(),
+            tracker: Arc::new(Tracker::quiet()),
         });
         (w, queue, out, scans)
     }
@@ -744,6 +802,14 @@ mod tests {
             .unwrap();
         let (_tx, rx) = watch::channel(false);
         w.clone().run(rx).await.unwrap();
+        // The tracker saw the page through, with its engine tag and scan
+        // source, and holds nothing in flight.
+        let st = w.tracker.status();
+        assert_eq!(st.since_start.done, 1);
+        assert_eq!(st.since_start.from_loc, 1);
+        assert!(st.in_flight.is_empty());
+        assert_eq!(st.recent[0].doc_id, "sn83045462_1890-05-03_ed-1_seq-7");
+        assert!(st.recent[0].uploaded);
 
         let altos = out.list("alto").await.unwrap();
         assert_eq!(altos.len(), 1, "{altos:?}");
@@ -870,6 +936,10 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+        let st = w.tracker.status();
+        assert!(st.since_start.failed > 0);
+        assert_eq!(st.since_start.dead_lettered, 1);
+        assert_eq!(st.recent[0].error_kind.as_deref(), Some("dequeue_count"));
         assert!(out.list("pages").await.unwrap().is_empty());
     }
 
@@ -987,6 +1057,7 @@ mod tests {
             out: w.out.clone(),
             scans: w.scans.clone(),
             metrics: w.metrics.clone(),
+            tracker: w.tracker.clone(),
         });
         (w, queue, out)
     }
