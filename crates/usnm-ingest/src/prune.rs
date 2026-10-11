@@ -10,7 +10,10 @@
 //!   `previous_version`;
 //! - any published version newer than the serving one, which is only there
 //!   after someone rolled `current.json` back by hand: rolling forward
-//!   again must still work.
+//!   again must still work. A newer run that wrote its snapshot's manifest
+//!   counts as published whatever its status: a release writes the
+//!   manifest before `current.json` and records the publish after it, and
+//!   that last step can fail (`PublishedUnrecorded`).
 //!
 //! A kept version's indexes are what any record of it names: `current.json`
 //! (the serving one), its run in the pipeline state (`indexes`,
@@ -226,11 +229,19 @@ pub async fn kept(reference: &dyn ObjectStore, state: &State) -> anyhow::Result<
 
     let mut newer = Vec::new();
     for run in runs.values() {
-        if run.status == RunStatus::Published
-            && run.index_version != serving
-            && run.started_at > serving_run.started_at
-        {
-            let v = &run.index_version;
+        if run.index_version == serving || run.started_at <= serving_run.started_at {
+            continue;
+        }
+        let v = &run.index_version;
+        // Published, or maybe published without the record (above).
+        let path = format!("{v}/manifest.json");
+        let published = run.status == RunStatus::Published
+            || reference
+                .get(&path)
+                .await
+                .with_context(|| format!("reading {path}"))?
+                .is_some();
+        if published {
             let (ids, found) = version_indexes(reference, &runs, v).await?;
             if !found {
                 bail!(
@@ -632,6 +643,30 @@ mod tests {
         assert!(k.indexes.contains("pages-base-20261015-1"));
         // The failed run isn't a version.
         assert!(!k.indexes.contains("pages-base-20261012-1"));
+    }
+
+    #[tokio::test]
+    async fn a_newer_run_with_a_snapshot_counts_as_published() {
+        // A release writes its manifest, then current.json, then records the
+        // publish, which can fail: the run stays `building` though the
+        // version went live. Rolled back by hand, it's still kept.
+        let e = env().await;
+        for (version, day) in [("pages-v20261020-1", 20), ("pages-v20261021-1", 21)] {
+            let index = version.replace("pages-v", "pages-base-");
+            let r = run(version, &[&index], &index, day, "building");
+            e.state.docs.upsert(INDEX_RUNS, version, &r).await.unwrap();
+        }
+        put(
+            &e.reference,
+            "pages-v20261020-1/manifest.json",
+            json!({"indexes": [{"index_id": "pages-base-20261020-1"}]}),
+        )
+        .await;
+        let k = kept(e.reference.as_ref(), &e.state).await.unwrap();
+        assert_eq!(k.newer, ["pages-v20261020-1"]);
+        assert!(k.indexes.contains("pages-base-20261020-1"));
+        // Without a snapshot it never reached current.json.
+        assert!(!k.indexes.contains("pages-base-20261021-1"));
     }
 
     /// A Quickwit node's index API: lists, splits and deletes, recording
