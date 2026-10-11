@@ -60,6 +60,9 @@ param americanStories bool = false
 @description('Search American Stories\' text on a version built with it (05 §5.5.4). False makes the API search LoC\'s text alone, whatever current.json says, without a release; the provision restarts the API, which warms up again (docs/operations.md, "American Stories\' text").')
 param americanStoriesSearch bool = true
 
+@description('Search the Congress pages (#229) on a version whose current.json names a Congress index set. False makes the API leave them unloaded and answer source=congress with 422, without a release; the provision restarts the API (docs/configuration.md, USNM_CONGRESS_SEARCH).')
+param congressSearch bool = true
+
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
 @description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations.md, "Full rebuild").')
@@ -124,7 +127,7 @@ param ocrNodes bool = false
 @description('Public IPv4 addresses or CIDR ranges the OCR nodes connect from, comma separated (the operator\'s home IP). Only in the environment\'s settings, never in the repository.')
 param ocrNodeIps string = ''
 
-@description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account; onboard.sh adds each node\'s Arc identity to it.')
+@description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
 
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
@@ -298,6 +301,32 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
   }
 }
 
+// The OCR nodes' monitoring (ADR-0015 decision 8), apart from the
+// environment's: a workspace and an Application Insights component of their
+// own, so a node can't write the environment's telemetry or fill its daily
+// cap; the data collection rule; the nodes' group's Monitoring Metrics
+// Publisher grant on that component only; and alerts on a node sending too
+// much and on the cap. onboard.sh installs the agent on each node and
+// associates it with the rule.
+module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
+  scope: rg
+  name: 'ocr-node-monitoring'
+  params: {
+    location: location
+    tags: tags
+    nameSuffix: env
+    workspaceName: 'usnm-ocr-log-${env}'
+    appInsightsName: 'usnm-ocr-appi-${env}'
+    ruleName: 'usnm-ocr-dcr-${env}'
+    // 0.1 GB to start: about 8 to 25 MB a day per node is estimated before
+    // the worker's telemetry, which isn't measured yet. Raise it with
+    // cap_gb in ops/queries/ocr-node-health.kql.
+    dailyCapGb: '0.1'
+    nodeGroupId: trim(ocrNodeGroupId)
+    actionGroupId: monitoring.outputs.actionGroupId
+  }
+}
+
 module cosmos 'modules/cosmos.bicep' = {
   scope: rg
   name: 'cosmos'
@@ -362,7 +391,9 @@ module containerEnv 'modules/containerapps-env.bicep' = {
   }
 }
 
-// Resource logs for everything that has them, to the one workspace.
+// Resource logs for everything that has them: to the environment's
+// workspace, except what the OCR nodes control (the exchange account's queue
+// logs, the nodes' rule's errors), which goes to the nodes' workspace.
 module diagnostics 'modules/diagnostics.bicep' = {
   scope: rg
   name: 'diagnostics'
@@ -377,6 +408,9 @@ module diagnostics 'modules/diagnostics.bicep' = {
     tilesStorageName: tiles.outputs.name
     scratchStorageName: ingestScratch ? scratch!.outputs.accountName : ''
     exchangeStorageName: ocrNodes ? ocrExchange!.outputs.name : ''
+    ocrNodeWorkspaceId: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceId : ''
+    ocrNodeWorkspaceName: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceName : ''
+    ocrNodeDcrName: ocrNodes ? ocrNodeMonitoring!.outputs.ruleName : ''
   }
 }
 
@@ -408,6 +442,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     ingestCron: ingestJobs && useAcr ? ingestCron : ''
     americanStoriesSearch: americanStoriesSearch
+    congressSearch: congressSearch
   }
 }
 
@@ -649,3 +684,12 @@ output OCR_ENDPOINT string = ocr ? ocrService!.outputs.endpoint : ''
 output OCR_EXCHANGE_ACCOUNT string = ocrNodes ? ocrExchange!.outputs.name : ''
 output OCR_QUEUE_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
 output OCR_BLOB_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+// The nodes' data collection rule; onboard.sh associates each node with it.
+output OCR_NODE_DCR_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.ruleId : ''
+// The nodes' own Application Insights component: onboard.sh passes its
+// ingestion settings (not a credential: local auth is off) to the worker.
+output OCR_NODE_APPINSIGHTS string = ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsConnectionString : ''
+output OCR_NODE_APPINSIGHTS_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.appInsightsId : ''
+// The nodes' workspace's customer id: scripts/logs.sh runs the ocr-node-*
+// queries there.
+output OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID string = ocrNodes ? ocrNodeMonitoring!.outputs.workspaceCustomerId : ''
