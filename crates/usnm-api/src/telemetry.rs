@@ -3,19 +3,18 @@
 //! Every request except the health probes gets one `request` span, which
 //! the Application Insights exporter turns into a request (`AppRequests`):
 //! method, the matched route template (`/v1/aggregate`), status code and
-//! duration, failed only on a 5xx. It also gets one INFO log line with the
-//! same fields, outside the span so it goes to the console (and Log
-//! Analytics) only. Neither ever carries the raw path or query string: query
-//! strings hold search text (09 §9.4.2).
+//! duration, failed only on a 5xx. It never carries the raw path or query
+//! string: query strings hold search text (09 §9.4.2). There is no console
+//! line per request and no request count or duration metric: `AppRequests`
+//! has them, and the copies were most of the API's log volume (#231).
 //!
 //! The metrics go to `AppMetrics` when telemetry is on; otherwise the
 //! instruments come from the no-op global meter and record nothing.
 
 use std::sync::{Arc, OnceLock, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 use opentelemetry::metrics::{Counter, Histogram, Meter, ObservableGauge};
@@ -32,7 +31,7 @@ pub const SERVICE: usnm_telemetry::Service = usnm_telemetry::Service {
     version: env!("CARGO_PKG_VERSION"),
 };
 
-/// Container Apps probes: counted, but neither traced nor logged.
+/// Container Apps probes: neither traced nor logged.
 const PROBES: [&str; 2] = ["/healthz", "/readyz"];
 
 /// Route label for a request no API route matched: the site's files...
@@ -42,10 +41,6 @@ pub const NO_ROUTE: &str = "(no route)";
 
 /// The API's instruments.
 pub struct Metrics {
-    /// Responses by `route` and `status_class` (`2xx`…), probes included.
-    requests: Counter<u64>,
-    /// Time to the response head, by `route`.
-    duration: Histogram<f64>,
     /// Search backend time for one response, by `endpoint` (aggregate,
     /// hits) and `outcome` (ok, too_broad, timeout, error).
     backend: Histogram<f64>,
@@ -79,15 +74,6 @@ pub struct Metrics {
 impl Metrics {
     pub fn new(meter: &Meter) -> Self {
         Self {
-            requests: meter
-                .u64_counter("api.requests")
-                .with_description("Responses by route and status class")
-                .build(),
-            duration: meter
-                .f64_histogram("api.request_duration_seconds")
-                .with_unit("s")
-                .with_description("Time to the response head, by route")
-                .build(),
             backend: meter
                 .f64_histogram("api.backend_duration_seconds")
                 .with_unit("s")
@@ -150,13 +136,6 @@ impl Metrics {
     /// From the global meter provider (`usnm_telemetry::init` installs it).
     pub fn global() -> Self {
         Self::new(&opentelemetry::global::meter(SERVICE.name))
-    }
-
-    fn request(&self, route: &str, status: StatusCode, elapsed: Duration) {
-        let route = KeyValue::new("route", route.to_owned());
-        let class = KeyValue::new("status_class", format!("{}xx", status.as_u16() / 100));
-        self.requests.add(1, &[route.clone(), class]);
-        self.duration.record(elapsed.as_secs_f64(), &[route]);
     }
 
     pub(crate) fn backend<T>(
@@ -291,21 +270,15 @@ pub(crate) struct ServedVersion(pub String);
 #[derive(Clone, Default)]
 struct RouteSlot(Arc<OnceLock<String>>);
 
-/// Outermost middleware: the request span, the log line and the request
-/// metrics.
+/// Outermost middleware: the request span, and the rejected-query count.
 pub(crate) async fn track(
     State(state): State<Arc<AppState>>,
     mut req: Request,
     next: Next,
 ) -> Response {
-    let started = Instant::now();
     let path = req.uri().path();
-    if let Some(probe) = PROBES.iter().find(|p| **p == path) {
-        let resp = next.run(req).await;
-        state
-            .metrics
-            .request(probe, resp.status(), started.elapsed());
-        return resp;
+    if PROBES.contains(&path) {
+        return next.run(req).await;
     }
     let api = is_api_path(path);
     let method = req.method().clone();
@@ -326,17 +299,12 @@ pub(crate) async fn track(
         usnm.problem = Empty,
     );
     let resp = next.run(req).instrument(span.clone()).await;
-    let elapsed = started.elapsed();
     let status = resp.status();
-    let route = match slot.0.get() {
-        Some(r) => r.as_str(),
-        None => {
-            let r = if api { NO_ROUTE } else { SITE_ROUTE };
-            span.record("http.route", r);
-            span.record("otel.name", format!("{method} {r}"));
-            r
-        }
-    };
+    if slot.0.get().is_none() {
+        let r = if api { NO_ROUTE } else { SITE_ROUTE };
+        span.record("http.route", r);
+        span.record("otel.name", format!("{method} {r}"));
+    }
     // The version the response came from; the one serving now for responses
     // that don't say (a reload may have swapped it in since).
     match resp.extensions().get::<ServedVersion>() {
@@ -360,15 +328,6 @@ pub(crate) async fn track(
         },
     );
     drop(span);
-    tracing::info!(
-        parent: None,
-        method = %method,
-        route,
-        status = status.as_u16(),
-        ms = elapsed.as_millis() as u64,
-        "request"
-    );
-    state.metrics.request(route, status, elapsed);
     if let Some(Rejection(reason)) = resp.extensions().get::<Rejection>() {
         state
             .metrics

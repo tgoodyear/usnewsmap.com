@@ -11,7 +11,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use usnm_core::ids::PageKey;
-use usnm_core::params::{RawParams, SearchRequest};
+use usnm_core::params::RawParams;
 use usnm_core::query::highlight_terms;
 use usnm_core::time::date_from_day;
 use usnm_search::{Hit, HitSort, HitsQuery};
@@ -148,7 +148,7 @@ pub async fn hits(
     raw.reject_unknown(&["place", "cursor", "limit", "sort"])?;
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
-    let req = SearchRequest::from_raw(&raw, rd.bounds())?;
+    let req = rd.search_request(&raw)?;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {
         return Err(ApiError::Unsupported(
             "OCR-tolerant (fuzzy) matching".into(),

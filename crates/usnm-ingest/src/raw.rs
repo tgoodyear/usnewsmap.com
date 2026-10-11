@@ -124,15 +124,15 @@ impl Upload {
     }
 
     /// Commit the archive (once the download has ended and checked out) and
-    /// wait for it; its size.
-    pub async fn commit(self) -> anyhow::Result<u64> {
+    /// wait for it; its size. `None` if an object was already at its path
+    /// (another curation's copy, recorded or not): that one stays as it is.
+    pub async fn commit(self) -> anyhow::Result<Option<u64>> {
         let _ = self.commit.send(true);
-        let n = self
-            .task
-            .await
-            .context("the raw upload's task failed")?
-            .with_context(|| format!("retaining `{}`", self.path))?;
-        Ok(n)
+        match self.task.await.context("the raw upload's task failed")? {
+            Ok(n) => Ok(Some(n)),
+            Err(usnm_store::StoreError::AlreadyExists(_)) => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("retaining `{}`", self.path)),
+        }
     }
 
     /// Give the upload up: nothing becomes visible.
@@ -160,6 +160,10 @@ pub struct Copied {
     pub bytes: u64,
     /// Already there with the same sha256.
     pub skipped: u64,
+    /// The destination holds another archive for the batch (its manifest
+    /// names another sha256, or an archive is at the path with no manifest):
+    /// left as it is, and the copy fails at the end.
+    pub conflicts: u64,
     /// Not in the source but already in the destination (e.g. curated
     /// straight into the archival account): nothing to copy.
     pub already_there: u64,
@@ -169,9 +173,10 @@ pub struct Copied {
 /// Copy retained archives (`batches`, `{batch}_verNN`) and the kept batch
 /// lists from one raw store to another, e.g. from an environment's own
 /// `raw` container into the archival account. Each archive is streamed,
-/// checked against its manifest's sha256 as it goes, and committed (Cold)
-/// before its manifest is written; one already there with the same sha256
-/// is left alone.
+/// checked against its manifest's sha256 as it goes, and committed (Cold,
+/// create-only) before its manifest is written. One already there with the
+/// same sha256 is left alone; a batch whose destination holds another
+/// archive is never overwritten and fails the copy once the rest is done.
 pub async fn copy(
     from: &dyn ObjectStore,
     to: &dyn ObjectStore,
@@ -181,6 +186,7 @@ pub async fn copy(
     use sha2::{Digest, Sha256};
     let mut out = Copied::default();
     let mut missing = Vec::new();
+    let mut conflicts = Vec::new();
     for b in batches {
         let Some(m) = find(from, b, None).await? else {
             // Curated straight into the destination, or never retained.
@@ -192,8 +198,20 @@ pub async fn copy(
             }
             continue;
         };
-        if find(to, b, Some(&m.sha256)).await?.is_some() {
-            out.skipped += 1;
+        // Any destination manifest decides first: the same archive is
+        // skipped, another one is a conflict, before anything is written.
+        if let Some(theirs) = find(to, b, None).await? {
+            if theirs.sha256.eq_ignore_ascii_case(&m.sha256) && theirs.bytes == m.bytes {
+                out.skipped += 1;
+            } else {
+                tracing::warn!(
+                    batch = %b,
+                    source = %m.sha256,
+                    destination = %theirs.sha256,
+                    "the destination holds another archive for this batch; left as it is"
+                );
+                conflicts.push(b.clone());
+            }
             continue;
         }
         let mut stream = from
@@ -228,7 +246,21 @@ pub async fn copy(
         };
         let (uploaded, fed) = tokio::join!(upload, feed);
         let n = fed?;
-        uploaded.with_context(|| format!("copying `{}`", m.path))?;
+        match uploaded {
+            Ok(_) => {}
+            // An archive at the path with no manifest (a curation that
+            // stopped before recording it, or one recording it now).
+            Err(usnm_store::StoreError::AlreadyExists(_)) => {
+                tracing::warn!(
+                    batch = %b,
+                    path = %m.path,
+                    "an archive is already at the path, with no manifest; left as it is"
+                );
+                conflicts.push(b.clone());
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("copying `{}`", m.path)),
+        }
         record_once(to, &m).await?;
         tracing::info!(batch = %b, mb = n / (1024 * 1024), "archive copied");
         out.archives += 1;
@@ -245,6 +277,15 @@ pub async fn copy(
         to.put(&path, bytes, "application/json").await?;
         out.listings += 1;
     }
+    out.conflicts = conflicts.len() as u64;
+    anyhow::ensure!(
+        conflicts.is_empty(),
+        "the destination holds another archive for {} batch(es), left as they are: {} (copied {}, skipped {})",
+        conflicts.len(),
+        conflicts.join(", "),
+        out.archives,
+        out.skipped
+    );
     // Everything that could be copied is; a batch retained nowhere is a gap.
     anyhow::ensure!(
         missing.is_empty(),
@@ -335,7 +376,15 @@ mod tests {
         let sha = digest.await.unwrap().unwrap();
         assert_eq!(parsed, data);
         assert_eq!(sha, want);
-        assert_eq!(upload.commit().await.unwrap(), data.len() as u64);
+        assert_eq!(upload.commit().await.unwrap(), Some(data.len() as u64));
+        assert_eq!(raw.get(&path).await.unwrap().unwrap(), data);
+        // Another upload to the same path never replaces it.
+        let (tee, other) = start(raw.clone(), &path);
+        tee.send(bytes::Bytes::from_static(b"other bytes"))
+            .await
+            .unwrap();
+        drop(tee);
+        assert_eq!(other.commit().await.unwrap(), None);
         assert_eq!(raw.get(&path).await.unwrap().unwrap(), data);
         let m = Manifest {
             batch: "b_ver01".into(),
@@ -436,6 +485,42 @@ mod tests {
         let gap = vec!["b_ver01".to_owned(), "z_ver01".to_owned()];
         let e = copy(&fresh, &to, &gap).await.unwrap_err().to_string();
         assert!(e.contains("z_ver01"), "{e}");
+
+        // A destination that holds another archive for the batch, recorded
+        // or not, is left as it is and fails the copy.
+        let other = usnm_store::LocalStore::new(dir.path().join("f"));
+        other
+            .put(&m.path, b"older one".to_vec(), "x")
+            .await
+            .unwrap();
+        record(
+            &other,
+            &Manifest {
+                bytes: 9,
+                sha256: "0".repeat(64),
+                ..m.clone()
+            },
+        )
+        .await
+        .unwrap();
+        let e = copy(&fresh, &other, &batches)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("another archive"), "{e}");
+        assert_eq!(other.get(&m.path).await.unwrap().unwrap(), b"older one");
+        let orphan = usnm_store::LocalStore::new(dir.path().join("g"));
+        orphan
+            .put(&m.path, b"unrecorded".to_vec(), "x")
+            .await
+            .unwrap();
+        let e = copy(&fresh, &orphan, &batches)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("another archive"), "{e}");
+        assert_eq!(orphan.get(&m.path).await.unwrap().unwrap(), b"unrecorded");
+        assert!(find(&orphan, "b_ver01", None).await.unwrap().is_none());
     }
 
     #[tokio::test]

@@ -47,7 +47,7 @@ resource raw 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-
   properties: { publicAccess: 'None' }
 }
 
-// Packaged sample sets, immutable once written (`usnm-qwcluster bundle`).
+// Packaged sample sets, immutable once written (docs/operations.md, "Sample sets").
 resource sets 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobService
   name: 'sets'

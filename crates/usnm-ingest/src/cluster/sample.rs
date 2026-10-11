@@ -74,6 +74,9 @@ pub struct Published {
     pub american_stories: Option<u64>,
     /// The copies the version hides at search time (its `duplicates.json`).
     pub hidden: usize,
+    /// The analyzer its main indexes were built with (`common_grams`, #168):
+    /// version 1 where absent, the latest for a version this code doesn't know.
+    pub analyzer: usnm_core::text::Analyzer,
 }
 
 /// Read the published version from the reference store.
@@ -119,6 +122,13 @@ pub async fn published(reference: &dyn ObjectStore) -> anyhow::Result<Published>
         bounds: (bound("from"), bound("to")),
         american_stories: current["american_stories"].as_u64(),
         hidden,
+        analyzer: match current["common_grams"].as_u64() {
+            None => usnm_core::text::Analyzer::V1,
+            Some(v) => u32::try_from(v)
+                .ok()
+                .and_then(usnm_core::common_grams::analyzer)
+                .unwrap_or(usnm_core::text::Analyzer::LATEST),
+        },
     })
 }
 
@@ -202,6 +212,7 @@ struct Shared {
     plan: Plan,
     stories: Option<american_stories::Source>,
     cut: u32,
+    analyzer: usnm_core::text::Analyzer,
 }
 
 async fn sample_batch(s: Arc<Shared>, b: RunBatch) -> anyhow::Result<BatchSample> {
@@ -259,7 +270,16 @@ async fn sample_batch(s: Arc<Shared>, b: RunBatch) -> anyhow::Result<BatchSample
         let place = s.catalog.place(&title.place_id).context("place")?;
         // No `decade` field: the cluster's indexes take the template as
         // it is (`load::index_config`, `sink::INDEX_TEMPLATE`), as do sets.
-        let doc = page_doc(row, title, place, text_as, false);
+        let doc = page_doc(
+            row,
+            title,
+            place,
+            text_as,
+            crate::release::DocFormat {
+                decade: false,
+                analyzer: s.analyzer,
+            },
+        );
         serde_json::to_writer(&mut out.lines, &doc)?;
         out.lines.push(b'\n');
         out.docs += 1;
@@ -321,6 +341,7 @@ pub async fn build(
         plan,
         stories,
         cut: spec.cut,
+        analyzer: published.analyzer,
     });
     let total = batches.len();
     let mut results = stream::iter(batches)

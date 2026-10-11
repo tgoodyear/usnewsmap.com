@@ -1,0 +1,116 @@
+# Quickwit built from our fork, https://github.com/tgoodyear/quickwit, at
+# the tag `usnm-v0.9.1-pool1`: v0.9.1 plus one commit that gives the Azure
+# blob storage a pooled HTTP client and one shared token credential (#251,
+# ADR-0013). A drop-in replacement for quickwit/quickwit:v0.9.1: the stages,
+# base images (by digest), packages, features and layout are those of
+# Quickwit's own Dockerfile at v0.9.1, so the only difference from the
+# official image is that commit. `QW_AZURE_POOL=false` at run time restores
+# the old client. Production's searcher sidecar and ingest image run it.
+#
+# Built in an environment's registry by ACR Tasks (about an hour), which
+# records the digest in infra/quickwit-image.json:
+#
+#   scripts/build-quickwit.sh --env prod
+#
+# It needs no build context: the source comes from the fork. A new patch goes
+# on the fork's `usnm/v0.9.1-pool` branch with a new `usnm-*` tag (names that
+# trigger none of Quickwit's own workflows); then update QW_COMMIT_HASH and
+# QW_COMMIT_TAGS below, which also names the image tag (docs/operations.md,
+# "The Quickwit image").
+
+# The fork's commit tagged usnm-v0.9.1-pool1 (its parent is 962685f, v0.9.1).
+ARG QW_COMMIT_HASH=5fecc2cbf14bd0f3abee0f420820920a788e10a6
+
+FROM rust:bookworm@sha256:b5efaabfd787a695d2e46b37d3d9c54040e11f4c10bc2e714bbadbfcc0cd6c39 AS source
+ARG QW_COMMIT_HASH
+WORKDIR /src
+RUN git init -q . \
+    && git remote add origin https://github.com/tgoodyear/quickwit.git \
+    && git fetch -q --depth 1 origin "$QW_COMMIT_HASH" \
+    && git checkout -q FETCH_HEAD
+
+FROM node:24@sha256:b2b2184ba9b78c022e1d6a7924ec6fba577adf28f15c9d9c457730cc4ad3807a AS ui-builder
+
+COPY --from=source /src/quickwit/quickwit-ui /quickwit/quickwit-ui
+
+WORKDIR /quickwit/quickwit-ui
+
+RUN touch .gitignore_for_build_directory \
+    && NODE_ENV=production make install build
+
+
+FROM rust:bookworm@sha256:b5efaabfd787a695d2e46b37d3d9c54040e11f4c10bc2e714bbadbfcc0cd6c39 AS bin-builder
+
+ARG CARGO_FEATURES=release-feature-set
+ARG CARGO_PROFILE=release
+# The commit date of v0.9.1. `quickwit --version` shows the fork's commit, and
+# the build records (usnm-ingest's build_info) the tag, so our build is told apart.
+ARG QW_COMMIT_DATE=2026-09-22T16:38:29Z
+ARG QW_COMMIT_HASH
+ARG QW_COMMIT_TAGS=v0.9.1-pool1
+ARG LAMBDA_ZIP_PATH
+# Parallel rustc jobs; lower it if the builder runs out of memory.
+ARG CARGO_BUILD_JOBS=
+
+ENV QW_COMMIT_DATE=$QW_COMMIT_DATE
+ENV QW_COMMIT_HASH=$QW_COMMIT_HASH
+ENV QW_COMMIT_TAGS=$QW_COMMIT_TAGS
+ENV LAMBDA_ZIP_PATH=$LAMBDA_ZIP_PATH
+
+RUN apt-get -y update \
+    && apt-get -y install ca-certificates \
+    clang \
+    cmake \
+    libssl-dev \
+    llvm \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# The source tree without .git, as upstream copies it, so the build takes the
+# commit details from the variables above.
+COPY --from=source /src/quickwit /quickwit
+COPY --from=source /src/config/quickwit.yaml /quickwit/config/quickwit.yaml
+COPY --from=ui-builder /quickwit/quickwit-ui/build /quickwit/quickwit-ui/build
+
+WORKDIR /quickwit
+
+RUN rustup toolchain install
+
+RUN echo "Building workspace with feature(s) '$CARGO_FEATURES' and profile '$CARGO_PROFILE'" \
+    && if [ -n "$CARGO_BUILD_JOBS" ]; then export CARGO_BUILD_JOBS; else unset CARGO_BUILD_JOBS; fi \
+    && RUSTFLAGS="--cfg tokio_unstable" \
+    cargo build \
+    -p quickwit-cli \
+    --features $CARGO_FEATURES \
+    --bin quickwit \
+    $(test "$CARGO_PROFILE" = "release" && echo "--release") \
+    && echo "Copying binaries to /quickwit/bin" \
+    && mkdir -p /quickwit/bin \
+    && find target/$CARGO_PROFILE -maxdepth 1 -perm /a+x -type f -exec mv {} /quickwit/bin \;
+
+
+FROM debian:bookworm-slim@sha256:e899040a73d36e2b36fa33216943539d9957cba8172b858097c2cabcdb20a3e2 AS quickwit
+
+LABEL org.opencontainers.image.title="Quickwit"
+LABEL maintainer="Quickwit, Inc. <hello@quickwit.io>"
+LABEL org.opencontainers.image.vendor="Quickwit, Inc."
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.description="Quickwit v0.9.1 from tgoodyear/quickwit tag usnm-v0.9.1-pool1"
+
+RUN apt-get -y update \
+    && apt-get -y install ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /quickwit
+RUN mkdir config qwdata
+COPY --from=bin-builder /quickwit/bin/quickwit /usr/local/bin/quickwit
+COPY --from=bin-builder /quickwit/config/quickwit.yaml /quickwit/config/quickwit.yaml
+
+ENV QW_CONFIG=/quickwit/config/quickwit.yaml
+ENV QW_DATA_DIR=/quickwit/qwdata
+ENV QW_LISTEN_ADDRESS=0.0.0.0
+
+RUN quickwit --version
+
+ENTRYPOINT ["quickwit"]

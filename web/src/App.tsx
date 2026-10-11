@@ -25,6 +25,7 @@ import { MeasureToggle } from "./components/MeasureToggle";
 import { InfoTip } from "./components/InfoTip";
 import { Tooltip } from "./components/Tooltip";
 import { americanStoriesOnlyNote } from "./lib/matchSource";
+import { baselineNote } from "./lib/baseline";
 import { SkewLegend } from "./components/SkewLegend";
 import { useMediaQuery } from "./lib/useMediaQuery";
 import { PagesLists, WhenLists, exactMedian, medianCandidates, type MedianStatus } from "./components/PlaceLists";
@@ -606,6 +607,7 @@ export function App() {
                 <MeasureToggle
                   norm={view.norm}
                   onChange={(n) => setView({ norm: n })}
+                  baseline={baselineNote(data?.baseline)}
                   unavailable={
                     view.lccn.length > 0
                       ? { skew: "Not for one newspaper: pages published aren't counted per newspaper." }

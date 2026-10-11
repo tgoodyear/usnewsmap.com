@@ -47,6 +47,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use usnm_core::params::{RawParams, SearchRequest};
 use usnm_core::query::{Mode, MAX_QUERY_CHARS};
+use usnm_core::text::Analyzers;
 use usnm_store::ObjectStore;
 
 // The same crawler, script and headless classification as page views (06 §6.3.7).
@@ -608,8 +609,13 @@ const MAX_DISTINCT: usize = 50_000;
 
 /// The cache key part of the search a record describes: the canonical query
 /// string `/v1/aggregate` computes it under (06 §6.3.1), for the corpus
-/// `bounds` serving now. `None` if it no longer parses.
-pub fn canonical(r: &Record, bounds: (NaiveDate, NaiveDate)) -> Option<String> {
+/// `bounds` and the `analyzers` of the version serving now. `None` if it no
+/// longer parses.
+pub fn canonical(
+    r: &Record,
+    bounds: (NaiveDate, NaiveDate),
+    analyzers: Analyzers,
+) -> Option<String> {
     let mut s = form_urlencoded::Serializer::new(String::new());
     // The canonical query, without a mode, parses to the same search
     // (`Node`'s Display is its canonical rendering).
@@ -626,7 +632,7 @@ pub fn canonical(r: &Record, bounds: (NaiveDate, NaiveDate)) -> Option<String> {
         s.append_pair("front", "true");
     }
     let raw = RawParams::parse(&s.finish()).ok()?;
-    SearchRequest::from_raw(&raw, bounds)
+    SearchRequest::from_raw(&raw, bounds, analyzers)
         .ok()
         .map(|req| req.canonical())
 }
@@ -644,6 +650,7 @@ pub async fn top_searches(
     days: u64,
     n: usize,
     bounds: (NaiveDate, NaiveDate),
+    analyzers: Analyzers,
 ) -> Vec<String> {
     if n == 0 {
         return Vec::new();
@@ -670,7 +677,7 @@ pub async fn top_searches(
             body.split(|c| *c == b'\n')
                 .filter_map(|line| serde_json::from_slice::<Record>(line).ok())
                 .filter(|r| r.pages != Some(0))
-                .filter_map(|r| canonical(&r, bounds))
+                .filter_map(|r| canonical(&r, bounds, analyzers))
                 .collect::<Vec<String>>()
         })
         .await
@@ -839,7 +846,7 @@ mod tests {
             NaiveDate::from_ymd_opt(1770, 1, 1).unwrap(),
             NaiveDate::from_ymd_opt(1963, 12, 31).unwrap(),
         );
-        let req = SearchRequest::from_raw(&raw, bounds).unwrap();
+        let req = SearchRequest::from_raw(&raw, bounds, Analyzers::default()).unwrap();
         Search::new(&raw, &req, "pages-v1")
     }
 
@@ -986,14 +993,14 @@ mod tests {
             "q=%22free+silver%22~3&from=1890-01-01",
         ] {
             let raw = RawParams::parse(query).unwrap();
-            let req = SearchRequest::from_raw(&raw, bounds()).unwrap();
+            let req = SearchRequest::from_raw(&raw, bounds(), Analyzers::default()).unwrap();
             let entry = Entry::new(
                 at("2026-09-29T12:00:00Z"),
                 Search::new(&raw, &req, "v"),
                 body.clone(),
             );
             assert_eq!(
-                canonical(&entry.record(), bounds()).as_deref(),
+                canonical(&entry.record(), bounds(), Analyzers::default()).as_deref(),
                 Some(req.canonical().as_str()),
                 "{query}"
             );
@@ -1002,7 +1009,7 @@ mod tests {
 
     fn line(q: &str, pages: u64) -> String {
         let raw = RawParams::parse(q).unwrap();
-        let req = SearchRequest::from_raw(&raw, bounds()).unwrap();
+        let req = SearchRequest::from_raw(&raw, bounds(), Analyzers::default()).unwrap();
         let body = Arc::new(format!(r#"{{"total":{{"hits":{pages}}}}}"#).into_bytes());
         let entry = Entry::new(
             at("2026-09-29T12:00:00Z"),
@@ -1013,9 +1020,13 @@ mod tests {
     }
 
     fn key(q: &str) -> String {
-        SearchRequest::from_raw(&RawParams::parse(q).unwrap(), bounds())
-            .unwrap()
-            .canonical()
+        SearchRequest::from_raw(
+            &RawParams::parse(q).unwrap(),
+            bounds(),
+            Analyzers::default(),
+        )
+        .unwrap()
+        .canonical()
     }
 
     #[tokio::test]
@@ -1059,7 +1070,7 @@ mod tests {
             .put(&day_path(day(9)), lines(&[line("q=old", 1)]), CONTENT_TYPE)
             .await
             .unwrap();
-        let top = top_searches(&store, today, 7, 10, bounds()).await;
+        let top = top_searches(&store, today, 7, 10, bounds(), Analyzers::default()).await;
         // Counts 2, 2, then 1s in canonical order; zero-hit searches and
         // days outside the window are left out.
         assert_eq!(
@@ -1072,9 +1083,21 @@ mod tests {
                 key("q=cholera"),
             ]
         );
-        assert_eq!(top_searches(&store, today, 7, 1, bounds()).await.len(), 1);
-        assert!(top_searches(&store, today, 7, 0, bounds()).await.is_empty());
-        assert_eq!(top_searches(&store, today, 7, 10, bounds()).await, top);
+        assert_eq!(
+            top_searches(&store, today, 7, 1, bounds(), Analyzers::default())
+                .await
+                .len(),
+            1
+        );
+        assert!(
+            top_searches(&store, today, 7, 0, bounds(), Analyzers::default())
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            top_searches(&store, today, 7, 10, bounds(), Analyzers::default()).await,
+            top
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

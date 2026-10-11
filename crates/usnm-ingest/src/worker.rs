@@ -573,26 +573,52 @@ impl Worker {
         // before the batch can be marked curated.
         if let (Some(u), Some(r)) = (upload, &self.raw) {
             let path = u.path().to_owned();
-            let bytes = u.commit().await?;
-            raw::record_once(
-                r.as_ref(),
-                &raw::Manifest {
-                    batch: name.to_owned(),
-                    path: path.clone(),
-                    source_url: b.source_url.clone(),
-                    bytes,
-                    sha256: sha.clone(),
-                    fetched_at: Utc::now(),
-                    headers,
-                },
-            )
-            .await?;
-            tracing::info!(
-                batch = name,
-                path,
-                archive_mb = mb(bytes),
-                "archive retained"
-            );
+            if let Some(bytes) = u.commit().await? {
+                raw::record_once(
+                    r.as_ref(),
+                    &raw::Manifest {
+                        batch: name.to_owned(),
+                        path: path.clone(),
+                        source_url: b.source_url.clone(),
+                        bytes,
+                        sha256: sha.clone(),
+                        fetched_at: Utc::now(),
+                        headers,
+                    },
+                )
+                .await?;
+                tracing::info!(
+                    batch = name,
+                    path,
+                    archive_mb = mb(bytes),
+                    "archive retained"
+                );
+            } else {
+                // Another curation's copy is already at the path (another
+                // environment sharing the archival account, or an archive
+                // LoC served before at this version). It stays as it is,
+                // with whatever manifest names it; this batch curates from
+                // what it downloaded.
+                match raw::find(r.as_ref(), name, None).await? {
+                    Some(t) if t.sha256.eq_ignore_ascii_case(&sha) => tracing::info!(
+                        batch = name,
+                        path,
+                        "the archive was already retained, the same one"
+                    ),
+                    Some(t) => tracing::warn!(
+                        batch = name,
+                        path,
+                        retained = %t.sha256,
+                        downloaded = %sha,
+                        "another archive is retained for this batch; this one isn't kept"
+                    ),
+                    None => tracing::warn!(
+                        batch = name,
+                        path,
+                        "an archive with no manifest is at the path (a curation that stopped, or one recording it now); this one isn't kept"
+                    ),
+                }
+            }
         }
         tracing::info!(
             batch = name,

@@ -70,7 +70,12 @@ impl Ctx {
 /// 5: hits say when their snippets come from American Stories' text (#218).
 /// 6: hits say which texts the query matches (`matched_in`), and the
 /// aggregate counts the pages only American Stories' text finds (#218).
-pub(crate) const RESPONSE_FORMAT: u32 = 6;
+/// 7: without `lang`, an English query's baselines count English pages, and
+/// the aggregate says which pages its baselines count (`baseline`, #237).
+/// Also bump it when `usnm_core::query_language`'s rule or word lists change:
+/// they decide a search's baselines from its canonical request, so a body
+/// cached under the old rule would be wrong under the new one.
+pub(crate) const RESPONSE_FORMAT: u32 = 7;
 
 /// A persistent-cache read slower than this is abandoned and the response computed.
 const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);

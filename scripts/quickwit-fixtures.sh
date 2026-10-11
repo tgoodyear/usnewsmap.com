@@ -85,6 +85,21 @@ for index in pages-base-fixture pages-delta-fixture-1 pages-ja-fixture; do
     --data-binary @"$docs" |
     grep -q '"num_rejected_docs": 0' || { echo "ingest of ${index} rejected documents" >&2; exit 1; }
 done
+# The same base and delta with their common-word pairs at version 1 (05
+# §5.5.3), as the indexes built before #168 have them: the parity test
+# searches them with queries parsed for that version.
+for index in pages-base-fixture pages-delta-fixture-1; do
+  copy="${index}-cg1"
+  sed -e "s|\${INDEX_ID}|${copy}|" -e "s|\${INDEX_URI}|file://${work}/indexes/${copy}|" \
+    "$root/infra/quickwit/pages-index.yaml" |
+    curl -sf -XPOST -H 'content-type: application/yaml' --data-binary @- \
+      "$url/api/v1/indexes" > /dev/null
+  cargo run -q --manifest-path "$root/Cargo.toml" -p usnm-core --example add_text_cg -- 1 \
+    < "$root/fixtures/data/indexes/${index}.jsonl" > "$work/${copy}.jsonl"
+  curl -sf -XPOST "$url/api/v1/${copy}/ingest?commit=force" \
+    --data-binary @"$work/${copy}.jsonl" |
+    grep -q '"num_rejected_docs": 0' || { echo "ingest of ${copy} rejected documents" >&2; exit 1; }
+done
 # The same base and delta laid out by decade (05 §5.5.5): their pages moved
 # over four decades (fixtures/decades.rs), the base partitioned and the
 # delta tagged, as a release builds them.

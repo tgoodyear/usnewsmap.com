@@ -1,5 +1,5 @@
-// Retained batch archives (`retainRaw`, docs/operations.md "Retained
-// archives"): the `raw` container, which curation writes each archive it
+// Retained batch archives (`retainRaw`, docs/operations.md "Archival
+// storage"): the `raw` container, which curation writes each archive it
 // downloads to (Blob access tier Cold, set per blob as it is written) and
 // reads it back from instead of LoC. For benchmark sets in a dev environment;
 // production keeps no archives (ADR-0006). Turning the setting off deletes

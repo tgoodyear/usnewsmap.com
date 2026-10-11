@@ -14,8 +14,8 @@ use tower::ServiceExt;
 use usnm_api::config::Config;
 use usnm_api::refdata::RefData;
 use usnm_api::{app, reload_if_changed, AppState, Engine, Loader};
-use usnm_core::query::parse;
-use usnm_core::text::tokenize;
+use usnm_core::query::parse_with;
+use usnm_core::text::{tokenize, Analyzer};
 use usnm_core::time::{date_from_day, day_number};
 use usnm_search::memory::{eval, MemoryBackend};
 use usnm_search::PageDoc;
@@ -90,6 +90,15 @@ fn header_str(h: &axum::http::HeaderMap, name: header::HeaderName) -> &str {
     h.get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
 }
 
+/// The fixture version's analyzer: its `current.json` has no
+/// `common_grams`, as versions built before analyzer versions (#168).
+const FIXTURE: Analyzer = Analyzer::V1;
+
+/// [`usnm_core::query::parse`] as the API parses for the fixture version.
+fn parse(q: &str) -> Result<usnm_core::query::Node, usnm_core::query::QueryError> {
+    parse_with(q, FIXTURE)
+}
+
 /// Independent brute-force count over the fixture files.
 fn oracle_count(q: &str, from: &str, to: &str, indexes: &[&str]) -> u64 {
     let node = parse(q).unwrap();
@@ -100,7 +109,7 @@ fn oracle_count(q: &str, from: &str, to: &str, indexes: &[&str]) -> u64 {
     indexes
         .iter()
         .flat_map(|i| load_docs(i))
-        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text, FIXTURE)))
         .count() as u64
 }
 
@@ -131,6 +140,70 @@ async fn searches_name_their_decades_only_on_a_version_laid_out_with_them() {
         assert_eq!(status, StatusCode::OK, "{a}");
         let (_, _, b) = get(&off, q).await;
         assert_eq!(a["total"], b["total"], "{q}");
+    }
+}
+
+/// Queries are folded with the analyzer the served version was built with
+/// (#168): on a version with common-word pairs 2, `½` is the word `½`, as
+/// Quickwit's `text` has it; on one with pairs 1, or none, it is `1⁄2`, as
+/// those versions' pairs have it. Phrases search the pairs on either, and
+/// the Japanese pages fold as their own version says.
+#[tokio::test]
+async fn queries_fold_as_the_served_version_was_built() {
+    use usnm_api::refdata::JaIndexes;
+    use usnm_core::params::RawParams;
+    use usnm_core::text::Analyzers;
+    let canonical = |rd: &RefData, q: &str| {
+        let raw = RawParams::parse(&format!("q={q}")).unwrap();
+        rd.search_request(&raw).unwrap().query.to_string()
+    };
+    let mut rd = refdata().await;
+    // The fixture version predates the pairs: version 1, phrases in `text`.
+    assert_eq!(rd.analyzers(), Analyzers::all(Analyzer::V1));
+    assert!(!rd.index_set().common_grams());
+    assert_eq!(canonical(&rd, "%C2%BD"), "1\u{2044}2");
+    rd.current.common_grams = Some(1);
+    assert!(rd.index_set().common_grams());
+    assert_eq!(rd.index_set().analyzer(), Analyzer::V1);
+    assert_eq!(canonical(&rd, "%C2%BD"), "1\u{2044}2");
+    let v1 = rd.current.clone();
+    rd.current.common_grams = Some(2);
+    assert!(rd.index_set().common_grams());
+    assert_eq!(rd.index_set().analyzer(), Analyzer::V2);
+    assert_eq!(canonical(&rd, "%C2%BD"), "½");
+    let v2 = rd.current.clone();
+    // Pairs this API doesn't know: phrases stay in `text`.
+    rd.current.common_grams = Some(usnm_core::common_grams::VERSION + 1);
+    assert!(!rd.index_set().common_grams());
+    assert_eq!(rd.index_set().analyzer(), Analyzer::LATEST);
+    // The Japanese pages fold as `ja.fold` says.
+    rd.current = v1.clone();
+    rd.current.ja = Some(JaIndexes {
+        indexes: vec!["pages-ja-fixture".into()],
+        fold: 1,
+        pages: 52,
+    });
+    assert_eq!(rd.ja_index_set().unwrap().analyzer(), Analyzer::V1);
+    rd.current.ja.as_mut().unwrap().fold = 2;
+    assert_eq!(rd.analyzers().ja, Analyzer::V2);
+    assert_eq!(rd.ja_index_set().unwrap().analyzer(), Analyzer::V2);
+
+    // Through the API, on the memory backend, which reads pages and
+    // queries as Quickwit does: `½` finds the four market reports that print
+    // it with version 2, and with version 1 (`1⁄2`, the phrase "1 2" to the
+    // engine) the four that print `1/2`, as before #168. `1/2` finds those
+    // on either.
+    for (current, half) in [(v1, "1\u{2044}2"), (v2, "½")] {
+        let mut rd = refdata().await;
+        rd.current = current;
+        let s = Arc::new(AppState::new(config(), Arc::new(fixture_backend()), rd));
+        for (q, want) in [("%C2%BD", 4), ("1%2F2", 4)] {
+            let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["total"]["hits"], want, "{q} {half}");
+        }
+        let (_, _, body) = get(&s, "/v1/aggregate?q=%C2%BD").await;
+        assert_eq!(body["query"]["ast"], half, "{body}");
     }
 }
 
@@ -585,6 +658,98 @@ async fn lang_filter_keeps_exact_baselines() {
     assert!(body["series"]["baseline"].is_null());
 }
 
+/// Without `lang`, a query whose words are English is compared with the pages
+/// of titles that list English (#237), while its hits still count every
+/// matching page: the fixture's German (P00006) and Spanish (P00003) titles
+/// print the same English text, so they match but aren't in the baseline.
+#[tokio::test]
+async fn an_english_query_is_compared_with_english_pages() {
+    let s = state_with(None).await;
+    let (status, _, body) = get(&s, "/v1/aggregate?q=gold").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["baseline"],
+        json!({"languages": ["eng"], "why": "query_language"})
+    );
+    // P00001, P00002 (English and German), P00004 and P00005.
+    assert_eq!(body["total"]["baseline_pages"], 4 * 312);
+    let series: u64 = body["series"]["baseline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .sum();
+    assert_eq!(series, 4 * 312);
+    // The canonical request has no `lang`: the choice follows from the query.
+    assert!(!body["query"]["canonical"]
+        .as_str()
+        .unwrap()
+        .contains("lang="));
+    let link = body["cube"]["baseline_ref"].as_str().unwrap().to_owned();
+    assert!(link.contains("lang=eng"), "{link}");
+    let (status, _, cov) = get(&s, &link).await;
+    assert_eq!(status, StatusCode::OK, "{cov}");
+    assert_eq!(
+        cov["places"],
+        json!(["P00001", "P00002", "P00004", "P00005"])
+    );
+    // The hits are not filtered: the German and Spanish titles' matches count.
+    let ids = body["places"]["id"].as_array().unwrap();
+    assert!(ids.contains(&json!("P00003")) && ids.contains(&json!("P00006")));
+    let (_, _, filtered) = get(&s, "/v1/aggregate?q=gold&lang=eng").await;
+    assert!(
+        body["total"]["hits"].as_u64().unwrap() > filtered["total"]["hits"].as_u64().unwrap(),
+        "{body}"
+    );
+    // A phrase of English words too.
+    let (_, _, body) = get(&s, "/v1/aggregate?q=%22cross+of+gold%22").await;
+    assert_eq!(body["baseline"]["languages"], json!(["eng"]));
+}
+
+/// An explicit `lang` decides the baseline, whatever the query's words.
+#[tokio::test]
+async fn a_language_filter_still_decides_the_baseline() {
+    let s = state_with(None).await;
+    let (status, _, body) = get(&s, "/v1/aggregate?q=gold&lang=ger").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["baseline"],
+        json!({"languages": ["ger"], "why": "filter"})
+    );
+    assert_eq!(body["total"]["baseline_pages"], 2 * 312);
+    let (_, _, body) = get(&s, "/v1/aggregate?q=convention&lang=eng,spa").await;
+    assert_eq!(
+        body["baseline"],
+        json!({"languages": ["eng", "spa"], "why": "filter"})
+    );
+    assert_eq!(body["total"]["baseline_pages"], 5 * 312);
+}
+
+/// A query the word lists can't call English keeps every page as its
+/// baseline: "convention" is as common in French, and a prefix matches
+/// words the lists can't vouch for.
+#[tokio::test]
+async fn a_query_of_uncertain_language_keeps_every_page() {
+    let s = state_with(None).await;
+    for q in ["convention", "silve*", "convention+OR+gold"] {
+        let (status, _, body) = get(&s, &format!("/v1/aggregate?q={q}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["total"]["hits"].as_u64().unwrap() > 0, "{q}");
+        assert_eq!(
+            body["baseline"],
+            json!({"languages": [], "why": "all"}),
+            "{q}"
+        );
+        assert_eq!(body["total"]["baseline_pages"], 6 * 312, "{q}");
+        let link = body["cube"]["baseline_ref"].as_str().unwrap();
+        assert!(!link.contains("lang="), "{link}");
+    }
+    // Filters without exact baselines have no baseline to describe.
+    let (_, _, body) = get(&s, "/v1/aggregate?q=gold&front=true").await;
+    assert!(body["baseline"].is_null());
+    assert!(body["series"]["baseline"].is_null());
+}
+
 /// A version published before baselines were kept per language serves the
 /// language filter without them, as it always did.
 #[tokio::test]
@@ -607,9 +772,13 @@ async fn lang_filter_on_an_older_snapshot_has_no_baseline() {
     let (status, headers, _) = get(&s, "/v1/coverage?lang=ger&v=pages-v-other").await;
     assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
-    // Searches without a language filter are unaffected.
+    // Searches without a language filter are unaffected: an English query
+    // keeps every page as its baseline, as before #237.
     let (_, _, body) = get(&s, "/v1/aggregate?q=gold").await;
-    assert!(body["cube"]["baseline_ref"].is_string());
+    let link = body["cube"]["baseline_ref"].as_str().unwrap();
+    assert!(!link.contains("lang="), "{link}");
+    assert_eq!(body["baseline"], json!({"languages": [], "why": "all"}));
+    assert_eq!(body["total"]["baseline_pages"], 6 * 312);
 }
 
 #[tokio::test]
@@ -949,7 +1118,7 @@ async fn days_per_place_match_brute_force() {
             .iter()
             .flat_map(|i| load_docs(i))
             .filter(|d| d.place_id == id && d.day >= from && d.day <= to)
-            .filter(|d| eval(&node, &tokenize(&d.text)))
+            .filter(|d| eval(&node, &tokenize(&d.text, FIXTURE)))
         {
             *expected.entry(d.day).or_default() += 1;
         }
@@ -1119,7 +1288,7 @@ async fn newspapers_and_languages_match_brute_force() {
     for d in ["pages-base-fixture", "pages-delta-fixture-1"]
         .iter()
         .flat_map(|i| load_docs(i))
-        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text, FIXTURE)))
     {
         *papers.entry(d.lccn.clone()).or_default() += 1;
         for l in d.language {
@@ -1174,7 +1343,7 @@ async fn distinct_days_match_brute_force() {
     let docs: Vec<PageDoc> = ["pages-base-fixture", "pages-delta-fixture-1"]
         .iter()
         .flat_map(|i| load_docs(i))
-        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+        .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text, FIXTURE)))
         .collect();
     let days = |place: Option<&str>| {
         docs.iter()
@@ -1279,7 +1448,7 @@ async fn first_and_last_mentions_match_brute_force() {
         let (f, t) = (day(from), day(to));
         let matching: Vec<&PageDoc> = docs
             .iter()
-            .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text)))
+            .filter(|d| d.day >= f && d.day <= t && eval(&node, &tokenize(&d.text, FIXTURE)))
             .collect();
         let first = matching.iter().copied().min_by_key(|d| (d.day, d.sort_key));
         let last = matching.iter().copied().max_by_key(|d| (d.day, d.sort_key));
@@ -1535,7 +1704,7 @@ async fn hot_reload_swaps_reference_data_and_backend_together() {
 }
 
 fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f6")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f7")) else {
         return Vec::new();
     };
     entries
@@ -1566,7 +1735,7 @@ async fn slow_responses_persist_and_survive_a_restart() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(files.len(), 1, "one entry under {{version}}/f6/");
+    assert_eq!(files.len(), 1, "one entry under {{version}}/f7/");
     let name = files[0].file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         !name.contains("fever"),
@@ -2229,7 +2398,7 @@ async fn ja_state_with(cfg: Config, american_stories: bool) -> Arc<AppState> {
     let mut refdata = refdata().await;
     refdata.current.ja = Some(usnm_api::refdata::JaIndexes {
         indexes: vec!["pages-ja-fixture".into()],
-        fold: usnm_core::ja::FOLD_VERSION,
+        fold: usnm_core::ja::fold_version(FIXTURE),
         pages: 52,
     });
     if american_stories {
@@ -2251,9 +2420,9 @@ async fn japanese_queries_search_the_japanese_pages() {
     let s = ja_state().await;
     let docs = load_docs("pages-ja-fixture");
     let printed_has = |w: &str| {
-        let q = vec![usnm_core::ja::tokenize(w)];
+        let q = vec![usnm_core::ja::tokenize(w, FIXTURE)];
         docs.iter()
-            .filter(|d| !usnm_core::ja::find(d.printed.as_deref().unwrap(), &q).is_empty())
+            .filter(|d| !usnm_core::ja::find(d.printed.as_deref().unwrap(), &q, FIXTURE).is_empty())
             .count() as u64
     };
     let war = printed_has("戰爭");
@@ -2267,6 +2436,10 @@ async fn japanese_queries_search_the_japanese_pages() {
         // The relative rate compares with pages of titles that list Japanese.
         let r = body["cube"]["baseline_ref"].as_str().unwrap();
         assert!(r.contains("lang=jpn"), "{r}");
+        assert_eq!(
+            body["baseline"],
+            json!({"languages": ["jpn"], "why": "query_language"})
+        );
     }
     // Hits: our OCR is marked, snippets show the printed form, and the LoC
     // viewer link has no highlight (LoC has no text for these pages).

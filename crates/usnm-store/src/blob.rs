@@ -25,17 +25,25 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
 
 /// A prefix for one upload's block ids: Azure stages blocks by blob and id,
 /// so two uploads to the same blob at once must not share ids, or a commit
-/// could mix their blocks.
+/// could mix their blocks. Uploads can come from any worker in any
+/// environment (the archival account is shared), so the tag is random:
+/// hashes keyed by `RandomState` (seeded from the OS's randomness, so
+/// different on every host and process) over the time, process and a
+/// counter.
 fn upload_tag() -> String {
+    use std::hash::{BuildHasher, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
-    let mix = nanos
-        ^ (u64::from(std::process::id()) << 32)
-        ^ SEQ.fetch_add(1, Ordering::Relaxed).rotate_left(17);
-    format!("{mix:016x}")
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(nanos);
+    h.write_u32(std::process::id());
+    h.write_u64(SEQ.fetch_add(1, Ordering::Relaxed));
+    let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
+    h2.write_u64(h.finish());
+    format!("{:016x}{:016x}", h.finish(), h2.finish())
 }
 
 /// The `n`th block's id in upload `tag`: the same length for every block, base64.
@@ -234,8 +242,9 @@ impl ObjectStore for BlobStore {
     }
 
     /// Put Block for every [`BLOCK_BYTES`], then Put Block List with the
-    /// tier: blocks stay invisible (and are discarded within a week) unless
-    /// the list is committed.
+    /// tier and `If-None-Match: *`: blocks stay invisible (and are discarded
+    /// within a week) unless the list is committed, and the commit fails if
+    /// a blob is already there, leaving that blob as it was.
     async fn put_stream(
         &self,
         path: &str,
@@ -278,6 +287,7 @@ impl ObjectStore for BlobStore {
             .request(Method::PUT, path)
             .await?
             .query(&[("comp", "blocklist")])
+            .header(IF_NONE_MATCH, "*")
             .header("x-ms-blob-content-type", content_type)
             .header(CONTENT_TYPE, "application/xml");
         if let Some(t) = tier {
@@ -288,9 +298,13 @@ impl ObjectStore for BlobStore {
             .send()
             .await
             .map_err(|e| transport("put block list", path, e))?;
-        match resp.status() {
-            StatusCode::CREATED => Ok(total),
-            s => Err(StoreError::Http {
+        match (resp.status(), error_code(&resp)) {
+            (StatusCode::CREATED, _) => Ok(total),
+            (StatusCode::CONFLICT, "BlobAlreadyExists")
+            | (StatusCode::PRECONDITION_FAILED, "ConditionNotMet") => {
+                Err(StoreError::AlreadyExists(path.into()))
+            }
+            (s, _) => Err(StoreError::Http {
                 op: "put block list",
                 path: path.into(),
                 status: s.as_u16(),

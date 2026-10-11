@@ -4,7 +4,11 @@ import { expect, test, type Page } from "@playwright/test";
 
 // The relative-rate view (doc 11) against the API serving the synthetic
 // fixtures: 6 places in 6 states, so the view is available, and the fixture
-// corpus has no real differences between places.
+// corpus has no real differences between places. Most tests search
+// "convention": it is on the same pages as "cross of gold", but French uses
+// it as much as English, so it is compared with every page and all 6 places
+// (#237). "cross of gold" is English, so it is compared with the 4 places
+// with English-language papers.
 
 const STYLE = {
   version: 8,
@@ -32,7 +36,7 @@ const measure = (page: Page) => page.getByRole("group", { name: "Measure" });
 test("the relative rate: toggle, legend, lists, table, export and permalink", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto("/?q=%22cross+of+gold%22&bucket=month");
+  await page.goto("/?q=convention&bucket=month");
   await expect(measure(page).getByRole("button", { name: "Pages" })).toHaveAttribute("aria-pressed", "true");
 
   // From the keyboard.
@@ -66,6 +70,7 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
   await page.keyboard.press("Enter");
   await expect(info).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByText("pulled toward the typical rate")).toBeVisible();
+  await expect(page.getByText("compared with all its newspapers' pages, in every language")).toBeVisible();
   // The explanation fits on the screen, phones included.
   const onScreen = async (tip: string) => {
     const box = (await page.locator(tip).boundingBox())!;
@@ -112,7 +117,7 @@ test("the relative rate: toggle, legend, lists, table, export and permalink", as
 });
 
 test("a selected place says how its rate compares", async ({ page }) => {
-  await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=skew&tab=table");
+  await page.goto("/?q=convention&bucket=month&norm=skew&tab=table");
   await page
     .getByRole("table", { name: /Relative rate of each place/ })
     .locator("tbody th button")
@@ -124,7 +129,7 @@ test("a selected place says how its rate compares", async ({ page }) => {
 });
 
 test("an older share-of-pages permalink opens on Pages", async ({ page }) => {
-  await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=rel");
+  await page.goto("/?q=convention&bucket=month&norm=rel");
   await expect(measure(page).getByRole("button", { name: "Pages" })).toHaveAttribute("aria-pressed", "true");
   await expect(measure(page).getByRole("button", { name: "Share of pages" })).toHaveCount(0);
   // Pages, Relative rate and Median date (#127).
@@ -136,7 +141,7 @@ test("an older share-of-pages permalink opens on Pages", async ({ page }) => {
 });
 
 test("the relative rate needs five places with pages", async ({ page }) => {
-  await page.goto("/?q=%22cross+of+gold%22&bucket=month&state=IL,NY&norm=skew");
+  await page.goto("/?q=convention&bucket=month&state=IL,NY&norm=skew");
   await expect(page.getByRole("status").filter({ hasText: "at least 5 places" })).toBeVisible();
   // Page counts are shown meanwhile.
   await expect(page.locator(".legend")).toContainText("Pages containing the match");
@@ -145,7 +150,7 @@ test("the relative rate needs five places with pages", async ({ page }) => {
 test("playback keeps the relative rate and its scale", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=skew&win=3");
+  await page.goto("/?q=convention&bucket=month&norm=skew&win=3");
   await expect(page.locator(".legend")).toContainText("Relative rate");
   await page.locator("body").press("Home");
   await expect(page).toHaveURL(/[?&]t=1895-01-01/);
@@ -160,7 +165,17 @@ test("playback keeps the relative rate and its scale", async ({ page }) => {
 });
 
 test("a heat layer in the link gives way to points in the relative rate", async ({ page }) => {
-  await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=skew&layer=heat&state=IL,NY");
+  await page.goto("/?q=convention&bucket=month&norm=skew&layer=heat&state=IL,NY");
   await expect(page.getByRole("status").filter({ hasText: "at least 5 places" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Map layer" })).toHaveCount(0);
+});
+
+test("an English search is compared with English-language newspapers' pages", async ({ page }) => {
+  await page.goto("/?q=%22cross+of+gold%22&bucket=month&norm=skew");
+  // The fixtures' 4 places with English-language papers, fewer than the 5 the view needs here.
+  await expect(page.getByRole("status").filter({ hasText: "at least 5 places" })).toBeVisible();
+  await page.getByRole("button", { name: "About the relative rate" }).click();
+  await expect(page.getByText("compared with the pages of its English-language newspapers")).toBeVisible();
+  await expect(page.getByText("mostly bilingual papers, still count")).toBeVisible();
+  await expectAccessible(page);
 });

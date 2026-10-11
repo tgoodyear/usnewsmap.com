@@ -56,7 +56,8 @@ describe("coverage alignment and relative frequency", () => {
 
   it("divides safely", () => {
     const r = relative(new Float64Array([1, 2, 0]), new Float64Array([4, 0, 0]));
-    expect(Array.from(r)).toEqual([0.25, 0, 0]);
+    // Matches with no pages in the baseline (another language's papers, #237) have no share.
+    expect(Array.from(r)).toEqual([0.25, Number.NaN, 0]);
   });
 });
 

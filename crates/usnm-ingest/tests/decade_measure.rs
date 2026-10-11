@@ -164,7 +164,7 @@ fn corpus(docs: u64, with_decade: bool, mut f: impl FnMut(Value)) {
                     "sort_key": (u64::from(title) << 32) | (n % 8 + 1),
                     "date": date.to_string(),
                     "batch": format!("batch_measure_{batch:04}_ver01"),
-                    "text_cg": usnm_core::common_grams::index_text(&text),
+                    "text_cg": usnm_core::common_grams::index_text(&text, usnm_core::text::Analyzer::LATEST),
                     "text": text,
                 });
                 if with_decade {

@@ -133,6 +133,23 @@ def page_text(rng, topics):
     return " ".join(words).capitalize() + "."
 
 
+# A market report on some of one place's pages, in LoC's text only and
+# without drawing from either random stream, so no other text changes. Its
+# fractions are each one word in the index (`½`, `61¼`), and `1/2` is two
+# (#168); the two forms are on different pages. The circled ideographs are
+# kept as they are, and `B㊁` is one word, not `b` and `二` (#241).
+MARKET = {3: "Wheat closed ½ higher at 61¼ and oats steady.",
+          4: "Oats closed 1/2 lower at 20¾ and wheat steady.",
+          5: "Auction lots ㊀ and B㊁ withdrawn."}
+
+
+def market(pid, d, seq):
+    """The market report on this page, or None."""
+    if pid == "P00001" and seq == 2 and d.year == 1896:
+        return MARKET.get(d.month)
+    return None
+
+
 # American Stories' second OCR of a page (05 §5.5.4, #218), from its own
 # random stream so LoC's text above doesn't change with it. It covers some
 # pages; on those it reads headlines LoC's text lacks (so their words match
@@ -221,6 +238,9 @@ def main():
                 written = list(topics)
                 text = "" if rng.random() < 0.02 else page_text(rng, topics)
                 text, text_as = american_stories(as_rng, text, written)
+                report = market(pid, d, seq)
+                if text and report:
+                    text += " " + report
                 dn = day_number(d)
                 counts[dn] = counts.get(dn, 0) + 1
                 if not text and not text_as:

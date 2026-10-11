@@ -8,7 +8,7 @@ use std::time::Instant;
 use axum::extract::{OriginalUri, State};
 use axum::response::Response;
 use serde::Serialize;
-use usnm_core::params::{RawParams, SearchRequest};
+use usnm_core::params::RawParams;
 use usnm_core::time::BucketUnit;
 use usnm_search::plan::{self, PlannedDays};
 
@@ -72,7 +72,7 @@ pub async fn days(
     raw.reject_unknown(&["place"])?;
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
-    let mut req = SearchRequest::from_raw(&raw, rd.bounds())?;
+    let mut req = rd.search_request(&raw)?;
     // Always by day, so any `bucket` shares one cache key and one URL.
     req.bucket = BucketUnit::Day;
     if uses_fuzzy(&req.query) && !snap.backend.capabilities().fuzzy {

@@ -48,7 +48,7 @@ scripts/logs.sh prod errors-by-batch 1d
 scripts/logs.sh prod job-executions 2d
 ```
 
-The workspace id is the stack output `LOG_ANALYTICS_WORKSPACE_ID`; the queries run with your own sign-in (Log Analytics Reader or more). Traces (`release`, `curate`) and metrics are in Application Insights `appi-usnm-<env>`. With alert emails set, a failed job, a stalled release, a stalled backfill or a backfill replica silent for 15 minutes sends an email (08 §8.1.2). The same views, as charts: the "usnewsmap pipeline" workbook under Application Insights `appi-usnm-<env>` → Workbooks.
+The workspace id is the stack output `LOG_ANALYTICS_WORKSPACE_ID`; the queries run with your own sign-in (Log Analytics Reader or more). Traces (`release`, `curate`) and metrics are in Application Insights `appi-usnm-<env>`. With alert emails set, a failed job, a stalled release, a stalled backfill or a backfill replica silent for 15 minutes sends an email (08 §8.1.2). So does a full Log Analytics daily cap (08 §8.1.1): until the cap resets nothing is logged, so a job that looks stalled may still be working; check `az containerapp job execution list` before stopping it. The same views, as charts: the "usnewsmap pipeline" workbook under Application Insights `appi-usnm-<env>` → Workbooks.
 The last lines of each worker say why it stopped: `max runtime reached; claiming no more batches` (with the number of batches still queued) when the execution should be started again. `curation finished` on its own means the worker found nothing more it could claim. A batch that failed in this execution is queued again but skipped by that worker, so check `scripts/logs.sh prod errors-by-batch 1d` and start the job once more if it lists batches that weren't curated later.
 
 ## Switch the API to the published indexes
@@ -106,6 +106,28 @@ Read it while cold searches run (`scripts/load-cold-searches.py`):
 
 The pool numbers are a reading once a minute, not an average, so a short burst can fall between two. `MainBusyPercent` is busy time over the thread time the runtime had (`api.searcher_runtime_capacity_ms`), so it stays a share however the reports fall into the minutes; it is empty for a replica's first minute and after a searcher restart.
 
+## The Quickwit image
+
+The searcher sidecar, the ingest image (whose Quickwit is the release's writer) and the ingest job's init container run our build of Quickwit v0.9.1 ([ADR-0013](design/adr/0013-quickwit-from-our-fork.md)). `Dockerfile.quickwit-patched` builds it from our fork, [`tgoodyear/quickwit`](https://github.com/tgoodyear/quickwit), at a pinned commit. `infra/quickwit-image.json` records its digest for each environment, and `infra/main.bicep` and CI's publish read it there; an environment the file doesn't list runs upstream v0.9.1.
+
+Build it in an environment's registry, which records the digest in the file:
+
+```sh
+scripts/build-quickwit.sh --env prod              # ACR Tasks, about an hour; the build log follows
+scripts/build-quickwit.sh --env dev --from prod   # or import prod's build (same digest, no build)
+```
+
+If your `az` session expires during the build, ACR still finishes it. Once it has, run the same command again: it finds the tag and records its digest without building (`--rebuild` builds again). Then commit the file in a pull request. Once it merges, CI's publish checks that the registry has the digest (it fails if not) and rebuilds the ingest image on it, which the jobs pick up at their next execution. The sidecar and the init container move with `scripts/provision.sh <env>`, run once publish has finished.
+
+**A new patch, or a Quickwit upgrade:**
+
+1. On the fork, commit to the `usnm/v0.9.1-pool` branch (for an upgrade, rebase the commit onto the new upstream tag in a new branch, such as `usnm/v0.9.2-pool`) and tag it with a new `usnm-*` tag, such as `usnm-v0.9.1-pool2`. Names starting `usnm` trigger none of Quickwit's own workflows.
+2. In `Dockerfile.quickwit-patched`, set `QW_COMMIT_HASH` to the tagged commit and `QW_COMMIT_TAGS` to the tag without `usnm-` (`v0.9.1-pool2`), which is also the image's tag. For an upgrade, also take the new version's Dockerfile changes (base images, packages) and its `QW_COMMIT_DATE`, and move the `upstream` pin in `infra/quickwit-image.json` and `Dockerfile.ingest`'s default to the new release (CI checks they match).
+3. `scripts/build-quickwit.sh --env prod`, then commit, merge and provision, as above.
+4. Re-run the cold-search test (`scripts/load-cold-searches.py`) and read [the searcher's threads](#searcher-threads).
+
+**Back to upstream:** remove the environment from `environments` in `infra/quickwit-image.json` (or put its previous digest back), merge, and run `scripts/provision.sh <env>` once publish has finished. Publish copies upstream v0.9.1 into the registry if it isn't there and rebuilds the ingest image on it. To turn pooling off in the searcher alone, without a new image, set `QW_AZURE_POOL=false` on the sidecar (`infra/modules/containerapp.bicep`) and provision.
+
 ## Cache warm-up
 
 Each API start, and each publish before it swaps the new version in, warms the caches with the home page's examples and the most frequent logged searches (06 §6.5). One line per run:
@@ -128,7 +150,7 @@ Each computed search also logs `slow warm-up query` with its `ms` when it takes 
 
 ## Full rebuild
 
-Rebuild the indexes as one merged base (one-off, or a compaction). A release also builds a full base by itself, without `USNM_INGEST_FULL`, when the published version was built with another search backend or another version of the common-word pairs (05 §5.5.3), or when `USNM_AMERICAN_STORIES` is on and the published version doesn't have American Stories' text (below); the steps below force one. It is also how merged places and other place changes of published titles reach the site (04 §4.6). Indexes built before the merge settings (September 2026) keep their many small splits: their splits are past any maturation period, so nothing merges them in place, and they are sealed. A full release builds a new base from every curated batch, merged, and publishes a version with no deltas; the previous version stays in Blob for rollback (`current.json`). It takes the writer lock like any release, so it never runs alongside another writer (08 §8.4.1). Run it when no backfill or ingest execution is running and the backfill has finished:
+Rebuild the indexes as one merged base (one-off, or a compaction). A release also builds a full base by itself, without `USNM_INGEST_FULL`, when the published version was built with another search backend, without common-word pairs or with a version of them newer than the release knows (05 §5.5.3), or when `USNM_AMERICAN_STORIES` is on and the published version doesn't have American Stories' text (below); the steps below force one. It is also how merged places and other place changes of published titles reach the site (04 §4.6). Indexes built before the merge settings (September 2026) keep their many small splits: their splits are past any maturation period, so nothing merges them in place, and they are sealed. A full release builds a new base from every curated batch, merged, and publishes a version with no deltas; the previous version stays in Blob for rollback (`current.json`). A full base is also what moves a version to the latest analyzer versions (05 §5.5.3): a delta folds its words as the published version's indexes do, so a change to the folding, such as vulgar fractions as one word (`½`, #168), reaches the site only with a full rebuild. Afterwards `current.json` has the latest `common_grams` and `ja.fold` (2 since #168), as does `build.features` in `reference/<version>/manifest.json`, and the API parses queries for them. It takes the writer lock like any release, so it never runs alongside another writer (08 §8.4.1). Run it when no backfill or ingest execution is running and the backfill has finished:
 
 ```sh
 RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
@@ -223,14 +245,14 @@ scripts/settings.sh prod USNM_JA_LATIN true
 scripts/provision.sh prod
 ```
 
-- The next release that builds a main index (the weekly delta) adds the pages LoC ships without text, a few thousand documents. An overlay-only release adds none. Its log has `indexed our Japanese OCR's Latin text` with `missing` and `in_place_of_locs`; `reference/<version>/ocr_ja.json` has `latin: {added, pages, hidden}`, `ja_latin.json` lists the pages, and the build record has `features.ja_latin`.
-- Our text in place of LoC's reaches a batch when a release indexes it, so for the published Japanese batches at the next [full rebuild](#full-rebuild) (with the setting on).
+- The next release adds the pages LoC ships without text, a few thousand documents, in a new main index: the weekly delta, or, when LoC has published no new batch, a delta of just these pages (`no newly curated batches; releasing our OCR's Latin text of pages LoC ships without text in a delta of its own`). After that, a run with no new batch and no new OCR releases nothing. The log has `indexed our Japanese OCR's Latin text` with `missing` and `in_place_of_locs`; `reference/<version>/ocr_ja.json` has `latin: {added, pages, hidden, rule}`, `ja_latin.json` lists the pages, and the build record has `features.ja_latin`.
+- Our text in place of LoC's reaches a batch when a release indexes it, so for the published Japanese batches at the next [full rebuild](#full-rebuild) (with the setting on). A delta of only the pages LoC ships without text indexes no batch, and its log line says so.
 - Check: an English search for a word in a Colorado Times ad (for example `"Larimer Street"` over 1945) finds pages marked "Our OCR", whose viewer link has no highlight. The page totals don't change: these pages were counted since #139.
 - Clearing the setting stops new documents; a delta keeps the ones already indexed, and the next full rebuild leaves them out.
 
 ## Check Japanese search
 
-Our OCR of the Japanese pages LoC ships without text (04 §4.8) goes live only with a release: each release reads the OCR job's output once, near its start, and logs `Japanese OCR overlay` with the pages it took. Pages the job reads after that wait for the next release; when nothing else is new, a run releases them on their own ("releasing the new Japanese OCR on the same indexes"). After a release publishes, check from outside:
+Our OCR of the Japanese pages LoC ships without text (04 §4.8) goes live only with a release: each release reads the OCR job's output once, near its start, and logs `Japanese OCR overlay` with the pages it took. Pages the job reads after that wait for the next release; when nothing else is new, a run releases them on their own ("releasing the new Japanese OCR on the same indexes"), or, with `USNM_JA_LATIN` and Latin text on pages LoC ships without text, in a delta of just those pages ([above](#japanese-ocr-mixed-pages-and-english-text)). After a release publishes, check from outside:
 
 ```sh
 scripts/check-ja-search.py --expect <issue> … --late <issue> …
@@ -364,7 +386,7 @@ Production keeps no batch archives (ADR-0006): LoC is the source of record. The 
 scripts/archive-store.sh deploy --subscription <id>     # prints the account's resource id
 ```
 
-**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, Blob Data Contributor on `raw` for `id-usnm-ingest`. With the search cluster on, it also gives `id-usnm-qwbench` Reader on `raw` and Contributor on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
+**An environment uses it** with `USNM_ARCHIVE_ACCOUNT` set to that resource id and a provision. That adds a private endpoint in the environment's VNet (`pe-usnm-archive-blob`, in its Blob private DNS zone) and, in the account's group, a custom role on `raw` for `id-usnm-ingest` that lists, reads and creates blobs but can't delete them (`usnm archive writer`). With the search cluster on, `id-usnm-qwbench` also gets read access on `raw` and the writer role on `sets`. The ingest and backfill jobs get `USNM_RAW_URL` pointing at `raw`. Clearing the setting removes only the environment's endpoint and roles. The account's lock can block removing an endpoint to it, so drop the setting (or tear the environment down) this way. `scripts/teardown.sh` refuses while the setting is on.
 
 ```sh
 scripts/archive-store.sh unlock
@@ -375,7 +397,7 @@ scripts/archive-store.sh deploy        # the lock back
 
 **What curation does with it:**
 
-- **Every archive it downloads is kept** byte for byte as fetched, at `raw/{batch}/{archive file}`. It is written in 8 MiB blocks as it streams (never held whole) at the Cold tier. Once the archive's sha256 checks out, the upload is committed and `raw/{batch}/manifest.json` records the source URL, bytes, sha256, the time and LoC's response headers (`last-modified`, `etag`, `content-length`, `content-type`). Only then is the batch marked curated. A download that fails its checksum leaves nothing.
+- **Every archive it downloads is kept** byte for byte as fetched, at `raw/{batch}/{archive file}`. It is written in 8 MiB blocks as it streams (never held whole) at the Cold tier. Once the archive's sha256 checks out, the upload is committed and `raw/{batch}/manifest.json` records the source URL, bytes, sha256, the time and LoC's response headers (`last-modified`, `etag`, `content-length`, `content-type`). Only then is the batch marked curated. A download that fails its checksum leaves nothing. The commit is create-only: an archive already at the path (another environment's, sharing the account) is never replaced, and the batch curates from its own download with a warning if the two differ.
 - **A batch already kept is curated from the copy,** not LoC, when its manifest's sha256 is the one LoC lists (or LoC lists none). It needs no download slot, and the copy is checked again as it's read. The `archive source` line says which (`source: raw` or `loc`), and `archive retained` logs each new copy.
 - **Batch lists are kept too:** each remote list an `enqueue` or `run` reads goes to `raw/listings/{time}-{sha}.json`. Titles-sync keeps the fields it uses from each title record in the environment's `reference/raw/titles.json`. Nothing else is downloaded from outside Azure: the search cluster's sample, sets and bench read only Azure stores.
 
@@ -388,7 +410,7 @@ scripts/start-job.sh dev INGEST_JOB enqueue --batches "$B" --force
 scripts/start-job.sh dev BACKFILL_JOB curate --max-runtime-secs 14400
 ```
 
-**An environment's own `raw` container** (`USNM_RETAIN_RAW true`) does the same inside the environment's data account. It goes with the environment, and turning the setting off deletes it, so it suits a short trial. `USNM_ARCHIVE_ACCOUNT` takes precedence when both are set. To move archives kept there into the archival account, with both settings on, run the copy in the ingest job. It streams each archive, checks it against its manifest, and skips those already there:
+**An environment's own `raw` container** (`USNM_RETAIN_RAW true`) does the same inside the environment's data account. It goes with the environment, and turning the setting off deletes it, so it suits a short trial. `USNM_ARCHIVE_ACCOUNT` takes precedence when both are set. To move archives kept there into the archival account, with both settings on, run the copy in the ingest job. It streams each archive, checks it against its manifest, and skips those already there. A batch for which the destination holds another archive is left as it is and fails the copy at the end:
 
 ```sh
 scripts/start-job.sh dev INGEST_JOB archive-copy \
@@ -611,3 +633,86 @@ scripts/settings.sh dev USNM_SEARCH_LOCAL_MODE ""; scripts/provision.sh dev   # 
 ```
 
 The report's comparison tables group the runs as `0.9.1 blob` and `0.9.1 nfs` (and `cache`, `copy`) with ratios to blob, and its bench rows name each run's mode. Compare the `r2` runs: if `nfs` cuts the main runtime's busy seconds per search and the probe's warm-up seconds as `copy` was meant to show, the Blob path (HTTP, TLS, the Azure client) is the main runtime's cost and an NFS share is a way around it in production; if it barely moves them, the cost is in decoding what a split needs. The flame graphs show which functions those seconds went to.
+
+## On-prem OCR nodes
+
+Local machines re-read badly OCR'd pages (#296, [ADR-0015](design/adr/0015-onprem-ocr-workers.md)). Each node is an Azure Arc-enabled server running AlmaLinux 9 (RHEL 10 is also accepted), with a managed identity and no stored secret. It takes pages from Storage queues in the exchange account `stusnmo<suffix>` and writes its output to that account's `ocr-out` container, which a cloud job copies into `curated`. This section sets up the account, connects and monitors a node, and starts the worker ([`crates/usnm-ocr-worker`](../crates/usnm-ocr-worker/README.md)).
+
+**The exchange account.** Set the node IPs (the home connection's public IPv4 address; a comma-separated list or CIDR ranges also work) and turn it on. The IP lives only in the environment's settings, never in the repository. The provision also adds a Microsoft.Storage service endpoint to `snet-cae`, which closes open connections from the subnet to storage public endpoints (the data lake is reached through its private endpoint and isn't affected), so run it while no ingest job is running.
+
+```sh
+scripts/settings.sh prod USNM_OCR_NODE_IPS 203.0.113.7    # the home IP
+scripts/settings.sh prod USNM_OCR_NODES true
+scripts/ocr-node/group.sh --env prod --dry-run
+scripts/ocr-node/group.sh --env prod                      # writes USNM_OCR_NODE_GROUP
+scripts/provision.sh prod                                 # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
+```
+
+**The nodes' group.** The nodes get their roles through an Entra security group, `usnm-ocr-nodes-<env>`: the provision grants the group Message Processor on `ocr-priority` and `ocr-bulk`, Message Sender on `ocr-deadletter`, a custom writer role on `ocr-out` (list, read and create blobs, no delete) and Monitoring Metrics Publisher on the nodes' own Application Insights component, `usnm-ocr-appi-<env>` (the worker's telemetry), and nothing else; nothing on the environment's `appi-usnm-<env>`. Each node's Arc identity is a member. `group.sh` creates the group once per environment, saves its object id in `USNM_OCR_NODE_GROUP` and makes you an owner so you can add and remove members. Run again, it uses the saved id and lists the group's owners. It never adopts a group by name: if one named `usnm-ocr-nodes-<env>` exists and no id is saved, it stops, so you can check that group's members and owners (`az ad group member list --group <id>`, `az ad group owner list --group <id>`) before saving its id by hand. The provision grants every member the node roles, and owners can add members. Creating it needs the right to create security groups (the default user setting, or Groups Administrator). The deployment stack can't create it (ADR-0015), and teardown leaves it: delete it by its object id, the value of `USNM_OCR_NODE_GROUP` (`az ad group delete --group <id>`; teardown keeps the settings file, renamed), not by its name.
+
+**Create the VM.** On a Proxmox host, `scripts/ocr-node/proxmox-create-vm.sh` (copy it to the host, run it as root) creates an AlmaLinux 9 VM from AlmaLinux's GenericCloud image, checking its published sha256. The VM boots UEFI with Secure Boot (Microsoft's keys pre-enrolled; AlmaLinux's shim is signed) and has a vTPM, CPU type `host` (so the OCR engines can use AVX2), the QEMU guest agent, DHCP and start at boot. cloud-init creates an admin user `claude` with key-only SSH and passwordless sudo. On the first try cloud-init left the hostname as `localhost`; the script now sets `fqdn` and runs `hostnamectl set-hostname`. It prints the VM's address once the guest agent reports one.
+
+```sh
+bash proxmox-create-vm.sh --vmid 120 --name usnm-ocr-node1 --ssh-key "$(cat ~/.ssh/id_ed25519.pub)"
+# optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm --bridge vmbr0 --snippets-storage local
+```
+
+**The Proxmox host's network card.** The NUC's Intel e1000e NIC logs `Detected Hardware Unit Hang` and drops off the network under load. Turning off its segmentation and receive offloads fixes it; make it permanent with a `post-up` line on the interface in `/etc/network/interfaces` (the NIC is `nic0` on this host):
+
+```text
+iface nic0 inet manual
+        post-up /sbin/ethtool -K nic0 tso off gso off gro off
+```
+
+**Connect a node.** The node needs AlmaLinux 9 or RHEL 10 and an admin account with key-based SSH and passwordless sudo. Its name (`--name`, also the worker's `--node-id`) is 1 to 32 letters, digits or hyphens. Run it from your machine, signed in to `az` as an account with the right to create app registrations in the tenant (the Application Developer role, or the default user setting that lets users register applications), to assign roles on the environment's resource group and to write its Arc machines, their extensions and their data collection rule associations (Owner; or User Access Administrator together with Contributor, or with Azure Connected Machine Resource Administrator and Monitoring Contributor: turning on automatic agent upgrade writes the machine, `Microsoft.HybridCompute/machines/write`, and the monitoring agent is an extension with a data collection rule association) and to add members to the nodes' group (its owner, which `group.sh` made you). The first onboarding in a subscription also registers three resource providers, a subscription-level action (Contributor or Owner on the subscription); with only resource-group-level rights, have them registered first:
+
+```sh
+scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1 --dry-run
+scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org --name usnm-ocr-node1
+```
+
+`onboard.sh` registers the `Microsoft.HybridCompute`, `Microsoft.GuestConfiguration` and `Microsoft.HybridConnectivity` providers. Unless the node is already connected, it then creates a throwaway app registration and service principal, `usnm-arc-onboard-<name>-<UTC time>`, with a client secret valid for 2 hours and only Azure Connected Machine Onboarding on the environment's resource group, and waits for the role assignment to show up. Then it runs `scripts/ocr-node/node-setup.sh` on the node with sudo. That script installs python3, podman, chrony, cron (for the agent's automatic upgrades), rsyslog and which, and initscripts where the distribution has it (the monitoring agent's prerequisites), plus htop, iftop and screen from EPEL for watching the node (no OCR engine: EL9 has only Tesseract 4.1.1 and EPEL 9 none, so the engines come later as pinned container images or a source build); creates the `usnm` user; installs the Connected Machine agent; sets its extension allow list to the Azure Monitor Linux Agent alone (with extensions off while a different list is replaced), reads it back, stops if any other extension is installed in `/var/lib/waagent` (the allow list doesn't remove one installed before it, and turning the extension manager on would run it again), and only then turns the extension manager on (an empty list allows every extension), and turns off guest configuration and incoming connections; keeps the journal on disk (`/etc/systemd/journald.conf.d/50-usnm.conf`: `Storage=persistent`, `SystemMaxUse=1G`; the cloud image keeps it in memory only, so a reboot lost the logs); sets sshd to offer post-quantum key exchange first where its OpenSSH supports it (a drop-in, `/etc/ssh/sshd_config.d/40-pq-kex.conf`; AlmaLinux 9.8's default crypto policy leaves it out); connects with that service principal (the tenant, app id and secret go over ssh's stdin, never on a command line; the secret waits in a root-only file under `/run` while `azcmagent connect --config` reads it, and a refused connect is retried for a few minutes while the new principal propagates); writes the worker's settings to `/etc/usnm/ocr-worker.env` (the exchange account's queue and `ocr-out` URLs, the node id, `--concurrency` of one page per CPU and the connection string of the nodes' Application Insights component, which `onboard.sh` passes from `OCR_NODE_APPINSIGHTS`; root's, mode 0644, nothing secret: with local auth off, ingestion needs an Entra token too); and installs `usnm-ocr-worker.service`, which starts only once `/usr/local/bin/usnm-ocr-worker` exists. It ends by checking that `usnm` can get a token (for Resource Manager, not storage: see below), and prints `azcmagent show` and `azcmagent config list`. Run again, it skips what's done and applies the lockdown, the settings and the unit as they are now (restarting a running worker if they changed). `onboard.sh` then waits for the machine's system-assigned identity and adds it to the nodes' group unless it's already a member, which gives the node its roles; no provision is needed. The machine identity's private key can live in the node's TPM (`--identity-key-store tpm`, the agent's TPM-backed identity, in preview; `proxmox-create-vm.sh` gives VMs a vTPM 2.0), so it can't be copied off the disk. Azure accepts that only once the subscription's `Microsoft.HybridCompute/HybridComputePreview` feature is Registered, which needs Microsoft's approval: `az feature register --namespace Microsoft.HybridCompute --name HybridComputePreview` leaves it Pending until then (requested 2026-10-10). `onboard.sh` checks the feature and asks `node-setup.sh` for the TPM only when it's Registered; otherwise the key stays in the agent's default store on disk. The key store is fixed at connect: moving an existing node to the TPM means `offboard.sh` and `onboard.sh` again, which makes a new machine and identity. A vTPM's state is a file on the Proxmox host, so this protects against the VM's disk or a backup of it, not against the host. It also turns on Microsoft's automatic agent upgrade for the machine (in preview: the agent upgrades itself to within one version of the latest, in batches at off-peak hours, scheduled with cron), which `node-setup.sh` already asks for at connect with `--enable-automatic-upgrade`; the property is checked so a machine connected earlier gets it too. Last, it stops if the machine has any extension in Azure other than the Azure Monitor Linux Agent (delete it, then run again), associates the machine with the nodes' data collection rule (`OCR_NODE_DCR_ID`), waits until the machine reports the allow list to Azure (a few minutes after a change), and installs the Azure Monitor Linux Agent extension with automatic upgrades on, waiting until it's installed (an agent already installed with automatic upgrades off gets them turned on). As soon as `node-setup.sh` has finished, since the connect was its only use, or when `onboard.sh` stops before that, on failure or Ctrl-C too, it deletes the role assignment, the service principal and the app registration, purges them from Entra's deleted items and prints what it deleted; a warning names anything it couldn't delete, to remove by hand.
+
+**A node connected before monitoring** (connected with extensions off): provision once, so the nodes' workspace, component and rule exist and the group has Monitoring Metrics Publisher, then run `onboard.sh` again. It needs no onboarding credential for a connected node, re-runs `node-setup.sh` (which applies the allow list) and installs the agent.
+
+**Monitoring.** The nodes have a workspace of their own, `usnm-ocr-log-<env>`, with its own daily cap of 0.1 GB, and an Application Insights component on it, `usnm-ocr-appi-<env>` (`infra/modules/ocr-node-monitoring.bicep`). The nodes' group can write telemetry to that component only, so a node, or anyone with a node's token, can neither write rows the API alerts read nor fill the environment's 1 GB cap; at worst it fills the nodes' cap, which stops the nodes' monitoring until the reset (ADR-0015). The rule, `usnm-ocr-dcr-<env>`, collects into the nodes' workspace: syslog at Warning and above from the system's facilities (kernel OOM kills, systemd, sshd, chronyd, podman containers' stderr); the worker's own lines at Info and above, from `local0` (its unit's `SyslogFacility`), since journald records every line the worker writes at info, warnings and errors included; and every 60 s, CPU per core, memory used, free space and read and write bytes per file system, and network bytes per interface. The agent also sends a heartbeat a minute (free). The worker's traces and metrics go to the nodes' component as role `usnm-ocr-worker`, instance the node name (see the worker's README). The exchange account's queue logs (`StorageQueueLogs`, a row for every queue request) and the rule's errors (`DCRLogErrors`) go to the nodes' workspace too. The estimate is 8 to 25 MB a day per node before the worker's telemetry, which isn't measured yet; measure it after a day and raise the cap if needed (`dailyCapGb` of the `ocr-node-monitoring` module in `infra/main.bicep`, and `cap_gb` in `ops/queries/ocr-node-health.kql`, then provision). With alert emails set:
+
+- _OCR node log volume high_ (severity 2) fires when a node sends more than a tenth of the cap (10 MB) in an hour, through the agent (Syslog and Perf) and its Application Insights telemetry together, so a crash loop or debug logging is caught before one node fills the cap.
+- _OCR nodes' daily cap reached_ (severity 2) fires on the nodes' workspace's `OverQuota` event, as the environment's cap alert does (#279). Until the reset, the node alerts and queries see nothing. In the nodes' workspace, `Usage | where IsBillable | summarize sum(Quantity) by DataType, bin(TimeGenerated, 1h)` shows what filled it.
+
+`scripts/logs.sh` runs the `ocr-node-*` queries against the nodes' workspace (`OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID`):
+
+```sh
+scripts/logs.sh prod ocr-node-health      # per node: heartbeat, counters, CPU, memory, free space on /, worker lines, PerfMB, SyslogMB and WorkerMB; DayMB and CapPct for the workspace
+scripts/logs.sh prod ocr-node-errors 2d   # worker warnings and errors, panics, failed units, OOM kills, other errors
+```
+
+`no heartbeat` means the node is down or off the network, or has lost its agent or its association with the rule (run `onboard.sh` again): the agent sends heartbeats only to the workspaces of the rules it's associated with. `no counters` with heartbeats means the agent is associated but its counters aren't arriving: check the rule's counters and the agent's logs under `/var/opt/microsoft/azuremonitoragent/log`. A node with no heartbeat in the whole span isn't listed at all, so widen the span (`scripts/logs.sh prod ocr-node-health 7d`) or check the Arc machine's status.
+
+**Start the worker.** Build `usnm-ocr-worker` for EL9 ([its README](../crates/usnm-ocr-worker/README.md#building-for-almalinux-9)), copy it to the node and, as root:
+
+```sh
+install -m 0755 usnm-ocr-worker /usr/local/bin/
+systemctl enable --now usnm-ocr-worker
+journalctl -u usnm-ocr-worker -f
+```
+
+The unit runs `usnm-ocr-worker run --queue-url https://<exchange>.queue.core.windows.net --out-url https://<exchange>.blob.core.windows.net/ocr-out --node-id <name> --shutdown-grace-secs 60` plus `USNM_OCR_ARGS` (default `--concurrency <CPUs>`), as `usnm`, with the agent's identity. On stop, the worker gets 120 s: in-flight pages get 60 s, telemetry up to 30 s more. `node-setup.sh` rewrites `/etc/usnm/ocr-worker.env` on every run, so put local changes in `/etc/usnm/ocr-worker.local.env`, read after it, for example `USNM_OCR_ARGS="--concurrency 3 --api-gap-ms 7000 --tile-gap-ms 2000"` with two nodes sharing loc.gov's rate, or `RUST_LOG=info,usnm_ocr_worker=debug` (the worker's own debug lines; a bare `RUST_LOG=debug` turns on every library's too, and every line goes to the nodes' workspace twice, through syslog and Application Insights, against its cap, so only for a while); then `systemctl restart usnm-ocr-worker`.
+
+**When the home IP changes,** the nodes lose the exchange account until the firewall has the new address. Hidden messages come back on their own once their time runs out.
+
+```sh
+scripts/settings.sh prod USNM_OCR_NODE_IPS <new IP>
+scripts/provision.sh prod
+```
+
+**Group changes take a while.** Membership is a claim in the identity's access token, and managed identity tokens are cached per resource for around 24 hours; Microsoft says a membership change can take several hours to apply, and a refresh can't be forced ([Microsoft](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization)). So a node that fetched a storage token before it joined the group is refused by the exchange account until that token expires (that's why `node-setup.sh` checks with a Resource Manager token), and a removed node keeps its access for up to about a day on a token it already holds.
+
+**Remove a node** with no provision:
+
+```sh
+scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node1.example.org --dry-run
+scripts/ocr-node/offboard.sh --env prod --name usnm-ocr-node1 --host claude@node1.example.org
+```
+
+It removes the machine's identity from the nodes' group and deletes its data collection rule associations. With `--host`, it deletes the Azure Monitor Agent extension and waits while the node uninstalls it, then on the node stops and disables `usnm-ocr-worker.service`, removes any extension left (`azcmagent extension remove --all`) and runs `azcmagent disconnect --force-local-only`, which clears the agent's local state without an Azure sign-in, so no onboarding credential is needed. Last, it deletes the Arc machine with your `az` sign-in, which deletes its identity so it can get no new token. Without `--host` (a node that's gone or unreachable) it leaves the extension to go with the machine and prints the node commands to run later. It needs ownership of the nodes' group and the right to delete resources in the environment's resource group. To cut a node off at once, rather than when its tokens expire, also take its address out of `USNM_OCR_NODE_IPS` and provision; with both nodes behind the same home IP, that cuts off every node. Offboard every node before turning `USNM_OCR_NODES` off. The provision then deletes the exchange account with its queues and `ocr-out`, and the nodes' monitoring: their workspace with its data, their Application Insights component with the group's Monitoring Metrics Publisher grant, the data collection rule and the two node alerts. Azure won't delete a data collection rule that still has associations: with a node still associated, the provision fails until its association is gone. `offboard.sh` deletes the machine's associations. The provision stops before it starts if the rule in `OCR_NODE_DCR_ID` still has any. The Arc machines stay in the resource group, and their identities in the nodes' group, until offboarded.

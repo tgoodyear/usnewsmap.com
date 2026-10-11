@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use usnm_core::params::Filters;
 use usnm_core::query::Node;
+use usnm_core::text::Analyzer;
 use usnm_core::time::BucketSpec;
 
 pub mod cache_metrics;
@@ -72,8 +73,15 @@ pub struct PageDoc {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IndexSet {
     ids: Vec<String>,
-    /// Every index has the `text_cg` field at the API's
-    /// `usnm_core::common_grams::VERSION` (05 §5.5.3).
+    /// The analyzer every index was built with (`usnm_core::text`, #168):
+    /// queries are parsed with it, and a Japanese page's snippets fold its
+    /// printed text with it. Pages' `text` is `usnm_text`'s whatever the
+    /// version, so the memory backend and the other snippets read it as
+    /// Quickwit does.
+    analyzer: Analyzer,
+    /// Every index has the `text_cg` field at a `usnm_core::common_grams`
+    /// version the API supports, the one of [`IndexSet::analyzer`]
+    /// (05 §5.5.3).
     common_grams: bool,
     /// Every index has American Stories' text, `text_as` and `text_as_cg`,
     /// at the API's `usnm_core::american_stories::VERSION` (05 §5.5.4).
@@ -91,11 +99,23 @@ impl IndexSet {
     pub fn new(ids: Vec<String>) -> Self {
         Self {
             ids,
+            analyzer: Analyzer::LATEST,
             common_grams: false,
             american_stories: false,
             decades: None,
             hidden: Arc::default(),
         }
+    }
+
+    /// The analyzer the indexes were built with ([`Analyzer::LATEST`] unless
+    /// set).
+    pub fn with_analyzer(mut self, analyzer: Analyzer) -> Self {
+        self.analyzer = analyzer;
+        self
+    }
+
+    pub fn analyzer(&self) -> Analyzer {
+        self.analyzer
     }
 
     /// Whether phrases may search `text_cg` (05 §5.5.3).
@@ -419,9 +439,12 @@ pub fn mark_html(segments: &[(bool, &str)]) -> String {
 /// one character for one, so the marks land on the text as printed. An exact
 /// phrase is marked as a whole; a NEAR phrase's words are marked one by one;
 /// a prefix, wildcard or fuzzy term marks each printed word it matches.
-pub fn ja_snippets(printed: &str, query: &Node) -> Vec<String> {
+///
+/// The page's Latin runs are folded by `analyzer`, the one the Japanese
+/// index was built with (#168).
+pub fn ja_snippets(printed: &str, query: &Node, analyzer: Analyzer) -> Vec<String> {
     const CONTEXT: usize = 40;
-    let tokens = usnm_core::ja::tokenize(printed);
+    let tokens = usnm_core::ja::tokenize(printed, analyzer);
     let mut phrases: Vec<Vec<String>> = Vec::new();
     let mut stack = vec![query];
     while let Some(node) = stack.pop() {
@@ -442,7 +465,7 @@ pub fn ja_snippets(printed: &str, query: &Node) -> Vec<String> {
     }
     phrases.sort();
     phrases.dedup();
-    usnm_core::ja::snippets(printed, &phrases, CONTEXT, 1)
+    usnm_core::ja::snippets(printed, &phrases, CONTEXT, 1, analyzer)
         .into_iter()
         .map(|pieces| {
             let borrowed: Vec<(bool, &str)> =

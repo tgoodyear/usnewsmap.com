@@ -205,7 +205,10 @@ pub fn request(
     let end = (end - shift).max(start);
     let qs = format!("{query}&from={start}&to={end}");
     let raw = RawParams::parse(&qs).map_err(|e| anyhow::anyhow!("{qs}: {e}"))?;
-    SearchRequest::from_raw(&raw, bounds).map_err(|e| anyhow::anyhow!("{qs}: {e}"))
+    // The bench's indexes are loaded from samples of the published version,
+    // built with the latest analyzer (a full release).
+    SearchRequest::from_raw(&raw, bounds, usnm_core::text::Analyzers::default())
+        .map_err(|e| anyhow::anyhow!("{qs}: {e}"))
 }
 
 fn coarser(unit: BucketUnit) -> Option<BucketUnit> {
