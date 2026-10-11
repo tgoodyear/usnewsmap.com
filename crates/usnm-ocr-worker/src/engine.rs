@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
-use usnm_core::ocr_engine::{Digest, OcrEngineTag};
+use usnm_core::ocr_engine::{Digest, Fields, OcrEngineTag, TagError};
 
 /// What an engine read on a page.
 #[derive(Debug)]
@@ -860,11 +860,14 @@ impl Tesseract {
 
     /// The `ocr_engine` value for a language, if it has a model here.
     pub fn engine_for(&self, language: &str) -> Option<String> {
-        route(language, &self.installed).map(|m| self.tag(&m).to_string())
+        let profile = route(language, &self.installed)?;
+        self.tag(&profile).ok().map(|t| t.to_string())
     }
 
-    /// The `ocr_engine` tag for a read with `profile` (13 §13.8.1).
-    pub fn tag(&self, profile: &str) -> OcrEngineTag {
+    /// The `ocr_engine` tag for a read with `profile` (13 §13.8.1); an
+    /// error when Tesseract's version or a model name doesn't fit the
+    /// tag's character sets.
+    pub fn tag(&self, profile: &str) -> Result<OcrEngineTag, TagError> {
         let (image, models) = match &self.runner {
             Runner::Podman { image, .. } => (
                 image
@@ -876,16 +879,16 @@ impl Tesseract {
             // A host binary reads whatever models the host has.
             Runner::Host(_) => (Digest::Local, Digest::Local),
         };
-        OcrEngineTag {
-            family: "tesseract".into(),
-            version: self.version.clone(),
-            profile: profile.to_owned(),
+        OcrEngineTag::new(Fields {
+            family: "tesseract",
+            version: &self.version,
+            profile,
             image,
             models,
-            route: ROUTE.into(),
+            route: ROUTE,
             route_version: ROUTE_VERSION,
             contract: CONTRACT,
-        }
+        })
     }
 }
 
@@ -1111,7 +1114,15 @@ impl Tesseract {
         Ok(EngineOutput {
             text,
             alto,
-            engine: self.tag(models).to_string(),
+            engine: self
+                .tag(models)
+                .with_context(|| {
+                    format!(
+                        "no ocr_engine tag for tesseract {} with {models}",
+                        self.version
+                    )
+                })?
+                .to_string(),
         })
     }
 }
@@ -1172,7 +1183,7 @@ mod tests {
             threads: 1,
             timeout: Duration::from_secs(1),
         };
-        let tag = t.tag("frak2021").to_string();
+        let tag = t.tag("frak2021").unwrap().to_string();
         let want = models_digest(MODELS_LOCK, "frak2021").unwrap();
         assert_eq!(
             tag,
@@ -1187,7 +1198,7 @@ mod tests {
             runner: Runner::Host("tesseract".into()),
             ..t
         };
-        assert!(!host.tag("eng").pinned());
+        assert!(!host.tag("eng").unwrap().pinned());
     }
 
     #[test]

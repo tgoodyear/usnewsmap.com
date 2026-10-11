@@ -23,23 +23,37 @@ pub enum EngineTag {
     Legacy(String),
 }
 
-/// The fields of 13 §13.8.1's tag.
+/// The fields of 13 §13.8.1's tag. Built only through [`OcrEngineTag::new`]
+/// or [`EngineTag::parse`], which check every field, so a tag always
+/// formats to a value that parses back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OcrEngineTag {
+    family: String,
+    version: String,
+    profile: String,
+    image: Digest,
+    models: Digest,
+    route: String,
+    route_version: u32,
+    contract: u32,
+}
+
+/// The fields of a new tag, for [`OcrEngineTag::new`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fields<'a> {
     /// `tesseract`.
-    pub family: String,
+    pub family: &'a str,
     /// `5.5.0`.
-    pub version: String,
+    pub version: &'a str,
     /// The models read together, `frak2021` or `deu_latf+deu`.
-    pub profile: String,
+    pub profile: &'a str,
     /// The first 12 hex digits of the image's sha256, or `local`.
     pub image: Digest,
     /// The first 12 hex digits of the profile's models' sha256 (sorted
     /// `<name> <sha256>` lines), or `local`.
     pub models: Digest,
-    /// The route that picked the profile.
-    pub route: String,
-    /// The route's version, `r<N>`.
+    /// The route that picked the profile, and its version (`r<N>`).
+    pub route: &'a str,
     pub route_version: u32,
     /// The engine contract's version (0: the worker runs the engine
     /// directly, before ADR-0016's contract).
@@ -111,8 +125,43 @@ impl fmt::Display for Digest {
 }
 
 impl OcrEngineTag {
-    /// Refuses fields outside 13 §13.8.1's character sets.
-    pub fn check(&self) -> Result<(), TagError> {
+    /// A tag, refusing fields outside 13 §13.8.1's character sets.
+    pub fn new(f: Fields<'_>) -> Result<Self, TagError> {
+        let tag = Self {
+            family: f.family.to_owned(),
+            version: f.version.to_owned(),
+            profile: f.profile.to_owned(),
+            image: f.image,
+            models: f.models,
+            route: f.route.to_owned(),
+            route_version: f.route_version,
+            contract: f.contract,
+        };
+        tag.check()?;
+        Ok(tag)
+    }
+
+    pub fn family(&self) -> &str {
+        &self.family
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    pub fn image(&self) -> &Digest {
+        &self.image
+    }
+
+    pub fn models(&self) -> &Digest {
+        &self.models
+    }
+
+    fn check(&self) -> Result<(), TagError> {
         if !is_id(&self.family) {
             return Err(TagError("bad family"));
         }
@@ -161,7 +210,8 @@ impl EngineTag {
     /// [`EngineTag::Legacy`]. A value that starts like it but has a bad
     /// field is an error.
     pub fn parse(s: &str) -> Result<Self, TagError> {
-        if !s.split(' ').skip(1).any(|f| f.starts_with("profile=")) {
+        // The older forms have no `key=value` field after the first.
+        if !s.split(' ').skip(1).any(|f| f.contains('=')) {
             return Ok(Self::Legacy(s.to_owned()));
         }
         let mut fields = s.split(' ');
@@ -196,20 +246,19 @@ impl EngineTag {
             .ok_or(TagError("no route"))?
             .split_once("@r")
             .ok_or(TagError("route is <id>@r<N>"))?;
-        let tag = OcrEngineTag {
-            family: family.to_owned(),
-            version: version.to_owned(),
-            profile: profile.ok_or(TagError("no profile"))?.to_owned(),
+        let tag = OcrEngineTag::new(Fields {
+            family,
+            version,
+            profile: profile.ok_or(TagError("no profile"))?,
             image: Digest::parse(image.ok_or(TagError("no image"))?)?,
             models: Digest::parse(models.ok_or(TagError("no models"))?)?,
-            route: route.to_owned(),
+            route,
             route_version: rv.parse().map_err(|_| TagError("bad route version"))?,
             contract: contract
                 .ok_or(TagError("no contract"))?
                 .parse()
                 .map_err(|_| TagError("bad contract"))?,
-        };
-        tag.check()?;
+        })?;
         Ok(Self::Tag(tag))
     }
 
@@ -226,20 +275,24 @@ impl EngineTag {
 mod tests {
     use super::*;
 
-    fn tag() -> OcrEngineTag {
-        OcrEngineTag {
-            family: "tesseract".into(),
-            version: "5.5.0".into(),
-            profile: "deu_latf+deu".into(),
+    fn fields() -> Fields<'static> {
+        Fields {
+            family: "tesseract",
+            version: "5.5.0",
+            profile: "deu_latf+deu",
             image: Digest::short(
                 "sha256:3f9a0c1d2e4b5566778899aabbccddeeff00112233445566778899aabbccddee",
             )
             .unwrap(),
             models: Digest::short("8c2d71aa09fe0000").unwrap(),
-            route: "minimal".into(),
+            route: "minimal",
             route_version: 1,
             contract: 0,
         }
+    }
+
+    fn tag() -> OcrEngineTag {
+        OcrEngineTag::new(fields()).unwrap()
     }
 
     #[test]
@@ -257,9 +310,12 @@ mod tests {
 
     #[test]
     fn local_images_read_back_unpinned() {
-        let mut t = tag();
-        t.image = Digest::Local;
-        t.models = Digest::Local;
+        let t = OcrEngineTag::new(Fields {
+            image: Digest::Local,
+            models: Digest::Local,
+            ..fields()
+        })
+        .unwrap();
         let EngineTag::Tag(back) = EngineTag::parse(&t.to_string()).unwrap() else {
             panic!("not a tag");
         };
@@ -284,11 +340,20 @@ mod tests {
             "tesseract/5.5.0 profile=deu image=local models=local route=minimal contract=0",
             "tesseract/5.5.0 profile=deu image=local models=local route=minimal@r1",
             "tesseract/5.5.0 profile=deu profile=eng image=local models=local route=minimal@r1 contract=0",
+            "tesseract/5.5.0 image=local models=local route=minimal@r1 contract=0",
+            "tesseract-5.5.0 profile=deu image=local models=local route=minimal@r1 contract=0",
         ] {
             assert!(EngineTag::parse(bad).is_err(), "{bad}");
         }
-        let mut t = tag();
-        t.profile = "deu latf".into();
-        assert!(t.check().is_err());
+        for profile in ["deu latf", "Deu", "", "deu=x"] {
+            assert!(
+                OcrEngineTag::new(Fields {
+                    profile,
+                    ..fields()
+                })
+                .is_err(),
+                "{profile}"
+            );
+        }
     }
 }
