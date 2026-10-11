@@ -88,8 +88,9 @@ export function newspaperSummary(chosen: readonly string[], nameOf: (lccn: strin
 }
 
 /**
- * The papers a search is limited to, for the line over its results: up to
- * three names, then how many more.
+ * The papers a search is limited to, for the line over its results: every
+ * name up to three; from four on, two names and how many more, so it never
+ * reads "and 1 more" where the name would fit.
  */
 export function paperFilterNames(
   lccns: readonly string[],
@@ -290,7 +291,7 @@ export function NewspaperFilter({ id, titles, failed = false, onWant, value, onC
         </p>
         {expanded && total > shown.length && (
           <p className="papers-filter__more" aria-hidden="true">
-            {total.toLocaleString("en-US")} match; type more to narrow the list.
+            {total.toLocaleString("en-US")} newspapers match; type more to narrow the list.
           </p>
         )}
         {listOpen && text.trim() && titles && total === 0 && (
