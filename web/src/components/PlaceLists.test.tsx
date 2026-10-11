@@ -442,6 +442,64 @@ describe("Median date: Show more", () => {
     expect(screen.queryByText("Finding the listed places' median days…")).toBeNull();
   });
 
+  // Thirty places; M5 to M14 share 1875. The first exact answer has days for
+  // M0-M4 and M25-M29, so 1875 goes by bucket (by name: M10-M14, then M5-M9).
+  // With days for all of 1875, M5-M9 come first and M10-M14 go past ten.
+  const shared = () => years(30).map((r, i) => (i >= 5 && i < 15 ? { ...r, when: 5 / 30, whenLabel: "1875" } : r));
+  const day = (i: number) => dayNumber(`${1870 + i}-03-01`);
+  const firstDays = () =>
+    new Map([...[0, 1, 2, 3, 4, 25, 26, 27, 28, 29].map((i): [string, number] => [`M${i}`, day(i)])]);
+  const allDays = () =>
+    new Map([
+      ...firstDays(),
+      ...ids(5, 15).map((id, i): [string, number] => [id, dayNumber(`1875-01-${String(i + 1).padStart(2, "0")}`)]),
+    ]);
+
+  it("waits for the added places' days before moving focus, so it isn't lost when they re-rank", () => {
+    const rows = shared();
+    const { rerender } = render(
+      <When rows={rows} onSelect={() => {}} trailing={false} exact={firstDays()} status="exact" />,
+    );
+    // In App the longer list's places are a new set, so the lists are updating as soon as it shows.
+    rerender(<When rows={rows} onSelect={() => {}} trailing={false} exact={firstDays()} status="updating" />);
+    const more = button(earliest(), "Show more")!;
+    more.focus();
+    fireEvent.click(more);
+    // Shown by bucket for now; focus stays on Show more rather than on M10, which is about to move.
+    expect(names(earliest()).slice(5)).toEqual(["M10, IL", "M11, IL", "M12, IL", "M13, IL", "M14, IL"]);
+    expect(document.activeElement).toBe(more);
+    rerender(<When rows={rows} onSelect={() => {}} trailing={false} exact={allDays()} status="exact" />);
+    expect(names(earliest()).slice(5)).toEqual(["M5, IL", "M6, IL", "M7, IL", "M8, IL", "M9, IL"]);
+    // The first added place in the final order, not the body.
+    expect(document.activeElement?.textContent).toBe("M5, IL");
+  });
+
+  it("moves focus to the first added place when the days fail, and not when focus has moved on", () => {
+    const rows = shared();
+    const { rerender } = render(
+      <When rows={rows} onSelect={() => {}} trailing={false} exact={firstDays()} status="exact" />,
+    );
+    rerender(<When rows={rows} onSelect={() => {}} trailing={false} exact={firstDays()} status="updating" />);
+    const more = button(earliest(), "Show more")!;
+    more.focus();
+    fireEvent.click(more);
+    expect(document.activeElement).toBe(more);
+    rerender(<When rows={rows} onSelect={() => {}} trailing={false} status="bucket" />);
+    expect(document.activeElement?.textContent).toBe(names(earliest())[5]);
+
+    cleanup();
+    const again = render(<When rows={rows} onSelect={() => {}} trailing={false} exact={firstDays()} status="exact" />);
+    again.rerender(<When rows={rows} onSelect={() => {}} trailing={false} exact={firstDays()} status="updating" />);
+    const more2 = button(earliest(), "Show more")!;
+    more2.focus();
+    fireEvent.click(more2);
+    // The reader tabs on to Latest's Show more while the days load: focus stays there.
+    const elsewhere = button(latest(), "Show more")!;
+    elsewhere.focus();
+    again.rerender(<When rows={rows} onSelect={() => {}} trailing={false} exact={allDays()} status="exact" />);
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
   it("says when too many places share a bucket to rank them by day", () => {
     render(<When rows={years(30)} onSelect={() => {}} trailing={false} status="bucket" tied="month" />);
     expect(screen.getByText(/Too many places share a median month/)).toBeTruthy();

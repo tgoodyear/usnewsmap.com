@@ -453,6 +453,7 @@ export function WhenLists({
           render={item}
           limit={shown.earliest}
           onLimit={(n) => onShown("earliest", n)}
+          ranking={status === "updating"}
         />
         <ShownList
           heading="Latest median date"
@@ -462,6 +463,7 @@ export function WhenLists({
           render={item}
           limit={shown.latest}
           onLimit={(n) => onShown("latest", n)}
+          ranking={status === "updating"}
         />
       </div>
       <p className="skew-list__note" role="status">
