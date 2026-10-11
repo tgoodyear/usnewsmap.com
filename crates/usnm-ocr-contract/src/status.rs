@@ -55,6 +55,9 @@ pub struct WorkerStatus {
     pub recent: Vec<Completion>,
     /// The journal's size, for `GET /journal?from=<offset>`.
     pub journal_bytes: u64,
+    /// Which journal file it is (it changes when the file is replaced), so
+    /// a reader knows to start again from 0.
+    pub journal_id: String,
 }
 
 /// A page a worker is on now.

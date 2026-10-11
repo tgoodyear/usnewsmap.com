@@ -223,11 +223,11 @@ pub fn render(v: &View) -> String {
         if let Some(e) = &h.error {
             let _ = write!(o, "<p class=\"err\">{}</p>", esc(e));
         }
-        if let Some(r) = h.received {
+        if let Some(r) = h.collected_at {
             let stale = h.age_secs.unwrap_or(0) > 300;
             let _ = write!(
                 o,
-                "<table class=\"kv\"><tr><td>Stats</td><td>{} {}</td></tr>",
+                "<table class=\"kv\"><tr><td>Stats</td><td>collected {} {}</td></tr>",
                 ago(now, r),
                 if stale {
                     badge("warning", "stale")

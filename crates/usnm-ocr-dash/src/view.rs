@@ -39,6 +39,7 @@ pub struct View {
 pub struct HostView {
     pub name: String,
     pub received: Option<DateTime<Utc>>,
+    pub collected_at: Option<DateTime<Utc>>,
     pub age_secs: Option<i64>,
     pub error: Option<String>,
     pub cpu_pct: f64,
@@ -272,7 +273,13 @@ fn host_views(h: &Hosts, s: &Settings, now: DateTime<Utc>) -> Vec<HostView> {
             HostView {
                 name: name.clone(),
                 received: host.received,
-                age_secs: host.received.map(|r| (now - r).num_seconds()),
+                collected_at: host.stats.as_ref().map(|st| st.collected_at),
+                // From when the host collected them, so a stopped timer
+                // shows even while its last file is read again and again.
+                age_secs: host
+                    .stats
+                    .as_ref()
+                    .map(|st| (now - st.collected_at).num_seconds()),
                 error: host.error.clone(),
                 cpu_pct: (st.node.cpu * 1000.0).round() / 10.0,
                 cpus: st.node.cpuinfo.cpus,
@@ -340,7 +347,7 @@ pub fn build(
         Some(p) => (
             p.keep
                 .iter()
-                .filter(|r| !nodes.ocred.contains_key(&*r.doc_id))
+                .filter(|r| !nodes.ocred.contains_key(&r.doc_id))
                 .take(s.next_n)
                 .map(|r| NextRow {
                     doc_id: r.doc_id.to_string(),
@@ -352,37 +359,37 @@ pub fn build(
                 .collect(),
             p.keep
                 .iter()
-                .filter(|r| !nodes.ocred.contains_key(&*r.doc_id))
+                .filter(|r| !nodes.ocred.contains_key(&r.doc_id))
                 .count() as u64,
         ),
         None => (Vec::new(), 0),
     };
-    let mut by_language: BTreeMap<String, u64> = BTreeMap::new();
-    let mut by_engine: BTreeMap<String, u64> = BTreeMap::new();
-    for i in nodes.ocred.values() {
-        let c = &nodes.done[*i].1;
-        *by_language.entry(c.language.clone()).or_default() += 1;
-        *by_engine.entry(c.engine.clone()).or_default() += 1;
+    let mut by_language: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut by_engine: BTreeMap<&str, u64> = BTreeMap::new();
+    for o in nodes.ocred.values() {
+        *by_language
+            .entry(&nodes.names[o.language as usize])
+            .or_default() += 1;
+        *by_engine
+            .entry(&nodes.names[o.engine as usize])
+            .or_default() += 1;
     }
-    let sorted = |m: BTreeMap<String, u64>| {
-        let mut v: Vec<(String, u64)> = m.into_iter().collect();
+    let sorted = |m: BTreeMap<&str, u64>| {
+        let mut v: Vec<(String, u64)> = m.into_iter().map(|(k, n)| (k.to_owned(), n)).collect();
         v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         v
     };
+    // Each node's latest pages: from its status while it answers (failures
+    // too), else the pages OCRed copied here.
     let latest = nodes
         .nodes
         .iter()
-        .enumerate()
-        .map(|(i, n)| NodeLatest {
+        .map(|n| NodeLatest {
             node: n.name.clone(),
-            rows: nodes
-                .done
-                .iter()
-                .rev()
-                .filter(|(j, _)| *j == i)
-                .take(s.next_n)
-                .map(|(_, c)| c.clone())
-                .collect(),
+            rows: match &n.status {
+                Some(st) => st.recent.iter().take(s.next_n).cloned().collect(),
+                None => n.latest.iter().rev().take(s.next_n).cloned().collect(),
+            },
         })
         .collect();
     let node_views = nodes
@@ -454,4 +461,26 @@ pub fn read_seed_plan(bytes: &[u8]) -> anyhow::Result<BTreeMap<String, String>> 
             (k.chars().take(64).collect(), v.chars().take(200).collect())
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use usnm_ocr_contract::status::HostStats;
+
+    #[test]
+    fn a_host_is_as_old_as_its_stats_not_the_last_read() {
+        let now = Utc::now();
+        let mut h = Hosts::new(Vec::new());
+        h.put(
+            HostStats {
+                host: "pve-big".into(),
+                collected_at: now - Duration::hours(2),
+                ..HostStats::default()
+            },
+            now,
+        );
+        let v = host_views(&h, &Settings::default(), now);
+        assert_eq!(v[0].age_secs, Some(7200));
+    }
 }

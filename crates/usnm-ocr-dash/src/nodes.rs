@@ -1,19 +1,26 @@
 //! The OCR nodes: each worker's `GET /status`, and its journal of finished
-//! pages (`GET /journal?from=<offset>`), copied here so the totals outlive
-//! a worker's restart and a page finished while the dashboard was down
-//! still counts.
+//! pages (`GET /journal?from=<offset>`), whose OCRed pages are copied here
+//! so the totals outlive a worker's restart and a page finished while the
+//! dashboard was down still counts.
+//!
+//! Memory stays small: per page OCRed, its doc_id and three small numbers
+//! (node, language, engine tag, the strings interned); per node, the
+//! latest pages for the page. The copy on disk holds only pages OCRed.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Write as _;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::io::{BufRead, Write as _};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use usnm_ocr_contract::status::{Completion, WorkerStatus};
 
 /// The largest status or journal answer read.
 const MAX_BODY: usize = 4 * 1024 * 1024;
+/// Pages OCRed kept per node for when its status can't be had.
+const LATEST: usize = 100;
 
 #[derive(Debug)]
 pub struct Node {
@@ -22,8 +29,11 @@ pub struct Node {
     pub status: Option<WorkerStatus>,
     pub last_ok: Option<DateTime<Utc>>,
     pub error: Option<String>,
-    /// How much of the worker's journal has been copied.
+    /// How much of the worker's journal has been copied, and which journal.
     pub offset: u64,
+    pub journal_id: String,
+    /// The latest pages OCRed, newest last, from the copy.
+    pub latest: VecDeque<Completion>,
 }
 
 /// A node's name: `[A-Za-z0-9-]`, 1 to 32; it names a file here.
@@ -35,22 +45,39 @@ pub fn check_name(s: &str) -> anyhow::Result<()> {
     }
 }
 
+/// A page OCRed: its node, language and engine tag, as indices into
+/// [`Nodes::names`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ocred {
+    pub node: u16,
+    pub language: u32,
+    pub engine: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct Mark {
+    offset: u64,
+    journal_id: String,
+}
+
 #[derive(Debug, Default)]
 pub struct Nodes {
     pub nodes: Vec<Node>,
     state_dir: PathBuf,
-    /// Every finished page copied, with its node's index.
-    pub done: Vec<(usize, Completion)>,
-    seen: HashSet<(usize, String, i64)>,
-    /// Pages OCRed (outcome `done`) → their latest completion's index.
-    pub ocred: HashMap<String, usize>,
+    /// Pages OCRed, by doc_id: the last node to report each.
+    pub ocred: HashMap<Box<str>, Ocred>,
+    /// Interned languages and engine tags.
+    pub names: Vec<String>,
+    index: HashMap<String, u32>,
 }
 
 /// What one poll of a node brought.
 pub struct Polled {
     status: WorkerStatus,
-    lines: Vec<Completion>,
+    /// The pages OCRed in the new lines.
+    done: Vec<Completion>,
     offset: u64,
+    journal_id: String,
 }
 
 impl Nodes {
@@ -58,7 +85,7 @@ impl Nodes {
     pub fn open(state_dir: PathBuf, nodes: &[(String, String)]) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&state_dir)
             .with_context(|| format!("creating {}", state_dir.display()))?;
-        let offsets: BTreeMap<String, u64> = match std::fs::read(state_dir.join("offsets.json")) {
+        let marks: BTreeMap<String, Mark> = match std::fs::read(state_dir.join("offsets.json")) {
             Ok(b) => serde_json::from_slice(&b).context("offsets.json")?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e.into()),
@@ -69,25 +96,28 @@ impl Nodes {
         };
         for (name, url) in nodes {
             check_name(name)?;
+            let mark = marks.get(name);
             me.nodes.push(Node {
                 name: name.clone(),
                 url: url.trim_end_matches('/').to_owned(),
                 status: None,
                 last_ok: None,
                 error: None,
-                offset: offsets.get(name).copied().unwrap_or(0),
+                offset: mark.map_or(0, |m| m.offset),
+                journal_id: mark.map(|m| m.journal_id.clone()).unwrap_or_default(),
+                latest: VecDeque::new(),
             });
         }
         for i in 0..me.nodes.len() {
-            let path = me.journal_path(i);
-            let text = match std::fs::read_to_string(&path) {
-                Ok(t) => t,
+            let path = me.copy_path(i);
+            let f = match std::fs::File::open(&path) {
+                Ok(f) => f,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
             };
-            for l in text.lines() {
-                if let Ok(c) = serde_json::from_str::<Completion>(l) {
-                    if c.check().is_ok() {
+            for l in std::io::BufReader::new(f).lines() {
+                if let Ok(c) = serde_json::from_str::<Completion>(&l?) {
+                    if c.check().is_ok() && c.outcome == "done" {
                         me.add(i, c);
                     }
                 }
@@ -96,103 +126,151 @@ impl Nodes {
         Ok(me)
     }
 
-    fn journal_path(&self, i: usize) -> PathBuf {
+    fn copy_path(&self, i: usize) -> PathBuf {
         self.state_dir
             .join(format!("journal-{}.jsonl", self.nodes[i].name))
     }
 
-    /// Add a completion; false if it was here already.
-    fn add(&mut self, i: usize, c: Completion) -> bool {
-        let key = (
-            i,
-            c.doc_id.clone(),
-            c.finished_at.timestamp_nanos_opt().unwrap_or(0),
-        );
-        if !self.seen.insert(key) {
-            return false;
+    fn intern(&mut self, s: &str) -> u32 {
+        if let Some(i) = self.index.get(s) {
+            return *i;
         }
-        if c.outcome == "done" {
-            self.ocred.insert(c.doc_id.clone(), self.done.len());
-        }
-        self.done.push((i, c));
-        true
+        let i = self.names.len() as u32;
+        self.names.push(s.to_owned());
+        self.index.insert(s.to_owned(), i);
+        i
     }
 
-    /// Ask a node for its status and any journal past `offset`.
-    pub async fn poll(client: &reqwest::Client, url: &str, offset: u64) -> anyhow::Result<Polled> {
+    /// Count a page OCRed. Repeats (a journal copied twice) change nothing
+    /// but which node and engine it is under.
+    fn add(&mut self, i: usize, c: Completion) {
+        let o = Ocred {
+            node: i as u16,
+            language: self.intern(&c.language),
+            engine: self.intern(&c.engine),
+        };
+        self.ocred.insert(c.doc_id.as_str().into(), o);
+        let latest = &mut self.nodes[i].latest;
+        if !latest
+            .iter()
+            .any(|l| l.doc_id == c.doc_id && l.finished_at == c.finished_at)
+        {
+            latest.push_back(c);
+            if latest.len() > LATEST {
+                latest.pop_front();
+            }
+        }
+    }
+
+    /// Ask a node for its status and any journal past `offset`. A journal
+    /// with another id, or shorter than the offset, is read from the start.
+    pub async fn poll(
+        client: &reqwest::Client,
+        url: &str,
+        offset: u64,
+        journal_id: &str,
+    ) -> anyhow::Result<Polled> {
         let status: WorkerStatus =
             serde_json::from_slice(&get(client, &format!("{url}/status")).await?)
                 .context("the status isn't JSON")?;
         let mut offset = offset;
-        if status.journal_bytes < offset {
-            // A new journal: copy it from the start (repeats are dropped).
+        if status.journal_bytes < offset || status.journal_id != journal_id {
             offset = 0;
         }
-        let mut lines = Vec::new();
+        let mut done = Vec::new();
         if status.journal_bytes > offset {
             let body = get(client, &format!("{url}/journal?from={offset}")).await?;
             if let Some(end) = body.iter().rposition(|b| *b == b'\n') {
                 offset += end as u64 + 1;
                 for l in String::from_utf8_lossy(&body[..end]).lines() {
                     match serde_json::from_str::<Completion>(l) {
-                        Ok(c) if c.check().is_ok() => lines.push(c),
+                        Ok(c) if c.check().is_ok() => {
+                            if c.outcome == "done" {
+                                done.push(c);
+                            }
+                        }
                         _ => tracing::warn!(url, "a journal line that isn't a completion; skipped"),
                     }
                 }
             }
         }
         Ok(Polled {
+            journal_id: status.journal_id.clone(),
             status,
-            lines,
+            done,
             offset,
         })
     }
 
-    /// Apply a poll of node `i`: keep its status, copy its new lines.
+    /// Apply a poll of node `i`: keep its status, and copy its pages OCRed.
+    /// The offset moves only once they are on disk, so a failed write is
+    /// tried again at the next poll.
     pub fn apply(&mut self, i: usize, r: anyhow::Result<Polled>, now: DateTime<Utc>) {
-        match r {
-            Ok(p) => {
-                let mut new = Vec::new();
-                for c in p.lines {
-                    if self.add(i, c.clone()) {
-                        new.push(c);
-                    }
-                }
-                if let Err(e) = self.persist(i, &new, p.offset) {
-                    tracing::warn!(error = format!("{e:#}"), "can't save the copied journal");
+        let p = match r {
+            Ok(p) => p,
+            Err(e) => {
+                self.nodes[i].error = Some(format!("{e:#}"));
+                return;
+            }
+        };
+        match self.persist(i, &p) {
+            Ok(()) => {
+                for c in p.done {
+                    self.add(i, c);
                 }
                 let n = &mut self.nodes[i];
                 n.offset = p.offset;
-                n.status = Some(p.status);
-                n.last_ok = Some(now);
+                n.journal_id = p.journal_id;
                 n.error = None;
             }
-            Err(e) => self.nodes[i].error = Some(format!("{e:#}")),
+            Err(e) => {
+                tracing::warn!(error = format!("{e:#}"), "can't save the copied journal");
+                self.nodes[i].error = Some(format!("can't save its journal here: {e:#}"));
+            }
         }
+        let n = &mut self.nodes[i];
+        n.status = Some(p.status);
+        n.last_ok = Some(now);
     }
 
-    fn persist(&self, i: usize, new: &[Completion], offset: u64) -> anyhow::Result<()> {
-        if !new.is_empty() {
-            let mut f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.journal_path(i))?;
+    fn persist(&self, i: usize, p: &Polled) -> anyhow::Result<()> {
+        if !p.done.is_empty() {
             let mut buf = Vec::new();
-            for c in new {
+            for c in &p.done {
                 serde_json::to_writer(&mut buf, c)?;
                 buf.push(b'\n');
             }
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.copy_path(i))?;
             f.write_all(&buf)?;
+            f.sync_data()?;
         }
-        if self.nodes[i].offset != offset || !new.is_empty() {
-            let mut offsets: BTreeMap<&str, u64> = self
+        let n = &self.nodes[i];
+        if n.offset != p.offset || n.journal_id != p.journal_id {
+            let mut marks: BTreeMap<&str, Mark> = self
                 .nodes
                 .iter()
-                .map(|n| (n.name.as_str(), n.offset))
+                .map(|n| {
+                    (
+                        n.name.as_str(),
+                        Mark {
+                            offset: n.offset,
+                            journal_id: n.journal_id.clone(),
+                        },
+                    )
+                })
                 .collect();
-            offsets.insert(&self.nodes[i].name, offset);
+            marks.insert(
+                &n.name,
+                Mark {
+                    offset: p.offset,
+                    journal_id: p.journal_id.clone(),
+                },
+            );
             let tmp = self.state_dir.join("offsets.json.tmp");
-            std::fs::write(&tmp, serde_json::to_vec(&offsets)?)?;
+            std::fs::write(&tmp, serde_json::to_vec(&marks)?)?;
             std::fs::rename(&tmp, self.state_dir.join("offsets.json"))?;
         }
         Ok(())
@@ -235,7 +313,7 @@ mod tests {
         serde_json::to_string(&Completion {
             doc_id: doc.into(),
             language: "deu".into(),
-            engine: "tesseract 5.5.0 frak2021".into(),
+            engine: "tesseract/5.5.0 profile=frak2021".into(),
             queue: "ocr-bulk".into(),
             reason: "bulk".into(),
             outcome: outcome.into(),
@@ -248,8 +326,8 @@ mod tests {
             + "\n"
     }
 
-    /// A worker whose journal is whatever the test puts in it.
-    async fn fake_worker(journal: Arc<Mutex<String>>) -> String {
+    /// A worker whose journal (id, text) is whatever the test puts in it.
+    async fn fake_worker(journal: Arc<Mutex<(String, String)>>) -> String {
         let j1 = journal.clone();
         let app = Router::new()
             .route(
@@ -257,10 +335,11 @@ mod tests {
                 route(move || {
                     let j = j1.clone();
                     async move {
-                        let len = j.lock().unwrap().len() as u64;
+                        let j = j.lock().unwrap();
                         axum::Json(WorkerStatus {
                             node_id: "n1".into(),
-                            journal_bytes: len,
+                            journal_id: j.0.clone(),
+                            journal_bytes: j.1.len() as u64,
                             ..WorkerStatus::default()
                         })
                     }
@@ -270,7 +349,7 @@ mod tests {
                 "/journal",
                 route(move |Query(q): Query<HashMap<String, usize>>| {
                     let j = journal.clone();
-                    async move { j.lock().unwrap()[q["from"]..].to_owned() }
+                    async move { j.lock().unwrap().1[q["from"]..].to_owned() }
                 }),
             );
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -279,53 +358,87 @@ mod tests {
         format!("http://{addr}")
     }
 
+    async fn poll(n: &mut Nodes, client: &reqwest::Client, url: &str) {
+        let (o, id) = (n.nodes[0].offset, n.nodes[0].journal_id.clone());
+        let r = Nodes::poll(client, url, o, &id).await;
+        n.apply(0, r, Utc::now());
+    }
+
     #[tokio::test]
-    async fn copies_the_journal_once_and_keeps_it_over_a_restart() {
+    async fn copies_pages_ocred_once_and_keeps_them_over_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let journal = Arc::new(Mutex::new(String::new()));
+        let journal = Arc::new(Mutex::new(("j1".to_owned(), String::new())));
         let url = fake_worker(journal.clone()).await;
         let client = reqwest::Client::new();
         let nodes = [("node1".to_owned(), url.clone())];
         let mut n = Nodes::open(dir.path().to_owned(), &nodes).unwrap();
-        journal
-            .lock()
-            .unwrap()
-            .push_str(&line("sn1_1890-01-01_ed-1_seq-1", "done"));
-        journal
-            .lock()
-            .unwrap()
-            .push_str("{\"doc_id\":\"Seitentext hier\"}\n");
-        journal
-            .lock()
-            .unwrap()
-            .push_str(&line("sn1_1890-01-01_ed-1_seq-2", "failed"));
-        let r = Nodes::poll(&client, &url, n.nodes[0].offset).await;
-        n.apply(0, r, Utc::now());
-        assert_eq!(n.done.len(), 2);
+        {
+            let mut j = journal.lock().unwrap();
+            j.1.push_str(&line("sn1_1890-01-01_ed-1_seq-1", "done"));
+            j.1.push_str("{\"doc_id\":\"Seitentext hier\"}\n");
+            j.1.push_str(&line("sn1_1890-01-01_ed-1_seq-2", "failed"));
+        }
+        poll(&mut n, &client, &url).await;
         assert_eq!(n.ocred.len(), 1);
+        assert_eq!(n.nodes[0].latest.len(), 1);
         assert!(n.nodes[0].error.is_none());
+        let first = n.nodes[0].offset;
+        assert!(first > 0);
         // Nothing new: nothing added.
-        let r = Nodes::poll(&client, &url, n.nodes[0].offset).await;
-        n.apply(0, r, Utc::now());
-        assert_eq!(n.done.len(), 2);
-        // The worker starts a new journal with the same page in it: the
-        // dashboard reads it from the start and drops the repeat.
-        *journal.lock().unwrap() = line("sn1_1890-01-01_ed-1_seq-1", "done");
-        let r = Nodes::poll(&client, &url, n.nodes[0].offset).await;
-        n.apply(0, r, Utc::now());
-        assert_eq!(n.done.len(), 2);
-        // Reopened: the copy and the offset are back.
+        poll(&mut n, &client, &url).await;
+        assert_eq!(n.ocred.len(), 1);
+        // A new journal, as long as the old one, with a new page first: it
+        // is read from the start because its id changed.
+        {
+            let mut j = journal.lock().unwrap();
+            let mut text = line("sn1_1890-01-01_ed-1_seq-3", "done");
+            while text.len() < first as usize + 10 {
+                text.push_str(&line("sn1_1890-01-01_ed-1_seq-1", "done"));
+            }
+            *j = ("j2".to_owned(), text);
+        }
+        poll(&mut n, &client, &url).await;
+        assert_eq!(n.ocred.len(), 2);
+        assert_eq!(n.nodes[0].latest.len(), 2);
+        // Reopened: the copy, the offset and the id are back.
         let again = Nodes::open(dir.path().to_owned(), &nodes).unwrap();
-        assert_eq!(again.done.len(), 2);
+        assert_eq!(again.ocred.len(), 2);
         assert_eq!(again.nodes[0].offset, n.nodes[0].offset);
+        assert_eq!(again.nodes[0].journal_id, "j2");
+        let o = again.ocred["sn1_1890-01-01_ed-1_seq-3"];
+        assert_eq!(again.names[o.language as usize], "deu");
     }
 
     #[tokio::test]
-    async fn a_node_that_is_away_shows_its_error() {
+    async fn a_failed_save_leaves_the_offset_for_the_next_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Arc::new(Mutex::new((
+            "j1".to_owned(),
+            line("sn1_1890-01-01_ed-1_seq-1", "done"),
+        )));
+        let url = fake_worker(journal).await;
+        let client = reqwest::Client::new();
+        let state = dir.path().join("state");
+        let mut n = Nodes::open(state.clone(), &[("node1".to_owned(), url.clone())]).unwrap();
+        // The copy can't be written: a directory where its file goes.
+        std::fs::create_dir(state.join("journal-node1.jsonl")).unwrap();
+        poll(&mut n, &client, &url).await;
+        assert_eq!(n.nodes[0].offset, 0);
+        assert!(n.ocred.is_empty());
+        assert!(n.nodes[0].error.is_some());
+        assert!(n.nodes[0].status.is_some());
+        std::fs::remove_dir(state.join("journal-node1.jsonl")).unwrap();
+        poll(&mut n, &client, &url).await;
+        assert!(n.nodes[0].offset > 0);
+        assert_eq!(n.ocred.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_node_that_doesnt_answer_shows_its_error() {
         let dir = tempfile::tempdir().unwrap();
         let nodes = [("node2".to_owned(), "http://127.0.0.1:9".to_owned())];
         let mut n = Nodes::open(dir.path().to_owned(), &nodes).unwrap();
-        let r = Nodes::poll(&reqwest::Client::new(), "http://127.0.0.1:9", 0).await;
+        let r = Nodes::poll(&reqwest::Client::new(), "http://127.0.0.1:9", 0, "").await;
         n.apply(0, r, Utc::now());
         assert!(n.nodes[0].error.is_some());
         assert!(n.nodes[0].status.is_none());

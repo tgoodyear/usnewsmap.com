@@ -325,8 +325,20 @@ impl Fetch {
         {
             return;
         }
-        self.attempt = Some((key, now));
-        match Plan::load(&want) {
+        self.attempt = Some((key.clone(), now));
+        let loaded = Plan::load(&want).and_then(|p| {
+            // The file must be the one the fetcher read; one swapped in
+            // under the same path would mix two plans.
+            anyhow::ensure!(
+                key.1.is_empty() || p.sha256 == key.1,
+                "{}'s sha256 is {}, not the {} the fetcher's status names",
+                want.display(),
+                p.sha256,
+                key.1
+            );
+            Ok(p)
+        });
+        match loaded {
             Ok(p) => {
                 tracing::info!(manifest = %want.display(), keep = p.keep.len(), buffer = p.buffer_pages, "manifest read");
                 self.plan = Some(p);
@@ -552,5 +564,26 @@ mod tests {
             next,
             ["sn4_1890-01-01_ed-1_seq-2", "sn3_1890-01-01_ed-1_seq-1"]
         );
+    }
+
+    #[test]
+    fn refuses_a_manifest_that_isnt_the_one_the_fetcher_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("manifest.parquet");
+        let rows = vec![row("sn4_1890-01-01_ed-1_seq-1", "az_a", "ger")];
+        std::fs::write(&manifest, encode(&rows).unwrap()).unwrap();
+        std::fs::write(
+            dir.path().join("status-full.json"),
+            format!(
+                "{{\"state\":\"running\",\"manifest\":\"{}\",\"manifest_sha256\":\"{}\"}}",
+                manifest.display(),
+                "0".repeat(64)
+            ),
+        )
+        .unwrap();
+        let mut f = Fetch::new(dir.path().to_owned(), None);
+        f.poll(Utc::now());
+        assert!(f.plan.is_none());
+        assert!(f.plan_error.as_deref().unwrap().contains("sha256"));
     }
 }

@@ -68,18 +68,18 @@ impl App {
 
     /// Ask every node, at once.
     pub async fn poll_nodes(self: &Arc<Self>, client: &reqwest::Client) {
-        let targets: Vec<(usize, String, u64)> = {
+        let targets: Vec<(usize, String, u64, String)> = {
             let n = self.nodes.lock().expect("nodes lock");
             n.nodes
                 .iter()
                 .enumerate()
-                .map(|(i, n)| (i, n.url.clone(), n.offset))
+                .map(|(i, n)| (i, n.url.clone(), n.offset, n.journal_id.clone()))
                 .collect()
         };
         let mut set = tokio::task::JoinSet::new();
-        for (i, url, offset) in targets {
+        for (i, url, offset, id) in targets {
             let client = client.clone();
-            set.spawn(async move { (i, Nodes::poll(&client, &url, offset).await) });
+            set.spawn(async move { (i, Nodes::poll(&client, &url, offset, &id).await) });
         }
         while let Some(r) = set.join_next().await {
             if let Ok((i, r)) = r {
