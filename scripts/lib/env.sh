@@ -3,11 +3,24 @@
 # repository root as the working directory. Needs az signed in to the
 # environment's subscription for the stack functions, and a die() function.
 #
-# An environment's settings are KEY="value" lines (the layout azd used, so
-# older environments carry over) in one file: $USNM_SETTINGS_HOME/<env>/.env
-# (default ~/.config/usnewsmap/<env>/.env) when that directory exists, so
-# every checkout reads the same settings, otherwise the checkout's own
-# .azure/<env>/.env (#275).
+# An environment's settings live in three places (#295), and
+# infra/env/schema.json says which setting goes where:
+#
+# - public choices (flags, sizes, caps, schedules) in infra/env/<env>.json,
+#   committed, so a change to them goes through a pull request;
+# - private ones (addresses, principals, resource ids) in the environment's
+#   settings vault, a Key Vault the stack creates (its name is the local
+#   SETTINGS_KEYVAULT), which provision reads with the operator's sign-in
+#   (load_vault); until it exists, they stay in the local file;
+# - everything else in the local file: the stack's outputs, the
+#   subscription and tenant, and what the scripts keep (local in the
+#   schema). KEY="value" lines (the layout azd used, so older environments
+#   carry over) in $USNM_SETTINGS_HOME/<env>/.env (default
+#   ~/.config/usnewsmap/<env>/.env) when that directory exists, so every
+#   checkout reads the same file, otherwise the checkout's own
+#   .azure/<env>/.env (#275).
+#
+# A setting in the wrong place, or in two, stops provision (settings_check).
 #
 # The name becomes part of resource names (the registry allows only
 # lowercase letters and digits), the stack's name and the settings path.
@@ -47,11 +60,39 @@ fi
 valid_key() {
   [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "error: invalid setting name: $1" >&2; exit 2; }
 }
-# Read one setting (empty when unset).
+# The committed settings, infra/env/<env>.json (USNM_ENV_DIR replaces
+# infra/env in the tests). scripts/lib/env_settings.py checks the file
+# against the schema and prints SETTINGS_PUBLIC, SETTINGS_PRIVATE and
+# SETTINGS_LOCAL (the schema's settings by where they live) and
+# COMMITTED_SETTINGS (KEY="value" lines). A file that doesn't check out
+# stops every script up front, like a local file that doesn't parse.
+SETTINGS_DIR=${USNM_ENV_DIR:-infra/env}
+COMMITTED_FILE="$SETTINGS_DIR/$ENV_NAME.json"
+SETTINGS_PUBLIC="" SETTINGS_PRIVATE="" COMMITTED_SETTINGS=""
+load_committed() {
+  local out
+  out=$(python3 scripts/lib/env_settings.py --env "$ENV_NAME" --shell) ||
+    { echo "error: fix $COMMITTED_FILE (or $SETTINGS_DIR/schema.json) before running anything" >&2; return 1; }
+  eval "$out"
+}
+load_committed || exit 1
+# The settings vault's private settings as KEY="value" lines, once
+# load_vault has read them (VAULT_LOADED), and their names.
+VAULT_SETTINGS="" VAULT_KEYS="" VAULT_LOADED=false
+in_list() { [[ " $2 " == *" $1 "* ]]; }
+is_public() { in_list "$1" "$SETTINGS_PUBLIC"; }
+is_private() { in_list "$1" "$SETTINGS_PRIVATE"; }
+# A value quoted for a KEY="value" line, which is sourced.
+quote_value() {
+  local v=$1
+  v=${v//\\/\\\\}; v=${v//\"/\\\"}; v=${v//\$/\\\$}; v=${v//\`/\\\`}
+  printf '%s' "$v"
+}
+# One setting from the local file (empty when unset).
 # shellcheck source=/dev/null
 # Only the file counts: the caller's variable of the same name is cleared.
 # A settings file that can't be read or parsed fails the read.
-aget() {
+local_get() {
   valid_key "$1"
   (set +u; unset "$1"; set -a
    if [ -f "$ENV_FILE" ]; then
@@ -59,15 +100,78 @@ aget() {
    fi
    printf '%s\n' "${!1:-}")
 }
-# Write one setting, quoted so the file can be sourced.
+# The names the local file sets, one per line.
+local_keys() {
+  [ -f "$ENV_FILE" ] || return 0
+  { grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" || [ $? -eq 1 ]; } | tr -d =
+}
+# Whether the local file sets $1, even to "".
+local_has() { local_keys | grep -qx "$1"; }
+committed_get() {
+  (set +u; unset "$1"; eval "$COMMITTED_SETTINGS"; printf '%s\n' "${!1:-}")
+}
+# Read one setting (empty when unset), wherever it lives: a public one from
+# the committed file; a private one from the local file, else the vault (a
+# local entry wins, even "": teardown clears USNM_ARCHIVE_ACCOUNT that way);
+# anything else from the local file. A public setting still only in the
+# local file (an environment from before #295) is read from there with a
+# warning, so the scripts keep working until it moves; provision refuses.
+aget() {
+  valid_key "$1"
+  local v
+  if is_public "$1"; then
+    v=$(committed_get "$1")
+    if [ -z "$v" ] && local_has "$1"; then
+      v=$(local_get "$1") || return 1
+      [ -z "$v" ] ||
+        echo "warning: $1 is in $ENV_FILE; it belongs in $COMMITTED_FILE: scripts/settings.sh --env $ENV_NAME --migrate" >&2
+    fi
+    printf '%s\n' "$v"
+    return 0
+  fi
+  if is_private "$1" && ! local_has "$1"; then
+    if $VAULT_LOADED; then
+      (set +u; unset "$1"; eval "$VAULT_SETTINGS"; printf '%s\n' "${!1:-}")
+    else
+      vault_get "$1"
+    fi
+    return
+  fi
+  local_get "$1"
+}
+# One private setting from the settings vault, when load_vault hasn't read
+# them all (the scripts but provision): empty when there's no vault or no
+# such secret, a failure when the vault can't be read, so a script never
+# takes an unreadable setting for an unset one.
+vault_get() {
+  local vault out
+  vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  [ -n "$vault" ] || { echo; return 0; }
+  if ! out=$(az keyvault secret show --vault-name "$vault" --name "$(vault_secret_name "$1")" --query value -o tsv 2>&1); then
+    grep -q SecretNotFound <<< "$out" && { echo; return 0; }
+    echo "error: can't read $1 from the settings vault $vault: $out" >&2
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+# Write one setting: a public one to the committed file (and out of the
+# local one, where an environment from before #295 kept it), anything else
+# to the local file, quoted so it can be sourced. An empty value removes a
+# public setting, which then takes its default, as an empty one always has.
 aset() {
   valid_key "$1"
   # One setting, one line: the file is edited line by line.
   [[ $2 != *$'\n'* ]] || { echo "error: $1: values can't contain newlines" >&2; return 1; }
-  local v=$2 tmp
+  if is_public "$1"; then
+    python3 scripts/lib/env_settings.py --env "$ENV_NAME" --set "$1" --value "$2" || return 1
+    load_committed || return 1
+    local_del "$1"
+    return
+  fi
+  local v tmp
   mkdir -p "$(dirname "$ENV_FILE")"
   touch "$ENV_FILE"
-  v=${v//\\/\\\\}; v=${v//\"/\\\"}; v=${v//\$/\\\$}; v=${v//\`/\\\`}
+  v=$(quote_value "$2")
   tmp=$(mktemp)
   # grep's 1 means "no other lines"; anything above is a read error, and
   # writing the file back would lose every other setting.
@@ -76,15 +180,121 @@ aset() {
   printf '%s="%s"\n' "$1" "$v" >> "$tmp"
   mv "$tmp" "$ENV_FILE"
 }
-# Remove one setting.
+# Remove one setting: a public one from the committed file (and the local
+# one), anything else from the local file. A private setting in the vault
+# stays there: az keyvault secret delete removes it.
 adel() {
   valid_key "$1"
+  if is_public "$1"; then
+    python3 scripts/lib/env_settings.py --env "$ENV_NAME" --unset "$1" || return 1
+    load_committed || return 1
+  fi
+  local_del "$1"
+}
+local_del() {
   [ -f "$ENV_FILE" ] || return 0
   local tmp
   tmp=$(mktemp)
   grep -v "^$1=" "$ENV_FILE" > "$tmp" || [ $? -eq 1 ] ||
     { rm -f "$tmp"; echo "error: can't read $ENV_FILE" >&2; return 1; }
   mv "$tmp" "$ENV_FILE"
+}
+# A private setting's secret in the settings vault: Key Vault names allow
+# letters, digits and hyphens, so USNM_ALERT_EMAILS is USNM-ALERT-EMAILS.
+vault_secret_name() { printf '%s' "${1//_/-}"; }
+# Read the settings vault's secrets into VAULT_SETTINGS, with the
+# operator's sign-in (Key Vault Secrets User or Officer, which the stack
+# gives the account that deploys it). The vault's name is a stack output;
+# before the first provision that creates it, there's nothing to read. A
+# secret that isn't a private setting stops here, like an unknown key in a
+# committed file.
+load_vault() {
+  local vault names n key v lines=""
+  VAULT_SETTINGS="" VAULT_KEYS=""
+  vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  [ -n "$vault" ] || { VAULT_LOADED=true; return 0; }
+  names=$(az keyvault secret list --vault-name "$vault" --query "[].name" -o tsv) ||
+    { echo "error: can't list the secrets in $vault (it needs Key Vault Secrets User)" >&2; return 1; }
+  for n in $names; do
+    key=$(tr 'a-z-' 'A-Z_' <<< "$n")
+    is_private "$key" ||
+      { echo "error: $vault holds $n, which isn't a private setting (infra/env/schema.json)" >&2; return 1; }
+    v=$(az keyvault secret show --vault-name "$vault" --name "$n" --query value -o tsv) ||
+      { echo "error: can't read $n from $vault" >&2; return 1; }
+    [[ $v != *$'\n'* ]] || { echo "error: $vault's $n has more than one line" >&2; return 1; }
+    lines+="$key=\"$(quote_value "$v")\""$'\n'
+    VAULT_KEYS+=" $key"
+  done
+  VAULT_SETTINGS=$lines VAULT_LOADED=true
+}
+# Each setting in its place, before a deployment reads them: a public one
+# only in the committed file, a private one in the vault or the local file
+# but not both. A private one still in the local file once the vault exists
+# is a warning, with the commands that move it. load_vault first.
+settings_check() {
+  local k v errors="" moves=""
+  for k in $(local_keys); do
+    if is_public "$k"; then
+      errors+="  $k is in $ENV_FILE; public settings are committed, in $COMMITTED_FILE"$'\n'
+    elif is_private "$k" && [ -n "$(local_get "$k")" ]; then
+      if in_list "$k" "$VAULT_KEYS"; then
+        errors+="  $k is in both $ENV_FILE and the settings vault; keep one: scripts/settings.sh --env $ENV_NAME --key $k --unset (the local one)"$'\n'
+      elif [ -n "$(local_get SETTINGS_KEYVAULT)" ]; then
+        moves+="  az keyvault secret set --vault-name $(local_get SETTINGS_KEYVAULT) --name $(vault_secret_name "$k") --value \"\$(scripts/settings.sh --env $ENV_NAME --key $k)\" -o none && scripts/settings.sh --env $ENV_NAME --key $k --unset"$'\n'
+      fi
+    fi
+  done
+  if [ -n "$moves" ]; then
+    printf 'warning: private settings still in %s; move them to the settings vault:\n%s' "$ENV_FILE" "$moves" >&2
+  fi
+  [ -n "$errors" ] || return 0
+  printf 'error: settings in the wrong place:\n%s' "$errors" >&2
+  echo "scripts/settings.sh --env $ENV_NAME --migrate moves the public ones into $COMMITTED_FILE, to commit" >&2
+  return 1
+}
+# Move an environment from before #295 over: every public setting in the
+# local file into the committed file, unless the committed file already
+# has another value (then nothing moves). Private settings stay local until
+# the vault exists; provision's warning then says how to move them.
+migrate_settings() {
+  local k v c conflicts="" moved=0
+  for k in $(local_keys); do
+    is_public "$k" || continue
+    v=$(local_get "$k") || return 1
+    c=$(committed_get "$k")
+    if [ -n "$v" ] && [ -n "$c" ] && [ "$v" != "$c" ]; then
+      conflicts+="  $k: $COMMITTED_FILE has \"$c\", $ENV_FILE \"$v\""$'\n'
+    fi
+  done
+  if [ -n "$conflicts" ]; then
+    printf 'error: these differ; settle each in one place first (scripts/settings.sh --env %s --key K --value V):\n%s' "$ENV_NAME" "$conflicts" >&2
+    return 1
+  fi
+  for k in $(local_keys); do
+    is_public "$k" || continue
+    v=$(local_get "$k") || return 1
+    c=$(committed_get "$k")
+    if [ -n "$v" ] && [ -z "$c" ]; then
+      python3 scripts/lib/env_settings.py --env "$ENV_NAME" --set "$k" --value "$v" || return 1
+      load_committed || return 1
+    fi
+    local_del "$k" || return 1
+    moved=$((moved + 1))
+  done
+  echo "moved $moved public settings from $ENV_FILE to $COMMITTED_FILE"
+  for k in $(local_keys); do
+    is_private "$k" && echo "private, stays in $ENV_FILE until the settings vault exists: $k"
+  done
+  return 0
+}
+# Whether the committed file (and the schema) match the checkout's commit:
+# scripts/provision.sh deploys only committed settings, unless --allow-dirty.
+committed_clean() {
+  local dir out
+  dir=$(dirname "$COMMITTED_FILE")
+  out=$(git -C "$dir" status --porcelain -- "$(basename "$COMMITTED_FILE")" schema.json 2>&1) ||
+    { echo "error: can't check $COMMITTED_FILE with git: $out" >&2; return 2; }
+  [ -z "$out" ] || { printf '%s\n' "$out" >&2; return 1; }
 }
 
 # One deployment stack per environment, at subscription scope (it holds the
@@ -160,23 +370,25 @@ ocr_nodes_off_check() {
   echo "offboard those nodes first (scripts/ocr-node/offboard.sh), or turn USNM_OCR_NODES back on" >&2
   return 1
 }
-# The OCR nodes' Key Vault (usnmocrkv<env><suffix>, ADR-0017) is deleted by
-# the stack when USNM_OCR_NODES goes off, and a deleted vault stays
-# soft-deleted, holding its name, for its retention (7 days outside prod).
-# Turning the nodes back on then fails on the reserved name, so recover a
-# soft-deleted vault of this environment first; the stack takes it back over
-# with its secrets. Prod's has purge protection and is recovered the same way.
-ocr_vault_recover() {
-  local nodes rg out v
+# A deleted Key Vault stays soft-deleted, holding its name, for its
+# retention (7 days outside prod), and the stack can't create one under a
+# reserved name, so recover a soft-deleted vault of this environment first;
+# the stack takes it back over with its secrets. The OCR nodes' vault
+# (usnmocrkv<env><suffix>, ADR-0017) goes when USNM_OCR_NODES goes off, so
+# it's recovered when they're on; the settings vault
+# (usnmcorekv<env><suffix>, #295) always, as the stack always has one.
+# Prod's have purge protection and are recovered the same way.
+vaults_recover() {
+  local nodes rg out v want="starts_with(name, 'usnmcorekv')"
   nodes=$(aget USNM_OCR_NODES) || return 1
-  [ "$nodes" = true ] || return 0
+  [ "$nodes" != true ] || want="($want || starts_with(name, 'usnmocrkv'))"
   rg=$(aget AZURE_RESOURCE_GROUP) || return 1
   [ -n "$rg" ] || return 0
   # Only a vault deleted from this environment's own group: the name prefix
   # alone could match another environment's vault (the suffix comes from the
   # full environment name), so the original vault id must name this group.
   out=$(az keyvault list-deleted --resource-type vault \
-    --query "[?starts_with(name, 'usnmocrkv') && contains(to_lower(properties.vaultId), to_lower('/resourceGroups/$rg/providers/'))].name" \
+    --query "[?$want && contains(to_lower(properties.vaultId), to_lower('/resourceGroups/$rg/providers/'))].name" \
     -o tsv 2>&1) ||
     { echo "error: can't list deleted Key Vaults: $out" >&2; return 1; }
   [ -n "$out" ] || return 0
@@ -226,9 +438,11 @@ deploy_env_guardrails() {
   deploy_guardrails "$location" "$emails" "$dev_location"
 }
 provision() {
+  load_vault || die "not provisioning $ENV_NAME"
+  settings_check || die "not provisioning $ENV_NAME"
   experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
-  ocr_vault_recover || die "not provisioning $ENV_NAME"
+  vaults_recover || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
     deploy_env_guardrails && deploy_stack && save_outputs && return 0
     [ "$attempt" = 3 ] && die "provisioning failed three times"

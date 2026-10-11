@@ -415,6 +415,28 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
 var ocrVaultName = 'usnmocrkv${take(env, 9)}${suffix}'
 var ocrVaultId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.KeyVault/vaults', ocrVaultName)
 
+// The settings vault (#295, ADR-0006): the environment's private settings,
+// which scripts/provision.sh reads with the operator's sign-in. A public
+// endpoint without a firewall, Entra ID only, so the public-network policy
+// exempts it by resource id, and its assignment goes first. Compact name
+// (ADR-0017): usnmcorekv{env}{sfx}, the environment name cut to 8
+// characters so the name stays within 24.
+var settingsVaultName = 'usnmcorekv${take(env, 8)}${suffix}'
+var settingsVaultId = resourceId(subscription().subscriptionId, rg.name, 'Microsoft.KeyVault/vaults', settingsVaultName)
+
+module settingsVault 'modules/settings-vault.bicep' = {
+  scope: rg
+  name: 'settings-vault'
+  dependsOn: [policies]
+  params: {
+    location: location
+    tags: tags
+    name: settingsVaultName
+    purgeProtection: env == 'prod'
+    ciPrincipalId: registry.outputs.ciPrincipalId
+  }
+}
+
 module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {
   scope: rg
   name: 'ocr-vault'
@@ -544,6 +566,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     ocrNodeWorkspaceName: ocrNodes ? ocrNodeMonitoring!.outputs.workspaceName : ''
     ocrNodeDcrName: ocrNodes ? ocrNodeMonitoring!.outputs.ruleName : ''
     ocrVaultName: ocrNodes ? ocrVault!.outputs.name : ''
+    settingsVaultName: settingsVault.outputs.name
   }
 }
 
@@ -832,7 +855,9 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
       // Deny and the exemption arrive together, in the same assignment update.
       '${guardrailPolicyNames.auditPublicAccess}': {
         effect: { value: 'deny' }
-        publicAccountIds: { value: ocrNodes ? [tilesId, exchangeId, ocrVaultId] : [tilesId] }
+        publicAccountIds: {
+          value: ocrNodes ? [tilesId, settingsVaultId, exchangeId, ocrVaultId] : [tilesId, settingsVaultId]
+        }
       }
     }
   }
@@ -914,6 +939,8 @@ output SEARCH_COMPARE_URLS string = searchClusterOn ? join(searchClusterModule!.
 output OCR_EXCHANGE_ACCOUNT string = ocrNodes ? ocrExchange!.outputs.name : ''
 output OCR_QUEUE_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
 output OCR_BLOB_ENDPOINT string = ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+// The settings vault: scripts/provision.sh reads the private settings from it.
+output SETTINGS_KEYVAULT string = settingsVault.outputs.name
 // The OCR nodes' Key Vault: onboard.sh reads the Red Hat secrets from it.
 output OCR_KEYVAULT string = ocrNodes ? ocrVault!.outputs.name : ''
 // The nodes' data collection rule; onboard.sh associates each node with it.

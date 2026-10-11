@@ -9,7 +9,13 @@ STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
 STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
 message). For a job execution (scripts/titles-seed.sh through
 scripts/start-job.sh): STUB_EXECUTION (the started execution's name) and
-STUB_EXEC_STATUS (its status). It logs each call to STUB_LOG."""
+STUB_EXEC_STATUS (its status). For the settings vault (#295): STUB_SECRETS
+(the secrets' names, one per line) and STUB_SECRET_<NAME> (a secret's value,
+its hyphens as underscores). It logs each call to STUB_LOG.
+
+The committed settings (infra/env/<env>.json) are read from a directory of
+each test's own (USNM_ENV_DIR, a git repository holding a copy of the
+schema), never the checkout's."""
 
 import json
 import os
@@ -33,6 +39,14 @@ case "$1 $2" in
       *"keys(parameters"*) printf '%s\n' "${STUB_PARAMS:-}" ;;
       *) if [ -n "${STUB_STACK:-}" ]; then echo "$STUB_STACK"
          else echo "ERROR: DeploymentStackNotFound: usnm-dev could not be found." >&2; exit 3; fi ;;
+    esac ;;
+  "keyvault secret")
+    case "$3" in
+      list) [ -z "${STUB_SECRETS:-}" ] || printf '%b\n' "$STUB_SECRETS" ;;
+      show) n=$(sed 's/.*--name \([^ ]*\).*/\1/' <<< "$*"); v="STUB_SECRET_${n//-/_}"
+        if [ -n "${!v+x}" ]; then printf '%s\n' "${!v}"
+        else echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault." >&2; exit 3; fi ;;
+      *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
   "group show")
@@ -71,16 +85,46 @@ class Stubbed(unittest.TestCase):
         self.settings = os.path.join(self.tmp, "settings")
         os.makedirs(os.path.join(self.settings, "dev"))
         self.log = os.path.join(self.tmp, "az.log")
+        # The committed settings: a repository of the test's own.
+        self.env_dir = os.path.join(self.tmp, "env")
+        os.mkdir(self.env_dir)
+        shutil.copy(os.path.join(ROOT, "infra", "env", "schema.json"), self.env_dir)
         self.env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp,
-                    "USNM_SETTINGS_HOME": self.settings, "STUB_LOG": self.log}
+                    "USNM_SETTINGS_HOME": self.settings, "STUB_LOG": self.log,
+                    "USNM_ENV_DIR": self.env_dir,
+                    "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        self.git("init", "-q")
+        self.git("add", "schema.json")
+        self.git("commit", "-q", "-m", "schema")
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.env_dir, "-c", "user.name=t", "-c", "user.email=t@example.org",
+                        *args], check=True, env=self.env, capture_output=True)
 
     def settings_file(self, text, env="dev"):
         os.makedirs(os.path.join(self.settings, env), exist_ok=True)
         with open(os.path.join(self.settings, env, ".env"), "w") as f:
             f.write(text)
+
+    def local_text(self, env="dev"):
+        with open(os.path.join(self.settings, env, ".env")) as f:
+            return f.read()
+
+    def committed(self, data, env="dev", commit=True):
+        """Writes infra/env/<env>.json (and commits it)."""
+        data = dict(sorted({"$schema": "./schema.json", **data}.items()))
+        with open(os.path.join(self.env_dir, f"{env}.json"), "w") as f:
+            f.write(json.dumps(data, indent=2) + "\n")
+        if commit:
+            self.git("add", f"{env}.json")
+            self.git("commit", "-q", "-m", env)
+
+    def committed_data(self, env="dev"):
+        with open(os.path.join(self.env_dir, f"{env}.json")) as f:
+            return json.load(f)
 
     def lib(self, script, env_name="dev", **extra):
         """Runs `script` with scripts/lib/env.sh sourced, as the scripts do."""
@@ -325,6 +369,302 @@ class TitlesSeed(Stubbed):
         r = subprocess.run([os.path.join(HERE, "titles-seed.sh"), "dev"], cwd=ROOT, env=self.env,
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
+
+
+class CommittedSettings(Stubbed):
+    """infra/env/<env>.json, the vault and the local file (#295)."""
+
+    VAULT = {"SETTINGS_KEYVAULT": "usnmcorekvdevabc123"}
+
+    def local(self, **values):
+        self.settings_file("".join(f'{k}="{v}"\n' for k, v in values.items()))
+
+    def test_a_public_setting_is_read_from_the_committed_file(self):
+        self.committed({"USNM_JA_LATIN": True, "USNM_INGEST_SCRATCH_GIB": 64})
+        r = self.lib("aget USNM_JA_LATIN; aget USNM_INGEST_SCRATCH_GIB; aget USNM_OCR")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["true", "64", ""])
+
+    def test_a_public_setting_is_written_to_the_committed_file(self):
+        self.local(USNM_SEARCH_BACKEND="fixtures", API_URL="https://api.example.org")
+        r = self.lib("aset USNM_SEARCH_BACKEND quickwit; aset USNM_JA_LATIN true; aset USNM_SPLIT_DOCS 120000")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.committed_data(), {"$schema": "./schema.json", "USNM_JA_LATIN": True,
+                                                 "USNM_SEARCH_BACKEND": "quickwit", "USNM_SPLIT_DOCS": 120000})
+        # Out of the local file, where it no longer counts; outputs stay.
+        self.assertEqual(self.local_text(), 'API_URL="https://api.example.org"\n')
+        # Sorted, in the canonical format.
+        r = subprocess.run(["python3", os.path.join(HERE, "lib", "env_settings.py"), "--check"],
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_empty_value_unsets_a_public_setting(self):
+        self.committed({"USNM_API_IMAGE": "cr/usnewsmap-api:1"})
+        r = self.lib("aset USNM_API_IMAGE ''; aset USNM_OCR true; adel USNM_OCR")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.committed_data(), {"$schema": "./schema.json"})
+
+    def test_a_value_of_the_wrong_type_is_refused(self):
+        r = self.lib("aset USNM_JA_LATIN yes")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("true or false", r.stderr)
+        r = self.lib("aset USNM_SPLIT_DOCS 12k")
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_private_and_local_settings_stay_local(self):
+        r = self.lib("aset USNM_ALERT_EMAILS ops@example.org; aset USNM_EXPERIMENT 295; aset API_URL x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.env_dir, "dev.json")))
+        self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
+
+    def test_an_old_local_public_setting_is_read_with_a_warning(self):
+        self.local(USNM_OCR="true")
+        r = self.lib("aget USNM_OCR")
+        self.assertEqual(r.stdout.strip(), "true")
+        self.assertIn("--migrate", r.stderr)
+
+    def test_a_committed_file_that_doesnt_check_out_stops_everything(self):
+        with open(os.path.join(self.env_dir, "dev.json"), "w") as f:
+            f.write('{\n  "USNM_ALERT_EMAILS": "ops@example.org"\n}\n')
+        r = self.lib("echo ran")
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("ran", r.stdout)
+        self.assertIn("private", r.stderr)
+
+    def test_private_settings_come_from_the_vault(self):
+        self.local(**self.VAULT)
+        r = self.lib("load_vault; aget USNM_ALERT_EMAILS; aget USNM_OCR_USERS",
+                     STUB_SECRETS="USNM-ALERT-EMAILS\\nusnm-ocr-users",
+                     STUB_SECRET_USNM_ALERT_EMAILS='ops@example.org', STUB_SECRET_usnm_ocr_users='a"b$c')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["ops@example.org", 'a"b$c'])
+        self.assertTrue(any(c.startswith("keyvault secret list --vault-name usnmcorekvdevabc123") for c in self.calls()))
+
+    def test_other_scripts_read_one_secret(self):
+        # Without load_vault (onboard.sh, group.sh, ...): one secret, by name.
+        self.local(**self.VAULT)
+        r = self.lib("aget USNM_OCR_NODE_GROUP; aget USNM_OCR_USERS",
+                     STUB_SECRET_USNM_OCR_NODE_GROUP="group-1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["group-1", ""])
+        self.assertFalse(any(c.startswith("keyvault secret list") for c in self.calls()))
+
+    def test_an_unreadable_vault_fails_the_read(self):
+        self.local(SETTINGS_KEYVAULT="usnm-no-such")
+        with open(os.path.join(self.tmp, "bin", "az"), "w") as f:
+            f.write('#!/usr/bin/env bash\necho "ERROR: (Forbidden) not allowed" >&2\nexit 1\n')
+        r = self.lib("aget USNM_OCR_NODE_GROUP")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't read USNM_OCR_NODE_GROUP", r.stderr)
+
+    def test_no_vault_yet_reads_nothing(self):
+        r = self.lib("load_vault; aget USNM_ALERT_EMAILS")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_a_vault_secret_that_isnt_a_private_setting_stops(self):
+        self.local(**self.VAULT)
+        for name in ("USNM-JA-LATIN", "rhel-activation-key"):
+            r = self.lib("load_vault", STUB_SECRETS=name)
+            self.assertEqual(r.returncode, 1, name)
+            self.assertIn("isn't a private setting", r.stderr)
+
+    def test_a_local_entry_shadows_the_vault(self):
+        # teardown.sh clears USNM_ARCHIVE_ACCOUNT for its provision.
+        self.local(**self.VAULT, USNM_ARCHIVE_ACCOUNT="")
+        r = self.lib("load_vault; settings_check; aget USNM_ARCHIVE_ACCOUNT",
+                     STUB_SECRETS="USNM-ARCHIVE-ACCOUNT", STUB_SECRET_USNM_ARCHIVE_ACCOUNT="/subscriptions/x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "")
+
+    def test_a_private_setting_in_two_places_stops(self):
+        self.local(**self.VAULT, USNM_ALERT_EMAILS="old@example.org")
+        r = self.lib("load_vault; settings_check",
+                     STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("USNM_ALERT_EMAILS is in both", r.stderr)
+        self.assertNotIn("ops@example.org", r.stderr)
+
+    def test_a_private_setting_still_local_is_a_warning_with_the_move(self):
+        self.local(**self.VAULT, USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib("load_vault; settings_check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("az keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS", r.stderr)
+        # The command reads the value; it isn't printed.
+        self.assertNotIn("ops@example.org", r.stderr)
+
+    def test_a_public_setting_in_the_local_file_stops(self):
+        self.local(USNM_JA_LATIN="true", API_URL="x")
+        r = self.lib("settings_check")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("USNM_JA_LATIN is in", r.stderr)
+        self.assertIn("--migrate", r.stderr)
+
+    def test_provision_checks_before_anything_else(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\nUSNM_JA_LATIN="true"\n', env="prod")
+        r = self.lib("provision", env_name="prod")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not provisioning prod", r.stderr)
+        self.assertFalse(os.path.exists(self.log) and any(c.startswith("stack") for c in self.calls()))
+
+    def test_migrate_moves_the_public_settings(self):
+        self.local(USNM_JA_LATIN="true", USNM_INGEST_SCRATCH_GIB="64", USNM_API_IMAGE="",
+                   USNM_ALERT_EMAILS="ops@example.org", API_URL="x")
+        self.committed({"USNM_INGEST_SCRATCH_GIB": 64})
+        r = self.lib("migrate_settings; settings_check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.committed_data(), {"$schema": "./schema.json", "USNM_INGEST_SCRATCH_GIB": 64,
+                                                 "USNM_JA_LATIN": True})
+        self.assertEqual(self.local_text(), 'USNM_ALERT_EMAILS="ops@example.org"\nAPI_URL="x"\n')
+        self.assertIn("private, stays", r.stdout)
+
+    def test_migrate_stops_on_a_conflict(self):
+        self.local(USNM_JA_LATIN="true", USNM_OCR="true")
+        self.committed({"USNM_JA_LATIN": False})
+        r = self.lib("migrate_settings")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("USNM_JA_LATIN", r.stderr)
+        # Nothing moved.
+        self.assertEqual(self.committed_data(), {"$schema": "./schema.json", "USNM_JA_LATIN": False})
+        self.assertIn('USNM_OCR="true"', self.local_text())
+
+
+class SettingsScript(Stubbed):
+    def run_settings(self, *args, **extra):
+        return subprocess.run([os.path.join(HERE, "settings.sh"), *args], cwd=ROOT,
+                              env={**self.env, **extra}, capture_output=True, text=True)
+
+    def test_a_public_setting_goes_in_the_committed_file(self):
+        r = self.run_settings("--env", "dev", "--key", "USNM_JA_LATIN", "--value", "true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.committed_data()["USNM_JA_LATIN"], True)
+        self.assertIn("pull request", r.stdout)
+        r = self.run_settings("--env", "dev", "--key", "USNM_JA_LATIN")
+        self.assertEqual(r.stdout, "true\n")
+        r = self.run_settings("--env", "dev", "--key", "USNM_JA_LATIN", "--unset")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("USNM_JA_LATIN", self.committed_data())
+
+    def test_a_private_setting_with_a_vault_says_how(self):
+        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("az keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS", r.stderr)
+        self.assertNotIn("USNM_ALERT_EMAILS", self.local_text())
+
+    def test_a_private_setting_is_read_from_the_vault(self):
+        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS",
+                          STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "ops@example.org\n")
+
+    def test_a_private_setting_without_a_vault_stays_local(self):
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
+
+    def test_migrate(self):
+        self.settings_file('USNM_OCR="true"\n')
+        r = self.run_settings("--env", "dev", "--migrate")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.committed_data()["USNM_OCR"], True)
+        self.assertIn("moved 1", r.stdout)
+
+    def test_migrate_takes_only_the_environment(self):
+        r = self.run_settings("--env", "dev", "--migrate", "--key", "USNM_OCR")
+        self.assertEqual(r.returncode, 2)
+
+
+class ProvisionScript(Stubbed):
+    def provision(self, *args):
+        return subprocess.run([os.path.join(HERE, "provision.sh"), "--env", "dev", *args], cwd=ROOT,
+                              env=self.env, capture_output=True, text=True)
+
+    def test_uncommitted_settings_are_refused(self):
+        self.committed({"USNM_OCR": True}, commit=False)
+        r = self.provision()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("uncommitted changes", r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_allow_dirty_deploys_them(self):
+        self.committed({"USNM_OCR": True}, commit=False)
+        r = self.provision("--allow-dirty")
+        # Past the check: the stub az then fails the version check.
+        self.assertNotIn("uncommitted", r.stderr)
+        self.assertTrue(os.path.exists(self.log))
+
+    def test_committed_settings_pass(self):
+        self.committed({"USNM_OCR": True})
+        r = self.provision()
+        self.assertNotIn("uncommitted", r.stderr)
+
+
+class CheckCommitted(unittest.TestCase):
+    """scripts/lib/env_settings.py --check, on a directory of its own."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        shutil.copy(os.path.join(ROOT, "infra", "env", "schema.json"), self.dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def check(self, text, name="prod.json"):
+        with open(os.path.join(self.dir, name), "w") as f:
+            f.write(text)
+        return subprocess.run(["python3", os.path.join(HERE, "lib", "env_settings.py"), "--check"],
+                              env={**os.environ, "USNM_ENV_DIR": self.dir}, capture_output=True, text=True)
+
+    def test_the_checkouts_files(self):
+        r = subprocess.run(["python3", os.path.join(HERE, "lib", "env_settings.py"), "--check"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_valid_file(self):
+        r = self.check('{\n  "$schema": "./schema.json",\n  "USNM_JA_LATIN": true,\n  "USNM_SEARCH_BACKEND": "quickwit"\n}\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_private_setting_fails(self):
+        r = self.check('{\n  "USNM_OCR_NODE_IPS": "203.0.113.7"\n}\n')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("private", r.stderr)
+
+    def test_a_local_setting_fails(self):
+        r = self.check('{\n  "AZURE_LOCATION": "eastus2"\n}\n')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("local", r.stderr)
+
+    def test_an_unknown_setting_fails(self):
+        r = self.check('{\n  "USNM_NO_SUCH": true\n}\n')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("isn't a setting", r.stderr)
+
+    def test_the_wrong_type_fails(self):
+        for text in ('{\n  "USNM_JA_LATIN": "true"\n}\n', '{\n  "USNM_SPLIT_DOCS": true\n}\n'):
+            r = self.check(text)
+            self.assertEqual(r.returncode, 1, text)
+
+    def test_unsorted_keys_fail(self):
+        r = self.check('{\n  "USNM_OCR": true,\n  "USNM_JA_LATIN": true\n}\n')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("sorted", r.stderr)
+
+    def test_another_format_fails(self):
+        r = self.check('{"USNM_OCR": true}\n')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("canonical", r.stderr)
+
+    def test_a_setting_missing_from_the_schema_fails(self):
+        with open(os.path.join(self.dir, "schema.json")) as f:
+            schema = json.load(f)
+        del schema["properties"]["USNM_JA_LATIN"]
+        with open(os.path.join(self.dir, "schema.json"), "w") as f:
+            json.dump(schema, f)
+        r = self.check("{}\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("reads USNM_JA_LATIN", r.stderr)
 
 
 if __name__ == "__main__":
