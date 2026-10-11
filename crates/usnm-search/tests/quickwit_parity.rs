@@ -13,6 +13,7 @@ use chrono::NaiveDate;
 use usnm_core::params::Filters;
 use usnm_core::query::{parse, parse_with, Mode, Node, QueryError};
 use usnm_core::text::Analyzer;
+use usnm_core::text_layout::TextLayout;
 use usnm_core::time::{BucketSpec, BucketUnit};
 use usnm_search::memory::MemoryBackend;
 use usnm_search::quickwit::QuickwitBackend;
@@ -25,6 +26,9 @@ const INDEXES: [&str; 2] = ["pages-base-fixture", "pages-delta-fixture-1"];
 /// (`Analyzer::V1`), as the indexes built before #168 have them; the ones
 /// above have the latest (`scripts/quickwit-fixtures.sh`).
 const INDEXES_V1: [&str; 2] = ["pages-base-fixture-cg1", "pages-delta-fixture-1-cg1"];
+/// The same pages with one searched field for both texts (05 §5.5.7,
+/// #283): `text_all` and `text_all_cg`, `text` and `text_as` stored only.
+const INDEXES_SINGLE: [&str; 2] = ["pages-base-fixture-single", "pages-delta-fixture-1-single"];
 /// The Japanese pages (#139), searched on their own.
 const JA_INDEX: &str = "pages-ja-fixture";
 /// The Congress pages (#229), their own index set too.
@@ -43,10 +47,12 @@ fn memory() -> MemoryBackend {
     let files = INDEXES
         .iter()
         .chain(&INDEXES)
+        .chain(&INDEXES)
         .chain([&JA_INDEX, &CONGRESS_INDEX]);
     let ids = INDEXES
         .iter()
         .chain(&INDEXES_V1)
+        .chain(&INDEXES_SINGLE)
         .chain([&JA_INDEX, &CONGRESS_INDEX]);
     for (file, id) in files.zip(ids) {
         let file = std::fs::File::open(dir.join(format!("{file}.jsonl"))).expect("fixture");
@@ -171,8 +177,8 @@ async fn version_1_queries_match_the_reference_backend() {
         "b㊁",
     ] {
         let node = parse_with(q, v1).unwrap();
-        let want = sorted(mem.summary(&set, &node, &f, &spec).await.unwrap());
-        let got = sorted(qw.summary(&set, &node, &f, &spec).await.expect(q));
+        let want = mem.summary(&set, &node, &f, &spec).await.unwrap();
+        let got = qw.summary(&set, &node, &f, &spec).await.expect(q);
         assert_eq!(got, want, "summary: {q}");
         found += usize::from(want.total_hits > 0);
         let page = HitsQuery {
@@ -200,6 +206,22 @@ fn sets() -> Vec<(&'static str, IndexSet)> {
     let loc = IndexSet::new(INDEXES.iter().map(|s| (*s).to_owned()).collect());
     let both = loc.clone().with_american_stories(true);
     vec![("loc", loc), ("both texts", both)]
+}
+
+/// Both texts in one searched field (05 §5.5.7), as the API searches a
+/// version with `text_layout` 2.
+fn single() -> IndexSet {
+    IndexSet::new(INDEXES_SINGLE.iter().map(|s| (*s).to_owned()).collect())
+        .with_american_stories(true)
+        .with_text_layout(TextLayout::Single)
+}
+
+/// [`sets`] and the same pages with one field for both texts: every check
+/// runs on both layouts.
+fn searched_sets() -> Vec<(&'static str, IndexSet)> {
+    let mut out = sets();
+    out.push(("one field", single()));
+    out
 }
 
 fn filter_cases() -> Vec<(&'static str, Filters)> {
@@ -237,11 +259,6 @@ fn specs(f: &Filters) -> Vec<BucketSpec> {
     out
 }
 
-fn sorted(mut s: Summary) -> Summary {
-    s.places.sort_by(|a, b| a.place_id.cmp(&b.place_id));
-    s
-}
-
 fn sorted_cells(mut c: Vec<CubeCell>) -> Vec<CubeCell> {
     c.sort_by(|a, b| (&a.place_id, a.bucket).cmp(&(&b.place_id, b.bucket)));
     c
@@ -255,7 +272,7 @@ async fn summaries_and_cubes_match_the_reference_backend() {
     };
     let mem = memory();
     let mut checked = 0;
-    for ((sname, set), (qname, q)) in sets()
+    for ((sname, set), (qname, q)) in searched_sets()
         .into_iter()
         .flat_map(|s| queries().into_iter().map(move |q| (s.clone(), q)))
     {
@@ -267,8 +284,8 @@ async fn summaries_and_cubes_match_the_reference_backend() {
                 f.from = spec.from;
                 f.to = spec.to;
                 let ctx = format!("{sname} / {qname} / {fname} / {:?}", spec.unit);
-                let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
-                let got = sorted(qw.summary(set, &q, &f, &spec).await.expect(&ctx));
+                let want = mem.summary(set, &q, &f, &spec).await.unwrap();
+                let got = qw.summary(set, &q, &f, &spec).await.expect(&ctx);
                 assert_eq!(got, want, "summary: {ctx}");
 
                 let all: Vec<u8> = (0..8).collect();
@@ -434,7 +451,7 @@ async fn hits_pages_match_the_reference_backend() {
     let mem = memory();
     let f = filters("1895-01-01", "1897-12-31");
     let mut from_american_stories = 0;
-    for ((sname, set), (qname, q)) in sets()
+    for ((sname, set), (qname, q)) in searched_sets()
         .into_iter()
         .flat_map(|s| queries().into_iter().map(move |q| (s.clone(), q)))
     {
@@ -543,7 +560,7 @@ async fn relevant_hits_list_the_same_pages() {
     };
     let mem = memory();
     let f = filters("1895-01-01", "1897-12-31");
-    for ((sname, set), (qname, q)) in sets()
+    for ((sname, set), (qname, q)) in searched_sets()
         .into_iter()
         .flat_map(|s| queries().into_iter().map(move |q| (s.clone(), q)))
     {
@@ -594,7 +611,7 @@ async fn fuzzy_terms_match_the_reference_backend_or_are_refused() {
                     "fuzzy query ran but capability is off"
                 );
                 let want = mem.summary(&set, &node, &f, &spec).await.unwrap();
-                assert_eq!(sorted(got), sorted(want), "fuzzy {q}~{fuzzy}");
+                assert_eq!(got, want, "fuzzy {q}~{fuzzy}");
             }
             Err(SearchError::Unsupported(_)) => assert!(!qw.capabilities().fuzzy),
             Err(e) => panic!("fuzzy {q}~{fuzzy}: {e}"),
@@ -662,8 +679,8 @@ async fn japanese_searches_match_the_reference_backend() {
                 f.from = spec.from;
                 f.to = spec.to;
                 let ctx = format!("{qname} / {fname} / {:?}", spec.unit);
-                let want = sorted(mem.summary(&set, q, &f, &spec).await.unwrap());
-                let got = sorted(qw.summary(&set, q, &f, &spec).await.expect(&ctx));
+                let want = mem.summary(&set, q, &f, &spec).await.unwrap();
+                let got = qw.summary(&set, q, &f, &spec).await.expect(&ctx);
                 assert_eq!(got, want, "summary: {ctx}");
                 nonzero += usize::from(want.total_hits > 0);
                 let all: Vec<u8> = (0..8).collect();
@@ -723,6 +740,82 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
             "only {matched} phrases matched the fixtures ({analyzer:?})"
         );
     }
+    // One field for both texts (05 §5.5.7), through its pairs field.
+    let set = single();
+    let grams = set.clone().with_common_grams(true);
+    let matched = common_word_phrases(&qw, &mem, &set, &grams).await;
+    assert!(matched >= 10, "only {matched} phrases matched (one field)");
+}
+
+/// With one field for both texts (05 §5.5.7) a phrase or NEAR search still
+/// can't span the two: a word near the end of a page's LoC text that its
+/// American Stories text lacks, and one near the start of that text that
+/// LoC's lacks, are within the largest slop of each other but for the gap
+/// the release puts between them. Quickwit finds what the reference finds
+/// (which reads each text on its own), and not that page. The count of
+/// pages only American Stories' text matches is refused there.
+#[tokio::test]
+async fn one_field_keeps_phrases_within_one_text() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let set = single();
+    let tokens =
+        |t: Option<&str>| usnm_core::text::tokenize(t.unwrap_or_default(), Analyzer::LATEST);
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/indexes");
+    let mut checked = 0;
+    for file in INDEXES {
+        let text = std::fs::read_to_string(dir.join(format!("{file}.jsonl"))).unwrap();
+        for line in text.lines() {
+            let doc: PageDoc = serde_json::from_str(line).unwrap();
+            let (loc, american) = (tokens(Some(&doc.text)), tokens(doc.text_as.as_deref()));
+            let Some(a) = loc.iter().rev().take(10).find(|w| !american.contains(w)) else {
+                continue;
+            };
+            let Some(b) = american.iter().take(10).find(|w| !loc.contains(w)) else {
+                continue;
+            };
+            let mut f = filters("1895-01-01", "1897-12-31");
+            f.from = usnm_core::time::date_from_day(doc.day);
+            f.to = f.from;
+            f.lccns = vec![doc.lccn.clone()];
+            let page = HitsQuery {
+                limit: 50,
+                ..Default::default()
+            };
+            for q in [
+                format!("\"{a} {b}\"~{}", usnm_core::query::MAX_SLOP),
+                format!("\"{a} {b}\""),
+            ] {
+                let node = parse(&q).unwrap();
+                let want = mem.hits(&set, &node, &f, &page).await.unwrap();
+                let got = qw.hits(&set, &node, &f, &page).await.expect(&q);
+                let ids = |p: &usnm_search::HitsPage| -> Vec<String> {
+                    p.hits.iter().map(|h| h.doc_id.clone()).collect()
+                };
+                assert_eq!(ids(&got), ids(&want), "{q} on {}", doc.doc_id);
+                assert!(
+                    !ids(&got).contains(&doc.doc_id),
+                    "{q} spans the texts of {}",
+                    doc.doc_id
+                );
+            }
+            // Both words are on the page.
+            let both = parse(&format!("{a} {b}")).unwrap();
+            let got = qw.hits(&set, &both, &f, &page).await.expect("and");
+            assert!(got.hits.iter().any(|h| h.doc_id == doc.doc_id));
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no page has such words");
+    let f = filters("1895-01-01", "1897-12-31");
+    assert!(matches!(
+        qw.american_stories_only(&set, &parse("gold").unwrap(), &f)
+            .await,
+        Err(SearchError::Unsupported(_))
+    ));
 }
 
 /// How many of the phrases matched: Quickwit through the pairs (`grams`)
@@ -771,8 +864,8 @@ async fn common_word_phrases(
             set.american_stories(),
             set.analyzer()
         );
-        let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
-        let got = sorted(qw.summary(grams, &q, &f, &spec).await.expect(&ctx));
+        let want = mem.summary(set, &q, &f, &spec).await.unwrap();
+        let got = qw.summary(grams, &q, &f, &spec).await.expect(&ctx);
         assert_eq!(got, want, "summary: {ctx}");
         if want.total_hits > 0 {
             matched += 1;
@@ -780,8 +873,9 @@ async fn common_word_phrases(
         let want = sorted_cells(mem.cube(set, &q, &f, &spec, &all).await.unwrap());
         let got = sorted_cells(qw.cube(grams, &q, &f, &spec, &all).await.expect(&ctx));
         assert_eq!(got, want, "cube: {ctx}");
-        // The pages only American Stories' text matches, through the pairs.
-        if set.american_stories() {
+        // The pages only American Stories' text matches, through the pairs,
+        // where they can be counted.
+        if set.counts_american_stories_only() {
             let want = mem.american_stories_only(set, &q, &f).await.unwrap();
             let got = qw.american_stories_only(grams, &q, &f).await.expect(&ctx);
             assert_eq!(got, want, "american stories only: {ctx}");
@@ -952,8 +1046,8 @@ async fn searches_by_decade_match_the_reference_backend() {
             );
             named += u32::from(clause.is_some());
             let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
-            let want = sorted(mem.summary(set, &q, &f, &spec).await.unwrap());
-            let got = sorted(qw.summary(set, &q, &f, &spec).await.expect(&ctx));
+            let want = mem.summary(set, &q, &f, &spec).await.unwrap();
+            let got = qw.summary(set, &q, &f, &spec).await.expect(&ctx);
             // Days with a match are a HyperLogLog estimate in Quickwit,
             // merged over more splits here than in the other tests: within
             // 2%, not exact.
@@ -1193,8 +1287,8 @@ async fn congress_searches_match_the_reference_backend() {
                     f.from = spec.from;
                     f.to = spec.to;
                     let ctx = format!("{sname} / {qname} / {fname} / {:?}", spec.unit);
-                    let want = sorted(mem.summary(set, q, &f, &spec).await.unwrap());
-                    let got = sorted(qw.summary(set, q, &f, &spec).await.expect(&ctx));
+                    let want = mem.summary(set, q, &f, &spec).await.unwrap();
+                    let got = qw.summary(set, q, &f, &spec).await.expect(&ctx);
                     assert_eq!(got, want, "summary: {ctx}");
                     nonzero += usize::from(want.total_hits > 0);
                     let shards: Vec<u8> = (0..8).collect();
