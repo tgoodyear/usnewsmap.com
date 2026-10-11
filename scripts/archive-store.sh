@@ -43,11 +43,15 @@ command -v jq > /dev/null || die "jq is needed"
 az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
 [ -z "$SUBSCRIPTION" ] || az account set --subscription "$SUBSCRIPTION"
 echo "subscription $(az account show --query '[name, id]' -o tsv | paste -sd' ' -)"
-# A stack's location is fixed once created.
+# A stack's location is fixed once created. Only "not found" means a first
+# deployment; any other error stops here rather than fall back to LOCATION.
 keep_stack_location() {
   local location
-  if location=$(az stack sub show -n "$STACK" --query location -o tsv 2> /dev/null); then
+  if location=$(az stack sub show -n "$STACK" --query location -o tsv 2>&1); then
     LOCATION=$location
+  else
+    grep -qiE 'NotFound|could not be found' <<< "$location" ||
+      die "can't check $STACK: $location"
   fi
 }
 
