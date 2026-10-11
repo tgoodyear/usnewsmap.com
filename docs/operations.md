@@ -216,7 +216,7 @@ Releases never delete an index, so `qw-index` keeps every version ever built and
 
 A kept version's indexes are all that its records name: `current.json`, its run in the pipeline state, the `indexes` of `reference/<version>/manifest.json`, and its Japanese and Congress index ids (`pages-ja-{date}-{n}`, `congress-{date}-{n}`). Every other `pages-…` or `congress-…` index is deleted: older versions, and rebuilds that were stopped or failed. Indexes of other names (such as Quickwit's own `otel-…`) are left alone. It deletes through Quickwit (`DELETE /api/v1/indexes/{id}`), which removes the split files and the index's metastore entry together, never with blob deletes.
 
-Without `--delete`, it's a dry run: it lists each index it would delete with its splits, documents and size (its published splits' files), and the total, and changes nothing. It takes the writer lock like a release, so it fails with ``lock `quickwit-writer` is held by …`` while a release runs, and a release can't take the lock while prune holds it. It refuses to run when `current.json` can't be read or names no indexes, when the serving version has no index run, or when neither the rollback's run nor its manifest exists. With `--delete`, it reads `current.json` and the runs again just before deleting and stops if what it keeps has changed.
+Without `--delete`, it's a dry run: it lists each index it would delete with its splits, documents and size (its published splits' files), and the total, and changes nothing. It takes the writer lock like a release, so it fails with ``lock `quickwit-writer` is held by …`` while a release runs, and a release can't take the lock while prune holds it. It refuses to run when `current.json` can't be read or names no indexes, when the serving version has no index run, or when neither the rollback's run nor its manifest names its indexes (and when a manifest's `indexes` isn't a list of `index_id`s). With `--delete`, it reads `current.json` and the runs again before each delete and stops if what it keeps has changed. If the writer lock can't be renewed, it gives up the delete under way at once and stops its Quickwit node.
 
 Run it in the ingest job, as an execution with other arguments (`scripts/start-job.sh`), after a new version is published and checked, and while no ingest or backfill execution is running. An execution can't mount the scratch share, and prune doesn't need it: its Quickwit node only reads the metastore and deletes, with its data in a temporary directory. You need `az` signed in with access that can start the job (the owner's Contributor on the resource group) and read the logs. Dry run first:
 
@@ -224,7 +224,7 @@ Run it in the ingest job, as an execution with other arguments (`scripts/start-j
 RG=$(scripts/settings.sh prod AZURE_RESOURCE_GROUP)
 JOB=$(scripts/settings.sh prod INGEST_JOB)
 QW=(--quickwit-bin /usr/local/bin/quickwit --quickwit-metastore azure://qw-index --quickwit-index-root azure://qw-index)
-scripts/start-job.sh prod INGEST_JOB prune "${QW[@]}"            # dry run: lists, deletes nothing
+scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}"   # dry run: lists, deletes nothing
 az containerapp job execution list -n "$JOB" -g "$RG" -o table  # until it has Succeeded
 scripts/logs.sh prod prune 2h
 ```
@@ -232,7 +232,7 @@ scripts/logs.sh prod prune 2h
 `prune keeps` names the serving and rollback versions and every index they keep; check that the serving version is the one `/v1/status` reports and that the rollback is the one you want. Then one `prune candidate` line per index it would delete, with `bytes` and `gib`, and `prune plan` with the count and `total_gib` (the execution's console log ends with the whole report as JSON). If the list is what you expect, delete:
 
 ```sh
-scripts/start-job.sh prod INGEST_JOB prune "${QW[@]}" --delete
+scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}" --delete
 scripts/logs.sh prod prune 2h    # a "deleted index" line for each, then "pruned"
 ```
 

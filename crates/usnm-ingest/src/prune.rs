@@ -27,8 +27,10 @@
 //!
 //! It takes the writer lock like a release (08 §8.4.1), so it never runs
 //! beside one, and refuses to run when `current.json` can't be read or a
-//! kept version's indexes can't be worked out. Before deleting, it reads
-//! `current.json` and the runs again, and stops if what it keeps changed.
+//! kept version's indexes can't be worked out. Before each delete it reads
+//! `current.json` and the runs again, and stops if what it keeps changed;
+//! a delete still running when the lock can't be renewed is given up at
+//! once, and the caller stops its Quickwit node.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -127,7 +129,8 @@ async fn runs(state: &State) -> anyhow::Result<BTreeMap<String, RunSummary>> {
 
 /// The indexes `version` names in the pipeline state and its snapshot's
 /// manifest, plus the Japanese and Congress ids its name gives; and whether
-/// either record was found.
+/// either record names any (its main indexes). A manifest whose `indexes`
+/// isn't a list of objects with an `index_id` stops prune.
 async fn version_indexes(
     reference: &dyn ObjectStore,
     runs: &BTreeMap<String, RunSummary>,
@@ -136,11 +139,11 @@ async fn version_indexes(
     let mut indexes = BTreeSet::new();
     let mut found = false;
     if let Some(run) = runs.get(version) {
-        found = true;
         indexes.extend(run.indexes.iter().filter(|i| !i.is_empty()).cloned());
         if !run.new_index.is_empty() {
             indexes.insert(run.new_index.clone());
         }
+        found = !indexes.is_empty();
     }
     let path = format!("{version}/manifest.json");
     if let Some(bytes) = reference
@@ -150,15 +153,24 @@ async fn version_indexes(
     {
         let manifest: Value = serde_json::from_slice(&bytes)
             .with_context(|| format!("{path} isn't JSON; refusing to prune"))?;
-        found = true;
-        indexes.extend(
-            manifest["indexes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|l| l["index_id"].as_str())
-                .map(str::to_owned),
-        );
+        let listed = match &manifest["indexes"] {
+            Value::Null => Vec::new(),
+            Value::Array(layout) => layout
+                .iter()
+                .map(|l| {
+                    l["index_id"]
+                        .as_str()
+                        .filter(|i| !i.is_empty())
+                        .map(str::to_owned)
+                })
+                .collect::<Option<Vec<_>>>()
+                .with_context(|| {
+                    format!("{path} has an index without an index_id; refusing to prune")
+                })?,
+            _ => bail!("{path}'s indexes isn't a list; refusing to prune"),
+        };
+        found |= !listed.is_empty();
+        indexes.extend(listed);
     }
     indexes.insert(ocr_ja::index_id(version));
     indexes.insert(congress::index_id(version));
@@ -205,8 +217,8 @@ pub async fn kept(reference: &dyn ObjectStore, state: &State) -> anyhow::Result<
         let (ids, found) = version_indexes(reference, &runs, r).await?;
         if !found {
             bail!(
-                "the rollback version `{r}` has neither an index run nor {r}/manifest.json, so \
-                 its indexes are unknown; refusing to prune"
+                "neither an index run nor {r}/manifest.json of the rollback version `{r}` names \
+                 its indexes, so they are unknown; refusing to prune"
             );
         }
         indexes.extend(ids);
@@ -218,12 +230,16 @@ pub async fn kept(reference: &dyn ObjectStore, state: &State) -> anyhow::Result<
             && run.index_version != serving
             && run.started_at > serving_run.started_at
         {
-            newer.push(run.index_version.clone());
-            indexes.extend(
-                version_indexes(reference, &runs, &run.index_version)
-                    .await?
-                    .0,
-            );
+            let v = &run.index_version;
+            let (ids, found) = version_indexes(reference, &runs, v).await?;
+            if !found {
+                bail!(
+                    "neither the index run nor {v}/manifest.json of the published version `{v}` \
+                     names its indexes, so they are unknown; refusing to prune"
+                );
+            }
+            newer.push(v.clone());
+            indexes.extend(ids);
         }
     }
     Ok(Kept {
@@ -342,20 +358,33 @@ pub async fn prune(
 
     let mut deleted = Vec::new();
     if delete && !candidates.is_empty() {
-        // Nothing may have changed what is kept since the plan: a rollback
-        // by hand writes current.json without the lock.
-        lease.check()?;
-        let again = self::kept(reference, state).await?;
-        if again != kept {
-            bail!("current.json or the index runs changed while pruning; nothing was deleted, run it again");
-        }
         for c in &candidates {
             lease.check()?;
-            // The plan never holds a kept index; checked again before every delete.
+            // Nothing may have changed what is kept since the plan: a
+            // rollback by hand writes current.json without the lock, and a
+            // delete can take minutes. So before every delete.
+            let again = self::kept(reference, state).await?;
+            if again != kept {
+                bail!(
+                    "current.json or the index runs changed while pruning; {} deleted ({}), \
+                     run it again",
+                    deleted.len(),
+                    deleted.join(", ")
+                );
+            }
+            // The plan never holds a kept index; checked again here.
             if kept.indexes.contains(&c.index_id) || !is_ours(&c.index_id) {
                 bail!("`{}` is kept; refusing to delete it", c.index_id);
             }
-            delete_index(&http, base, &c.index_id).await?;
+            // A delete can outlast the lock (DELETE_TIMEOUT); give it up as
+            // soon as a renewal fails, and the caller stops the node.
+            tokio::select! {
+                r = delete_index(&http, base, &c.index_id) => r?,
+                () = lease.lost() => {
+                    lease.check()?;
+                    bail!("the writer lock was lost while deleting `{}`", c.index_id)
+                }
+            }
             tracing::info!(index = %c.index_id, bytes = c.bytes, "deleted index");
             deleted.push(c.index_id.clone());
         }
@@ -554,6 +583,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refuses_when_the_rollback_manifest_names_no_indexes() {
+        // The rollback with no run: only its manifest can name its indexes.
+        let e = env().await;
+        put(
+            &e.reference,
+            "current.json",
+            json!({"index_version": "pages-v20261015-1", "indexes": ["pages-base-20261015-1"],
+                   "previous_version": "pages-v20260920-1"}),
+        )
+        .await;
+        for (manifest, says) in [
+            (json!({}), "unknown"),
+            (json!({"indexes": []}), "unknown"),
+            (json!({"indexes": "pages-base-20260920-1"}), "isn't a list"),
+            (
+                json!({"indexes": [{"index": "pages-base-20260920-1"}]}),
+                "without an index_id",
+            ),
+        ] {
+            put(&e.reference, "pages-v20260920-1/manifest.json", manifest).await;
+            let err = kept(e.reference.as_ref(), &e.state).await.unwrap_err();
+            assert!(format!("{err:#}").contains(says), "{err:#}");
+        }
+        put(
+            &e.reference,
+            "pages-v20260920-1/manifest.json",
+            json!({"indexes": [{"index_id": "pages-base-20260920-1"}]}),
+        )
+        .await;
+        let k = kept(e.reference.as_ref(), &e.state).await.unwrap();
+        assert!(k.indexes.contains("pages-base-20260920-1"));
+    }
+
+    #[tokio::test]
     async fn a_rollback_by_hand_keeps_the_newer_version() {
         let e = env().await;
         put(
@@ -673,6 +736,107 @@ mod tests {
         assert!(r.candidates.is_empty() && r.deleted.is_empty());
         unlock_writer(&e.state, "pruner", lease).await.unwrap();
         assert_eq!(deleted.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stops_when_what_it_keeps_changes_between_deletes() {
+        use axum::extract::Path;
+        use axum::routing::{delete, get};
+        let e = env().await;
+        // Deleting the first candidate rolls current.json back by hand to a
+        // version whose Japanese index is the second candidate.
+        let current = e._dir.path().join("reference/current.json");
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/indexes",
+                get(|| async {
+                    axum::Json(json!(["pages-base-20261012-1", "pages-ja-20261001-1"]
+                        .iter()
+                        .map(|id| json!({"index_config": {"index_id": id}}))
+                        .collect::<Vec<_>>()))
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                get(|| async { axum::Json(json!({"splits": []})) }),
+            )
+            .route(
+                "/api/v1/indexes/{id}",
+                delete(move |Path(id): Path<String>| async move {
+                    assert_eq!(id, "pages-base-20261012-1");
+                    let v = json!({"index_version": "pages-v20261008-1",
+                        "indexes": ["pages-base-20261001-1", "pages-delta-20261008-1"],
+                        "previous_version": "pages-v20261001-1"});
+                    std::fs::write(&current, serde_json::to_vec(&v).unwrap()).unwrap();
+                    "[]"
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let lease = lock_writer(&e.state, "pruner").await.unwrap();
+        let err = prune(
+            &e.state,
+            e.reference.as_ref(),
+            &format!("http://{addr}"),
+            true,
+            &lease,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("changed while pruning; 1 deleted (pages-base-20261012-1)"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gives_up_a_delete_when_the_lock_is_lost() {
+        use axum::routing::{delete, get};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let e = env().await;
+        let app = axum::Router::new()
+            .route(
+                "/api/v1/indexes",
+                get(|| async {
+                    axum::Json(json!([{"index_config": {"index_id": "pages-base-20261012-1"}}]))
+                }),
+            )
+            .route(
+                "/api/v1/indexes/{id}/splits",
+                get(|| async { axum::Json(json!({"splits": []})) }),
+            )
+            // A delete that never answers.
+            .route(
+                "/api/v1/indexes/{id}",
+                delete(std::future::pending::<&'static str>),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let lost = Arc::new(AtomicBool::new(false));
+        let lease = WriterLease::for_test(lost.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            lost.store(true, Ordering::SeqCst);
+        });
+        let err = tokio::time::timeout(
+            Duration::from_secs(10),
+            prune(
+                &e.state,
+                e.reference.as_ref(),
+                &format!("http://{addr}"),
+                true,
+                &lease,
+            ),
+        )
+        .await
+        .expect("gave up within seconds")
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("could not be renewed"),
+            "{err:#}"
+        );
     }
 
     #[tokio::test]

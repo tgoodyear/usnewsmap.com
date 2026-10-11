@@ -362,9 +362,18 @@ impl WriterLease {
     /// 4 hours by default) race against it, so a writer that may no longer hold the
     /// lock stops within a second instead of at its next checkpoint, long
     /// before the lock expires and another writer could take it.
-    async fn lost(&self) {
+    pub(crate) async fn lost(&self) {
         while !self.lost.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+
+    /// A lease with no lock behind it, lost once `lost` is set.
+    #[cfg(test)]
+    pub(crate) fn for_test(lost: Arc<AtomicBool>) -> Self {
+        Self {
+            lost,
+            renewer: tokio::spawn(async {}),
         }
     }
 }
