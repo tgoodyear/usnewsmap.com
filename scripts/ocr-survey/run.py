@@ -45,18 +45,17 @@ PLAN = {
         g: [("db_resnet50+parseq-multilingual", 1.0)]
         for g in ("worst-english", "control", "german", "czech", "polish")
     }, None, 1800),
-    # The slow engines (10 to 15 minutes a page or more on node 1): the first 5 pages of each group
     "ndnp-open-ocr": ({
         "worst-english": [("segmentation", 1.0)],
         "control": [("segmentation", 1.0)],
-    }, 5, 1800),
+    }, None, 1800),
     "americanstories": ({
         "worst-english": [("word-level", 1.0)],
         "control": [("word-level", 1.0)],
-    }, 5, 1800),
+    }, None, 1800),
     "surya": ({
         g: [("surya-ocr-2-tiles", 1.0)] for g in ("worst-english", "serbian", "russian", "german")
-    }, 1, 1800),
+    }, 2, 1800),
 }
 
 
@@ -80,8 +79,12 @@ def jobs_for(engine: str, manifest: list[dict], pages_per_group: int | None = No
     return out
 
 
+ENV: list[str] = []  # --env: extra environment for the engine containers
+
+
 def podman(engine: str, sample: Path, work: Path, jobs: Path, results: Path, out: Path, extra=(),
            memory: str = "7g") -> list[str]:
+    extra = [*extra, *(x for e in ENV for x in ("-e", e))]
     return ["podman", "run", "--rm", "--memory", memory, "--network", "none", *extra,
             "-v", f"{sample}:/data:ro,z", "-v", f"{work}:/work:z", f"ocr-survey/{engine}",
             "--jobs", f"/work/{jobs.relative_to(work)}", "--results", f"/work/{results.relative_to(work)}",
@@ -128,7 +131,11 @@ def main() -> None:
     ap.add_argument("--throughput-pages", type=int, default=8)
     ap.add_argument("--parallel", type=int, default=1, help="containers at once for an engine's jobs")
     ap.add_argument("--pages-per-group", type=int, default=None, help="only the first K pages of each group")
+    ap.add_argument("--env", action="append", default=[],
+                    help="KEY=VALUE for the engine containers, e.g. OMP_NUM_THREADS=4 (repeatable)")
+    ap.add_argument("--memory", default=None, help="memory limit per container (default: 7g over --parallel)")
     a = ap.parse_args()
+    ENV.extend(a.env)
     for sub in ("jobs", "results", "out"):
         (a.work / sub).mkdir(parents=True, exist_ok=True)
     if a.throughput:
@@ -147,7 +154,8 @@ def main() -> None:
         if a.parallel == 1:
             jp = a.work / "jobs" / f"{engine}.jsonl"
             jp.write_text("".join(json.dumps(j) + "\n" for j in jobs))
-            subprocess.run(podman(engine, a.sample, a.work, jp, a.work / "results" / f"{engine}.jsonl", out))
+            subprocess.run(podman(engine, a.sample, a.work, jp, a.work / "results" / f"{engine}.jsonl", out,
+                                  memory=a.memory or "7g"))
             continue
         procs = []
         for i in range(a.parallel):
@@ -155,7 +163,7 @@ def main() -> None:
             jp.write_text("".join(json.dumps(j) + "\n" for j in jobs[i::a.parallel]))
             procs.append(subprocess.Popen(podman(engine, a.sample, a.work, jp,
                                                  a.work / "results" / f"{engine}.{i}.jsonl", out,
-                                                 memory=f"{max(1, 7 // a.parallel)}g")))
+                                                 memory=a.memory or f"{max(1, 7 // a.parallel)}g")))
         for p in procs:
             p.wait()
 
