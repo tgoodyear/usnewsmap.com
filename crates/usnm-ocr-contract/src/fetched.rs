@@ -34,11 +34,14 @@ const MANIFEST_KEY: &str = "usnm.manifest";
 pub const PREFIX: &str = "fetched";
 /// The largest list read (about 20 bytes a page compressed).
 pub const MAX_BYTES: usize = 128 << 20;
-/// The most pages a list may hold: more than both sets of a manifest.
-pub const MAX_PAGES: usize = 8_000_000;
-/// The most bytes a list's columns may decompress to (about 60 bytes a
+/// The most pages a list may hold: the first manifest's 1.92 million pages
+/// with room. The reader keeps 8 bytes a page (a hash), so a full list
+/// costs the pickup job (1 GiB) about 64 MiB of set and one decoded
+/// record batch at a time.
+pub const MAX_PAGES: usize = 4_000_000;
+/// The most bytes a list's columns may decompress to (about 40 bytes a
 /// page at [`MAX_PAGES`]).
-pub const MAX_UNCOMPRESSED: i64 = 512 << 20;
+pub const MAX_UNCOMPRESSED: i64 = 160 << 20;
 
 /// A page whose full-size scan is on the scan server.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -48,12 +51,39 @@ pub struct Fetched {
     pub doc_id: String,
 }
 
-/// A list read back.
+/// A list read back: the pages as 64-bit hashes of (batch, doc_id), so a
+/// list a node made large costs little memory. A collision can only make a
+/// page that isn't fetched look fetched, which costs a LoC fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct List {
     /// The manifest's index version (`pages-v20261010-2`).
     pub manifest: String,
-    pub pages: HashSet<Fetched>,
+    pages: HashSet<u64>,
+}
+
+impl List {
+    pub fn contains(&self, batch: &str, doc_id: &str) -> bool {
+        self.pages.contains(&key(batch, doc_id))
+    }
+
+    pub fn len(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+}
+
+/// A page's hash in a [`List`]: SipHash with fixed keys, so the same in
+/// every process of a build.
+fn key(batch: &str, doc_id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    #[allow(deprecated)] // SipHasher: stable, keyed with zeros; no DoS concern here.
+    let mut h = std::hash::SipHasher::new();
+    batch.hash(&mut h);
+    doc_id.hash(&mut h);
+    h.finish()
 }
 
 /// `fetched/<manifest version>/`.
@@ -157,7 +187,7 @@ pub fn decode(bytes: Bytes) -> anyhow::Result<List> {
     if rows > MAX_PAGES {
         bail!("fetched list: {rows} rows, more than {MAX_PAGES}");
     }
-    let mut pages = HashSet::with_capacity(rows);
+    let mut pages: HashSet<u64> = HashSet::with_capacity(rows.min(1 << 20));
     for batch in builder.build()? {
         let batch = batch?;
         let col = |name: &str| -> anyhow::Result<StringArray> {
@@ -176,7 +206,7 @@ pub fn decode(bytes: Bytes) -> anyhow::Result<List> {
                 doc_id: d.value(i).to_owned(),
             };
             check(&p)?;
-            pages.insert(p);
+            pages.insert(key(&p.batch, &p.doc_id));
         }
         if pages.len() > MAX_PAGES {
             bail!("fetched list: more than {MAX_PAGES} pages");
@@ -207,7 +237,9 @@ mod tests {
         .collect();
         let back = decode(Bytes::from(encode("pages-v20261010-2", &pages).unwrap())).unwrap();
         assert_eq!(back.manifest, "pages-v20261010-2");
-        assert_eq!(back.pages, pages);
+        assert_eq!(back.len(), 3);
+        assert!(pages.iter().all(|p| back.contains(&p.batch, &p.doc_id)));
+        assert!(!back.contains("nbu_gage", "sn2_1901-01-01_ed-2_seq-9"));
     }
 
     #[test]

@@ -894,18 +894,13 @@ async fn fetched_pages(
     let mut report = FetchedReport {
         manifest: path,
         list: newest,
-        listed: list.pages.len() as u64,
+        listed: list.len() as u64,
         keep_pages: rows.len() as u64,
         on_list: 0,
     };
     let pages: Vec<(ManifestRow, String)> = rows
         .into_iter()
-        .filter(|r| {
-            list.pages.contains(&fetched::Fetched {
-                batch: r.batch.clone(),
-                doc_id: r.doc_id.clone(),
-            })
-        })
+        .filter(|r| list.contains(&r.batch, &r.doc_id))
         .filter_map(|r| language(&r).map(|l| (r, l)))
         .collect();
     report.on_list = pages.len() as u64;
