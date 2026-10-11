@@ -1175,8 +1175,9 @@ mod tests {
         let err = check("idx", 140_000, T, &many).unwrap_err().to_string();
         assert!(err.contains("at most 11"), "{err}");
         assert_eq!(IndexLayout::of("empty", &[]).splits, 0);
-        // An index created with a larger target (`--split-docs`) is held to
-        // it: 12 splits of 35,000 pages are merged at 30,000, not at 120,000.
+        // An index is held to the target it was created with (`--split-docs`):
+        // 12 splits of 35,000 pages are mature at 30,000, so they pass, but at
+        // 120,000 they should still have merged, so they fail.
         let mid: Vec<Split> = (0..12)
             .map(|i| Split {
                 docs: 35_000,
