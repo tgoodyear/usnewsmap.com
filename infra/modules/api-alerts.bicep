@@ -49,6 +49,9 @@ param actionGroupId string
 @description('The API\'s container app (ca-usnm-<env>), for the replica CPU alert.')
 param apiAppName string
 
+@description('The searcher\'s own app (usnm-search-ca-<env>, #267), whose CPU the replica CPU alert then watches; empty while the searcher is the API\'s sidecar.')
+param searcherAppName string = ''
+
 @description('Create the replica CPU alert: the app keeps a replica running (minReplicas above 0), so its CPU has a sample every minute.')
 param replicaCpu bool = false
 
@@ -163,7 +166,7 @@ var rules = [
   {
     name: 'api-server-errors'
     displayName: 'API server errors'
-    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 10 search timeouts and busy refusals. Kind says which, TopRoute the route and status with the most. Next: scripts/logs.sh <env> api-errors 1h for the routes, codes and the API\'s error lines; for timeouts and busy refusals, check the Quickwit sidecar (container quickwit) and whether a new index version was just published.'
+    description: 'usnm-api answered at least 5 requests with a 5xx in 10 minutes, more than 2% of its requests (search timeouts and busy refusals not counted), or at least 10 search timeouts and busy refusals. Kind says which, TopRoute the route and status with the most. Next: scripts/logs.sh --env <env> --query-name api-errors --span 1h for the routes, codes and the API\'s error lines; for timeouts and busy refusals, check the Quickwit sidecar (container quickwit) and whether a new index version was just published.'
     severity: 2
     frequency: 'PT5M'
     window: 'PT10M'
@@ -174,7 +177,7 @@ var rules = [
   {
     name: 'api-aggregate-slow'
     displayName: 'Slow aggregate searches'
-    description: 'p95 of /v1/aggregate was over 3 s in the last 15 minutes (at least 20 requests, 3 of them over 3 s). Right after a new index version is published every search is cold, so this can fire and clear on its own. Next: scripts/logs.sh <env> api-requests 1h for latency by route, and the API workbook for cache hits and backend time.'
+    description: 'p95 of /v1/aggregate was over 3 s in the last 15 minutes (at least 20 requests, 3 of them over 3 s). Right after a new index version is published every search is cold, so this can fire and clear on its own. Next: scripts/logs.sh --env <env> --query-name api-requests --span 1h for latency by route, and the API workbook for cache hits and backend time.'
     severity: 3
     frequency: 'PT5M'
     window: 'PT15M'
@@ -185,7 +188,7 @@ var rules = [
   {
     name: 'api-searches-slow'
     displayName: 'Searches longer than a visitor waits'
-    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Endpoint and Outcome are the ones with the most. Errors other than timeouts and busy refusals count toward the API server errors alert. Next: the slow-search tiles in the API workbook (by endpoint and outcome), and scripts/logs.sh <env> api-requests 1h.'
+    description: 'At least 3 searches in the last hour took longer than a visitor waits (USNM_SEARCH_TIMEOUT_SECS, then a 202), ran past the 2-minute limit, or were refused as busy. Endpoint and Outcome are the ones with the most. Errors other than timeouts and busy refusals count toward the API server errors alert. Next: the slow-search tiles in the API workbook (by endpoint and outcome), and scripts/logs.sh --env <env> --query-name api-requests --span 1h.'
     severity: 3
     frequency: 'PT15M'
     window: 'PT1H'
@@ -294,7 +297,7 @@ resource unavailable 'Microsoft.Insights/metricAlerts@2018-03-01' = [
     location: 'global'
     tags: union(tags, linkTag)
     properties: {
-      description: '${t.displayName} (${t.url}) failed from at least 2 of 3 locations (each after 3 tries). Next: open the URL yourself; the Availability page of the Application Insights resource shows which check failed (status code, timeout or certificate) and from where; then scripts/logs.sh <env> api-errors 1h and the container app\'s revisions and replicas.'
+      description: '${t.displayName} (${t.url}) failed from at least 2 of 3 locations (each after 3 tries). Next: open the URL yourself; the Availability page of the Application Insights resource shows which check failed (status code, timeout or certificate) and from where; then scripts/logs.sh --env <env> --query-name api-errors --span 1h and the container app\'s revisions and replicas.'
       severity: 1
       enabled: true
       scopes: [webtest[i].id, appInsightsId]
@@ -313,8 +316,11 @@ resource unavailable 'Microsoft.Insights/metricAlerts@2018-03-01' = [
   }
 ]
 
+// The app the searcher runs in: the API's, or its own (#267).
+var cpuAppName = empty(searcherAppName) ? apiAppName : searcherAppName
+
 resource apiApp 'Microsoft.App/containerApps@2024-03-01' existing = {
-  name: apiAppName
+  name: cpuAppName
 }
 
 // The replicas' CPU (each the API and the Quickwit sidecar together, 4 vCPU
@@ -327,12 +333,14 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' existing = {
 // after scaling to zero a window could hold only a start's samples.
 // Stateful: one email when it starts, one when it clears. Platform metrics
 // stay in Azure Monitor 93 days; the API workbook charts them per replica.
+// With the searcher in its own app (#267) the alert watches that app: one
+// replica of 3.75 vCPU, which the same 3 vCPU threshold leaves 0.75 under.
 resource replicaCpuAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (replicaCpu) {
   name: 'alert-usnm-api-replica-cpu-${nameSuffix}'
   location: 'global'
   tags: tags
   properties: {
-    description: 'The replicas of ${apiAppName} averaged over 3 vCPU (of 4) for the last 6 hours. #238 (deferred 10 October 2026): if it keeps happening outside releases for a week, revisit more search capacity (a second searcher, #239, after moving Quickwit out of the API replica, #267). Next: the capacity tiles in the API workbook (replica CPU and the queue wait by day), and scripts/logs.sh <env> api-requests 24h for the traffic.'
+    description: 'The replicas of ${cpuAppName} averaged over 3 vCPU (of ${empty(searcherAppName) ? '4' : '3.75'}) for the last 6 hours. #238 (deferred 10 October 2026): if it keeps happening outside releases for a week, revisit more search capacity (a second searcher, #239, after moving Quickwit out of the API replica, #267). Next: the capacity tiles in the API workbook (replica CPU and the queue wait by day), and scripts/logs.sh --env <env> --query-name api-requests --span 24h for the traffic.'
     severity: 4
     enabled: true
     scopes: [apiApp.id]
