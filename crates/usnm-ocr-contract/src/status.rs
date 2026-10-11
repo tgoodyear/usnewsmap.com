@@ -112,8 +112,8 @@ pub struct Completion {
     pub doc_id: String,
     /// ISO 639-3, from the message.
     pub language: String,
-    /// The engine and models that read the page (`tesseract 5.5.0 deu`),
-    /// empty if it wasn't read.
+    /// The engine tag of the page's row (`ocr_engine`, 13 §13.8.1), empty
+    /// if it wasn't read.
     pub engine: String,
     pub queue: String,
     /// `bulk` or `user`.
@@ -135,15 +135,26 @@ pub struct Completion {
 
 const OUTCOMES: [&str; 4] = ["done", "failed", "abandoned", "dead_lettered"];
 
-/// A short tag: letters, digits and ` ._:+-()/`, at most `max` bytes. The
-/// engine string and the kinds are tags; nothing longer gets through.
+/// A short tag: letters, digits and ` ._:+-()/=@,`, at most `max` bytes.
+/// The engine tag (13 §13.8.1, `tesseract/5.5.0 profile=frak2021 image=…`)
+/// and the kinds are tags; nothing longer gets through.
 pub fn is_tag(s: &str, max: usize) -> bool {
     s.len() <= max
         && s.bytes().all(|b| {
             b.is_ascii_alphanumeric()
                 || matches!(
                     b,
-                    b' ' | b'.' | b'_' | b':' | b'+' | b'-' | b'(' | b')' | b'/'
+                    b' ' | b'.'
+                        | b'_'
+                        | b':'
+                        | b'+'
+                        | b'-'
+                        | b'('
+                        | b')'
+                        | b'/'
+                        | b'='
+                        | b'@'
+                        | b','
                 )
         })
 }
@@ -163,7 +174,7 @@ impl Completion {
         );
         anyhow::ensure!(
             is_tag(&self.language, 8)
-                && is_tag(&self.engine, 120)
+                && is_tag(&self.engine, 240)
                 && is_tag(&self.queue, 32)
                 && is_tag(&self.reason, 16)
                 && self.error_kind.as_deref().is_none_or(|k| is_tag(k, 32)),
@@ -272,7 +283,7 @@ mod tests {
         Completion {
             doc_id: doc.into(),
             language: "deu".into(),
-            engine: "tesseract 5.5.0 deu+frak2021".into(),
+            engine: "tesseract/5.5.0 profile=frak2021 image=sha256:0123456789ab models=sha256:0123456789ab route=minimal@r1 contract=0".into(),
             queue: "ocr-bulk".into(),
             reason: "bulk".into(),
             outcome: "done".into(),
@@ -310,6 +321,9 @@ mod tests {
         assert!(bad.check().is_err());
         let mut bad = c.clone();
         bad.engine = "x".repeat(500);
+        assert!(bad.check().is_err());
+        let mut bad = c.clone();
+        bad.engine = "Der Text\nder Seite".into();
         assert!(bad.check().is_err());
         let mut bad = c.clone();
         bad.error_kind = Some("Die Zeitung schrieb: \"…\"".into());
