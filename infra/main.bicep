@@ -65,6 +65,9 @@ param congressSearch bool = true
 
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
+
+@description('Weigh our own OCR from curated/ocr-local (the on-prem nodes\' output, #296) against LoC\'s text: on the pages of the batches a release indexes, ours replaces LoC\'s where rule v1 prefers it (12 §12.5 Step 9). Published batches take it at the next full release (docs/operations.md, "Our OCR in releases").')
+param ocrLocal bool = false
 @description('Lay the next full rebuild\'s base out by decade (#123): every split holds one decade, so a date-limited search skips the others. Only a full base takes it; deltas follow the published version, and a full rebuild without it lays nothing out by decade (docs/operations.md, "Full rebuild").')
 param partitionDecade bool = false
 
@@ -182,6 +185,12 @@ param ocrNodeIps string = ''
 
 @description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
+
+@description('Schedule for the OCR pickup job usnm-ocrsync-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
+param ocrSyncCron string = '17 * * * *'
+
+@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name (USNM_OCR_SEED_* and USNM_OCR_BULK_*; docs/operations.md). Seeding stays off while USNM_OCR_SEED_PLAN is empty (ADR-0015 decision 7).')
+param ocrSeed object = {}
 
 @description('Entra object ids (people or groups), comma separated, given Key Vault Secrets Officer on the OCR nodes\' Key Vault, usnmocrkv<env><suffix> (with ocrNodes): the operators who set and read the fleet\'s secrets, such as the Red Hat activation key. Settings only, never in the repository (#295).')
 param ocrKeyVaultAdmins string = ''
@@ -627,6 +636,7 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     full: ingestFull
     americanStories: americanStories
     jaLatin: jaLatin
+    ocrLocal: ocrLocal
     partitionDecade: partitionDecade
     singleTextField: singleTextField
     workers: backfillWorkers
@@ -638,6 +648,11 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     jaOcrImage: jaOcrJob ? '${registry.outputs.loginServer}/usnewsmap-ja-ocr:${imageTag}' : ''
     jaOcrReplicas: jaOcrReplicas
     rootImage: '${registry.outputs.loginServer}/${quickwitPin.image}@${quickwitPin.digest}'
+    ocrSync: ocrNodes
+    ocrQueueEndpoint: ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
+    ocrBlobEndpoint: ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+    ocrSyncCron: ocrSyncCron == 'manual' ? '' : ocrSyncCron
+    ocrSeed: ocrSeed
     rawUrl: !empty(archiveAccountId)
       ? 'https://${archiveAccount}.blob.${environment().suffixes.storage}/raw'
       : (retainRaw ? '${storage.outputs.blobEndpoint}${rawStore!.outputs.container}' : '')
@@ -702,6 +717,7 @@ module ingestAlerts 'modules/ingest-alerts.bicep' = if (!empty(emails) && ingest
     nameSuffix: env
     workspaceId: monitoring.outputs.workspaceId
     actionGroupId: monitoring.outputs.actionGroupId
+    ocrSync: ocrNodes
   }
 }
 
@@ -813,6 +829,9 @@ output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName 
 output BACKFILL_JOB string = ingestJobs && useAcr ? ingest!.outputs.backfillJobName : ''
 output JA_OCR_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaOcrJobName : ''
 output JA_AUDIT_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaAuditJobName : ''
+// The OCR pickup job (12 §12.5 Step 8); scripts/start-job.sh --job OCR_SYNC_JOB
+// runs ocr-enqueue and ocr-requeue as executions of it.
+output OCR_SYNC_JOB string = ingestJobs && useAcr ? ingest!.outputs.ocrSyncJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
 // For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).
