@@ -314,7 +314,9 @@ pub struct WriterLease {
 }
 
 impl WriterLease {
-    fn check(&self) -> anyhow::Result<()> {
+    /// Fails once a renewal has failed: the holder may no longer hold the
+    /// lock, so it must stop before its next write.
+    pub fn check(&self) -> anyhow::Result<()> {
         if self.lost.load(Ordering::SeqCst) {
             bail!("the writer lock could not be renewed; stopping without publishing");
         }
@@ -338,30 +340,43 @@ impl Drop for WriterLease {
     }
 }
 
+/// Take the writer lock as `owner` and keep renewing it until
+/// [`unlock_writer`]. Whatever changes the indexes Quickwit holds takes it
+/// first: a release, and `prune` (`crate::prune`), so neither runs beside
+/// the other.
+pub async fn lock_writer(state: &State, owner: &str) -> anyhow::Result<WriterLease> {
+    state.lock(WRITER_LOCK, owner, LEASE_TTL).await?;
+    let lost = Arc::new(AtomicBool::new(false));
+    let (state, owner, flag) = (state.clone(), owner.to_owned(), lost.clone());
+    let renewer = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(LEASE_RENEW).await;
+            if let Err(e) = state.lock(WRITER_LOCK, &owner, LEASE_TTL).await {
+                tracing::error!(error = %format!("{e:#}"), "writer lock renewal failed");
+                flag.store(true, Ordering::SeqCst);
+                break;
+            }
+        }
+    });
+    Ok(WriterLease { lost, renewer })
+}
+
+/// Stop renewing `lease` and release the writer lock `owner` holds.
+pub async fn unlock_writer(state: &State, owner: &str, lease: WriterLease) -> anyhow::Result<()> {
+    drop(lease);
+    state.unlock(WRITER_LOCK, owner).await
+}
+
 impl Release {
     /// Take the writer lock and keep renewing it. Callers that run a
     /// Quickwit writer node take it before the node starts and release it
     /// after the node stops, so no two writers ever overlap.
     pub async fn lock(&self) -> anyhow::Result<WriterLease> {
-        self.state.lock(WRITER_LOCK, &self.owner, LEASE_TTL).await?;
-        let lost = Arc::new(AtomicBool::new(false));
-        let (state, owner, flag) = (self.state.clone(), self.owner.clone(), lost.clone());
-        let renewer = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(LEASE_RENEW).await;
-                if let Err(e) = state.lock(WRITER_LOCK, &owner, LEASE_TTL).await {
-                    tracing::error!(error = %format!("{e:#}"), "writer lock renewal failed");
-                    flag.store(true, Ordering::SeqCst);
-                    break;
-                }
-            }
-        });
-        Ok(WriterLease { lost, renewer })
+        lock_writer(&self.state, &self.owner).await
     }
 
     pub async fn unlock(&self, lease: WriterLease) -> anyhow::Result<()> {
-        drop(lease);
-        self.state.unlock(WRITER_LOCK, &self.owner).await
+        unlock_writer(&self.state, &self.owner, lease).await
     }
 
     /// Build and publish a new version, or `None` if there is nothing new.

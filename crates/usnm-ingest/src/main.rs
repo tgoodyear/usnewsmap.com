@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand};
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::docs::{DocStore, FileDocs};
 use usnm_ingest::merges::{self, MergeWait};
-use usnm_ingest::release::{Published, PublishedUnrecorded, Release, TitlesLeft};
+use usnm_ingest::release::{self, Published, PublishedUnrecorded, Release, TitlesLeft};
 use usnm_ingest::sink::{IndexSink, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::source::{self, ListedBatch};
 use usnm_ingest::state::{BatchStatus, Outcome, State, Step};
@@ -197,6 +197,20 @@ enum Command {
     /// JSON on stdout. Reads every batch's counts and the parts of the
     /// batches that share title-days; changes nothing.
     Duplicates,
+    /// Delete the Quickwit indexes that neither the serving version nor its
+    /// rollback names (#245): older versions' and stopped rebuilds'. Without
+    /// `--delete`, only lists them with their sizes (a dry run). Takes the
+    /// writer lock like a release, and refuses if `current.json` can't be
+    /// read (docs/operations.md, "Prune old index versions").
+    Prune {
+        /// Delete the listed indexes. Without it nothing is deleted.
+        #[arg(long)]
+        delete: bool,
+        /// The Quickwit node on the index store: `--quickwit-url` or
+        /// `--quickwit-bin` (with its metastore and index root).
+        #[command(flatten)]
+        target: IndexTarget,
+    },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
         /// As for `enqueue`: LoC's listing unless another list is given.
@@ -559,6 +573,54 @@ fn dir_size(path: &std::path::Path) -> u64 {
         .sum()
 }
 
+/// `prune`, holding the writer lock throughout (released on every path),
+/// against `--quickwit-url` or a node run from `--quickwit-bin` for its
+/// length. The node's data goes in a temporary directory: it only reads
+/// the metastore and deletes, and a job execution has no scratch share.
+async fn prune(
+    cli: &Stores,
+    state: &State,
+    delete: bool,
+    t: &IndexTarget,
+) -> anyhow::Result<usnm_ingest::prune::Report> {
+    if t.index_dir.is_some() {
+        bail!("prune needs a Quickwit node: --quickwit-url or --quickwit-bin");
+    }
+    let reference = usnm_store::open(&cli.reference)?;
+    // Before the lock and the node: refuse at once without a published version.
+    usnm_ingest::prune::kept(reference.as_ref(), state).await?;
+    let owner = owner_id();
+    let lease = release::lock_writer(state, &owner).await?;
+    let result = async {
+        match (&t.quickwit_url, &t.quickwit_bin) {
+            (Some(url), None) => {
+                usnm_ingest::prune::prune(state, reference.as_ref(), url, delete, &lease).await
+            }
+            (None, Some(bin)) => {
+                let metastore = t
+                    .quickwit_metastore
+                    .as_deref()
+                    .context("--quickwit-bin needs --quickwit-metastore")?;
+                let dir = tempfile::Builder::new().prefix("usnm-prune").tempdir()?;
+                let node =
+                    QuickwitNode::start(bin, dir.path(), t.quickwit_port, metastore, root(t)?)
+                        .await?;
+                let r =
+                    usnm_ingest::prune::prune(state, reference.as_ref(), &node.url, delete, &lease)
+                        .await;
+                node.stop().await?;
+                r
+            }
+            _ => bail!("choose one of --quickwit-url or --quickwit-bin"),
+        }
+    }
+    .await;
+    let unlocked = release::unlock_writer(state, &owner, lease).await;
+    let report = result?;
+    unlocked?;
+    Ok(report)
+}
+
 fn root(t: &IndexTarget) -> anyhow::Result<&str> {
     t.quickwit_index_root
         .as_deref()
@@ -605,6 +667,7 @@ impl Command {
             Command::Geocode => "geocode",
             Command::Duplicates => "duplicates",
             Command::ArchiveCopy { .. } => "archive-copy",
+            Command::Prune { .. } => "prune",
             Command::Run { .. } => "run",
         }
     }
@@ -627,7 +690,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::Curate { .. }
         | Command::Geocode
         | Command::Duplicates
-        | Command::ArchiveCopy { .. } => None,
+        | Command::ArchiveCopy { .. }
+        | Command::Prune { .. } => None,
     }
 }
 
@@ -740,6 +804,11 @@ async fn command(
         Command::Duplicates => {
             let curated = usnm_store::open(&cli.stores.curated)?;
             let report = usnm_ingest::dedup::report(&state, curated.as_ref()).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(None)
+        }
+        Command::Prune { delete, target } => {
+            let report = prune(&cli.stores, &state, *delete, target).await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(None)
         }
@@ -1013,6 +1082,40 @@ mod tests {
         std::fs::write(dir.path().join("qwdata/b"), vec![0u8; 500]).unwrap();
         assert_eq!(dir_size(&dir.path().join("qwdata")), 3500);
         assert_eq!(dir_size(&dir.path().join("missing")), 0);
+    }
+
+    #[test]
+    fn prune_is_a_dry_run_unless_asked_to_delete() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "prune",
+                "--quickwit-url",
+                "http://127.0.0.1:7280",
+            ];
+            args.extend_from_slice(extra);
+            match Cli::try_parse_from(args).unwrap().command {
+                Command::Prune { delete, target } => (delete, target.quickwit_url),
+                _ => panic!("not a prune"),
+            }
+        };
+        assert_eq!(parse(&[]), (false, Some("http://127.0.0.1:7280".into())));
+        assert!(parse(&["--delete"]).0);
+        // Named flags only (#277).
+        assert!(Cli::try_parse_from([
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "prune",
+            "delete"
+        ])
+        .is_err());
     }
 
     #[test]
