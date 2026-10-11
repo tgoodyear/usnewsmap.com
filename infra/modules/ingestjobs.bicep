@@ -55,7 +55,7 @@ param americanStories bool = false
 param jaLatin bool = false
 @description('Lay a full rebuild\'s base out by decade (#123, 05 §5.5.5), so date-limited searches skip the other decades\' splits. Only a full base takes it; deltas follow the published version.')
 param partitionDecade bool = false
-@description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.6). Only a full base takes it; deltas follow the published version.')
+@description('Search a full rebuild\'s texts in one field (#283, 05 §5.5.7). Only a full base takes it; deltas follow the published version.')
 param singleTextField bool = false
 @minValue(1)
 @maxValue(32)

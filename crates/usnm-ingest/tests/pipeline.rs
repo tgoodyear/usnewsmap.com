@@ -335,7 +335,7 @@ impl Env {
     }
 
     /// A main index laid out with one searched field for both texts (05
-    /// §5.5.6): each document's `text_all` and `text_all_cg` checked against
+    /// §5.5.7): each document's `text_all` and `text_all_cg` checked against
     /// its stored texts and returned without them, as the fixtures hold.
     /// None has a pairs field of one text.
     fn index_single(&self, id: &str) -> BTreeMap<String, Value> {
@@ -2188,6 +2188,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
         lccns: vec![],
         langs: vec![],
         front_only: false,
+        series: Vec::new(),
     };
     let spec = BucketSpec::new(BucketUnit::Year, from, to);
     let every = parse("the OR a OR of OR and").unwrap();
@@ -3590,7 +3591,7 @@ async fn a_version_without_american_stories_is_rebuilt_in_full_when_it_is_turned
 }
 
 /// A full release with `--single-text-field` searches both texts in one
-/// field (05 §5.5.6): the documents have `text_all` and `text_all_cg` and
+/// field (05 §5.5.7): the documents have `text_all` and `text_all_cg` and
 /// no pairs field of one text, and the version says so. Deltas follow the
 /// published version whatever the setting says; a full release without it
 /// goes back to a field per text.
@@ -3924,7 +3925,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
     node.stop().await.unwrap();
 }
 
-/// One searched field for both texts (05 §5.5.6) goes into a real Quickwit
+/// One searched field for both texts (05 §5.5.7) goes into a real Quickwit
 /// writer under the strict mapping: a base and a delta with `text_all` and
 /// `text_all_cg`, `text` and `text_as` stored, and a phrase can't span the
 /// two texts. Runs when `QUICKWIT_BIN` is set.
@@ -4306,6 +4307,7 @@ async fn releases_a_base_laid_out_by_decade_into_a_quickwit_writer_node() {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         };
         let spec = BucketSpec::new(BucketUnit::Month, f.from, f.to);
         let a = backend.summary(&by_decade, &q, &f, &spec).await.unwrap();

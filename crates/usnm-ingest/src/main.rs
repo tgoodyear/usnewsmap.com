@@ -147,7 +147,7 @@ enum Command {
         #[arg(long)]
         partition_decade: bool,
         /// Search a full base's texts, LoC's and American Stories', in one
-        /// field (#283, 05 §5.5.6), so a search looks each word up once.
+        /// field (#283, 05 §5.5.7), so a search looks each word up once.
         /// Only a full base takes it; deltas follow the published version.
         #[arg(long)]
         single_text_field: bool,

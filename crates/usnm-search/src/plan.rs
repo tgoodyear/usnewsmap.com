@@ -34,7 +34,7 @@ pub struct Aggregate {
     pub last: Option<Hit>,
     /// When the search covers American Stories' text in fields of its own:
     /// how many of the matching pages match in it but not in LoC's text
-    /// (05 §5.5.4). `None` with one field for both texts (05 §5.5.6).
+    /// (05 §5.5.4). `None` with one field for both texts (05 §5.5.7).
     pub american_stories_only: Option<u64>,
 }
 
@@ -84,7 +84,7 @@ pub async fn aggregate(
     );
     // One count-only query.
     let american_stories_only = async {
-        // Not with one field for both texts (05 §5.5.6).
+        // Not with one field for both texts (05 §5.5.7).
         if !indexes.counts_american_stories_only() {
             return Ok(None);
         }
@@ -241,6 +241,7 @@ mod tests {
             ocr_source: None,
             ocr_engine: None,
             text_as: None,
+            congress: Default::default(),
             doc_id: format!("sn99{i:06}_x_ed-1_seq-1"),
             day,
             ym: 0,
@@ -272,6 +273,7 @@ mod tests {
             lccns: vec![],
             langs: vec![],
             front_only: false,
+            series: Vec::new(),
         }
     }
 
@@ -335,7 +337,7 @@ mod tests {
             run(on.clone(), none.clone()).await.american_stories_only,
             Some(0)
         );
-        // One field for both texts (05 §5.5.6): the same pages, no count.
+        // One field for both texts (05 §5.5.7): the same pages, no count.
         let single = on.with_text_layout(usnm_core::text_layout::TextLayout::Single);
         let a = run(single.clone(), q).await;
         assert_eq!((a.summary.total_hits, a.american_stories_only), (25, None));

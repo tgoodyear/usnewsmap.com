@@ -12,7 +12,7 @@ Two more facts shaped the design. Quickwit 0.9.1's `remove_long` filter in our `
 
 ## Decision
 
-- **A version can search both texts in one field** (`text_layout: 2` in `current.json`, 05 §5.5.6). `text_all` holds LoC's words, 32 positions no query can match, then American Stories' words; `text_all_cg` holds each text's common-word pairs the same way. `text` and `text_as` are stored for snippets and `matched_in`, not indexed. A query looks each word up once.
+- **A version can search both texts in one field** (`text_layout: 2` in `current.json`, 05 §5.5.7). `text_all` holds LoC's words, 32 positions no query can match, then American Stories' words; `text_all_cg` holds each text's common-word pairs the same way. `text` and `text_as` are stored for snippets and `matched_in`, not indexed. A query looks each word up once.
 - **The release writes the tokens**, one per word as the version's analyzer folds them, with `_` where a word is dropped and in the gap, and the fields use Quickwit's `whitespace` tokenizer, as the pairs field already does. A gap of dropped filler words would cost at least 255 bytes a position, and a shorter filler word would be indexed and reachable by a prefix query.
 - **`total.american_stories_only` is not counted on such a version.** Hits keep `matched_in` and `snippet_source`, which the API works out from the stored texts.
 - **`USNM_AMERICAN_STORIES_SEARCH=false` has no effect on such a version**: the API logs a warning and searches both texts.

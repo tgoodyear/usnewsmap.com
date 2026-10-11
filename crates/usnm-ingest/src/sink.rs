@@ -140,7 +140,7 @@ impl Decades {
 }
 
 /// How this run's new main index lays its pages out: by decade (05
-/// §5.5.5) and in which text fields (05 §5.5.6). Only the main index takes
+/// §5.5.5) and in which text fields (05 §5.5.7). Only the main index takes
 /// it; the Japanese index keeps its own mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MainLayout {
@@ -174,7 +174,7 @@ const TEMPLATE_TEXT_FIELDS: [&str; 4] = [
 ];
 const TEMPLATE_SEARCH_FIELDS: &str = "default_search_fields: [text]";
 
-/// `template` with the text fields of `layout` (05 §5.5.6). `Separate`
+/// `template` with the text fields of `layout` (05 §5.5.7). `Separate`
 /// leaves it as it is. `Single` keeps `text` and `text_as` stored but not
 /// indexed, drops their pairs, and adds `text_all` and `text_all_cg`, each
 /// with the comment lines above it replaced. Each line it changes must be
@@ -200,7 +200,7 @@ pub fn text_fields(layout: TextLayout, template: &str) -> anyhow::Result<String>
             }
             if i == 0 {
                 for l in [
-                    "# One searched field for both texts (05 §5.5.6, #283). LoC's text (or",
+                    "# One searched field for both texts (05 §5.5.7, #283). LoC's text (or",
                     "# our OCR's Latin text, #203) and American Stories' (05 §5.5.4) are",
                     "# stored for snippets and `matched_in`, not searched.",
                     "- { name: text, type: text, indexed: false, stored: true }",
@@ -349,7 +349,7 @@ const INGEST_RETRY_FOR: Duration = Duration::from_secs(600);
 #[async_trait]
 pub trait IndexSink: Send {
     /// Start a new, empty main index, laid out as `layout` says: by decade
-    /// (05 §5.5.5) and in its text fields (05 §5.5.6). Fails if it already
+    /// (05 §5.5.5) and in its text fields (05 §5.5.7). Fails if it already
     /// exists.
     async fn create(&mut self, index_id: &str, layout: MainLayout) -> anyhow::Result<()>;
     /// Create an index with another mapping (the Japanese pages',

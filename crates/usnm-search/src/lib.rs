@@ -65,6 +65,50 @@ pub struct PageDoc {
     /// ([`IndexSet::american_stories`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_as: Option<String>,
+    /// A Congress page's fields (#229), in the Congress index set only
+    /// (`infra/quickwit/congress-index.yaml`). `None` on newspaper pages.
+    #[serde(flatten)]
+    pub congress: CongressFields,
+}
+
+/// What a Congress page carries beyond a newspaper page's fields (#229):
+/// which series it is from and what to cite and link. Every field is
+/// optional and absent on newspaper pages.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CongressFields {
+    /// `globe`, `serialset`, `annals` or `register`
+    /// ([`usnm_core::params::CONGRESS_SERIES`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<String>,
+    /// The document's title (Serial Set) or the volume's label (debates).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// As printed: "H. Doc. 16-42", "Cong. Globe, 25th Cong., 2nd Sess."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub congress: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// `house`, `senate` or `joint`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chamber: Option<String>,
+    /// The page or column numbers as printed ("272", "1041-1042").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub printed_page: Option<String>,
+    /// GovInfo package (Serial Set), UNT item or Congress.gov volume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_id: Option<String>,
+    /// The page in its source's viewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+}
+
+impl CongressFields {
+    /// Whether this is a Congress page.
+    pub fn is_congress(&self) -> bool {
+        self.series.is_some()
+    }
 }
 
 /// The sealed indexes a published `index_version` names (08 §8.4.1), and
@@ -89,7 +133,7 @@ pub struct IndexSet {
     /// cover it: in `text_as` and `text_as_cg`, or in the one searched
     /// field of [`TextLayout::Single`].
     american_stories: bool,
-    /// Which fields the texts are searched in (05 §5.5.6, #283): a field
+    /// Which fields the texts are searched in (05 §5.5.7, #283): a field
     /// per text, or one for both.
     text_layout: TextLayout,
     /// Every index has the `decade` field at the API's
@@ -145,7 +189,7 @@ impl IndexSet {
         self.american_stories
     }
 
-    /// The indexes' text fields (05 §5.5.6).
+    /// The indexes' text fields (05 §5.5.7).
     pub fn with_text_layout(mut self, layout: TextLayout) -> Self {
         self.text_layout = layout;
         self
@@ -323,6 +367,10 @@ pub struct Hit {
     /// Stories' text, and not on Japanese pages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_in: Option<Vec<&'static str>>,
+    /// A Congress page's series, title, citation and link (#229); empty,
+    /// and left out of the JSON, on newspaper pages.
+    #[serde(flatten)]
+    pub congress: CongressFields,
 }
 
 /// [`Hit::snippet_source`] for snippets from American Stories' text, and
@@ -414,7 +462,7 @@ pub trait SearchBackend: Send + Sync {
     /// in American Stories' text but not in LoC's (05 §5.5.4): the hits
     /// whose [`Hit::matched_in`] is American Stories' text alone. One
     /// count-only request. A backend without it refuses, and so does every
-    /// backend on a set with one field for both texts (05 §5.5.6), where
+    /// backend on a set with one field for both texts (05 §5.5.7), where
     /// LoC's alone can't be searched.
     async fn american_stories_only(
         &self,

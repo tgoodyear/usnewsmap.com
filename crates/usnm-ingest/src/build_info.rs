@@ -42,7 +42,7 @@ pub struct Built {
     /// and of the version's main indexes, which all have the `decade` field
     /// or none does.
     pub decades: crate::sink::Decades,
-    /// The text fields (05 §5.5.6): of the main index this run writes, and
+    /// The text fields (05 §5.5.7): of the main index this run writes, and
     /// of the version's main indexes, which all have the same ones.
     pub text_layout: usnm_core::text_layout::TextLayout,
     /// The analyzer the run's indexes fold words with (#168): the latest for

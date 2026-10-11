@@ -99,7 +99,7 @@ pub struct Release {
     /// says. Off: the documents, the index config and `current.json` are as
     /// before.
     pub partition_decade: bool,
-    /// Search a full base's texts in one field (05 §5.5.6, #283): `text_all`
+    /// Search a full base's texts in one field (05 §5.5.7, #283): `text_all`
     /// and `text_all_cg` hold LoC's and American Stories' words with a gap
     /// between them, `text` and `text_as` are stored only, and
     /// `current.json` says so (`text_layout`). Only a full base takes it: a
@@ -183,7 +183,7 @@ pub struct DocFormat {
     /// The analyzer that folds the common-word pairs (05 §5.5.3, #168), and
     /// the words of `text_all`.
     pub analyzer: Analyzer,
-    /// Which fields the texts are searched in (05 §5.5.6).
+    /// Which fields the texts are searched in (05 §5.5.7).
     pub text: TextLayout,
 }
 
@@ -248,7 +248,7 @@ pub fn main_doc(
             }
         }
         // One searched field for both texts; `text` and `text_as` are
-        // stored for snippets (05 §5.5.6).
+        // stored for snippets (05 §5.5.7).
         TextLayout::Single => {
             let (words, pairs) =
                 usnm_core::text_layout::index_fields(text, text_as, format.analyzer);
@@ -297,7 +297,7 @@ struct PublishedPointer {
     american_stories: Option<u32>,
     /// `decades`: every index of the version has the `decade` field (05 §5.5.5).
     decades: Option<u32>,
-    /// `text_layout`: the text fields of every main index (05 §5.5.6).
+    /// `text_layout`: the text fields of every main index (05 §5.5.7).
     text_layout: Option<u32>,
 }
 
@@ -484,7 +484,7 @@ impl Release {
                 "American Stories' text is new to the published version; building a full base"
             );
         }
-        // The text fields (05 §5.5.6): a delta is laid out as the published
+        // The text fields (05 §5.5.7): a delta is laid out as the published
         // version is, so a layout this release doesn't know can't take one.
         let published_layout = previous_layout.map(TextLayout::from_version);
         let relayouting = matches!(published_layout, Some(None));
@@ -1020,7 +1020,7 @@ impl Release {
         }
         // Every main index of the version has one searched field for both
         // texts: a base this run built with it, or one the published version
-        // has, with deltas written like it (05 §5.5.6). Absent: a field per
+        // has, with deltas written like it (05 §5.5.7). Absent: a field per
         // text, as before the setting.
         if text_layout != TextLayout::Separate {
             pointer["text_layout"] = json!(text_layout.version());
@@ -1146,7 +1146,7 @@ impl Release {
         }
     }
 
-    /// The text fields of this release's main index (05 §5.5.6): a full
+    /// The text fields of this release's main index (05 §5.5.7): a full
     /// base's as `single_text_field` says; a delta's (or an overlay-only
     /// release's, which keeps the main indexes) as the published version
     /// has them, so every main index of a version has the same fields.

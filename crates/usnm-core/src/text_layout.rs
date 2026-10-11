@@ -1,4 +1,4 @@
-//! How the main index lays out a page's texts for searching (05 §5.5.6,
+//! How the main index lays out a page's texts for searching (05 §5.5.7,
 //! #283): a field for each text, or one field for both.
 //!
 //! [`TextLayout::Separate`] is the layout of every version before #283:

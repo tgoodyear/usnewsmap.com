@@ -26,11 +26,13 @@ const INDEXES: [&str; 2] = ["pages-base-fixture", "pages-delta-fixture-1"];
 /// (`Analyzer::V1`), as the indexes built before #168 have them; the ones
 /// above have the latest (`scripts/quickwit-fixtures.sh`).
 const INDEXES_V1: [&str; 2] = ["pages-base-fixture-cg1", "pages-delta-fixture-1-cg1"];
-/// The same pages with one searched field for both texts (05 §5.5.6,
+/// The same pages with one searched field for both texts (05 §5.5.7,
 /// #283): `text_all` and `text_all_cg`, `text` and `text_as` stored only.
 const INDEXES_SINGLE: [&str; 2] = ["pages-base-fixture-single", "pages-delta-fixture-1-single"];
 /// The Japanese pages (#139), searched on their own.
 const JA_INDEX: &str = "pages-ja-fixture";
+/// The Congress pages (#229), their own index set too.
+const CONGRESS_INDEX: &str = "congress-fixture";
 
 fn quickwit() -> Option<QuickwitBackend> {
     let url = std::env::var("QUICKWIT_URL")
@@ -46,12 +48,12 @@ fn memory() -> MemoryBackend {
         .iter()
         .chain(&INDEXES)
         .chain(&INDEXES)
-        .chain([&JA_INDEX]);
+        .chain([&JA_INDEX, &CONGRESS_INDEX]);
     let ids = INDEXES
         .iter()
         .chain(&INDEXES_V1)
         .chain(&INDEXES_SINGLE)
-        .chain([&JA_INDEX]);
+        .chain([&JA_INDEX, &CONGRESS_INDEX]);
     for (file, id) in files.zip(ids) {
         let file = std::fs::File::open(dir.join(format!("{file}.jsonl"))).expect("fixture");
         let docs: Vec<PageDoc> = std::io::BufReader::new(file)
@@ -80,6 +82,7 @@ fn filters(from: &str, to: &str) -> Filters {
         lccns: vec![],
         langs: vec![],
         front_only: false,
+        series: Vec::new(),
     }
 }
 
@@ -205,7 +208,7 @@ fn sets() -> Vec<(&'static str, IndexSet)> {
     vec![("loc", loc), ("both texts", both)]
 }
 
-/// Both texts in one searched field (05 §5.5.6), as the API searches a
+/// Both texts in one searched field (05 §5.5.7), as the API searches a
 /// version with `text_layout` 2.
 fn single() -> IndexSet {
     IndexSet::new(INDEXES_SINGLE.iter().map(|s| (*s).to_owned()).collect())
@@ -742,14 +745,14 @@ async fn phrases_through_common_word_pairs_match_the_reference_backend() {
             "only {matched} phrases matched the fixtures ({analyzer:?})"
         );
     }
-    // One field for both texts (05 §5.5.6), through its pairs field.
+    // One field for both texts (05 §5.5.7), through its pairs field.
     let set = single();
     let grams = set.clone().with_common_grams(true);
     let matched = common_word_phrases(&qw, &mem, &set, &grams).await;
     assert!(matched >= 10, "only {matched} phrases matched (one field)");
 }
 
-/// With one field for both texts (05 §5.5.6) a phrase or NEAR search still
+/// With one field for both texts (05 §5.5.7) a phrase or NEAR search still
 /// can't span the two: a word near the end of a page's LoC text that its
 /// American Stories text lacks, and one near the start of that text that
 /// LoC's lacks, are within the largest slop of each other but for the gap
@@ -1247,4 +1250,82 @@ async fn searches_by_decade_open_only_their_decades_splits() {
     );
     // A range with no pages: none.
     assert_eq!(opened(set, filters("1900-01-01", "1910-12-31")).await, 0);
+}
+
+#[tokio::test]
+async fn congress_searches_match_the_reference_backend() {
+    let Some(qw) = quickwit() else {
+        eprintln!("QUICKWIT_URL not set; skipping");
+        return;
+    };
+    let mem = memory();
+    let plain = IndexSet::new(vec![CONGRESS_INDEX.to_owned()]);
+    // As the API searches it: phrases with common words go to `text_cg`.
+    let grams = plain.clone().with_common_grams(true);
+    let all = filters("1789-01-01", "1994-12-31");
+    let mut globe = all.clone();
+    globe.series = vec!["globe".into()];
+    let mut two = filters("1820-01-01", "1850-12-31");
+    two.series = vec!["annals".into(), "register".into()];
+    let queries: Vec<(&str, Node)> = vec![
+        ("word", parse("tariff").unwrap()),
+        ("phrase", parse("\"fugitive slave\"").unwrap()),
+        (
+            "common-word phrase",
+            parse("\"admission of california\"").unwrap(),
+        ),
+        ("and", parse("gold silver").unwrap()),
+        ("or", parse("missouri OR nullification").unwrap()),
+        ("not", parse("senate -california").unwrap()),
+        ("prefix", parse("nullif*").unwrap()),
+        (
+            "near",
+            build("free standard", Some(Mode::Near), 4, 0).unwrap(),
+        ),
+    ];
+    let mut nonzero = 0;
+    for (sname, set) in [("plain", &plain), ("pairs", &grams)] {
+        for (qname, q) in &queries {
+            for (fname, f) in [("all", &all), ("globe", &globe), ("annals+register", &two)] {
+                for spec in specs(f) {
+                    let mut f = f.clone();
+                    f.from = spec.from;
+                    f.to = spec.to;
+                    let ctx = format!("{sname} / {qname} / {fname} / {:?}", spec.unit);
+                    let want = sorted(mem.summary(set, q, &f, &spec).await.unwrap());
+                    let got = sorted(qw.summary(set, q, &f, &spec).await.expect(&ctx));
+                    assert_eq!(got, want, "summary: {ctx}");
+                    nonzero += usize::from(want.total_hits > 0);
+                    let shards: Vec<u8> = (0..8).collect();
+                    let want = sorted_cells(mem.cube(set, q, &f, &spec, &shards).await.unwrap());
+                    let got = sorted_cells(qw.cube(set, q, &f, &spec, &shards).await.expect(&ctx));
+                    assert_eq!(got, want, "cube: {ctx}");
+                }
+                let page = HitsQuery {
+                    limit: 10,
+                    ..Default::default()
+                };
+                let ctx = format!("{sname} / {qname} / {fname}");
+                let want = mem.hits(set, q, f, &page).await.unwrap();
+                let got = qw.hits(set, q, f, &page).await.expect(&ctx);
+                assert_eq!(got.total, want.total, "hits total: {ctx}");
+                let key = |h: &usnm_search::Hit| {
+                    (
+                        h.doc_id.clone(),
+                        h.snippets.clone(),
+                        h.congress.clone(),
+                        h.front_page,
+                        h.seq,
+                        h.place_id.clone(),
+                    )
+                };
+                assert_eq!(
+                    got.hits.iter().map(key).collect::<Vec<_>>(),
+                    want.hits.iter().map(key).collect::<Vec<_>>(),
+                    "hits: {ctx}"
+                );
+            }
+        }
+    }
+    assert!(nonzero > 20, "only {nonzero} Congress searches matched");
 }

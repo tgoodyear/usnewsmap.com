@@ -1,4 +1,4 @@
-//! The fixture indexes with one searched field for both texts (05 §5.5.6,
+//! The fixture indexes with one searched field for both texts (05 §5.5.7,
 //! #283), for scripts/quickwit-fixtures.sh and the parity test:
 //!
 //! - `single_field_fixture --template`: the index template on stdin, with
