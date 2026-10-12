@@ -5940,6 +5940,7 @@ async fn put_serialset(e: &Env) -> usnm_ingest::congress::curated::Counts {
         &rows,
         at,
         volume.lastmod(),
+        Some(volume.fingerprint()),
     )
     .await
     .unwrap()

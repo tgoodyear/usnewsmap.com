@@ -564,12 +564,15 @@ enum Command {
     /// volume's documents (MODS and PDF, about one request a second), read
     /// the PDFs page by page with pdftotext and delete them, and write a
     /// curated attempt per volume. Volumes with a finished attempt are
-    /// skipped unless a package changed since (its sitemap `lastmod`). With
+    /// skipped unless their packages changed since (ids and sitemap
+    /// `lastmod`s). With
     /// USNM_RAW_URL the MODS and page texts are kept there and read back on
     /// a later run. Holds the `congress-serialset` lock. Prints what it did
     /// as JSON.
     CongressSerialset {
-        /// Only these years' sitemaps (`1820`), comma separated; default all.
+        /// Only the volumes with a package in these years' sitemaps
+        /// (`1820`), comma separated; default all. Every sitemap is still
+        /// read, and each volume is made of its packages in all of them.
         #[arg(long, value_delimiter = ',')]
         years: Vec<u16>,
         /// Only these serial numbers' volumes (`33`), comma separated.

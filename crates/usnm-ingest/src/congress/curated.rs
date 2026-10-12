@@ -411,6 +411,13 @@ pub struct Counts {
     /// fetch knows the unit changed. None for sources without one (UNT).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_lastmod: Option<String>,
+    /// A fingerprint of every package the attempt read with its `lastmod`
+    /// (the Serial Set's `Volume::fingerprint`), so a later fetch sees a
+    /// package added, dropped or changed even when the newest `lastmod`
+    /// didn't move. None for sources without one, and for attempts written
+    /// before it was recorded (the Serial Set fetches those again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_packages: Option<String>,
 }
 
 impl Counts {
@@ -452,6 +459,7 @@ impl Counts {
             parts,
             finished_at,
             source_lastmod: None,
+            source_packages: None,
         }
     }
 }
@@ -534,10 +542,13 @@ pub async fn write_attempt(
     rows: &[CuratedPage],
     now: DateTime<Utc>,
 ) -> anyhow::Result<Counts> {
-    write_attempt_from(store, series, source, unit, rows, now, None).await
+    write_attempt_from(store, series, source, unit, rows, now, None, None).await
 }
 
-/// [`write_attempt`], recording the source's `lastmod` for what it read.
+/// [`write_attempt`], recording the source's `lastmod` and package
+/// fingerprint for what it read ([`Counts::source_lastmod`],
+/// [`Counts::source_packages`]).
+#[allow(clippy::too_many_arguments)]
 pub async fn write_attempt_from(
     store: &dyn ObjectStore,
     series: &str,
@@ -546,6 +557,7 @@ pub async fn write_attempt_from(
     rows: &[CuratedPage],
     now: DateTime<Utc>,
     source_lastmod: Option<String>,
+    source_packages: Option<String>,
 ) -> anyhow::Result<Counts> {
     let attempt = next_attempt(store, series, unit).await?;
     let dir = attempt_dir(series, unit, attempt);
@@ -565,6 +577,7 @@ pub async fn write_attempt_from(
     }
     let counts = Counts {
         source_lastmod,
+        source_packages,
         ..Counts::of(series, source, unit, attempt, rows, vec![part], now)
     };
     let counts_path = format!("{dir}/{COUNTS}");
@@ -589,8 +602,8 @@ pub const EMPTY: &str = "empty.json";
 /// Serial Set volume all of whose documents are left out for good). It
 /// takes an attempt number like any attempt, so whichever of a unit's
 /// newest empty attempt and newest finished one has the higher number is
-/// the unit's state: the fetch skips the unit until its source changes
-/// past `source_lastmod`, and the release leaves out a finished attempt an
+/// the unit's state: the fetch skips the unit until its packages change
+/// (`source_packages`), and the release leaves out a finished attempt an
 /// empty one came after ([`superseded_by_empty`]). [`finished`] doesn't
 /// list it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -602,6 +615,9 @@ pub struct Empty {
     pub finished_at: DateTime<Utc>,
     /// As in [`Counts::source_lastmod`].
     pub source_lastmod: Option<String>,
+    /// As in [`Counts::source_packages`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_packages: Option<String>,
     /// What was left out, with why (`{id}: undated`, `{id}: no_pdf`).
     pub left_out: Vec<String>,
 }
@@ -613,6 +629,7 @@ pub async fn write_empty(
     unit: &str,
     now: DateTime<Utc>,
     source_lastmod: Option<String>,
+    source_packages: Option<String>,
     left_out: Vec<String>,
 ) -> anyhow::Result<Empty> {
     let attempt = next_attempt(store, series, unit).await?;
@@ -623,6 +640,7 @@ pub async fn write_empty(
         attempt,
         finished_at: now,
         source_lastmod,
+        source_packages,
         left_out,
     };
     let path = format!("{}/{EMPTY}", attempt_dir(series, unit, attempt));

@@ -7,11 +7,19 @@
 //!    package ids with a `lastmod`. A volume package (`SERIALSET-00033_00_00`)
 //!    is the whole bound volume and duplicates its documents, so only the
 //!    document packages (`SERIALSET-00033_00_00-009-0042-0000`) are fetched,
-//!    grouped by their volume, the unit a curated attempt holds.
+//!    grouped by their volume, the unit a curated attempt holds. Every
+//!    yearly sitemap is read, even with `--years`, since a volume's packages
+//!    can be listed in more than one: `--years` picks the volumes with a
+//!    package in those years, and each is still made of its packages in
+//!    every sitemap, so a run with `--years` writes the same attempt a run
+//!    without it would.
 //! 2. **Decide.** A volume is fetched when it has no finished or empty
-//!    attempt, or when one of its packages has a later `lastmod` than the
-//!    newer of them recorded (`Counts::source_lastmod`,
-//!    `curated::Empty::source_lastmod`): a document GPO changed or added.
+//!    attempt, or when its packages and their `lastmod`s differ from those
+//!    the newer of them read ([`Volume::fingerprint`], recorded as
+//!    `Counts::source_packages` and `curated::Empty::source_packages`): a
+//!    document GPO changed, added or dropped, whatever its `lastmod`. An
+//!    attempt written before the fingerprint was recorded has none and is
+//!    fetched again (from the raw store, when it holds the volume).
 //!    `--refetch` fetches finished and empty volumes again.
 //! 3. **Fetch.** Per document, its MODS (`/metadata/pkg/{id}/mods.xml`) and
 //!    its PDF (`/content/pkg/{id}/pdf/{id}.pdf`), one request at a time,
@@ -34,10 +42,10 @@
 //!    for (its MODS, or a PDF its MODS names) or that couldn't be read is
 //!    `incomplete`: nothing is written, the 404 isn't kept, and the next
 //!    run fetches it again, since a finished attempt records the volume's
-//!    latest `lastmod` and would not be fetched again. A volume stopped by
+//!    packages and would not be fetched again. A volume stopped by
 //!    the deadline also writes nothing and is fetched again by the next run.
 //!    A volume all of whose documents are left out for good gets an empty
-//!    attempt (`empty.json`, [`curated::Empty`]) with its `lastmod` and what
+//!    attempt (`empty.json`, [`curated::Empty`]) with its packages and what
 //!    was left out, and no pages: later runs skip it like a finished one,
 //!    and the release leaves out any earlier attempt of it.
 
@@ -713,6 +721,26 @@ impl Volume {
             .filter_map(|d| d.lastmod.clone())
             .max()
     }
+
+    /// Which documents it has, each with its `lastmod`: the SHA-256 (hex)
+    /// of `{id}\t{lastmod}\n` per document, by id. A document added,
+    /// dropped or with any other `lastmod`, earlier or later, changes it.
+    pub fn fingerprint(&self) -> String {
+        let mut ids: Vec<(&str, &str)> = self
+            .documents
+            .iter()
+            .map(|d| (d.id.id.as_str(), d.lastmod.as_deref().unwrap_or_default()))
+            .collect();
+        ids.sort_unstable();
+        let mut h = Sha256::new();
+        for (id, lastmod) in ids {
+            h.update(id.as_bytes());
+            h.update(b"\t");
+            h.update(lastmod.as_bytes());
+            h.update(b"\n");
+        }
+        crate::source::hex(&h.finalize())
+    }
 }
 
 /// The listed packages, grouped.
@@ -726,6 +754,15 @@ pub struct Plan {
     pub bad_ids: Vec<String>,
 }
 
+/// The package id a sitemap entry names (`…/app/details/{id}`).
+fn entry_id(e: &Entry) -> &str {
+    e.loc
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+}
+
 /// Group the sitemaps' packages by volume. A package listed twice keeps its
 /// later `lastmod`.
 pub fn plan(entries: Vec<Entry>) -> Plan {
@@ -733,12 +770,7 @@ pub fn plan(entries: Vec<Entry>) -> Plan {
     let mut docs: BTreeMap<String, BTreeMap<String, Listed>> = BTreeMap::new();
     let mut volumes_seen = BTreeSet::new();
     for e in entries {
-        let id = e
-            .loc
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or_default();
+        let id = entry_id(&e);
         let Some(pkg) = PackageId::parse(id) else {
             p.bad_ids.push(id.to_owned());
             continue;
@@ -781,7 +813,9 @@ pub fn plan(entries: Vec<Entry>) -> Plan {
 pub struct Options {
     /// Where to fetch from: GovInfo, or a copy of its responses (tests).
     pub base: String,
-    /// Only these years' sitemaps; empty: all.
+    /// Only the volumes with a package in these years' sitemaps; empty:
+    /// all. Every sitemap is still read, and a volume is made of its
+    /// packages in all of them.
     pub years: Vec<u16>,
     /// Only these serial numbers' volumes; empty: every volume listed.
     pub serials: Vec<u32>,
@@ -812,20 +846,23 @@ impl Default for Options {
 /// What a run did, printed as JSON at the end.
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
-    /// Yearly sitemaps read.
+    /// Yearly sitemaps read: all of them, even with `--years`.
     pub sitemaps: usize,
     /// Packages they list.
     pub listed: usize,
     /// Whole-volume packages, not fetched.
     pub volume_packages: usize,
     pub bad_ids: Vec<String>,
-    /// Volumes with documents, and their documents (after `--serials`).
+    /// Volumes with documents, and their documents (after `--years` and
+    /// `--serials`).
     pub volumes: usize,
     pub documents: usize,
-    /// Volumes with a finished (or empty) attempt and nothing newer, not
-    /// fetched again.
+    /// Volumes with a finished (or empty) attempt of the same packages and
+    /// `lastmod`s, not fetched again.
     pub already: usize,
-    /// Volumes with a finished (or empty) attempt whose packages changed since.
+    /// Volumes with a finished (or empty) attempt whose packages changed
+    /// since (added, dropped or another `lastmod`), or that has no record
+    /// of its packages (written before it was kept).
     pub changed: usize,
     /// Volumes written, with their attempt and pages.
     pub written: Vec<(String, u32, u64)>,
@@ -850,21 +887,22 @@ pub struct Report {
     pub undated: Vec<String>,
     /// Volumes all of whose documents are left out for good (`no_pdf`,
     /// `undated`): an empty attempt (`curated::Empty`) is written in place
-    /// of pages, so later runs skip them until their `lastmod` moves.
+    /// of pages, so later runs skip them until their packages change.
     pub empty_volumes: Vec<String>,
     /// Volumes left for the next run: the deadline, `--max-volumes` or a lost lock.
     pub left: usize,
 }
 
-/// Read the sitemap index and the yearly sitemaps, keeping each response in
-/// the raw store.
+/// Read the sitemap index and every yearly sitemap, keeping each response in
+/// the raw store: the entries, and the ids of the packages listed in the
+/// years `--years` names (all, without it).
 async fn list(
     fetch: &dyn Fetch,
     raw: Option<&dyn ObjectStore>,
     opts: &Options,
     now: DateTime<Utc>,
     report: &mut Report,
-) -> anyhow::Result<Vec<Entry>> {
+) -> anyhow::Result<(Vec<Entry>, BTreeSet<String>)> {
     let dir = format!("congress/govinfo/sitemaps/{}", now.format("%Y%m%dT%H%M%SZ"));
     let url = format!("{}{INDEX_PATH}", opts.base);
     let body = fetch
@@ -877,8 +915,10 @@ async fn list(
     let mut sitemaps: Vec<(u16, Entry)> = Vec::new();
     for e in parse_index(&body).with_context(|| url.clone())? {
         match sitemap_year(&e.loc) {
-            Some(y) if opts.years.is_empty() || opts.years.contains(&y) => sitemaps.push((y, e)),
-            Some(_) => {}
+            // Every year, even with `--years`: a volume's packages can be in
+            // more than one sitemap, and a volume read from only some of
+            // them would be written as finished without the others.
+            Some(y) => sitemaps.push((y, e)),
             None => {
                 tracing::warn!(loc = %e.loc, "a sitemap the index names without a year; skipped")
             }
@@ -894,6 +934,7 @@ async fn list(
     }
     sitemaps.sort_by_key(|(y, _)| *y);
     let mut out = Vec::new();
+    let mut selected = BTreeSet::new();
     for (year, e) in sitemaps {
         let url = rebase(&opts.base, &e.loc);
         let body = fetch
@@ -906,10 +947,13 @@ async fn list(
         let mut got = parse_urlset(&body).with_context(|| url.clone())?;
         tracing::info!(year, packages = got.len(), "Serial Set sitemap read");
         report.sitemaps += 1;
+        if opts.years.is_empty() || opts.years.contains(&year) {
+            selected.extend(got.iter().map(|e| entry_id(e).to_owned()));
+        }
         out.append(&mut got);
     }
     report.listed = out.len();
-    Ok(out)
+    Ok((out, selected))
 }
 
 /// One document, read.
@@ -1083,8 +1127,18 @@ pub async fn run(
     lost: &AtomicBool,
 ) -> anyhow::Result<Report> {
     let mut report = Report::default();
-    let entries = list(fetch, raw, opts, Utc::now(), &mut report).await?;
+    let (entries, selected) = list(fetch, raw, opts, Utc::now(), &mut report).await?;
     let mut p = plan(entries);
+    if !opts.years.is_empty() {
+        // The volumes with a package in those years, each with its
+        // packages in every sitemap.
+        let volumes: BTreeSet<String> = selected
+            .iter()
+            .filter_map(|id| PackageId::parse(id))
+            .map(|id| id.volume)
+            .collect();
+        p.volumes.retain(|v| volumes.contains(&v.volume));
+    }
     report.volume_packages = p.volume_packages;
     report.bad_ids = p.bad_ids.clone();
     if !p.bad_ids.is_empty() {
@@ -1110,7 +1164,7 @@ pub async fn run(
         .map(|f| (f.unit.clone(), f))
         .collect();
     // A volume whose documents were all left out has an empty attempt:
-    // the newer of it and the finished one says what was read, and when.
+    // the newer of it and the finished one says which packages were read.
     let empties: BTreeMap<String, curated::Empty> = curated::empties(curated)
         .await?
         .into_iter()
@@ -1121,19 +1175,22 @@ pub async fn run(
     for v in &p.volumes {
         let recorded = match (finished.get(&v.volume), empties.get(&v.volume)) {
             (Some(f), e) if e.is_none_or(|e| e.attempt < f.attempt) => {
-                Some(curated::read_counts(curated, f).await?.0.source_lastmod)
+                Some(curated::read_counts(curated, f).await?.0.source_packages)
             }
-            (_, Some(e)) => Some(e.source_lastmod.clone()),
+            (_, Some(e)) => Some(e.source_packages.clone()),
             (_, None) => None,
         };
         match recorded {
             None => todo.push(v),
             Some(_) if opts.refetch => todo.push(v),
-            Some(lastmod) if v.lastmod() > lastmod => {
+            Some(Some(packages)) if packages == v.fingerprint() => report.already += 1,
+            // Packages added, dropped or with another `lastmod`, earlier
+            // or later; or an attempt from before the packages were
+            // recorded, which can't tell: fetched again.
+            Some(_) => {
                 report.changed += 1;
                 todo.push(v);
             }
-            Some(_) => report.already += 1,
         }
     }
     tracing::info!(
@@ -1164,9 +1221,9 @@ pub async fn run(
                 tracing::warn!(volume = %v.volume, "the fetch lock was lost; stopping");
                 break;
             }
-            // A finished attempt records the volume's latest `lastmod`, and
-            // a later run skips it: written only when every document is
-            // read or left out for good.
+            // A finished attempt records the volume's packages, and a
+            // later run skips it: written only when every document is read
+            // or left out for good.
             Ok(read) if read.unread > 0 => {
                 tracing::warn!(
                     volume = %v.volume, unread = read.unread, documents = v.documents.len(),
@@ -1180,7 +1237,7 @@ pub async fn run(
                 ));
             }
             // Recorded as an empty attempt, so later runs skip the volume
-            // until its `lastmod` moves (or `--refetch`), and the release
+            // until its packages change (or `--refetch`), and the release
             // drops an earlier attempt of it.
             Ok(read) if read.rows.is_empty() => {
                 let empty = curated::write_empty(
@@ -1189,6 +1246,7 @@ pub async fn run(
                     &v.volume,
                     Utc::now(),
                     v.lastmod(),
+                    Some(v.fingerprint()),
                     read.left_out,
                 )
                 .await?;
@@ -1207,6 +1265,7 @@ pub async fn run(
                     &rows,
                     Utc::now(),
                     v.lastmod(),
+                    Some(v.fingerprint()),
                 )
                 .await?;
                 tracing::info!(
@@ -1570,10 +1629,11 @@ mod tests {
         let report = run(&gi, &text, &curated, Some(&raw), &opts, &lost)
             .await
             .unwrap();
-        assert_eq!((report.sitemaps, report.listed), (1, 5));
+        // Both sitemaps are read; `--years 1820` picks the volumes.
+        assert_eq!((report.sitemaps, report.listed), (2, 7));
         assert_eq!(
             (report.volume_packages, report.volumes, report.documents),
-            (2, 2, 3)
+            (3, 2, 3)
         );
         // Serial 25's one document has no recorded MODS: GovInfo's 404.
         assert_eq!(
@@ -1589,8 +1649,8 @@ mod tests {
         // The PDFs were deleted once read.
         assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
         assert_eq!(gi.asked("/content/pkg/"), 2);
-        // The index, one sitemap, three MODS (one a 404) and two PDFs.
-        assert_eq!(gi.asked.lock().unwrap().len(), 7);
+        // The index, two sitemaps, three MODS (one a 404) and two PDFs.
+        assert_eq!(gi.asked.lock().unwrap().len(), 8);
 
         let f = curated::finished(&curated).await.unwrap();
         assert_eq!(f.len(), 1);
@@ -2075,6 +2135,178 @@ mod tests {
         let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
         assert_eq!((r.already, r.changed), (1, 0));
         assert_eq!(gi.inner.asked("/content/pkg/"), 0);
+    }
+
+    /// The recorded responses, with one package of the 1820 sitemap listed
+    /// in the 1990 one instead: a volume whose packages are in two yearly
+    /// sitemaps.
+    struct Moved(Recorded, &'static str);
+
+    #[async_trait::async_trait]
+    impl Fetch for Moved {
+        async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            let body = self.0.get(url).await?;
+            let year = |y: &str| url.ends_with(&format!("SERIALSET_{y}_sitemap.xml"));
+            if !year("1820") && !year("1990") {
+                return Ok(body);
+            }
+            let block = {
+                let s = String::from_utf8(recorded("SERIALSET_1820_sitemap.xml")).unwrap();
+                let at = s.find(self.1).unwrap();
+                let start = s[..at].rfind("<url>").unwrap();
+                let end = at + s[at..].find("</url>").unwrap() + "</url>".len();
+                s[start..end].to_owned()
+            };
+            let s = String::from_utf8(body.unwrap()).unwrap();
+            let s = if year("1820") {
+                s.replace(&block, "")
+            } else {
+                s.replace("</urlset>", &format!("{block}\n</urlset>"))
+            };
+            Ok(Some(s.into_bytes()))
+        }
+    }
+
+    /// `--years` picks volumes, but each is made of its packages in every
+    /// sitemap: a volume listed in 1820 and 1990 is written whole by a run
+    /// with `--years 1820` (or `--years 1990`), and a run of every year then
+    /// skips it.
+    #[tokio::test]
+    async fn years_pick_volumes_made_from_every_sitemap() {
+        let dir = tempfile::tempdir().unwrap();
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let v33 = plan(parse_urlset(&recorded("SERIALSET_1820_sitemap.xml")).unwrap())
+            .volumes
+            .remove(1);
+        assert_eq!(v33.volume, "00033_00_00");
+        for (i, year) in [1820, 1990].into_iter().enumerate() {
+            let curated = usnm_store::LocalStore::new(dir.path().join(format!("curated-{i}")));
+            let opts = Options {
+                years: vec![year],
+                serials: vec![33],
+                ..options(dir.path())
+            };
+            let gi = Moved(Recorded::default(), D53);
+            let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+            assert_eq!(r.sitemaps, 2, "{year}");
+            // Both documents, D53 from the 1990 sitemap.
+            assert_eq!(r.documents, 2, "{year}");
+            assert_eq!(r.written, [("00033_00_00".to_owned(), 1, 6)], "{year}");
+            let f = curated::finished(&curated).await.unwrap();
+            let (counts, _) = curated::read_counts(&curated, &f[0]).await.unwrap();
+            assert_eq!(counts.source_packages, Some(v33.fingerprint()), "{year}");
+            assert_eq!(counts.source_lastmod, v33.lastmod(), "{year}");
+
+            // Every year: the same packages, so skipped.
+            let all = Options {
+                years: Vec::new(),
+                ..opts.clone()
+            };
+            let gi = Moved(Recorded::default(), D53);
+            let r = run(&gi, &text, &curated, None, &all, &lost).await.unwrap();
+            assert_eq!((r.already, r.changed, r.written.len()), (1, 0, 0), "{year}");
+            assert_eq!(gi.0.asked("/metadata/pkg/"), 0, "{year}");
+        }
+    }
+
+    /// A volume is fetched again when its packages change in any way, not
+    /// only when the newest `lastmod` moves later: a document's `lastmod`
+    /// moved earlier, or a document added with an older one. An attempt
+    /// that recorded no packages (written before they were kept) is
+    /// fetched again too.
+    #[tokio::test]
+    async fn a_change_below_the_newest_lastmod_is_fetched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::LocalStore::new(dir.path().join("curated"));
+        let raw = usnm_store::LocalStore::new(dir.path().join("raw"));
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let opts = Options {
+            serials: vec![33],
+            ..options(dir.path())
+        };
+        let r = run(
+            &Recorded::default(),
+            &text,
+            &curated,
+            Some(&raw),
+            &opts,
+            &lost,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.written, [("00033_00_00".to_owned(), 1, 6)]);
+
+        // D53's `lastmod` moves earlier, under D42's (the volume's newest,
+        // which stays): fetched again, D53 from GovInfo and D42 from the
+        // raw store.
+        let earlier = || Recorded {
+            touched: Some((D53, "2020-01-01T00:00:00.000Z")),
+            ..Recorded::default()
+        };
+        let gi = earlier();
+        let r = run(&gi, &text, &curated, Some(&raw), &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!((r.changed, r.already), (1, 0));
+        assert_eq!(r.written, [("00033_00_00".to_owned(), 2, 6)]);
+        assert_eq!(gi.asked("/content/pkg/"), 1);
+        let f = curated::finished(&curated).await.unwrap();
+        let (c2, _) = curated::read_counts(&curated, &f[0]).await.unwrap();
+        assert_eq!(
+            c2.source_lastmod.as_deref(),
+            Some("2024-11-06T03:15:00.159Z")
+        );
+        // The same again: skipped.
+        let gi = earlier();
+        let r = run(&gi, &text, &curated, Some(&raw), &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!((r.already, r.changed), (1, 0));
+        assert_eq!(gi.asked("/metadata/pkg/"), 0);
+
+        // An attempt without the packages, as the first version of the
+        // fetch wrote: fetched again (from the raw store).
+        let rows = curated::read_checked(&curated, &c2.parts[0]).await.unwrap();
+        curated::write_attempt_from(
+            &curated,
+            SERIES,
+            SOURCE,
+            "00033_00_00",
+            &rows,
+            Utc::now(),
+            c2.source_lastmod.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        let gi = earlier();
+        let r = run(&gi, &text, &curated, Some(&raw), &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!((r.changed, r.already), (1, 0));
+        assert_eq!(r.written, [("00033_00_00".to_owned(), 4, 6)]);
+        assert_eq!(gi.asked("/content/pkg/"), 0);
+
+        // A document added with an older `lastmod` than the newest: the
+        // newest is the same, the fingerprint isn't.
+        let mut entries = parse_urlset(&recorded("SERIALSET_1820_sitemap.xml")).unwrap();
+        let before = plan(entries.clone()).volumes.remove(1);
+        entries.push(Entry {
+            loc: "https://www.govinfo.gov/app/details/SERIALSET-00033_00_00-030-0060-0000".into(),
+            lastmod: Some("2001-01-01T00:00:00.000Z".into()),
+        });
+        let after = plan(entries).volumes.remove(1);
+        assert_eq!(after.documents.len(), 3);
+        assert_eq!(before.lastmod(), after.lastmod());
+        assert_ne!(before.fingerprint(), after.fingerprint());
+        // Dropped, or listed in another order: as read.
+        let mut reordered = after.clone();
+        reordered.documents.reverse();
+        assert_eq!(reordered.fingerprint(), after.fingerprint());
+        reordered.documents.retain(|d| d.id.id != D42);
+        assert_ne!(reordered.fingerprint(), after.fingerprint());
     }
 
     #[test]
