@@ -52,6 +52,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$VMID" ] && [ -n "$NAME" ] && [ -n "$SSH_KEY" ] || usage
+case "$MEMORY_MIB$BALLOON_MIB" in *[!0-9]*|"") echo "error: --memory-mib and --balloon-mib must be whole numbers" >&2; exit 2 ;; esac
+[ "$BALLOON_MIB" -eq 0 ] || [ "$BALLOON_MIB" -lt "$MEMORY_MIB" ] || { echo "error: --balloon-mib must be 0 or below --memory-mib" >&2; exit 2; }
 # The name becomes a file name, the hostname and part of the cloud-init
 # document, so it must be a plain DNS label (as Proxmox and onboard.sh want).
 [[ $NAME =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,52}[A-Za-z0-9])?$ ]] ||
