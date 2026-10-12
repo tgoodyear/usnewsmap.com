@@ -80,8 +80,6 @@ fi
 IFS= read -r offline || true
 [ -n "$offline" ] || die "no offline token on stdin"
 mkdir -p "$dest"
-tmp=$(mktemp -d)
-trap "rm -rf $tmp" EXIT
 json() { python3 -c "import json,sys
 d=json.load(sys.stdin)
 for k in sys.argv[1].split(\".\"):
@@ -94,14 +92,17 @@ access=$(printf "%s" "$offline" | curl -fsS --proto =https \
   die "Red Hat SSO refused the offline token (expired? offline tokens lapse after 30 days unused)"
 unset offline
 [ -n "$access" ] || die "no access token from Red Hat SSO"
-# The download link: a redirect, or JSON with body.href. The header from stdin.
-code=$(printf "Authorization: Bearer %s\n" "$access" | curl -sS --proto =https -H @- \
-  -D "$tmp/headers" -o "$tmp/body" -w "%{http_code}" \
-  "https://api.access.redhat.com/management/v1/images/$sha/download")
+# The download link: a redirect, or JSON with body.href. The header from
+# stdin; the answer, headers then body then the status code, stays in memory.
+resp=$(printf "Authorization: Bearer %s\n" "$access" | curl -sS --proto =https -H @- \
+  -D - -w "\n%{http_code}" "https://api.access.redhat.com/management/v1/images/$sha/download")
 unset access
+code=$(printf "%s\n" "$resp" | tail -n 1)
+resp=$(printf "%s\n" "$resp" | sed "\$d")
 case "$code" in
-  307|302|301) href=$(sed -n "s/^[Ll]ocation: *//p" "$tmp/headers" | tr -d "\r" | head -1) ;;
-  200) href=$(json body.href < "$tmp/body") ;;
+  307|302|301) href=$(printf "%s\n" "$resp" | sed -n "s/^[Ll]ocation: *//p" | tr -d "\r" | head -1) ;;
+  200) href=$(printf "%s" "$resp" | python3 -c "import sys
+print(sys.stdin.read().split(\"\r\n\r\n\")[-1])" | json body.href) ;;
   404) die "Red Hat has no image with SHA-256 $sha" ;;
   *) die "the image API answered HTTP $code" ;;
 esac

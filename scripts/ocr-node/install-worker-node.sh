@@ -169,13 +169,14 @@ if command -v selinuxenabled > /dev/null && selinuxenabled; then
   # may hold for a few minutes (on a new node, the monitoring agent's
   # collector loads a policy module): wait for it, up to five minutes.
   semanage_wait() {
-    local out _
-    for _ in $(seq 1 30); do
+    local out try
+    for try in $(seq 0 30); do
       if out=$(semanage "$@" 2>&1); then
         printf '%s\n' "$out"
         return 0
       fi
       grep -q "transaction lock" <<< "$out" || break
+      [ "$try" -lt 30 ] || break
       echo "the SELinux policy store is busy; waiting" >&2
       sleep 10
     done
