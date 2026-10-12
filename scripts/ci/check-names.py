@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Check resource names against ADR-0017 (docs/design/adr/0017-resource-naming.md,
+"Enforcement"), offline:
+
+    scripts/ci/check-names.py [--envs prod,dev,xabcd] [--bicep bicep] [--base origin/main]
+
+1. Evaluates names() from infra/naming.bicep with `bicep build-params
+   infra/names/check.bicepparam` (no Azure): prod pinned to its legacy
+   names, and each of --envs in ADR-0017's form with a sample suffix.
+2. Every value in ADR-0017's form must parse: `usnm`, a function word from
+   the registry in naming.bicep with up to three qualifiers, the type's
+   abbreviation, the environment last (only the suffix after it, only on a
+   global type), within the type's length limit; compact names
+   usnm{fn}{abbr}{env}{sfx}; workbook titles `usnm {Title} ({env})`. A value
+   that doesn't is allowed only if its key is in infra/names/exceptions.json
+   (for the conventional forms, only with "scope": "all"); an exception
+   whose value now conforms must be removed.
+3. The pinned prod names must equal infra/names/prod.json: a prod rename
+   shows up as a reviewed change to that file, never as a side effect.
+4. exceptions.json: keys sorted, each with a reason, the ADR section and an
+   `until` (phase-0 to phase-4, never, or an issue #N); and with --base, no
+   key that the base revision's file doesn't have (the list only shrinks).
+5. infra/main.bicep and infra/modules/*.bicep build no resource name from a
+   string containing usnm or usnewsmap (name, roleName, displayName,
+   groupShortName, SyntheticMonitorId), and every guid() seed containing
+   usnm is one of the frozen seeds below.
+
+Standard library only. Exits 1 listing every problem.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+CHECK_PARAMS = ROOT / "infra" / "names" / "check.bicepparam"
+PROD = ROOT / "infra" / "names" / "prod.json"
+EXCEPTIONS = ROOT / "infra" / "names" / "exceptions.json"
+
+ENV_RE = re.compile(r"^(prod|dev|x[a-z0-9]{1,4})$")
+UNTIL_RE = re.compile(r"^(phase-[0-4]|never|#[0-9]+)$")
+TITLE_RE = re.compile(r"^usnm [A-Za-z ]+ \((prod|dev|x[a-z0-9]{1,4})\)$")
+QUALIFIER_RE = re.compile(r"^[a-z0-9]{1,12}$")
+WORD_RE = re.compile(r"^[a-z][a-z0-9]{1,8}$")
+
+# guid() seeds that contain usnm. They are frozen: changing one rotates a
+# role definition's id or a workbook's name, which the stack then deletes
+# and recreates (ADR-0017, "Enforcement").
+FROZEN_SEEDS = {
+    "usnm-archive-writer",
+    "usnm-ocr-node-writer",
+    "usnm-search-log-writer",
+    "usnm-swa-deployer",
+    "usnm-workbook-api",
+    "usnm-workbook-ocr-nodes",
+    "usnm-workbook-pipeline",
+}
+
+# The properties that hold a resource's name or display name.
+NAME_PROPS = ("name", "roleName", "displayName", "groupShortName", "SyntheticMonitorId")
+NAME_PROP = re.compile(r"(?:^\s*|[{,]\s*)(" + "|".join(NAME_PROPS) + r"):\s*")
+LITERAL = re.compile(r"'((?:[^'\\]|\\.)*)'")
+
+
+def guid_calls(text: str) -> list[tuple[int, int]]:
+    """Spans of the guid(...) calls in `text`, with balanced parentheses."""
+    spans = []
+    for m in re.finditer(r"\bguid\(", text):
+        depth, i = 1, m.end()
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        spans.append((m.start(), i))
+    return spans
+
+
+def evaluate(bicep: str, envs: str) -> dict:
+    """The parameters check.bicepparam evaluates to."""
+    env = {**os.environ, "USNM_CHECK_ENVS": envs}
+    out = subprocess.run([bicep, "build-params", str(CHECK_PARAMS), "--stdout"],
+                         capture_output=True, text=True, env=env, cwd=ROOT)
+    if out.returncode != 0:
+        sys.exit(f"bicep build-params {CHECK_PARAMS.relative_to(ROOT)} failed:\n{out.stderr}")
+    params = json.loads(json.loads(out.stdout)["parametersJson"])["parameters"]
+    return {k: v["value"] for k, v in params.items()}
+
+
+def values(v) -> list:
+    return v if isinstance(v, list) else [v]
+
+
+def conforms(value: str, abbr: str, env: str, sfx: str, words: list, abbrs: dict) -> str | None:
+    """None when `value` is in ADR-0017's form for `abbr`, else why not."""
+    spec = abbrs.get(abbr)
+    if spec is None:
+        return f"unknown type abbreviation {abbr!r}"
+    form, limit = spec["form"], spec["maxLength"]
+    if form == "empty":
+        return None if value == "" else "must be empty in ADR-0017's form"
+    if form == "title":
+        if not TITLE_RE.match(value) or not value.endswith(f"({env})"):
+            return f"not a title `usnm {{Title}} ({env})`"
+        return None
+    if form == "shortName":
+        if value != f"usnm-{env}":
+            return f"not `usnm-{env}`"
+        return None if len(value) <= limit else f"longer than {limit}"
+    if len(value) > limit:
+        return f"{len(value)} characters, over the {limit} {abbr} allows"
+    if form == "compact":
+        head, tail = "usnm", f"{abbr}{env}{sfx}"
+        if not (value.startswith(head) and value.endswith(tail)):
+            return f"not usnm{{fn}}{abbr}{env}{sfx}"
+        fn = value[len(head):-len(tail)]
+        if fn not in words:
+            return f"function word {fn!r} isn't in the registry"
+        if len(fn) > 7:
+            return f"function word {fn!r} is over 7 characters, too long for a compact name"
+        return None
+    tokens = value.split("-")
+    if tokens[0] != "usnm":
+        return "doesn't start with usnm-"
+    if form == "global":
+        if tokens[-1] != sfx:
+            return f"doesn't end with -{env}-{sfx}"
+        tokens = tokens[:-1]
+    if tokens[-1] != env:
+        return f"doesn't end with -{env}" + (f"-{sfx}" if form == "global" else "")
+    if len(tokens) < 4 or tokens[-2] != abbr:
+        return f"the token before the environment isn't {abbr!r}"
+    desc = tokens[1:-2]
+    if desc[0] not in words or not WORD_RE.match(desc[0]):
+        return f"function word {desc[0]!r} isn't in the registry"
+    if len(desc) > 4:
+        return "more than three qualifiers"
+    bad = [q for q in desc[1:] if not QUALIFIER_RE.match(q)]
+    if bad:
+        return f"qualifier {bad[0]!r} isn't 1-12 lowercase letters or digits"
+    return None
+
+
+def check_names(names: dict, env: str, sfx: str, pinned: bool, tables: dict, exceptions: dict) -> list[str]:
+    """Problems with one evaluated names() map."""
+    out = []
+    types, words, abbrs = tables["nameTypes"], tables["functionWords"], tables["typeAbbreviations"]
+    create_only = set(tables["createOnlyKeys"])
+    label = f"{env} ({'pinned' if pinned else 'ADR-0017 form'})"
+    if set(names) != set(types):
+        out.append(f"{label}: names() keys and nameTypes differ: "
+                   f"{sorted(set(names) ^ set(types))}")
+    for key in sorted(names):
+        if key not in types:
+            continue
+        exc = exceptions.get(key)
+        excused = exc is not None and (pinned or exc.get("scope") == "all")
+        why = None
+        for v in values(names[key]):
+            if pinned and key in create_only and v == "":
+                continue
+            why = why or conforms(v, types[key], env, sfx, words, abbrs)
+        if why and not excused:
+            out.append(f"{label}: {key} = {names[key]!r}: {why}; follow ADR-0017 or list it in "
+                       f"{EXCEPTIONS.relative_to(ROOT)}")
+        if not why and excused and pinned:
+            out.append(f"{label}: {key} = {names[key]!r} follows ADR-0017: remove its exception")
+    return out
+
+
+def check_exceptions(exceptions: dict, base: dict | None) -> list[str]:
+    out = []
+    keys = list(exceptions)
+    if keys != sorted(keys):
+        out.append(f"{EXCEPTIONS.relative_to(ROOT)}: keys aren't sorted")
+    for key, e in exceptions.items():
+        for field in ("reason", "adr", "until"):
+            if not isinstance(e.get(field), str) or not e[field]:
+                out.append(f"exception {key}: no {field}")
+        if isinstance(e.get("until"), str) and not UNTIL_RE.match(e["until"]):
+            out.append(f"exception {key}: until {e['until']!r} isn't phase-0..phase-4, never or #N")
+        if e.get("scope", "prod") not in ("prod", "all"):
+            out.append(f"exception {key}: scope must be prod (the default) or all")
+    if base is not None:
+        for key in sorted(set(exceptions) - set(base)):
+            out.append(f"exception {key} is new: the list only shrinks (ADR-0017, \"Enforcement\")")
+    return out
+
+
+def check_prod(pinned: dict, expected: dict) -> list[str]:
+    expected = {k: v for k, v in expected.items() if not k.startswith("$")}
+    out = []
+    for key in sorted(set(pinned) | set(expected)):
+        if pinned.get(key) != expected.get(key):
+            out.append(f"prod {key}: names() gives {pinned.get(key)!r}, "
+                       f"{PROD.relative_to(ROOT)} has {expected.get(key)!r}: a prod rename must "
+                       "change prod.json in the same PR")
+    return out
+
+
+def value_at(code: str, i: int) -> str:
+    """The expression starting at code[i]: up to a top-level , or } or the line's end."""
+    depth, quoted, j = 0, False, i
+    while j < len(code):
+        c = code[j]
+        if quoted:
+            if c == "\\":
+                j += 1
+            elif c == "'":
+                quoted = False
+        elif c == "'":
+            quoted = True
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif c == "," and depth == 0:
+            break
+        j += 1
+    return code[i:j]
+
+
+def check_sources(paths: list[Path]) -> list[str]:
+    """Resource names built from a usnm string, and unknown guid() seeds."""
+    out = []
+    for path in paths:
+        rel = path.relative_to(ROOT)
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("//"):
+                continue
+            code = line
+            calls = guid_calls(code)
+            for start, end in calls:
+                for seed in LITERAL.findall(code[start:end]):
+                    if ("usnm" in seed or "usnewsmap" in seed) and seed not in FROZEN_SEEDS:
+                        out.append(f"{rel}:{n}: guid() seed {seed!r} isn't a known frozen seed")
+            for start, end in reversed(calls):
+                code = code[:start] + code[end:]
+            for m in NAME_PROP.finditer(code):
+                for lit in LITERAL.findall(value_at(code, m.end())):
+                    if "usnm" in lit or "usnewsmap" in lit:
+                        # The Cosmos database is a child, named in code.
+                        if m.group(1) == "name" and lit == "usnm":
+                            continue
+                        out.append(f"{rel}:{n}: {m.group(1)} built from {lit!r}: take it from "
+                                   "names() in infra/naming.bicep (ADR-0017)")
+    return out
+
+
+def git_show(ref: str, path: Path) -> str | None:
+    r = subprocess.run(["git", "show", f"{ref}:{path.relative_to(ROOT)}"], cwd=ROOT,
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--envs", default="prod,dev,xabcd",
+                    help="environments to evaluate in ADR-0017's form, comma separated")
+    ap.add_argument("--bicep", default="bicep", help="the Bicep CLI (CI's pinned version)")
+    ap.add_argument("--base", default="",
+                    help="a git revision whose exceptions.json the current one may only shrink from")
+    a = ap.parse_args()
+    envs = [e.strip() for e in a.envs.split(",") if e.strip()]
+    bad = [e for e in envs if not ENV_RE.match(e)]
+    if bad:
+        ap.error(f"not environment names: {bad}")
+
+    p = evaluate(a.bicep, ",".join(envs))
+    exceptions = json.loads(EXCEPTIONS.read_text(encoding="utf-8"))
+    base = None
+    if a.base:
+        text = git_show(a.base, EXCEPTIONS)
+        if text is None:
+            print(f"note: {a.base} has no {EXCEPTIONS.relative_to(ROOT)}; not checking that it shrinks")
+        else:
+            base = json.loads(text)
+    problems = check_exceptions(exceptions, base)
+    problems += check_names(p["prodPinned"], "prod", p["legacyProdSuffix"], True, p, exceptions)
+    problems += check_prod(p["prodPinned"], json.loads(PROD.read_text(encoding="utf-8")))
+    for env in envs:
+        problems += check_names(p["conventional"][env], env, p["sampleSuffix"], False, p, exceptions)
+    sources = [ROOT / "infra" / "main.bicep"] + sorted((ROOT / "infra" / "modules").glob("*.bicep"))
+    problems += check_sources(sources)
+
+    for line in problems:
+        print(line)
+    if problems:
+        print(f"{len(problems)} problem(s)", file=sys.stderr)
+        return 1
+    n = len(p["prodPinned"])
+    print(f"ok: {n} names for prod (pinned) and in ADR-0017's form for {', '.join(envs)}; "
+          f"{len(exceptions)} exceptions; {len(sources)} templates")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

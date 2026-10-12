@@ -61,7 +61,17 @@ param storageBlobEndpoint string
 param cosmosEndpoint string
 @description('Application Insights connection string: the ingestion endpoint and instrumentation key. The jobs authenticate with id-usnm-ingest (Monitoring Metrics Publisher); the component accepts nothing else.')
 param appInsightsConnectionString string
-param jobNameSuffix string
+@description('The jobs\' names (infra/naming.bicep); a Container Apps job name is under 32 characters.')
+@maxLength(31)
+param ingestJobName string
+@maxLength(31)
+param backfillJobName string
+@maxLength(31)
+param jaOcrJobName string
+@maxLength(31)
+param jaAuditJobName string
+@maxLength(31)
+param ocrSyncJobName string
 @description('Weekly schedule for the ingest job (UTC cron). Empty: manual only.')
 param cron string = ''
 @description('Make every ingest run a full release: a new base from every curated batch, merged (04 §4.7). For a one-off rebuild; turn it off afterwards.')
@@ -207,7 +217,7 @@ var env = [
 var rawEnv = empty(rawUrl) ? [] : [{ name: 'USNM_RAW_URL', value: rawUrl }]
 
 resource ingest 'Microsoft.App/jobs@2025-01-01' = {
-  name: 'caj-usnm-ingest-${jobNameSuffix}'
+  name: ingestJobName
   location: location
   tags: tags
   identity: {
@@ -283,7 +293,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
 }
 
 resource backfill 'Microsoft.App/jobs@2025-01-01' = {
-  name: 'caj-usnm-backfill-${jobNameSuffix}'
+  name: backfillJobName
   location: location
   tags: tags
   identity: {
@@ -323,7 +333,7 @@ resource backfill 'Microsoft.App/jobs@2025-01-01' = {
 }
 
 resource jaOcr 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
-  name: 'caj-usnm-jaocr-${jobNameSuffix}'
+  name: jaOcrJobName
   location: location
   tags: tags
   identity: {
@@ -363,7 +373,7 @@ resource jaOcr 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
 }
 
 resource jaAudit 'Microsoft.App/jobs@2025-01-01' = if (!empty(jaOcrImage)) {
-  name: 'caj-usnm-jaone-${jobNameSuffix}'
+  name: jaAuditJobName
   location: location
   tags: tags
   identity: {
@@ -451,7 +461,7 @@ var ocrSyncMaxRuntimeSecs = 3000
 var ocrSeedEnv = filter(map(items(ocrSeed), s => { name: s.key, value: string(s.value) }), e => !empty(e.value))
 
 resource ocrSyncJob 'Microsoft.App/jobs@2025-01-01' = if (ocrSync) {
-  name: 'usnm-ocrsync-caj-${jobNameSuffix}'
+  name: ocrSyncJobName
   location: location
   tags: tags
   identity: {

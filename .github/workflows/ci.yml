@@ -392,6 +392,18 @@ jobs:
       # parameters, the settings location and scripts/dev-status.sh (#275).
       - name: The environment scripts' tests pass
         run: python3 -m unittest -v scripts/test_env_scripts.py
+      # Resource names (ADR-0017): names() in infra/naming.bicep against the
+      # rules, infra/names/exceptions.json (which only shrinks against the
+      # base branch) and infra/names/prod.json, and no module building a
+      # name of its own.
+      - name: Resource names follow ADR-0017 and prod's are unchanged
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          base=""
+          if git fetch -q --depth=1 origin "$BASE_REF"; then base=FETCH_HEAD; fi
+          scripts/ci/check-names.py ${base:+--base "$base"}
+          python3 -m unittest -v scripts/ci/test_check_names.py
       # The workbooks are loaded as text, so Bicep doesn't parse them.
       - name: The workbook definitions parse and name the workspace placeholder
         run: |
@@ -404,7 +416,7 @@ jobs:
       # environment; unset ones take their defaults).
       - run: bicep build-params infra/main.bicepparam --stdout > /dev/null
         env:
-          AZURE_ENV_NAME: ci
+          AZURE_ENV_NAME: dev
 
   web:
     name: web (lint, typecheck, test, build)

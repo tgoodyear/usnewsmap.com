@@ -100,17 +100,32 @@ class SettingsLocation(Stubbed):
         self.assertEqual(r.stdout.strip(), os.path.join(self.settings, "dev", ".env"))
 
     def test_without_it_the_checkout_holds_them(self):
-        r = self.lib('echo "$ENV_FILE"', env_name="nosuchenv")
-        self.assertEqual(r.stdout.strip(), ".azure/nosuchenv/.env")
+        r = self.lib('echo "$ENV_FILE"', env_name="x1")
+        self.assertEqual(r.stdout.strip(), ".azure/x1/.env")
 
 
-class ReservedNames(Stubbed):
-    def test_other_stacks_names_are_reserved(self):
-        # usnm-archive and usnm-guardrails are stacks of their own.
-        for name in ("archive", "guardrails"):
+class EnvironmentNames(Stubbed):
+    # ADR-0017: prod, dev, or x plus 1-4 lowercase letters or digits.
+    def test_the_closed_list(self):
+        for name in ("prod", "dev", "x1", "xab12"):
+            r = self.lib("true", env_name=name)
+            self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
+
+    def test_anything_else_is_refused(self):
+        # usnm-archive and usnm-guardrails are stacks of their own, ci is a
+        # function word, and longer names overflow the resource names.
+        for name in ("archive", "guardrails", "ci", "x", "xabcde", "Prod", "dev2", "staging", "x-1"):
             r = self.lib("true", env_name=name)
             self.assertEqual(r.returncode, 2, name)
-            self.assertIn("reserved", r.stderr)
+            self.assertIn("ADR-0017", r.stderr)
+
+    def test_bootstrap_checks_it_before_signing_in(self):
+        # The stub az would log a call; the name is refused first.
+        r = subprocess.run([os.path.join(HERE, "bootstrap.sh"), "--env", "staging"], cwd=ROOT,
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("ADR-0017", r.stderr)
+        self.assertFalse(os.path.exists(self.log))
 
 
 class ExperimentMarker(Stubbed):
@@ -251,6 +266,35 @@ class DevStatus(Stubbed):
                         STUB_COST_ERROR="ERROR: (TooManyRequests) throttled")
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't read the cost", r.stderr)
+
+
+class StartQuality(Stubbed):
+    # The jobs' names come from the stack's outputs, in either form (ADR-0017).
+    SETTINGS = ('AZURE_SUBSCRIPTION_ID="sub-1"\nAZURE_RESOURCE_GROUP="usnm-core-rg-dev"\n'
+                'JA_OCR_JOB="usnm-jaocr-caj-dev"\nJA_AUDIT_JOB="usnm-jaone-caj-dev"\n')
+
+    def start(self, *args):
+        return subprocess.run([os.path.join(HERE, "ja-ocr", "start-quality.sh"), "--env", "dev", *args],
+                              cwd=ROOT, env={**self.env, "STUB_EXECUTION": "usnm-jaocr-caj-dev-abc12"},
+                              capture_output=True, text=True)
+
+    def test_the_jobs_come_from_the_settings(self):
+        self.settings_file(self.SETTINGS)
+        r = self.start("--sample-pct", "10")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(any(c.startswith("containerapp job show -n usnm-jaocr-caj-dev -g usnm-core-rg-dev")
+                            for c in self.calls()))
+        self.assertTrue(any("/jobs/usnm-jaocr-caj-dev/start?" in c for c in self.calls()))
+        r = self.start("--command", "mixed")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(any("/jobs/usnm-jaone-caj-dev/start?" in c for c in self.calls()))
+
+    def test_without_the_outputs(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\nAZURE_RESOURCE_GROUP="rg-usnm-dev"\n')
+        r = self.start()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("JA_OCR_JOB", r.stderr)
+        self.assertFalse(os.path.exists(self.log))
 
 
 class TitlesSeed(Stubbed):

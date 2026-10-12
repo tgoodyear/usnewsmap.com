@@ -9,19 +9,10 @@
 # every checkout reads the same settings, otherwise the checkout's own
 # .azure/<env>/.env (#275).
 #
-# The name becomes part of resource names (the registry allows only
-# lowercase letters and digits), the stack's name and the settings path.
-# "guardrails" is taken: usnm-guardrails is the shared policy stack.
-valid_env_name() {
-  [[ $1 =~ ^[a-z][a-z0-9]{0,15}$ ]] || {
-    echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter" >&2
-    exit 2
-  }
-  # usnm-<name> would be another stack's name, and rg-usnm-<name> its group.
-  case "$1" in
-    guardrails | archive) echo "error: \"$1\" is reserved" >&2; exit 2 ;;
-  esac
-}
+# The environment name: prod, dev or x plus 1-4 lowercase letters or digits
+# (ADR-0017; valid_env_name).
+# shellcheck source=scripts/lib/env-name.sh
+. scripts/lib/env-name.sh
 valid_env_name "$ENV_NAME"
 # need_stack_az, GUARDRAILS_STACK, stack_param and deploy_guardrails.
 # shellcheck source=scripts/lib/guardrails.sh

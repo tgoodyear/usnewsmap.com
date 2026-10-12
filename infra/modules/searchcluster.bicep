@@ -51,8 +51,18 @@
 
 param location string
 param tags object
-@description('Environment name, for the job and identity names.')
-param nameSuffix string
+@description('The apps\' names (infra/naming.bicep), by index: nodes, comparison searchers, and the local-disk searcher. A container app name is under 32 characters.')
+@minLength(4)
+param nodeAppNames string[]
+@minLength(4)
+param compareAppNames string[]
+@maxLength(31)
+param localAppName string
+@description('The bench job\'s and the two identities\' names (infra/naming.bicep).')
+@maxLength(31)
+param benchJobName string
+param nodeIdentityName string
+param benchIdentityName string
 param environmentId string
 @description('The ingest image (Quickwit 0.9.1 with usnm-ingest and usnm-qwcluster): the cluster\'s nodes and the bench job.')
 param image string
@@ -113,7 +123,7 @@ var benchContainer = 'qw-bench'
 // What node 0 adds to the indexer and searcher every node may run.
 var rootServices = ['metastore', 'control_plane', 'janitor']
 // Inside the environment: node 0's internal ingress, by app name.
-var rootUrl = 'http://ca-usnm-qw-0'
+var rootUrl = 'http://${nodeAppNames[0]}'
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
@@ -150,13 +160,13 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing =
 }
 
 resource nodeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-usnm-qwnode-${nameSuffix}'
+  name: nodeIdentityName
   location: location
   tags: tags
 }
 
 resource benchIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-usnm-qwbench-${nameSuffix}'
+  name: benchIdentityName
   location: location
   tags: tags
 }
@@ -243,7 +253,7 @@ var nodeProbes = [
 
 resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
   for i in range(0, nodes): {
-    name: 'ca-usnm-qw-${i}'
+    name: nodeAppNames[i]
     location: location
     tags: tags
     // The user-assigned identity pulls the image and writes the seed entry;
@@ -365,7 +375,7 @@ var localResources = localDedicated ? { cpu: json('3.25'), memory: '24Gi' } : { 
 var nfsOwnerImage = 'mcr.microsoft.com/azurelinux/busybox:1.36'
 
 resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
-  name: 'ca-usnm-qwl-0'
+  name: localAppName
   location: location
   tags: tags
   dependsOn: [pulls]
@@ -456,7 +466,7 @@ resource localApp 'Microsoft.App/containerApps@2024-03-01' = if (localOn) {
 
 resource localReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (localOn) {
   scope: cluster
-  name: guid(cluster.id, 'ca-usnm-qwl-0', blobReader)
+  name: guid(cluster.id, localAppName, blobReader)
   properties: {
     principalId: localApp!.identity.principalId
     principalType: 'ServicePrincipal'
@@ -467,7 +477,7 @@ resource localReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (
 // Version comparison (#251): standalone searchers over the cluster's indexes.
 resource compareApps 'Microsoft.App/containerApps@2024-03-01' = [
   for (compareImage, i) in compareImages: {
-    name: 'ca-usnm-qws-${i}'
+    name: compareAppNames[i]
     location: location
     tags: tags
     dependsOn: [pulls]
@@ -539,7 +549,7 @@ resource compareReaders 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
 ]
 
 resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
-  name: 'caj-usnm-qwbench-${nameSuffix}'
+  name: benchJobName
   location: location
   tags: tags
   dependsOn: [pulls, benchWriters, curatedReader, referenceReader]
@@ -587,7 +597,7 @@ resource benchJob 'Microsoft.App/jobs@2025-01-01' = {
 
 output nodeApps array = [for i in range(0, nodes): nodeApps[i].name]
 output compareApps array = [for (compareImage, i) in compareImages: compareApps[i].name]
-output localUrl string = localOn ? 'http://ca-usnm-qwl-0' : ''
+output localUrl string = localOn ? 'http://${localAppName}' : ''
 // Each comparison searcher's root for `bench --cluster`, inside the environment.
 output compareUrls array = [for (compareImage, i) in compareImages: 'http://${compareApps[i].name}']
 output benchJobName string = benchJob.name
