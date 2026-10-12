@@ -259,10 +259,8 @@ mod tests {
         assert!(p.path.starts_with("fetched/pages-v20261010-2/node2."));
         let list = fetched::decode(out.get(&p.path).await.unwrap().unwrap().into()).unwrap();
         assert_eq!(list.manifest, "pages-v20261010-2");
-        assert!(list.pages.contains(&Fetched {
-            batch: "lu_Cypher".into(),
-            doc_id: "sn2_1901-01-01_ed-2_seq-9".into(),
-        }));
+        assert!(list.contains("lu_Cypher", "sn2_1901-01-01_ed-2_seq-9"));
+        assert_eq!(list.len(), 2);
     }
 
     #[test]
