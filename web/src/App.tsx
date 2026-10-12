@@ -443,10 +443,13 @@ export function App() {
   // answer still on its way, after Show more lets the days be asked for,
   // keeps them, marked as updating, rather than blanking them: the lists, and
   // the Show more button focus is on, stay mounted until the ranking settles.
-  // Only a search that has shown no lists yet says it is loading.
+  // Only a search that has shown no lists yet says it is loading. Empty
+  // lists (no place yet has pages enough for a median) are not shown lists:
+  // when playback makes a place eligible, its first ranking waits for the
+  // exact answer rather than showing it by bucket first.
   const [listedFor, setListedFor] = useState("");
-  if (wantsDays && (baseStatus === "bucket" || baseStatus === "exact") && listedFor !== searchId)
-    setListedFor(searchId);
+  const listed = baseStatus === "exact" || (baseStatus === "bucket" && (candidates === null || candidates.length > 0));
+  if (wantsDays && listed && listedFor !== searchId) setListedFor(searchId);
   const medianStatus: MedianStatus =
     baseStatus === "loading" && !agg.isPlaceholderData && listedFor === searchId ? "updating" : baseStatus;
   const daysSource = dayCounts.data ?? null;

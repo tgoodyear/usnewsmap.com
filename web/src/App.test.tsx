@@ -282,4 +282,34 @@ describe("App's Median date lists (#264)", () => {
     expect(rows()[10]!.textContent).toContain(name(29));
     expect(document.activeElement?.textContent).toBe(`${name(29)}, IL`);
   });
+
+  it("lists nothing until the first exact answer when playback makes the first place eligible", async () => {
+    // Two years: Atlanta's 2 pages in 1850 are too few for a median, its 12 by 1851 enough.
+    const twoYears: AggregateResponse = {
+      ...aggregate("P00001", 12, "sn82014424"),
+      bucket: { unit: "year", from: "1850-01-01", to: "1851-12-31", count: 2 },
+      series: { hits: [2, 10], baseline: null },
+      cube: { p: [0, 0], b: [0, 1], h: [2, 10], calls: 1, baseline_ref: null },
+    };
+    api.aggregate.mockResolvedValue(twoYears);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    api.days.mockImplementation(async (_params: unknown, _version: unknown, want: string[]): Promise<DaysResponse> => {
+      await gate;
+      return { index_version: "v1", places: want.map((id) => ({ id, days: [dayNumber("1851-06-01")], hits: [12] })) };
+    });
+    show("?q=gold&norm=when&t=1850-01-01");
+    // In 1850 no place can be listed, and no days are asked for.
+    const list = (await screen.findByRole("heading", { name: "Earliest median date" })).closest("section")!;
+    expect(within(list).queryAllByRole("listitem")).toHaveLength(0);
+    expect(api.days).not.toHaveBeenCalled();
+    // Playback reaches 1851: Atlanta's days are asked for, and nothing is listed until they come.
+    fireEvent.change(screen.getByRole("slider", { name: "Time" }), { target: { value: "1" } });
+    await waitFor(() => expect(api.days).toHaveBeenCalled());
+    expect(screen.getByText("Finding each place's median day…")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Earliest median date" })).toBeNull();
+    await act(async () => release());
+    const ranked = (await screen.findByRole("heading", { name: "Earliest median date" })).closest("section")!;
+    expect(within(ranked).getAllByRole("listitem")[0]!.textContent).toContain("Atlanta");
+  });
 });
