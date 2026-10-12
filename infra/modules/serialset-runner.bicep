@@ -2,14 +2,17 @@
 // amendment of October 2026): `usnm-ingest congress-serialset` run on an OCR
 // node, as that node's Arc machine identity, in place of the Azure job.
 //
-// One grant: Storage Blob Data Contributor on the curated container, with a
-// condition that leaves it only what the fetch does there, all of it under
-// congress/serialset/:
+// One grant: a custom role with blob read and write data actions and no
+// control-plane actions (Storage Blob Data Contributor would also let it
+// delete or reconfigure the container, which a condition can't restrict),
+// on the curated container, with a condition that leaves it only what the
+// fetch does there, all of it under congress/serialset/:
 // - list, with a prefix under congress/serialset/ (the fetch lists only its
 //   own series, congress/curated.rs finished_in and empties_in);
 // - read, write and create blobs whose path is under congress/serialset/
 //   (counts.json, the parquet parts and empty.json, all create-only);
-// - no delete and no move, anywhere.
+// - no delete and no move, anywhere (the role has neither; the condition
+//   says so again).
 // Nothing on the other containers, and nothing on Cosmos: the runner holds
 // its lock in a local state file (docs/operations.md, "The Serial Set
 // on-prem").
@@ -17,10 +20,31 @@
 param storageName string
 @description('Object id of the runner\'s identity (the node\'s Arc machine identity).')
 param principalId string
-
-var blobContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+@description('The writer role\'s name, before its scope (infra/naming.bicep).')
+param roleLabel string
 var blobs = 'Microsoft.Storage/storageAccounts/blobServices/containers/blobs'
 var path = 'congress/serialset/'
+
+resource writer 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: guid(resourceGroup().id, 'usnm-sset-writer')
+  properties: {
+    // Role names are unique per tenant: include the subscription and group.
+    roleName: '${roleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    description: 'The on-prem Serial Set runner: list, read and create blobs. No delete, no container actions.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: []
+        dataActions: [
+          '${blobs}/read'
+          '${blobs}/write'
+          '${blobs}/add/action'
+        ]
+      }
+    ]
+    assignableScopes: [resourceGroup().id]
+  }
+}
 
 // ABAC (condition version 2.0). Each clause either doesn't apply to the
 // request's action or holds for it; all three must hold.
@@ -64,11 +88,11 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
 
 resource grant 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: account::blobService::curated
-  name: guid(account::blobService::curated.id, principalId, blobContributor, 'serialset-runner')
+  name: guid(account::blobService::curated.id, principalId, writer.id)
   properties: {
     principalId: principalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobContributor)
+    roleDefinitionId: writer.id
     description: 'The on-prem Serial Set runner (#229): list, read and create blobs under congress/serialset/ only; no delete.'
     conditionVersion: '2.0'
     condition: condition

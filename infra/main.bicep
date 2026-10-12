@@ -400,6 +400,7 @@ module serialSetRunnerGrant 'modules/serialset-runner.bicep' = if (serialSetOnPr
   params: {
     storageName: storage.outputs.name
     principalId: trim(serialSetRunner)
+    roleLabel: n.serialSetWriterRole
   }
 }
 
