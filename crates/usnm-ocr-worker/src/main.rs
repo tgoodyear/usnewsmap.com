@@ -537,9 +537,16 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                         }
                     });
                 }
-                // Bound now: a worker that can't have its status port fails
-                // to start, and systemd says so.
-                status::serve(listen, tracker.clone(), status_allow, stop.clone()).await?;
+                // Supervised apart from the OCR loop, which runs whatever
+                // happens to it.
+                status::supervise(
+                    listen,
+                    tracker.clone(),
+                    status_allow,
+                    stop.clone(),
+                    Metrics::global(),
+                    status::RESTART_FIRST,
+                );
             }
             let worker = Arc::new(Worker {
                 queue,

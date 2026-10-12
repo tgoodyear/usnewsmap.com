@@ -662,9 +662,14 @@ pub fn render(v: &View) -> String {
         (Some(q), Some(from)) => {
             let _ = write!(
                 o,
-                "<p>As {} saw them {}.</p>",
+                "<p>As {} saw them {}{}.</p>",
                 esc(from),
-                ago(now, q.checked_at)
+                ago(now, q.checked_at),
+                if v.azure.queues_stale {
+                    format!(" {}", badge("warning", "stale"))
+                } else {
+                    String::new()
+                }
             );
             if let Some(e) = &q.error {
                 let _ = write!(o, "<p class=\"err\">{}</p>", esc(e));

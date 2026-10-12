@@ -433,54 +433,89 @@ pub fn router(tracker: Arc<Tracker>, allow: Vec<IpAddr>) -> Router {
         .with_state(s)
 }
 
-/// Serve the status on `listen` to `allow` until `stop`. The port is bound
-/// before this returns, so a worker that can't have it doesn't start; if
-/// the server stops later, it binds again after 30 s.
-pub async fn serve(
+/// The first wait before the status server is started again; it doubles
+/// to [`RESTART_MAX`].
+pub const RESTART_FIRST: std::time::Duration = std::time::Duration::from_secs(5);
+pub const RESTART_MAX: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Serve the status on `listen` to `allow` until `stop`, supervised: a
+/// failure to bind, an error while serving or a panic is logged, counted
+/// in `ocr.status_restarts` and followed by a restart after a backoff
+/// (`first`, doubling to [`RESTART_MAX`], back to `first` after an hour
+/// up). It never touches the OCR loop: the worker runs on whatever happens
+/// here.
+pub fn supervise(
     listen: SocketAddr,
     tracker: Arc<Tracker>,
     allow: Vec<IpAddr>,
     stop: tokio::sync::watch::Receiver<bool>,
-) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    let first = tokio::net::TcpListener::bind(listen)
-        .await
-        .map_err(|e| anyhow::anyhow!("binding the status port {listen}: {e}"))?;
-    tracing::info_span!("ocr_worker_start")
-        .in_scope(|| tracing::info!(%listen, allow = ?allow, "status listening"));
-    Ok(tokio::spawn(async move {
-        let mut listener = Some(first);
+    metrics: crate::telemetry::Metrics,
+    first: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut wait = first;
         loop {
-            let l = match listener.take() {
-                Some(l) => Ok(l),
-                None => tokio::net::TcpListener::bind(listen).await,
-            };
-            let r = match l {
-                Ok(l) => {
-                    let mut stop = stop.clone();
-                    axum::serve(
-                        l,
-                        router(tracker.clone(), allow.clone())
-                            .into_make_service_with_connect_info::<SocketAddr>(),
-                    )
-                    .with_graceful_shutdown(async move {
-                        let _ = stop.wait_for(|s| *s).await;
-                    })
-                    .await
-                }
-                Err(e) => Err(e),
+            let started = std::time::Instant::now();
+            let run = tokio::spawn(serve_once(
+                listen,
+                tracker.clone(),
+                allow.clone(),
+                stop.clone(),
+            ));
+            let cause = match run.await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(("error", e.to_string())),
+                Err(e) => Some(("panic", e.to_string())),
             };
             if *stop.borrow() {
                 return;
             }
+            let (cause, error) = cause.unwrap_or(("stopped", String::new()));
+            if started.elapsed() > std::time::Duration::from_secs(3600) {
+                wait = first;
+            }
+            metrics
+                .status_restarts
+                .add(1, &[opentelemetry::KeyValue::new("cause", cause)]);
             tracing::info_span!("ocr_status").in_scope(|| {
                 tracing::error!(
-                    error = r.err().map(|e| e.to_string()),
-                    "the status server stopped; binding again in 30 s"
+                    cause,
+                    error,
+                    retry_secs = wait.as_secs(),
+                    "the status server failed; starting it again"
                 )
             });
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let mut stop_wait = stop.clone();
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = stop_wait.wait_for(|s| *s) => return,
+            }
+            wait = (wait * 2).min(RESTART_MAX);
         }
-    }))
+    })
+}
+
+/// Bind and serve until `stop` or an error.
+async fn serve_once(
+    listen: SocketAddr,
+    tracker: Arc<Tracker>,
+    allow: Vec<IpAddr>,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .map_err(|e| anyhow::anyhow!("binding the status port {listen}: {e}"))?;
+    tracing::info_span!("ocr_status")
+        .in_scope(|| tracing::info!(%listen, allow = ?allow, "status listening"));
+    axum::serve(
+        listener,
+        router(tracker, allow).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = stop.wait_for(|s| *s).await;
+    })
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -631,6 +666,42 @@ mod tests {
         // Nothing was taken.
         assert_eq!(q.approximate_count(DEADLETTER).await.unwrap(), 2);
         assert!(s.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_status_server_comes_back_when_its_port_frees() {
+        // Someone else holds the port: the server can't bind, and keeps
+        // trying; the worker isn't touched.
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap();
+        let t = Arc::new(Tracker::quiet());
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let task = supervise(
+            addr,
+            t,
+            vec!["127.0.0.1".parse().unwrap()],
+            rx,
+            crate::telemetry::Metrics::global(),
+            std::time::Duration::from_millis(50),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert!(!task.is_finished());
+        drop(held);
+        let url = format!("http://{addr}/status");
+        let mut ok = false;
+        for _ in 0..50 {
+            if let Ok(r) = reqwest::get(&url).await {
+                ok = r.status().is_success();
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(ok, "the status server didn't come back");
+        tx.send_replace(true);
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

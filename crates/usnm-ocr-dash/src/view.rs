@@ -178,10 +178,17 @@ pub struct AzureView {
     pub queues: Option<QueueStats>,
     /// The node whose counts these are.
     pub queues_from: Option<String>,
+    /// The look is older than [`QUEUES_FRESH`].
+    pub queues_stale: bool,
     pub queues_note: &'static str,
     pub imports: &'static str,
     pub workbook_url: Option<String>,
 }
+
+/// A node counts for the queues only if it answered this recently.
+pub const NODE_FRESH: Duration = Duration::minutes(3);
+/// A look at the queues older than this is marked stale.
+pub const QUEUES_FRESH: Duration = Duration::minutes(5);
 
 /// Where the queues come from (12 §12.2.5).
 pub const QUEUES_NOTE: &str = "From the nodes: each worker with a status port looks once a minute, with Get Queue \
@@ -190,13 +197,13 @@ messages too; the dead letters are the oldest visible ones.";
 
 /// The freshest look at the queues among the nodes, with every node's
 /// dead letters joined.
-pub fn merge_queues(nodes: &Nodes) -> (Option<QueueStats>, Option<String>) {
+pub fn merge_queues(nodes: &Nodes, now: DateTime<Utc>) -> (Option<QueueStats>, Option<String>) {
     let mut looks: Vec<(&str, &QueueStats)> = nodes
         .nodes
         .iter()
         // Only nodes answering now, so an offline node's old dead
         // letters don't linger.
-        .filter(|n| n.error.is_none())
+        .filter(|n| n.error.is_none() && n.last_ok.is_some_and(|t| now - t <= NODE_FRESH))
         .filter_map(|n| Some((n.name.as_str(), n.status.as_ref()?.queues.as_ref()?)))
         .collect();
     looks.sort_by_key(|(_, q)| std::cmp::Reverse(q.checked_at));
@@ -456,7 +463,7 @@ pub fn build(
             }
         })
         .collect();
-    let queues = merge_queues(nodes);
+    let queues = merge_queues(nodes, now);
     View {
         generated_at: now,
         refresh_secs: s.refresh_secs,
@@ -477,6 +484,10 @@ pub fn build(
             workbook_url: s.workbook_url.clone(),
         },
         azure: AzureView {
+            queues_stale: queues
+                .0
+                .as_ref()
+                .is_some_and(|q| now - q.checked_at > QUEUES_FRESH),
             queues: queues.0,
             queues_from: queues.1,
             queues_note: QUEUES_NOTE,
@@ -536,7 +547,7 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(merge_queues(&n), (None, None));
+        assert_eq!(merge_queues(&n, Utc::now()), (None, None));
         let dl = |id: &str| DeadLetterView {
             message_id: id.into(),
             at: format!("2026-10-11T23:00:0{}Z", id.len()),
@@ -554,7 +565,9 @@ mod tests {
         };
         n.nodes[0].status = Some(look(now - Duration::minutes(5), 10, &["a", "b"]));
         n.nodes[1].status = Some(look(now, 7, &["b", "c"]));
-        let (q, from) = merge_queues(&n);
+        n.nodes[0].last_ok = Some(now);
+        n.nodes[1].last_ok = Some(now);
+        let (q, from) = merge_queues(&n, now);
         let q = q.unwrap();
         assert_eq!(from.as_deref(), Some("n2"));
         assert_eq!(q.counts["ocr-bulk"], 7);
@@ -566,8 +579,11 @@ mod tests {
         assert_eq!(ids.len(), 3);
         // A node whose last poll failed doesn't count.
         n.nodes[1].error = Some("HTTP 503".into());
-        let (q, from) = merge_queues(&n);
+        let (q, from) = merge_queues(&n, now);
         assert_eq!(from.as_deref(), Some("n1"));
         assert_eq!(q.unwrap().counts["ocr-bulk"], 10);
+        // Nor one that hasn't answered within the window.
+        n.nodes[0].last_ok = Some(now - Duration::minutes(10));
+        assert_eq!(merge_queues(&n, now), (None, None));
     }
 }

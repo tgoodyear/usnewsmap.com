@@ -405,11 +405,15 @@ impl Worker {
             .map(|(m, k)| (k.doc_id(), m.language, m.reason.as_str().to_owned()));
         // Ends the page in the tracker however the task ends: with its
         // outcome, or as abandoned at shutdown if the task is dropped.
+        // One attempt: the message as received this time (its id and pop
+        // receipt), so a redelivered message running beside an earlier
+        // attempt is tracked apart.
+        let attempt = format!("{}/{}", msg.id, msg.pop_receipt);
         let mut guard = page.map(|(doc_id, language, reason)| {
-            self.tracker.begin(&msg.id, &doc_id, &language, &msg.queue);
+            self.tracker.begin(&attempt, &doc_id, &language, &msg.queue);
             Tracked {
                 tracker: self.tracker.clone(),
-                token: msg.id.clone(),
+                token: attempt.clone(),
                 page: Some(Completion {
                     doc_id,
                     language,
@@ -422,7 +426,7 @@ impl Worker {
             }
         });
         let ended = self
-            .handle_in(msg, received, &span)
+            .handle_in(msg, &attempt, received, &span)
             .instrument(span.clone())
             .await;
         if let Some((g, mut c)) = guard
@@ -437,7 +441,13 @@ impl Worker {
         }
     }
 
-    async fn handle_in(&self, msg: Received, received: Instant, span: &tracing::Span) -> Ended {
+    async fn handle_in(
+        &self,
+        msg: Received,
+        attempt: &str,
+        received: Instant,
+        span: &tracing::Span,
+    ) -> Ended {
         let decoded = message::decode(&msg.text);
         if let Ok((m, key)) = &decoded {
             span.record("page", tracing::field::display(key));
@@ -476,7 +486,7 @@ impl Worker {
             m.reason.as_str(),
             &msg.queue,
         );
-        match self.process(&m, &key, &msg.id, deadline).await {
+        match self.process(&m, &key, attempt, deadline).await {
             Ok(done) => {
                 let ended = Ended {
                     outcome: "done",
