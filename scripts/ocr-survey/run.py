@@ -40,7 +40,7 @@ PLAN = {
         "czech": [("ces", 1.0), ("ces", 0.5)],
         "russian": [("rus", 1.0)],
         "polish": [("pol", 1.0)],
-    }, None, 3600),
+    }, None, 1800),
     "doctr": ({
         g: [("db_resnet50+parseq-multilingual", 1.0)]
         for g in ("worst-english", "control", "german", "czech", "polish")
@@ -55,7 +55,7 @@ PLAN = {
     }, None, 1800),
     "surya": ({
         g: [("surya-ocr-2-tiles", 1.0)] for g in ("worst-english", "serbian", "russian", "german")
-    }, 2, 1800),
+    }, 2, 3600),
 }
 
 
