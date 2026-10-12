@@ -102,18 +102,14 @@ fn ago(now: DateTime<Utc>, t: DateTime<Utc>) -> String {
     format!("{} ago", span(s))
 }
 
-/// How long ago, with the time itself in the tooltip.
-fn ago_title(now: DateTime<Utc>, t: DateTime<Utc>) -> String {
-    format!(
-        "<span title=\"{}\">{}</span>",
-        t.format("%Y-%m-%d %H:%M:%S UTC"),
-        ago(now, t)
-    )
+/// A short form that opens, by click, tap or keyboard, to the whole of it.
+fn more(short: &str, whole: &str) -> String {
+    format!("<details class=\"more\"><summary>{short}</summary><div>{whole}</div></details>")
 }
 
-/// Text cut to one line with an ellipsis, the whole of it in the tooltip.
+/// Text cut to one line with an ellipsis, opening to the whole of it.
 fn clip(s: &str) -> String {
-    format!("<span class=\"clip\" title=\"{0}\">{0}</span>", esc(s))
+    more(&format!("<span class=\"clip\">{}</span>", esc(s)), &esc(s))
 }
 
 /// A progress track with its label beside it.
@@ -160,10 +156,15 @@ section > :last-child { margin-bottom:0; }
 .scroll { max-height:360px; overflow:auto; border-bottom:1px solid var(--grid); }
 .scroll th { position:sticky; top:0; background:var(--surface); box-shadow:inset 0 -1px var(--grid); z-index:1; }
 .scroll tr:last-child td { border-bottom:none; }
-/* An error in a list: two lines at most, the whole text in its tooltip. */
-td.msg { width:100%; max-width:0; white-space:normal; }
-td.msg > div { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden;
-  overflow-wrap:anywhere; color:var(--ink2); font-size:13px; }
+/* Cut text opens to the whole of it: an error in a list is two lines at most. */
+.more > summary { cursor:pointer; list-style:none; }
+.more > summary::-webkit-details-marker { display:none; }
+.more[open] > summary > * { display:none; }
+.more[open] > summary::after { content:"Show less"; color:var(--fill); }
+.more > div { white-space:normal; overflow-wrap:anywhere; max-width:40em; }
+td.msg { width:100%; max-width:0; white-space:normal; color:var(--ink2); font-size:13px; }
+.clamp { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden;
+  overflow-wrap:anywhere; }
 table { border-collapse:collapse; width:100%; font-variant-numeric: tabular-nums; }
 th, td { text-align:left; padding:3px 8px 3px 0; border-bottom:1px solid var(--grid); vertical-align:top; white-space:nowrap; }
 th { color:var(--ink2); font-weight:600; }
@@ -243,12 +244,19 @@ fn short_urls(s: &str) -> String {
     o
 }
 
-/// An error cell: two lines at most, the whole text in its tooltip.
-fn msg(e: &str) -> String {
+/// An error cell: two lines at most, opening to the whole message (and
+/// when, if the row shows only how long ago).
+fn msg(e: &str, at: Option<DateTime<Utc>>) -> String {
+    let whole = match at {
+        Some(t) => format!("{}: {}", time(t), esc(e)),
+        None => esc(e),
+    };
     format!(
-        "<td class=\"msg\"><div title=\"{}\">{}</div></td>",
-        esc(e),
-        esc(&short_urls(e))
+        "<td class=\"msg\">{}</td>",
+        more(
+            &format!("<span class=\"clamp\">{}</span>", esc(&short_urls(e))),
+            &whole
+        )
     )
 }
 
@@ -551,10 +559,10 @@ pub fn render(v: &View) -> String {
             let _ = write!(
                 o,
                 "<tr><td>{}</td><td><code>{}</code></td><td>{}</td>{}</tr>",
-                ago_title(now, e.at),
+                ago(now, e.at),
                 esc(&e.doc_id),
                 esc(&e.kind),
-                msg(&e.error)
+                msg(&e.error, Some(e.at))
             );
         }
         o.push_str("</table></div>");
@@ -820,7 +828,7 @@ pub fn render(v: &View) -> String {
                         d.dequeue_count,
                         esc(&d.node),
                         time_str(&d.at),
-                        msg(&d.error)
+                        msg(&d.error, None)
                     );
                 }
                 o.push_str("</table></div>");
@@ -876,8 +884,9 @@ mod tests {
             "https://example.com/x and "
         );
         assert_eq!(
-            msg("a <b> https://www.loc.gov/item/x/"),
-            "<td class=\"msg\"><div title=\"a &lt;b&gt; https://www.loc.gov/item/x/\">a &lt;b&gt; /item/x/</div></td>"
+            msg("a <b> https://www.loc.gov/item/x/", None),
+            "<td class=\"msg\"><details class=\"more\"><summary><span class=\"clamp\">a &lt;b&gt; /item/x/</span></summary>\
+             <div>a &lt;b&gt; https://www.loc.gov/item/x/</div></details></td>"
         );
     }
 }
