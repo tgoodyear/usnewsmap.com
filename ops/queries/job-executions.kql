@@ -1,4 +1,5 @@
-// Ingest and backfill job replicas: when they ran and how they ended.
+// Ingest, backfill and OCR pickup job replicas: when they ran and how they
+// ended.
 // Console lines per replica, with the platform's reasons (exit codes,
 // deadline or backoff limit) from ContainerAppSystemLogs. Ending is
 // titles_left for the expected stop when titles-sync runs out of time (the
@@ -6,7 +7,7 @@
 // other "command failed" line, empty when the replica wrote none.
 // Lines that could carry the managed identity endpoint's secret are dropped.
 let console = ContainerAppConsoleLogs
-    | where ContainerName in ("ingest", "curate")
+    | where ContainerName in ("ingest", "curate", "ocrsync")
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"
     | extend j = parse_json(Log)
     | summarize
@@ -23,7 +24,10 @@ let console = ContainerAppConsoleLogs
             tostring(j.fields.message) == "command failed")
         by Job = coalesce(ContainerAppName, JobName), Replica = ContainerGroupName;
 let platform = ContainerAppSystemLogs
-    // Both name forms (ADR-0017): caj-usnm-{job}-{env} and usnm-{job}-caj-{env}.
+    // Both name forms (ADR-0017): caj-usnm-{job}-{env} and usnm-{job}-caj-{env};
+    // the latter covers the OCR pickup job under both its names,
+    // usnm-ocrsync-caj-{env} until the October 2026 rename (#309), then
+    // usnm-ocrs-caj-{env}.
     | where JobName startswith "caj-usnm-" or ContainerAppName startswith "caj-usnm-"
         or JobName matches regex @"^usnm-[a-z0-9-]+-caj-" or ContainerAppName matches regex @"^usnm-[a-z0-9-]+-caj-"
     | where Log !has "IDENTITY_HEADER" and Log !has "MSI_SECRET"

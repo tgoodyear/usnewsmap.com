@@ -78,7 +78,7 @@ var functionWords = [
   'jaocr'
   'jaone'
   'ocr'
-  'ocrsync'
+  'ocrs'
   'pipeline'
   'qw'
   'scratch'
@@ -342,9 +342,10 @@ func names(env string, sfx string, pinned bool) Names => {
   ocrNodeVolumeAlert: pinned ? 'alert-usnm-ocr-node-volume-${env}' : usnmName('ocr-node-volume', 'alert', env)
   ocrNodeWriterRole: pinned ? 'usnm OCR node writer' : usnmName('ocr-nodewriter', 'role', env)
   ocrNodesWorkbookTitle: 'usnm OCR nodes (${env})'
-  ocrSyncBacklogAlert: usnmName('ocrsync-backlog', 'alert', env)
-  ocrSyncFailedAlert: usnmName('ocrsync-failed', 'alert', env)
-  ocrSyncJob: usnmName('ocrsync', 'caj', env)
+  // 'ocrs', not 'ocrsync', the pickup job's first name (#386, ADR-0017).
+  ocrSyncBacklogAlert: usnmName('ocrs-backlog', 'alert', env)
+  ocrSyncFailedAlert: usnmName('ocrs-failed', 'alert', env)
+  ocrSyncJob: usnmName('ocrs', 'caj', env)
   ocrVault: usnmCompactName('ocr', 'kv', env, sfx)
   ocrWorkspace: usnmName('ocr', 'log', env)
   pipelineWorkbookTitle: pinned ? 'usnewsmap pipeline' : 'usnm pipeline (${env})'
