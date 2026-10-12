@@ -330,11 +330,15 @@ settings_store_endpoint() {
 }
 # The settings store's endpoint from its stack's outputs
 # (SETTINGS_STORE_ENDPOINT, whose case the stack may change), in the
-# selected subscription: empty without the stack or that output.
+# environment's recorded subscription, or the selected one before bootstrap
+# records it: empty without the stack or that output.
 stack_settings_store() {
-  local out err errf
+  local out err errf sub
+  local scope=()
+  sub=$(local_get AZURE_SUBSCRIPTION_ID) || return 1
+  [ -z "$sub" ] || scope=(--subscription "$sub")
   errf=$(mktemp)
-  if ! out=$(az stack sub show -n "$SETTINGS_STACK" --query outputs -o json 2> "$errf"); then
+  if ! out=$(az stack sub show -n "$SETTINGS_STACK" --query outputs -o json ${scope[@]+"${scope[@]}"} 2> "$errf"); then
     err=$(cat "$errf")
     rm -f "$errf"
     # az says ResourceNotFound for a stack that doesn't exist.
@@ -547,7 +551,7 @@ deploy_stack() (
     # what-if, a deployment's shows the same template's.
     echo "validating stack $STACK (preflight)"
     az stack sub validate "${stack_args[@]}" --only-show-errors -o none || exit 1
-    echo "stack $STACK passes preflight; its changes:"
+    echo "stack $STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
     az deployment sub what-if --location "$location" --parameters infra/main.bicepparam --only-show-errors
     exit
   fi

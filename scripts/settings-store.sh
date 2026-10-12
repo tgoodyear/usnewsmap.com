@@ -62,7 +62,10 @@ fi
 
 case "$ACTION" in
   what-if)
-    # Stacks have no what-if; a deployment's shows the same template's changes.
+    # Stacks have no what-if; a deployment's shows the same template's
+    # changes, but not what the stack deletes because the template dropped
+    # it (an admin taken off the list loses the role).
+    echo "the store's changes (a deployment's what-if: it doesn't list role assignments the stack deletes for admins taken off the list):"
     az deployment sub what-if --location "$LOCATION" \
       --template-file infra/settings/main.bicep \
       --parameters location="$LOCATION" admins="$ADMINS" --only-show-errors

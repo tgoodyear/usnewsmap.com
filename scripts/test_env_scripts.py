@@ -537,7 +537,8 @@ class TitlesSeed(Stubbed):
         self.assertIn("USNM_ARCHIVE_ACCOUNT", r.stderr)
         # A private setting: the only call looks for the settings store in
         # its stack's outputs; there's no stack.
-        self.assertEqual(self.calls(), ["stack sub show -n usnm-config --query outputs -o json"])
+        # In the environment's recorded subscription.
+        self.assertEqual(self.calls(), ["stack sub show -n usnm-config --query outputs -o json --subscription sub-1"])
 
     def test_needs_the_ingest_job(self):
         self.settings_file(self.SETTINGS.replace('INGEST_JOB="caj-usnm-ingest-dev"\n', ""))
@@ -696,6 +697,13 @@ class CommittedSettings(Stubbed):
         self.assertIn(f'SETTINGS_STORE_ENDPOINT="{self.EP}"', self.local_text())
         # Recorded once: the second read doesn't ask the stack again.
         self.assertEqual(sum(c.startswith("stack sub show") for c in self.calls()), 1)
+
+    def test_the_store_is_looked_up_in_the_environments_subscription(self):
+        # Whichever subscription az has selected.
+        self.local(AZURE_SUBSCRIPTION_ID="sub-env")
+        r = self.lib("aget USNM_ALERT_EMAILS", **self.OUTPUTS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("stack sub show -n usnm-config --query outputs -o json --subscription sub-env", self.calls())
 
     def test_a_single_read_with_an_unreadable_stack_fails(self):
         # Not "unset": a script never takes an unreadable setting for an
