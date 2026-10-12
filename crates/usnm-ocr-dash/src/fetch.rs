@@ -44,6 +44,10 @@ pub struct FetchStatus {
     pub fetched: u64,
     pub failed_permanent: u64,
     pub failed_transient: u64,
+    /// Pages skipped while their issue's item cools off (#414).
+    pub failed_item_error: u64,
+    pub issues_cooling: u64,
+    pub issues_item_permanent: u64,
     pub bytes_fetched: u64,
     pub bytes_on_disk: u64,
     pub max_total_bytes: Option<u64>,
@@ -190,6 +194,9 @@ pub struct Fetch {
     /// The latest failures, newest last.
     pub failures: VecDeque<FailureLine>,
     pub dead: HashSet<String>,
+    /// Pages skipped because loc.gov couldn't serve their issue's item
+    /// (`loc_item_error`), until fetched or permanent.
+    pub cooling: HashSet<String>,
     failure_times: VecDeque<DateTime<Utc>>,
     /// LoC holds seen over the last day.
     holds: VecDeque<DateTime<Utc>>,
@@ -220,6 +227,7 @@ impl Fetch {
             events: VecDeque::new(),
             failures: VecDeque::new(),
             dead: HashSet::new(),
+            cooling: HashSet::new(),
             failure_times: VecDeque::new(),
             holds: VecDeque::new(),
             last_hold_until: None,
@@ -422,6 +430,7 @@ impl Fetch {
                 Got::Reset => {
                     self.failures.clear();
                     self.dead.clear();
+                    self.cooling.clear();
                     self.failure_times.clear();
                     continue;
                 }
@@ -434,8 +443,15 @@ impl Fetch {
                 let Ok(f) = serde_json::from_str::<FailureLine>(&l) else {
                     continue;
                 };
-                if f.kind == "permanent" {
-                    self.dead.insert(f.doc_id.clone());
+                match f.kind.as_str() {
+                    "permanent" => {
+                        self.cooling.remove(&f.doc_id);
+                        self.dead.insert(f.doc_id.clone());
+                    }
+                    "loc_item_error" => {
+                        self.cooling.insert(f.doc_id.clone());
+                    }
+                    _ => {}
                 }
                 self.failure_times.push_back(f.at);
                 self.failures.push_back(f);
@@ -460,6 +476,14 @@ impl Fetch {
 
     pub fn holds_since(&self, since: DateTime<Utc>) -> usize {
         self.holds.iter().rev().take_while(|t| **t >= since).count()
+    }
+
+    /// Pages skipped for an item error and not fetched since.
+    pub fn cooling_pages(&self) -> usize {
+        self.cooling
+            .iter()
+            .filter(|d| !self.fetched.contains(d.as_str()))
+            .count()
     }
 
     pub fn failures_since(&self, since: DateTime<Utc>) -> usize {
@@ -562,7 +586,9 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.path().join("failures-full.jsonl"),
-            format!("{{\"doc_id\":\"sn3_1890-01-01_ed-1_seq-1\",\"kind\":\"permanent\",\"error\":\"HTTP 404\",\"at\":\"{at}\"}}\n"),
+            format!("{{\"doc_id\":\"sn3_1890-01-01_ed-1_seq-1\",\"kind\":\"permanent\",\"error\":\"HTTP 404\",\"at\":\"{at}\"}}\n\
+                     {{\"doc_id\":\"sn4_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{old}\"}}\n\
+                     {{\"doc_id\":\"sn5_1890-01-01_ed-1_seq-1\",\"kind\":\"loc_item_error\",\"error\":\"HTTP 503\",\"at\":\"{at}\"}}\n"),
         )
         .unwrap();
         std::fs::write(
@@ -580,6 +606,8 @@ mod tests {
         assert_eq!(f.since(now - Duration::days(1)).bytes, 212);
         assert_eq!(f.current_group(), Some(0));
         assert!(f.dead.contains("sn3_1890-01-01_ed-1_seq-1"));
+        // sn4's page was skipped for an item error and fetched since.
+        assert_eq!(f.cooling_pages(), 1);
         assert_eq!(f.holds_since(now - Duration::hours(1)), 1);
         // The same hold seen again isn't counted twice.
         f.poll(now);
