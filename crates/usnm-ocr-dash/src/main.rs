@@ -49,7 +49,8 @@ struct Cli {
     /// Where to serve HTTPS.
     #[arg(long, env = "USNM_OCRDASH_TLS_LISTEN", default_value = "0.0.0.0:443")]
     tls_listen: SocketAddr,
-    /// The name in the certificate, which plain HTTP redirects to.
+    /// The name in the certificate, which plain HTTP redirects to (with
+    /// `--tls-listen`'s port unless it's 443).
     #[arg(long, env = "USNM_OCRDASH_HTTPS_NAME", requires = "tls_cert")]
     https_name: Option<String>,
     /// Who may ask anything: address ranges, host names (resolved at start
@@ -227,9 +228,14 @@ async fn main() -> anyhow::Result<()> {
         version = VERSION.as_str(),
         "usnm-ocrdash started"
     );
+    let authority = match cli.tls_listen.port() {
+        443 => name.clone(),
+        port => format!("{name}:{port}"),
+    };
     let plain = axum::serve(
         listener,
-        redirect_router(app.clone(), &name).into_make_service_with_connect_info::<SocketAddr>(),
+        redirect_router(app.clone(), &authority)
+            .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         let _ = stop_rx.wait_for(|stop| *stop).await;

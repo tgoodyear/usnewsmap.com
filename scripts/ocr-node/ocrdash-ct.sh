@@ -151,7 +151,8 @@ if $CONFIGURE; then
   [ -z "$WORKBOOK_URL" ] || [[ $WORKBOOK_URL =~ ^https://portal\.azure\.com/[^[:space:]\"\'\<\>]+$ ]] ||
     die "--workbook-url: an https://portal.azure.com/ link"
   if [ -n "$HTTPS_NAME" ]; then
-    [[ $HTTPS_NAME =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || die "--https-name: a host name"
+    [[ $HTTPS_NAME =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && $HTTPS_NAME != *..* && ${#HTTPS_NAME} -le 253 ]] ||
+      die "--https-name: a host name"
     [ -s "$CERTS/$HTTPS_NAME/fullchain.pem" ] && [ -s "$CERTS/$HTTPS_NAME/privkey.pem" ] ||
       die "no certificate in $CERTS/$HTTPS_NAME: run home-infra's scripts/acme-setup.sh first"
     mp="$CERTS/$HTTPS_NAME,mp=/etc/usnm/tls,ro=1"

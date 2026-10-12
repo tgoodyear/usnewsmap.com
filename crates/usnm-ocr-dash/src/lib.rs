@@ -189,18 +189,21 @@ pub fn router(app: Arc<App>) -> Router {
 }
 
 /// Plain HTTP when the page itself is served over HTTPS: every request is
-/// redirected to `https://<https_name>` with the same path and query, except
+/// redirected to `https://<authority>` (the name, and the port unless 443)
+/// with the same path and query, except
 /// the hosts' stats pushes (`PUT /api/host/{name}`), which carry no secret,
 /// are checked by address, and come from `curl` that doesn't follow
 /// redirects. The same `--allow` as the page.
-pub fn redirect_router(app: Arc<App>, https_name: &str) -> Router {
-    let base = format!("https://{https_name}");
+pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
+    let base = format!("https://{authority}");
+    let redirect = move |uri: Uri| async move {
+        let path = uri.path_and_query().map_or("/", |p| p.as_str());
+        Redirect::permanent(&format!("{base}{path}"))
+    };
     Router::new()
-        .route("/api/host/{name}", put(put_host))
-        .fallback(move |uri: Uri| async move {
-            let path = uri.path_and_query().map_or("/", |p| p.as_str());
-            Redirect::permanent(&format!("{base}{path}"))
-        })
+        // Any other method on the push path is redirected too, not a 405.
+        .route("/api/host/{name}", put(put_host).fallback(redirect.clone()))
+        .fallback(redirect)
         .layer(DefaultBodyLimit::max(hosts::MAX_HOST_BYTES))
         .layer(middleware::from_fn_with_state(app.clone(), allow_only))
         .with_state(app)
@@ -289,6 +292,9 @@ mod tests {
             to.as_deref(),
             Some("https://ocr.example.org/api/fetch.json?x=1")
         );
+        let ((s, _), to) = call_on(plain(), "198.51.100.50", "GET", "/api/host/pve", "").await;
+        assert_eq!(s, StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(to.as_deref(), Some("https://ocr.example.org/api/host/pve"));
         let ((s, _), _) = call_on(plain(), "203.0.113.3", "GET", "/", "").await;
         assert_eq!(s, StatusCode::FORBIDDEN);
         let stats = r#"{"schema":1,"host":"pve","pools":[]}"#;
