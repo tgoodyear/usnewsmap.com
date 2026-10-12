@@ -496,6 +496,7 @@ mod tests {
             }),
             Box::new(|s: &mut Sidecar| s.loc_url = "https://evil.example/0007.jp2".into()),
             Box::new(|s: &mut Sidecar| s.format = "jpeg".into()),
+            Box::new(|s: &mut Sidecar| s.md5 = None),
         ] {
             let before = loc.0.load(Ordering::SeqCst);
             put_jp2(dir.path(), "keep", &p2, b"jp2 bytes", edit);

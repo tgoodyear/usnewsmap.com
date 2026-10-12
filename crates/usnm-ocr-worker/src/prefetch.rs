@@ -465,9 +465,11 @@ pub fn sample(rows: &[ManifestRow], n: usize) -> Vec<ManifestRow> {
 }
 
 /// Whether `bytes` are what `side` records: the size, the sha256 and, if
-/// it has one, the md5.
+/// it has one, the md5, which a JP2's sidecar must have.
 pub fn matches_sidecar(bytes: &[u8], side: &Sidecar) -> bool {
-    bytes.len() as u64 == side.bytes
+    // A JP2 is only ever written with the bag's md5.
+    (side.format != ScanFormat::Jp2.name() || side.md5.is_some())
+        && bytes.len() as u64 == side.bytes
         && sha256(bytes) == side.sha256
         && side
             .md5

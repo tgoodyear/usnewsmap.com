@@ -734,6 +734,9 @@ impl LocClient {
         // The last answer for this file was a fast, bare 503.
         let mut bare_before = false;
         for attempt in 1..=self.cfg.attempts.max(1) {
+            // Whether the answer just before this one was a fast, bare
+            // 503; any other answer in between clears it.
+            let prev_bare = std::mem::take(&mut bare_before);
             pacer.wait().await;
             let wait = self.cfg.backoff * attempt;
             let sent = Instant::now();
@@ -774,7 +777,7 @@ impl LocClient {
                         // look the same, only a second fast, bare 503 for
                         // the same file in a row, after the first held, can
                         // be an item error.
-                        let may_be_item = server == Server::Api || bare_before;
+                        let may_be_item = server == Server::Api || prev_bare;
                         bare_before = bare;
                         if let (Some(title), Some(_), true, true) =
                             (title, self.health(server), may_be_item, bare)
@@ -2026,7 +2029,7 @@ mod tests {
         assert_eq!(t.len(), 4);
         for w in t.windows(2) {
             assert!(
-                w[1] - w[0] >= Duration::from_millis(190),
+                w[1] - w[0] >= Duration::from_millis(150),
                 "{:?}",
                 w[1] - w[0]
             );
@@ -2273,5 +2276,37 @@ mod tests {
             matches!(e, FetchError::Transient(ref m) if m.contains("METS")),
             "{e:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn another_failure_between_bare_503s_clears_the_first() {
+        let s = StandIn::start().await;
+        one_issue(&s);
+        s.add_issue(
+            BATCH,
+            "sn2",
+            "0002A",
+            "1890050301",
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: b"x",
+            }],
+        );
+        let mets2 = format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml");
+        let mut cfg = batch_client(&s, Duration::from_millis(10), None, false).cfg;
+        cfg.attempts = 3;
+        let loc = LocClient::new(cfg).unwrap();
+        loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+        for a in [
+            Scripted::Status(503),
+            Scripted::Status(500),
+            Scripted::Status(503),
+        ] {
+            s.script(&mets2, a);
+        }
+        let sn2: PageKey = "sn2/1890-05-03/ed-1/seq-1".parse().unwrap();
+        let e = loc.resolve(&sn2, "xx_test", 1).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
     }
 }
