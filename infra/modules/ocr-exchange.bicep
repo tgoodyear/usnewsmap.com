@@ -21,6 +21,8 @@ param subnetId string
 param nodeGroupId string = ''
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
 param ingestPrincipalId string
+@description('The node writer role\'s name, before its scope (infra/naming.bicep).')
+param nodeWriterRoleLabel string
 
 // Role definition ids, from
 // https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage
@@ -31,6 +33,10 @@ param ingestPrincipalId string
 var queueMessageProcessor = '8a0f0c08-91a1-4084-bc3d-661d67233fed'
 // Put Message only.
 var queueMessageSender = 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a'
+// Storage Queue Data Reader: queues/read (Get Queue Metadata, the
+// approximate message count) and messages/read (Peek Messages). Nothing
+// that takes, hides, adds or deletes a message.
+var queueDataReader = '19e7f393-937e-4f77-808e-94535e297925'
 var queueDataContributor = '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
 var blobContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 
@@ -154,7 +160,8 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
 }
 
 // The nodes: take and delete messages on the two work queues, add to the
-// dead-letter queue, and read and create blobs in ocr-out, without delete,
+// dead-letter queue, read every queue's length and peek its messages (for
+// the LAN dashboard), and read and create blobs in ocr-out, without delete,
 // so one node can't remove another's output. Azure RBAC can't make blobs
 // write-once, so "write" still allows an overwrite; the worker writes
 // create-only (If-None-Match: *), and the copy-in job checks every part.
@@ -163,7 +170,7 @@ resource nodeWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(resourceGroup().id, 'usnm-ocr-node-writer')
   properties: {
     // Role names are unique per tenant: include the subscription and group.
-    roleName: 'usnm OCR node writer (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
+    roleName: '${nodeWriterRoleLabel} (${take(subscription().subscriptionId, 8)}/${resourceGroup().name})'
     description: 'An on-prem OCR node: list, read and create blobs. No delete.'
     type: 'CustomRole'
     permissions: [
@@ -206,6 +213,32 @@ resource nodeDeadLetter 'Microsoft.Authorization/roleAssignments@2022-04-01' = i
     principalId: nodeGroupId
     principalType: 'Group'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender)
+  }
+}
+
+// For the LAN dashboard (12 §12.2.5): each worker reports every queue's
+// length and the dead letters at the front of ocr-deadletter, by Get Queue
+// Metadata and Peek Messages. Reader on each of the three queues, not the
+// account.
+resource nodeReadQueues 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for (q, i) in workQueues: if (nodeGrants) {
+    scope: queues[i]
+    name: guid(queues[i].id, nodeGroupId, queueDataReader)
+    properties: {
+      principalId: nodeGroupId
+      principalType: 'Group'
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueDataReader)
+    }
+  }
+]
+
+resource nodeReadDeadLetter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (nodeGrants) {
+  scope: deadLetter
+  name: guid(deadLetter.id, nodeGroupId, queueDataReader)
+  properties: {
+    principalId: nodeGroupId
+    principalType: 'Group'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueDataReader)
   }
 }
 
