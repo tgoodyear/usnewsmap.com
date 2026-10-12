@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -101,7 +102,9 @@ def load_manifest(sample: Path) -> list[dict]:
 def throughput(sample: Path, work: Path, n: int, pages: int) -> None:
     manifest = [r for r in load_manifest(sample) if r["group"] == "german"][:pages]
     d = work / "throughput" / f"x{n}"
-    d.mkdir(parents=True, exist_ok=True)
+    if d.exists():  # results left from an earlier run would be skipped as done and count as new work
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
     shards = [manifest[i::n] for i in range(n)]
     procs, t0 = [], time.time()
     for i, shard in enumerate(shards):
@@ -148,6 +151,7 @@ def main() -> None:
         throughput(a.sample, a.work, a.throughput, a.throughput_pages)
         return
     manifest = load_manifest(a.sample)
+    failed = []
     for engine in filter(None, a.engines.split(",")):
         done = set()
         for res in (a.work / "results").glob(f"{engine}*.jsonl"):
@@ -160,8 +164,10 @@ def main() -> None:
         if a.parallel == 1:
             jp = a.work / "jobs" / f"{engine}.jsonl"
             jp.write_text("".join(json.dumps(j) + "\n" for j in jobs))
-            subprocess.run(podman(engine, a.sample, a.work, jp, a.work / "results" / f"{engine}.jsonl", out,
-                                  memory=a.memory or "7g"))
+            rc = subprocess.run(podman(engine, a.sample, a.work, jp, a.work / "results" / f"{engine}.jsonl", out,
+                                       memory=a.memory or "7g")).returncode
+            if rc:
+                failed.append(f"{engine}: exit {rc}")
             continue
         procs = []
         for i in range(a.parallel):
@@ -170,8 +176,11 @@ def main() -> None:
             procs.append(subprocess.Popen(podman(engine, a.sample, a.work, jp,
                                                  a.work / "results" / f"{engine}.{i}.jsonl", out,
                                                  memory=a.memory or f"{max(1, 7 // a.parallel)}g")))
-        for p in procs:
-            p.wait()
+        codes = [p.wait() for p in procs]
+        if any(codes):
+            failed.append(f"{engine}: exit codes {codes}")
+    if failed:  # the other engines still ran; rerunning picks up where each stopped
+        raise SystemExit("container failures: " + "; ".join(failed))
 
 
 if __name__ == "__main__":

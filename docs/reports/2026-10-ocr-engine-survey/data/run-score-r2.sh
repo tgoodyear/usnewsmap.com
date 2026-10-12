@@ -10,3 +10,4 @@ podman run --rm -v $R/sample:/sample:ro,z -v $R/repo:/repo:ro,z -v $R/score:/sco
   && python3 /repo/docs/reports/2026-10-ocr-engine-survey/dedup.py --sample /sample --work /score/work --data /out/data > /out/dedup.md"
 rc=$?
 echo "$(date -u +%FT%TZ) score-r2 done rc=$rc" >> $R/status.txt
+exit $rc
