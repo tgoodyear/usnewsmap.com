@@ -1,6 +1,6 @@
 //! `usnm-ocr-worker`: see the crate's README.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -198,10 +198,11 @@ enum Command {
         /// (`0.0.0.0:8381`): `GET /status` and `GET /journal`. Unset: none.
         #[arg(long, env = "USNM_OCR_STATUS_LISTEN")]
         status_listen: Option<SocketAddr>,
-        /// The only addresses the status is served to (the dashboard's),
-        /// comma-separated.
+        /// The only hosts the status is served to (the dashboard's), as
+        /// names or addresses, comma-separated. Names are resolved each
+        /// time the server starts.
         #[arg(long, env = "USNM_OCR_STATUS_ALLOW", value_delimiter = ',')]
-        status_allow: Vec<IpAddr>,
+        status_allow: Vec<String>,
         /// The journal of finished pages (doc_id, language, engine tag,
         /// times, outcome; no text), appended to across restarts.
         #[arg(long, env = "USNM_OCR_STATUS_JOURNAL")]

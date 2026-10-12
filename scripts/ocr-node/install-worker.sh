@@ -5,14 +5,9 @@
 #   scripts/ocr-node/install-worker.sh --env prod --name usnm-ocr-node1 \
 #     --host claude@node1.example.org [--ssh-key ~/.ssh/id_ed25519] \
 #     [--release ocr-worker-YYYYMMDD-SHA7] [--nodes N] [--concurrency N] \
-<<<<<<< HEAD
 #     [--scan-cache-url http://HOST:8380] [--pacing-multiplier M] \
-#     [--page-timeout-secs N] [--publish-fetched VERSION] [--enable] \
-#     [--rollback] [--dry-run]
-=======
-#     [--scan-cache-url http://HOST:8380] [--status-allow DASHBOARD_IP] \
-#     [--enable] [--rollback] [--dry-run]
->>>>>>> c221bfc (OCR worker: its status and a journal of finished pages for the LAN dashboard (#296))
+#     [--page-timeout-secs N] [--publish-fetched VERSION] \
+#     [--status-allow DASHBOARD] [--enable] [--rollback] [--dry-run]
 #
 # Steps:
 #   1. picks the release (--release, or the newest ocr-worker-* release) and
@@ -33,17 +28,14 @@
 #      of members in the nodes' Entra group; --nodes must match it. With
 #      --scan-cache-url, the worker reads prefetched scans from the scan
 #      server in the scan-fetch container first (ADR-0015 decision 9).
-<<<<<<< HEAD
 #      --page-timeout-secs sets USNM_OCR_PAGE_TIMEOUT_SECS (the worker's
 #      default is 600). --publish-fetched VERSION makes this node also
 #      publish the scan server's fetched list for that prefetch manifest
 #      to ocr-out/fetched/ for the seeder (12 Step 11); set it on one node.
-=======
-#      With --status-allow, the worker serves its status to the LAN
-#      dashboard at that address on port 8381 (12 §12.2.5), with a journal
+#      With --status-allow (the dashboard's host name, or its address),
+#      the worker serves its status to the LAN dashboard on port 8381 (12 §12.2.5), with a journal
 #      of finished pages in /var/lib/usnm-ocr, and the node's nftables
 #      drops the port from anyone else.
->>>>>>> c221bfc (OCR worker: its status and a journal of finished pages for the LAN dashboard (#296))
 #   3. over ssh with sudo (scripts/ocr-node/install-worker-node.sh): puts
 #      the binary in /usr/local/lib/usnm-ocr-worker/<release>/, loads the
 #      Tesseract image into the engine account's (usnmeng's) podman
@@ -68,22 +60,14 @@
 # members), and ssh with passwordless sudo for --host. Works with macOS's
 # bash 3.2.
 set -euo pipefail
-<<<<<<< HEAD
 usage() { sed -n '5,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-=======
-usage() { sed -n '5,9s/^# \{0,1\}//p' "$0" >&2; exit 2; }
->>>>>>> c221bfc (OCR worker: its status and a journal of finished pages for the LAN dashboard (#296))
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 REPO=tgoodyear/usnewsmap.com
 WORKFLOW="$REPO/.github/workflows/ci.yml"
-<<<<<<< HEAD
 ENV_NAME="" HOST="" NAME="" SSH_KEY="" RELEASE="" NODES="" CONCURRENCY="" SCAN_CACHE_URL=""
-PACING="" PAGE_TIMEOUT="" PUBLISH_FETCHED=""
-=======
-ENV_NAME="" HOST="" NAME="" SSH_KEY="" RELEASE="" NODES="" CONCURRENCY="" SCAN_CACHE_URL="" STATUS_ALLOW=""
->>>>>>> c221bfc (OCR worker: its status and a journal of finished pages for the LAN dashboard (#296))
+PACING="" PAGE_TIMEOUT="" PUBLISH_FETCHED="" STATUS_ALLOW=""
 ENABLE=false ROLLBACK=false DRY_RUN=false
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -95,13 +79,10 @@ while [ $# -gt 0 ]; do
     --nodes) NODES=${2:-}; shift 2 ;;
     --concurrency) CONCURRENCY=${2:-}; shift 2 ;;
     --scan-cache-url) SCAN_CACHE_URL=${2:-}; shift 2 ;;
-<<<<<<< HEAD
     --pacing-multiplier) PACING=${2:-}; shift 2 ;;
     --page-timeout-secs) PAGE_TIMEOUT=${2:-}; shift 2 ;;
     --publish-fetched) PUBLISH_FETCHED=${2:-}; shift 2 ;;
-=======
     --status-allow) STATUS_ALLOW=${2:-}; shift 2 ;;
->>>>>>> c221bfc (OCR worker: its status and a journal of finished pages for the LAN dashboard (#296))
     --enable) ENABLE=true; shift ;;
     --rollback) ROLLBACK=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -118,14 +99,11 @@ done
 [ -z "$NODES" ] || [[ $NODES =~ ^[1-9][0-9]?$ ]] || die "--nodes: 1 to 99"
 [ -z "$CONCURRENCY" ] || [[ $CONCURRENCY =~ ^[1-9][0-9]?$ ]] || die "--concurrency: 1 to 99"
 [ -z "$SCAN_CACHE_URL" ] || [[ $SCAN_CACHE_URL =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || die "--scan-cache-url: http://HOST:PORT"
-<<<<<<< HEAD
 [ -z "$PACING" ] || [[ $PACING =~ ^[1-9][0-9]?$ ]] || die "--pacing-multiplier: 1 to 99"
 [ -z "$PAGE_TIMEOUT" ] || [[ $PAGE_TIMEOUT =~ ^[1-9][0-9]{1,4}$ ]] || die "--page-timeout-secs: 10 to 99999"
 [ -z "$PUBLISH_FETCHED" ] || [[ $PUBLISH_FETCHED =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "--publish-fetched: a manifest version (pages-vYYYYMMDD-N)"
 [ -z "$PUBLISH_FETCHED" ] || [ -n "$SCAN_CACHE_URL" ] || die "--publish-fetched needs --scan-cache-url"
-=======
-[ -z "$STATUS_ALLOW" ] || [[ $STATUS_ALLOW =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--status-allow: the dashboard's IPv4 address"
->>>>>>> c221bfc (OCR worker: its status and a journal of finished pages for the LAN dashboard (#296))
+[ -z "$STATUS_ALLOW" ] || [[ $STATUS_ALLOW =~ ^[A-Za-z0-9.-]+$ ]] || die "--status-allow: the dashboard's host name or IPv4 address"
 [ "$ROLLBACK" = false ] || [ "$ENABLE" = false ] || die "--rollback and --enable don't go together"
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

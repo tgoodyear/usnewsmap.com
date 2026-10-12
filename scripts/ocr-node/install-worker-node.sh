@@ -195,7 +195,15 @@ status_allow=$(sed -n 's/^USNM_OCR_STATUS_ALLOW=//p' "$ENVFILE")
 if [ -n "$status_listen" ]; then
   port=${status_listen##*:}
   [[ $port =~ ^[0-9]+$ ]] || die "USNM_OCR_STATUS_LISTEN: <address>:<port>"
-  [[ $status_allow =~ ^[0-9.]+(,[0-9.]+)*$ ]] || die "USNM_OCR_STATUS_ALLOW: IPv4 addresses, comma-separated"
+  [[ $status_allow =~ ^[A-Za-z0-9.-]+(,[A-Za-z0-9.-]+)*$ ]] || die "USNM_OCR_STATUS_ALLOW: host names or IPv4 addresses, comma-separated"
+  # Names to addresses for the rule (the LAN's DNS); the worker resolves
+  # them again each time its status server starts.
+  addrs=""
+  for h in ${status_allow//,/ }; do
+    for a in $(getent ahostsv4 "$h" | awk '{print $1}' | sort -u); do addrs+="${addrs:+, }$a"; done
+  done
+  [ -n "$addrs" ] || die "USNM_OCR_STATUS_ALLOW: $status_allow doesn't resolve"
+  status_allow=$addrs
   install -d -m 0755 /etc/nftables
   cat > /etc/nftables/usnm-ocr-status.nft <<NFT
 # Written by scripts/ocr-node/install-worker-node.sh: the worker's status

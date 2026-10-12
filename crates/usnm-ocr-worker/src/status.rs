@@ -447,7 +447,7 @@ pub const RESTART_MAX: std::time::Duration = std::time::Duration::from_secs(300)
 pub fn supervise(
     listen: SocketAddr,
     tracker: Arc<Tracker>,
-    allow: Vec<IpAddr>,
+    allow: Vec<String>,
     stop: tokio::sync::watch::Receiver<bool>,
     metrics: crate::telemetry::Metrics,
     first: std::time::Duration,
@@ -496,12 +496,31 @@ pub fn supervise(
 }
 
 /// Bind and serve until `stop` or an error.
+/// The addresses of `hosts`: each an address, or a name resolved now.
+pub async fn resolve(hosts: &[String]) -> anyhow::Result<Vec<IpAddr>> {
+    let mut out = Vec::new();
+    for h in hosts {
+        match h.parse::<IpAddr>() {
+            Ok(ip) => out.push(ip.to_canonical()),
+            Err(_) => {
+                let addrs = tokio::net::lookup_host((h.as_str(), 0))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("resolving {h}: {e}"))?;
+                out.extend(addrs.map(|a| a.ip().to_canonical()));
+            }
+        }
+    }
+    anyhow::ensure!(!out.is_empty(), "no address to serve the status to");
+    Ok(out)
+}
+
 async fn serve_once(
     listen: SocketAddr,
     tracker: Arc<Tracker>,
-    allow: Vec<IpAddr>,
+    hosts: Vec<String>,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    let allow = resolve(&hosts).await?;
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|e| anyhow::anyhow!("binding the status port {listen}: {e}"))?;
@@ -679,7 +698,7 @@ mod tests {
         let task = supervise(
             addr,
             t,
-            vec!["127.0.0.1".parse().unwrap()],
+            vec!["localhost".to_owned()],
             rx,
             crate::telemetry::Metrics::global(),
             std::time::Duration::from_millis(50),
