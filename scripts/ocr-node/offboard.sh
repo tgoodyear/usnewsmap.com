@@ -16,7 +16,9 @@
 #      it (without --host, deleting the machine in step 4 removes the
 #      extension's resource; the node is gone or unreachable);
 #   3. with --host, over ssh with sudo: stops and disables
-#      usnm-ocr-worker.service, removes the engine runtime (ADR-0016: the
+#      usnm-ocr-worker.service, turns off automatic updates and the weekly
+#      reboot window (dnf-automatic.timer and usnm-ocr-reboot.timer, whose
+#      units and script it removes), removes the engine runtime (ADR-0016: the
 #      engine account usnmeng with its containers, images and subordinate
 #      ids, its Podman API units, the cgroup delegation, the scratch tmpfs
 #      and the group usnmocr), stops the extension manager and removes any
@@ -227,8 +229,16 @@ rm -f "/etc/systemd/system/$scratch" /etc/tmpfiles.d/usnm-ocr.conf
 rm -rf /run/usnm-ocr
 systemctl daemon-reload
 if getent group usnmocr > /dev/null; then groupdel usnmocr && echo "removed group usnmocr"; fi'
+# Automatic updates and the weekly reboot window that node-setup.sh sets
+# up: a node kept or reused after offboarding neither updates nor reboots
+# by itself. dnf-automatic stays installed.
+UPDATES_REMOVE='systemctl disable --now usnm-ocr-reboot.timer dnf-automatic.timer 2> /dev/null || true
+rm -f /etc/systemd/system/usnm-ocr-reboot.timer /etc/systemd/system/usnm-ocr-reboot.service \
+  /usr/local/sbin/usnm-ocr-reboot-if-needed
+systemctl daemon-reload'
 # shellcheck disable=SC2016 # expanded on the node
 REMOTE='systemctl disable --now usnm-ocr-worker.service 2> /dev/null || true
+'"$UPDATES_REMOVE"'
 '"$ENGINE_REMOVE"'
 if ! command -v azcmagent > /dev/null; then
   echo "no Connected Machine agent"
@@ -261,6 +271,7 @@ fi'
 if [ -z "$HOST" ]; then
   echo "no --host; if the node still exists, run on it as root:"
   echo "  systemctl disable --now usnm-ocr-worker.service"
+  printf '%s\n' "$UPDATES_REMOVE" | while IFS= read -r line; do echo "  $line"; done
   printf '%s\n' "$ENGINE_REMOVE" | while IFS= read -r line; do echo "  $line"; done
   echo "  systemctl stop extd"
   echo "  azcmagent extension remove --all"
