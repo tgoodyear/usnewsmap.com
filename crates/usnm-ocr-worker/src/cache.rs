@@ -28,9 +28,7 @@ use bytes::Bytes;
 use usnm_core::ids::PageKey;
 
 use crate::batch::jp2_url_of;
-use crate::loc::{
-    image_url, FetchError, ImageSize, Scan, ScanFormat, MAX_IMAGE_BYTES, USER_AGENT,
-};
+use crate::loc::{image_url, FetchError, ImageSize, Scan, ScanFormat, MAX_IMAGE_BYTES, USER_AGENT};
 use crate::prefetch::{matches_sidecar, Set, Sidecar};
 use crate::worker::ScanSource;
 
@@ -273,6 +271,7 @@ impl ScanSource for CachedScans {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prefetch::sha256;
     use crate::serve::{router, AllowList, ServeOptions};
     use chrono::Utc;
     use std::net::SocketAddr;
@@ -280,6 +279,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     const ROOT: &str = "https://tile.loc.gov/image-services/iiif/";
+    const STORAGE: &str = "https://tile.loc.gov/storage-services/service/";
 
     #[derive(Debug, Default)]
     struct Loc(AtomicU32);
@@ -290,7 +290,10 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(Scan {
                 iiif_base: format!("{ROOT}service:from:loc"),
-                jpeg: Bytes::from_static(b"loc"),
+                url: format!("{ROOT}service:from:loc/full/full/0/default.jpg"),
+                format: ScanFormat::Jpeg,
+                bytes: Bytes::from_static(b"loc"),
+                md5: None,
                 download: Duration::ZERO,
                 from_cache: false,
                 evict: None,
@@ -328,6 +331,8 @@ mod tests {
             sha256: sha256(body),
             download_ms: 1,
             user_agent: "x".into(),
+            format: "jpeg".into(),
+            md5: None,
         };
         edit(&mut side);
         let mut sp = path.into_os_string();
@@ -363,7 +368,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let base = server(dir.path()).await;
         let loc = Arc::new(Loc::default());
-        let cache = CachedScans::new(&base, ROOT.into(), loc.clone()).unwrap();
+        let cache = CachedScans::new(&base, ROOT.into(), STORAGE.into(), loc.clone()).unwrap();
         let key: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
         // Nothing cached: LoC.
         assert!(!cache.scan(&key, "batch_x").await.unwrap().from_cache);
@@ -372,7 +377,7 @@ mod tests {
         put(dir.path(), "buffer", &key, "batch_x", b"jpeg bytes", |_| {});
         let s = cache.scan(&key, "batch_x").await.unwrap();
         assert!(s.from_cache);
-        assert_eq!(&s.jpeg[..], b"jpeg bytes");
+        assert_eq!(&s.bytes[..], b"jpeg bytes");
         let url = s.evict.clone().unwrap();
         assert!(url.ends_with("/scans/buffer/batch_x/sn1/1890-05-03/1/1.jpg"));
         assert_eq!(loc.0.load(Ordering::SeqCst), 1);
@@ -405,12 +410,106 @@ mod tests {
         }
     }
 
+    /// A JP2 fetched through the batch, with its sidecar.
+    fn put_jp2(dir: &Path, set: &str, key: &PageKey, body: &[u8], edit: impl FnOnce(&mut Sidecar)) {
+        let path = dir
+            .join(set)
+            .join("batch_x")
+            .join(&key.lccn)
+            .join(key.date.format("%Y-%m-%d").to_string())
+            .join(key.edition.to_string())
+            .join(format!("{}.jp2", key.seq));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, body).unwrap();
+        let base = format!("{ROOT}service:ndnp:x:batch_x_ver01:data:sn1:1:1890050301:0007");
+        let mut side = Sidecar {
+            doc_id: key.doc_id(),
+            batch: "batch_x".into(),
+            batch_version: 1,
+            loc_url: format!("{STORAGE}ndnp/x/batch_x_ver01/data/sn1/1/1890050301/0007.jp2"),
+            iiif_base: base,
+            resolution: "full".into(),
+            fetched_at: Utc::now(),
+            bytes: body.len() as u64,
+            sha256: sha256(body),
+            download_ms: 1,
+            user_agent: "x".into(),
+            format: "jp2".into(),
+            md5: Some(crate::batch::md5_hex(body)),
+        };
+        edit(&mut side);
+        let mut sp = path.into_os_string();
+        sp.push(".json");
+        std::fs::write(sp, serde_json::to_vec(&side).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reads_jp2s_and_jpegs_side_by_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = server(dir.path()).await;
+        let loc = Arc::new(Loc::default());
+        let cache = CachedScans::new(&base, ROOT.into(), STORAGE.into(), loc.clone()).unwrap();
+        let p1: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
+        let p2: PageKey = "sn1/1890-05-03/ed-1/seq-2".parse().unwrap();
+        // Page 1 was fetched as a JPEG before the batch route, page 2 as a JP2.
+        put(dir.path(), "keep", &p1, "batch_x", b"old jpeg", |_| {});
+        put_jp2(dir.path(), "keep", &p2, b"jp2 bytes", |_| {});
+        let s1 = cache.scan(&p1, "batch_x").await.unwrap();
+        assert!(s1.from_cache);
+        assert_eq!(
+            (s1.format, &s1.bytes[..]),
+            (ScanFormat::Jpeg, &b"old jpeg"[..])
+        );
+        assert!(s1.url.ends_with("/full/full/0/default.jpg") && s1.md5.is_none());
+        let s2 = cache.scan(&p2, "batch_x").await.unwrap();
+        assert!(s2.from_cache);
+        assert_eq!(
+            (s2.format, &s2.bytes[..]),
+            (ScanFormat::Jp2, &b"jp2 bytes"[..])
+        );
+        assert!(s2.url.starts_with(STORAGE) && s2.url.ends_with("/0007.jp2"));
+        assert_eq!(
+            s2.md5.as_deref(),
+            Some(crate::batch::md5_hex(b"jp2 bytes").as_str())
+        );
+        assert_eq!(loc.0.load(Ordering::SeqCst), 0);
+        // Both there: the JP2.
+        put_jp2(dir.path(), "keep", &p1, b"new jp2", |_| {});
+        assert_eq!(
+            cache.scan(&p1, "batch_x").await.unwrap().format,
+            ScanFormat::Jp2
+        );
+        // A buffer JP2 is evicted by its own URL.
+        let p3: PageKey = "sn1/1890-05-03/ed-1/seq-3".parse().unwrap();
+        put_jp2(dir.path(), "buffer", &p3, b"buffer jp2", |_| {});
+        let s3 = cache.scan(&p3, "batch_x").await.unwrap();
+        assert!(s3
+            .evict
+            .unwrap()
+            .ends_with("/scans/buffer/batch_x/sn1/1890-05-03/1/3.jp2"));
+        // A JP2 whose md5, URL or format doesn't check out: LoC.
+        for edit in [
+            Box::new(|s: &mut Sidecar| s.md5 = Some(crate::batch::md5_hex(b"other")))
+                as Box<dyn FnOnce(&mut Sidecar)>,
+            Box::new(|s: &mut Sidecar| {
+                s.loc_url = format!("{STORAGE}ndnp/x/batch_x_ver01/data/sn1/1/1890050301/0008.jp2")
+            }),
+            Box::new(|s: &mut Sidecar| s.loc_url = "https://evil.example/0007.jp2".into()),
+            Box::new(|s: &mut Sidecar| s.format = "jpeg".into()),
+        ] {
+            let before = loc.0.load(Ordering::SeqCst);
+            put_jp2(dir.path(), "keep", &p2, b"jp2 bytes", edit);
+            assert!(!cache.scan(&p2, "batch_x").await.unwrap().from_cache);
+            assert_eq!(loc.0.load(Ordering::SeqCst), before + 1);
+        }
+    }
+
     #[test]
     fn refuses_a_bad_cache_url_at_startup() {
         let loc: Arc<dyn ScanSource> = Arc::new(Loc::default());
         for bad in ["http://", "http://host:99999", "ftp://host", "host:8380"] {
             assert!(
-                CachedScans::new(bad, ROOT.into(), Arc::clone(&loc)).is_err(),
+                CachedScans::new(bad, ROOT.into(), STORAGE.into(), Arc::clone(&loc)).is_err(),
                 "{bad}"
             );
         }
@@ -418,7 +517,7 @@ mod tests {
         // address.
         for good in ["http://scans.example.org:8380", "http://192.0.2.5:8380"] {
             assert!(
-                CachedScans::new(good, ROOT.into(), Arc::clone(&loc)).is_ok(),
+                CachedScans::new(good, ROOT.into(), STORAGE.into(), Arc::clone(&loc)).is_ok(),
                 "{good}"
             );
         }
@@ -428,7 +527,13 @@ mod tests {
     async fn a_server_that_is_away_costs_seconds_not_a_thread() {
         let loc = Arc::new(Loc::default());
         // Nothing listens there.
-        let cache = CachedScans::new("http://127.0.0.1:9", ROOT.into(), loc.clone()).unwrap();
+        let cache = CachedScans::new(
+            "http://127.0.0.1:9",
+            ROOT.into(),
+            STORAGE.into(),
+            loc.clone(),
+        )
+        .unwrap();
         let key: PageKey = "sn1/1890-05-03/ed-1/seq-1".parse().unwrap();
         let t0 = std::time::Instant::now();
         assert!(!cache.scan(&key, "batch_x").await.unwrap().from_cache);

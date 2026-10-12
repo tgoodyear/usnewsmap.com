@@ -151,12 +151,6 @@ impl StandIn {
             .collect()
     }
 
-    /// The path of `batch_dir`'s directory on the stand-in's storage
-    /// service, under `inst`, ending in `/`.
-    pub fn batch_path(inst: &str, batch_dir: &str) -> String {
-        format!("/storage-services/service/ndnp/{inst}/batch_{batch_dir}/")
-    }
-
     /// An issue in a bag at `batch_path`: its METS (pages in the order
     /// given), its JP2s and their manifest lines. Returns the METS path.
     pub fn add_issue(
@@ -196,7 +190,10 @@ impl StandIn {
         self.put(&mets_path, mets);
         for p in pages {
             lines.push(format!("{}  {issue}{}.jp2", batch::md5_hex(p.jp2), p.frame));
-            self.put(&format!("{batch_path}{issue}{}.jp2", p.frame), p.jp2.to_vec());
+            self.put(
+                &format!("{batch_path}{issue}{}.jp2", p.frame),
+                p.jp2.to_vec(),
+            );
         }
         let manifest = {
             let mut i = self.inner.lock().unwrap();

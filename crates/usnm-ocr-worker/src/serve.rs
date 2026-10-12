@@ -410,8 +410,14 @@ mod tests {
             scan_rel("buffer/curiv_joshuaTree/sn1/1890-05-03/1/7.jpg.json"),
             Some("buffer")
         );
-        assert_eq!(scan_rel("keep/mdu_garlic/sn1/1904-07-29/1/7.jp2"), Some("keep"));
-        assert_eq!(scan_rel("keep/mdu_garlic/sn1/1904-07-29/1/7.jp2.json"), Some("keep"));
+        assert_eq!(
+            scan_rel("keep/mdu_garlic/sn1/1904-07-29/1/7.jp2"),
+            Some("keep")
+        );
+        assert_eq!(
+            scan_rel("keep/mdu_garlic/sn1/1904-07-29/1/7.jp2.json"),
+            Some("keep")
+        );
         for bad in [
             "other/a/b.jpg",
             "keep/../x/1.jpg",

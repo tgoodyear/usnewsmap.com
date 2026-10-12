@@ -979,7 +979,8 @@ pub fn set_alto_source(alto: &str, name: &str, sha256: &str, md5: Option<&str>) 
     if !hex(sha256) {
         return named;
     }
-    let mut ids = format!("<fileIdentifier fileIdentifierLocation=\"sha256\">{sha256}</fileIdentifier>");
+    let mut ids =
+        format!("<fileIdentifier fileIdentifierLocation=\"sha256\">{sha256}</fileIdentifier>");
     if let Some(m) = md5.filter(|m| hex(m)) {
         ids.push_str(&format!(
             "<fileIdentifier fileIdentifierLocation=\"md5\">{m}</fileIdentifier>"

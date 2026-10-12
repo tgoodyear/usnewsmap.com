@@ -81,7 +81,9 @@ use usnm_ocr_contract::prefetch::{self, ManifestRow};
 pub use usnm_ocr_contract::prefetch::{priority, set_of, Set, WORST_ENGLISH};
 
 use crate::batch;
-use crate::loc::{issue_id, FetchError, ImageSize, LocClient, Scan, ScanFormat, Server, USER_AGENT};
+use crate::loc::{
+    issue_id, FetchError, ImageSize, LocClient, Scan, ScanFormat, Server, USER_AGENT,
+};
 
 /// How often a fetcher waiting at the buffer cap counts the buffer again.
 pub const BUFFER_RECHECK: Duration = Duration::from_secs(60);
@@ -469,7 +471,10 @@ pub fn sample(rows: &[ManifestRow], n: usize) -> Vec<ManifestRow> {
 pub fn matches_sidecar(bytes: &[u8], side: &Sidecar) -> bool {
     bytes.len() as u64 == side.bytes
         && sha256(bytes) == side.sha256
-        && side.md5.as_ref().is_none_or(|m| batch::md5_hex(bytes) == *m)
+        && side
+            .md5
+            .as_ref()
+            .is_none_or(|m| batch::md5_hex(bytes) == *m)
 }
 
 /// The size of the scan at `scan`, if it and its sidecar are there and
@@ -988,7 +993,10 @@ impl Run {
             Err(e) => return Fetched::Failed(e, storage_issue),
         }
         if let c @ (Check::Cooling(_) | Check::Permanent) = self.cooling.check(&issue) {
-            return Fetched::Skip(c, "its issue's item answered 503 while loc.gov served others");
+            return Fetched::Skip(
+                c,
+                "its issue's item answered 503 while loc.gov served others",
+            );
         }
         match self.loc.scan_at(key, size).await {
             Ok(scan) => Fetched::Scan(scan, issue, true),
@@ -1075,7 +1083,12 @@ impl Run {
                 Ok(Outcome::Done)
             }
             Fetched::Failed(FetchError::Item(msg), route) => {
-                tracing::warn!(doc_id = row.doc_id, error = msg, route, "loc.gov item error");
+                tracing::warn!(
+                    doc_id = row.doc_id,
+                    error = msg,
+                    route,
+                    "loc.gov item error"
+                );
                 let check = self.cooling.mark(&route, &msg)?;
                 let lccn = row.lccn.clone();
                 let outcome = self.skip(row, &t, check, &msg)?;
@@ -1423,7 +1436,8 @@ fn last_fetched(path: &Path) -> Vec<Sidecar> {
         return Vec::new();
     };
     let mut tail = Vec::new();
-    if f.seek(SeekFrom::Start(len.saturating_sub(64 * 1024))).is_err()
+    if f.seek(SeekFrom::Start(len.saturating_sub(64 * 1024)))
+        .is_err()
         || f.read_to_end(&mut tail).is_err()
     {
         return Vec::new();
@@ -1662,13 +1676,18 @@ mod tests {
     #[test]
     fn lays_scans_out_by_set_batch_title_issue_and_page() {
         let r = row("sn83045462", 1890, 7, "ger");
-        let p = scan_path(Path::new("/tank/ocr/scans"), &r, ImageSize::Full);
+        let p = scan_path(
+            Path::new("/tank/ocr/scans"),
+            &r,
+            ImageSize::Full,
+            ScanFormat::Jpeg,
+        );
         assert_eq!(
             p,
             Path::new("/tank/ocr/scans/keep/batch_x/sn83045462/1890-05-03/1/7.jpg")
         );
         let e = row("sn83045462", 1890, 7, "eng");
-        let p = scan_path(Path::new("/t"), &e, ImageSize::Pct(50));
+        let p = scan_path(Path::new("/t"), &e, ImageSize::Pct(50), ScanFormat::Jpeg);
         assert_eq!(
             p,
             Path::new("/t/buffer/batch_x/sn83045462/1890-05-03/1/7.pct50.jpg")
@@ -1718,7 +1737,7 @@ mod tests {
         )
         .unwrap();
         let out = dir.path().join("scans");
-        let path = scan_path(&out, &r, ImageSize::Full);
+        let path = scan_path(&out, &r, ImageSize::Full, ScanFormat::Jpeg);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"jpeg").unwrap();
         let side = Sidecar {
@@ -1733,6 +1752,8 @@ mod tests {
             sha256: sha256(b"jpeg"),
             download_ms: 0,
             user_agent: String::new(),
+            format: "jpeg".into(),
+            md5: None,
         };
         std::fs::write(sidecar_path(&path), serde_json::to_vec(&side).unwrap()).unwrap();
         let opts = Options {
@@ -1763,7 +1784,7 @@ mod tests {
         )
         .unwrap();
         let out = dir.path().join("scans");
-        let path = scan_path(&out, &r, ImageSize::Full);
+        let path = scan_path(&out, &r, ImageSize::Full, ScanFormat::Jpeg);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(consumed_path(&path), b"{}").unwrap();
         let opts = Options {
@@ -1845,6 +1866,8 @@ mod tests {
             sha256: String::new(),
             download_ms: 3000,
             user_agent: USER_AGENT.into(),
+            format: "jpeg".into(),
+            md5: None,
         };
         let index = vec![
             line(&manifest[0], 4_000_000),
@@ -1939,10 +1962,14 @@ mod tests {
             LocClient::new(LocConfig {
                 api_gap: Duration::from_millis(10),
                 tile_gap,
+                storage_gap: tile_gap,
                 attempts: 3,
                 backoff: Duration::from_millis(10),
                 api_root: root.to_owned(),
                 iiif_root: format!("{root}/iiif/"),
+                storage_root: format!("{root}/storage-services/service/ndnp/"),
+                batches_root: format!("{root}/data/batches/"),
+                ..LocConfig::default()
             })
             .unwrap(),
         )
@@ -1998,7 +2025,7 @@ mod tests {
             );
         }
         let r = row("sn1", 1890, 1, "deu");
-        let scan = scan_path(&out, &r, ImageSize::Pct(50));
+        let scan = scan_path(&out, &r, ImageSize::Pct(50), ScanFormat::Jpeg);
         let body = std::fs::read(&scan).unwrap();
         assert!(String::from_utf8_lossy(&body).ends_with("0001 pct:50"));
         let side: Sidecar =
@@ -2323,5 +2350,229 @@ mod tests {
             .await
             .unwrap();
         assert_eq!((s.state.as_str(), s.failed_transient), ("done", 6));
+    }
+
+    use crate::standin::{Page, Scripted, StandIn};
+
+    const BATCH: &str = "/storage-services/service/ndnp/xx/batch_xx_test_ver01/";
+
+    fn batch_row(lccn: &str, date: &str, seq: u16) -> ManifestRow {
+        let key = PageKey::new(lccn, date.parse().unwrap(), 1, seq).unwrap();
+        ManifestRow::new(&key, "xx_test", 1, Some("deu".into()), "detected", 0.5)
+    }
+
+    fn batch_loc(s: &StandIn, cache: &Path) -> Arc<LocClient> {
+        Arc::new(
+            LocClient::new(LocConfig {
+                api_gap: Duration::from_millis(10),
+                tile_gap: Duration::from_millis(10),
+                storage_gap: Duration::from_millis(10),
+                attempts: 3,
+                backoff: Duration::from_millis(10),
+                api_root: s.root.clone(),
+                iiif_root: s.iiif_root(),
+                storage_root: s.storage_root(),
+                batches_root: s.batches_root(),
+                batch_cache: Some(cache.to_owned()),
+                ..LocConfig::default()
+            })
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn fetches_jp2s_through_the_batch_keeps_old_jpegs_and_falls_back_to_the_api() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = StandIn::start().await;
+        // Pages 1 and 2 are in the batch; page 3 isn't in the METS.
+        s.add_issue(
+            BATCH,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &[
+                Page {
+                    seq: 1,
+                    frame: "0011",
+                    jp2: b"jp2 one",
+                },
+                Page {
+                    seq: 2,
+                    frame: "0010",
+                    jp2: b"jp2 two",
+                },
+            ],
+        );
+        let item = serde_json::json!({"resources": [{"files": [
+            [], [],
+            [{"mimetype": "image/jp2", "url": format!("{}{BATCH}data/sn1/0001A/1890050301/0012.jp2", s.root)}],
+        ]}]});
+        s.put(
+            "/item/sn1/1890-05-03/ed-1/",
+            serde_json::to_vec(&item).unwrap(),
+        );
+        s.put(
+            "/iiif/service:ndnp:xx:batch_xx_test_ver01:data:sn1:0001A:1890050301:0012/full/full/0/default.jpg",
+            b"iiif jpeg three".to_vec(),
+        );
+        let rows: Vec<ManifestRow> = (1..=3).map(|q| batch_row("sn1", "1890-05-03", q)).collect();
+        let out = dir.path().join("scans");
+        // Page 1 is on disk already as a JPEG, with a sidecar from before
+        // the batch route (no format, no md5).
+        let old = scan_path(&out, &rows[0], ImageSize::Full, ScanFormat::Jpeg);
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, b"old jpeg").unwrap();
+        let side = serde_json::json!({
+            "doc_id": rows[0].doc_id, "batch": "xx_test", "batch_version": 1,
+            "loc_url": "https://tile.loc.gov/image-services/iiif/service:x/full/full/0/default.jpg",
+            "iiif_base": "https://tile.loc.gov/image-services/iiif/service:x",
+            "resolution": "full", "fetched_at": "2026-10-11T00:00:00Z", "bytes": 8,
+            "sha256": sha256(b"old jpeg"), "download_ms": 1, "user_agent": "x"
+        });
+        std::fs::write(sidecar_path(&old), serde_json::to_vec(&side).unwrap()).unwrap();
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows.clone()),
+            out: out.clone(),
+            concurrency: 1,
+            ..Options::default()
+        };
+        let cache = dir.path().join("batches");
+        let (_tx, rx) = watch::channel(false);
+        let st = run(opts.clone(), batch_loc(&s, &cache), rx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                st.already_there,
+                st.fetched,
+                st.fetched_jp2,
+                st.fetched_item_api
+            ),
+            (1, 2, 1, 1)
+        );
+        assert_eq!(std::fs::read(&old).unwrap(), b"old jpeg", "kept");
+        // Page 2: the JP2, with the storage URL, the IIIF base and the bag's md5.
+        let jp2 = scan_path(&out, &rows[1], ImageSize::Full, ScanFormat::Jp2);
+        assert_eq!(std::fs::read(&jp2).unwrap(), b"jp2 two");
+        let side: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&jp2)).unwrap()).unwrap();
+        assert_eq!(side.format, "jp2");
+        assert_eq!(
+            side.loc_url,
+            format!("{}{BATCH}data/sn1/0001A/1890050301/0010.jp2", s.root)
+        );
+        assert_eq!(
+            side.iiif_base,
+            format!(
+                "{}service:ndnp:xx:batch_xx_test_ver01:data:sn1:0001A:1890050301:0010",
+                s.iiif_root()
+            )
+        );
+        assert_eq!(
+            side.md5.as_deref(),
+            Some(batch::md5_hex(b"jp2 two").as_str())
+        );
+        assert_eq!(side.sha256, sha256(b"jp2 two"));
+        // Page 3: through the item API, as the IIIF JPEG.
+        let p3 = scan_path(&out, &rows[2], ImageSize::Full, ScanFormat::Jpeg);
+        assert_eq!(std::fs::read(&p3).unwrap(), b"iiif jpeg three");
+        let side3: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&p3)).unwrap()).unwrap();
+        assert_eq!(
+            (side3.format.as_str(), side3.md5.as_deref()),
+            ("jpeg", None)
+        );
+        // The index holds both formats.
+        let index =
+            read_index(&std::fs::read_to_string(out.join("index-full.jsonl")).unwrap()).unwrap();
+        assert_eq!(index.len(), 2);
+        // One manifest, one METS, one JP2, one item, one IIIF image.
+        assert_eq!(
+            (
+                s.hits(&format!("{BATCH}manifest-md5.txt")),
+                s.hits(".xml"),
+                s.hits(".jp2"),
+                s.hits("/ed-1/"),
+                s.hits(".jpg")
+            ),
+            (1, 1, 1, 1, 1)
+        );
+
+        // Again, in a new process: everything is there, in either format,
+        // and nothing is asked of LoC.
+        let before = s.hits("");
+        let st = run(opts, batch_loc(&s, &cache), rx).await.unwrap();
+        assert_eq!((st.already_there, st.fetched), (3, 0));
+        assert_eq!(s.hits(""), before);
+        // A JP2 that no longer matches its bag md5 isn't taken as there.
+        let mut changed = side.clone();
+        changed.md5 = Some(batch::md5_hex(b"other"));
+        std::fs::write(sidecar_path(&jp2), serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert_eq!(there(&out, &rows[1], ImageSize::Full).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_storage_item_error_cools_off_that_route_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = StandIn::start().await;
+        s.add_issue(
+            BATCH,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: b"a",
+            }],
+        );
+        s.add_issue(
+            BATCH,
+            "sn2",
+            "0002A",
+            "1890050301",
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: b"b",
+            }],
+        );
+        // sn2's METS answers 503 at once, while sn1's answered.
+        for _ in 0..2 {
+            s.script(
+                &format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml"),
+                Scripted::Status(503),
+            );
+        }
+        let rows = vec![
+            batch_row("sn1", "1890-05-03", 1),
+            batch_row("sn2", "1890-05-03", 1),
+        ];
+        let out = dir.path().join("scans");
+        let opts = Options {
+            manifest: write_manifest(dir.path(), rows),
+            out: out.clone(),
+            concurrency: 1,
+            item_cooloff: Duration::from_secs(3600),
+            ..Options::default()
+        };
+        let (tx, rx) = watch::channel(false);
+        let r = tokio::spawn(run(opts, batch_loc(&s, &dir.path().join("b")), rx));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tx.send_replace(true);
+        let st = r.await.unwrap().unwrap();
+        assert_eq!(
+            (st.fetched, st.failed_item_error, st.issues_cooling),
+            (1, 1, 1)
+        );
+        let errs: BTreeMap<String, ItemError> =
+            serde_json::from_slice(&std::fs::read(out.join("item-errors.json")).unwrap()).unwrap();
+        assert_eq!(
+            errs.keys().collect::<Vec<_>>(),
+            ["storage:sn2/1890-05-03/ed-1"]
+        );
+        // Nothing went round the item API.
+        assert_eq!(s.hits("/ed-1/"), 0);
+        assert_eq!(st.loc_hold_secs, None);
     }
 }

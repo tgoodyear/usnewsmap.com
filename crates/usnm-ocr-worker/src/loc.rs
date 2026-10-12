@@ -33,6 +33,8 @@
 //! side, not a hold. An item JSON 503, or a METS or JP2 503 on the storage
 //! service, counts as an item error, with nothing held, only when all of
 //! these are true:
+//! - on the storage service, it is the second 503 for that file, after the
+//!   first held the server as usual (503s under load look the same there);
 //! - it came back within [`ITEM_ERROR_FAST`], with no `Retry-After`;
 //! - another request to that server answered 2xx within
 //!   [`ITEM_ERROR_OK_WITHIN`], or one paced request for the last small file
@@ -741,7 +743,13 @@ impl LocClient {
                     ) {
                         let asked = retry_after(&resp);
                         let mut checked = None;
-                        if let (Some(title), Some(_)) = (title, self.health(server)) {
+                        // On the storage service, where 503s under load
+                        // look the same, only a second one for the same
+                        // file, after a hold, can be an item error.
+                        let may_be_item = server == Server::Api || attempt > 1;
+                        if let (Some(title), Some(_), true) =
+                            (title, self.health(server), may_be_item)
+                        {
                             // Any Retry-After, even one that can't be
                             // read, is a hold.
                             if status == StatusCode::SERVICE_UNAVAILABLE
@@ -857,9 +865,7 @@ impl LocClient {
 
     async fn iiif_scan(&self, base: String, size: ImageSize) -> Result<Scan, FetchError> {
         let url = image_url(&base, size);
-        let got = self
-            .get(&url, Server::Tile, MAX_IMAGE_BYTES, None)
-            .await?;
+        let got = self.get(&url, Server::Tile, MAX_IMAGE_BYTES, None).await?;
         Ok(Scan {
             iiif_base: base,
             url,
@@ -932,7 +938,11 @@ impl LocClient {
                 {
                     Some(u) => found = Some((u.to_owned(), g)),
                     None => {
-                        tracing::warn!(batch = dir, at = g.url, "the batch's manifest isn't on the storage service; not using it");
+                        tracing::warn!(
+                            batch = dir,
+                            at = g.url,
+                            "the batch's manifest isn't on the storage service; not using it"
+                        );
                     }
                 }
             }
@@ -1064,7 +1074,13 @@ impl LocClient {
         let Some(md5) = files.jp2.get(frame) else {
             return Ok(None);
         };
-        let url = batch::file_url(&bag.url, &key.lccn, &files.reel, &dir, &format!("{frame}.jp2"));
+        let url = batch::file_url(
+            &bag.url,
+            &key.lccn,
+            &files.reel,
+            &dir,
+            &format!("{frame}.jp2"),
+        );
         let Some(base) = iiif_base(&self.cfg.iiif_root, &url) else {
             return Ok(None);
         };
@@ -1088,7 +1104,13 @@ impl LocClient {
             return self.iiif_scan(page.iiif_base.clone(), size).await.map(Some);
         }
         let Some(got) = self
-            .fetch(&page.url, Server::Storage, MAX_IMAGE_BYTES, Some(&key.lccn), true)
+            .fetch(
+                &page.url,
+                Server::Storage,
+                MAX_IMAGE_BYTES,
+                Some(&key.lccn),
+                true,
+            )
             .await?
         else {
             tracing::warn!(url = page.url, "a JP2 the bag lists isn't there");
@@ -1683,8 +1705,16 @@ mod tests {
             "0001A",
             "1890050301",
             &[
-                Page { seq: 1, frame: "0101", jp2: b"jp2 page one" },
-                Page { seq: 2, frame: "0099", jp2: b"jp2 page two" },
+                Page {
+                    seq: 1,
+                    frame: "0101",
+                    jp2: b"jp2 page one",
+                },
+                Page {
+                    seq: 2,
+                    frame: "0099",
+                    jp2: b"jp2 page two",
+                },
             ],
         );
     }
@@ -1698,9 +1728,16 @@ mod tests {
         let s = StandIn::start().await;
         one_issue(&s);
         let cache = tempfile::tempdir().unwrap();
-        let loc = batch_client(&s, Duration::from_millis(10), Some(cache.path().into()), false);
+        let loc = batch_client(
+            &s,
+            Duration::from_millis(10),
+            Some(cache.path().into()),
+            false,
+        );
         let p2 = loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap();
-        assert!(p2.url.ends_with(&format!("{BATCH}data/sn1/0001A/1890050301/0099.jp2")));
+        assert!(p2
+            .url
+            .ends_with(&format!("{BATCH}data/sn1/0001A/1890050301/0099.jp2")));
         assert_eq!(
             p2.iiif_base,
             format!(
@@ -1716,11 +1753,17 @@ mod tests {
         assert_eq!(&scan.bytes[..], b"jp2 page two");
         assert_eq!(scan.format, ScanFormat::Jp2);
         assert_eq!(scan.url, p2.url);
-        assert_eq!(scan.md5.as_deref(), Some(batch::md5_hex(b"jp2 page two").as_str()));
+        assert_eq!(
+            scan.md5.as_deref(),
+            Some(batch::md5_hex(b"jp2 page two").as_str())
+        );
         // One manifest and one METS for the issue's two pages.
         let p1 = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
         assert!(p1.url.ends_with("/0101.jp2"));
-        assert_eq!((s.hits("manifest-md5.txt"), s.hits("1890050301.xml")), (1, 1));
+        assert_eq!(
+            (s.hits("manifest-md5.txt"), s.hits("1890050301.xml")),
+            (1, 1)
+        );
         // Nothing LoC doesn't list: no seq 3, no such issue, no such batch.
         assert_eq!(loc.resolve(&key(3), "xx_test", 1).await.unwrap(), None);
         let other: PageKey = "sn1/1890-05-04/ed-1/seq-1".parse().unwrap();
@@ -1728,33 +1771,82 @@ mod tests {
         assert_eq!(loc.resolve(&key(1), "xx_none", 1).await.unwrap(), None);
         assert_eq!(loc.resolve(&key(1), "Bad-Batch", 1).await.unwrap(), None);
         // A JP2 whose bytes aren't the bag's: transient, never used.
-        s.put(&format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"), b"changed".to_vec());
-        let e = loc.scan_resolved(&key(1), &p1, ImageSize::Full).await.unwrap_err();
-        assert!(matches!(e, FetchError::Transient(ref m) if m.contains("md5")), "{e:?}");
+        s.put(
+            &format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"),
+            b"changed".to_vec(),
+        );
+        let e = loc
+            .scan_resolved(&key(1), &p1, ImageSize::Full)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(e, FetchError::Transient(ref m) if m.contains("md5")),
+            "{e:?}"
+        );
         // A JP2 the bag lists that answers 404: None, for the item API.
-        s.put(&format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"), Vec::new());
-        s.script(&format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"), Scripted::Status(404));
-        assert!(loc.scan_resolved(&key(1), &p1, ImageSize::Full).await.unwrap().is_none());
+        s.put(
+            &format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"),
+            Vec::new(),
+        );
+        s.script(
+            &format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"),
+            Scripted::Status(404),
+        );
+        assert!(loc
+            .scan_resolved(&key(1), &p1, ImageSize::Full)
+            .await
+            .unwrap()
+            .is_none());
         // A scaled scan is the IIIF JPEG of the same base.
         s.put(
             "/iiif/service:ndnp:xx:batch_xx_test_ver01:data:sn1:0001A:1890050301:0099/full/pct:50/0/default.jpg",
             b"half".to_vec(),
         );
-        let half = loc.scan_resolved(&key(2), &p2, ImageSize::Pct(50)).await.unwrap().unwrap();
-        assert_eq!((&half.bytes[..], half.format), (&b"half"[..], ScanFormat::Jpeg));
+        let half = loc
+            .scan_resolved(&key(2), &p2, ImageSize::Pct(50))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (&half.bytes[..], half.format),
+            (&b"half"[..], ScanFormat::Jpeg)
+        );
 
         // A new process with the same cache asks LoC for neither again.
-        let loc = batch_client(&s, Duration::from_millis(10), Some(cache.path().into()), false);
-        assert_eq!(loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap(), p2);
-        assert_eq!((s.hits("manifest-md5.txt"), s.hits("1890050301.xml")), (1, 1));
+        let loc = batch_client(
+            &s,
+            Duration::from_millis(10),
+            Some(cache.path().into()),
+            false,
+        );
+        assert_eq!(
+            loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap(),
+            p2
+        );
+        assert_eq!(
+            (
+                s.hits(&format!("{BATCH}manifest-md5.txt")),
+                s.hits("1890050301.xml")
+            ),
+            (1, 1)
+        );
         assert!(cache.path().join("xx_test_ver01/manifest-md5.txt").exists());
         assert!(cache
             .path()
             .join("xx_test_ver01/mets/sn1/1890050301.xml")
             .exists());
         // A METS on disk that isn't the bag's is fetched again.
-        std::fs::write(cache.path().join("xx_test_ver01/mets/sn1/1890050301.xml"), b"x").unwrap();
-        let loc = batch_client(&s, Duration::from_millis(10), Some(cache.path().into()), false);
+        std::fs::write(
+            cache.path().join("xx_test_ver01/mets/sn1/1890050301.xml"),
+            b"x",
+        )
+        .unwrap();
+        let loc = batch_client(
+            &s,
+            Duration::from_millis(10),
+            Some(cache.path().into()),
+            false,
+        );
         loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap();
         assert_eq!(s.hits("1890050301.xml"), 2);
     }
@@ -1769,7 +1861,11 @@ mod tests {
             "sn1",
             "0001A",
             "1890050301",
-            &[Page { seq: 1, frame: "0001", jp2: b"jp2" }],
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: b"jp2",
+            }],
         );
         s.redirect(
             "/data/batches/xx_test_ver01/manifest-md5.txt",
@@ -1780,7 +1876,10 @@ mod tests {
         assert!(p.url.contains("/ndnp/yy/batch_xx_test_ver01/data/"));
         // A redirect off the storage service isn't followed into use.
         s.put("/other/manifest-md5.txt", "x".to_owned());
-        s.redirect("/data/batches/xx_off_ver01/manifest-md5.txt", "/other/manifest-md5.txt");
+        s.redirect(
+            "/data/batches/xx_off_ver01/manifest-md5.txt",
+            "/other/manifest-md5.txt",
+        );
         assert_eq!(loc.resolve(&key(1), "xx_off", 1).await.unwrap(), None);
     }
 
@@ -1793,9 +1892,16 @@ mod tests {
         let loc = batch_client(&s, Duration::from_millis(200), None, false);
         let t0 = std::time::Instant::now();
         let p = loc.resolve(&key(2), "xx_test", 1).await.unwrap().unwrap();
-        let scan = loc.scan_resolved(&key(2), &p, ImageSize::Full).await.unwrap().unwrap();
+        let scan = loc
+            .scan_resolved(&key(2), &p, ImageSize::Full)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(&scan.bytes[..], b"jp2 page two");
-        assert!(t0.elapsed() >= Duration::from_secs(1), "waited out Retry-After");
+        assert!(
+            t0.elapsed() >= Duration::from_secs(1),
+            "waited out Retry-After"
+        );
         let mut t: Vec<std::time::Instant> = ["manifest-md5.txt", ".xml", ".jp2"]
             .iter()
             .flat_map(|x| s.times(x))
@@ -1805,7 +1911,11 @@ mod tests {
         // last after the hold.
         assert_eq!(t.len(), 4);
         for w in t.windows(2) {
-            assert!(w[1] - w[0] >= Duration::from_millis(190), "{:?}", w[1] - w[0]);
+            assert!(
+                w[1] - w[0] >= Duration::from_millis(190),
+                "{:?}",
+                w[1] - w[0]
+            );
         }
         assert!(t[3] - t[2] >= Duration::from_secs(1));
     }
@@ -1840,7 +1950,10 @@ mod tests {
         }
         let loc = batch_client(&s, Duration::from_millis(10), None, false);
         let p = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        let e = loc.scan_resolved(&key(1), &p, ImageSize::Full).await.unwrap_err();
+        let e = loc
+            .scan_resolved(&key(1), &p, ImageSize::Full)
+            .await
+            .unwrap_err();
         assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
         assert!(loc.held_until().is_some());
         assert_eq!(s.hits("/item/sn1/1890-05-03/ed-1/"), 0);
@@ -1855,19 +1968,54 @@ mod tests {
             "sn2",
             "0002A",
             "1890050301",
-            &[Page { seq: 1, frame: "0001", jp2: b"x" }],
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: b"x",
+            }],
         );
         let loc = batch_client(&s, Duration::from_millis(10), None, false);
-        // sn1's METS answers; sn2's answers 503 at once.
+        // sn1's METS answers; sn2's answers 503 at once, twice: the
+        // first holds, the second is an item error.
         loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
-        s.script(
-            &format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml"),
-            Scripted::Status(503),
-        );
+        for _ in 0..2 {
+            s.script(
+                &format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml"),
+                Scripted::Status(503),
+            );
+        }
         let sn2: PageKey = "sn2/1890-05-03/ed-1/seq-1".parse().unwrap();
         let e = loc.resolve(&sn2, "xx_test", 1).await.unwrap_err();
         assert!(matches!(e, FetchError::Item(_)), "{e:?}");
+        assert_eq!(
+            s.hits(&format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml")),
+            2
+        );
+        // Only the first one's 10 ms hold.
         assert_eq!(loc.held_until(), None);
+        // A single 503 for a file that answers next time is only a hold.
+        s.script(
+            &format!("{BATCH}data/sn1/0001A/1890050301/0101.jp2"),
+            Scripted::Status(503),
+        );
+        let p1 = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+        loc.scan_resolved(&key(1), &p1, ImageSize::Full)
+            .await
+            .unwrap()
+            .unwrap();
+        // A slow 503 is a hold.
+        s.script(
+            &format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml"),
+            Scripted::Slow(503, Duration::from_millis(2500)),
+        );
+        let mut cfg = batch_client(&s, Duration::from_millis(10), None, false).cfg;
+        cfg.attempts = 1;
+        cfg.backoff = Duration::from_secs(5);
+        let slow = LocClient::new(cfg).unwrap();
+        slow.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+        let e = slow.resolve(&sn2, "xx_test", 1).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(slow.held_until().is_some());
         // A manifest's 503 always holds, however fast.
         s.script(&format!("{BATCH}manifest-md5.txt"), Scripted::Status(503));
         let mut cfg = batch_client(&s, Duration::from_millis(10), None, false).cfg;

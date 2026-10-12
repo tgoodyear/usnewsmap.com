@@ -105,7 +105,9 @@ pub fn mets_url_of(jp2_url: &str) -> Option<String> {
 /// [`crate::loc::iiif_base`]. `service_root` is
 /// `https://tile.loc.gov/storage-services/service/`.
 pub fn jp2_url_of(iiif_root: &str, service_root: &str, iiif_base: &str) -> Option<String> {
-    let id = iiif_base.strip_prefix(iiif_root)?.strip_prefix("service:")?;
+    let id = iiif_base
+        .strip_prefix(iiif_root)?
+        .strip_prefix("service:")?;
     if id.is_empty() || id.contains("..") || !id.split(':').all(safe_segment) {
         return None;
     }
@@ -304,7 +306,10 @@ pub fn mets_pages(xml: &[u8]) -> Result<BTreeMap<u16, String>, String> {
                 if want_service && usage != "service" {
                     return None;
                 }
-                let stem = href.strip_prefix("./").unwrap_or(href).strip_suffix(".jp2")?;
+                let stem = href
+                    .strip_prefix("./")
+                    .unwrap_or(href)
+                    .strip_suffix(".jp2")?;
                 safe_segment(stem).then(|| stem.to_owned())
             })
         };
@@ -409,10 +414,7 @@ nothex  data/sn1/1/1890050301/0001.jp2
             issue.jp2.keys().collect::<Vec<_>>(),
             ["0806", "0811", "0812"]
         );
-        assert_eq!(
-            hex(&issue.jp2["0812"]),
-            "0006ea39cc07715ae2bfdd9143179867"
-        );
+        assert_eq!(hex(&issue.jp2["0812"]), "0006ea39cc07715ae2bfdd9143179867");
         assert_eq!(
             issue.mets_file("1904072901").unwrap(),
             (
@@ -452,7 +454,8 @@ nothex  data/sn1/1/1890050301/0001.jp2
         );
         // The IIIF id from the batch path is the one the item API route gave
         // for this page (its sidecar on pve-big).
-        let iiif = crate::loc::iiif_base("https://tile.loc.gov/image-services/iiif/", &jp2).unwrap();
+        let iiif =
+            crate::loc::iiif_base("https://tile.loc.gov/image-services/iiif/", &jp2).unwrap();
         assert_eq!(
             iiif,
             "https://tile.loc.gov/image-services/iiif/service:ndnp:mdu:batch_mdu_garlic_ver02:data:sn83045081:0029602241A:1904072901:0812"
@@ -482,7 +485,10 @@ nothex  data/sn1/1/1890050301/0001.jp2
     fn md5s() {
         assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
         assert_eq!(hex(&md5(b"abc")), md5_hex(b"abc"));
-        assert_eq!(parse_md5("900150983cd24fb0d6963f7d28e17f72"), Some(md5(b"abc")));
+        assert_eq!(
+            parse_md5("900150983cd24fb0d6963f7d28e17f72"),
+            Some(md5(b"abc"))
+        );
         assert_eq!(parse_md5("90015"), None);
         assert_eq!(parse_md5("zz0150983cd24fb0d6963f7d28e17f72"), None);
     }

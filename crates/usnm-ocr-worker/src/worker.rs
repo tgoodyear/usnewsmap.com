@@ -629,12 +629,19 @@ impl Worker {
                     KeyValue::new("language", m.language.clone()),
                 ],
             );
-            Ok((scan.iiif_base, scan.url, scan_sha256, scan.md5, scan.evict, out))
+            Ok((
+                scan.iiif_base,
+                scan.url,
+                scan_sha256,
+                scan.md5,
+                scan.evict,
+                out,
+            ))
         };
         let (iiif_base, scan_url, scan_sha256, scan_md5, evict, out) =
             tokio::time::timeout_at(deadline.into(), read)
-            .await
-            .map_err(|_| Failure::Abandoned)??;
+                .await
+                .map_err(|_| Failure::Abandoned)??;
         let text = usnm_core::text::normalize_ocr(&out.text);
         // The ALTO names the file read (the IIIF JPEG or the batch's JP2)
         // and its sha256, and a JP2's bag md5; the overlay row names the
