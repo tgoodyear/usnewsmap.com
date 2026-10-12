@@ -102,7 +102,7 @@ if [ -n "$previous" ] && [ "$previous" != "$SUBSCRIPTION" ]; then
   # one's private settings come back to the local file until it exists,
   # read while the old subscription (and its tenant) is selected.
   vault_detach_from "$previous" "$SUBSCRIPTION" ||
-    die "can't read the private settings in the old settings vault, $(local_get SETTINGS_KEYVAULT); sign in where you can read it (az login --tenant …) and run this again, or delete SETTINGS_KEYVAULT from $ENV_FILE and set them again once the new vault exists"
+    die "can't read the private settings in the old subscription's settings vault; sign in where you can read it (az login --tenant …) and run this again, or, to move without them (set them again once the new vault exists), put SETTINGS_KEYVAULT=\"\" in $ENV_FILE"
 fi
 az account set --subscription "$SUBSCRIPTION"
 

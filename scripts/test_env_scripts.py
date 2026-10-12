@@ -12,8 +12,10 @@ message). For a job execution (scripts/start-job.sh, and
 scripts/titles-seed.sh through it): STUB_EXECUTION (the started execution's name) and
 STUB_EXEC_STATUS (its status). For the settings vault (#295): STUB_SECRETS
 (the secrets' names, one per line), STUB_SECRET_<NAME> (a secret's value,
-its hyphens as underscores), STUB_VAULT_ERROR (listing or setting secrets
-fails with that message), STUB_SHOW_ERROR (reading a secret's value fails
+its hyphens as underscores), STUB_DELETED_SECRETS (soft-deleted secrets'
+names, one per line: show and delete don't find them, set conflicts until
+`secret recover`; a `secret delete` adds to them), STUB_VAULT_ERROR (listing,
+setting or deleting secrets fails with that message), STUB_SHOW_ERROR (reading a secret's value fails
 with that message), STUB_OUTPUTS (the stack's outputs as JSON),
 STUB_DELETED_VAULTS (soft-deleted vaults, one per line: the name, a tab
 and the vault id) and
@@ -22,7 +24,8 @@ STUB_EXISTING_GROUPS (when set, the only groups `az group exists` finds,
 one per line).
 `az account set` selects a subscription (STUB_ACCOUNTS: the ones az is
 signed in to, one per line; unset: any), and each vault call is logged with
-the selected one to STUB_LOG.vault. STUB_OUTPUTS_ERROR makes reading the
+the selected one to STUB_LOG.vault, and each read of the stack's outputs
+the selected one to STUB_LOG.stack. STUB_OUTPUTS_ERROR makes reading the
 stack's outputs fail with that message. It logs each call to STUB_LOG.
 
 The committed settings (infra/env/<env>.json) are read from a directory of
@@ -55,6 +58,7 @@ case "$1 $2" in
       *"--query location"*) echo eastus2 ;;
       *"keys(parameters"*) printf '%s\n' "${STUB_PARAMS:-}" ;;
       *"--query outputs -o json"*)
+        echo "$(cat "$STUB_LOG.account" 2> /dev/null || echo none)" >> "$STUB_LOG.stack"
         if [ -n "${STUB_OUTPUTS_ERROR:-}" ]; then echo "$STUB_OUTPUTS_ERROR" >&2; exit 1
         elif [ -n "${STUB_OUTPUTS:-}" ]; then printf '%s\n' "$STUB_OUTPUTS"
         elif [ -n "${STUB_STACK:-}" ]; then echo '{}'
@@ -64,13 +68,28 @@ case "$1 $2" in
     esac ;;
   "keyvault secret")
     printf '%s %s\n' "$(cat "$STUB_LOG.account" 2> /dev/null || echo none)" "$3" >> "$STUB_LOG.vault"
+    n=$(sed -n 's/.*--name \([^ ]*\).*/\1/p' <<< "$*"); v="STUB_SECRET_${n//-/_}"
+    deleted() {
+      { printf '%b\n' "${STUB_DELETED_SECRETS:-}"; cat "$STUB_LOG.deleted" 2> /dev/null; } | grep -qx "$n" &&
+        ! { cat "$STUB_LOG.recovered" 2> /dev/null | grep -qx "$n"; }
+    }
     case "$3" in
       list) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
         [ -z "${STUB_SECRETS:-}" ] || printf '%b\n' "$STUB_SECRETS" ;;
-      set) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi ;;
+      set) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
+        if deleted; then
+          echo "ERROR: (Conflict) Secret $n is currently in a deleted but recoverable state, and its name cannot be reused; in this state, the secret can only be recovered or purged. Code: Conflict Inner error: {\"code\": \"ObjectIsDeletedButRecoverable\"}" >&2; exit 1
+        fi ;;
+      delete) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
+        if [ -z "${!v+x}" ] || deleted; then
+          echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault." >&2; exit 3; fi
+        echo "$n" >> "$STUB_LOG.deleted" ;;
+      recover) deleted || { echo "ERROR: (SecretNotFound) Deleted Secret not found" >&2; exit 3; }
+        echo "$n" >> "$STUB_LOG.recovered" ;;
       show) if [ -n "${STUB_SHOW_ERROR:-}" ]; then echo "$STUB_SHOW_ERROR" >&2; exit 1; fi
-        n=$(sed 's/.*--name \([^ ]*\).*/\1/' <<< "$*"); v="STUB_SECRET_${n//-/_}"
-        if [ -n "${!v+x}" ]; then printf '%s\n' "${!v}"
+        if deleted; then
+          echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault. If you recently deleted this secret you may be able to recover it using the correct recovery command." >&2; exit 3
+        elif [ -n "${!v+x}" ]; then printf '%s\n' "${!v}"
         else echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault." >&2; exit 3; fi ;;
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
@@ -710,13 +729,20 @@ class CommittedSettings(Stubbed):
                      STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 1)
         self.assertIn("USNM_ALERT_EMAILS is in both", r.stderr)
+        # Keeping the vault's drops only the local copy; --unset would
+        # delete the secret too.
+        self.assertIn("--key USNM_ALERT_EMAILS --unset-local", r.stderr)
+        self.assertNotIn("--unset ", r.stderr)
         self.assertNotIn("ops@example.org", r.stderr)
 
     def test_a_private_setting_still_local_is_a_warning_with_the_move(self):
         self.local(**self.VAULT, USNM_ALERT_EMAILS="ops@example.org")
         r = self.lib("load_vault; settings_check")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("az keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS", r.stderr)
+        # settings.sh writes it to the vault and removes the local copy.
+        self.assertIn('scripts/settings.sh --env dev --key USNM_ALERT_EMAILS --value '
+                      '"$(scripts/settings.sh --env dev --key USNM_ALERT_EMAILS)"', r.stderr)
+        self.assertNotIn("--unset", r.stderr)
         # The command reads the value; it isn't printed.
         self.assertNotIn("ops@example.org", r.stderr)
 
@@ -985,6 +1011,118 @@ class CommittedSettings(Stubbed):
         self.assertLess(detach, select)
         self.assertEqual(text.count("az account set"), 1)
 
+    def read_log(self, suffix):
+        path = self.log + suffix
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return f.read().splitlines()
+
+    OLD_STACK = {"STUB_OUTPUTS": '{"settingS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevold123"}}'}
+
+    def test_a_move_without_a_local_vault_name_reads_the_old_stacks_vault(self):
+        # Another operator's machine: the old stack names the old vault,
+        # asked with the old subscription selected.
+        self.local(AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
+        r = self.lib("vault_detach_from sub-old sub-new", **self.OLD_STACK, STUB_SECRETS="USNM-ALERT-EMAILS",
+                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read_log(".stack"), ["sub-old"])
+        self.assertEqual(self.read_log(".vault"), ["sub-old list", "sub-old show"])
+        self.assertIn("keyvault secret list --vault-name usnmcorekvdevold123 --query [].name -o tsv", self.calls())
+        self.assertEqual(self.read_log(".account"), ["sub-new"])
+        self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
+        self.assertNotIn("SETTINGS_KEYVAULT", self.local_text())
+
+    def test_a_move_whose_old_stack_cant_be_read_stops(self):
+        self.local(AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
+        r = self.lib("vault_detach_from sub-old sub-new",
+                     STUB_OUTPUTS_ERROR="ERROR: (AuthorizationFailed) The client does not have authorization")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.read_log(".stack"), ["sub-old"])
+        self.assertEqual(self.read_log(".vault"), [])
+        self.assertEqual(self.read_log(".account"), ["sub-new"])
+
+    def test_a_move_from_a_subscription_without_a_vault_copies_nothing(self):
+        self.local(AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
+        r = self.lib("vault_detach_from sub-old sub-new")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read_log(".stack"), ["sub-old"])
+        self.assertEqual(self.read_log(".vault"), [])
+        self.assertEqual(self.read_log(".account"), ["sub-new"])
+
+    def test_a_move_without_a_local_vault_name_needs_the_old_subscription(self):
+        # Without its name, only the old stack can say whether there's a
+        # vault, so a subscription az can't select stops the move.
+        self.local(AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
+        r = self.lib("vault_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("az login --tenant tenant-old", r.stderr)
+        self.assertEqual(self.read_log(".stack"), [])
+
+    def test_an_empty_vault_name_moves_without_the_old_vault(self):
+        # An old subscription that's gone: SETTINGS_KEYVAULT="" says so.
+        self.local(AZURE_SUBSCRIPTION_ID="sub-old", SETTINGS_KEYVAULT="")
+        r = self.lib("vault_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(self.log) and
+                         any(c.startswith(("account set", "stack", "keyvault")) for c in self.calls()))
+        self.assertEqual(self.local_text(), 'AZURE_SUBSCRIPTION_ID="sub-old"\n')
+
+    def test_unsetting_a_private_setting_deletes_its_secret(self):
+        # --unset: the setting takes its default, not the vault's value.
+        self.local(**self.VAULT, USNM_ALERT_EMAILS="old@example.org")
+        r = self.lib('adel USNM_ALERT_EMAILS; echo "[$(aget USNM_ALERT_EMAILS)]"',
+                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("keyvault secret delete --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS -o none",
+                      self.calls())
+        self.assertTrue(r.stdout.endswith("[]\n"), r.stdout)
+        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+
+    def test_unsetting_a_private_setting_the_vault_lacks(self):
+        self.local(**self.VAULT, USNM_ALERT_EMAILS="")
+        r = self.lib("adel USNM_ALERT_EMAILS")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+
+    def test_unsetting_before_the_vault_exists_is_local(self):
+        self.local(USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib("adel USNM_ALERT_EMAILS")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.local_text(), "")
+        self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
+
+    def test_a_refused_delete_keeps_the_local_copy(self):
+        self.local(**self.VAULT, USNM_ALERT_EMAILS="old@example.org")
+        r = self.lib("adel USNM_ALERT_EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org",
+                     STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't delete USNM_ALERT_EMAILS", r.stderr)
+        self.assertIn("az role assignment create", r.stderr)
+        self.assertIn('USNM_ALERT_EMAILS="old@example.org"', self.local_text())
+
+    def test_setting_a_deleted_private_setting_recovers_it_first(self):
+        # Soft delete keeps the name: recover, then set (no purge, which
+        # prod's purge protection refuses).
+        self.local(**self.VAULT)
+        r = self.lib("aset USNM_ALERT_EMAILS new@example.org", STUB_DELETED_SECRETS="USNM-ALERT-EMAILS",
+                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ops = [c.split()[2] for c in self.calls() if c.startswith("keyvault secret")]
+        self.assertEqual(ops, ["show", "set", "recover", "set"])
+        self.assertIn("keyvault secret recover --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS -o none",
+                      self.calls())
+        self.assertFalse(any("purge" in c for c in self.calls()))
+
+    def test_unset_then_set_again(self):
+        self.local(**self.VAULT)
+        r = self.lib("adel USNM_ALERT_EMAILS; aset USNM_ALERT_EMAILS new@example.org",
+                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ops = [c.split()[2] for c in self.calls() if c.startswith("keyvault secret")]
+        self.assertEqual(ops, ["delete", "show", "set", "recover", "set"])
+
     def test_migrate_moves_the_public_settings(self):
         self.local(USNM_JA_LATIN="true", USNM_INGEST_SCRATCH_GIB="64", USNM_API_IMAGE="",
                    USNM_ALERT_EMAILS="ops@example.org", API_URL="x")
@@ -1045,6 +1183,57 @@ class SettingsScript(Stubbed):
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't set USNM_ALERT_EMAILS", r.stderr)
         self.assertIn('USNM_ALERT_EMAILS="old@example.org"', self.local_text())
+
+    def test_unset_clears_a_private_setting_in_the_vault(self):
+        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--unset",
+                              STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("keyvault secret delete --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS -o none",
+                      self.calls())
+        self.assertIn("cleared USNM_ALERT_EMAILS in the settings vault usnmcorekvdevabc123", r.stdout)
+        self.assertIn("scripts/provision.sh --env dev", r.stdout)
+
+    def test_a_new_machine_reports_the_stacks_vault(self):
+        # No local name: the stack's vault is resolved before the message.
+        outputs = '{"SETTINGS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}'
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org",
+                              STUB_OUTPUTS=outputs)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("USNM_ALERT_EMAILS is in the settings vault usnmcorekvdevabc123", r.stdout)
+        self.assertNotIn("until the settings vault exists", r.stdout)
+        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        os.remove(os.path.join(self.settings, "dev", ".env"))
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "", STUB_OUTPUTS=outputs)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("hides the settings vault's value", r.stdout)
+        os.remove(os.path.join(self.settings, "dev", ".env"))
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--unset", STUB_OUTPUTS=outputs,
+                              STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("cleared USNM_ALERT_EMAILS in the settings vault usnmcorekvdevabc123", r.stdout)
+        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+
+    def test_unset_before_the_vault_exists(self):
+        self.settings_file('USNM_ALERT_EMAILS="ops@example.org"\n')
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--unset")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("cleared USNM_ALERT_EMAILS in", r.stdout)
+        self.assertNotIn("settings vault", r.stdout)
+        self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
+
+    def test_unset_local_keeps_the_vaults_value(self):
+        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\nUSNM_GITHUB_REPO_IDS="o@1/r@1"\n')
+        r = self.run_settings("--env", "dev", "--key", "USNM_GITHUB_REPO_IDS", "--unset-local",
+                              STUB_SECRET_USNM_GITHUB_REPO_IDS="o@1/r@2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("now comes from the settings vault", r.stdout)
+        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        self.assertFalse(any(c.startswith(("keyvault secret delete", "keyvault secret set")) for c in self.calls()))
+
+    def test_one_change_at_a_time(self):
+        r = self.run_settings("--env", "dev", "--key", "USNM_OCR", "--unset", "--unset-local")
+        self.assertEqual(r.returncode, 2)
 
     def test_a_private_setting_is_read_from_the_vault(self):
         self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')

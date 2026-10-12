@@ -227,20 +227,40 @@ aset() {
 }
 # One private setting into the settings vault $1, with the operator's
 # sign-in (Entra ID, Key Vault Secrets Officer), unless it already holds
-# that value.
+# that value. The vault has soft delete, so a secret an unset deleted
+# (adel) keeps its name until it's recovered or purged, and setting it
+# fails meanwhile: it's recovered first, then set (a purge would fail in
+# prod, whose vault has purge protection). A recovery takes a moment to
+# finish, so the set is tried again for up to a minute.
 vault_set() {
-  local cur out
+  local cur out name try=0 recovered=false
   if $VAULT_LOADED; then
     cur=$(set +u; unset "$2"; eval "$VAULT_SETTINGS"; printf '%s\n' "${!2:-}")
   else
     cur=$(vault_get "$2") || return 1
   fi
   [ "$cur" != "$3" ] || return 0
-  if ! out=$(az keyvault secret set --vault-name "$1" --name "$(vault_secret_name "$2")" --value "$3" -o none 2>&1); then
+  name=$(vault_secret_name "$2")
+  until out=$(az keyvault secret set --vault-name "$1" --name "$name" --value "$3" -o none 2>&1); do
+    if ! $recovered && grep -qiE 'ObjectIsDeletedButRecoverable|deleted but recoverable' <<< "$out"; then
+      echo "recovering $2's soft-deleted secret in the settings vault $1 before setting it"
+      if ! out=$(az keyvault secret recover --vault-name "$1" --name "$name" -o none 2>&1); then
+        echo "error: can't recover $2's deleted secret in the settings vault $1: $out" >&2
+        vault_access_hint "$1"
+        return 1
+      fi
+      recovered=true
+      continue
+    fi
+    if $recovered && [ $try -lt 12 ] && grep -qiE 'ObjectIsBeingRecovered|being recovered|deleted but recoverable' <<< "$out"; then
+      try=$((try + 1))
+      sleep 5
+      continue
+    fi
     echo "error: can't set $2 in the settings vault $1: $out" >&2
     vault_access_hint "$1"
     return 1
-  fi
+  done
   echo "set $2 in the settings vault $1"
   # Read from the vault from now on, not from what load_vault read.
   VAULT_LOADED=false
@@ -259,16 +279,37 @@ local_set() {
   printf '%s="%s"\n' "$1" "$v" >> "$tmp"
   mv "$tmp" "$ENV_FILE"
 }
-# Remove one setting: a public one from the committed file (and the local
-# one), anything else from the local file. A private setting in the vault
-# stays there: az keyvault secret delete removes it.
+# Remove one setting, so it takes its default: a public one from the
+# committed file (and the local one); a private one from the settings
+# vault, once it exists, and from the local file; anything else from the
+# local file. local_del removes only the local entry (a private setting's
+# vault value then applies).
 adel() {
   valid_key "$1"
   if is_public "$1"; then
     python3 scripts/lib/env_settings.py --env "$ENV_NAME" --unset "$1" || return 1
     load_committed || return 1
+  elif is_private "$1"; then
+    local vault
+    vault=$(settings_vault_name) || return 1
+    [ -z "$vault" ] || vault_delete "$vault" "$1" || return 1
   fi
   local_del "$1"
+}
+# Delete one private setting's secret from the settings vault $1 (nothing
+# to do when it has none). The vault keeps it soft-deleted, which reads as
+# unset (secret show and list skip it); vault_set recovers the name when the
+# setting is set again.
+vault_delete() {
+  local out
+  if ! out=$(az keyvault secret delete --vault-name "$1" --name "$(vault_secret_name "$2")" -o none 2>&1); then
+    grep -q SecretNotFound <<< "$out" && return 0
+    echo "error: can't delete $2 from the settings vault $1: $out" >&2
+    vault_access_hint "$1"
+    return 1
+  fi
+  echo "deleted $2 from the settings vault $1"
+  VAULT_LOADED=false
 }
 local_del() {
   [ -f "$ENV_FILE" ] || return 0
@@ -347,7 +388,7 @@ for k, v in (json.loads(sys.argv[1] or "{}") or {}).items():
 # already has is kept.
 vault_detach() {
   local k v vault
-  vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  vault=$(settings_vault_name) || return 1
   [ -n "$vault" ] || return 0
   load_vault || return 1
   for k in $VAULT_KEYS; do
@@ -360,16 +401,23 @@ vault_detach() {
   echo "the private settings of $vault are in $ENV_FILE until the new settings vault exists"
 }
 # vault_detach for a move from subscription $1 to $2: az takes a Key Vault
-# token from the selected subscription's tenant, so the old vault is read
-# with the old subscription selected (in another tenant, az must be signed
-# in there too; az login keeps the other sign-ins), then $2 is selected
-# again, whatever happened.
+# token from the selected subscription's tenant, so the old subscription is
+# selected first (in another tenant, az must be signed in there too; az
+# login keeps the other sign-ins). With it selected, the old vault's name
+# comes from the local file or, when that lacks it (another operator's
+# machine), from the old stack's outputs, and the vault is read; then $2 is
+# selected again, whatever happened. A local SETTINGS_KEYVAULT="" moves
+# without the old vault's settings (for an old subscription that's gone).
 vault_detach_from() {
   local old=$1 target=$2 tenant rc=0
-  [ -n "$(local_get SETTINGS_KEYVAULT)" ] || return 0
+  if local_has SETTINGS_KEYVAULT && [ -z "$(local_get SETTINGS_KEYVAULT)" ]; then
+    echo "SETTINGS_KEYVAULT is \"\" in $ENV_FILE: moving without the old settings vault's private settings"
+    local_del SETTINGS_KEYVAULT
+    return
+  fi
   tenant=$(local_get AZURE_TENANT_ID) || return 1
   if ! az account set --subscription "$old" 2> /dev/null; then
-    echo "error: az can't select the old subscription $old, where the settings vault is: az login --tenant ${tenant:-<its tenant>} (az keeps your other sign-ins), then run this again with --subscription $target" >&2
+    echo "error: az can't select the old subscription $old, whose settings vault holds the private settings: az login --tenant ${tenant:-<its tenant>} (az keeps your other sign-ins), then run this again with --subscription $target" >&2
     return 1
   fi
   vault_detach || rc=1
@@ -387,9 +435,9 @@ settings_check() {
       errors+="  $k is in $ENV_FILE; public settings are committed, in $COMMITTED_FILE"$'\n'
     elif is_private "$k" && [ -n "$(local_get "$k")" ]; then
       if in_list "$k" "$VAULT_KEYS"; then
-        errors+="  $k is in both $ENV_FILE and the settings vault; keep one: scripts/settings.sh --env $ENV_NAME --key $k --unset (the local one)"$'\n'
+        errors+="  $k is in both $ENV_FILE and the settings vault; keep the vault's: scripts/settings.sh --env $ENV_NAME --key $k --unset-local; or the local one: scripts/settings.sh --env $ENV_NAME --key $k --value \"\$(scripts/settings.sh --env $ENV_NAME --key $k)\""$'\n'
       elif [ -n "$(local_get SETTINGS_KEYVAULT)" ]; then
-        moves+="  az keyvault secret set --vault-name $(local_get SETTINGS_KEYVAULT) --name $(vault_secret_name "$k") --value \"\$(scripts/settings.sh --env $ENV_NAME --key $k)\" -o none && scripts/settings.sh --env $ENV_NAME --key $k --unset"$'\n'
+        moves+="  scripts/settings.sh --env $ENV_NAME --key $k --value \"\$(scripts/settings.sh --env $ENV_NAME --key $k)\""$'\n'
       fi
     fi
   done
