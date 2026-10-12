@@ -23,9 +23,10 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$REPO" ] || REPO=$(cd "$(dirname "$0")" && git rev-parse --show-toplevel)
 
-# A dotted quad in one of the three ranges, CIDR blocks included, but not
-# inside a longer run of digits and dots (a version like 1.10.0.0.4).
-o='[0-9]{1,3}'
+# A dotted quad (octets 0-255) in one of the three ranges, CIDR blocks
+# included, but not inside a longer run of digits and dots (a version like
+# 1.10.0.0.4).
+o='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 quad="10\\.$o\\.$o\\.$o|172\\.(1[6-9]|2[0-9]|3[01])\\.$o\\.$o|192\\.168\\.$o\\.$o"
 pattern="(^|[^0-9.])($quad)([^0-9.]|\\.([^0-9]|$)|$)"
 
