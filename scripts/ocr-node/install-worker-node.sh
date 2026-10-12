@@ -169,7 +169,8 @@ if command -v selinuxenabled > /dev/null && selinuxenabled; then
   if ! semanage fcontext -l -C | grep -qF "$rule"; then
     semanage fcontext -a -t bin_t "$rule"
   fi
-  restorecon "$LIB/$RELEASE/usnm-ocr-worker"
+  # Every installed release, so a later --rollback runs bin_t too.
+  restorecon -R "$LIB"
   ls -Z "$LIB/$RELEASE/usnm-ocr-worker"
 fi
 printf '%s\n' "$IMAGE_ID" > "$LIB/$RELEASE/tesseract.image-id"
