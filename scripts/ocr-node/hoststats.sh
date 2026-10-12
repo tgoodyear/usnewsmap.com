@@ -75,7 +75,8 @@ def sample():
 t1, i1 = sample(); time.sleep(2); t2, i2 = sample()
 d = json.load(sys.stdin)
 if t2 > t1:
-    d["cpu"] = round((t2 - t1 - (i2 - i1)) / (t2 - t1), 4)
+    # iowait can go backwards, so keep the share inside 0..1.
+    d["cpu"] = round(min(1.0, max(0.0, (t2 - t1 - (i2 - i1)) / (t2 - t1))), 4)
 json.dump(d, sys.stdout, separators=(",", ":"))
 ')
   resources=$(pvesh get /cluster/resources --type vm --output-format json)
