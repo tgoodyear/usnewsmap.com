@@ -349,12 +349,14 @@ func names(env string, sfx string, pinned bool) Names => {
   ocrVault: usnmCompactName('ocr', 'kv', env, sfx)
   ocrWorkspace: usnmName('ocr', 'log', env)
   pipelineWorkbookTitle: pinned ? 'usnewsmap pipeline' : 'usnm pipeline (${env})'
-  qwBenchIdentity: pinned ? 'id-usnm-qwbench-${env}' : usnmName('qw-bench', 'id', env)
-  qwBenchJob: pinned ? 'caj-usnm-qwbench-${env}' : usnmName('qw-bench', 'caj', env)
-  qwCompareApps: map(range(0, 4), i => pinned ? 'ca-usnm-qws-${i}' : usnmName('qw-cmp-${i}', 'ca', env))
-  qwLocalApp: pinned ? 'ca-usnm-qwl-0' : usnmName('qw-local', 'ca', env)
-  qwNodeApps: map(range(0, 4), i => pinned ? 'ca-usnm-qw-${i}' : usnmName('qw-${i}', 'ca', env))
-  qwNodeIdentity: pinned ? 'id-usnm-qwnode-${env}' : usnmName('qw-node', 'id', env)
+  // The search cluster never runs in prod (main.bicep), so these were legacy
+  // only while every environment was pinned: ADR-0017's form everywhere.
+  qwBenchIdentity: usnmName('qw-bench', 'id', env)
+  qwBenchJob: usnmName('qw-bench', 'caj', env)
+  qwCompareApps: map(range(0, 4), i => usnmName('qw-cmp-${i}', 'ca', env))
+  qwLocalApp: usnmName('qw-local', 'ca', env)
+  qwNodeApps: map(range(0, 4), i => usnmName('qw-${i}', 'ca', env))
+  qwNodeIdentity: usnmName('qw-node', 'id', env)
   registry: pinned ? 'crusnm${env}${sfx}' : usnmCompactName('core', 'cr', env, sfx)
   releaseStalledAlert: pinned ? 'alert-usnm-release-stalled-${env}' : usnmName('ingest-release-stalled', 'alert', env)
   rg: pinned ? 'rg-usnm-${env}' : usnmName('core', 'rg', env)

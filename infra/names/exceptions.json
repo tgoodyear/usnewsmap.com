@@ -57,7 +57,7 @@
   "archiveEndpoint": {
     "until": "phase-0",
     "adr": "ADR-0017, Exceptions",
-    "reason": "Not deployed in prod: legacy only because Phase 0 keeps every environment's names. Conventional once dev and experiments are unpinned (#309), with no ternary left for prod to keep."
+    "reason": "Deployed in prod only with USNM_ARCHIVE_ACCOUNT, which the Bicep can't see: the current prod keeps pe-usnm-archive-blob until its live stack shows no such endpoint (the ternary then goes, #309). Dev and experiments use ADR-0017's name."
   },
   "archiveWriterRole": {
     "until": "phase-1",
@@ -193,36 +193,6 @@
     "until": "phase-2",
     "adr": "ADR-0017, Display names",
     "reason": "Scheduled for Phase 2: a workbook's displayName changes in place; its name is a GUID."
-  },
-  "qwBenchIdentity": {
-    "until": "phase-0",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Not deployed in prod: legacy only because Phase 0 keeps every environment's names. Conventional once dev and experiments are unpinned (#309), with no ternary left for prod to keep."
-  },
-  "qwBenchJob": {
-    "until": "phase-0",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Not deployed in prod: legacy only because Phase 0 keeps every environment's names. Conventional once dev and experiments are unpinned (#309), with no ternary left for prod to keep."
-  },
-  "qwCompareApps": {
-    "until": "phase-0",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Not deployed in prod: legacy only because Phase 0 keeps every environment's names. Conventional once dev and experiments are unpinned (#309), with no ternary left for prod to keep."
-  },
-  "qwLocalApp": {
-    "until": "phase-0",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Not deployed in prod: legacy only because Phase 0 keeps every environment's names. Conventional once dev and experiments are unpinned (#309), with no ternary left for prod to keep."
-  },
-  "qwNodeApps": {
-    "until": "phase-0",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Not deployed in prod: legacy only because Phase 0 keeps every environment's names. Conventional once dev and experiments are unpinned (#309), with no ternary left for prod to keep."
-  },
-  "qwNodeIdentity": {
-    "until": "phase-0",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Not deployed in prod: legacy only because Phase 0 keeps every environment's names. Conventional once dev and experiments are unpinned (#309), with no ternary left for prod to keep."
   },
   "registry": {
     "until": "phase-4",

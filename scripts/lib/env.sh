@@ -85,7 +85,9 @@ adel() {
 # in each form. A legacy Container Apps environment's own group is Azure's
 # ME_<environment>_<group>_<region>, which starts with LEGACY_INFRA_GROUP.
 PROJECT_GROUPS="usnm-core-rg-$ENV_NAME rg-usnm-$ENV_NAME"
+# shellcheck disable=SC2034 # used by scripts/dev-status.sh
 ENV_GROUPS="$PROJECT_GROUPS usnm-core-infra-rg-$ENV_NAME rg-usnm-$ENV_NAME-spot"
+# shellcheck disable=SC2034 # used by scripts/dev-status.sh
 LEGACY_INFRA_GROUP="ME_cae-usnm-${ENV_NAME}_"
 # One deployment stack per environment, at subscription scope (it holds the
 # resource groups). Resources dropped from the template are deleted; deny
@@ -190,8 +192,8 @@ ocr_vault_recover() {
 # experiment's issue number. The template tags the project group
 # (usnm-core-rg-<env>) with it and with USNM_EXPERIMENT_STARTED, set here:
 # the group's own `started` while its `experiment` is the same, otherwise
-# now. teardown.sh's provision sets
-# NO_EXPERIMENT_CHECK, since it only takes the environment apart.
+# now. teardown.sh's provision sets NO_EXPERIMENT_CHECK, since it only takes
+# the environment apart.
 experiment_marker() {
   local exp out g tagged started=""
   [ "$ENV_NAME" = dev ] || return 0

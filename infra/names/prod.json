@@ -1,5 +1,5 @@
 {
-  "$comment": "The prod names infra/naming.bicep's names('prod', 'ffapzy', true) gives (ADR-0017). scripts/ci/check-names.py fails when they differ, so a prod rename is a reviewed change to this file. Derived from the Bicep, not read from the live stack; the owner checks it against Azure. Some keys name resources prod doesn't deploy (the search cluster's, the archive endpoint); the NIC and infrastructure-group keys are empty when pinned.",
+  "$comment": "The prod names infra/naming.bicep's names('prod', 'ffapzy', true) gives (ADR-0017). scripts/ci/check-names.py fails when they differ, so a prod rename is a reviewed change to this file. Derived from the Bicep, not read from the live stack; the owner checks it against Azure. Some keys name resources prod doesn't deploy: the search cluster's (never in prod, so already in ADR-0017's form) and the archive endpoint (only with USNM_ARCHIVE_ACCOUNT). The NIC and infrastructure-group keys are empty when pinned.",
   "actionGroup": "ag-usnm-prod",
   "actionGroupShortName": "usnm",
   "apiAggregateSlowAlert": "alert-usnm-api-aggregate-slow-prod",
@@ -51,22 +51,22 @@
   "ocrVault": "usnmocrkvprodffapzy",
   "ocrWorkspace": "usnm-ocr-log-prod",
   "pipelineWorkbookTitle": "usnewsmap pipeline",
-  "qwBenchIdentity": "id-usnm-qwbench-prod",
-  "qwBenchJob": "caj-usnm-qwbench-prod",
+  "qwBenchIdentity": "usnm-qw-bench-id-prod",
+  "qwBenchJob": "usnm-qw-bench-caj-prod",
   "qwCompareApps": [
-    "ca-usnm-qws-0",
-    "ca-usnm-qws-1",
-    "ca-usnm-qws-2",
-    "ca-usnm-qws-3"
+    "usnm-qw-cmp-0-ca-prod",
+    "usnm-qw-cmp-1-ca-prod",
+    "usnm-qw-cmp-2-ca-prod",
+    "usnm-qw-cmp-3-ca-prod"
   ],
-  "qwLocalApp": "ca-usnm-qwl-0",
+  "qwLocalApp": "usnm-qw-local-ca-prod",
   "qwNodeApps": [
-    "ca-usnm-qw-0",
-    "ca-usnm-qw-1",
-    "ca-usnm-qw-2",
-    "ca-usnm-qw-3"
+    "usnm-qw-0-ca-prod",
+    "usnm-qw-1-ca-prod",
+    "usnm-qw-2-ca-prod",
+    "usnm-qw-3-ca-prod"
   ],
-  "qwNodeIdentity": "id-usnm-qwnode-prod",
+  "qwNodeIdentity": "usnm-qw-node-id-prod",
   "registry": "crusnmprodffapzy",
   "releaseStalledAlert": "alert-usnm-release-stalled-prod",
   "rg": "rg-usnm-prod",

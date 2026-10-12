@@ -2,7 +2,7 @@
 // "Search cluster experiment"). Deployed only with `searchCluster` on; with
 // it off main.bicep skips this module, and the stack deletes what it made.
 //
-// - Nodes: one app per member, `ca-usnm-qw-{i}`, each exactly one replica
+// - Nodes: one app per member, `usnm-qw-{i}-ca-{env}`, each exactly one replica
 //   (min = max = 1) on the Consumption profile. Node 0 is the only metastore
 //   (the single writer of the file-backed metastore at `azure://qw-cluster`),
 //   the control plane, the janitor, an indexer and a searcher, and the root
@@ -16,7 +16,7 @@
 //   other nodes' entries as peer seeds and then becomes Quickwit (exec). A
 //   node that restarts at a new IP registers again and joins through the
 //   others; they learn its new address by gossip.
-// - Bench job `caj-usnm-qwbench-{env}` (manual): `usnm-qwcluster` builds the
+// - Bench job `usnm-qw-bench-caj-{env}` (manual): `usnm-qwcluster` builds the
 //   1% sample from `curated` (read only), loads it into the cluster, runs the
 //   benchmark searches against node 0, and logs and stores its reports in
 //   `qw-bench/runs/`.
@@ -27,15 +27,15 @@
 //   use a system-assigned identity in Container Apps (08 §8.2), so each node's
 //   system identity gets Blob Data Contributor on this container alone.
 // - `qw-bench`: the seed registry, the sample documents and the reports.
-//   Blob Data Contributor for `id-usnm-qwnode-{env}` (the nodes' own code:
-//   seeds) and `id-usnm-qwbench-{env}` (the bench job), both user-assigned.
+//   Blob Data Contributor for `usnm-qw-node-id-{env}` (the nodes' own code:
+//   seeds) and `usnm-qw-bench-id-{env}` (the bench job), both user-assigned.
 // - The bench identity reads `curated` and `reference` (Blob Data Reader).
 // Both identities pull the ingest image (AcrPull): it has Quickwit and the
 // `usnm-qwcluster` binary.
 //
 // Version comparison (#251; docs/operations.md, "Quickwit version
 // comparison"): with `compareImages`, one standalone searcher per image,
-// `ca-usnm-qws-{i}`, each the API sidecar's shape (searcher and metastore,
+// `usnm-qw-cmp-{i}-ca-{env}`, each the API sidecar's shape (searcher and metastore,
 // polling the file-backed metastore in `qw-cluster`), with a cluster id of
 // its own and no seeds, so they never join each other or the cluster. Each
 // searches the same splits, the cluster's indexes, with Blob Data *Reader*
@@ -72,7 +72,7 @@ param storageAccountName string
 param storageBlobEndpoint string
 @description('The archival account\'s Blob endpoint (USNM_ARCHIVE_ACCOUNT), for packaged sample sets; empty: none.')
 param archiveBlobEndpoint string = ''
-@description('Cluster members (apps ca-usnm-qw-0 to -{nodes - 1}). 0 runs no node and keeps the containers and the bench job: the idle state between runs.')
+@description('Cluster members (apps usnm-qw-0-ca-{env} to usnm-qw-{nodes - 1}-ca-{env}). 0 runs no node and keeps the containers and the bench job: the idle state between runs.')
 @minValue(0)
 @maxValue(4)
 param nodes int = 1
@@ -97,11 +97,11 @@ param runtimeThreads int = 0
 @minValue(0)
 param searchThreads int = 0
 
-@description('Version comparison (#251): one standalone searcher ca-usnm-qws-{i} per image, each nodeVcpu vCPU, reading the cluster\'s indexes. Empty: none.')
+@description('Version comparison (#251): one standalone searcher usnm-qw-cmp-{i}-ca-{env} per image, each nodeVcpu vCPU, reading the cluster\'s indexes. Empty: none.')
 @maxLength(4)
 param compareImages array = []
 
-@description('Local-disk test (#251): one standalone 0.9.1 searcher, ca-usnm-qwl-0, reading the cluster\'s indexes from Blob (blob) or from a copy of localIndex on an NFS share (nfs), on Consumption, or through a split cache on its disk (cache) or from a copy on its disk (copy), on the dedicated profile. Empty: none.')
+@description('Local-disk test (#251): one standalone 0.9.1 searcher, usnm-qw-local-ca-{env}, reading the cluster\'s indexes from Blob (blob) or from a copy of localIndex on an NFS share (nfs), on Consumption, or through a split cache on its disk (cache) or from a copy on its disk (copy), on the dedicated profile. Empty: none.')
 @allowed(['', 'blob', 'cache', 'copy', 'nfs'])
 param localMode string = ''
 
@@ -307,7 +307,7 @@ resource nodeApps 'Microsoft.App/containerApps@2024-03-01' = [
             ], tuningArgs)
             resources: { cpu: nodeCpu, memory: nodeMemory }
             env: [
-              // Selects id-usnm-qwnode for the seed registry; the wrapper
+              // Selects the node identity for the seed registry; the wrapper
               // removes it before Quickwit starts.
               { name: 'AZURE_CLIENT_ID', value: nodeIdentity.properties.clientId }
               { name: 'RUST_LOG', value: nodeRustLog }

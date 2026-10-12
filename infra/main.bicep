@@ -102,7 +102,7 @@ param dedicatedProfile bool = false
 @description('Run the ingest job on the E4 profile (needs dedicatedProfile). Turn this off and provision before turning dedicatedProfile off: a profile in use can\'t be removed.')
 param ingestOnDedicated bool = false
 
-@description('Deploy the experimental Quickwit search cluster (#239): node apps ca-usnm-qw-{i}, the bench job caj-usnm-qwbench-{env} and their containers qw-cluster and qw-bench (docs/operations.md, "Search cluster experiment"). Needs useAcr; ignored in prod. Turning it off deletes all of it, the two containers included.')
+@description('Deploy the experimental Quickwit search cluster (#239): node apps usnm-qw-{i}-ca-{env}, the bench job usnm-qw-bench-caj-{env} and their containers qw-cluster and qw-bench (docs/operations.md, "Search cluster experiment"). Needs useAcr; ignored in prod. Turning it off deletes all of it, the two containers included.')
 param searchCluster bool = false
 
 @description('Search cluster members (0 to 4). 0 keeps the cluster\'s containers and bench job but runs no node.')
@@ -131,10 +131,10 @@ param searchClusterRuntimeThreads int = 0
 @minValue(0)
 param searchClusterSearchThreads int = 0
 
-@description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher ca-usnm-qws-{i} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
+@description('Quickwit version comparison (#251): ingest image tags, comma separated, each run as a standalone searcher usnm-qw-cmp-{i}-ca-{env} over the search cluster\'s indexes (searchClusterNodeVcpu each; docs/operations.md, "Quickwit version comparison"). Empty: none.')
 param searchCompareTags string = ''
 
-@description('Local-disk test (#251): a standalone 0.9.1 searcher, ca-usnm-qwl-0, reading the search cluster\'s indexes from Blob (blob) or a copy of searchLocalIndex on an NFS share (nfs), on Consumption at the API sidecar\'s 3.75 vCPU / 7.5 GiB, or through a split cache (cache) or from a copy (copy) on its own disk, on the E4 profile (needs dedicatedProfile) for the disk (docs/operations.md, "Local-disk test"). Empty: none.')
+@description('Local-disk test (#251): a standalone 0.9.1 searcher, usnm-qw-local-ca-{env}, reading the search cluster\'s indexes from Blob (blob) or a copy of searchLocalIndex on an NFS share (nfs), on Consumption at the API sidecar\'s 3.75 vCPU / 7.5 GiB, or through a split cache (cache) or from a copy (copy) on its own disk, on the E4 profile (needs dedicatedProfile) for the disk (docs/operations.md, "Local-disk test"). Empty: none.')
 @allowed(['', 'blob', 'cache', 'copy', 'nfs'])
 param searchLocalMode string = ''
 
