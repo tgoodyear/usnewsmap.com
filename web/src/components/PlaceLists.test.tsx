@@ -500,6 +500,20 @@ describe("Median date: Show more", () => {
     expect(document.activeElement).toBe(elsewhere);
   });
 
+  it("keeps lists shown by bucket, not older exact ones, while their first days load", () => {
+    const rows = shared();
+    const { rerender } = render(
+      <When rows={rows} onSelect={() => {}} trailing={false} exact={allDays()} status="exact" />,
+    );
+    fireEvent.click(button(earliest(), "Show more")!);
+    expect(names(earliest()).slice(5)).toEqual(["M5, IL", "M6, IL", "M7, IL", "M8, IL", "M9, IL"]);
+    // Then by bucket (in App: too many tied places, maybe another search), then their days are asked for.
+    rerender(<When rows={rows} onSelect={() => {}} trailing={false} status="bucket" tied="year" />);
+    rerender(<When rows={rows} onSelect={() => {}} trailing={false} exact={null} status="updating" />);
+    expect(names(earliest()).slice(5)).toEqual(["M10, IL", "M11, IL", "M12, IL", "M13, IL", "M14, IL"]);
+    expect(screen.queryByText("Finding each place's median day…")).toBeNull();
+  });
+
   it("says when too many places share a bucket to rank them by day", () => {
     render(<When rows={years(30)} onSelect={() => {}} trailing={false} status="bucket" tied="month" />);
     expect(screen.getByText(/Too many places share a median month/)).toBeTruthy();

@@ -375,8 +375,8 @@ export function medianLists(rows: ListRow[], exact: Map<string, number> | null |
 
 /**
  * Where the Median date lists stand: `exact` (ranked by day), `updating`
- * (the last exact lists while the next set loads), `loading` (no exact
- * answer for this search yet: nothing is listed), or `bucket` (ranked by the
+ * (the last lists, exact or by bucket, while the next set loads), `loading`
+ * (no answer for this search yet and no lists shown: nothing is listed), or `bucket` (ranked by the
  * search's bucket for good: a search by day, more tied places than the
  * lists' lengths allow requests for, or the day counts failed).
  */
@@ -407,12 +407,16 @@ export function WhenLists({
   // The lists last shown from exact days, and how long the lists were then.
   // While the next set loads ("updating") they stay exactly as they were, not
   // recomputed against the new window from the old answer, until the fresh
-  // answer replaces them.
+  // answer replaces them. After lists by bucket (or none) `ranked` is null:
+  // an "updating" then shows them by bucket, not exact lists from before
+  // them, maybe another search's.
   const lengths = `${shown.earliest},${shown.latest}`;
-  const [last, setLast] = useState<{ ranked: Ranked; lengths: string } | null>(null);
-  const current = status === "updating" && last ? null : medianLists(rows, status === "bucket" ? null : exact);
-  if (status === "exact" && current && (current.key !== last?.ranked.key || lengths !== last.lengths))
+  const [last, setLast] = useState<{ ranked: Ranked | null; lengths: string } | null>(null);
+  const current = status === "updating" && last?.ranked ? null : medianLists(rows, status === "bucket" ? null : exact);
+  if (status === "exact" && current && (current.key !== last?.ranked?.key || lengths !== last.lengths))
     setLast({ ranked: current, lengths });
+  if ((status === "bucket" || status === "loading") && (last?.ranked || last?.lengths !== lengths))
+    setLast({ ranked: null, lengths });
   if (status === "loading") {
     return (
       <ListsPanel title="Earliest and latest" label="Places with the earliest and latest median dates">
@@ -435,7 +439,7 @@ export function WhenLists({
       </span>
     </>
   );
-  // A list grew (or shrank) since the last exact lists: the days of the places it lists are on their way.
+  // A list grew (or shrank) since the last lists: the days of the places it lists are on their way.
   const note =
     status !== "updating"
       ? ""

@@ -425,7 +425,7 @@ export function App() {
   });
   const fresh =
     !!dayCounts.data && !dayCounts.isPlaceholderData && candidatesKey !== "" && requestKey === candidatesKey;
-  const medianStatus: MedianStatus = !wantsDays
+  const baseStatus: MedianStatus = !wantsDays
     ? "bucket"
     : agg.isPlaceholderData
       ? "loading"
@@ -438,6 +438,17 @@ export function App() {
             : dayCounts.data
               ? "updating"
               : "loading";
+  // The search whose Median date lists have been shown. Once they have (by
+  // bucket: too many tied places to ask for at the lengths shown), a first
+  // answer still on its way, after Show more lets the days be asked for,
+  // keeps them, marked as updating, rather than blanking them: the lists, and
+  // the Show more button focus is on, stay mounted until the ranking settles.
+  // Only a search that has shown no lists yet says it is loading.
+  const [listedFor, setListedFor] = useState("");
+  if (wantsDays && (baseStatus === "bucket" || baseStatus === "exact") && listedFor !== searchId)
+    setListedFor(searchId);
+  const medianStatus: MedianStatus =
+    baseStatus === "loading" && !agg.isPlaceholderData && listedFor === searchId ? "updating" : baseStatus;
   const daysSource = dayCounts.data ?? null;
   const exactMedians = useMemo(() => {
     if (!data || !daysSource || (medianStatus !== "exact" && medianStatus !== "updating")) return null;
