@@ -170,9 +170,11 @@ impl Nodes {
         offset: u64,
         journal_id: &str,
     ) -> anyhow::Result<Polled> {
-        let status: WorkerStatus =
+        let mut status: WorkerStatus =
             serde_json::from_slice(&get(client, &format!("{url}/status")).await?)
                 .context("the status isn't JSON")?;
+        // Only pages and tags reach the page.
+        status.sanitize();
         let mut offset = offset;
         if status.journal_bytes < offset || status.journal_id != journal_id {
             offset = 0;

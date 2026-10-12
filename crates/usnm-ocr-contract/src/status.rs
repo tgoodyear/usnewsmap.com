@@ -162,14 +162,55 @@ pub fn is_tag(s: &str, max: usize) -> bool {
         })
 }
 
+fn canonical_doc_id(s: &str) -> bool {
+    PageKey::from_doc_id(s).is_ok_and(|k| k.doc_id() == s)
+}
+
+impl InFlight {
+    /// A real doc_id and short tags only.
+    pub fn check(&self) -> bool {
+        canonical_doc_id(&self.doc_id)
+            && is_tag(&self.language, 8)
+            && is_tag(&self.queue, 32)
+            && is_tag(&self.stage, 16)
+    }
+}
+
+impl WorkerStatus {
+    /// Hold a status from the network to what the dashboard may show:
+    /// pages with real doc_ids, and short tags. Anything else is dropped
+    /// (a list entry) or blanked (a field), so a broken or hostile status
+    /// can't put text on the page.
+    pub fn sanitize(&mut self) {
+        let tag = |s: &mut String, max: usize| {
+            if !is_tag(s, max) {
+                *s = "?".into();
+            }
+        };
+        tag(&mut self.node_id, 64);
+        tag(&mut self.version, 120);
+        tag(&mut self.engine, 120);
+        tag(&mut self.engine_version, 120);
+        self.models.retain(|m| is_tag(m, 64));
+        self.routes.retain(|k, v| is_tag(k, 8) && is_tag(v, 120));
+        if self
+            .scan_cache_url
+            .as_deref()
+            .is_some_and(|u| !is_tag(u, 200))
+        {
+            self.scan_cache_url = None;
+        }
+        self.in_flight.retain(InFlight::check);
+        self.recent.retain(|c| c.check().is_ok());
+    }
+}
+
 impl Completion {
     /// Holds a line to the journal's shape: a real doc_id, a known outcome
     /// and short tags only, so a broken or hostile line can't put text on
     /// the dashboard.
     pub fn check(&self) -> anyhow::Result<()> {
-        let key =
-            PageKey::from_doc_id(&self.doc_id).map_err(|e| anyhow::anyhow!("not a doc_id: {e}"))?;
-        anyhow::ensure!(key.doc_id() == self.doc_id, "not a canonical doc_id");
+        anyhow::ensure!(canonical_doc_id(&self.doc_id), "not a canonical doc_id");
         anyhow::ensure!(OUTCOMES.contains(&self.outcome.as_str()), "unknown outcome");
         anyhow::ensure!(
             matches!(self.scan.as_str(), "" | "cache" | "loc"),
@@ -374,5 +415,37 @@ mod tests {
         assert_eq!(h.resources[0].kind, "qemu");
         assert_eq!(h.pools[0].health, "ONLINE");
         assert!((h.datasets[0].compressratio - 1.10).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_status_from_the_network_keeps_only_pages_and_tags() {
+        let mut s = WorkerStatus {
+            node_id: "usnm-ocr-node1".into(),
+            version: "0.1.0 (commit 0123abc)".into(),
+            engine: "Die ganze Seite\nmit Text".into(),
+            models: vec!["frak2021".into(), "x".repeat(300)],
+            scan_cache_url: Some("http://scans.example:8380".into()),
+            ..WorkerStatus::default()
+        };
+        s.in_flight.push(InFlight {
+            doc_id: "sn84027718_1890-01-02_ed-1_seq-3".into(),
+            language: "deu".into(),
+            queue: "ocr-bulk".into(),
+            stage: "ocr".into(),
+            ..InFlight::default()
+        });
+        s.in_flight.push(InFlight {
+            doc_id: "Ein Satz aus der Zeitung".into(),
+            ..InFlight::default()
+        });
+        s.recent.push(done("sn84027718_1890-01-02_ed-1_seq-3"));
+        s.recent.push(done("kein doc_id"));
+        s.sanitize();
+        assert_eq!(s.node_id, "usnm-ocr-node1");
+        assert_eq!(s.engine, "?");
+        assert_eq!(s.models, ["frak2021"]);
+        assert!(s.scan_cache_url.is_some());
+        assert_eq!(s.in_flight.len(), 1);
+        assert_eq!(s.recent.len(), 1);
     }
 }
