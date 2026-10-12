@@ -505,6 +505,7 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
 2. **The node.** Build `usnm-ingest` from source in a container, so the node gets no toolchain, and install it with poppler-utils and the units in `scripts/ocr-node/` (`usnm-sset.service`, `usnm-sset-status.service`, `usnm-sset-status.timer`, `sset-status.py` as `/usr/local/bin/usnm-sset-status`):
 
    ```sh
+   mkdir -p src
    curl -sL https://codeload.github.com/tgoodyear/usnewsmap.com/tar.gz/<commit> | tar xz -C src --strip-components=1
    nice -n 19 podman run --rm --cpus 3 -v "$PWD/src:/src:Z" -w /src docker.io/library/rust:1-bookworm \
      cargo build --release --locked -p usnm-ingest --bin usnm-ingest

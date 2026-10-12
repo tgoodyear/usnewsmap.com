@@ -28,6 +28,10 @@ Environment=USNM_PDFTOTEXT=/usr/bin/pdftotext
 # deleted once read.
 Environment=USNM_WORK_DIR=/var/lib/usnm-sset/work
 EnvironmentFile=/etc/usnm/sset.env
+# A PDF a stopped run was reading stays in the scratch directory (SIGTERM
+# skips its cleanup): remove any before each start, so restarts can't fill
+# the disk.
+ExecStartPre=/bin/sh -c 'rm -f /var/lib/usnm-sset/work/serialset/serialset-*.pdf'
 # The report (JSON) goes to the journal with the log lines.
 ExecStart=/usr/local/bin/usnm-ingest congress-serialset
 # A failure (GovInfo down past the retries, a write refused) starts it
