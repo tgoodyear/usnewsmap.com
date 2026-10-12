@@ -469,8 +469,10 @@ impl LocClient {
                         let asked = retry_after(&resp);
                         let mut checked = None;
                         if let Some(title) = title {
+                            // Any Retry-After, even one that can't be
+                            // read, is a hold.
                             if status == StatusCode::SERVICE_UNAVAILABLE
-                                && asked.is_none()
+                                && !resp.headers().contains_key(reqwest::header::RETRY_AFTER)
                                 && sent.elapsed() < ITEM_ERROR_FAST
                             {
                                 match self.item_error(url, title).await {
@@ -873,6 +875,8 @@ mod tests {
         /// 503 after 2.5 s, no Retry-After.
         Slow503,
         Too429,
+        /// 503 at once with a `Retry-After` that can't be read.
+        BadRetryAfter,
     }
 
     /// A stand-in loc.gov answering `/item/<lccn>/<date>/ed-1/` as
@@ -922,6 +926,9 @@ mod tests {
                                 S::SERVICE_UNAVAILABLE.into_response()
                             }
                             Some(Answer::Too429) => S::TOO_MANY_REQUESTS.into_response(),
+                            Some(Answer::BadRetryAfter) => {
+                                (S::SERVICE_UNAVAILABLE, [("retry-after", "soon")]).into_response()
+                            }
                         }
                     }
                 },
@@ -984,6 +991,7 @@ mod tests {
             ("sn2/1904-07-30", Answer::RetryAfter(1)),
             ("sn3/1904-07-30", Answer::Too429),
             ("sn4/1904-07-30", Answer::Slow503),
+            ("sn5/1904-07-30", Answer::BadRetryAfter),
         ])
         .await;
         let loc = items_client(&root, 1);
@@ -1004,6 +1012,12 @@ mod tests {
         assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
         assert!(loc.held_until().is_some());
         assert_eq!(hits.lock().unwrap()["sn4/1904-07-30"], 1);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        item(&loc, &page("sn1", "1904-07-29")).await.unwrap();
+        // A Retry-After that can't be read is still a hold.
+        let e = item(&loc, &page("sn5", "1904-07-30")).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
     }
 
     #[tokio::test]
