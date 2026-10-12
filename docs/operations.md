@@ -1137,7 +1137,7 @@ scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
 
 **When it shows something odd.**
 
-- _A node says "no status"._ The worker isn't answering on port 8381: it is down, or it was installed without `--status-allow 192.168.0.105`, or the dashboard's address changed. `scripts/ocr-node/install-worker.sh --status-allow <address>` sets the worker's settings and the node's nftables rule (`usnm-ocr-status-firewall.service`).
+- _A node says "no status"._ The worker isn't answering on port 8381: it is down, or it was installed without `--status-allow <CT 212's address>`, or the dashboard's address changed. `scripts/ocr-node/install-worker.sh --status-allow <address>` sets the worker's settings and the node's nftables rule (`usnm-ocr-status-firewall.service`).
 - _The stats are stale._ `systemctl status usnm-hoststats.timer` on the host. On the NUC, a failed push logs `can't push` in `journalctl -u usnm-hoststats`.
 - _A new manifest._ The dashboard reads the manifest the fetcher's status names, and reads it again when its sha256 changes.
 - _Logs:_ `pct exec 212 -- journalctl -u usnm-ocrdash`. The copies of the workers' journals are in `/var/lib/usnm-ocrdash` in the container; deleting them makes the dashboard copy each worker's journal again from the start.

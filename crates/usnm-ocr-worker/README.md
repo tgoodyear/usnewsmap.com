@@ -143,6 +143,7 @@ Metrics are sent every 30 s and once more at shutdown.
 With `--status-listen 0.0.0.0:8381` (`USNM_OCR_STATUS_LISTEN`) and `--status-allow <dashboard address>` (`USNM_OCR_STATUS_ALLOW`), `run` serves its status to `usnm-ocrdash` (12 §12.2.5) and refuses every other address:
 
 - `GET /status`: the node id, version, engine, concurrency, scan server, any LoC hold, the pages in flight (doc_id, language, queue, stage, start), pages by outcome and scan source over the last hour and day and since the start, the latest finished pages, and each language's engine profile from its last page done.
+- The status also carries the queues as the worker last saw them, a look a minute: each queue's approximate length (Get Queue Metadata) and up to 20 dead letters at the front of `ocr-deadletter` (Peek Messages), shown as their page, cause, kind, error, receive count, node and time. It takes and deletes nothing, and needs Storage Queue Data Reader on the queues.
 - `GET /journal?from=<offset>`: `--status-journal` (`USNM_OCR_STATUS_JOURNAL`) from a byte offset, whole lines only, at most 1 MiB. Each line is one finished page: doc_id, language, engine tag, queue, reason, times, outcome, scan source, whether its output was uploaded, and a failure's kind. The file is appended to across restarts.
 
 Neither holds page text. `scripts/ocr-node/install-worker.sh --status-allow <address>` writes the settings, and the node's nftables drops the port from anyone else.

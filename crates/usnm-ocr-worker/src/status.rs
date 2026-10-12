@@ -453,7 +453,7 @@ mod tests {
 
     async fn get(tracker: Arc<Tracker>, from: &str, uri: &str) -> (StatusCode, Vec<u8>) {
         let peer: SocketAddr = format!("{from}:5000").parse().unwrap();
-        let r = router(tracker, vec!["192.168.0.105".parse().unwrap()])
+        let r = router(tracker, vec!["203.0.113.5".parse().unwrap()])
             .layer(MockConnectInfo(peer))
             .oneshot(HttpRequest::get(uri).body(Body::empty()).unwrap())
             .await
@@ -494,7 +494,7 @@ mod tests {
         assert!(!s.journal_id.is_empty());
         t.end(page("sn1_1890-01-01_ed-1_seq-2", "failed", "loc"));
 
-        let (code, body) = get(t.clone(), "192.168.0.105", "/journal?from=0").await;
+        let (code, body) = get(t.clone(), "203.0.113.5", "/journal?from=0").await;
         assert_eq!(code, StatusCode::OK);
         let lines: Vec<Completion> = String::from_utf8(body.clone())
             .unwrap()
@@ -505,14 +505,14 @@ mod tests {
         assert_eq!(lines[1].outcome, "failed");
         let (_, rest) = get(
             t.clone(),
-            "192.168.0.105",
+            "203.0.113.5",
             &format!("/journal?from={}", body.len()),
         )
         .await;
         assert!(rest.is_empty());
-        let (code, _) = get(t.clone(), "192.168.0.50", "/status").await;
+        let (code, _) = get(t.clone(), "203.0.113.50", "/status").await;
         assert_eq!(code, StatusCode::FORBIDDEN);
-        let (code, body) = get(t.clone(), "192.168.0.105", "/status").await;
+        let (code, body) = get(t.clone(), "203.0.113.5", "/status").await;
         assert_eq!(code, StatusCode::OK);
         let s: WorkerStatus = serde_json::from_slice(&body).unwrap();
         assert_eq!(s.node_id, "usnm-ocr-node1");
