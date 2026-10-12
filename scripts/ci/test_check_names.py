@@ -149,6 +149,61 @@ class Sources(unittest.TestCase):
         out = self.check("  name: guid(resourceGroup().id, 'usnm-new-seed')\n")
         self.assertIn("frozen seed", out[0])
 
+    def test_a_name_split_over_lines(self):
+        # The value on the next line, a ternary over three lines, and a
+        # concatenation continued on the next line: each still counts, at
+        # the property's own line.
+        out = self.check("resource x 'T' = {\n  name:\n    'caj-usnm-ingest-${env}'\n}\n")
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].endswith("names() in infra/naming.bicep (ADR-0017)"))
+        self.assertIn("m.bicep:2:", out[0])
+        out = self.check("resource x 'T' = {\n  name: pinned\n    ? 'ca-usnm-${env}'\n    : n.apiApp\n"
+                         "  location: location\n}\n")
+        self.assertEqual(len(out), 1)
+        self.assertIn("m.bicep:2:", out[0])
+        out = self.check("resource x 'T' = {\n  displayName: concat(\n    'usnewsmap ',\n    env)\n}\n")
+        self.assertEqual(len(out), 1)
+        # The next property isn't read as part of the value.
+        self.assertEqual(self.check("resource x 'T' = {\n  name: n.apiApp\n  tags: { a: 'usnm-x' }\n}\n"), [])
+
+    def test_a_guid_call_split_over_lines(self):
+        out = self.check("resource r 'T' = {\n  name: guid(\n    resourceGroup().id,\n"
+                         "    'usnm-new-seed'\n  )\n  properties: {}\n}\n")
+        self.assertEqual(len(out), 1)
+        self.assertIn("m.bicep:4: guid() seed 'usnm-new-seed'", out[0])
+        self.assertEqual(self.check("resource r 'T' = {\n  name: guid(\n    resourceGroup().id,\n"
+                                    "    'usnm-swa-deployer'\n  )\n  properties: { scope: '/dbs/usnm' }\n}\n"),
+                         [])
+
+    def test_comments_are_skipped_but_strings_kept(self):
+        self.assertEqual(self.check("  name: n.x // was 'caj-usnm-x'\n  /* name: 'ca-usnm-y'\n"
+                                    "  name: 'ca-usnm-z' */\n"), [])
+        out = self.check("  name: 'https://ca-usnm-x' // a comment\n")
+        self.assertEqual(len(out), 1)
+
+
+class Base(unittest.TestCase):
+    """--base and --require-base: a base that can't be read is a problem."""
+
+    def test_no_base(self):
+        self.assertEqual(cn.base_exceptions("", False), (None, []))
+        base, out = cn.base_exceptions("", True)
+        self.assertIsNone(base)
+        self.assertIn("--require-base", out[0])
+
+    def test_a_revision_that_doesnt_resolve(self):
+        base, out = cn.base_exceptions("refs/heads/no-such-branch-309", False)
+        self.assertIsNone(base)
+        self.assertIn("isn't a revision here", out[0])
+
+    def test_the_current_revision(self):
+        # HEAD has both files (in a checkout with history at all).
+        if cn.git("cat-file", "-e", "HEAD:infra/names/exceptions.json").returncode != 0:
+            self.skipTest("no committed exceptions.json at HEAD")
+        base, out = cn.base_exceptions("HEAD", True)
+        self.assertEqual(out, [])
+        self.assertIsInstance(base, dict)
+
 
 if __name__ == "__main__":
     unittest.main()

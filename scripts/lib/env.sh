@@ -78,6 +78,15 @@ adel() {
   mv "$tmp" "$ENV_FILE"
 }
 
+# The environment's resource groups by name (ADR-0017; infra/naming.bicep's
+# rg, containerEnvInfraRg and spotRg), in both forms: dev and experiments
+# use ADR-0017's, and the current prod keeps its legacy names until its
+# rebuild. The project group, which carries the experiment tag, comes first
+# in each form. A legacy Container Apps environment's own group is Azure's
+# ME_<environment>_<group>_<region>, which starts with LEGACY_INFRA_GROUP.
+PROJECT_GROUPS="usnm-core-rg-$ENV_NAME rg-usnm-$ENV_NAME"
+ENV_GROUPS="$PROJECT_GROUPS usnm-core-infra-rg-$ENV_NAME rg-usnm-$ENV_NAME-spot"
+LEGACY_INFRA_GROUP="ME_cae-usnm-${ENV_NAME}_"
 # One deployment stack per environment, at subscription scope (it holds the
 # resource groups). Resources dropped from the template are deleted; deny
 # settings stop anyone deleting a managed resource outside the stack.
@@ -178,12 +187,13 @@ ocr_vault_recover() {
 }
 # dev exists only while an experiment runs (#275; docs/operations.md, "Dev
 # environment lifecycle"), so its provision needs USNM_EXPERIMENT, the
-# experiment's issue number. The template tags rg-usnm-<env> with it and
-# with USNM_EXPERIMENT_STARTED, set here: the group's own `started` while
-# its `experiment` is the same, otherwise now. teardown.sh's provision sets
+# experiment's issue number. The template tags the project group
+# (usnm-core-rg-<env>) with it and with USNM_EXPERIMENT_STARTED, set here:
+# the group's own `started` while its `experiment` is the same, otherwise
+# now. teardown.sh's provision sets
 # NO_EXPERIMENT_CHECK, since it only takes the environment apart.
 experiment_marker() {
-  local exp out tagged started=""
+  local exp out g tagged started=""
   [ "$ENV_NAME" = dev ] || return 0
   # Teardown's provision reads and checks nothing: a bad marker or a tag it
   # can't read mustn't stop the detach.
@@ -194,13 +204,17 @@ experiment_marker() {
     return 1
   fi
   [[ $exp =~ ^[0-9]+$ ]] || { echo "error: USNM_EXPERIMENT is an issue number, not \"$exp\"" >&2; return 1; }
-  if out=$(az group show -n "rg-usnm-$ENV_NAME" --query "[tags.experiment, tags.started]" -o tsv 2>&1); then
-    IFS=$'\t' read -r tagged started <<< "$out"
-    [ "$tagged" = "$exp" ] || started=""
-  elif ! grep -qiE 'ResourceGroupNotFound|could not be found' <<< "$out"; then
-    echo "error: can't read the tags of rg-usnm-$ENV_NAME: $out" >&2
-    return 1
-  fi
+  # The project group in either name form: the first one that exists.
+  for g in $PROJECT_GROUPS; do
+    if out=$(az group show -n "$g" --query "[tags.experiment, tags.started]" -o tsv 2>&1); then
+      IFS=$'\t' read -r tagged started <<< "$out"
+      [ "$tagged" = "$exp" ] || started=""
+      break
+    elif ! grep -qiE 'ResourceGroupNotFound|could not be found' <<< "$out"; then
+      echo "error: can't read the tags of $g: $out" >&2
+      return 1
+    fi
+  done
   [ -n "$started" ] || started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   aset USNM_EXPERIMENT_STARTED "$started"
 }

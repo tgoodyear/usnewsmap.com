@@ -5,6 +5,7 @@ scripts/test_env_scripts.py). Nothing here reaches Azure.
 The stub answers from environment variables: STUB_STACK (the stack's
 resource count; unset: not found), STUB_GROUPS (group names, one per line),
 STUB_TAGS (the project group's "experiment<TAB>started"; unset: no group),
+STUB_TAGGED_GROUP (when set, the only group `group show` finds),
 STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
 STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
 message). For a job execution (scripts/start-job.sh, and
@@ -36,6 +37,8 @@ case "$1 $2" in
     esac ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
   "group show")
+    if [ -n "${STUB_TAGGED_GROUP:-}" ] && [ "$4" != "$STUB_TAGGED_GROUP" ]; then
+      echo "ERROR: (ResourceGroupNotFound) Resource group '$4' could not be found." >&2; exit 3; fi
     if [ -n "${STUB_TAGS+x}" ]; then printf '%b\n' "$STUB_TAGS"
     else echo "ERROR: (ResourceGroupNotFound) Resource group 'rg-usnm-dev' could not be found." >&2; exit 3; fi ;;
   "resource list") printf 'Microsoft.Storage/storageAccounts\tstusnmdev\n' ;;
@@ -168,6 +171,19 @@ class ExperimentMarker(Stubbed):
                      STUB_TAGS="275\\t2026-10-01T12:00:00Z")
         self.assertEqual(r.stdout.strip(), "2026-10-01T12:00:00Z")
 
+    def test_the_group_in_either_name_form(self):
+        # Dev's project group is usnm-core-rg-dev (ADR-0017); rg-usnm-dev is
+        # the legacy form, still looked for.
+        self.settings_file('USNM_EXPERIMENT="275"\n')
+        for group in ("usnm-core-rg-dev", "rg-usnm-dev"):
+            r = self.lib("experiment_marker; aget USNM_EXPERIMENT_STARTED", STUB_TAGGED_GROUP=group,
+                         STUB_TAGS="275\\t2026-10-01T12:00:00Z")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), "2026-10-01T12:00:00Z", group)
+        shows = [c for c in self.calls() if c.startswith("group show")]
+        self.assertTrue(shows[0].startswith("group show -n usnm-core-rg-dev "), shows)
+        self.assertTrue(shows[-1].startswith("group show -n rg-usnm-dev "), shows)
+
     def test_another_experiment_starts_again(self):
         self.settings_file('USNM_EXPERIMENT="301"\n')
         r = self.lib("experiment_marker; aget USNM_EXPERIMENT_STARTED",
@@ -254,6 +270,24 @@ class DevStatus(Stubbed):
         # dev's groups only, whatever their case: not prod's, not dev2's.
         self.assertIn("cost since 2026-10-01T12:00:00Z: 1.75 USD", r.stdout)
         self.assertTrue(re.search(r"group rg-usnm-dev: 1 resources", r.stdout))
+
+    def test_an_experiment_in_adr_0017_names(self):
+        cost = json.dumps({"properties": {
+            "columns": [{"name": "Cost"}, {"name": "ResourceGroupName"}, {"name": "Currency"}],
+            "rows": [[1.25, "usnm-core-rg-dev", "USD"], [0.5, "USNM-CORE-INFRA-RG-DEV", "USD"],
+                     [0.25, "rg-usnm-dev-spot", "USD"], [40.0, "rg-usnm-prod", "USD"],
+                     [0.1, "usnm-core-rg-dev2", "USD"]]}})
+        r = self.status(STUB_STACK="120", STUB_GROUPS="usnm-core-rg-dev\nusnm-core-infra-rg-dev",
+                        STUB_TAGGED_GROUP="usnm-core-rg-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",
+                        STUB_COST=cost)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("experiment #275, started 2026-10-01T12:00:00Z", r.stdout)
+        self.assertIn("cost since 2026-10-01T12:00:00Z: 2 USD", r.stdout)
+        self.assertTrue(re.search(r"group usnm-core-infra-rg-dev: 1 resources", r.stdout))
+        query = [c for c in self.calls() if c.startswith("group list")][0]
+        for g in ("usnm-core-rg-dev", "usnm-core-infra-rg-dev", "rg-usnm-dev-spot", "rg-usnm-dev",
+                  "ME_cae-usnm-dev_"):
+            self.assertIn(f"'{g}'", query)
 
     def test_cost_without_the_reader_role_is_a_warning(self):
         r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",

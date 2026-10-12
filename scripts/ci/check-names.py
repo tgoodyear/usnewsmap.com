@@ -2,7 +2,7 @@
 """Check resource names against ADR-0017 (docs/design/adr/0017-resource-naming.md,
 "Enforcement"), offline:
 
-    scripts/ci/check-names.py [--envs prod,dev,xabcd] [--bicep bicep] [--base origin/main]
+    scripts/ci/check-names.py [--envs prod,dev,xabcd] [--bicep bicep] [--base origin/main] [--require-base]
 
 1. Evaluates names() from infra/naming.bicep with `bicep build-params
    infra/names/check.bicepparam` (no Azure): prod pinned to its legacy
@@ -20,10 +20,13 @@
 4. exceptions.json: keys sorted, each with a reason, the ADR section and an
    `until` (phase-0 to phase-4, never, or an issue #N); and with --base, no
    key that the base revision's file doesn't have (the list only shrinks).
+   A --base that doesn't resolve or can't be read is a problem; CI also
+   passes --require-base, so the check can't run without one.
 5. infra/main.bicep and infra/modules/*.bicep build no resource name from a
    string containing usnm or usnewsmap (name, roleName, displayName,
    groupShortName, SyntheticMonitorId), and every guid() seed containing
-   usnm is one of the frozen seeds below.
+   usnm is one of the frozen seeds below. Each file is read whole, with its
+   comments blanked, so a value or a guid() call split over lines counts.
 
 Standard library only. Exits 1 listing every problem.
 """
@@ -62,20 +65,71 @@ FROZEN_SEEDS = {
 
 # The properties that hold a resource's name or display name.
 NAME_PROPS = ("name", "roleName", "displayName", "groupShortName", "SyntheticMonitorId")
-NAME_PROP = re.compile(r"(?:^\s*|[{,]\s*)(" + "|".join(NAME_PROPS) + r"):\s*")
+NAME_PROP = re.compile(r"(?:^[ \t]*|[{,]\s*)(" + "|".join(NAME_PROPS) + r")\s*:\s*", re.M)
 LITERAL = re.compile(r"'((?:[^'\\]|\\.)*)'")
 
 
+def string_end(text: str, i: int) -> int:
+    """The index just past the string literal that starts at text[i] ('...'
+    with backslash escapes, or a multi-line '''...''')."""
+    if text.startswith("'''", i):
+        j = text.find("'''", i + 3)
+        return len(text) if j < 0 else j + 3
+    j = i + 1
+    while j < len(text):
+        if text[j] == "\\":
+            j += 2
+            continue
+        if text[j] == "'":
+            return j + 1
+        j += 1
+    return len(text)
+
+
+def mask_comments(text: str) -> str:
+    """`text` with its // and /* */ comments blanked: the same length and the
+    same line breaks, so offsets and line numbers still match the file.
+    String literals are kept, comment markers inside them included."""
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "'":
+            j = string_end(text, i)
+            out.append(text[i:j])
+            i = j
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            j = len(text) if j < 0 else j
+            out.append(" " * (j - i))
+            i = j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = len(text) if j < 0 else j + 2
+            out.append(re.sub(r"[^\n]", " ", text[i:j]))
+            i = j
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def guid_calls(text: str) -> list[tuple[int, int]]:
-    """Spans of the guid(...) calls in `text`, with balanced parentheses."""
+    """Spans of the guid(...) calls in `text`, with balanced parentheses
+    (ignoring those inside string literals), across lines."""
     spans = []
-    for m in re.finditer(r"\bguid\(", text):
+    for m in re.finditer(r"\bguid\s*\(", text):
         depth, i = 1, m.end()
         while i < len(text) and depth:
+            if text[i] == "'":
+                i = string_end(text, i)
+                continue
             depth += {"(": 1, ")": -1}.get(text[i], 0)
             i += 1
         spans.append((m.start(), i))
     return spans
+
+
+def line_of(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
 
 
 def evaluate(bicep: str, envs: str) -> dict:
@@ -200,19 +254,25 @@ def check_prod(pinned: dict, expected: dict) -> list[str]:
     return out
 
 
+# A line ending in one of these, or a next line starting with ? or :, goes on
+# with the same expression (a ternary or an operator split across lines).
+CONTINUES_AFTER = "?:([{,+-*/%&|=!<>"
+CONTINUES_WITH = "?:"
+
+
 def value_at(code: str, i: int) -> str:
-    """The expression starting at code[i]: up to a top-level , or } or the line's end."""
-    depth, quoted, j = 0, False, i
+    """The expression starting at code[i], across lines: up to a top-level
+    , or a closing bracket, or the end of its last line. A value that starts
+    on the next line (`name:` then a newline) is read from there, and a
+    ternary or an operator split over lines is read to its end."""
+    depth, j, seen = 0, i, False
     while j < len(code):
         c = code[j]
-        if quoted:
-            if c == "\\":
-                j += 1
-            elif c == "'":
-                quoted = False
-        elif c == "'":
-            quoted = True
-        elif c in "([{":
+        if c == "'":
+            j = string_end(code, j)
+            seen = True
+            continue
+        if c in "([{":
             depth += 1
         elif c in ")]}":
             if depth == 0:
@@ -220,41 +280,76 @@ def value_at(code: str, i: int) -> str:
             depth -= 1
         elif c == "," and depth == 0:
             break
+        elif c == "\n" and depth == 0 and seen:
+            before = code[i:j].rstrip()
+            after = code[j:].lstrip()
+            if not (before and before[-1] in CONTINUES_AFTER) and not after.startswith(tuple(CONTINUES_WITH)):
+                break
+        if not c.isspace():
+            seen = True
         j += 1
     return code[i:j]
 
 
 def check_sources(paths: list[Path]) -> list[str]:
-    """Resource names built from a usnm string, and unknown guid() seeds."""
+    """Resource names built from a usnm string, and unknown guid() seeds. Each
+    file is read whole, so a property or a guid() call split over lines is
+    checked like one on a single line; line numbers are the file's."""
     out = []
     for path in paths:
         rel = path.relative_to(ROOT)
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if line.lstrip().startswith("//"):
-                continue
-            code = line
-            calls = guid_calls(code)
-            for start, end in calls:
-                for seed in LITERAL.findall(code[start:end]):
-                    if ("usnm" in seed or "usnewsmap" in seed) and seed not in FROZEN_SEEDS:
-                        out.append(f"{rel}:{n}: guid() seed {seed!r} isn't a known frozen seed")
-            for start, end in reversed(calls):
-                code = code[:start] + code[end:]
-            for m in NAME_PROP.finditer(code):
-                for lit in LITERAL.findall(value_at(code, m.end())):
-                    if "usnm" in lit or "usnewsmap" in lit:
-                        # The Cosmos database is a child, named in code.
-                        if m.group(1) == "name" and lit == "usnm":
-                            continue
-                        out.append(f"{rel}:{n}: {m.group(1)} built from {lit!r}: take it from "
-                                   "names() in infra/naming.bicep (ADR-0017)")
+        code = mask_comments(path.read_text(encoding="utf-8"))
+        calls = guid_calls(code)
+        for start, end in calls:
+            for m in LITERAL.finditer(code, start, end):
+                seed = m.group(1)
+                if ("usnm" in seed or "usnewsmap" in seed) and seed not in FROZEN_SEEDS:
+                    out.append(f"{rel}:{line_of(code, m.start())}: guid() seed {seed!r} isn't a known "
+                               "frozen seed")
+        # A guid() seed is not a name: each call becomes a placeholder value
+        # of the same length and line breaks, so offsets still match.
+        for start, end in calls:
+            code = code[:start] + "_" + re.sub(r"[^\n]", " ", code[start + 1:end]) + code[end:]
+        for m in NAME_PROP.finditer(code):
+            for lit in LITERAL.findall(value_at(code, m.end())):
+                if "usnm" in lit or "usnewsmap" in lit:
+                    # The Cosmos database is a child, named in code.
+                    if m.group(1) == "name" and lit == "usnm":
+                        continue
+                    out.append(f"{rel}:{line_of(code, m.start(1))}: {m.group(1)} built from {lit!r}: "
+                               "take it from names() in infra/naming.bicep (ADR-0017)")
     return out
 
 
-def git_show(ref: str, path: Path) -> str | None:
-    r = subprocess.run(["git", "show", f"{ref}:{path.relative_to(ROOT)}"], cwd=ROOT,
-                       capture_output=True, text=True)
-    return r.stdout if r.returncode == 0 else None
+def git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+
+
+def base_exceptions(ref: str, required: bool) -> tuple[dict | None, list[str]]:
+    """The base revision's exceptions.json, for the shrink check, and any
+    problem reading it. Without --base there's nothing to compare (a local
+    run), unless --require-base (CI), where that is a problem. A revision
+    that doesn't resolve, or whose file doesn't parse, is always a problem.
+    A base without the file is accepted only while it has no naming.bicep
+    either (the change that adds both)."""
+    if not ref:
+        return None, (["--require-base: no --base revision given, so the exceptions can't be "
+                       "checked to only shrink"] if required else [])
+    if git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode != 0:
+        return None, [f"--base {ref} isn't a revision here (was it fetched?): the exceptions can't "
+                      "be checked to only shrink"]
+    rel = EXCEPTIONS.relative_to(ROOT)
+    shown = git("show", f"{ref}:{rel}")
+    if shown.returncode != 0:
+        if git("cat-file", "-e", f"{ref}:infra/naming.bicep").returncode == 0:
+            return None, [f"--base {ref} has infra/naming.bicep but no readable {rel}: "
+                          f"{shown.stderr.strip()}"]
+        print(f"note: {ref} predates {rel} (no infra/naming.bicep either); nothing to shrink from")
+        return None, []
+    try:
+        return json.loads(shown.stdout), []
+    except json.JSONDecodeError as e:
+        return None, [f"--base {ref}: {rel} doesn't parse: {e}"]
 
 
 def main() -> int:
@@ -264,6 +359,8 @@ def main() -> int:
     ap.add_argument("--bicep", default="bicep", help="the Bicep CLI (CI's pinned version)")
     ap.add_argument("--base", default="",
                     help="a git revision whose exceptions.json the current one may only shrink from")
+    ap.add_argument("--require-base", action="store_true",
+                    help="fail unless --base names a revision whose exceptions.json can be read (CI)")
     a = ap.parse_args()
     envs = [e.strip() for e in a.envs.split(",") if e.strip()]
     bad = [e for e in envs if not ENV_RE.match(e)]
@@ -272,14 +369,8 @@ def main() -> int:
 
     p = evaluate(a.bicep, ",".join(envs))
     exceptions = json.loads(EXCEPTIONS.read_text(encoding="utf-8"))
-    base = None
-    if a.base:
-        text = git_show(a.base, EXCEPTIONS)
-        if text is None:
-            print(f"note: {a.base} has no {EXCEPTIONS.relative_to(ROOT)}; not checking that it shrinks")
-        else:
-            base = json.loads(text)
-    problems = check_exceptions(exceptions, base)
+    base, problems = base_exceptions(a.base, a.require_base)
+    problems += check_exceptions(exceptions, base)
     problems += check_names(p["prodPinned"], "prod", p["legacyProdSuffix"], True, p, exceptions)
     problems += check_prod(p["prodPinned"], json.loads(PROD.read_text(encoding="utf-8")))
     for env in envs:
@@ -294,7 +385,8 @@ def main() -> int:
         return 1
     n = len(p["prodPinned"])
     print(f"ok: {n} names for prod (pinned) and in ADR-0017's form for {', '.join(envs)}; "
-          f"{len(exceptions)} exceptions; {len(sources)} templates")
+          f"{len(exceptions)} exceptions; {len(sources)} templates"
+          + (f"; exceptions only shrink against {a.base}" if base is not None else ""))
     return 0
 
 

@@ -395,14 +395,21 @@ jobs:
       # Resource names (ADR-0017): names() in infra/naming.bicep against the
       # rules, infra/names/exceptions.json (which only shrinks against the
       # base branch) and infra/names/prod.json, and no module building a
-      # name of its own.
+      # name of its own. The base branch's tip is fetched into a ref of its
+      # own (one commit is enough: only its exceptions.json is read). A
+      # fetch that still fails after retries fails the step, and so does a
+      # base check-names.py can't read (--require-base), so the shrink check
+      # never drops out quietly.
       - name: Resource names follow ADR-0017 and prod's are unchanged
         env:
           BASE_REF: ${{ github.base_ref || 'main' }}
         run: |
-          base=""
-          if git fetch -q --depth=1 origin "$BASE_REF"; then base=FETCH_HEAD; fi
-          scripts/ci/check-names.py ${base:+--base "$base"}
+          for try in 1 2 3 4; do
+            git fetch --no-tags --depth=1 origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF" && break
+            if [ "$try" = 4 ]; then echo "::error::can't fetch the base branch $BASE_REF"; exit 1; fi
+            sleep $((try * 5))
+          done
+          scripts/ci/check-names.py --require-base --base "refs/remotes/origin/$BASE_REF"
           python3 -m unittest -v scripts/ci/test_check_names.py
       # The workbooks are loaded as text, so Bicep doesn't parse them.
       - name: The workbook definitions parse and name the workspace placeholder

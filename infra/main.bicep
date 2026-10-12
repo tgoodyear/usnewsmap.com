@@ -8,7 +8,7 @@
 targetScope = 'subscription'
 
 import { guardrailPolicyNames } from 'guardrails.bicep'
-import { checkedEnvName, names } from 'naming.bicep'
+import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
 
 @minLength(2)
 @maxLength(5)
@@ -253,12 +253,11 @@ var tags = {
 }
 var emails = filter(map(split(alertEmails, ','), e => trim(e)), e => !empty(e))
 var suffix = take(uniqueString(subscription().id, env), 6)
-// Every resource name (ADR-0017), from infra/naming.bicep. Phase 0 of
-// ADR-0017 changes no name, so every environment keeps its legacy names for
-// now. ADR-0017 pins them to the current prod alone (suffix ==
-// legacyProdSuffix), so that dev and experiments come up conventional; that
-// switch is a separate change, made while no dev resources exist (#309).
-var pinnedNames = true
+// Every resource name (ADR-0017), from infra/naming.bicep. Only the current
+// prod (its suffix in its subscription, legacyProdSuffix) keeps its legacy
+// names; dev, experiments and a prod rebuilt in another subscription come
+// up in ADR-0017's form (#309; dev held nothing when this changed).
+var pinnedNames = suffix == legacyProdSuffix
 var n = names(env, suffix, pinnedNames)
 // The Quickwit image (ADR-0013, 08 §8.6). An environment listed in
 // quickwit-image.json runs our build of Quickwit from its own registry,
