@@ -96,7 +96,7 @@ done
 [ -z "$SCAN_CACHE_URL" ] || [[ $SCAN_CACHE_URL =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || die "--scan-cache-url: http://HOST:PORT"
 [ -z "$PACING" ] || [[ $PACING =~ ^[1-9][0-9]?$ ]] || die "--pacing-multiplier: 1 to 99"
 [ -z "$PAGE_TIMEOUT" ] || [[ $PAGE_TIMEOUT =~ ^[1-9][0-9]{1,4}$ ]] || die "--page-timeout-secs: 10 to 99999"
-[ -z "$PUBLISH_FETCHED" ] || [[ $PUBLISH_FETCHED =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "--publish-fetched: a manifest version (pages-vYYYYMMDD-N)"
+[ -z "$PUBLISH_FETCHED" ] || [[ $PUBLISH_FETCHED =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "--publish-fetched: a manifest version (pages-vYYYYMMDD-N)"
 [ -z "$PUBLISH_FETCHED" ] || [ -n "$SCAN_CACHE_URL" ] || die "--publish-fetched needs --scan-cache-url"
 [ "$ROLLBACK" = false ] || [ "$ENABLE" = false ] || die "--rollback and --enable don't go together"
 

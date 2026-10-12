@@ -94,6 +94,9 @@ impl Fold {
         match page {
             Some(p) => {
                 self.pages.insert(p);
+                if self.pages.len() > fetched::MAX_PAGES {
+                    bail!("the index lists more than {} scans", fetched::MAX_PAGES);
+                }
             }
             None => self.skipped += 1,
         }
@@ -103,16 +106,15 @@ impl Fold {
     fn chunk(&mut self, mut bytes: &[u8]) -> anyhow::Result<()> {
         while let Some(i) = bytes.iter().position(|&b| b == b'\n') {
             let (head, rest) = bytes.split_at(i);
+            if self.partial.len() + head.len() > MAX_LINE {
+                bail!("an index line is longer than {MAX_LINE} bytes");
+            }
             if self.partial.is_empty() {
                 self.line(head)?;
             } else {
                 self.partial.extend_from_slice(head);
                 let line = std::mem::take(&mut self.partial);
-                if line.len() <= MAX_LINE {
-                    self.line(&line)?;
-                } else {
-                    self.skipped += 1;
-                }
+                self.line(&line)?;
             }
             bytes = &rest[1..];
         }
@@ -274,5 +276,9 @@ mod tests {
         assert_eq!((f.lines, f.pages.len()), (1, 1));
         let mut f = Fold::default();
         assert!(f.chunk(&vec![b'x'; MAX_LINE + 1]).is_err());
+        let mut long = vec![b'x'; MAX_LINE + 1];
+        long.push(b'\n');
+        let mut f = Fold::default();
+        assert!(f.chunk(&long).is_err());
     }
 }
