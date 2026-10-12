@@ -89,7 +89,7 @@ struct EngineArgs {
     #[arg(long, default_value_t = 1)]
     threads_per_page: u32,
     /// Give up on a page after this long.
-    #[arg(long, default_value_t = 600)]
+    #[arg(long, env = "USNM_OCR_PAGE_TIMEOUT_SECS", default_value_t = 600)]
     page_timeout_secs: u64,
 }
 
@@ -235,7 +235,7 @@ enum Command {
         #[arg(long, env = "USNM_PREFETCH_MAX_TOTAL_BYTES")]
         max_total_bytes: Option<u64>,
         /// Pages in flight at once; they share the pacers.
-        #[arg(long, env = "USNM_PREFETCH_CONCURRENCY", default_value_t = 2)]
+        #[arg(long, env = "USNM_PREFETCH_CONCURRENCY", default_value_t = 4)]
         concurrency: usize,
         /// The lock that keeps it to one fetching process (default
         /// `<out>/.prefetch.lock`).

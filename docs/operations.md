@@ -697,7 +697,13 @@ scripts/logs.sh --env dev --query-name titles-archive --span 1h
 
 **Cost of standing up:** two provisions and two or three `az acr build` runs, a few cents. Reading the 1% set back from Cold is about $0.71 ($0.03 per GB retrieved) plus about $0.24 of private endpoint processing. Then the idle floor (about $2 a day) and whatever the experiment runs. **Time:** about 40 to 60 minutes to a running environment with images. Data takes minutes for a set, about an hour to curate the 1% from the archive, and a few minutes to seed the titles from the archive (up to 8 hours for a titles-sync when there is no copy yet, or the catalog needs titles the copy lacks).
 
-**Tear it down** once the results are saved (reports copied out of `qw-bench/runs/`, logs queried, and, if titles-sync ran, its copy in the archive: the `titles-archive` query shows `title records in the raw store`, or run `scripts/start-job.sh --env dev --job INGEST_JOB -- titles-archive`):
+**Tear it down** once the results are saved: reports copied out of `qw-bench/runs/`, logs queried, and, if titles-sync ran with the archival account, its copy in the archive. Save that copy first, and don't start the teardown until the command below exits 0:
+
+```sh
+scripts/start-job.sh --env dev --job INGEST_JOB --wait-mins 20 -- titles-archive
+```
+
+Without `--wait-mins`, `start-job.sh` returns as soon as Azure accepts the execution, before anything is written, and a teardown started then would delete the record cache before the copy is made. With it, the script waits for the execution and exits 0 only once it has `Succeeded`, so the copy is in `raw/titles/` (or the newest copy there already held the same records, and nothing was written). It exits 1 if the execution ends `Failed`, `Stopped` or `Degraded` or is still running after 20 minutes: then don't tear down. Check the job's log (`scripts/logs.sh --env dev --query-name job-executions`; without `USNM_ARCHIVE_ACCOUNT` the job has no raw store, and the command fails with `titles-archive needs USNM_RAW_URL`), fix it and run it again. The command is create-only and skips a copy the archive already has, so running it when titles-sync's own copy succeeded costs one short execution. Then:
 
 ```sh
 scripts/teardown.sh --env dev
@@ -1026,7 +1032,7 @@ Check it with `pct exec 211 -- cat /tank/ocr/scans/status-full.json` and `pct ex
 
 ## OCR pickup: ocr-sync (#296)
 
-`usnm-ingest ocr-sync` takes the nodes' output into the lake ([12 §12.5 Step 8](design/12-onprem-ocr-pipeline.md)). It runs hourly at minute 17 (`USNM_OCR_SYNC_CRON`; `manual` turns the schedule off) as `usnm-ocrsync-caj-<env>` (saved as `OCR_SYNC_JOB`), on the ingest image as `id-usnm-ingest`, 0.5 vCPU and 1 GiB. The provision creates the job only when `USNM_OCR_NODES` and the ingest jobs are on, together with the exchange account's `ocr-quarantine` container, the identity's grant on it and two alerts. Runs take the Cosmos lock `ops/ocr-sync`, so two never overlap. Logs carry page ids, paths and reason codes, never text.
+`usnm-ingest ocr-sync` takes the nodes' output into the lake ([12 §12.5 Step 8](design/12-onprem-ocr-pipeline.md)). It runs hourly at minute 17 (`USNM_OCR_SYNC_CRON`; `manual` turns the schedule off) as `usnm-ocrs-caj-<env>` (saved as `OCR_SYNC_JOB`; `usnm-ocrsync-caj-<env>` before the October 2026 rename, #309), on the ingest image as `id-usnm-ingest`, 0.5 vCPU and 1 GiB. The provision creates the job only when `USNM_OCR_NODES` and the ingest jobs are on, together with the exchange account's `ocr-quarantine` container, the identity's grant on it and two alerts. Runs take the Cosmos lock `ops/ocr-sync`, so two never overlap. Logs carry page ids, paths and reason codes, never text.
 
 Each run:
 
@@ -1052,6 +1058,8 @@ scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-requeue --cause dequeu
 **Seeding** ([12 §12.5 Step 10](design/12-onprem-ocr-pipeline.md)) is off while `USNM_OCR_SEED_PLAN` is empty. With a plan, each run ranks (batch, title) units by their summed damage over 0.1 from Step 6's tables for the published version, and queues the pages at or above the minimum damage (`USNM_OCR_SEED_MIN_DAMAGE`, default 0.25), unit by unit in issue order. Run `ocr-damage` on the version first: the seeder refuses to run without its tables. It keeps at most `USNM_OCR_BULK_WINDOW` bulk pages outstanding: pages in the ledger with no result yet, or the queue's message count if that is larger. It tops up only when `ocr-bulk` holds fewer than `USNM_OCR_BULK_REFILL_BELOW` messages (default half the window). A window of 0 (the default) is two days of pages at the rate `ocr-sync` imported them over the last week, at least 500. Bulk pages that `ocr-enqueue` and `ocr-requeue` queue count toward the window, but the window doesn't limit them. Other settings: `USNM_OCR_SEED_LANGUAGES` (ISO 639-3, default the Tesseract pilot's `ces,deu,eng,pol,rus,srp`), `USNM_OCR_SEED_BATCHES`, `USNM_OCR_SEED_YEARS` (`1890` or `1850-1919`), `USNM_OCR_SEED_MAX_PAGES` (the plan's budget), `USNM_OCR_SEED_PILOT` (one language or a batch list, and a budget of at most 10,000) and `USNM_OCR_SEED_SKIP_AMERICAN_STORIES` (off; also skips pages whose American Stories text scores under the minimum). Set them with `scripts/settings.sh` and provision.
 
 It skips Japanese titles and pages already in the ledger, and copies of a page that another batch's copy wins (the release's duplicate rule). A page of the plan outstanding for 14 days, or dead-lettered with cause `dequeue_count`, is queued again at most 3 times. One dead-lettered as `unroutable` is queued again after 6 hours, doubling per cycle up to 48. A page whose message a failed run never sent (`not_sent`) goes out in the next run. Each batch's ranked units are stored under `curated/ocr-local/seed/rank/`, and the units a plan has finished under `curated/ocr-local/seed/plans/<plan>/done/`. A run that reaches its time limit before every batch is ranked queues no new pages; the next run continues from there.
+
+**Seeding from fetched scans** (Step 11, #368). With `USNM_OCR_SEED_SOURCE=fetched` the plan's new pages come from the prefetch manifest instead of the ranked units: the keep set of `audit/damage/v2/prefetch/<version>/manifest.parquet` in the curated store (`USNM_OCR_SEED_MANIFEST`, default the published version), in the order the fetcher takes it (German before the 1920s first, each issue together), in the languages, years and damage asked for, and only pages on the newest fetched list in `ocr-out/fetched/<version>/`. A node publishes that list from the scan server's index (`usnm-ocr-worker publish-fetched`), because the job can't reach the LAN. The list only narrows the manifest's pages, so a node can't add a page. The window, budget, ledger, retries and skips are the same as above. A MARC code in `USNM_OCR_SEED_LANGUAGES` (`ger`) is read as its ISO code (`deu`).
 
 `ocr-seed` is the same step on its own. Use `--dry-run` to print what it would queue as JSON, page ids per unit included, without writing anything. Its flags override the settings. For the pilot (Step 11), preview it, then set the plan:
 
@@ -1081,7 +1089,7 @@ Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismat
 scripts/start-job.sh --env prod --job OCR_SYNC_JOB -- ocr-sync --report
 ```
 
-**Alerts** (with alert emails), severity 3: `usnm-ocrsync-failed-alert-<env>` when an execution fails, and `usnm-ocrsync-backlog-alert-<env>` when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
+**Alerts** (with alert emails), severity 3: `usnm-ocrs-failed-alert-<env>` when an execution fails, and `usnm-ocrs-backlog-alert-<env>` when the last run left a part in `ocr-out` older than 72 hours. `ocr-out` deletes blobs 30 days after their last change, so a backlog left that long is lost.
 
 ## Our OCR in releases (#296)
 
