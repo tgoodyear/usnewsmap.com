@@ -87,7 +87,7 @@ recorded=$(aget AZURE_SUBSCRIPTION_ID)
   die "$ENV_NAME's settings are for subscription $recorded; moving is bootstrap's (--move)"
 az account set --subscription "$recorded" ||
   die "can't select subscription $recorded (az login to its tenant?)"
-[ -z "$VNET" ] || aset USNM_VNET_ADDRESS_PREFIX "$VNET"
+[ -z "$VNET" ] || { valid_vnet_prefix "$VNET" || exit 2; aset USNM_VNET_ADDRESS_PREFIX "$VNET"; }
 [ -n "$(aget USNM_VNET_ADDRESS_PREFIX)" ] ||
   die "no VNet address space for $ENV_NAME: pass --vnet-address-prefix CIDR (a private IPv4 block, /26 or larger)"
 aset USNM_EXPERIMENT "$EXPERIMENT"

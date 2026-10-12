@@ -29,7 +29,11 @@ o='[0-9]{1,3}'
 quad="10\\.$o\\.$o\\.$o|172\\.(1[6-9]|2[0-9]|3[01])\\.$o\\.$o|192\\.168\\.$o\\.$o"
 pattern="(^|[^0-9.])($quad)([^0-9.]|\\.([^0-9]|$)|$)"
 
-found=$(git -C "$REPO" grep -I -n -E "$pattern" || true)
+# git grep exits 1 for no match; anything above that (no repository, an
+# unreadable file) fails the check rather than passing it unscanned.
+rc=0
+found=$(git -C "$REPO" grep -I -n -E "$pattern") || rc=$?
+[ "$rc" -le 1 ] || { echo "error: git grep failed ($rc) in $REPO; nothing was scanned" >&2; exit 2; }
 if [ -n "$found" ]; then
   echo "Private (RFC 1918) addresses in tracked files. Use a host name, a constant or an environment variable instead:"
   echo "$found"

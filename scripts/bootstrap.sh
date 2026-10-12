@@ -117,7 +117,7 @@ aset USNM_GITHUB_REPO "$REPO"
 aset USNM_GITHUB_REPO_IDS \
   "$(gh api "repos/$REPO" --jq '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"')"
 [ -n "$DOMAIN" ] && aset USNM_DNS_ZONE "$DOMAIN"
-[ -z "$VNET" ] || aset USNM_VNET_ADDRESS_PREFIX "$VNET"
+[ -z "$VNET" ] || { valid_vnet_prefix "$VNET" || exit 2; aset USNM_VNET_ADDRESS_PREFIX "$VNET"; }
 [ -n "$(aget USNM_VNET_ADDRESS_PREFIX)" ] ||
   die "no VNet address space for $ENV_NAME: pass --vnet-address-prefix CIDR (a private IPv4 block, /26 or larger)"
 if [ -n "$EMAIL" ]; then
