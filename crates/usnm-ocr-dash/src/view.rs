@@ -400,7 +400,7 @@ pub fn build(
                     doc_id: r.doc_id.to_string(),
                     lang: r.lang.to_string(),
                     group: group_name(r.group),
-                    fetched: fetch.fetched.contains(&r.doc_id),
+                    fetched: fetch.fetched.contains_key(&r.doc_id),
                     in_flight: in_flight.contains(&*r.doc_id),
                 })
                 .collect(),

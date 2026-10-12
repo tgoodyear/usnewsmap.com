@@ -1110,9 +1110,22 @@ pub async fn run(
         opts.item_cooloff,
         opts.item_max_cooloffs,
     )?;
-    // The last page fetched names an item that answered, to check an
-    // item error against before any item answers in this run.
-    if let Some(key) = last_fetched(&opts.out.join(format!("index-{}.jsonl", tag(opts.size)))) {
+    // The last page fetched, in the index of any set this run fetches,
+    // names an item that answered, to check an item error against before
+    // any item answers in this run.
+    let mut tags = Vec::new();
+    if opts.sets.has(Set::Keep) {
+        tags.push(tag(opts.size));
+    }
+    if opts.sets.has(Set::Buffer) {
+        tags.push(tag(opts.buffer_size));
+    }
+    tags.dedup();
+    if let Some((_, key)) = tags
+        .iter()
+        .filter_map(|t| last_fetched(&opts.out.join(format!("index-{t}.jsonl"))))
+        .max_by_key(|(at, _)| *at)
+    {
         loc.set_known_good(loc.item_url(&key));
     }
     let run = Arc::new(Run {
@@ -1267,8 +1280,9 @@ pub async fn run(
     Ok(status)
 }
 
-/// The page of the last line of an index file, read from its end.
-fn last_fetched(path: &Path) -> Option<PageKey> {
+/// When the last line of an index file was fetched, and its page, read
+/// from the file's end.
+fn last_fetched(path: &Path) -> Option<(DateTime<Utc>, PageKey)> {
     use std::io::{Read as _, Seek as _, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
@@ -1280,7 +1294,7 @@ fn last_fetched(path: &Path) -> Option<PageKey> {
         .lines()
         .rev()
         .filter_map(|l| serde_json::from_str::<Sidecar>(l).ok())
-        .find_map(|s| PageKey::from_doc_id(&s.doc_id).ok())
+        .find_map(|s| Some((s.fetched_at, PageKey::from_doc_id(&s.doc_id).ok()?)))
 }
 
 /// What a sample says about the whole manifest.

@@ -349,8 +349,9 @@ impl LocClient {
     /// rather than a hold (the module notes), and if not, how long a
     /// failed check asked to wait. Records it if it is.
     async fn item_error(&self, url: &str, title: &str) -> Result<(), Option<Duration>> {
-        let check = {
-            let mut h = self.health.lock().expect("health lock");
+        /// Whether item errors from too many titles, with this one, are
+        /// inside the window.
+        fn too_many_titles(h: &mut ApiHealth, title: &str) -> bool {
             let now = Instant::now();
             while h
                 .item_errors
@@ -367,8 +368,16 @@ impl LocClient {
                     titles = titles.len(),
                     "item errors from several titles: holding instead"
                 );
+                return true;
+            }
+            false
+        }
+        let check = {
+            let mut h = self.health.lock().expect("health lock");
+            if too_many_titles(&mut h, title) {
                 return Err(None);
             }
+            let now = Instant::now();
             match &h.known_good {
                 Some((good, _)) if good == url => return Err(None),
                 Some((_, Some(at))) if now.duration_since(*at) <= ITEM_ERROR_OK_WITHIN => None,
@@ -382,11 +391,13 @@ impl LocClient {
                 Probe::Failed(d) => return Err(d),
             }
         }
-        self.health
-            .lock()
-            .expect("health lock")
-            .item_errors
-            .push_back((Instant::now(), title.to_owned()));
+        // Checked again with the record, under one lock: callers that
+        // waited on probes together can't all pass the titles rule.
+        let mut h = self.health.lock().expect("health lock");
+        if too_many_titles(&mut h, title) {
+            return Err(None);
+        }
+        h.item_errors.push_back((Instant::now(), title.to_owned()));
         Ok(())
     }
 
@@ -1047,6 +1058,37 @@ mod tests {
         // A third title inside the window: loc.gov, not the items.
         let e = item(&loc, &page("sn4", "1904-07-30")).await.unwrap_err();
         assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+        assert!(loc.held_until().is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_item_errors_after_a_restart_still_count_titles() {
+        let (root, _) = items_loc(vec![
+            ("sn1/1904-07-29", Answer::Ok),
+            ("sn2/1904-07-30", Answer::Bare503),
+            ("sn3/1904-07-30", Answer::Bare503),
+            ("sn4/1904-07-30", Answer::Bare503),
+            ("sn5/1904-07-30", Answer::Bare503),
+        ])
+        .await;
+        let loc = Arc::new(items_client(&root, 1));
+        // Known good from an earlier run: each caller checks it first.
+        loc.set_known_good(loc.item_url(&page("sn1", "1904-07-29")));
+        let mut tasks = Vec::new();
+        for t in ["sn2", "sn3", "sn4", "sn5"] {
+            let loc = loc.clone();
+            tasks.push(tokio::spawn(async move {
+                matches!(
+                    item(&loc, &page(t, "1904-07-30")).await,
+                    Err(FetchError::Item(_))
+                )
+            }));
+        }
+        let mut items = 0;
+        for t in tasks {
+            items += usize::from(t.await.unwrap());
+        }
+        assert_eq!(items, ITEM_ERROR_TITLES - 1);
         assert!(loc.held_until().is_some());
     }
 
