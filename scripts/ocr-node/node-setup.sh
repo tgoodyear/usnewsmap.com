@@ -299,7 +299,10 @@ step "Weekly reboot window"
 # /usr/local/sbin/usnm-ocr-reboot-if-needed (scripts/ocr-node/reboot-if-needed.sh,
 # which onboard.sh copies beside this script), which reboots only when
 # `dnf needs-restarting -r` says an update needs it, after stopping the
-# worker. Each node has its own day, so they are never down together.
+# worker (and the Serial Set fetch, where it runs); at boot,
+# usnm-ocr-reboot-resume.service starts again what it stopped that
+# wouldn't start by itself. Each node has its own day, so they are never
+# down together.
 # Without --reboot-day, a node keeps the day it has; a new node needs one.
 reboot_timer=/etc/systemd/system/usnm-ocr-reboot.timer
 if [ -z "$REBOOT_DAY" ]; then
@@ -339,8 +342,21 @@ Persistent=false
 
 [Install]
 WantedBy=timers.target" && reboot_changed=true
+put_conf /etc/systemd/system/usnm-ocr-reboot-resume.service '# Written by scripts/ocr-node/node-setup.sh (#296).
+[Unit]
+Description=Start again what the OCR node stopped for its reboot window
+ConditionPathExists=/var/lib/usnm-ocr-reboot/resume
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usnm-ocr-reboot-if-needed --resume
+SyslogIdentifier=usnm-ocr-reboot
+
+[Install]
+WantedBy=multi-user.target' || true
 systemctl daemon-reload
-systemctl enable usnm-ocr-reboot.timer > /dev/null 2>&1
+systemctl enable usnm-ocr-reboot.timer usnm-ocr-reboot-resume.service > /dev/null 2>&1
 if [ "$reboot_changed" = true ]; then
   systemctl restart usnm-ocr-reboot.timer
 else

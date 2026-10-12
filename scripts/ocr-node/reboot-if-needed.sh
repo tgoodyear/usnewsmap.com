@@ -4,15 +4,22 @@
 # from usnm-ocr-reboot.service, which usnm-ocr-reboot.timer starts once a
 # week on the node's own day (node-setup.sh --reboot-day).
 #
-#   usnm-ocr-reboot-if-needed [--drain-timeout SECS] [--dnf-wait SECS] [--dry-run]
+#   usnm-ocr-reboot-if-needed [--drain-timeout SECS] [--dnf-wait SECS] [--dry-run] [--resume]
 #
 # dnf-automatic installs every update daily but never reboots
 # (node-setup.sh sets reboot = never). This reboots only when
 # `dnf needs-restarting -r` says an update needs it (the kernel, glibc,
 # systemd and the like). It waits for a dnf-automatic run still going (up
 # to --dnf-wait, default 1800 s; after that it skips this week), then stops
-# usnm-ocr-worker.service and waits for it to exit, up to --drain-timeout
-# (default 1260 s: the 1200 s page timeout and a minute), then reboots.
+# usnm-ocr-worker.service, and usnm-sset.service (the on-prem Serial Set
+# fetch, #229) if it's running, and waits for them to exit, up to
+# --drain-timeout (default 1260 s: the 1200 s page timeout and a minute),
+# then reboots. The worker is enabled and starts at boot; the Serial Set
+# fetch isn't, so the units it stopped are listed in $RESUME and
+# usnm-ocr-reboot-resume.service runs this with --resume at boot, which
+# starts them again. The fetch resumes from its raw store; its lock (30
+# minutes) outlives the reboot, so its first start fails on it and
+# systemd tries again after 31 minutes (its RestartSec).
 #
 # On SIGTERM the worker stops taking pages, gives those in flight 60 s (its
 # --shutdown-grace-secs) to finish, then abandons the rest without output;
@@ -31,12 +38,13 @@ pri() { if [ -n "${JOURNAL_STREAM:-}" ]; then printf '<%s>%s\n' "$1" "$2"; else 
 log() { pri 5 "$*"; }
 warn() { pri 4 "$*"; }
 
-DRAIN_TIMEOUT=1260 DNF_WAIT=1800 DRY_RUN=false
+DRAIN_TIMEOUT=1260 DNF_WAIT=1800 DRY_RUN=false RESUME_MODE=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --drain-timeout) DRAIN_TIMEOUT=${2:-}; shift 2 ;;
     --dnf-wait) DNF_WAIT=${2:-}; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --resume) RESUME_MODE=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
   esac
@@ -45,7 +53,29 @@ done
 [[ $DNF_WAIT =~ ^[0-9]+$ ]] || { echo "error: --dnf-wait: seconds" >&2; usage; }
 [ "$(id -u)" -eq 0 ] || { echo "error: run as root" >&2; exit 1; }
 
-WORKER=usnm-ocr-worker.service
+# Stopped before a reboot when running: the OCR worker, and the Serial Set
+# fetch where a node runs it.
+UNITS="usnm-ocr-worker.service usnm-sset.service"
+RESUME=/var/lib/usnm-ocr-reboot/resume
+
+if [ "$RESUME_MODE" = true ]; then
+  [ -s "$RESUME" ] || { log "nothing to start again"; exit 0; }
+  while read -r unit; do
+    case " $UNITS " in *" $unit "*) ;; *) warn "warning: $unit isn't one of $UNITS; not started"; continue ;; esac
+    if [ "$DRY_RUN" = true ]; then
+      log "dry run: would start $unit"
+    else
+      # --no-block: a unit that waits on the network doesn't hold up boot.
+      if systemctl start --no-block "$unit"; then
+        log "started $unit again"
+      else
+        warn "warning: couldn't start $unit"
+      fi
+    fi
+  done < "$RESUME"
+  [ "$DRY_RUN" = true ] || rm -f "$RESUME"
+  exit 0
+fi
 
 # Exit status 1 means a reboot is needed, 0 not; anything else is a failure.
 status=0
@@ -64,27 +94,40 @@ while systemctl is-active --quiet dnf-automatic.service; do
     exit 1
   fi
   [ "$waited" -gt 0 ] || log "waiting for dnf-automatic to finish"
-  sleep 10
-  waited=$((waited + 10))
+  step=$((DNF_WAIT - waited < 10 ? DNF_WAIT - waited : 10))
+  sleep "$step"
+  waited=$((waited + step))
 done
 
+# Running, or waiting to restart (activating), so a unit between tries
+# comes back too.
+running=""
+for unit in $UNITS; do
+  case "$(systemctl is-active "$unit" 2> /dev/null || true)" in
+    active|activating|reloading) running="${running:+$running }$unit" ;;
+  esac
+done
 if [ "$DRY_RUN" = true ]; then
-  log "dry run: would stop $WORKER (up to $DRAIN_TIMEOUT s) and reboot"
+  log "dry run: would stop ${running:-nothing} (up to $DRAIN_TIMEOUT s), reboot and start it again"
   exit 0
 fi
 
-if systemctl is-active --quiet "$WORKER"; then
-  log "stopping $WORKER (in-flight pages get the worker's grace; up to $DRAIN_TIMEOUT s in all)"
+if [ -n "$running" ]; then
+  mkdir -p "$(dirname "$RESUME")"
+  tr ' ' '\n' <<< "$running" > "$RESUME"
+  log "stopping $running (the worker's in-flight pages get its grace; up to $DRAIN_TIMEOUT s in all)"
   start=$(date +%s)
-  timeout "$DRAIN_TIMEOUT" systemctl stop "$WORKER" ||
-    warn "warning: systemctl stop $WORKER returned $? after $(($(date +%s) - start)) s"
-  if systemctl is-active --quiet "$WORKER"; then
-    warn "warning: $WORKER still $(systemctl is-active "$WORKER" || true) after $DRAIN_TIMEOUT s; rebooting anyway"
-  else
-    log "$WORKER stopped after $(($(date +%s) - start)) s"
-  fi
+  # shellcheck disable=SC2086 # a list of unit names
+  timeout "$DRAIN_TIMEOUT" systemctl stop $running ||
+    warn "warning: systemctl stop $running returned $? after $(($(date +%s) - start)) s"
+  for unit in $running; do
+    if systemctl is-active --quiet "$unit"; then
+      warn "warning: $unit still $(systemctl is-active "$unit" || true) after $DRAIN_TIMEOUT s; rebooting anyway"
+    fi
+  done
+  log "stopped after $(($(date +%s) - start)) s"
 else
-  log "$WORKER isn't running"
+  log "none of $UNITS is running"
 fi
 warn "rebooting"
 systemctl reboot
