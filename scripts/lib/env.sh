@@ -573,6 +573,7 @@ deploy_policy_exemptions() (
       --scope "/subscriptions/$(aget AZURE_SUBSCRIPTION_ID)/resourceGroups/$g" \
       --query "parameters.publicAccountIds.value" -o json) || exit 1
     local out
+    az deployment group what-if "${args[@]}" >&2 || exit 1
     out=$(az deployment group what-if "${args[@]}" --no-pretty-print -o json) || exit 1
     # The ids the next value has and the current one doesn't.
     python3 -c '
@@ -614,16 +615,19 @@ deploy_stack() (
     # Azure's preflight validation of the stack, as a create runs it first
     # (policy denials included), then the template's changes: stacks have no
     # what-if, a deployment's shows the same template's.
-    local exempting="" err
+    local exempting="" err what_if_args=()
     [ "${2:-}" != --exempting ] || exempting=${3:-}
     echo "validating stack $STACK (preflight)"
     if ! err=$(az stack sub validate "${stack_args[@]}" --only-show-errors -o none 2>&1); then
       only_pending_refusals "$err" "$exempting" || { echo "$err" >&2; exit 1; }
-      echo "preflight refuses only what the policy step exempts first (#336):"
-      sed 's/^/  /' <<< "$exempting"
+      echo "preflight refuses only what the policy step exempts first (#336), which a provision writes before the stack:"
+      while IFS= read -r err; do echo "  $err"; done <<< "$exempting"
+      # The what-if's own preflight would refuse the same resources, so it
+      # checks the template alone; the validation above checked the rest.
+      what_if_args=(--validation-level Template)
     fi
     echo "stack $STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
-    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam --only-show-errors
+    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam "${what_if_args[@]}" --only-show-errors
     exit
   fi
   az stack sub create "${stack_args[@]}" --yes --only-show-errors -o none
