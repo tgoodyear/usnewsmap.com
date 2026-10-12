@@ -537,14 +537,9 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                         }
                     });
                 }
-                let (tracker, stop) = (tracker.clone(), stop.clone());
-                tokio::spawn(async move {
-                    if let Err(e) = status::serve(listen, tracker, status_allow, stop).await {
-                        tracing::info_span!("ocr_status").in_scope(|| {
-                            tracing::warn!(error = format!("{e:#}"), "the status server stopped")
-                        });
-                    }
-                });
+                // Bound now: a worker that can't have its status port fails
+                // to start, and systemd says so.
+                status::serve(listen, tracker.clone(), status_allow, stop.clone()).await?;
             }
             let worker = Arc::new(Worker {
                 queue,

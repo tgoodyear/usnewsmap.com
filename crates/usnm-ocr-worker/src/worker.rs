@@ -173,13 +173,14 @@ pub struct Worker {
 /// outcome is known (the task was cancelled at shutdown).
 struct Tracked {
     tracker: Arc<Tracker>,
+    token: String,
     page: Option<Completion>,
 }
 
 impl Drop for Tracked {
     fn drop(&mut self) {
         if let Some(c) = self.page.take() {
-            self.tracker.end(c);
+            self.tracker.end(&self.token, c);
         }
     }
 }
@@ -405,9 +406,10 @@ impl Worker {
         // Ends the page in the tracker however the task ends: with its
         // outcome, or as abandoned at shutdown if the task is dropped.
         let mut guard = page.map(|(doc_id, language, reason)| {
-            self.tracker.begin(&doc_id, &language, &msg.queue);
+            self.tracker.begin(&msg.id, &doc_id, &language, &msg.queue);
             Tracked {
                 tracker: self.tracker.clone(),
+                token: msg.id.clone(),
                 page: Some(Completion {
                     doc_id,
                     language,
@@ -423,12 +425,15 @@ impl Worker {
             .handle_in(msg, received, &span)
             .instrument(span.clone())
             .await;
-        if let Some(mut c) = guard.as_mut().and_then(|g| g.page.take()) {
+        if let Some((g, mut c)) = guard
+            .as_mut()
+            .and_then(|g| g.page.take().map(|c| (g.token.clone(), c)))
+        {
             c.engine = ended.engine;
             c.outcome = ended.outcome.into();
             c.uploaded = ended.uploaded;
             c.error_kind = ended.error_kind.map(Into::into);
-            self.tracker.end(c);
+            self.tracker.end(&g, c);
         }
     }
 
@@ -471,7 +476,7 @@ impl Worker {
             m.reason.as_str(),
             &msg.queue,
         );
-        match self.process(&m, &key, deadline).await {
+        match self.process(&m, &key, &msg.id, deadline).await {
             Ok(done) => {
                 let ended = Ended {
                     outcome: "done",
@@ -540,6 +545,7 @@ impl Worker {
         &self,
         m: &OcrMessage,
         key: &PageKey,
+        token: &str,
         deadline: Instant,
     ) -> Result<Done, Failure> {
         let work = tempfile::tempdir()
@@ -570,9 +576,8 @@ impl Worker {
                 ],
             );
             let scan = scan?;
-            let doc_id = key.doc_id();
-            self.tracker.scanned(&doc_id, scan.from_cache);
-            self.tracker.stage(&doc_id, "ocr");
+            self.tracker.scanned(token, scan.from_cache);
+            self.tracker.stage(token, "ocr");
             let scan_sha256 = crate::prefetch::sha256(&scan.jpeg);
             if scan.from_cache {
                 tracing::debug!(doc_id = %key.doc_id(), "scan read from the cache");
@@ -640,7 +645,7 @@ impl Worker {
         // The uploads are cut off at the deadline too: past it the message
         // may be with another node already. An ALTO without its part is
         // harmless; parts are only read with their ALTO.
-        self.tracker.stage(&key.doc_id(), "upload");
+        self.tracker.stage(token, "upload");
         let (alto_path, part_path) =
             tokio::time::timeout_at(deadline.into(), self.write_output(key, alto, part))
                 .await

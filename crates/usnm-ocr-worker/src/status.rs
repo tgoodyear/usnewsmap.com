@@ -155,9 +155,11 @@ impl Tracker {
         }
     }
 
-    pub fn begin(&self, doc_id: &str, language: &str, queue: &str) {
+    /// A page taken, under `token` (its message's id), which the page's
+    /// later calls name: the same page can be in flight twice.
+    pub fn begin(&self, token: &str, doc_id: &str, language: &str, queue: &str) {
         self.inner.lock().expect("tracker lock").in_flight.insert(
-            doc_id.to_owned(),
+            token.to_owned(),
             InFlight {
                 doc_id: doc_id.to_owned(),
                 language: language.to_owned(),
@@ -168,13 +170,13 @@ impl Tracker {
         );
     }
 
-    pub fn stage(&self, doc_id: &str, stage: &str) {
+    pub fn stage(&self, token: &str, stage: &str) {
         if let Some(p) = self
             .inner
             .lock()
             .expect("tracker lock")
             .in_flight
-            .get_mut(doc_id)
+            .get_mut(token)
         {
             p.stage = stage.to_owned();
         }
@@ -185,25 +187,25 @@ impl Tracker {
     }
 
     /// Where a page's scan came from.
-    pub fn scanned(&self, doc_id: &str, from_cache: bool) {
+    pub fn scanned(&self, token: &str, from_cache: bool) {
         self.inner
             .lock()
             .expect("tracker lock")
             .sources
-            .insert(doc_id.to_owned(), if from_cache { "cache" } else { "loc" });
+            .insert(token.to_owned(), if from_cache { "cache" } else { "loc" });
     }
 
     /// A page finished: off the in-flight list, into the counts and the
     /// journal. A line that fails [`Completion::check`] is counted but not
     /// written.
-    pub fn end(&self, mut c: Completion) {
+    pub fn end(&self, token: &str, mut c: Completion) {
         c.finished_at = Utc::now();
         {
             let mut i = self.inner.lock().expect("tracker lock");
-            if let Some(p) = i.in_flight.remove(&c.doc_id) {
+            if let Some(p) = i.in_flight.remove(token) {
                 c.started_at = p.started_at;
             }
-            if let Some(src) = i.sources.remove(&c.doc_id) {
+            if let Some(src) = i.sources.remove(token) {
                 if c.scan.is_empty() {
                     c.scan = src.to_owned();
                 }
@@ -431,25 +433,54 @@ pub fn router(tracker: Arc<Tracker>, allow: Vec<IpAddr>) -> Router {
         .with_state(s)
 }
 
-/// Serve the status on `listen` to `allow` until `stop`.
+/// Serve the status on `listen` to `allow` until `stop`. The port is bound
+/// before this returns, so a worker that can't have it doesn't start; if
+/// the server stops later, it binds again after 30 s.
 pub async fn serve(
     listen: SocketAddr,
     tracker: Arc<Tracker>,
     allow: Vec<IpAddr>,
-    mut stop: tokio::sync::watch::Receiver<bool>,
-) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(listen).await?;
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    let first = tokio::net::TcpListener::bind(listen)
+        .await
+        .map_err(|e| anyhow::anyhow!("binding the status port {listen}: {e}"))?;
     tracing::info_span!("ocr_worker_start")
         .in_scope(|| tracing::info!(%listen, allow = ?allow, "status listening"));
-    axum::serve(
-        listener,
-        router(tracker, allow).into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        let _ = stop.wait_for(|s| *s).await;
-    })
-    .await?;
-    Ok(())
+    Ok(tokio::spawn(async move {
+        let mut listener = Some(first);
+        loop {
+            let l = match listener.take() {
+                Some(l) => Ok(l),
+                None => tokio::net::TcpListener::bind(listen).await,
+            };
+            let r = match l {
+                Ok(l) => {
+                    let mut stop = stop.clone();
+                    axum::serve(
+                        l,
+                        router(tracker.clone(), allow.clone())
+                            .into_make_service_with_connect_info::<SocketAddr>(),
+                    )
+                    .with_graceful_shutdown(async move {
+                        let _ = stop.wait_for(|s| *s).await;
+                    })
+                    .await
+                }
+                Err(e) => Err(e),
+            };
+            if *stop.borrow() {
+                return;
+            }
+            tracing::info_span!("ocr_status").in_scope(|| {
+                tracing::error!(
+                    error = r.err().map(|e| e.to_string()),
+                    "the status server stopped; binding again in 30 s"
+                )
+            });
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -502,20 +533,23 @@ mod tests {
             ..About::default()
         };
         let t = Arc::new(Tracker::new(about.clone(), Some(journal.clone()), None).unwrap());
-        t.begin("sn1_1890-01-01_ed-1_seq-1", "deu", "ocr-bulk");
-        t.begin("sn1_1890-01-01_ed-1_seq-2", "deu", "ocr-bulk");
-        t.stage("sn1_1890-01-01_ed-1_seq-2", "ocr");
-        t.end(page("sn1_1890-01-01_ed-1_seq-1", "done", "cache"));
+        t.begin("m1", "sn1_1890-01-01_ed-1_seq-1", "deu", "ocr-bulk");
+        t.begin("m2", "sn1_1890-01-01_ed-1_seq-2", "deu", "ocr-bulk");
+        // The same page again, under another message: tracked apart.
+        t.begin("m3", "sn1_1890-01-01_ed-1_seq-2", "deu", "ocr-bulk");
+        t.stage("m2", "ocr");
+        t.end("m1", page("sn1_1890-01-01_ed-1_seq-1", "done", "cache"));
         let s = t.status();
-        assert_eq!(s.in_flight.len(), 1);
-        assert_eq!(s.in_flight[0].stage, "ocr");
+        assert_eq!(s.in_flight.len(), 2);
+        assert!(s.in_flight.iter().any(|p| p.stage == "ocr"));
         assert_eq!(s.last_hour.done, 1);
         assert_eq!(s.last_hour.from_cache, 1);
         assert_eq!(s.routes["deu"], "frak2021");
         assert_eq!(s.recent.len(), 1);
         assert!(s.journal_bytes > 0);
         assert!(!s.journal_id.is_empty());
-        t.end(page("sn1_1890-01-01_ed-1_seq-2", "failed", "loc"));
+        t.end("m2", page("sn1_1890-01-01_ed-1_seq-2", "failed", "loc"));
+        assert_eq!(t.status().in_flight.len(), 1);
 
         let (code, body) = get(t.clone(), "203.0.113.5", "/journal?from=0").await;
         assert_eq!(code, StatusCode::OK);
@@ -544,7 +578,7 @@ mod tests {
         // A restarted worker carries on with the same journal.
         drop(t);
         let t = Tracker::new(about, Some(journal), None).unwrap();
-        t.end(page("sn1_1890-01-01_ed-1_seq-3", "done", "loc"));
+        t.end("m4", page("sn1_1890-01-01_ed-1_seq-3", "done", "loc"));
         let all = String::from_utf8(t.journal_from(0).unwrap()).unwrap();
         assert_eq!(all.lines().count(), 3);
     }
@@ -604,11 +638,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let journal = dir.path().join("journal.jsonl");
         let t = Tracker::new(About::default(), Some(journal.clone()), None).unwrap();
-        t.end(page("sn1_1890-01-01_ed-1_seq-1", "done", "loc"));
+        t.end("m1", page("sn1_1890-01-01_ed-1_seq-1", "done", "loc"));
         let before = t.status().journal_id;
         std::fs::rename(&journal, dir.path().join("old.jsonl")).unwrap();
         std::fs::write(&journal, "").unwrap();
-        t.end(page("sn1_1890-01-01_ed-1_seq-2", "done", "loc"));
+        t.end("m2", page("sn1_1890-01-01_ed-1_seq-2", "done", "loc"));
         let s = t.status();
         assert_ne!(s.journal_id, before);
         let all = String::from_utf8(t.journal_from(0).unwrap()).unwrap();

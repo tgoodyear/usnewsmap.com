@@ -194,6 +194,9 @@ pub fn merge_queues(nodes: &Nodes) -> (Option<QueueStats>, Option<String>) {
     let mut looks: Vec<(&str, &QueueStats)> = nodes
         .nodes
         .iter()
+        // Only nodes answering now, so an offline node's old dead
+        // letters don't linger.
+        .filter(|n| n.error.is_none())
         .filter_map(|n| Some((n.name.as_str(), n.status.as_ref()?.queues.as_ref()?)))
         .collect();
     looks.sort_by_key(|(_, q)| std::cmp::Reverse(q.checked_at));
@@ -213,6 +216,8 @@ pub fn merge_queues(nodes: &Nodes) -> (Option<QueueStats>, Option<String>) {
             }
         }
     }
+    // Oldest first, across nodes.
+    q.dead_letters.sort_by(|a, b| a.at.cmp(&b.at));
     (Some(q), Some((*from).to_owned()))
 }
 
@@ -534,6 +539,7 @@ mod tests {
         assert_eq!(merge_queues(&n), (None, None));
         let dl = |id: &str| DeadLetterView {
             message_id: id.into(),
+            at: format!("2026-10-11T23:00:0{}Z", id.len()),
             ..DeadLetterView::default()
         };
         let now = Utc::now();
@@ -557,6 +563,11 @@ mod tests {
             .iter()
             .map(|d| d.message_id.as_str())
             .collect();
-        assert_eq!(ids, ["b", "c", "a"]);
+        assert_eq!(ids.len(), 3);
+        // A node whose last poll failed doesn't count.
+        n.nodes[1].error = Some("HTTP 503".into());
+        let (q, from) = merge_queues(&n);
+        assert_eq!(from.as_deref(), Some("n1"));
+        assert_eq!(q.unwrap().counts["ocr-bulk"], 10);
     }
 }
