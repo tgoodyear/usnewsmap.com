@@ -201,9 +201,7 @@ async fn main() -> anyhow::Result<()> {
             listener,
             router(app).into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(stop_requested())
         .await?;
         return Ok(());
     };
@@ -217,7 +215,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let handle = handle.clone();
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            stop_requested().await;
             handle.graceful_shutdown(Some(Duration::from_secs(10)));
             let _ = stop_tx.send(true);
         });
@@ -245,6 +243,23 @@ async fn main() -> anyhow::Result<()> {
             .with_context(|| format!("HTTPS on {}", cli.tls_listen))
     },)?;
     Ok(())
+}
+
+/// SIGINT, or SIGTERM from `systemctl stop` and `restart`.
+async fn stop_requested() {
+    use tokio::signal::unix::{signal, SignalKind};
+    match signal(SignalKind::terminate()) {
+        Ok(mut term) => {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = tokio::signal::ctrl_c() => {}
+            }
+        }
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+    tracing::info!("stop requested");
 }
 
 /// `--https-name` goes into redirects: a host name only.

@@ -11,8 +11,8 @@
 #   ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7> [--ctid 212]
 #   ocrdash-ct.sh --configure [--allow lan|<range>]
 #     [--worker <name>=http://<host>:<port>]... [--host-push <host>=<its name>]...
-#     [--workbook-url URL] [--port 80] [--https-name ocr.tjg.fyi
-#     [--certs /var/lib/usnm-certs]] [--ctid 212]
+#     [--workbook-url URL] [--port 80]
+#     [--https-name ocr.tjg.fyi [--certs /var/lib/usnm-certs]] [--ctid 212]
 #
 # --create makes the container (onboot, one NIC on --bridge with DHCP,
 # nesting for systemd's sandboxing) with three read-only bind mounts:
@@ -155,13 +155,16 @@ if $CONFIGURE; then
     [ -s "$CERTS/$HTTPS_NAME/fullchain.pem" ] && [ -s "$CERTS/$HTTPS_NAME/privkey.pem" ] ||
       die "no certificate in $CERTS/$HTTPS_NAME: run home-infra's scripts/acme-setup.sh first"
     mp="$CERTS/$HTTPS_NAME,mp=/etc/usnm/tls,ro=1"
+    # A changed mount point applies only when the container starts again,
+    # so it is rebooted here.
     if [ "$(pct config "$CTID" | sed -n 's/^mp3: //p')" != "$mp" ]; then
       pct set "$CTID" --mp3 "$mp"
-    fi
-    if ! in_ct test -f /etc/usnm/tls/fullchain.pem; then
-      # Not mounted yet: the change waits for the container's restart.
+      echo "mp3 is $mp now; rebooting CT $CTID to apply it"
       pct reboot "$CTID"
-      for _ in $(seq 30); do in_ct test -f /etc/usnm/tls/fullchain.pem 2> /dev/null && break; sleep 2; done
+      for _ in $(seq 60); do
+        pct status "$CTID" | grep -q running && in_ct test -f /etc/usnm/tls/fullchain.pem 2> /dev/null && break
+        sleep 2
+      done
     fi
     in_ct su -s /bin/sh ocrdash -c 'test -r /etc/usnm/tls/privkey.pem' ||
       die "ocrdash can't read /etc/usnm/tls/privkey.pem (group of the files on the host: ocrdash's mapped gid)"
