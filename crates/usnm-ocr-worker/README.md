@@ -48,7 +48,7 @@ Pages are in two sets. The keep set holds every page not detected as English and
 
 `run --publish-fetched <manifest version>` (`USNM_OCR_PUBLISH_FETCHED`, set on one node) also relays the scan server's index to the seeder every `--publish-every-secs` (1800): it reads `/index/full.jsonl` as a stream, keeps the full-size scans' batch and page id, and writes them create-only to `ocr-out/fetched/<version>/<node>.<stamp>.parquet` (`usnm_ocr_contract::fetched`). The seeder's `fetched` source queues only pages on the newest list (12 Step 11). A failed publish is logged and tried again at the next turn. `publish-fetched --scan-cache-url --out-url --node-id --manifest` does it once.
 
-`serve-scans --allow <node IPs> [--scans /tank/ocr/scans] [--manifests /tank/ocr/manifests] [--listen 0.0.0.0:8380]` serves `GET /scans/...` and the sidecars, `DELETE /scans/buffer/...` (renaming the sidecar to `<scan>.done`; `keep/` gets 403) and `PUT /manifests/<version>/{manifest.parquet,summary.json}`, to the allowed addresses only, with a log line per request.
+`serve-scans --allow <node host names> [--allow-refresh-secs 300] [--scans /tank/ocr/scans] [--manifests /tank/ocr/manifests] [--listen 0.0.0.0:8380]` serves `GET /scans/...` and the sidecars, `DELETE /scans/buffer/...` (renaming the sidecar to `<scan>.done`; `keep/` gets 403) and `PUT /manifests/<version>/{manifest.parquet,summary.json}`, to the allowed hosts only, with a log line per request. It resolves the `--allow` names at startup (a name that doesn't resolve stops it) and again every `--allow-refresh-secs`; a name that stops resolving keeps its last addresses.
 
 `--queue-url` and `--out-url` also take a directory, so the whole loop runs locally with no Azure at all. Other `run` flags: `--api-gap-ms` (3500) and `--tile-gap-ms` (1000) set the gaps between loc.gov API and image requests, `--scan-cache-url` names the scan server to ask before LoC (see Prefetching scans), `--visibility-secs` (1800) sets how long a taken message stays hidden, and `--shutdown-grace-secs` (60) sets how long in-flight pages get after SIGTERM. The Tesseract flags are `--tesseract-bin` or `--tesseract-image` (with `--podman-bin`, and `--podman-url` with `--scratch-dir`, `--engine-memory-mib` (1536), `--engine-cpus` (1) and `--engine-pids` (64)), `--psm` (3), `--dpi` (300), `--threads-per-page` (1) and `--page-timeout-secs` (600, or `USNM_OCR_PAGE_TIMEOUT_SECS`).
 
@@ -125,18 +125,29 @@ When `APPLICATIONINSIGHTS_CONNECTION_STRING` is set, the worker also sends telem
 
 Each message is a request (`ocr_page`) carrying its page id, queue, reason and language, with an `outcome` of `done`, `failed`, `abandoned` or `dead_lettered`. The lines logged while it runs, at the `RUST_LOG` level, go with it as traces. Message bodies, search text and tokens are never recorded. A page abandoned at shutdown is counted, and its request has no `outcome`. The metrics:
 
-| Metric                    | Attributes                                                       |
-| ------------------------- | ---------------------------------------------------------------- |
-| `ocr.pages_done`          | `engine`, `language`, `reason`, `queue`                          |
-| `ocr.pages_failed`        | the same, and `error` (fetch, engine, no_model, output, scratch) |
-| `ocr.pages_abandoned`     | `cause`: `budget` (with the page's attributes) or `shutdown`     |
-| `ocr.dead_lettered`       | `queue`, `cause` (dequeue_count, invalid, permanent, unroutable) |
-| `ocr.empty_polls`         | none: a poll that found both queues empty                        |
-| `ocr.loc_slowdowns`       | `status` (429, 503, 403), `server`, `retry_after`, `capped`      |
-| `ocr.ocr_seconds`         | histogram: `engine`, `models`, `language`                        |
-| `ocr.image_fetch_seconds` | histogram: `outcome` (ok, error), `source` (loc, cache)          |
+| Metric                    | Attributes                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------- |
+| `ocr.pages_done`          | `engine`, `language`, `reason`, `queue`                                         |
+| `ocr.pages_failed`        | the same, and `error` (fetch, engine, no_model, output, scratch)                |
+| `ocr.pages_abandoned`     | `cause`: `budget` (with the page's attributes) or `shutdown`                    |
+| `ocr.dead_lettered`       | `queue`, `cause` (dequeue_count, invalid, permanent, unroutable)                |
+| `ocr.empty_polls`         | none: a poll that found both queues empty                                       |
+| `ocr.status_restarts`     | `cause` (error, panic, stopped): the status server failed and was started again |
+| `ocr.loc_slowdowns`       | `status` (429, 503, 403), `server`, `retry_after`, `capped`                     |
+| `ocr.ocr_seconds`         | histogram: `engine`, `models`, `language`                                       |
+| `ocr.image_fetch_seconds` | histogram: `outcome` (ok, error), `source` (loc, cache)                         |
 
 Metrics are sent every 30 s and once more at shutdown.
+
+## Status for the LAN dashboard
+
+With `--status-listen 0.0.0.0:8381` (`USNM_OCR_STATUS_LISTEN`) and `--status-allow <dashboard address>` (`USNM_OCR_STATUS_ALLOW`), `run` serves its status to `usnm-ocrdash` (12 §12.2.5) and refuses every other address:
+
+- `GET /status`: the node id, version, engine, concurrency, scan server, any LoC hold, the pages in flight (doc_id, language, queue, stage, start), pages by outcome and scan source over the last hour and day and since the start, the latest finished pages, and each language's engine profile from its last page done.
+- The status also carries the queues as the worker last saw them, a look a minute: each queue's approximate length (Get Queue Metadata) and up to 20 dead letters at the front of `ocr-deadletter` (Peek Messages), shown as their page, cause, kind, error, receive count, node and time. It takes and deletes nothing, and needs Storage Queue Data Reader on the queues.
+- `GET /journal?from=<offset>`: `--status-journal` (`USNM_OCR_STATUS_JOURNAL`) from a byte offset, whole lines only, at most 1 MiB. Each line is one finished page: doc_id, language, engine tag, queue, reason, times, outcome, scan source, whether its output was uploaded, and a failure's kind. The file is appended to across restarts.
+
+The status server runs apart from the OCR loop: if it can't bind, fails or panics, it is logged, counted and started again after 5 s, doubling to 5 minutes. A page is tracked per attempt (its message id and pop receipt), so a redelivered message running beside an earlier attempt doesn't overwrite it. Neither endpoint holds page text. `scripts/ocr-node/install-worker.sh --status-allow <address>` writes the settings, and the node's nftables drops the port from anyone else.
 
 ## Building for AlmaLinux 9
 

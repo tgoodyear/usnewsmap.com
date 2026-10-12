@@ -159,6 +159,20 @@ step "The worker binary ($RELEASE)"
 echo "$BIN_SUM  $DIR/usnm-ocr-worker" | sha256sum --check --quiet || die "the binary's sha256 differs from the release's"
 install -d -o root -g root -m 0755 "$LIB" "$LIB/$RELEASE"
 install -o root -g root -m 0755 "$DIR/usnm-ocr-worker" "$LIB/$RELEASE/usnm-ocr-worker"
+# Under SELinux a file in /usr/local/lib is lib_t, and systemd runs a lib_t
+# program in init_t rather than unconfined_service_t; there the worker can't
+# reach the engine's Podman socket or the Arc agent's port (dontaudit, so no
+# AVC is logged). Every release's binary is labelled bin_t, as a program in
+# /usr/local/bin would be, and the rule survives a relabel.
+if command -v selinuxenabled > /dev/null && selinuxenabled; then
+  rule="$LIB/[^/]+/usnm-ocr-worker"
+  if ! semanage fcontext -l -C | grep -qF "$rule"; then
+    semanage fcontext -a -t bin_t "$rule"
+  fi
+  # Every installed release, so a later --rollback runs bin_t too.
+  restorecon -R "$LIB"
+  ls -Z "$LIB/$RELEASE/usnm-ocr-worker"
+fi
 printf '%s\n' "$IMAGE_ID" > "$LIB/$RELEASE/tesseract.image-id"
 chmod 0644 "$LIB/$RELEASE/tesseract.image-id"
 "$LIB/$RELEASE/usnm-ocr-worker" --version
@@ -187,6 +201,62 @@ install -d -o root -g root -m 0755 /etc/usnm
 install -o root -g usnm -m 0640 "$DIR/ocr-worker.env" "$ENVFILE.new"
 mv -f "$ENVFILE.new" "$ENVFILE"
 echo "$ENVFILE: written"
+# The status port for the LAN dashboard (USNM_OCR_STATUS_LISTEN), from the
+# dashboard's address only (USNM_OCR_STATUS_ALLOW): an nftables table of
+# its own, loaded by a oneshot unit at boot. Without the settings, both go.
+status_listen=$(sed -n 's/^USNM_OCR_STATUS_LISTEN=//p' "$ENVFILE")
+status_allow=$(sed -n 's/^USNM_OCR_STATUS_ALLOW=//p' "$ENVFILE")
+if [ -n "$status_listen" ]; then
+  port=${status_listen##*:}
+  [[ $port =~ ^[0-9]+$ ]] || die "USNM_OCR_STATUS_LISTEN: <address>:<port>"
+  [[ $status_allow =~ ^[A-Za-z0-9.-]+(,[A-Za-z0-9.-]+)*$ ]] || die "USNM_OCR_STATUS_ALLOW: host names or IPv4 addresses, comma-separated"
+  # Names to addresses for the rule (the LAN's DNS); the worker resolves
+  # them again each time its status server starts.
+  addrs=""
+  for h in ${status_allow//,/ }; do
+    for a in $(getent ahostsv4 "$h" | awk '{print $1}' | sort -u); do addrs+="${addrs:+, }$a"; done
+  done
+  [ -n "$addrs" ] || die "USNM_OCR_STATUS_ALLOW: $status_allow doesn't resolve"
+  status_allow=$addrs
+  install -d -m 0755 /etc/nftables
+  cat > /etc/nftables/usnm-ocr-status.nft <<NFT
+# Written by scripts/ocr-node/install-worker-node.sh: the worker's status
+# port only from the LAN dashboard.
+table inet usnm_ocr_status
+delete table inet usnm_ocr_status
+table inet usnm_ocr_status {
+  chain input {
+    type filter hook input priority 0; policy accept;
+    tcp dport $port ip saddr != { $status_allow } drop
+    tcp dport $port meta nfproto ipv6 drop
+  }
+}
+NFT
+  cat > /etc/systemd/system/usnm-ocr-status-firewall.service <<'FW'
+# Written by scripts/ocr-node/install-worker-node.sh: loads the status
+# port's nftables rule before the worker starts.
+[Unit]
+Description=usnewsmap OCR worker status port firewall
+Before=usnm-ocr-worker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables/usnm-ocr-status.nft
+
+[Install]
+WantedBy=multi-user.target
+FW
+  systemctl daemon-reload
+  systemctl enable usnm-ocr-status-firewall.service > /dev/null 2>&1
+  systemctl restart usnm-ocr-status-firewall.service
+  echo "status port $port: only from $status_allow"
+elif [ -e /etc/systemd/system/usnm-ocr-status-firewall.service ]; then
+  systemctl disable --now usnm-ocr-status-firewall.service > /dev/null 2>&1 || true
+  rm -f /etc/systemd/system/usnm-ocr-status-firewall.service /etc/nftables/usnm-ocr-status.nft
+  nft delete table inet usnm_ocr_status 2> /dev/null || true
+  echo "status port: off"
+fi
 if ! cmp -s "$DIR/usnm-ocr-worker.service" "$UNIT"; then
   install -o root -g root -m 0644 "$DIR/usnm-ocr-worker.service" "$UNIT.new"
   mv -f "$UNIT.new" "$UNIT"

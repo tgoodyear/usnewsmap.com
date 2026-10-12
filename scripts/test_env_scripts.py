@@ -13,7 +13,8 @@ scripts/titles-seed.sh through it): STUB_EXECUTION (the started execution's name
 STUB_EXEC_STATUS (its status). For the settings vault (#295): STUB_SECRETS
 (the secrets' names, one per line), STUB_SECRET_<NAME> (a secret's value,
 its hyphens as underscores), STUB_VAULT_ERROR (listing or setting secrets
-fails with that message), STUB_OUTPUTS (the stack's outputs as JSON),
+fails with that message), STUB_SHOW_ERROR (reading a secret's value fails
+with that message), STUB_OUTPUTS (the stack's outputs as JSON),
 STUB_DELETED_VAULTS (soft-deleted vaults, one per line: the name, a tab
 and the vault id) and
 STUB_GROUP_EXISTS (`az group exists`; unset: false).
@@ -63,7 +64,8 @@ case "$1 $2" in
       list) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
         [ -z "${STUB_SECRETS:-}" ] || printf '%b\n' "$STUB_SECRETS" ;;
       set) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi ;;
-      show) n=$(sed 's/.*--name \([^ ]*\).*/\1/' <<< "$*"); v="STUB_SECRET_${n//-/_}"
+      show) if [ -n "${STUB_SHOW_ERROR:-}" ]; then echo "$STUB_SHOW_ERROR" >&2; exit 1; fi
+        n=$(sed 's/.*--name \([^ ]*\).*/\1/' <<< "$*"); v="STUB_SECRET_${n//-/_}"
         if [ -n "${!v+x}" ]; then printf '%s\n' "${!v}"
         else echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault." >&2; exit 3; fi ;;
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
@@ -692,6 +694,15 @@ class CommittedSettings(Stubbed):
 
     # Provision up to the deployment, which the stub can't answer.
     PROVISION = "deploy_env_guardrails() { :; }; deploy_stack() { :; }; save_outputs() { :; }; provision"
+
+    def test_a_refused_secret_read_tells_how_to_get_access(self):
+        # Key Vault Reader lists the secrets but can't read their values.
+        self.local(**self.VAULT)
+        r = self.lib("load_vault", STUB_SECRETS="USNM-ALERT-EMAILS",
+                     STUB_SHOW_ERROR="ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't read USNM-ALERT-EMAILS", r.stderr)
+        self.assertIn("Key Vault Secrets Officer", r.stderr)
 
     @staticmethod
     def deleted(name, group):

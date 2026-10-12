@@ -345,6 +345,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_VNET_ADDRESS_PREFIX": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. The VNet's address space, an RFC 1918 block (no private addresses in the repository, #399).",
+      "not": {}
+    },
     "USNM_WWW_CERT_ID": {
       "x-usnm-visibility": "private",
       "description": "Private: in the environment's settings vault. A managed certificate's resource id, which names the subscription.",

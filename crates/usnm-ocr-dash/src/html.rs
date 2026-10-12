@@ -136,21 +136,38 @@ body { margin:0; padding:16px 20px 40px; background:var(--plane); color:var(--in
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:0 0 10px; } h3 { font-size:14px; margin:14px 0 6px; }
 .sub { color:var(--ink2); margin-bottom:16px; }
-.grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap:16px; }
+.grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap:16px; }
+.grid > section { min-width:0; }
 section { background:var(--surface); border:1px solid var(--ring); border-radius:8px; padding:14px 16px; overflow-x:auto; }
 table { border-collapse:collapse; width:100%; font-variant-numeric: tabular-nums; }
 th, td { text-align:left; padding:3px 8px 3px 0; border-bottom:1px solid var(--grid); vertical-align:top; white-space:nowrap; }
 th { color:var(--ink2); font-weight:600; }
 td.r, th.r { text-align:right; }
 .muted, .note { color:var(--ink2); } .note { white-space:normal; font-size:13px; }
-code { font-size:12.5px; } a { color:var(--fill); }
+code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
 .meter { display:inline-block; width:140px; height:8px; background:var(--track); border-radius:4px; vertical-align:middle; overflow:hidden; }
 .meter > span { display:block; height:100%; background:var(--fill); border-radius:4px; }
 .num { color:var(--ink2); }
 .badge { display:inline-block; padding:0 6px; border-radius:4px; border:1px solid var(--ring); font-weight:600; }
 .badge.good > span { color:var(--good); } .badge.warning > span { color:var(--warning); } .badge.critical > span { color:var(--critical); }
 .kv td:first-child { color:var(--ink2); width:1%; }
-.err { color:var(--critical); white-space:normal; }
+.err { color:var(--critical); white-space:normal; overflow-wrap:anywhere; }
+/* Phones: one column, no page-wide scroll. Two-column tables become
+   label-over-value cards; wider tables wrap, and scroll inside their panel
+   if they still don't fit. */
+@media (max-width: 640px) {
+  body { padding:10px 10px 32px; }
+  section { padding:10px 12px; }
+  .grid { gap:10px; }
+  th { white-space:nowrap; padding-right:6px; }
+  td { white-space:normal; overflow-wrap:break-word; padding-right:6px; }
+  td code { word-break:break-all; }
+  table.kv, table.kv tbody, table.kv tr, table.kv td { display:block; width:auto; }
+  table.kv td:first-child { width:auto; border-bottom:none; padding:6px 0 0; font-weight:600; }
+  table { width:100%; table-layout:auto; }
+  table.kv td + td { padding-top:0; }
+  .meter { width:84px; }
+}
 "#;
 
 /// Turns each `<time>` into the reader's local time.
@@ -657,10 +674,63 @@ pub fn render(v: &View) -> String {
     o.push_str("</p></section>");
 
     // 6. Queues.
+    o.push_str("<section><h2>Azure queues and dead letters</h2>");
+    match (&v.azure.queues, &v.azure.queues_from) {
+        (Some(q), Some(from)) => {
+            let _ = write!(
+                o,
+                "<p>As {} saw them {}{}.</p>",
+                esc(from),
+                ago(now, q.checked_at),
+                if v.azure.queues_stale {
+                    format!(" {}", badge("warning", "stale"))
+                } else {
+                    String::new()
+                }
+            );
+            if let Some(e) = &q.error {
+                let _ = write!(o, "<p class=\"err\">{}</p>", esc(e));
+            }
+            o.push_str("<table><tr><th>Queue</th><th class=\"r\">Messages</th></tr>");
+            for (name, n) in &q.counts {
+                let _ = write!(
+                    o,
+                    "<tr><td><code>{}</code></td><td class=\"r\">{}</td></tr>",
+                    esc(name),
+                    int(*n)
+                );
+            }
+            o.push_str("</table>");
+            if q.dead_letters.is_empty() {
+                o.push_str("<p class=\"muted\">No dead letters visible.</p>");
+            } else {
+                o.push_str("<h3>Dead letters, oldest first</h3><table><tr><th>doc_id</th><th>From</th><th>Cause</th><th class=\"r\">Received</th><th>Node</th><th>When</th><th>Error</th></tr>");
+                for d in &q.dead_letters {
+                    let cause = match &d.kind {
+                        Some(k) => format!("{} ({k})", d.cause),
+                        None => d.cause.clone(),
+                    };
+                    let _ = write!(
+                        o,
+                        "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td class=\"r\">{}</td><td>{}</td><td>{}</td><td class=\"note\">{}</td></tr>",
+                        if d.doc_id.is_empty() { "-".to_owned() } else { esc(&d.doc_id) },
+                        esc(&d.from),
+                        esc(&cause),
+                        d.dequeue_count,
+                        esc(&d.node),
+                        time_str(&d.at),
+                        esc(&d.error)
+                    );
+                }
+                o.push_str("</table>");
+            }
+        }
+        _ => o.push_str("<p class=\"muted\">No node has reported the queues yet.</p>"),
+    }
     let _ = write!(
         o,
-        "<section><h2>Azure queues and dead letters</h2><p class=\"note\">{}</p></section>",
-        esc(v.azure.queues)
+        "<p class=\"note\">{}</p></section>",
+        esc(v.azure.queues_note)
     );
 
     let _ = write!(o, "</div><script>{SCRIPT}</script></body></html>");
