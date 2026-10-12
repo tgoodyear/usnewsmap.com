@@ -81,9 +81,7 @@ use usnm_ocr_contract::prefetch::{self, ManifestRow};
 pub use usnm_ocr_contract::prefetch::{priority, set_of, Set, WORST_ENGLISH};
 
 use crate::batch;
-use crate::loc::{
-    issue_id, FetchError, ImageSize, LocClient, Scan, ScanFormat, Server, USER_AGENT,
-};
+use crate::loc::{issue_id, FetchError, ImageSize, LocClient, Scan, ScanFormat, USER_AGENT};
 
 /// How often a fetcher waiting at the buffer cap counts the buffer again.
 pub const BUFFER_RECHECK: Duration = Duration::from_secs(60);
@@ -1265,13 +1263,12 @@ pub async fn run(
         loc.set_known_good(loc.item_url(&key));
     }
     // On the storage service, the METS beside the last JP2 fetched.
-    if let Some(mets) = last
+    if let Some(jp2) = last
         .iter()
         .filter(|s| s.format == ScanFormat::Jp2.name())
         .max_by_key(|s| s.fetched_at)
-        .and_then(|s| batch::mets_url_of(&s.loc_url))
     {
-        loc.set_known_good_on(Server::Storage, mets);
+        loc.seed_storage_known_good(&jp2.loc_url);
     }
     let run = Arc::new(Run {
         loc,

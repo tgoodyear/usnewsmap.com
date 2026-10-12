@@ -93,14 +93,6 @@ pub fn file_url(batch_url: &str, lccn: &str, reel: &str, dir: &str, file: &str) 
     format!("{batch_url}data/{lccn}/{reel}/{dir}/{file}")
 }
 
-/// The issue METS beside a page's JP2 on the storage service.
-pub fn mets_url_of(jp2_url: &str) -> Option<String> {
-    let (issue, file) = jp2_url.rsplit_once('/')?;
-    file.strip_suffix(".jp2")?;
-    let dir = issue.rsplit_once('/')?.1;
-    safe_segment(dir).then(|| format!("{issue}/{dir}.xml"))
-}
-
 /// The JP2 a IIIF base names, on the storage service: the inverse of
 /// [`crate::loc::iiif_base`]. `service_root` is
 /// `https://tile.loc.gov/storage-services/service/`.
@@ -474,10 +466,6 @@ nothex  data/sn1/1/1890050301/0001.jp2
             jp2_url_of("r/", "s/", "r/service:a:..:b"),
             None,
             "no way out of the tree"
-        );
-        assert_eq!(
-            mets_url_of(&jp2).unwrap(),
-            "https://tile.loc.gov/storage-services/service/ndnp/mdu/batch_mdu_garlic_ver02/data/sn83045081/0029602241A/1904072901/1904072901.xml"
         );
     }
 

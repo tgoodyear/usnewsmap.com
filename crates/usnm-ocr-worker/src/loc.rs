@@ -379,9 +379,12 @@ pub struct BatchPage {
 /// What a server's answers say about telling an item error from a hold.
 #[derive(Debug, Default)]
 struct ApiHealth {
-    /// The last small file that answered 2xx, and when anything last did
-    /// (`None` for one set by [`LocClient::set_known_good`]).
-    known_good: Option<(String, Option<Instant>)>,
+    /// The last small file (at most [`PROBE_MAX_BYTES`]) that answered
+    /// 2xx, or one set by [`LocClient::set_known_good`]: what a check asks
+    /// for again.
+    known_good: Option<String>,
+    /// When anything on the server last answered 2xx.
+    last_ok: Option<Instant>,
     /// Item errors lately: when, and the title.
     item_errors: std::collections::VecDeque<(Instant, String)>,
 }
@@ -398,13 +401,13 @@ struct Got {
     body: Bytes,
     /// Sending to the end of the body.
     took: Duration,
-    /// Where it was answered from, after redirects.
-    url: String,
 }
 
 pub struct LocClient {
     cfg: LocConfig,
     http: reqwest::Client,
+    /// The same, following no redirect, for [`LocClient::locate`].
+    http_here: reqwest::Client,
     api: Pacer,
     tile: Arc<Pacer>,
     storage: Arc<Pacer>,
@@ -493,11 +496,29 @@ async fn write_file(path: &Path, body: &[u8]) -> std::io::Result<()> {
 
 impl LocClient {
     pub fn new(cfg: LocConfig) -> anyhow::Result<Self> {
+        let http_here = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .connect_timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(180))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            // Redirects within a host only. Chronicling America's batch
+            // redirect to the storage service is followed by hand
+            // ([`LocClient::locate`]), once checked and paced.
+            .redirect(reqwest::redirect::Policy::custom(|a| {
+                let same = a.previous().last().is_some_and(|p| {
+                    p.host_str() == a.url().host_str() && p.scheme() == a.url().scheme()
+                });
+                if a.previous().len() >= 5 || !same {
+                    a.stop()
+                } else {
+                    a.follow()
+                }
+            }))
             .build()?;
         let (tile, storage) = if cfg.storage_own_budget {
             (
@@ -528,6 +549,7 @@ impl LocClient {
             storage_health: Mutex::new(ApiHealth::default()),
             cfg,
             http,
+            http_here,
             metrics: Metrics::global(),
         })
     }
@@ -567,7 +589,7 @@ impl LocClient {
         if let Some(h) = self.health(server) {
             let mut h = h.lock().expect("health lock");
             if h.known_good.is_none() {
-                h.known_good = Some((url, None));
+                h.known_good = Some(url);
             }
         }
     }
@@ -613,11 +635,13 @@ impl LocClient {
                 return Err(None);
             }
             let now = Instant::now();
-            match &h.known_good {
-                Some((good, _)) if good == url => return Err(None),
-                Some((_, Some(at))) if now.duration_since(*at) <= ITEM_ERROR_OK_WITHIN => None,
-                Some((good, _)) => Some(good.clone()),
-                None => return Err(None),
+            if h.known_good.as_deref() == Some(url) {
+                return Err(None);
+            }
+            match (&h.known_good, h.last_ok) {
+                (_, Some(at)) if now.duration_since(at) <= ITEM_ERROR_OK_WITHIN => None,
+                (Some(good), _) => Some(good.clone()),
+                (None, _) => return Err(None),
             }
         };
         if let Some(good) = check {
@@ -644,8 +668,9 @@ impl LocClient {
                 match read_limited(resp, MAX_ITEM_BYTES).await {
                     Ok(_) => {
                         if let Some(h) = self.health(server) {
-                            h.lock().expect("health lock").known_good =
-                                Some((url.to_owned(), Some(Instant::now())));
+                            let mut h = h.lock().expect("health lock");
+                            h.known_good = Some(url.to_owned());
+                            h.last_ok = Some(Instant::now());
                         }
                         Probe::Ok
                     }
@@ -667,16 +692,15 @@ impl LocClient {
         }
     }
 
-    /// A 2xx from `server` for an item of a title: it is serving. A small
-    /// answer becomes the known-good item; a large one (a JP2) only moves
-    /// the time, so a check never asks for megabytes.
+    /// A 2xx from `server` for an item of a title: it is serving. Only a
+    /// small answer becomes the known-good item, so a check never asks for
+    /// megabytes.
     fn answered(&self, server: Server, url: &str, len: usize) {
         if let Some(h) = self.health(server) {
             let mut h = h.lock().expect("health lock");
-            let now = Some(Instant::now());
-            match &mut h.known_good {
-                Some((_, at)) if len > PROBE_MAX_BYTES => *at = now,
-                kg => *kg = Some((url.to_owned(), now)),
+            h.last_ok = Some(Instant::now());
+            if len <= PROBE_MAX_BYTES {
+                h.known_good = Some(url.to_owned());
             }
         }
     }
@@ -712,22 +736,18 @@ impl LocClient {
             let wait = self.cfg.backoff * attempt;
             let sent = Instant::now();
             match self.http.get(url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    let at = resp.url().to_string();
-                    match read_limited(resp, max).await {
-                        Ok(b) => {
-                            if title.is_some() {
-                                self.answered(server, url, b.len());
-                            }
-                            return Ok(Some(Got {
-                                body: b,
-                                took: sent.elapsed(),
-                                url: at,
-                            }));
+                Ok(resp) if resp.status().is_success() => match read_limited(resp, max).await {
+                    Ok(b) => {
+                        if title.is_some() {
+                            self.answered(server, url, b.len());
                         }
-                        Err(e) => last = e,
+                        return Ok(Some(Got {
+                            body: b,
+                            took: sent.elapsed(),
+                        }));
                     }
-                }
+                    Err(e) => last = e,
+                },
                 Ok(resp) => {
                     let status = resp.status();
                     if missing_ok && matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE) {
@@ -896,6 +916,92 @@ impl LocClient {
             .map_err(|e: Arc<FetchError>| e.cloned())
     }
 
+    /// Where `url` redirects, without following it: one paced request on
+    /// the storage service's pacer. `None` if it answers anything but a
+    /// redirect (a 404, or the file itself, which isn't the storage
+    /// service). A 429, 503 or 403 holds the storage service as any of its
+    /// answers would.
+    async fn locate(&self, url: &str) -> Result<Option<String>, FetchError> {
+        for attempt in 1..=self.cfg.attempts.max(1) {
+            self.storage.wait().await;
+            let resp = match self.http_here.get(url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    if attempt == self.cfg.attempts.max(1) {
+                        return Err(FetchError::Transient(format!(
+                            "giving up on {url}: {}",
+                            e.without_url()
+                        )));
+                    }
+                    tokio::time::sleep(self.cfg.backoff * attempt).await;
+                    continue;
+                }
+            };
+            let status = resp.status();
+            if status.is_redirection() {
+                let to = resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|l| l.to_str().ok())
+                    .and_then(|l| resp.url().join(l).ok());
+                return Ok(to.map(|u| u.to_string()));
+            }
+            if matches!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS
+                    | StatusCode::SERVICE_UNAVAILABLE
+                    | StatusCode::FORBIDDEN
+            ) {
+                let wait = self.cfg.backoff * attempt;
+                let d = retry_after(&resp).map_or(wait, |(r, _)| r.max(wait));
+                self.storage.hold(d);
+                tracing::warn!(
+                    status = status.as_u16(),
+                    server = "storage",
+                    wait_secs = d.as_secs(),
+                    "loc.gov asked us to slow down"
+                );
+                continue;
+            }
+            return Ok(None);
+        }
+        Err(FetchError::Transient(format!("giving up on {url}: held")))
+    }
+
+    /// Seed the storage service's known-good item from the last JP2 an
+    /// earlier run fetched: its issue's METS, as kept in the batch cache
+    /// (the plain or the signed one, whichever is there), so a check never
+    /// asks for a file that isn't on LoC.
+    pub fn seed_storage_known_good(&self, jp2_url: &str) {
+        let Some(rel) = jp2_url.strip_prefix(&self.cfg.storage_root) else {
+            return;
+        };
+        // <inst>/batch_<dir>/data/<lccn>/<reel>/<issue>/<frame>.jp2
+        let segs: Vec<&str> = rel.split('/').collect();
+        let [_, bdir, "data", lccn, _, issue, _] = segs[..] else {
+            return;
+        };
+        let (Some(bdir), Some(cache), Some(base)) = (
+            bdir.strip_prefix("batch_"),
+            self.cfg.batch_cache.as_ref(),
+            jp2_url.rsplit_once('/').map(|(b, _)| b),
+        ) else {
+            return;
+        };
+        for name in [format!("{issue}.xml"), format!("{issue}_1.xml")] {
+            if cache
+                .join(bdir)
+                .join("mets")
+                .join(lccn)
+                .join(&name)
+                .is_file()
+            {
+                self.set_known_good_on(Server::Storage, format!("{base}/{name}"));
+                return;
+            }
+        }
+    }
+
     async fn load_bag(&self, dir: &str) -> Result<Option<Arc<Bag>>, FetchError> {
         let cache = self.cache_dir(dir);
         if let Some(c) = &cache {
@@ -927,21 +1033,22 @@ impl LocClient {
             // Chronicling America knows where the batch is: follow it, but
             // only onto the storage service.
             let via = format!("{}{dir}/manifest-md5.txt", self.cfg.batches_root);
-            if let Some(g) = self
-                .fetch(&via, Server::Storage, MAX_BAG_BYTES, None, true)
-                .await?
-            {
-                match g
-                    .url
+            if let Some(to) = self.locate(&via).await? {
+                match to
                     .strip_suffix("manifest-md5.txt")
                     .filter(|u| u.starts_with(&self.cfg.storage_root))
                 {
-                    Some(u) => found = Some((u.to_owned(), g)),
+                    Some(u) => {
+                        found = self
+                            .fetch(&to, Server::Storage, MAX_BAG_BYTES, None, true)
+                            .await?
+                            .map(|g| (u.to_owned(), g));
+                    }
                     None => {
                         tracing::warn!(
                             batch = dir,
-                            at = g.url,
-                            "the batch's manifest isn't on the storage service; not using it"
+                            to,
+                            "the batch's redirect leaves the storage service; not following it"
                         );
                     }
                 }
@@ -1874,13 +1981,14 @@ mod tests {
         let loc = batch_client(&s, Duration::from_millis(10), None, false);
         let p = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
         assert!(p.url.contains("/ndnp/yy/batch_xx_test_ver01/data/"));
-        // A redirect off the storage service isn't followed into use.
+        // A redirect off the storage service isn't followed at all.
         s.put("/other/manifest-md5.txt", "x".to_owned());
         s.redirect(
             "/data/batches/xx_off_ver01/manifest-md5.txt",
             "/other/manifest-md5.txt",
         );
         assert_eq!(loc.resolve(&key(1), "xx_off", 1).await.unwrap(), None);
+        assert_eq!(s.hits("/other/manifest-md5.txt"), 0);
     }
 
     #[tokio::test]
@@ -2028,5 +2136,74 @@ mod tests {
         .await;
         assert!(r.is_err(), "held");
         assert!(loc.held_until().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_jp2_never_becomes_the_known_good_item() {
+        let s = StandIn::start().await;
+        let big = vec![7u8; PROBE_MAX_BYTES + 1];
+        s.add_issue(
+            BATCH,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: &big,
+            }],
+        );
+        let cache = tempfile::tempdir().unwrap();
+        let loc = batch_client(
+            &s,
+            Duration::from_millis(10),
+            Some(cache.path().into()),
+            false,
+        );
+        loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+        // A new process: the METS comes from the disk cache, so the only
+        // storage answer it gets is the JP2.
+        let loc = batch_client(
+            &s,
+            Duration::from_millis(10),
+            Some(cache.path().into()),
+            false,
+        );
+        let p = loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+        loc.scan_resolved(&key(1), &p, ImageSize::Full)
+            .await
+            .unwrap()
+            .unwrap();
+        let h = loc.storage_health.lock().unwrap();
+        assert!(h.last_ok.is_some());
+        assert_eq!(h.known_good, None);
+    }
+
+    #[tokio::test]
+    async fn the_storage_known_good_seed_is_a_mets_on_disk() {
+        let s = StandIn::start().await;
+        let cache = tempfile::tempdir().unwrap();
+        let loc = batch_client(
+            &s,
+            Duration::from_millis(10),
+            Some(cache.path().into()),
+            false,
+        );
+        let jp2 = format!(
+            "{}xx/batch_xx_test_ver01/data/sn1/0001A/1890050301/0001.jp2",
+            s.storage_root()
+        );
+        // Nothing on disk: no seed.
+        loc.seed_storage_known_good(&jp2);
+        assert_eq!(loc.storage_health.lock().unwrap().known_good, None);
+        // Only the signed METS is kept: that one.
+        let mets = cache.path().join("xx_test_ver01/mets/sn1");
+        std::fs::create_dir_all(&mets).unwrap();
+        std::fs::write(mets.join("1890050301_1.xml"), b"x").unwrap();
+        loc.seed_storage_known_good(&jp2);
+        assert_eq!(
+            loc.storage_health.lock().unwrap().known_good.as_deref(),
+            Some(jp2.replace("0001.jp2", "1890050301_1.xml").as_str())
+        );
     }
 }
