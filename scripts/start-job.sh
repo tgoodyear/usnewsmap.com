@@ -35,18 +35,19 @@ while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --job) [ $# -ge 2 ] || usage; SETTING=$2; shift 2 ;;
-    --wait-mins) [ $# -ge 2 ] || usage; WAIT_MINS=$2; shift 2 ;;
+    --wait-mins)
+      # Checked here, not later: an empty value (an unset variable) must not
+      # read as "no wait" and let a teardown go ahead.
+      [ $# -ge 2 ] || usage
+      [[ $2 =~ ^[0-9]+$ ]] || { echo "error: --wait-mins is a number of minutes" >&2; exit 2; }
+      # In decimal: Bash arithmetic reads a leading zero (`08`) as octal.
+      WAIT_MINS=$((10#$2)); shift 2 ;;
     --) shift; break ;;
     -h|--help) usage ;;
     *) echo "error: unexpected \"$1\" (the job's arguments go after --)" >&2; usage ;;
   esac
 done
 [ -n "$ENV_NAME" ] && [ -n "$SETTING" ] && [ $# -ge 1 ] || usage
-if [ -n "$WAIT_MINS" ]; then
-  [[ $WAIT_MINS =~ ^[0-9]+$ ]] || { echo "error: --wait-mins is a number of minutes" >&2; exit 2; }
-  # In decimal: Bash arithmetic reads a leading zero (`08`) as octal.
-  WAIT_MINS=$((10#$WAIT_MINS))
-fi
 die() { echo "error: $*" >&2; exit 1; }
 cd "$(dirname "$0")/.."
 . scripts/lib/env.sh

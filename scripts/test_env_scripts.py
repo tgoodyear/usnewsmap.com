@@ -304,9 +304,12 @@ class StartJobWait(Stubbed):
         self.assertIn("started no execution", r.stderr)
 
     def test_wait_mins_is_a_number(self):
-        r = self.start("--wait-mins", "soon")
-        self.assertEqual(r.returncode, 2)
-        self.assertFalse(os.path.exists(self.log))
+        # An empty value (an unset variable) is refused, not read as no wait.
+        for value in ("soon", "", "-5"):
+            r = self.start("--wait-mins", value)
+            self.assertEqual(r.returncode, 2, repr(value))
+            self.assertIn("--wait-mins is a number of minutes", r.stderr)
+            self.assertFalse(os.path.exists(self.log))
 
 
 class TitlesSeed(Stubbed):
