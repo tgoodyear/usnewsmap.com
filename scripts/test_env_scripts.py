@@ -12,7 +12,8 @@ message). For a job execution (scripts/start-job.sh, and
 scripts/titles-seed.sh through it): STUB_EXECUTION (the started execution's name) and
 STUB_EXEC_STATUS (its status). For the settings store (#295): STUB_KEYS
 (the keys under the label, one per line), STUB_KV_<KEY> (a key's value),
-STUB_STORE_ERROR (every App Configuration call fails with that message);
+STUB_STORE_ERROR (every App Configuration call fails with that message),
+STUB_STORE_FAILS (the first that many are refused);
 it refuses a call without --auth-mode login. STUB_OUTPUTS (a stack's
 outputs as JSON), STUB_VALIDATE_ERROR (`stack sub validate` fails with that
 message), STUB_DELETED_VAULTS (soft-deleted vaults, one per line: the name,
@@ -72,6 +73,8 @@ case "$1 $2" in
       "$(sed -n 's/.*--label \([^ ]*\).*/\1/p' <<< "$*")" >> "$STUB_LOG.store"
     case "$*" in *"--auth-mode login"*) ;; *) echo "stub az: the store takes Entra ID only: $*" >&2; exit 9 ;; esac
     if [ -n "${STUB_STORE_ERROR:-}" ]; then echo "$STUB_STORE_ERROR" >&2; exit 1; fi
+    if [ "$(wc -l < "$STUB_LOG.store")" -le "${STUB_STORE_FAILS:-0}" ]; then
+      echo "ERROR: Operation returned an invalid status 'Forbidden'" >&2; exit 1; fi
     k=$(sed -n 's/.*--key \([^ ]*\).*/\1/p' <<< "$*")
     case "$3" in
       list) if [ -n "$k" ]; then v="STUB_KV_$k"; printf '%s\n' "${!v:-}"
@@ -791,6 +794,24 @@ class CommittedSettings(Stubbed):
         self.assertIn("--migrate", r.stderr)
         self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
 
+    def test_a_new_stores_role_is_waited_for(self):
+        # The new Data Owner assignment takes a while to apply: the first
+        # reads are refused, then one works.
+        self.local(USNM_EXPERIMENT="295")
+        r = self.lib(self.PROVISION.replace('echo "settings-store.sh $*"',
+                                            'echo "settings-store.sh $*"; local_set SETTINGS_STORE_ENDPOINT '
+                                            + self.EP), STUB_STORE_FAILS="2", STORE_RETRY_SECS="0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.count("may not apply yet"), 2)
+        self.assertEqual(len(self.store_calls()), 3)
+
+    def test_an_existing_stores_refusal_fails_at_once(self):
+        self.local(**self.STORE, USNM_EXPERIMENT="295")
+        r = self.lib(self.PROVISION, STUB_STORE_ERROR="ERROR: Operation returned an invalid status 'Forbidden'")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("App Configuration Data Owner", r.stderr)
+        self.assertEqual(len(self.store_calls()), 1)
+
     def test_a_store_that_names_no_endpoint_stops_the_provision(self):
         self.local(USNM_EXPERIMENT="295")
         r = self.lib(self.PROVISION)
@@ -1110,8 +1131,8 @@ class CommittedSettings(Stubbed):
         self.assertIn('USNM_SETTINGS_VAULT_ADMINS="id-1"', self.local_text())
 
     def test_what_if_validates_and_deploys_nothing(self):
-        self.local(**self.STORE)
-        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if')
+        self.local(**self.STORE, USNM_EXPERIMENT="295")
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if', STUB_STACK="3")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("deploy_stack --what-if", r.stdout)
         self.assertNotIn("settings-store", r.stdout)
@@ -1119,12 +1140,36 @@ class CommittedSettings(Stubbed):
                              for c in self.calls()))
 
     def test_what_if_without_a_store_shows_the_stores_too(self):
-        self.local(USNM_ALERT_EMAILS="ops@example.org")
+        self.local(USNM_ALERT_EMAILS="ops@example.org", USNM_EXPERIMENT="295")
         r = self.lib('deploy_stack() { echo "deploy_stack $*"; }\n'
-                     'settings_store_script() { echo "settings-store.sh $*"; }; provision_what_if')
+                     'settings_store_script() { echo "settings-store.sh $*"; }; provision_what_if', STUB_STACK="3")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("settings-store.sh --what-if --location eastus2", r.stdout)
         self.assertIn("deploy_stack --what-if", r.stdout)
+
+    def test_what_if_checks_devs_experiment_and_writes_nothing(self):
+        self.local(**self.STORE)
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if', STUB_STACK="3")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("dev exists only during an experiment", r.stderr)
+        # With one: the start goes to the deployment, not the local file.
+        self.local(**self.STORE, USNM_EXPERIMENT="295", USNM_VNET_ADDRESS_PREFIX=self.vnet())
+        r = self.lib("provision_what_if; echo \"started=$EXPERIMENT_STARTED_DRY_RUN\"", STUB_STACK="3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"started=\d{4}-\d\d-\d\dT")
+        self.assertNotIn("USNM_EXPERIMENT_STARTED", self.local_text())
+        self.assertTrue(any(c.startswith("stack sub validate") for c in self.calls()))
+
+    def test_what_if_without_the_guardrail_stack_shows_its_changes(self):
+        # A new subscription: the stack's preflight needs the definitions
+        # the provision deploys first.
+        self.local(**self.STORE, USNM_EXPERIMENT="295")
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no guard-rail stack usnm-guardrails yet", r.stdout)
+        self.assertIn("deployment sub what-if --location eastus2 --template-file infra/guardrails.bicep --only-show-errors",
+                      self.calls())
+        self.assertNotIn("deploy_stack", r.stdout)
 
     def vnet(self):
         # A private block, built from its parts (no private address is

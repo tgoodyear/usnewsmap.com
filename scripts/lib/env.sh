@@ -531,6 +531,7 @@ deploy_stack() (
     exit 1
   }
   valid_vnet_prefix "$USNM_VNET_ADDRESS_PREFIX" || exit 1
+  [ -z "$EXPERIMENT_STARTED_DRY_RUN" ] || export USNM_EXPERIMENT_STARTED=$EXPERIMENT_STARTED_DRY_RUN
   # The stack's name comes from the environment's; the template's must match.
   export AZURE_ENV_NAME=$ENV_NAME
   local location
@@ -651,6 +652,9 @@ vaults_recover() {
 # says so). A local SETTINGS_KEYVAULT, the name of the settings vault the
 # store replaced (#295), goes.
 settings_store_script() { scripts/settings-store.sh "$@"; }
+# Whether settings_store_ensure just created the store, so its new role may
+# not apply yet (load_store_after_create).
+STORE_CREATED=false
 settings_store_ensure() {
   local endpoint location
   local_del SETTINGS_KEYVAULT || return 1
@@ -661,6 +665,22 @@ settings_store_ensure() {
   settings_store_script --deploy --location "$location" || return 1
   endpoint=$(settings_store_endpoint) || return 1
   [ -n "$endpoint" ] || { echo "error: the settings store's stack $SETTINGS_STACK names no endpoint" >&2; return 1; }
+  STORE_CREATED=true
+}
+# load_store, which right after settings_store_ensure created the store can
+# be refused while the new App Configuration Data Owner assignment
+# propagates (up to about 15 minutes): then it's tried once a minute for 15
+# minutes. On an existing store a refusal fails at once.
+STORE_RETRY_SECS=${STORE_RETRY_SECS:-60}
+load_store_after_create() {
+  local try
+  $STORE_CREATED || { load_store; return; }
+  for try in $(seq 1 15); do
+    load_store 2> /dev/null && return 0
+    echo "the settings store's new role may not apply yet; trying again in ${STORE_RETRY_SECS}s ($try of 15)"
+    sleep "$STORE_RETRY_SECS"
+  done
+  load_store
 }
 # dev exists only while an experiment runs (#275; docs/operations.md, "Dev
 # environment lifecycle"), so its provision needs USNM_EXPERIMENT, the
@@ -669,6 +689,10 @@ settings_store_ensure() {
 # the group's own `started` while its `experiment` is the same, otherwise
 # now. teardown.sh's provision sets NO_EXPERIMENT_CHECK, since it only takes
 # the environment apart.
+# experiment_marker [--dry-run]: --dry-run (the what-if) keeps the start in
+# EXPERIMENT_STARTED_DRY_RUN, which deploy_stack exports, and writes
+# nothing.
+EXPERIMENT_STARTED_DRY_RUN=""
 experiment_marker() {
   local exp out g tagged started=""
   [ "$ENV_NAME" = dev ] || return 0
@@ -693,6 +717,7 @@ experiment_marker() {
     fi
   done
   [ -n "$started" ] || started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ "${1:-}" = --dry-run ]; then EXPERIMENT_STARTED_DRY_RUN=$started; return 0; fi
   aset USNM_EXPERIMENT_STARTED "$started"
 }
 # New roles and permissions take a minute or two to apply everywhere, so a
@@ -711,7 +736,7 @@ provision() {
   # A soft-deleted vault can't be taken over: recover it first.
   vaults_recover || die "not provisioning $ENV_NAME"
   settings_store_ensure || die "not provisioning $ENV_NAME"
-  load_store || die "not provisioning $ENV_NAME"
+  load_store_after_create || die "not provisioning $ENV_NAME"
   settings_check || die "not provisioning $ENV_NAME"
   experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
@@ -723,12 +748,16 @@ provision() {
   done
 }
 # What a provision would deploy, changing nothing (provision.sh --what-if):
-# the settings as provision reads them (from the store when it exists),
-# Azure's preflight validation of the stack, policy included, and the
-# template's changes. Without a store yet, its own what-if first, and the
-# private settings come from the local file.
+# the settings as provision reads them (from the store when it exists) and
+# checks them, dev's experiment marker included, then Azure's preflight
+# validation of the stack, policy included, and the template's changes.
+# Without a store yet, its own what-if first, and the private settings come
+# from the local file. The stack assigns the guard-rail definitions, so in a
+# subscription without them (no usnm-guardrails stack, which a provision
+# deploys first) only their what-if is shown: the stack's preflight needs
+# them.
 provision_what_if() {
-  local endpoint location
+  local endpoint location out
   endpoint=$(settings_store_endpoint) || die "no what-if for $ENV_NAME"
   location=$(stack_location) || die "no what-if for $ENV_NAME"
   if [ -z "$endpoint" ]; then
@@ -737,6 +766,15 @@ provision_what_if() {
   fi
   load_store || die "no what-if for $ENV_NAME"
   settings_check || die "no what-if for $ENV_NAME"
+  experiment_marker --dry-run || die "no what-if for $ENV_NAME"
   ocr_nodes_off_check || die "no what-if for $ENV_NAME"
+  if ! out=$(az stack sub show -n "$GUARDRAILS_STACK" --query name -o tsv 2>&1); then
+    grep -qiE 'NotFound|could not be found' <<< "$out" || die "can't check $GUARDRAILS_STACK: $out"
+    echo "no guard-rail stack $GUARDRAILS_STACK yet: the provision deploys it first; its changes:"
+    az deployment sub what-if --location "$location" --template-file infra/guardrails.bicep --only-show-errors ||
+      die "the what-if of $GUARDRAILS_STACK failed"
+    echo "the stack $STACK assigns its definitions, so its preflight runs once they exist"
+    return 0
+  fi
   deploy_stack --what-if || die "the what-if of $STACK failed"
 }
