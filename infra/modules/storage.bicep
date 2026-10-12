@@ -91,7 +91,7 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
         {
           // The Quickwit metastore rewrites small JSON files often, and every
           // merge deletes splits, which versioning would otherwise keep (#245).
-          // Deleted versions stay in the 14-day soft delete above, so the
+          // Deleted versions stay in the 3-day soft delete above, so the
           // metastore is still recoverable.
           name: 'prune-index-versions'
           enabled: true
@@ -151,7 +151,7 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           // are timed by their creation. The API copies each day, shuffled,
           // to searches/days/ an hour after it ends; these go a week after
           // they're written (STAGING_DAYS in crates/usnm-api/src/searchlog.rs),
-          // then stay in soft delete for 14 days (ADR-0012 counts that).
+          // then stay in soft delete for 3 days (ADR-0012 counts that).
           name: 'expire-search-staging'
           enabled: true
           type: 'Lifecycle'
