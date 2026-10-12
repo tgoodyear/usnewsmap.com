@@ -2021,6 +2021,19 @@ async fn a_titles_pages_are_listed_without_a_query_only_when_switched_on() {
     }
     let (status, _, _) = get(&s, "/v1/hits?lccn=sn99999999").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get(&s, "/v1/hits?lccn=sn99999999&v=fixture-v1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // A stale `v` is redirected before the title is looked up: a title of
+    // an older version may be gone from this one, and the client learns of
+    // the new version from the redirect, not from a 404 at the old URL.
+    let (status, headers, body) = get(&s, "/v1/hits?lccn=sn99999999&v=old-version").await;
+    assert_eq!(status, StatusCode::TEMPORARY_REDIRECT, "{body}");
+    assert_eq!(header_str(&headers, header::CACHE_CONTROL), "no-store");
+    let location = header_str(&headers, header::LOCATION);
+    assert!(
+        location.contains("lccn=sn99999999") && location.ends_with("&v=fixture-v1"),
+        "{location}"
+    );
     // A search with `q` answers as before, under a key of its own.
     let (status, _, searched) = get(&s, "/v1/hits?q=gold&lccn=sn99000002&limit=5").await;
     assert_eq!(status, StatusCode::OK);

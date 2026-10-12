@@ -273,9 +273,18 @@ describe("the newspaper filter in the search form", () => {
     const button = screen.getByRole("button", { name: "Newspapers: Daily Alta California" });
     fireEvent.click(button);
     fireEvent.click(screen.getByRole("button", { name: "Browse pages of Daily Alta California" }));
-    expect(onBrowse).toHaveBeenCalledWith("sn6");
+    expect(onBrowse).toHaveBeenCalledWith("sn6", expect.any(Function));
     // The filter closes, so the pages show.
     expect(button.getAttribute("aria-expanded")).toBe("false");
+    // Closing the pages puts focus back: on the filter's trigger while the
+    // panel holding "Browse pages" is closed…
+    const returnFocus = onBrowse.mock.calls[0]![1] as () => void;
+    returnFocus();
+    expect(document.activeElement).toBe(button);
+    // …and on "Browse pages" itself when it can take focus again.
+    fireEvent.click(button);
+    returnFocus();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Browse pages of Daily Alta California" }));
   });
 
   it("isn't offered for a Congress search, which drops the filter", () => {

@@ -453,7 +453,6 @@ async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Resp
             ))
         }
     };
-    known_title(rd, &title)?;
     let PageParams {
         limit,
         sort,
@@ -483,6 +482,10 @@ async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Resp
         Ok(p) => p,
         Err(redirect) => return Ok(*redirect),
     };
+    // After a stale `v` is redirected: a title of an older version may be
+    // gone from this one, and the client learns of the new version from the
+    // redirect rather than a 404 at the old URL (as `/v1/titles/{lccn}`).
+    known_title(rd, &title)?;
     // No query, so no American Stories mark: the list is the same whether
     // or not searches cover that text.
     let key = format!("{serving}|hits|{canonical}");

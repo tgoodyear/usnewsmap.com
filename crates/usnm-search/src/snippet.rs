@@ -281,18 +281,20 @@ pub const OPENING: usize = 2 * CONTEXT;
 /// text goes on, and HTML-escaped with no `<mark>`. No fragment for a page
 /// with no text. Both backends use it, on the text the hit already carries.
 pub fn opening_snippet(text: &str) -> Vec<String> {
+    // Whitespace is made one space before the cut is chosen, so a long run
+    // of spaces or line breaks in the OCR neither spends the budget nor
+    // leaves `…` after nothing but trailing whitespace.
     let chars: Vec<char> = text
-        .trim_start()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
         .chars()
-        .map(|c| if c.is_whitespace() { ' ' } else { c })
         .collect();
     if chars.is_empty() {
         return Vec::new();
     }
     let to = word_end(&chars, OPENING.min(chars.len()));
-    let mut excerpt = collapse_spaces(&chars[..to].iter().collect::<String>())
-        .trim_end()
-        .to_owned();
+    let mut excerpt = chars[..to].iter().collect::<String>().trim_end().to_owned();
     if to < chars.len() {
         excerpt.push_str(" …");
     }
@@ -340,6 +342,37 @@ mod tests {
         assert!(cut.chars().count() <= OPENING + 2, "{cut}");
         let word = "x".repeat(OPENING + 10);
         assert_eq!(opening_snippet(&format!("{word} y")), [format!("{word} …")]);
+    }
+
+    #[test]
+    fn an_opening_excerpt_counts_a_run_of_whitespace_as_one_space() {
+        // A long run of spaces and line breaks takes one character of the
+        // budget, so the words after it are still in the excerpt.
+        let gap = format!("{}{}", " ".repeat(OPENING * 3), "\n".repeat(OPENING));
+        assert_eq!(
+            opening_snippet(&format!("The{gap}Omaha\t\t\tBee")),
+            ["The Omaha Bee"]
+        );
+        let words = "word ".repeat(OPENING / 5 - 2);
+        let spaced = format!("lead{gap}{words}end");
+        let want = format!("lead {words}end");
+        assert!(want.chars().count() <= OPENING, "{want}");
+        assert_eq!(opening_snippet(&spaced), [want]);
+        // Trailing whitespace, however long, is not more text: no `…`.
+        assert_eq!(
+            opening_snippet(&format!("The Omaha Bee{}", " \n".repeat(OPENING * 2))),
+            ["The Omaha Bee"]
+        );
+        let full = "x".repeat(OPENING);
+        assert_eq!(
+            opening_snippet(&format!("{full}{}", "\n ".repeat(OPENING))),
+            [full.as_str()]
+        );
+        // Only the text after the cut makes `…`.
+        assert_eq!(
+            opening_snippet(&format!("{full}{} y", "\n".repeat(50))),
+            [format!("{full} …")]
+        );
     }
 
     #[test]

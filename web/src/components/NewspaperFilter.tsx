@@ -133,9 +133,27 @@ interface Props {
   /**
    * Lists a chosen paper's pages without a search word (#274). Given only
    * when the API lists pages that way (`/v1/meta`'s `browse_pages`); each
-   * chosen paper then has "Browse pages".
+   * chosen paper then has "Browse pages". `returnFocus` puts focus back
+   * where the list was opened from, for when it closes.
    */
-  onBrowse?: (lccn: string) => void;
+  onBrowse?: (lccn: string, returnFocus: () => void) => void;
+}
+
+/**
+ * Focus back on the "Browse pages" button `from` while it can take focus,
+ * else on the filter's trigger (the panel holding `from` is closed, or the
+ * paper is no longer chosen), so closing the pages never leaves focus on
+ * the page's body.
+ */
+function focusOpener(from: HTMLElement, trigger: HTMLElement | null) {
+  const usable = (el: HTMLElement | null) => !!el && el.isConnected && !el.closest("[hidden]");
+  const to = usable(from)
+    ? from
+    : usable(trigger)
+      ? trigger
+      : // The search form was remounted: the trigger is a new element.
+        document.querySelector<HTMLElement>(".papers-filter__button");
+  to?.focus();
 }
 
 export function NewspaperFilter({ id, titles, failed = false, onWant, value, onChange, onBrowse }: Props) {
@@ -341,9 +359,10 @@ export function NewspaperFilter({ id, titles, failed = false, onWant, value, onC
                       <button
                         type="button"
                         className="link-button"
-                        onClick={() => {
+                        onClick={(e) => {
+                          const from = e.currentTarget;
                           setOpen(false);
-                          onBrowse(lccn);
+                          onBrowse(lccn, () => focusOpener(from, button.current));
                         }}
                       >
                         Browse pages <span className="visually-hidden">of {t?.title ?? lccn}</span>

@@ -79,8 +79,16 @@ export function App() {
   const wantTitlesNow = useCallback(() => setWantTitles(true), []);
   // A newspaper's pages without a search word (07 §7.13, #274), opened from
   // the newspaper filter when the API lists them (`browse_pages`).
-  const [browsing, setBrowsing] = useState<{ lccn: string; sort: PaperSort } | null>(null);
-  const browsePaper = useCallback((lccn: string) => setBrowsing({ lccn, sort: "oldest" }), []);
+  // `returnFocus` puts focus back on what opened the list when it closes.
+  const [browsing, setBrowsing] = useState<{
+    lccn: string;
+    sort: PaperSort;
+    returnFocus: () => void;
+  } | null>(null);
+  const browsePaper = useCallback(
+    (lccn: string, returnFocus: () => void) => setBrowsing({ lccn, sort: "oldest", returnFocus }),
+    [],
+  );
 
   // Parsed afresh on every URL change; a stable key keeps queries cached.
   const paramsKey = JSON.stringify(searchParams(view));
@@ -560,7 +568,10 @@ export function App() {
           sort={browsing.sort}
           onSort={(sort) => setBrowsing({ ...browsing, sort })}
           synthetic={meta.data.synthetic}
-          onClose={() => setBrowsing(null)}
+          onClose={() => {
+            setBrowsing(null);
+            browsing.returnFocus();
+          }}
         />
       )}
 

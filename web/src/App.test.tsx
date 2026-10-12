@@ -263,8 +263,20 @@ describe("browsing a newspaper's pages without a search word (#274)", () => {
     await waitFor(() =>
       expect(api.titlePages).toHaveBeenCalledWith("sn82014424", "v1", "newest", null, expect.anything()),
     );
+    // Closing puts focus back on the newspaper filter, not on the body:
+    // with the close button…
+    const trigger = screen.getByRole("button", { name: "Newspapers: The Atlanta Intelligencer" });
     fireEvent.click(screen.getByRole("button", { name: "Close the pages" }));
     expect(screen.queryByRole("heading", { name: /^Pages of/ })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    // …and with Escape.
+    fireEvent.click(trigger);
+    fireEvent.click(browseButton()!);
+    const again = await screen.findByRole("heading", { name: "Pages of The Atlanta Intelligencer" });
+    expect(document.activeElement).toBe(again);
+    fireEvent.keyDown(again, { key: "Escape" });
+    expect(screen.queryByRole("heading", { name: /^Pages of/ })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("isn't offered when the API doesn't list pages without a word", async () => {

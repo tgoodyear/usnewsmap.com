@@ -20,7 +20,7 @@ interface Props {
   /** Asks for the newspapers' list: it loads when the newspaper filter is first opened. */
   onWantTitles?: () => void;
   /** Lists a newspaper's pages without a search word (#274), when `meta.browse_pages` says the API can. */
-  onBrowsePaper?: (lccn: string) => void;
+  onBrowsePaper?: (lccn: string, returnFocus: () => void) => void;
 }
 
 const MODES: { value: Mode; label: string }[] = [
