@@ -69,6 +69,10 @@ case "$ACTION" in
     ;;
   deploy)
     need_stack_az
+    # A subscription that has never had a store doesn't have the provider
+    # registered, and the deployment would fail with MissingSubscriptionRegistration.
+    [ "$(az provider show -n Microsoft.AppConfiguration --query registrationState -o tsv 2> /dev/null)" = Registered ] ||
+      az provider register -n Microsoft.AppConfiguration --wait -o none
     az stack sub create --name "$STACK" --location "$LOCATION" \
       --template-file infra/settings/main.bicep \
       --parameters location="$LOCATION" admins="$ADMINS" \

@@ -110,7 +110,7 @@ az account set --subscription "$SUBSCRIPTION"
 step "Registering resource providers"
 for ns in Microsoft.App Microsoft.ContainerRegistry Microsoft.DocumentDB Microsoft.Web \
   Microsoft.Network Microsoft.Storage Microsoft.OperationalInsights Microsoft.Insights \
-  Microsoft.ManagedIdentity Microsoft.Consumption Microsoft.PolicyInsights; do
+  Microsoft.ManagedIdentity Microsoft.Consumption Microsoft.PolicyInsights Microsoft.AppConfiguration; do
   [ "$(az provider show -n "$ns" --query registrationState -o tsv 2> /dev/null)" = Registered ] ||
     az provider register -n "$ns" --wait -o none
 done

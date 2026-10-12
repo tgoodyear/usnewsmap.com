@@ -13,7 +13,8 @@ scripts/titles-seed.sh through it): STUB_EXECUTION (the started execution's name
 STUB_EXEC_STATUS (its status). For the settings store (#295): STUB_KEYS
 (the keys under the label, one per line), STUB_KV_<KEY> (a key's value),
 STUB_STORE_ERROR (every App Configuration call fails with that message),
-STUB_STORE_FAILS (the first that many are refused);
+STUB_STORE_FAILS (the first that many are refused); STUB_LIVE_VAULT (the
+one Key Vault `keyvault show` finds);
 it refuses a call without --auth-mode login. STUB_OUTPUTS (a stack's
 outputs as JSON), STUB_VALIDATE_ERROR (`stack sub validate` fails with that
 message), STUB_DELETED_VAULTS (soft-deleted vaults, one per line: the name,
@@ -93,6 +94,9 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
   "group create") ;;
   "keyvault list-deleted") [ -z "${STUB_DELETED_VAULTS:-}" ] || printf '%b\n' "$STUB_DELETED_VAULTS" ;;
   "keyvault recover") ;;
+  "keyvault show")
+    if [ -n "${STUB_LIVE_VAULT:-}" ] && [ "$4" = "$STUB_LIVE_VAULT" ]; then echo "$4"
+    else echo "ERROR: (ResourceNotFound) The Resource 'Microsoft.KeyVault/vaults/$4' was not found." >&2; exit 3; fi ;;
   "group show")
     if [ -n "${STUB_TAGGED_GROUP:-}" ] && [ "$4" != "$STUB_TAGGED_GROUP" ]; then
       echo "ERROR: (ResourceGroupNotFound) Resource group '$4' could not be found." >&2; exit 3; fi
@@ -825,6 +829,24 @@ class CommittedSettings(Stubbed):
         self.assertNotIn("settings-store.sh", r.stdout)
         # The settings vault's name from before the store goes.
         self.assertNotIn("SETTINGS_KEYVAULT", self.local_text())
+
+    def test_a_settings_vault_that_still_exists_stops_the_provision(self):
+        # Its secrets would go with it: they're copied first.
+        self.local(**self.STORE, USNM_EXPERIMENT="295", SETTINGS_KEYVAULT="usnmcorekvdevabc123")
+        r = self.lib(self.PROVISION, STUB_LIVE_VAULT="usnmcorekvdevabc123")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("the settings vault usnmcorekvdevabc123 still exists", r.stderr)
+        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+        self.assertEqual(self.store_calls(), [])
+
+    def test_what_if_records_nothing(self):
+        # A new checkout: the endpoint comes from the stack and isn't written.
+        self.local(USNM_EXPERIMENT="295")
+        r = self.lib('deploy_stack() { echo "deploy_stack $*"; }; provision_what_if',
+                     STUB_STACK="3", **self.OUTPUTS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.local_text(), 'USNM_EXPERIMENT="295"\n')
+        self.assertIn("deploy_stack --what-if", r.stdout)
 
     @staticmethod
     def deleted(name, group):

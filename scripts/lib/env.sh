@@ -317,12 +317,14 @@ for kv in json.loads(sys.argv[1] or "[]"):
 # checkout), the store stack's output, which is then recorded there. Empty
 # before the store exists. Every read and write of a private setting goes
 # through it, so none takes a store it can't name for no store.
+# SETTINGS_READ_ONLY (the what-if) records nothing.
+SETTINGS_READ_ONLY=false
 settings_store_endpoint() {
   local endpoint
   endpoint=$(local_get SETTINGS_STORE_ENDPOINT) || return 1
   if [ -z "$endpoint" ]; then
     endpoint=$(stack_settings_store) || return 1
-    [ -z "$endpoint" ] || local_set SETTINGS_STORE_ENDPOINT "$endpoint" || return 1
+    [ -z "$endpoint" ] || $SETTINGS_READ_ONLY || local_set SETTINGS_STORE_ENDPOINT "$endpoint" || return 1
   fi
   printf '%s\n' "$endpoint"
 }
@@ -650,14 +652,24 @@ vaults_recover() {
 # subscription creates it, in the environment's region. Its private
 # settings then move in with scripts/settings.sh --migrate (settings_check
 # says so). A local SETTINGS_KEYVAULT, the name of the settings vault the
-# store replaced (#295), goes.
+# store replaced (#295), goes, unless that vault still exists: its secrets
+# would be lost with it (the stack no longer declares it), so the provision
+# stops until they're copied.
 settings_store_script() { scripts/settings-store.sh "$@"; }
 # Whether settings_store_ensure just created the store, so its new role may
 # not apply yet (load_store_after_create).
 STORE_CREATED=false
 settings_store_ensure() {
-  local endpoint location
-  local_del SETTINGS_KEYVAULT || return 1
+  local endpoint location vault out
+  vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  if [ -n "$vault" ]; then
+    if out=$(az keyvault show -n "$vault" --query name -o tsv 2>&1); then
+      echo "error: the settings vault $vault still exists, and this provision would delete it with its secrets: copy each to the settings store first (scripts/settings.sh --env $ENV_NAME --key KEY --value \"\$(az keyvault secret show --vault-name $vault --name KEY-WITH-HYPHENS --query value -o tsv)\"), then remove SETTINGS_KEYVAULT from $ENV_FILE" >&2
+      return 1
+    fi
+    grep -qiE 'NotFound|not found' <<< "$out" || { echo "error: can't check the settings vault $vault: $out" >&2; return 1; }
+    local_del SETTINGS_KEYVAULT || return 1
+  fi
   endpoint=$(settings_store_endpoint) || return 1
   [ -z "$endpoint" ] || return 0
   location=$(stack_location) || return 1
@@ -758,6 +770,7 @@ provision() {
 # them.
 provision_what_if() {
   local endpoint location out
+  SETTINGS_READ_ONLY=true
   endpoint=$(settings_store_endpoint) || die "no what-if for $ENV_NAME"
   location=$(stack_location) || die "no what-if for $ENV_NAME"
   if [ -z "$endpoint" ]; then
