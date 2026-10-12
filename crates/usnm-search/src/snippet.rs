@@ -271,6 +271,34 @@ pub fn matched_in(
     }
 }
 
+/// Characters of a page's opening excerpt when it is listed without a
+/// query (#274): two lines of print, as a fragment around a match is.
+pub const OPENING: usize = 2 * CONTEXT;
+
+/// A page listed without a query (`/v1/hits?lccn=…` with no `q`, #274):
+/// the first [`OPENING`] characters of its text, cut at the end of a word,
+/// with columns' line breaks and runs of spaces as one space, `…` when the
+/// text goes on, and HTML-escaped with no `<mark>`. No fragment for a page
+/// with no text. Both backends use it, on the text the hit already carries.
+pub fn opening_snippet(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text
+        .trim_start()
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let to = word_end(&chars, OPENING.min(chars.len()));
+    let mut excerpt = collapse_spaces(&chars[..to].iter().collect::<String>())
+        .trim_end()
+        .to_owned();
+    if to < chars.len() {
+        excerpt.push_str(" …");
+    }
+    vec![mark_html(&[(false, excerpt.as_str())])]
+}
+
 fn collapse_spaces(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut space = false;
@@ -295,6 +323,23 @@ mod tests {
 
     fn snip(text: &str, q: &str) -> Vec<String> {
         text_snippets(text, &parse(q).unwrap(), TextLayout::Separate)
+    }
+
+    #[test]
+    fn an_opening_excerpt_is_the_first_words_escaped_and_unmarked() {
+        assert_eq!(
+            opening_snippet("  The <Bee>\n\nOmaha  & Co."),
+            ["The &lt;Bee&gt; Omaha &amp; Co."]
+        );
+        assert!(opening_snippet("").is_empty());
+        assert!(opening_snippet(" \n ").is_empty());
+        // A long text is cut at the end of the word the limit falls in.
+        let long = format!("{} tail", "word ".repeat(40));
+        let cut = &opening_snippet(&long)[0];
+        assert!(cut.ends_with("word …"), "{cut}");
+        assert!(cut.chars().count() <= OPENING + 2, "{cut}");
+        let word = "x".repeat(OPENING + 10);
+        assert_eq!(opening_snippet(&format!("{word} y")), [format!("{word} …")]);
     }
 
     #[test]
