@@ -496,12 +496,18 @@ ocr_nodes_off_check() {
 # it's recovered when they're on; the settings vault
 # (usnmcorekv<env><suffix>, #295) always, as the stack always has one.
 # Prod's have purge protection and are recovered the same way.
+# Both are in rg-usnm-<env>, whose name is fixed (main.bicep), so this
+# doesn't need the local file's AZURE_RESOURCE_GROUP: a rebuild after a
+# teardown starts from a local file without it. A vault is recovered into
+# its old group, so a group the teardown deleted is created first, as the
+# stack would (the stack then takes it over, with its tags). A recovered
+# settings vault is recorded (SETTINGS_KEYVAULT, RECOVERED_SETTINGS_VAULT),
+# so load_vault reads it before a stack exists to name it.
+RECOVERED_SETTINGS_VAULT=""
 vaults_recover() {
-  local nodes rg out v want="starts_with(name, 'usnmcorekv')"
+  local nodes out v exists location rg="rg-usnm-$ENV_NAME" want="starts_with(name, 'usnmcorekv')"
   nodes=$(aget USNM_OCR_NODES) || return 1
   [ "$nodes" != true ] || want="($want || starts_with(name, 'usnmocrkv'))"
-  rg=$(aget AZURE_RESOURCE_GROUP) || return 1
-  [ -n "$rg" ] || return 0
   # Only a vault deleted from this environment's own group: the name prefix
   # alone could match another environment's vault (the suffix comes from the
   # full environment name), so the original vault id must name this group.
@@ -510,10 +516,40 @@ vaults_recover() {
     -o tsv 2>&1) ||
     { echo "error: can't list deleted Key Vaults: $out" >&2; return 1; }
   [ -n "$out" ] || return 0
+  exists=$(az group exists -n "$rg" -o tsv) || { echo "error: can't check whether $rg exists" >&2; return 1; }
+  if [ "$exists" != true ]; then
+    location=$(stack_location) || return 1
+    echo "creating $rg to recover its soft-deleted Key Vaults into"
+    az group create -n "$rg" -l "$location" --tags project=usnewsmap "environment=$ENV_NAME" -o none || return 1
+  fi
   while IFS= read -r v; do
     echo "recovering soft-deleted Key Vault $v before the deployment re-creates it"
     az keyvault recover --name "$v" -o none || return 1
+    if [[ $v == usnmcorekv* ]]; then
+      local_set SETTINGS_KEYVAULT "$v" || return 1
+      RECOVERED_SETTINGS_VAULT=$v
+    fi
   done <<< "$out"
+}
+# The local file's SETTINGS_KEYVAULT is a stack output, which can outlive
+# its vault: teardown.sh purges dev's, and stand-up.sh starts again from the
+# local file a teardown kept. Before provision reads the vault, the stack's
+# output wins; without a stack (or that output), only a vault vaults_recover
+# just brought back is kept, and any other name is forgotten.
+settings_vault_current() {
+  local vault stack
+  vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  # Without one, load_vault asks the stack itself.
+  [ -n "$vault" ] || return 0
+  [ "$vault" != "$RECOVERED_SETTINGS_VAULT" ] || return 0
+  stack=$(stack_settings_vault) || return 1
+  [ "$stack" != "$vault" ] || return 0
+  if [ -n "$stack" ]; then
+    local_set SETTINGS_KEYVAULT "$stack"
+  else
+    echo "forgetting the settings vault $vault in $ENV_FILE: the stack usnm-$ENV_NAME doesn't name it (a teardown deleted it)"
+    local_del SETTINGS_KEYVAULT
+  fi
 }
 # dev exists only while an experiment runs (#275; docs/operations.md, "Dev
 # environment lifecycle"), so its provision needs USNM_EXPERIMENT, the
@@ -556,11 +592,14 @@ deploy_env_guardrails() {
   deploy_guardrails "$location" "$emails" "$dev_location"
 }
 provision() {
+  # A soft-deleted vault can't be read: recover it before reading the
+  # settings vault, and forget one that's gone.
+  vaults_recover || die "not provisioning $ENV_NAME"
+  settings_vault_current || die "not provisioning $ENV_NAME"
   load_vault || die "not provisioning $ENV_NAME"
   settings_check || die "not provisioning $ENV_NAME"
   experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
-  vaults_recover || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
     deploy_env_guardrails && deploy_stack && save_outputs && return 0
     [ "$attempt" = 3 ] && die "provisioning failed three times"

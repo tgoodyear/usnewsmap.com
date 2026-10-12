@@ -12,7 +12,9 @@ scripts/titles-seed.sh through it): STUB_EXECUTION (the started execution's name
 STUB_EXEC_STATUS (its status). For the settings vault (#295): STUB_SECRETS
 (the secrets' names, one per line), STUB_SECRET_<NAME> (a secret's value,
 its hyphens as underscores), STUB_VAULT_ERROR (listing or setting secrets
-fails with that message) and STUB_OUTPUTS (the stack's outputs as JSON).
+fails with that message), STUB_OUTPUTS (the stack's outputs as JSON),
+STUB_DELETED_VAULTS (soft-deleted vaults, one per line) and
+STUB_GROUP_EXISTS (`az group exists`; unset: false).
 `az account set` selects a subscription (STUB_ACCOUNTS: the ones az is
 signed in to, one per line; unset: any), and each vault call is logged with
 the selected one to STUB_LOG.vault. It logs each call to STUB_LOG.
@@ -65,6 +67,10 @@ case "$1 $2" in
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
+  "group exists") echo "${STUB_GROUP_EXISTS:-false}" ;;
+  "group create") ;;
+  "keyvault list-deleted") [ -z "${STUB_DELETED_VAULTS:-}" ] || printf '%b\n' "$STUB_DELETED_VAULTS" ;;
+  "keyvault recover") ;;
   "group show")
     if [ -n "${STUB_TAGS+x}" ]; then printf '%b\n' "$STUB_TAGS"
     else echo "ERROR: (ResourceGroupNotFound) Resource group 'rg-usnm-dev' could not be found." >&2; exit 3; fi ;;
@@ -602,6 +608,76 @@ class CommittedSettings(Stubbed):
         self.assertEqual(r.returncode, 1)
         self.assertIn("not provisioning prod", r.stderr)
         self.assertFalse(os.path.exists(self.log) and any(c.startswith("stack sub create") for c in self.calls()))
+
+    # Provision up to the deployment, which the stub can't answer.
+    PROVISION = "deploy_env_guardrails() { :; }; deploy_stack() { :; }; save_outputs() { :; }; provision"
+
+    def test_a_rebuild_recovers_the_soft_deleted_settings_vault(self):
+        # After a teardown, prod's local file is new: no resource group, no
+        # vault name, and the group is gone; the purge-protected vault holds
+        # its name, so it's recovered into a new group and read.
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n', env="prod")
+        r = self.lib(self.PROVISION, env_name="prod", STUB_DELETED_VAULTS="usnmcorekvprodabc123",
+                     STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        listed = next(c for c in calls if c.startswith("keyvault list-deleted"))
+        self.assertIn("/resourceGroups/rg-usnm-prod/providers/", listed)
+        create = calls.index("group create -n rg-usnm-prod -l eastus2 --tags project=usnewsmap environment=prod -o none")
+        recover = calls.index("keyvault recover --name usnmcorekvprodabc123 -o none")
+        listing = calls.index("keyvault secret list --vault-name usnmcorekvprodabc123 --query [].name -o tsv")
+        self.assertLess(create, recover)
+        self.assertLess(recover, listing)
+        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvprodabc123"', self.local_text("prod"))
+        self.assertNotIn("forgetting", r.stdout)
+
+    def test_a_recovery_into_a_group_that_exists_creates_none(self):
+        self.settings_file('AZURE_SUBSCRIPTION_ID="sub-1"\n', env="prod")
+        r = self.lib(self.PROVISION, env_name="prod", STUB_DELETED_VAULTS="usnmcorekvprodabc123",
+                     STUB_GROUP_EXISTS="true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(any(c.startswith("group create") for c in self.calls()))
+        self.assertIn("keyvault recover --name usnmcorekvprodabc123 -o none", self.calls())
+
+    def test_a_soft_deleted_recorded_vault_is_recovered_before_its_secrets_are_read(self):
+        self.local(**self.VAULT, AZURE_RESOURCE_GROUP="rg-usnm-dev", USNM_EXPERIMENT="295")
+        r = self.lib(self.PROVISION, STUB_DELETED_VAULTS="usnmcorekvdevabc123", STUB_GROUP_EXISTS="true",
+                     STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        recover = calls.index("keyvault recover --name usnmcorekvdevabc123 -o none")
+        listing = calls.index("keyvault secret list --vault-name usnmcorekvdevabc123 --query [].name -o tsv")
+        self.assertLess(recover, listing)
+        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+
+    def test_a_stand_up_after_a_teardown_forgets_the_purged_vault(self):
+        # teardown.sh -> stand-up.sh: the kept local file (one from before
+        # teardown dropped the name) names dev's purged vault, and there's
+        # no stack: provision forgets it instead of failing to list it.
+        self.local(**self.VAULT, AZURE_RESOURCE_GROUP="rg-usnm-dev", USNM_EXPERIMENT="295",
+                   USNM_ALERT_EMAILS="ops@example.org")
+        r = self.lib(self.PROVISION)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("forgetting the settings vault usnmcorekvdevabc123", r.stdout)
+        self.assertNotIn("SETTINGS_KEYVAULT", self.local_text())
+        self.assertFalse(any(c.startswith("keyvault secret") for c in self.calls()))
+        # The private setting is still read from the local file.
+        r = self.lib("aget USNM_ALERT_EMAILS")
+        self.assertEqual(r.stdout.strip(), "ops@example.org")
+
+    def test_the_stacks_vault_name_wins_over_a_stale_one(self):
+        self.local(SETTINGS_KEYVAULT="usnmcorekvdevold000", USNM_EXPERIMENT="295")
+        r = self.lib(self.PROVISION,
+                     STUB_OUTPUTS='{"settingS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+        self.assertIn("keyvault secret list --vault-name usnmcorekvdevabc123 --query [].name -o tsv", self.calls())
+
+    def test_teardown_drops_the_vault_name_from_the_kept_settings(self):
+        with open(os.path.join(HERE, "teardown.sh")) as f:
+            src = f.read()
+        kept = src.index('mv "$ENV_FILE" "$ENV_FILE.deleted-')
+        self.assertLess(src.index("adel SETTINGS_KEYVAULT"), kept)
 
     def vault_sets(self):
         return [c for c in self.calls() if c.startswith("keyvault secret set")]
