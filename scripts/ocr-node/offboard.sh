@@ -248,9 +248,9 @@ if [ "$(. /etc/os-release && printf %s "${ID:-}")" = rhel ] && command -v subscr
     insights-client --unregister || echo "warning: insights-client --unregister failed"
   fi
   # Stop the daily upload too, registered or not, so a node kept or reused
-  # after offboarding doesn't run an unregistered client every day.
+  # after offboarding does not run an unregistered client every day.
   if systemctl list-unit-files insights-client.timer > /dev/null 2>&1; then
-    systemctl disable --now insights-client.timer || echo "warning: couldn't disable insights-client.timer"
+    systemctl disable --now insights-client.timer || echo "warning: could not disable insights-client.timer"
   fi
   if subscription-manager identity > /dev/null 2>&1; then
     subscription-manager unregister || echo "warning: subscription-manager unregister failed"
