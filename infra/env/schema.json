@@ -58,13 +58,13 @@
       "x-usnm-visibility": "public",
       "type": "integer"
     },
-    "USNM_BUDGET_START": {
-      "x-usnm-visibility": "public",
-      "type": "string"
-    },
     "USNM_BROWSE_PAGES": {
       "x-usnm-visibility": "public",
       "type": "boolean"
+    },
+    "USNM_BUDGET_START": {
+      "x-usnm-visibility": "public",
+      "type": "string"
     },
     "USNM_CONGRESS": {
       "x-usnm-visibility": "public",
