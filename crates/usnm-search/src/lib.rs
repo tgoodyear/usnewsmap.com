@@ -561,9 +561,9 @@ pub trait SearchBackend: Send + Sync {
     /// refuses.
     ///
     /// With `after`, only the pages after that key in `page.sort` order
-    /// ([`BrowseKey::precedes`]), and `total` counts those alone: the
-    /// caller adds the pages it already listed. `page.offset` still skips
-    /// from there (the API sends 0 with `after`).
+    /// ([`BrowseKey::precedes`]), and `total` counts those alone (the API
+    /// returns it as is: the pages not yet listed). `page.offset` still
+    /// skips from there (the API sends 0 with `after`).
     async fn browse(
         &self,
         _indexes: &IndexSet,
