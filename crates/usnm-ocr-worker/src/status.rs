@@ -82,6 +82,21 @@ impl std::fmt::Debug for Tracker {
     }
 }
 
+fn open_journal(p: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+}
+
+/// Whether `f` is still the file at `path`.
+fn same_file(f: &std::fs::File, path: &std::path::Path) -> bool {
+    match (f.metadata(), std::fs::metadata(path)) {
+        (Ok(a), Ok(b)) => journal_id(&a) == journal_id(&b),
+        _ => false,
+    }
+}
+
 /// A journal file's identity: its device and inode, which change when the
 /// file is replaced, so the dashboard reads a new one from the start.
 #[cfg(unix)]
@@ -113,10 +128,7 @@ impl Tracker {
     ) -> anyhow::Result<Self> {
         let journal = match journal {
             Some(p) => {
-                let f = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&p)
+                let f = open_journal(&p)
                     .map_err(|e| anyhow::anyhow!("opening the journal {}: {e}", p.display()))?;
                 Some((p, Mutex::new(f)))
             }
@@ -223,7 +235,18 @@ impl Tracker {
                 Err(_) => return,
             };
             line.push(b'\n');
-            if let Err(e) = f.lock().expect("journal lock").write_all(&line) {
+            let mut f = f.lock().expect("journal lock");
+            // The file at the path may have been replaced (and the
+            // dashboard told so by its new id): write to the one there.
+            if !same_file(&f, path) {
+                match open_journal(path) {
+                    Ok(new) => *f = new,
+                    Err(e) => {
+                        tracing::warn!(error = %e, path = %path.display(), "can't reopen the journal")
+                    }
+                }
+            }
+            if let Err(e) = f.write_all(&line) {
                 tracing::warn!(error = %e, path = %path.display(), "can't write the journal");
             }
         }
@@ -574,6 +597,23 @@ mod tests {
         // Nothing was taken.
         assert_eq!(q.approximate_count(DEADLETTER).await.unwrap(), 2);
         assert!(s.error.is_none());
+    }
+
+    #[test]
+    fn a_replaced_journal_is_written_to_where_it_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = dir.path().join("journal.jsonl");
+        let t = Tracker::new(About::default(), Some(journal.clone()), None).unwrap();
+        t.end(page("sn1_1890-01-01_ed-1_seq-1", "done", "loc"));
+        let before = t.status().journal_id;
+        std::fs::rename(&journal, dir.path().join("old.jsonl")).unwrap();
+        std::fs::write(&journal, "").unwrap();
+        t.end(page("sn1_1890-01-01_ed-1_seq-2", "done", "loc"));
+        let s = t.status();
+        assert_ne!(s.journal_id, before);
+        let all = String::from_utf8(t.journal_from(0).unwrap()).unwrap();
+        assert_eq!(all.lines().count(), 1);
+        assert!(all.contains("seq-2"));
     }
 
     #[test]
