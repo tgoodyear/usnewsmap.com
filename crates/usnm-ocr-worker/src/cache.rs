@@ -1,17 +1,21 @@
 //! Scans read from the prefetch cache over HTTP before asking LoC (#368,
 //! ADR-0015 decision 9). The scan server in the scan-fetch container on
-//! pve-big (`serve-scans`) serves `/scans/<set>/<batch>/<lccn>/<date>/<ed>/<seq>.jpg`
+//! pve-big (`serve-scans`) serves `/scans/<set>/<batch>/<lccn>/<date>/<ed>/<seq>.<jp2|jpg>`
 //! and its sidecar; the node mounts nothing.
 //!
 //! The worker asks for the keep set's copy, then the buffer set's, with
 //! the same async client settings it uses for LoC: a 2 s connect timeout and
 //! a bounded total, so a server that is away costs a page seconds, not a
-//! stuck thread. A scan is used only when its sidecar names this page and
-//! batch at full size, its URL is the IIIF image URL of its base on the
-//! configured image server (tile.loc.gov), and the bytes' size and sha256
-//! match the sidecar. Then the result records that base as `image_url`, so
-//! `ocr-sync`'s check on it holds, and the ALTO records the sha256. A miss,
-//! a timeout, a 5xx or a scan that doesn't check out goes to LoC at once.
+//! stuck thread. In each set it asks for the JP2 (fetched through the
+//! page's batch) and then the JPEG (fetched before the batch route, or
+//! through the item API). A scan is used only when its sidecar names this
+//! page and batch at full size in that format, its URL is its IIIF base's
+//! file on tile.loc.gov (the IIIF image URL for a JPEG, the storage
+//! service's JP2 for a JP2), and the bytes' size, sha256 and, where the
+//! sidecar has one, the bag's md5 match it. Then the result records that
+//! base as `image_url`, so `ocr-sync`'s check on it holds, and the ALTO
+//! records the file's URL, its sha256 and its md5. A miss, a timeout, a 5xx
+//! or a scan that doesn't check out goes to LoC at once.
 //!
 //! A buffer-set scan is deleted (`DELETE`) once the page's output is
 //! uploaded, best effort; the server refuses to delete keep-set scans.
@@ -23,8 +27,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use usnm_core::ids::PageKey;
 
-use crate::loc::{image_url, FetchError, ImageSize, Scan, MAX_IMAGE_BYTES, USER_AGENT};
-use crate::prefetch::{sha256, Set, Sidecar};
+use crate::batch::jp2_url_of;
+use crate::loc::{
+    image_url, FetchError, ImageSize, Scan, ScanFormat, MAX_IMAGE_BYTES, USER_AGENT,
+};
+use crate::prefetch::{matches_sidecar, Set, Sidecar};
 use crate::worker::ScanSource;
 
 /// The cache's client: quick to give up, so LoC is never far behind.
@@ -40,6 +47,8 @@ pub struct CachedScans {
     pub base: String,
     /// Where IIIF bases must point (`https://tile.loc.gov/image-services/iiif/`).
     pub iiif_root: String,
+    /// Where JP2s must be (`https://tile.loc.gov/storage-services/service/`).
+    pub storage_root: String,
     pub inner: Arc<dyn ScanSource>,
     http: reqwest::Client,
 }
@@ -68,7 +77,12 @@ enum Found {
 impl CachedScans {
     /// `base` must be an `http` or `https` URL with a host (and a valid
     /// port, if any); anything else fails here, at startup.
-    pub fn new(base: &str, iiif_root: String, inner: Arc<dyn ScanSource>) -> anyhow::Result<Self> {
+    pub fn new(
+        base: &str,
+        iiif_root: String,
+        storage_root: String,
+        inner: Arc<dyn ScanSource>,
+    ) -> anyhow::Result<Self> {
         let u = reqwest::Url::parse(base)
             .map_err(|e| anyhow::anyhow!("--scan-cache-url {base:?}: {e}"))?;
         anyhow::ensure!(
@@ -78,6 +92,7 @@ impl CachedScans {
         Ok(Self {
             base: base.trim_end_matches('/').to_owned(),
             iiif_root,
+            storage_root,
             inner,
             http: reqwest::Client::builder()
                 .user_agent(USER_AGENT)
@@ -87,17 +102,30 @@ impl CachedScans {
         })
     }
 
-    /// The scan's URL on the server, in `set`.
-    pub fn url(&self, set: Set, key: &PageKey, batch: &str) -> String {
+    /// The scan's URL on the server, in `set` and `format`.
+    pub fn url(&self, set: Set, key: &PageKey, batch: &str, format: ScanFormat) -> String {
         format!(
-            "{}/scans/{}/{batch}/{}/{}/{}/{}.jpg",
+            "{}/scans/{}/{batch}/{}/{}/{}/{}.{}",
             self.base,
             set.dir(),
             key.lccn,
             key.date.format("%Y-%m-%d"),
             key.edition,
-            key.seq
+            key.seq,
+            format.ext()
         )
+    }
+
+    /// Whether `side`'s URL is its base's file in `format` on tile.loc.gov.
+    fn url_ok(&self, side: &Sidecar, format: ScanFormat) -> bool {
+        base_ok(&self.iiif_root, &side.iiif_base)
+            && match format {
+                ScanFormat::Jpeg => side.loc_url == image_url(&side.iiif_base, ImageSize::Full),
+                ScanFormat::Jp2 => {
+                    jp2_url_of(&self.iiif_root, &self.storage_root, &side.iiif_base).as_deref()
+                        == Some(side.loc_url.as_str())
+                }
+            }
     }
 
     async fn get(&self, url: &str, max: usize) -> Result<Option<Bytes>, String> {
@@ -117,8 +145,19 @@ impl CachedScans {
         crate::loc::read_limited(resp, max).await.map(Some)
     }
 
+    /// The page in `set`: its JP2, else its JPEG.
     async fn lookup(&self, set: Set, key: &PageKey, batch: &str) -> Found {
-        let url = self.url(set, key, batch);
+        for format in [ScanFormat::Jp2, ScanFormat::Jpeg] {
+            match self.lookup_as(set, key, batch, format).await {
+                Found::Missing => continue,
+                found => return found,
+            }
+        }
+        Found::Missing
+    }
+
+    async fn lookup_as(&self, set: Set, key: &PageKey, batch: &str, format: ScanFormat) -> Found {
+        let url = self.url(set, key, batch, format);
         let doc_id = key.doc_id();
         let side = match self.get(&format!("{url}.json"), MAX_SIDECAR_BYTES).await {
             Ok(Some(b)) => b,
@@ -142,8 +181,8 @@ impl CachedScans {
         if side.doc_id != doc_id
             || side.batch != batch
             || side.resolution != ImageSize::Full.to_string()
-            || !base_ok(&self.iiif_root, &side.iiif_base)
-            || side.loc_url != image_url(&side.iiif_base, ImageSize::Full)
+            || side.format != format.name()
+            || !self.url_ok(&side, format)
         {
             tracing::warn!(
                 doc_id,
@@ -151,7 +190,7 @@ impl CachedScans {
             );
             return Found::GiveUp;
         }
-        let jpeg = match self.get(&url, MAX_IMAGE_BYTES).await {
+        let bytes = match self.get(&url, MAX_IMAGE_BYTES).await {
             Ok(Some(b)) => b,
             Ok(None) => return Found::Missing,
             Err(e) => {
@@ -163,7 +202,7 @@ impl CachedScans {
                 return Found::GiveUp;
             }
         };
-        if jpeg.len() as u64 != side.bytes || sha256(&jpeg) != side.sha256 {
+        if !matches_sidecar(&bytes, &side) {
             tracing::warn!(
                 doc_id,
                 "a cached scan doesn't match its sidecar; fetching from LoC"
@@ -172,7 +211,10 @@ impl CachedScans {
         }
         Found::Scan(Box::new(Scan {
             iiif_base: side.iiif_base,
-            jpeg,
+            url: side.loc_url,
+            format,
+            bytes,
+            md5: side.md5,
             download: Duration::ZERO,
             from_cache: true,
             evict: (set == Set::Buffer).then_some(url),

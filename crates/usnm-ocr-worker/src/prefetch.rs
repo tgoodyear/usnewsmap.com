@@ -3,9 +3,14 @@
 //! so every engine reads the same local scan and LoC serves each image
 //! once.
 //!
-//! **Fetching** goes through [`LocClient`], the worker's own client: the
-//! same User-Agent, 3.5 s between loc.gov API requests and 1 s between
-//! image requests (shared by every page in flight in this process),
+//! **Fetching** goes through [`LocClient`], the worker's own client, batch
+//! route first: the page's JP2 from its batch directory on LoC's storage
+//! service, found through the batch's bag manifest and the issue's METS
+//! (both kept on disk), and only for a page that route can't place, the
+//! item API and the IIIF JPEG. The same User-Agent, 1 s between storage
+//! requests (sharing the image server's budget unless told otherwise), 1 s
+//! between image requests and 5 s between loc.gov API requests (shared by
+//! every page in flight in this process),
 //! `Retry-After` honoured on 429 and 503 and a 403 held the same way, at
 //! most an hour. Nothing works around a block: after
 //! [`Options::max_failures_in_a_row`] pages from at least
@@ -13,8 +18,9 @@
 //! A lock file in the output directory keeps it to one fetching process.
 //!
 //! **Item errors** (#414): when loc.gov answers 503 for one issue's item
-//! while serving others ([`FetchError::Item`], the client's notes say when),
-//! the issue's pages are skipped for [`Options::item_cooloff`] and asked
+//! while serving others ([`FetchError::Item`], the client's notes say when;
+//! on the storage service, the issue's METS or a JP2), the issue's pages
+//! are skipped on that route for [`Options::item_cooloff`] and asked
 //! again after it, in the same run (it waits for them at the end) or the
 //! next. After [`Options::item_max_cooloffs`] cool-offs the issue is
 //! permanent. Each skipped page is a `loc_item_error` failure line; the
@@ -32,16 +38,22 @@
 //! **Layout**: `<out>/<set>/<batch>/<lccn>/<date>/<edition>/<seq>.<ext>`
 //! (`<set>` is `keep` or `buffer`, so nothing that empties the buffer can
 //! reach a keep scan), where
-//! `<ext>` is `jpg` for a full scan and `pct<n>.jpg` for one scaled to n%,
-//! with a sidecar `<file>.json` ([`Sidecar`]) holding the LoC URL, the
-//! fetch time, the size and the sha256. The scan is written to a `.part`
+//! `<ext>` is `jp2` for a full scan fetched through its batch (the original
+//! JP2, checked against the bag's md5), `jpg` for a full scan fetched as
+//! the IIIF JPEG (before #368's batch route, or through the item API when
+//! the batch route can't place the page) and `pct<n>.jpg` for one scaled
+//! to n%, with a sidecar `<file>.json` ([`Sidecar`]) holding the LoC URL,
+//! the IIIF base, the fetch time, the size, the sha256 and, for a JP2, the
+//! bag's md5. The scan is written to a `.part`
 //! file, synced and renamed, then the sidecar the same way, so a scan
 //! counts only once its sidecar is there. Each fetch is also appended to
 //! `<out>/index-<tag>.jsonl`, and each failure to `<out>/failures-<tag>.jsonl`
 //! (`<tag>` is `full` or `pct<n>`).
 //!
-//! **Resuming**: a page whose scan and sidecar are there, with the size and
-//! sha256 the sidecar records, is skipped; anything else is fetched again.
+//! **Resuming**: a page whose scan and sidecar are there, in either format,
+//! with the size, sha256 and (if recorded) md5 the sidecar records, is
+//! skipped; anything else is fetched again. The JPEGs fetched before the
+//! batch route stay valid and aren't fetched again as JP2s.
 //!
 //! **Status**: `<out>/status-<tag>.json` ([`Status`]), rewritten every
 //! [`Options::progress_every`] pages and every 30 s, with a log line
@@ -68,7 +80,8 @@ use usnm_ocr_contract::prefetch::{self, ManifestRow};
 // 11) can queue pages in the order they are fetched.
 pub use usnm_ocr_contract::prefetch::{priority, set_of, Set, WORST_ENGLISH};
 
-use crate::loc::{image_url, issue_id, FetchError, ImageSize, LocClient, USER_AGENT};
+use crate::batch;
+use crate::loc::{issue_id, FetchError, ImageSize, LocClient, Scan, ScanFormat, Server, USER_AGENT};
 
 /// How often a fetcher waiting at the buffer cap counts the buffer again.
 pub const BUFFER_RECHECK: Duration = Duration::from_secs(60);
@@ -175,7 +188,7 @@ pub fn tag(size: ImageSize) -> String {
 }
 
 /// Where a page's scan goes: under its set's directory.
-pub fn scan_path(out: &Path, row: &ManifestRow, size: ImageSize) -> PathBuf {
+pub fn scan_path(out: &Path, row: &ManifestRow, size: ImageSize, format: ScanFormat) -> PathBuf {
     page_path(
         &out.join(set_of(row).dir()),
         &row.batch,
@@ -184,10 +197,22 @@ pub fn scan_path(out: &Path, row: &ManifestRow, size: ImageSize) -> PathBuf {
         row.edition,
         row.seq,
         size,
+        format,
     )
 }
 
+/// The formats a scan at `size` may be on disk in, the one fetched now
+/// first: a full scan as the batch's JP2 or the IIIF JPEG; a scaled one
+/// only as a JPEG.
+pub fn formats(size: ImageSize) -> &'static [ScanFormat] {
+    match size {
+        ImageSize::Full => &[ScanFormat::Jp2, ScanFormat::Jpeg],
+        ImageSize::Pct(_) => &[ScanFormat::Jpeg],
+    }
+}
+
 /// Where the scan of page `seq` of an issue goes, under a set's directory.
+#[allow(clippy::too_many_arguments)]
 pub fn page_path(
     set_dir: &Path,
     batch: &str,
@@ -196,9 +221,10 @@ pub fn page_path(
     edition: u16,
     seq: u16,
     size: ImageSize,
+    format: ScanFormat,
 ) -> PathBuf {
     let ext = match size {
-        ImageSize::Full => "jpg".to_owned(),
+        ImageSize::Full => format.ext().to_owned(),
         ImageSize::Pct(p) => format!("pct{p}.jpg"),
     };
     set_dir
@@ -209,7 +235,7 @@ pub fn page_path(
         .join(format!("{seq}.{ext}"))
 }
 
-/// The bytes of scans (`*.jpg`) under `dir`, 0 if it isn't there. Any
+/// The bytes of scans (`*.jpg`, `*.jp2`) under `dir`, 0 if it isn't there. Any
 /// other error is returned, so a cap is never checked against a count that
 /// missed files.
 pub fn dir_scan_bytes(dir: &Path) -> std::io::Result<u64> {
@@ -228,7 +254,11 @@ pub fn dir_scan_bytes(dir: &Path) -> std::io::Result<u64> {
             let t = e.file_type()?;
             if t.is_dir() {
                 stack.push(e.path());
-            } else if t.is_file() && e.file_name().to_string_lossy().ends_with(".jpg") {
+            } else if t.is_file() && {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.ends_with(".jpg") || n.ends_with(".jp2")
+            } {
                 match e.metadata() {
                     Ok(m) => total += m.len(),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -263,8 +293,10 @@ pub struct Sidecar {
     pub doc_id: String,
     pub batch: String,
     pub batch_version: u16,
-    /// The image URL fetched, on tile.loc.gov.
+    /// The image URL fetched, on tile.loc.gov: the IIIF JPEG, or the JP2
+    /// on the storage service.
     pub loc_url: String,
+    /// The page's IIIF base: its id, whichever file was fetched.
     pub iiif_base: String,
     /// `full` or `scaled:<n>`.
     pub resolution: String,
@@ -274,6 +306,18 @@ pub struct Sidecar {
     /// The image request's time, sent to last byte.
     pub download_ms: u64,
     pub user_agent: String,
+    /// `jpeg` (the IIIF JPEG; sidecars from before the batch route have
+    /// none) or `jp2` (the batch's original).
+    #[serde(default = "jpeg")]
+    pub format: String,
+    /// For a JP2, the md5 the batch's bag manifest lists, which the bytes
+    /// matched when fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub md5: Option<String>,
+}
+
+fn jpeg() -> String {
+    ScanFormat::Jpeg.name().into()
 }
 
 /// `status-<tag>.json`.
@@ -310,6 +354,12 @@ pub struct Status {
     pub issues_cooling: u64,
     #[serde(default)]
     pub issues_item_permanent: u64,
+    /// Of `fetched`: JP2s through the batch route, and pages that route
+    /// couldn't place, fetched through the item API.
+    #[serde(default)]
+    pub fetched_jp2: u64,
+    #[serde(default)]
+    pub fetched_item_api: u64,
     pub bytes_fetched: u64,
     /// This run's pages on disk: already there plus fetched.
     pub bytes_on_disk: u64,
@@ -330,13 +380,9 @@ pub struct Status {
     pub error: Option<String>,
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// A sha256 as lowercase hex.
 pub fn sha256(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
+    batch::hex(&Sha256::digest(bytes))
 }
 
 fn now_rfc3339() -> String {
@@ -418,16 +464,42 @@ pub fn sample(rows: &[ManifestRow], n: usize) -> Vec<ManifestRow> {
     out
 }
 
+/// Whether `bytes` are what `side` records: the size, the sha256 and, if
+/// it has one, the md5.
+pub fn matches_sidecar(bytes: &[u8], side: &Sidecar) -> bool {
+    bytes.len() as u64 == side.bytes
+        && sha256(bytes) == side.sha256
+        && side.md5.as_ref().is_none_or(|m| batch::md5_hex(bytes) == *m)
+}
+
 /// The size of the scan at `scan`, if it and its sidecar are there and
-/// agree (size and sha256).
-async fn verified(scan: &Path, row: &ManifestRow, size: ImageSize) -> Option<u64> {
+/// agree (format, size, sha256 and md5).
+async fn verified(
+    scan: &Path,
+    row: &ManifestRow,
+    size: ImageSize,
+    format: ScanFormat,
+) -> Option<u64> {
     let side = tokio::fs::read(sidecar_path(scan)).await.ok()?;
     let side = serde_json::from_slice::<Sidecar>(&side).ok()?;
-    if side.doc_id != row.doc_id || side.resolution != size.to_string() {
+    if side.doc_id != row.doc_id
+        || side.resolution != size.to_string()
+        || side.format != format.name()
+    {
         return None;
     }
     let b = tokio::fs::read(scan).await.ok()?;
-    (b.len() as u64 == side.bytes && sha256(&b) == side.sha256).then_some(side.bytes)
+    matches_sidecar(&b, &side).then_some(side.bytes)
+}
+
+/// The size of the page's scan, if one is there in any format and checks out.
+async fn there(out: &Path, row: &ManifestRow, size: ImageSize) -> Option<u64> {
+    for f in formats(size) {
+        if let Some(n) = verified(&scan_path(out, row, size, *f), row, size, *f).await {
+            return Some(n);
+        }
+    }
+    None
 }
 
 /// Write `body` to `path` through a synced `.part` file and a rename.
@@ -492,6 +564,8 @@ struct Counts {
     failed_permanent: AtomicU64,
     failed_transient: AtomicU64,
     bytes_fetched: AtomicU64,
+    fetched_jp2: AtomicU64,
+    fetched_item_api: AtomicU64,
     /// The keep set's scans of this run on disk: found there or fetched.
     keep_bytes: AtomicU64,
     /// The buffer set's scans on disk, all of them: the last count plus
@@ -683,6 +757,8 @@ impl Run {
         s.failed_item_error = c.failed_item_error.load(Ordering::SeqCst);
         (s.issues_cooling, s.issues_item_permanent) = self.cooling.counts();
         s.bytes_fetched = c.bytes_fetched.load(Ordering::SeqCst);
+        s.fetched_jp2 = c.fetched_jp2.load(Ordering::SeqCst);
+        s.fetched_item_api = c.fetched_item_api.load(Ordering::SeqCst);
         s.buffer_bytes = c.buffer_bytes.load(Ordering::SeqCst);
         s.bytes_on_disk = self.on_disk();
         let secs = self.started.elapsed().as_secs_f64();
@@ -740,6 +816,8 @@ impl Run {
             pages = s.pages,
             already_there = s.already_there,
             fetched = s.fetched,
+            fetched_jp2 = s.fetched_jp2,
+            fetched_item_api = s.fetched_item_api,
             failed_permanent = s.failed_permanent,
             failed_transient = s.failed_transient,
             failed_item_error = s.failed_item_error,
@@ -887,6 +965,37 @@ impl Run {
         true
     }
 
+    /// The page's scan: through its batch, or through the item API when
+    /// the batch route can't place it. An issue cooling off on the route
+    /// the page would take is skipped without asking LoC.
+    async fn fetch(&self, row: &ManifestRow, key: &PageKey, size: ImageSize) -> Fetched {
+        let issue = issue_id(key);
+        let storage_issue = format!("storage:{issue}");
+        if let c @ (Check::Cooling(_) | Check::Permanent) = self.cooling.check(&storage_issue) {
+            return Fetched::Skip(
+                c,
+                "its issue answered 503 on LoC's storage service while it served others",
+            );
+        }
+        let resolved = match self.loc.resolve(key, &row.batch, row.batch_version).await {
+            Ok(Some(p)) => self.loc.scan_resolved(key, &p, size).await,
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        };
+        match resolved {
+            Ok(Some(scan)) => return Fetched::Scan(scan, storage_issue, false),
+            Ok(None) => {}
+            Err(e) => return Fetched::Failed(e, storage_issue),
+        }
+        if let c @ (Check::Cooling(_) | Check::Permanent) = self.cooling.check(&issue) {
+            return Fetched::Skip(c, "its issue's item answered 503 while loc.gov served others");
+        }
+        match self.loc.scan_at(key, size).await {
+            Ok(scan) => Fetched::Scan(scan, issue, true),
+            Err(e) => Fetched::Failed(e, issue),
+        }
+    }
+
     /// One page.
     async fn page(&self, row: ManifestRow) -> anyhow::Result<Outcome> {
         let set = set_of(&row);
@@ -894,9 +1003,8 @@ impl Run {
             Set::Keep => self.opts.size,
             Set::Buffer => self.opts.buffer_size,
         };
-        let path = scan_path(&self.opts.out, &row, size);
         let c = &self.counts;
-        if let Some(n) = verified(&path, &row, size).await {
+        if let Some(n) = there(&self.opts.out, &row, size).await {
             c.already_there.fetch_add(1, Ordering::SeqCst);
             match set {
                 Set::Keep => c.keep_bytes.fetch_add(n, Ordering::SeqCst),
@@ -907,55 +1015,54 @@ impl Run {
             return Ok(Outcome::Done);
         }
         // A buffer page a worker has read and the scan server deleted.
-        if set == Set::Buffer
-            && tokio::fs::try_exists(consumed_path(&path))
-                .await
-                .unwrap_or(false)
-        {
-            c.already_there.fetch_add(1, Ordering::SeqCst);
-            self.streak_ok();
-            return Ok(Outcome::Done);
+        if set == Set::Buffer {
+            for f in formats(size) {
+                let done = consumed_path(&scan_path(&self.opts.out, &row, size, *f));
+                if tokio::fs::try_exists(done).await.unwrap_or(false) {
+                    c.already_there.fetch_add(1, Ordering::SeqCst);
+                    self.streak_ok();
+                    return Ok(Outcome::Done);
+                }
+            }
         }
         let t = tag(size);
         let key = row.key()?;
-        let issue = issue_id(&key);
-        // An issue cooling off is skipped without asking loc.gov; it says
-        // nothing new about loc.gov, so the run of failures is left as is.
-        match self.cooling.check(&issue) {
-            Check::Go => {}
-            check => {
-                return self.skip(
-                    row,
-                    &t,
-                    check,
-                    "its issue's item answered 503 while loc.gov served others",
-                )
-            }
-        }
         // Only a page that needs fetching waits for room in the buffer.
         if set == Set::Buffer && !self.wait_for_buffer().await {
             return Ok(Outcome::Left);
         }
-        match self.loc.scan_at(&key, size).await {
-            Ok(scan) => {
+        match self.fetch(&row, &key, size).await {
+            // An issue cooling off says nothing new about loc.gov, so the
+            // run of failures is left as is.
+            Fetched::Skip(check, why) => self.skip(row, &t, check, why),
+            Fetched::Scan(scan, route, via_api) => {
+                let path = scan_path(&self.opts.out, &row, size, scan.format);
                 let side = Sidecar {
                     doc_id: row.doc_id.clone(),
                     batch: row.batch.clone(),
                     batch_version: row.batch_version,
-                    loc_url: image_url(&scan.iiif_base, size),
+                    loc_url: scan.url.clone(),
                     iiif_base: scan.iiif_base.clone(),
                     resolution: size.to_string(),
                     fetched_at: Utc::now(),
-                    bytes: scan.jpeg.len() as u64,
-                    sha256: sha256(&scan.jpeg),
+                    bytes: scan.bytes.len() as u64,
+                    sha256: sha256(&scan.bytes),
                     download_ms: u64::try_from(scan.download.as_millis()).unwrap_or(u64::MAX),
                     user_agent: USER_AGENT.to_owned(),
+                    format: scan.format.name().into(),
+                    md5: scan.md5.clone(),
                 };
-                write_atomic(&path, scan.jpeg.to_vec()).await?;
+                write_atomic(&path, scan.bytes.to_vec()).await?;
                 write_atomic(&sidecar_path(&path), serde_json::to_vec_pretty(&side)?).await?;
                 self.index[&t].push(&side)?;
                 c.fetched.fetch_add(1, Ordering::SeqCst);
                 c.bytes_fetched.fetch_add(side.bytes, Ordering::SeqCst);
+                if scan.format == ScanFormat::Jp2 {
+                    c.fetched_jp2.fetch_add(1, Ordering::SeqCst);
+                }
+                if via_api {
+                    c.fetched_item_api.fetch_add(1, Ordering::SeqCst);
+                }
                 match set {
                     Set::Keep => c.keep_bytes.fetch_add(side.bytes, Ordering::SeqCst),
                     Set::Buffer => {
@@ -964,17 +1071,18 @@ impl Run {
                     }
                 };
                 self.streak_ok();
-                self.cooling.clear(&issue)?;
+                self.cooling.clear(&route)?;
+                Ok(Outcome::Done)
             }
-            Err(FetchError::Item(msg)) => {
-                tracing::warn!(doc_id = row.doc_id, error = msg, "loc.gov item error");
-                let check = self.cooling.mark(&issue, &msg)?;
+            Fetched::Failed(FetchError::Item(msg), route) => {
+                tracing::warn!(doc_id = row.doc_id, error = msg, route, "loc.gov item error");
+                let check = self.cooling.mark(&route, &msg)?;
                 let lccn = row.lccn.clone();
                 let outcome = self.skip(row, &t, check, &msg)?;
                 self.streak_fail(&lccn, &msg);
-                return Ok(outcome);
+                Ok(outcome)
             }
-            Err(e) => {
+            Fetched::Failed(e, _) => {
                 let (kind, msg) = match &e {
                     FetchError::Permanent(m) => ("permanent", m.clone()),
                     FetchError::Transient(m) => ("transient", m.clone()),
@@ -993,10 +1101,21 @@ impl Run {
                     c.failed_transient.fetch_add(1, Ordering::SeqCst);
                 }
                 self.streak_fail(&row.lccn, &msg);
+                Ok(Outcome::Done)
             }
         }
-        Ok(Outcome::Done)
     }
+}
+
+/// What [`Run::fetch`] got for a page.
+enum Fetched {
+    /// The scan, the cooling key of the route it came by, and whether that
+    /// was the item API.
+    Scan(Scan, String, bool),
+    /// Failed on the route with this cooling key.
+    Failed(FetchError, String),
+    /// Its issue is cooling off on the route the page would take.
+    Skip(Check, &'static str),
 }
 
 /// Hold the lock file for the life of the process, so only one prefetch
@@ -1121,12 +1240,25 @@ pub async fn run(
         tags.push(tag(opts.buffer_size));
     }
     tags.dedup();
-    if let Some((_, key)) = tags
+    let last: Vec<Sidecar> = tags
         .iter()
-        .filter_map(|t| last_fetched(&opts.out.join(format!("index-{t}.jsonl"))))
-        .max_by_key(|(at, _)| *at)
+        .flat_map(|t| last_fetched(&opts.out.join(format!("index-{t}.jsonl"))))
+        .collect();
+    if let Some(key) = last
+        .iter()
+        .max_by_key(|s| s.fetched_at)
+        .and_then(|s| PageKey::from_doc_id(&s.doc_id).ok())
     {
         loc.set_known_good(loc.item_url(&key));
+    }
+    // On the storage service, the METS beside the last JP2 fetched.
+    if let Some(mets) = last
+        .iter()
+        .filter(|s| s.format == ScanFormat::Jp2.name())
+        .max_by_key(|s| s.fetched_at)
+        .and_then(|s| batch::mets_url_of(&s.loc_url))
+    {
+        loc.set_known_good_on(Server::Storage, mets);
     }
     let run = Arc::new(Run {
         loc,
@@ -1280,21 +1412,36 @@ pub async fn run(
     Ok(status)
 }
 
-/// When the last line of an index file was fetched, and its page, read
-/// from the file's end.
-fn last_fetched(path: &Path) -> Option<(DateTime<Utc>, PageKey)> {
+/// The last lines of an index file (read from its last 64 KB): the last
+/// JPEG and the last JP2 fetched, each if there is one.
+fn last_fetched(path: &Path) -> Vec<Sidecar> {
     use std::io::{Read as _, Seek as _, SeekFrom};
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    f.seek(SeekFrom::Start(len.saturating_sub(64 * 1024)))
-        .ok()?;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(len) = f.metadata().map(|m| m.len()) else {
+        return Vec::new();
+    };
     let mut tail = Vec::new();
-    f.read_to_end(&mut tail).ok()?;
-    String::from_utf8_lossy(&tail)
+    if f.seek(SeekFrom::Start(len.saturating_sub(64 * 1024))).is_err()
+        || f.read_to_end(&mut tail).is_err()
+    {
+        return Vec::new();
+    }
+    let mut out: Vec<Sidecar> = Vec::new();
+    for s in String::from_utf8_lossy(&tail)
         .lines()
         .rev()
         .filter_map(|l| serde_json::from_str::<Sidecar>(l).ok())
-        .find_map(|s| Some((s.fetched_at, PageKey::from_doc_id(&s.doc_id).ok()?)))
+    {
+        if !out.iter().any(|o| o.format == s.format) {
+            out.push(s);
+        }
+        if out.len() == 2 {
+            break;
+        }
+    }
+    out
 }
 
 /// What a sample says about the whole manifest.
