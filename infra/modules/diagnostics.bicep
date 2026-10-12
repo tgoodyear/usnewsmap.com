@@ -10,7 +10,7 @@
 // Everything with resource logs is covered, with every category, except
 // where a category would record each request and eat the workspace's daily
 // cap (1 GB in prod, 0.15 GB in dev; a normal prod day is about 53 MB):
-// - Blob reads (StorageRead): the public tiles and the index splits Quickwit
+// - Blob reads (StorageRead): the index splits Quickwit
 //   range-reads on every search. Writes and deletes are the audit trail,
 //   in StorageBlobLogs on the Auxiliary plan (monitoring.bicep), outside
 //   the cap: one row per write or delete request (PutBlob, or PutBlock
