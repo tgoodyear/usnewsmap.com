@@ -35,7 +35,16 @@ def started(unit: str) -> datetime | None:
     return datetime.fromtimestamp(int(value), timezone.utc) if value.isdigit() else None
 
 
-def status(unit: str, done: str) -> dict:
+def previous(path: str) -> dict:
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def status(unit: str, done: str, out_path: str) -> dict:
     since = started(unit)
     active = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True).stdout.strip()
     out = {
@@ -45,7 +54,9 @@ def status(unit: str, done: str) -> dict:
         "started": since.isoformat() if since else None,
     }
     if since is None:
-        return out
+        # Not started since boot (the done marker keeps it from starting):
+        # keep the totals the last status had rather than zeros.
+        return {**previous(out_path), **out, "started": previous(out_path).get("started")}
     lines = subprocess.run(
         ["journalctl", "-u", unit, "-o", "cat", "--no-pager", "--since", f"@{int(since.timestamp())}"],
         capture_output=True,
@@ -117,7 +128,7 @@ def main() -> int:
     p.add_argument("--done", default="/var/lib/usnm-sset/done")
     p.add_argument("--push-url", default=None)
     args = p.parse_args()
-    s = status(args.unit, args.done)
+    s = status(args.unit, args.done, args.out)
     body = json.dumps(s, indent=2) + "\n"
     directory = os.path.dirname(args.out) or "."
     with tempfile.NamedTemporaryFile("w", dir=directory, delete=False) as f:

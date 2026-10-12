@@ -477,9 +477,12 @@ pub fn build(
         .map(|n| {
             let st = n.status.clone().unwrap_or_default();
             let ok = n.error.is_none() && n.status.is_some();
+            // The status's recent list is bounded and starts empty after a
+            // restart; the pages copied here (`latest`) outlast both.
             let last_page_at = st
                 .recent
                 .iter()
+                .chain(n.latest.iter())
                 .filter(|c| c.outcome == "done")
                 .map(|c| c.finished_at)
                 .max();
