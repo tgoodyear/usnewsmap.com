@@ -1,3 +1,4 @@
 {
-  "$schema": "./schema.json"
+  "$schema": "./schema.json",
+  "USNM_OCR_SEED_MAX_PAGES": "50000"
 }
