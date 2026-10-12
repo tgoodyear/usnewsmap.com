@@ -34,47 +34,41 @@ struct Cursor {
 /// A list of a title's pages without `q` (#274) resumes after the last page
 /// listed rather than at an offset, so it reaches every page however many
 /// the title has: `d` and `k` are that page's [`BrowseKey`] (day and
-/// `sort_key`), `n` how many pages came before the next one (the response's
-/// `total` is `n` plus those after the key), and `s` the order it was
-/// listed in, which a request must repeat. A search's cursor (`{"o":…}`)
+/// `sort_key`), and `s` the order it was listed in, which a request must
+/// repeat. It carries no count: anyone can write a cursor, so a later
+/// page's `total` is what the backend counts after the key, never a number
+/// the client sent. A search's cursor (`{"o":…}`)
 /// isn't one, nor is this a search's.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BrowseCursor {
     d: u32,
     k: u64,
-    n: u64,
     s: String,
 }
 
 impl BrowseCursor {
-    /// The cursor after `last`, the `n`th page listed in `sort` order.
-    fn encode(last: BrowseKey, n: u64, sort: HitSort) -> String {
+    /// The cursor after `last`, listed in `sort` order.
+    fn encode(last: BrowseKey, sort: HitSort) -> String {
         let c = BrowseCursor {
             d: last.day,
             k: last.sort_key,
-            n,
             s: sort.as_str().to_owned(),
         };
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&c).unwrap_or_default())
     }
 
-    /// The key to resume after and the pages before it; 400 for anything
-    /// that isn't a browse cursor of `sort` order.
-    fn decode(c: &str, sort: HitSort) -> Result<(BrowseKey, u64), ApiError> {
+    /// The key to resume after; 400 for anything that isn't a browse cursor
+    /// of `sort` order.
+    fn decode(c: &str, sort: HitSort) -> Result<BrowseKey, ApiError> {
         URL_SAFE_NO_PAD
             .decode(c)
             .ok()
             .and_then(|b| serde_json::from_slice::<BrowseCursor>(&b).ok())
             .filter(|c| c.s == sort.as_str())
-            .map(|c| {
-                (
-                    BrowseKey {
-                        day: c.d,
-                        sort_key: c.k,
-                    },
-                    c.n,
-                )
+            .map(|c| BrowseKey {
+                day: c.d,
+                sort_key: c.k,
             })
             .ok_or_else(|| ApiError::BadRequest("invalid `cursor`".into()))
     }
@@ -569,21 +563,18 @@ async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Resp
             st.config.compute_cap,
             snap2
                 .backend
-                .browse(&rd.index_set(), &req.filters, &page, after.map(|(k, _)| k)),
+                .browse(&rd.index_set(), &req.filters, &page, after),
         )
         .await;
         st.metrics.backend("hits", t.elapsed(), &result);
-        let mut result = result?;
-        // The backend counts the pages after the key; the list's total adds
-        // those listed before it.
-        let before = after.map_or(0, |(_, n)| n);
-        result.total += before;
-        let listed = before + result.hits.len() as u64;
+        let result = result?;
+        // `total` is the backend's count from the key on: every page on the
+        // first request, those not yet listed on a later one.
         let next_cursor = result
             .hits
             .last()
-            .filter(|_| listed < result.total)
-            .map(|last| BrowseCursor::encode(BrowseKey::of(last), listed, sort));
+            .filter(|_| (result.hits.len() as u64) < result.total)
+            .map(|last| BrowseCursor::encode(BrowseKey::of(last), sort));
         // No words to highlight: the viewer links have no `q`.
         Ok::<_, ApiError>(respond(rd, None, Some(&title), result, next_cursor, ""))
     };

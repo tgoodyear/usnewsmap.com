@@ -2096,7 +2096,8 @@ async fn browsing_a_titles_pages_reaches_the_last_page_past_the_offset_cap() {
             };
             let (status, _, body) = get(&s, &uri).await;
             assert_eq!(status, StatusCode::OK, "{uri}: {body}");
-            assert_eq!(body["total"], want.len(), "{uri}");
+            // The pages from this one on, as the backend counts them.
+            assert_eq!(body["total"], want.len() - walked.len(), "{uri}");
             walked.extend(
                 body["items"]
                     .as_array()
@@ -2130,7 +2131,23 @@ async fn browsing_a_titles_pages_reaches_the_last_page_past_the_offset_cap() {
     // A cursor that isn't this list's, in this order, is refused.
     let (_, _, first) = get(&s, "/v1/hits?lccn=sn99000002&limit=3").await;
     let browse_cursor = first["next_cursor"].as_str().unwrap().to_owned();
+    // A cursor carries no count a client could set: one with `n` is refused.
+    let decoded: Value = serde_json::from_slice(
+        &base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            &browse_cursor,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut forged = decoded.clone();
+    forged["n"] = json!(u64::MAX);
+    let forged = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        serde_json::to_vec(&forged).unwrap(),
+    );
     for uri in [
+        format!("/v1/hits?lccn=sn99000002&cursor={forged}"),
         "/v1/hits?lccn=sn99000002&cursor=not-a-cursor".to_owned(),
         format!("/v1/hits?lccn=sn99000002&cursor={search_cursor}"),
         format!("/v1/hits?lccn=sn99000002&sort=newest&cursor={browse_cursor}"),
