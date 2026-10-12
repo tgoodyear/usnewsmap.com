@@ -539,6 +539,44 @@ enum Command {
         #[arg(long, default_value = usnm_ingest::congress::globe::UNT)]
         unt_url: String,
     },
+    /// Fetch the Congressional Serial Set from GovInfo into curated Congress
+    /// pages (#229, 04 §4.10): read the yearly sitemaps, then fetch each
+    /// volume's documents (MODS and PDF, about one request a second), read
+    /// the PDFs page by page with pdftotext and delete them, and write a
+    /// curated attempt per volume. Volumes with a finished attempt are
+    /// skipped unless a package changed since (its sitemap `lastmod`). With
+    /// USNM_RAW_URL the MODS and page texts are kept there and read back on
+    /// a later run. Holds the `congress-serialset` lock. Prints what it did
+    /// as JSON.
+    CongressSerialset {
+        /// Only these years' sitemaps (`1820`), comma separated; default all.
+        #[arg(long, value_delimiter = ',')]
+        years: Vec<u16>,
+        /// Only these serial numbers' volumes (`33`), comma separated.
+        #[arg(long, value_delimiter = ',')]
+        serials: Vec<u32>,
+        /// Fetch volumes that already have a finished attempt again.
+        #[arg(long)]
+        refetch: bool,
+        /// Stop after this many volumes.
+        #[arg(long)]
+        max_volumes: Option<usize>,
+        /// Seconds after the start to stop: a volume stopped between
+        /// documents writes nothing, and the next run resumes it (from the
+        /// raw store's copies, when there is one). Keep it under the job's
+        /// replica timeout.
+        #[arg(long)]
+        max_runtime_secs: Option<u64>,
+        /// Seconds between requests; at least 1.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..=60))]
+        delay_secs: u64,
+        /// Where to fetch from (GovInfo; another host only for a copy of its responses).
+        #[arg(long, default_value = usnm_ingest::congress::serialset::GOVINFO)]
+        govinfo_url: String,
+        /// The pdftotext binary (poppler-utils).
+        #[arg(long, env = "USNM_PDFTOTEXT", default_value = "pdftotext")]
+        pdftotext: PathBuf,
+    },
     /// Enqueue (if a list is given), curate everything queued, then release.
     Run {
         /// As for `enqueue`: LoC's listing unless another list is given.
@@ -1060,6 +1098,7 @@ impl Command {
             Command::OcrEnqueue { .. } => "ocr-enqueue",
             Command::OcrRequeue { .. } => "ocr-requeue",
             Command::CongressGlobe { .. } => "congress-globe",
+            Command::CongressSerialset { .. } => "congress-serialset",
             Command::Run { .. } => "run",
         }
     }
@@ -1092,7 +1131,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::OcrSeed { .. }
         | Command::OcrEnqueue { .. }
         | Command::OcrRequeue { .. }
-        | Command::CongressGlobe { .. } => None,
+        | Command::CongressGlobe { .. }
+        | Command::CongressSerialset { .. } => None,
     }
 }
 
@@ -1424,7 +1464,11 @@ async fn command(
                      stopped by the deadline is fetched again from its first page"
                 );
             }
-            let fetch = globe::Http::new(std::time::Duration::from_secs(*crawl_delay_secs))?;
+            let fetch = globe::Http::new(
+                std::time::Duration::from_secs(*crawl_delay_secs),
+                globe::USER_AGENT,
+                "UNT",
+            )?;
             let opts = globe::Options {
                 base: unt_url.trim_end_matches('/').to_owned(),
                 items: items.clone(),
@@ -1439,6 +1483,67 @@ async fn command(
                 &owner_id(),
                 globe::run(
                     &fetch,
+                    curated.as_ref(),
+                    raw.as_deref(),
+                    &opts,
+                    lost.as_ref(),
+                ),
+                lost.clone(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(None)
+        }
+        Command::CongressSerialset {
+            years,
+            serials,
+            refetch,
+            max_volumes,
+            max_runtime_secs,
+            delay_secs,
+            govinfo_url,
+            pdftotext,
+        } => {
+            use usnm_ingest::congress::serialset;
+            let curated = usnm_store::open(&cli.stores.curated)?;
+            let raw = cli
+                .stores
+                .raw
+                .as_deref()
+                .map(usnm_store::open)
+                .transpose()?;
+            if raw.is_none() {
+                tracing::warn!(
+                    "no raw store (USNM_RAW_URL): GovInfo's MODS and page texts aren't kept, \
+                     and a volume stopped by the deadline is fetched again from its first PDF"
+                );
+            }
+            // PDFs are streamed here and deleted once read.
+            let scratch = cli.stores.work_dir.join("serialset");
+            std::fs::create_dir_all(&scratch)
+                .with_context(|| format!("creating {}", scratch.display()))?;
+            let fetch = usnm_ingest::congress::fetch::Http::new(
+                std::time::Duration::from_secs(*delay_secs),
+                serialset::USER_AGENT,
+                "GovInfo",
+            )?;
+            let pdf = serialset::Pdftotext::new(pdftotext.clone());
+            let opts = serialset::Options {
+                base: govinfo_url.trim_end_matches('/').to_owned(),
+                years: years.clone(),
+                serials: serials.clone(),
+                refetch: *refetch,
+                deadline: deadline(start, *max_runtime_secs),
+                max_volumes: *max_volumes,
+                scratch,
+            };
+            let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let report = serialset::locked(
+                &state,
+                &owner_id(),
+                serialset::run(
+                    &fetch,
+                    &pdf,
                     curated.as_ref(),
                     raw.as_deref(),
                     &opts,
@@ -1880,6 +1985,45 @@ mod tests {
         assert!(!refetch);
         assert!(parse(&["--crawl-delay-secs", "2"]).is_err());
         assert!(parse(&["--crawl-delay-secs", "5"]).is_ok());
+    }
+
+    #[test]
+    fn congress_serialset_paces_at_a_second_at_least() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "congress-serialset",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        let Command::CongressSerialset {
+            years,
+            serials,
+            delay_secs,
+            govinfo_url,
+            pdftotext,
+            refetch,
+            ..
+        } = parse(&["--years", "1820,1990", "--serials", "33"])
+            .unwrap()
+            .command
+        else {
+            panic!("not congress-serialset");
+        };
+        assert_eq!(years, [1820, 1990]);
+        assert_eq!(serials, [33]);
+        assert_eq!(delay_secs, 1);
+        assert_eq!(govinfo_url, usnm_ingest::congress::serialset::GOVINFO);
+        assert_eq!(pdftotext, PathBuf::from("pdftotext"));
+        assert!(!refetch);
+        assert!(parse(&["--delay-secs", "0"]).is_err());
+        assert!(parse(&["--delay-secs", "2"]).is_ok());
+        assert!(parse(&["1820"]).is_err(), "named arguments only");
     }
 
     #[test]

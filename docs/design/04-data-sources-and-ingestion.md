@@ -284,7 +284,7 @@ Without the setting nothing is read, the documents are byte for byte what they w
 
 The Congressional Globe (UNT's page OCR), the Serial Set (GovInfo, no key) and the Annals of Congress and Register of Debates (the Library of Congress's scans on Congress.gov, with our own OCR) are planned as a second corpus, searched apart from the newspapers (05 §5.5.6, 06 §6.3.10). The sources, sizes, fetch plans and the design are on #229.
 
-Phase 0 added the shapes: the page a release indexes (`usnm_ingest::congress::CongressPage`) and its engine document (`congress_doc`). Phase 1 adds the first source, the Globe, and the release step.
+Phase 0 added the shapes: the page a release indexes (`usnm_ingest::congress::CongressPage`) and its engine document (`congress_doc`). Phase 1 added the first source, the Globe, and the release step. Phase 2 adds the Serial Set from GovInfo ([below](#the-serial-set-from-govinfo-phase-2)); the release takes its volumes into the same Congress set. Neither fetch has run yet. The Annals and Register wait for the Congress.gov PDFs.
 
 **The Globe from UNT** (`usnm-ingest congress-globe`, `congress::globe`). It runs as the manual job `usnm-cong-caj-<env>` ([operations](../operations.md#congress-pages)):
 
@@ -308,6 +308,20 @@ Phase 0 added the shapes: the page a release indexes (`usnm_ingest::congress::Co
    - **Ids and links:** doc ids are `unt-{id}_p{seq}`; links go to `https://digital.library.unt.edu/ark:/67531/{id}/m1/{seq}/`.
    - **Citations:** `Cong. Globe, 25th Cong., 2nd Sess. 300`, or `Cong. Globe App., …` in the appendix, the page left off when it isn't known.
    - **Text:** normalized as LoC's is (§4.5); short and empty pages are counted but not indexed.
+
+#### The Serial Set from GovInfo (phase 2)
+
+`usnm-ingest congress-serialset` (`congress::serialset`) runs as the manual job `usnm-sset-caj-<env>` ([operations](../operations.md#the-serial-set-from-govinfo)). It needs no API key.
+
+1. **List.** The sitemap index (`/sitemap/SERIALSET_sitemap_index.xml`) names 182 yearly sitemaps, each listing package ids with a `lastmod` (`--years` reads only some). A volume package (`SERIALSET-00033_00_00`) is the bound volume and repeats its documents, so only document packages (`SERIALSET-00033_00_00-009-0042-0000`) are fetched, grouped by their volume (`00033_00_00`, GovInfo's `bagId`): the unit of a curated attempt. An id that isn't a Serial Set package is logged and left out.
+2. **Decide.** A volume is fetched when it has no finished attempt, or when one of its packages has a later `lastmod` than its newest attempt recorded (`counts.json`'s `source_lastmod`): GPO changed or added a document. `--refetch` fetches finished volumes again. This is also the monthly update; no api.data.gov key is needed.
+3. **Fetch.** Per document, `/metadata/pkg/{id}/mods.xml` and `/content/pkg/{id}/pdf/{id}.pdf`, one request at a time about a second apart, with a User-Agent that names the site and the issue; 429, 5xx and failed or cut-off requests back off as for UNT (`congress::fetch`, shared with the Globe). The PDF is streamed to scratch (`USNM_WORK_DIR`), read with poppler's `pdftotext` (one form feed ends each page, so the text is split there), and deleted. With a raw store the MODS and the page texts (`pages.json`, the strings `pdftotext` gave) are kept zstd-compressed under `raw/congress/govinfo/{volume}/{id}/{lastmod}/`, and the sitemaps under `raw/congress/govinfo/sitemaps/{run}/`, and read back instead of GovInfo. Only a response that parses as MODS is kept; a MODS 404 is kept as an empty body. A volume stopped at the deadline writes nothing. The Cosmos lock is `congress-serialset`.
+4. **Read a document.**
+   - **Text:** a `¬` at a line end is GovInfo's line-end hyphen (`com¬` / `mercial`) and is read as `-`, so normalizing (§4.5) joins the word. Short and empty pages are counted but not indexed.
+   - **Date:** MODS `dateIssued` (GovInfo's `extension` copy, else the `w3cdtf` one), with `date_precision` `day`, `month` (on its first day) or `year` (on 1 January), and `date_from` `date_issued`. Without one, the session year (`year`, `session_year`). Without either the document is left out and reported. The design proposed a year-only document on its session's first day; MODS has no session dates, so it is 1 January for now, and the first fetch counts how many there are.
+   - **Document:** `chamber` (`house`, `senate`), `doc_class` (`HDOC`, `SRPT`), `doc_number`, `citation` (`H. Doc. 16-42`), `serial`, `congress`, `session` and the title, from MODS.
+   - **States and places:** `places` are the MODS `geographic` subjects as given (`Spain`, `Gonzales County (Tex.)`). `states` has each state a subject names (`via: mods_geographic`: a name, `City, State`, an LCSH abbreviation in brackets, `Washington (State)`, `Washington (D.C.)`) and each state the title names in full (`via: title`; `Washington` only as `Washington Territory` or `State of Washington`, and a name inside a longer one counted once).
+5. **Write.** One attempt per volume: `curated/congress/serialset/{volume}/{attempt}/`, its `counts.json` with `source_lastmod`, the newest `lastmod` of its packages. Doc ids are `{package_id}_p{seq}`, `seq` the page in the document's PDF, and links go to `https://www.govinfo.gov/content/pkg/{id}/pdf/{id}.pdf#page={seq}`. Same-day hits order by serial number, then the document's place in its volume, then page (`unit_ordinal`). A volume none of whose documents could be read writes nothing.
 
 **Release** (`--congress`, `USNM_CONGRESS`; off by default, `congress::release`):
 

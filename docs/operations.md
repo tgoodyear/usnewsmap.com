@@ -394,7 +394,7 @@ Issues are named as the OCR job logs them (`ocr issue done`, `<lccn>_<date>_ed-<
 
 ## Congress pages
 
-The Congressional Globe (#229 phase 1, [04 §4.10](design/04-data-sources-and-ingestion.md#410-congress-pages-229)) is fetched from UNT's page OCR by `usnm-ingest congress-globe` and indexed by a release with `USNM_CONGRESS`. Both are off by default, and nothing has run yet.
+The Congressional Globe (#229 phase 1, [04 §4.10](design/04-data-sources-and-ingestion.md#410-congress-pages-229)) is fetched from UNT's page OCR by `usnm-ingest congress-globe`, and the Serial Set (phase 2) from GovInfo by `usnm-ingest congress-serialset` ([below](#the-serial-set-from-govinfo)). A release with `USNM_CONGRESS` indexes both in one Congress set. All are off by default, and nothing has run yet.
 
 1. **The archive first.** UNT's responses go to the raw store, so a fetch that stops resumes without asking UNT again. That is about 75 GB of OCR JSON before compression. Set `USNM_ARCHIVE_ACCOUNT` ([Archival storage](#archival-storage)) before the first fetch (decided on #229, 10 October); without a raw store the job logs a warning, keeps nothing and refetches a stopped item from its first page.
 2. **The job.** Deploy `usnm-cong-caj-<env>` (saved as `CONGRESS_JOB`): manual, one replica of 0.5 vCPU and 1 GiB, on the ingest image as `id-usnm-ingest`.
@@ -406,11 +406,30 @@ The Congressional Globe (#229 phase 1, [04 §4.10](design/04-data-sources-and-in
    az containerapp job start -n "$(scripts/settings.sh --env prod --key CONGRESS_JOB)" -g "$RG"
    ```
 
-   Each execution lists the collection, leaves out the items another holds, and fetches the items without a finished attempt. It goes one request every 3 seconds, as UNT's robots.txt asks, and stops between pages at 22 hours. Start it again after each execution until its report (JSON, at the end of the log) has `"left": 0`. The whole Globe is about 105,000 pages, about 4 days. The log has `Congressional Globe items` with the counts, `Globe item curated` per item with its pages by `date_from`, and `UNT asked us to wait` on a 429 or 5xx. One item, or a fetch again: `scripts/start-job.sh --env prod --job CONGRESS_JOB -- congress-globe --items metadc29274 [--refetch]`. The Cosmos lock `congress-globe` refuses a second execution while one runs.
+   Each execution lists the collection, leaves out the items another holds, and fetches the items without a finished attempt. It goes one request every 3 seconds, as UNT's robots.txt asks, and stops between pages at 22 hours. Start it again after each execution until its report (JSON, at the end of the log) has `"left": 0`. The whole Globe is about 105,000 pages, about 4 days. The log has `Congressional Globe items` with the counts, `Globe item curated` per item with its pages by `date_from`, and `the server asked us to wait` (with `server=UNT`) on a 429 or 5xx. One item, or a fetch again: `scripts/start-job.sh --env prod --job CONGRESS_JOB -- congress-globe --items metadc29274 [--refetch]`. The Cosmos lock `congress-globe` refuses a second execution while one runs.
 
 3. **The release.** Turn on `USNM_CONGRESS` (the ingest job's `--congress`), then provision. The next ingest run builds `congress-<stamp>-<n>` from the finished items, even with no new LoC batch (`no newly curated batches; releasing the changed Congress pages on the same indexes`). Later runs keep it until the fetch writes more items. Check `reference/<version>/congress.json` (the items and pages indexed), `congress/baselines.json` and `current.json`'s `congress` block. The API serves the pages with `source=congress` while `USNM_CONGRESS_SEARCH` is on (the default; [configuration](configuration.md)).
 
 Clearing `USNM_CONGRESS` makes the next release publish a version without the Congress set, even with no new LoC batch (`no newly curated batches; releasing the same indexes without the published Congress set`); `USNM_CONGRESS_SEARCH=false` hides it without a release. A full rebuild with `USNM_CONGRESS` on rebuilds the Congress index too when the analyzer changes.
+
+### The Serial Set from GovInfo
+
+`usnm-ingest congress-serialset` (#229 phase 2, [04 §4.10](design/04-data-sources-and-ingestion.md#410-congress-pages-229)) needs no API key: GovInfo's sitemaps, MODS and PDFs are public URLs. About 222,000 documents in about 11,900 volumes: 444,000 requests and about 4 TB of PDFs, each streamed to the replica's disk, read with `pdftotext` and deleted (about 5 days at a request a second).
+
+1. **The archive first**, as for the Globe: the MODS and each document's page texts (`pages.json`, about 20 GB in all) go to the raw store under `congress/govinfo/{volume}/{package}/{lastmod}/`, so a stopped volume resumes without downloading its PDFs again. The PDFs are never kept. Without a raw store the job logs a warning and refetches a stopped volume's PDFs.
+2. **The job.** Deploy `usnm-sset-caj-<env>` (saved as `SERIALSET_JOB`): manual, one replica of 1 vCPU and 2 GiB, on the ingest image (which carries poppler-utils) as `id-usnm-ingest`.
+
+   ```sh
+   scripts/settings.sh --env prod --key USNM_SERIALSET_JOB --value true
+   scripts/provision.sh --env prod
+   RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+   az containerapp job start -n "$(scripts/settings.sh --env prod --key SERIALSET_JOB)" -g "$RG"
+   ```
+
+   Each execution reads the sitemap index and the 182 yearly sitemaps, then fetches the volumes without a finished attempt, and those with a package whose `lastmod` is later than the one their attempt recorded (a document GPO changed or added). It goes about one request a second, backs off on 429 and 5xx (`the server asked us to wait`, `server=GovInfo`), and stops between documents at 22 hours. Start it again after each execution until its report (JSON, at the end of the log) has `"left": 0`. The log has `Serial Set volumes` with the counts, `Serial Set volume curated` per volume, and a warning per document left out. The report lists those: `missing` (GovInfo answered 404 for the MODS or the PDF), `unreadable` (pdftotext failed, or MODS that isn't MODS), `undated` (no usable `dateIssued` or session year) and `empty_volumes`; `date_precision` counts documents dated to the day, month or year. Some volumes or years: `scripts/start-job.sh --env prod --job SERIALSET_JOB -- congress-serialset --years 1820,1821 [--serials 33] [--refetch]`. The Cosmos lock `congress-serialset` refuses a second execution while one runs; it is separate from the Globe's, so the two fetches can run together.
+
+3. **Updates.** GPO is still adding volumes. Run the job again monthly: it rereads the sitemaps and fetches only new or changed volumes. The next release with `USNM_CONGRESS` rebuilds the Congress set.
+4. **Check.** After the release, `current.json`'s `congress.series` has `serialset` with its pages and dates (1817 to 1998), and `source=congress&series=serialset` searches only its pages. A hit links to the page in the document's PDF (`…/content/pkg/{id}/pdf/{id}.pdf#page={seq}`).
 
 ## OCR quality audit
 

@@ -76,6 +76,9 @@ param congress bool = false
 @description('Deploy the Congress fetch job, usnm-cong-caj-<env> (#229): manual, one replica of `usnm-ingest congress-globe`, which fetches the Congressional Globe from UNT at its crawl delay into curated/congress/. Set archiveAccountId first so every response is kept (docs/operations.md, "Congress pages").')
 param congressJob bool = false
 
+@description('Deploy the Serial Set fetch job, usnm-sset-caj-<env> (#229 phase 2): manual, one replica of `usnm-ingest congress-serialset`, which fetches the Serial Set from GovInfo (MODS and PDFs, about a request a second; the PDFs are read and deleted) into curated/congress/. Set archiveAccountId first so the MODS and page texts are kept (docs/operations.md, "Congress pages").')
+param serialSetJob bool = false
+
 @description('Give the pages LoC ships without text (the Japanese pages our OCR reads, 04 §4.8) a main-index document with the Latin-script text our OCR read on them, so English searches reach their English ads and sections (#203). The next release that builds a main index adds them; clearing it drops them at the next full release (docs/operations.md, "Japanese OCR: mixed pages and English text").')
 param jaLatin bool = false
 
@@ -272,6 +275,9 @@ var searcherName = 'usnm-search-ca-${env}'
 // not 'congress': with a 16-character environment name the name is 30
 // characters, within the Container Apps job limit (ingestjobs.bicep checks it).
 var congressJobName = 'usnm-cong-caj-${env}'
+// The Serial Set fetch job (serialSetJob, #229 phase 2), likewise: 'sset'
+// keeps it at 30 characters with a 16-character environment name.
+var serialSetJobName = 'usnm-sset-caj-${env}'
 var appOrigin = 'https://${appName}.${containerEnv.outputs.defaultDomain}'
 var domainOrigins = empty(dnsZoneName) ? [] : ['https://${dnsZoneName}', 'https://www.${dnsZoneName}']
 var siteOrigins = union(allowedOrigins, domainOrigins, [appOrigin])
@@ -685,6 +691,8 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     congress: congress
     congressJob: congressJob
     congressJobName: congressJobName
+    serialSetJob: serialSetJob
+    serialSetJobName: serialSetJobName
     partitionDecade: partitionDecade
     singleTextField: singleTextField
     pageLanguage: pageLanguage
@@ -891,6 +899,8 @@ output JA_AUDIT_JOB string = ingestJobs && useAcr ? ingest!.outputs.jaAuditJobNa
 output OCR_SYNC_JOB string = ingestJobs && useAcr ? ingest!.outputs.ocrSyncJobName : ''
 // The Congress fetch job (#229); scripts/start-job.sh --job CONGRESS_JOB.
 output CONGRESS_JOB string = ingestJobs && useAcr ? ingest!.outputs.congressJobName : ''
+// The Serial Set fetch job (#229 phase 2); scripts/start-job.sh --job SERIALSET_JOB.
+output SERIALSET_JOB string = ingestJobs && useAcr ? ingest!.outputs.serialSetJobName : ''
 output ACR_NAME string = registry.outputs.name
 output ACR_LOGIN_SERVER string = registry.outputs.loginServer
 // For the GitHub Environment variables CI signs in with (not secrets; scripts/bootstrap.sh writes them).

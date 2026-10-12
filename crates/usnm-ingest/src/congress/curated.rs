@@ -404,6 +404,11 @@ pub struct Counts {
     pub days: Vec<(u32, u32)>,
     pub parts: Vec<PartRef>,
     pub finished_at: DateTime<Utc>,
+    /// The latest date the source gave for what the attempt read (GovInfo's
+    /// sitemap `lastmod`, the newest of the volume's packages), so a later
+    /// fetch knows the unit changed. None for sources without one (UNT).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_lastmod: Option<String>,
 }
 
 impl Counts {
@@ -444,6 +449,7 @@ impl Counts {
             days: days.into_iter().collect(),
             parts,
             finished_at,
+            source_lastmod: None,
         }
     }
 }
@@ -526,6 +532,19 @@ pub async fn write_attempt(
     rows: &[CuratedPage],
     now: DateTime<Utc>,
 ) -> anyhow::Result<Counts> {
+    write_attempt_from(store, series, source, unit, rows, now, None).await
+}
+
+/// [`write_attempt`], recording the source's `lastmod` for what it read.
+pub async fn write_attempt_from(
+    store: &dyn ObjectStore,
+    series: &str,
+    source: &str,
+    unit: &str,
+    rows: &[CuratedPage],
+    now: DateTime<Utc>,
+    source_lastmod: Option<String>,
+) -> anyhow::Result<Counts> {
     let attempt = next_attempt(store, series, unit).await?;
     let dir = attempt_dir(series, unit, attempt);
     let body = write_part(rows)?;
@@ -542,7 +561,10 @@ pub async fn write_attempt(
     {
         anyhow::bail!("`{path}` already exists: another fetch wrote this attempt");
     }
-    let counts = Counts::of(series, source, unit, attempt, rows, vec![part], now);
+    let counts = Counts {
+        source_lastmod,
+        ..Counts::of(series, source, unit, attempt, rows, vec![part], now)
+    };
     let counts_path = format!("{dir}/{COUNTS}");
     if !store
         .put_new(
