@@ -178,6 +178,9 @@ else
   else
     insights-client --register
   fi
+  # Either way, make sure the daily upload runs: offboard.sh disables it,
+  # and a re-run of this script should leave a registered node reporting.
+  systemctl enable --now insights-client.timer
 fi
 
 step "Installing packages"
