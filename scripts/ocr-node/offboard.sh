@@ -244,6 +244,9 @@ else
 fi
 # A RHEL node leaves Red Hat too; onboard.sh registers it again.
 if [ "$(. /etc/os-release && printf %s "${ID:-}")" = rhel ] && command -v subscription-manager > /dev/null; then
+  if command -v insights-client > /dev/null && insights-client --status > /dev/null 2>&1; then
+    insights-client --unregister || echo "warning: insights-client --unregister failed"
+  fi
   if subscription-manager identity > /dev/null 2>&1; then
     subscription-manager unregister || echo "warning: subscription-manager unregister failed"
   else
@@ -257,6 +260,7 @@ if [ -z "$HOST" ]; then
   echo "  systemctl stop extd"
   echo "  azcmagent extension remove --all"
   echo "  azcmagent disconnect --force-local-only"
+  echo "  insights-client --unregister      # RHEL only"
   echo "  subscription-manager unregister   # RHEL only"
 elif [ "$DRY_RUN" = true ]; then
   echo "would run on $HOST with sudo:"
