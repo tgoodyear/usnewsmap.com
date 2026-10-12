@@ -76,7 +76,13 @@ impl Quartiles {
             return None;
         }
         v.sort_by(f64::total_cmp);
-        let q = |f: f64| v[((v.len() - 1) as f64 * f).round() as usize];
+        // Linear interpolation between the closest ranks, so the median of
+        // an even set is the mean of the middle pair, as `ocr_damage`'s.
+        let q = |f: f64| {
+            let x = (v.len() - 1) as f64 * f;
+            let (lo, hi) = (x.floor() as usize, x.ceil() as usize);
+            v[lo] + (v[hi] - v[lo]) * (x - lo as f64)
+        };
         Some(Self {
             p25: q(0.25),
             median: q(0.5),
@@ -214,5 +220,9 @@ mod quartile_tests {
         let q = Quartiles::of(vec![0.4, 0.1, 0.3, 0.2, 0.5]).unwrap();
         assert_eq!((q.p25, q.median, q.p75), (0.2, 0.3, 0.4));
         assert!(Quartiles::of(Vec::new()).is_none());
+        let q = Quartiles::of(vec![0.1, 0.2]).unwrap();
+        assert!((q.median - 0.15).abs() < 1e-12);
+        let q = Quartiles::of(vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        assert_eq!((q.p25, q.median, q.p75), (1.75, 2.5, 3.25));
     }
 }
