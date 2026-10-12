@@ -150,14 +150,37 @@ vault_get() {
   if ! out=$(az keyvault secret show --vault-name "$vault" --name "$(vault_secret_name "$1")" --query value -o tsv 2>&1); then
     grep -q SecretNotFound <<< "$out" && { echo; return 0; }
     echo "error: can't read $1 from the settings vault $vault: $out" >&2
+    vault_access_hint "$vault"
     return 1
   fi
   printf '%s\n' "$out"
 }
+# How an operator without access to the settings vault gets it, after a
+# refused read or write. Key Vault Secrets Officer goes to the operators in
+# USNM_SETTINGS_VAULT_ADMINS (a list in the vault itself) and to the account
+# that deployed last, so another operator needs one of them to add their
+# object id to the list and provision; or, as an Owner of the subscription,
+# a grant of their own on the resource group (one on the vault would
+# collide with the assignment the stack then makes), removed once the list
+# has them.
+vault_access_hint() {
+  local rg="rg-usnm-$ENV_NAME"
+  cat >&2 << EOF
+$1 gives Key Vault Secrets Officer to the operators in USNM_SETTINGS_VAULT_ADMINS and to whoever provisioned last. Either:
+  - ask one of them to add your object id (az ad signed-in-user show --query id -o tsv) to that list, comma separated, and provision:
+      az keyvault secret set --vault-name $1 --name $(vault_secret_name USNM_SETTINGS_VAULT_ADMINS) --value "<ids>" -o none
+  - or, as an Owner of the subscription, grant it to yourself on $rg, add yourself to the list as above, provision, then delete the grant (a new role takes a few minutes to apply):
+      az role assignment create --assignee-object-id "\$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "Key Vault Secrets Officer" --scope "/subscriptions/\$(az account show --query id -o tsv)/resourceGroups/$rg"
+EOF
+}
 # Write one setting: a public one to the committed file (and out of the
-# local one, where an environment from before #295 kept it), anything else
-# to the local file, quoted so it can be sourced. An empty value removes a
-# public setting, which then takes its default, as an empty one always has.
+# local one, where an environment from before #295 kept it); a private one,
+# once the settings vault exists, to the vault (and out of the local file,
+# so a script that sets it again, like bootstrap.sh, never leaves a second
+# copy); anything else to the local file, quoted so it can be sourced. An
+# empty value removes a public setting, which then takes its default, as an
+# empty one always has; an empty private one is a local "", which shadows
+# the vault (teardown.sh detaches the archive that way).
 aset() {
   valid_key "$1"
   # One setting, one line: the file is edited line by line.
@@ -168,6 +191,39 @@ aset() {
     local_del "$1"
     return
   fi
+  if is_private "$1" && [ -n "$2" ]; then
+    local vault
+    vault=$(local_get SETTINGS_KEYVAULT) || return 1
+    if [ -n "$vault" ]; then
+      vault_set "$vault" "$1" "$2" || return 1
+      local_del "$1"
+      return
+    fi
+  fi
+  local_set "$1" "$2"
+}
+# One private setting into the settings vault $1, with the operator's
+# sign-in (Entra ID, Key Vault Secrets Officer), unless it already holds
+# that value.
+vault_set() {
+  local cur out
+  if $VAULT_LOADED; then
+    cur=$(set +u; unset "$2"; eval "$VAULT_SETTINGS"; printf '%s\n' "${!2:-}")
+  else
+    cur=$(vault_get "$2") || return 1
+  fi
+  [ "$cur" != "$3" ] || return 0
+  if ! out=$(az keyvault secret set --vault-name "$1" --name "$(vault_secret_name "$2")" --value "$3" -o none 2>&1); then
+    echo "error: can't set $2 in the settings vault $1: $out" >&2
+    vault_access_hint "$1"
+    return 1
+  fi
+  echo "set $2 in the settings vault $1"
+  # Read from the vault from now on, not from what load_vault read.
+  VAULT_LOADED=false
+}
+# One setting into the local file, quoted so it can be sourced.
+local_set() {
   local v tmp
   mkdir -p "$(dirname "$ENV_FILE")"
   touch "$ENV_FILE"
@@ -212,9 +268,15 @@ load_vault() {
   local vault names n key v lines=""
   VAULT_SETTINGS="" VAULT_KEYS=""
   vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  # A local file without it (another operator's machine, a new checkout)
+  # takes it from the stack, so the private settings aren't deployed empty.
+  if [ -z "$vault" ]; then
+    vault=$(stack_settings_vault) || return 1
+    [ -z "$vault" ] || local_set SETTINGS_KEYVAULT "$vault" || return 1
+  fi
   [ -n "$vault" ] || { VAULT_LOADED=true; return 0; }
   names=$(az keyvault secret list --vault-name "$vault" --query "[].name" -o tsv) ||
-    { echo "error: can't list the secrets in $vault (it needs Key Vault Secrets User)" >&2; return 1; }
+    { echo "error: can't list the secrets in the settings vault $vault" >&2; vault_access_hint "$vault"; return 1; }
   for n in $names; do
     key=$(tr 'a-z-' 'A-Z_' <<< "$n")
     is_private "$key" ||
@@ -226,6 +288,44 @@ load_vault() {
     VAULT_KEYS+=" $key"
   done
   VAULT_SETTINGS=$lines VAULT_LOADED=true
+}
+# The settings vault's name from the stack's outputs (SETTINGS_KEYVAULT,
+# whose case the stack may change): empty without a stack or that output.
+stack_settings_vault() {
+  local out err errf
+  errf=$(mktemp)
+  if ! out=$(az stack sub show -n "usnm-$ENV_NAME" --query outputs -o json 2> "$errf"); then
+    err=$(cat "$errf")
+    rm -f "$errf"
+    grep -q DeploymentStackNotFound <<< "$err" && return 0
+    echo "error: can't read the stack usnm-$ENV_NAME's outputs: $err" >&2
+    return 1
+  fi
+  rm -f "$errf"
+  python3 -c 'import json, sys
+for k, v in (json.loads(sys.argv[1] or "{}") or {}).items():
+    if k.upper() == "SETTINGS_KEYVAULT":
+        print(v.get("value") or "")' "$out"
+}
+# Moving an environment to another subscription (bootstrap.sh --move)
+# rebuilds it there with a new settings vault (its name comes from the
+# subscription): the old vault's private settings come back to the local
+# file, where they stay until the new one exists (provision then says how
+# to move them), and the old vault is forgotten. A setting the local file
+# already has is kept.
+vault_detach() {
+  local k v vault
+  vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  [ -n "$vault" ] || return 0
+  load_vault || return 1
+  for k in $VAULT_KEYS; do
+    local_has "$k" && continue
+    v=$(aget "$k") || return 1
+    local_set "$k" "$v" || return 1
+  done
+  local_del SETTINGS_KEYVAULT || return 1
+  VAULT_SETTINGS="" VAULT_KEYS="" VAULT_LOADED=false
+  echo "the private settings of $vault are in $ENV_FILE until the new settings vault exists"
 }
 # Each setting in its place, before a deployment reads them: a public one
 # only in the committed file, a private one in the vault or the local file

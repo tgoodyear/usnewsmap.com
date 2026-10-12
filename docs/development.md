@@ -92,7 +92,7 @@ Each JSON data file in the repository has a spec and a check that CI runs:
 | `infra/workbooks/*.json`                         | `scripts/ci/check-workbooks.py` (CI job `infra`): each file `infra/modules/workbooks.bicep` loads parses, has `version` and `items`, and names the module's workspace placeholder instead of a resource id                                                               |
 | `fixtures/data/**`, `fixtures/skew-vectors.json` | Regenerated and compared (`python3 fixtures/generate.py`, `cargo test -p usnm-core --test skew_vectors`)                                                                                                                                                                 |
 
-The Python checks need `fastjsonschema` (`scripts/ci/requirements-ops.txt`), except `check-workbooks.py`, which uses the standard library:
+`check-version-snapshots.py` and `check-index-history.py` need `fastjsonschema` (`scripts/ci/requirements-ops.txt`); `check-workbooks.py` and `scripts/lib/env_settings.py` use only the standard library, so `python3 scripts/ci/check-workbooks.py` and `python3 scripts/lib/env_settings.py --check` run as they are:
 
 ```sh
 python3 -m venv /tmp/ops && /tmp/ops/bin/pip install --require-hashes --no-deps -r scripts/ci/requirements-ops.txt

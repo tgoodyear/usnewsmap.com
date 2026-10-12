@@ -8,12 +8,18 @@
 // settings; the template never reads or writes a secret.
 //
 // Access is Azure RBAC only (no access policies), Entra ID only like every
-// Key Vault: the account that deploys the stack gets Key Vault Secrets
-// Officer (it sets them), the environment's CI identity Key Vault Secrets
-// User (read). Network: a public endpoint with no firewall, like the
-// registry and Log Analytics, so laptops and GitHub runners reach it; a
-// private endpoint would cost about $7.30 a month and neither could. The
-// public-network policy exempts it by resource id (main.bicep).
+// Key Vault. Key Vault Secrets Officer (they set and read them) goes to the
+// operators in USNM_SETTINGS_VAULT_ADMINS, a stable list kept in this vault,
+// so every operator keeps access whoever provisions, and to the account
+// deploying the stack, so the first provision (an empty list) can fill it.
+// Another deployer's assignment lasts until the next provision by someone
+// else, which the stack then removes: list every operator. The
+// environment's CI identity gets Key Vault Secrets User (read).
+//
+// Network: a public endpoint with no firewall, like the registry and Log
+// Analytics, so laptops and GitHub runners reach it; a private endpoint
+// would cost about $7.30 a month and neither could. The public-network
+// policy exempts it by resource id (main.bicep).
 //
 // Purge protection is on in prod. Elsewhere it's off and soft delete keeps
 // a deleted vault for the minimum 7 days, so teardown.sh can purge it and a
@@ -26,6 +32,8 @@ param name string
 param purgeProtection bool
 @description('The CI identity\'s principal id, given Key Vault Secrets User.')
 param ciPrincipalId string
+@description('Entra object ids (people or groups) given Key Vault Secrets Officer, besides the deploying account.')
+param admins array = []
 
 // https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/security#key-vault-secrets-officer
 var secretsOfficer = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
@@ -58,15 +66,20 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-// The account deploying the stack: the operator, who runs provision.sh.
-resource officer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: vault
-  name: guid(vault.id, deployer().objectId, secretsOfficer)
-  properties: {
-    principalId: deployer().objectId
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsOfficer)
+// The operators, and the account deploying the stack (the operator running
+// provision.sh), once each: union drops a deployer already in the list.
+var officerIds = union(admins, [deployer().objectId])
+
+resource officers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for officer in officerIds: {
+    scope: vault
+    name: guid(vault.id, officer, secretsOfficer)
+    properties: {
+      principalId: officer
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsOfficer)
+    }
   }
-}
+]
 
 resource ciReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: vault

@@ -216,6 +216,9 @@ param ocrSeed object = {}
 @description('Entra object ids (people or groups), comma separated, given Key Vault Secrets Officer on the OCR nodes\' Key Vault, usnmocrkv<env><suffix> (with ocrNodes): the operators who set and read the fleet\'s secrets, such as the Red Hat activation key. Settings only, never in the repository (#295).')
 param ocrKeyVaultAdmins string = ''
 
+@description('Entra object ids (people or groups), comma separated, given Key Vault Secrets Officer on the environment\'s settings vault, usnmcorekv<env><suffix>, besides the account deploying the stack: every operator who provisions the environment, so each keeps reading its private settings whoever provisions (#295). Kept in that vault, never in the repository.')
+param settingsVaultAdmins string = ''
+
 @description('Assign the guard-rail policies (defined by the usnm-guardrails stack, infra/guardrails.bicep) to the resource groups.')
 param deployPolicies bool = true
 
@@ -434,6 +437,7 @@ module settingsVault 'modules/settings-vault.bicep' = {
     name: settingsVaultName
     purgeProtection: env == 'prod'
     ciPrincipalId: registry.outputs.ciPrincipalId
+    admins: filter(map(split(settingsVaultAdmins, ','), a => trim(a)), a => !empty(a))
   }
 }
 

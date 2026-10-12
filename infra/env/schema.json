@@ -307,6 +307,11 @@
       "x-usnm-visibility": "public",
       "type": "integer"
     },
+    "USNM_SETTINGS_VAULT_ADMINS": {
+      "x-usnm-visibility": "private",
+      "description": "Private: in the environment's settings vault. Entra object ids given Key Vault Secrets Officer on the settings vault: every operator who provisions the environment.",
+      "not": {}
+    },
     "USNM_SINGLE_TEXT_FIELD": {
       "x-usnm-visibility": "public",
       "type": "boolean"

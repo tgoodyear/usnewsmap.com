@@ -20,7 +20,7 @@ An environment's settings live in three places ([`infra/README.md`](../infra/REA
 
   CI's "stack change needs a provision" warning on the merge stays until you run that provision. Every `scripts/settings.sh` example below that sets a public setting works this way. In dev, an experiment's settings go in its own pull request; to try one before committing it, `scripts/provision.sh --env dev --allow-dirty`.
 
-- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the environment's settings vault, `usnmcorekv<env><suffix>`, which only you (and the environment's CI identity, to read) can reach with Entra ID. The secret's name is the setting's with hyphens: `USNM_ALERT_EMAILS` is `USNM-ALERT-EMAILS`. `scripts/settings.sh` reads them and prints the command that sets one:
+- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_SETTINGS_VAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the environment's settings vault, `usnmcorekv<env><suffix>`, which only the operators can reach with Entra ID (and the environment's CI identity, to read). The secret's name is the setting's with hyphens: `USNM_ALERT_EMAILS` is `USNM-ALERT-EMAILS`. `scripts/settings.sh` reads them and prints the command that sets one:
 
   ```sh
   vault=$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)
@@ -28,7 +28,16 @@ An environment's settings live in three places ([`infra/README.md`](../infra/REA
   scripts/provision.sh --env prod
   ```
 
-  A deleted secret's name stays reserved (soft delete) until it's recovered (`az keyvault secret recover`) or, outside prod, purged (`az keyvault secret purge`). Until the first provision creates the vault, private settings stay in the local file, and later provisions list the commands that move them.
+  A deleted secret's name stays reserved (soft delete) until it's recovered (`az keyvault secret recover`) or, outside prod, purged (`az keyvault secret purge`). Until the first provision creates the vault, private settings stay in the local file, and later provisions list the commands that move them. Once it exists, a script that sets a private setting (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` the nodes' group) writes it to the vault, only if the value changed, and removes any local copy, so a re-run never leaves it in two places. An empty value stays a local `""`, which hides the vault's value (`teardown.sh` detaches the archive that way).
+
+  **Who can read the vault.** Key Vault Secrets Officer goes to the Entra object ids in `USNM_SETTINGS_VAULT_ADMINS` (comma separated, kept in the vault itself) and to the account that runs the provision. Any other operator's grant is removed by the next provision someone else runs, so list everyone who provisions the environment; the first provision, before the list exists, gives it to you. A provision reads the vault before it deploys anything, and an operator without access stops there with the commands that fix it. To add someone, one of the operators adds their object id (`az ad signed-in-user show --query id -o tsv`, run by them) and provisions:
+
+  ```sh
+  az keyvault secret set --vault-name "$vault" --name USNM-SETTINGS-VAULT-ADMINS --value "<id>,<id>" -o none
+  scripts/provision.sh --env prod
+  ```
+
+  With no operator left, an Owner of the subscription grants the role to themselves on the resource group (not on the vault, where it would collide with the stack's assignment), adds themselves to the list as above, provisions, then deletes that grant: `az role assignment create --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "Key Vault Secrets Officer" --scope "/subscriptions/<subscription id>/resourceGroups/rg-usnm-prod"`. A local file without `SETTINGS_KEYVAULT` (a new machine) takes the vault's name from the stack.
 
 - **Everything else** stays in the local file (`~/.config/usnewsmap/<env>/.env` or `.azure/<env>/.env`): the stack's outputs, which every provision rewrites, the subscription and tenant, and what the scripts keep (`USNM_EXPERIMENT`, `USNM_IMAGE_TAG`).
 

@@ -100,6 +100,10 @@ if [ -n "$previous" ] && [ "$previous" != "$SUBSCRIPTION" ]; then
   [ "$MOVE" = true ] ||
     die "environment $ENV_NAME is in subscription $previous; pass --move to rebuild it in $SUBSCRIPTION (it starts with no data)"
   MOVING=true
+  # The new subscription gets a settings vault of its own (#295): the old
+  # one's private settings come back to the local file until it exists.
+  vault_detach ||
+    die "can't read the private settings in the old settings vault, $(aget SETTINGS_KEYVAULT); sign in where you can read it (az login --tenant …) and run this again, or delete SETTINGS_KEYVAULT from $ENV_FILE and set them again once the new vault exists"
   aset USNM_USE_ACR false
   aset USNM_API_IMAGE ""
   aset USNM_API_CERT_ID ""

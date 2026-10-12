@@ -10,8 +10,10 @@ STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
 message). For a job execution (scripts/titles-seed.sh through
 scripts/start-job.sh): STUB_EXECUTION (the started execution's name) and
 STUB_EXEC_STATUS (its status). For the settings vault (#295): STUB_SECRETS
-(the secrets' names, one per line) and STUB_SECRET_<NAME> (a secret's value,
-its hyphens as underscores). It logs each call to STUB_LOG.
+(the secrets' names, one per line), STUB_SECRET_<NAME> (a secret's value,
+its hyphens as underscores), STUB_VAULT_ERROR (listing or setting secrets
+fails with that message) and STUB_OUTPUTS (the stack's outputs as JSON).
+It logs each call to STUB_LOG.
 
 The committed settings (infra/env/<env>.json) are read from a directory of
 each test's own (USNM_ENV_DIR, a git repository holding a copy of the
@@ -37,12 +39,18 @@ case "$1 $2" in
       "stack sub create"*) ;;
       *"--query location"*) echo eastus2 ;;
       *"keys(parameters"*) printf '%s\n' "${STUB_PARAMS:-}" ;;
+      *"--query outputs -o json"*)
+        if [ -n "${STUB_OUTPUTS:-}" ]; then printf '%s\n' "$STUB_OUTPUTS"
+        elif [ -n "${STUB_STACK:-}" ]; then echo '{}'
+        else echo "ERROR: DeploymentStackNotFound: usnm-dev could not be found." >&2; exit 3; fi ;;
       *) if [ -n "${STUB_STACK:-}" ]; then echo "$STUB_STACK"
          else echo "ERROR: DeploymentStackNotFound: usnm-dev could not be found." >&2; exit 3; fi ;;
     esac ;;
   "keyvault secret")
     case "$3" in
-      list) [ -z "${STUB_SECRETS:-}" ] || printf '%b\n' "$STUB_SECRETS" ;;
+      list) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
+        [ -z "${STUB_SECRETS:-}" ] || printf '%b\n' "$STUB_SECRETS" ;;
+      set) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi ;;
       show) n=$(sed 's/.*--name \([^ ]*\).*/\1/' <<< "$*"); v="STUB_SECRET_${n//-/_}"
         if [ -n "${!v+x}" ]; then printf '%s\n' "${!v}"
         else echo "ERROR: (SecretNotFound) A secret with (name/id) $n was not found in this key vault." >&2; exit 3; fi ;;
@@ -458,9 +466,30 @@ class CommittedSettings(Stubbed):
         self.assertIn("can't read USNM_OCR_NODE_GROUP", r.stderr)
 
     def test_no_vault_yet_reads_nothing(self):
-        r = self.lib("load_vault; aget USNM_ALERT_EMAILS")
+        # No stack, or a stack without the output: no vault.
+        for stack in ({}, {"STUB_STACK": "3"}):
+            r = self.lib("load_vault; aget USNM_ALERT_EMAILS", **stack)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
+
+    def test_without_a_local_name_the_vault_comes_from_the_stack(self):
+        # Another operator's machine: the stack names the vault.
+        self.local(API_URL="x")
+        r = self.lib("load_vault; aget USNM_ALERT_EMAILS",
+                     STUB_OUTPUTS='{"settingS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}',
+                     STUB_SECRETS="USNM-ALERT-EMAILS", STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertFalse(os.path.exists(self.log))
+        self.assertEqual(r.stdout.strip(), "ops@example.org")
+        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+
+    def test_an_operator_without_access_is_told_how_to_get_it(self):
+        self.local(**self.VAULT)
+        r = self.lib("load_vault", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("USNM_SETTINGS_VAULT_ADMINS", r.stderr)
+        self.assertIn("--name USNM-SETTINGS-VAULT-ADMINS", r.stderr)
+        self.assertIn('az role assignment create --assignee-object-id "$(az ad signed-in-user show', r.stderr)
+        self.assertIn("/resourceGroups/rg-usnm-dev", r.stderr)
 
     def test_a_vault_secret_that_isnt_a_private_setting_stops(self):
         self.local(**self.VAULT)
@@ -505,7 +534,87 @@ class CommittedSettings(Stubbed):
         r = self.lib("provision", env_name="prod")
         self.assertEqual(r.returncode, 1)
         self.assertIn("not provisioning prod", r.stderr)
-        self.assertFalse(os.path.exists(self.log) and any(c.startswith("stack") for c in self.calls()))
+        self.assertFalse(os.path.exists(self.log) and any(c.startswith("stack sub create") for c in self.calls()))
+
+    def vault_sets(self):
+        return [c for c in self.calls() if c.startswith("keyvault secret set")]
+
+    def test_a_script_writes_a_private_setting_to_the_vault_once_it_exists(self):
+        # bootstrap.sh and group.sh set them with aset; a copy left local
+        # (from before the vault) moves into the vault.
+        self.local(**self.VAULT, USNM_GITHUB_REPO_IDS="o@1/r@2")
+        r = self.lib("aset USNM_GITHUB_REPO_IDS o@1/r@3; aset USNM_OCR_NODE_GROUP group-1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.vault_sets(), [
+            "keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-GITHUB-REPO-IDS --value o@1/r@3 -o none",
+            "keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-OCR-NODE-GROUP --value group-1 -o none"])
+        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+
+    def test_a_bootstrap_rerun_after_migration_leaves_one_copy(self):
+        # The values bootstrap.sh sets again are in the vault already.
+        self.local(**self.VAULT, API_URL="x")
+        vault = {"STUB_SECRETS": "USNM-GITHUB-REPO-IDS\\nUSNM-ALERT-EMAILS\\nUSNM-API-CERT-ID",
+                 "STUB_SECRET_USNM_GITHUB_REPO_IDS": "o@1/r@2", "STUB_SECRET_USNM_ALERT_EMAILS": "ops@example.org",
+                 "STUB_SECRET_USNM_API_CERT_ID": "/subscriptions/x/certificates/api"}
+        r = self.lib("aset USNM_GITHUB_REPO_IDS o@1/r@2; aset USNM_ALERT_EMAILS ops@example.org\n"
+                     "aset USNM_API_CERT_ID /subscriptions/x/certificates/api; load_vault; settings_check", **vault)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.vault_sets(), [])
+        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\nAPI_URL="x"\n')
+        self.assertNotIn("warning", r.stderr)
+        # After load_vault (provision's): only a changed value is written.
+        r = self.lib("load_vault; aset USNM_ALERT_EMAILS ops@example.org; aset USNM_ALERT_EMAILS new@example.org",
+                     **vault)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.vault_sets(), ["keyvault secret set --vault-name usnmcorekvdevabc123 "
+                                             "--name USNM-ALERT-EMAILS --value new@example.org -o none"])
+
+    def test_an_empty_private_value_stays_local(self):
+        # teardown.sh's detach: a local "" shadows the vault.
+        self.local(**self.VAULT)
+        r = self.lib("aset USNM_ARCHIVE_ACCOUNT ''")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('USNM_ARCHIVE_ACCOUNT=""', self.local_text())
+        self.assertFalse(os.path.exists(self.log) and self.vault_sets())
+
+    def test_a_refused_vault_write_fails_with_the_fix(self):
+        self.local(**self.VAULT)
+        r = self.lib("aset USNM_ALERT_EMAILS ops@example.org",
+                     STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't set USNM_ALERT_EMAILS", r.stderr)
+        self.assertIn("az role assignment create", r.stderr)
+        self.assertNotIn("USNM_ALERT_EMAILS", self.local_text())
+
+    def test_a_move_brings_the_old_vaults_settings_back(self):
+        # bootstrap.sh --move: the new subscription gets a new vault.
+        self.local(**self.VAULT, USNM_OCR_USERS="kept-local", API_URL="x")
+        r = self.lib("vault_detach\naset USNM_API_CERT_ID ''; aset USNM_GITHUB_REPO_IDS o@1/r@2\n"
+                     "load_vault; settings_check",
+                     STUB_SECRETS="USNM-ALERT-EMAILS\\nUSNM-API-CERT-ID\\nUSNM-OCR-USERS",
+                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org", STUB_SECRET_USNM_OCR_USERS="vault",
+                     STUB_SECRET_USNM_API_CERT_ID="/subscriptions/old/certificates/api")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = self.local_text()
+        self.assertNotIn("SETTINGS_KEYVAULT", text)
+        self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', text)
+        self.assertIn('USNM_OCR_USERS="kept-local"', text)
+        self.assertIn('USNM_API_CERT_ID=""', text)
+        self.assertIn('USNM_GITHUB_REPO_IDS="o@1/r@2"', text)
+        self.assertEqual(self.vault_sets(), [])
+        # A rerun once the new vault exists moves what bootstrap sets into it.
+        self.settings_file(text + 'SETTINGS_KEYVAULT="usnmcorekvdevnew456"\n')
+        r = self.lib("aset USNM_GITHUB_REPO_IDS o@1/r@2; load_vault; settings_check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("USNM_GITHUB_REPO_IDS", self.local_text())
+        self.assertEqual(self.vault_sets(), ["keyvault secret set --vault-name usnmcorekvdevnew456 "
+                                             "--name USNM-GITHUB-REPO-IDS --value o@1/r@2 -o none"])
+
+    def test_a_move_from_an_unreadable_vault_stops(self):
+        self.local(**self.VAULT)
+        r = self.lib("vault_detach", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("SETTINGS_KEYVAULT", self.local_text())
 
     def test_migrate_moves_the_public_settings(self):
         self.local(USNM_JA_LATIN="true", USNM_INGEST_SCRATCH_GIB="64", USNM_API_IMAGE="",
