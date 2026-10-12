@@ -415,7 +415,7 @@ pub struct LocClient {
     /// By batch directory; `None` for a batch LoC doesn't have.
     bags: moka::future::Cache<String, Option<Arc<Bag>>>,
     /// By `<batch dir>/<lccn>/<issue dir>`; `None` for an issue whose METS
-    /// isn't there or can't be read.
+    /// isn't there.
     mets: moka::future::Cache<String, Option<Pages>>,
     health: Mutex<ApiHealth>,
     storage_health: Mutex<ApiHealth>,
@@ -731,6 +731,8 @@ impl LocClient {
     ) -> Result<Option<Got>, FetchError> {
         let pacer = self.pacer(server);
         let mut last = String::new();
+        // The last answer for this file was a fast, bare 503.
+        let mut bare_before = false;
         for attempt in 1..=self.cfg.attempts.max(1) {
             pacer.wait().await;
             let wait = self.cfg.backoff * attempt;
@@ -763,33 +765,33 @@ impl LocClient {
                     ) {
                         let asked = retry_after(&resp);
                         let mut checked = None;
+                        // Any Retry-After, even one that can't be read, is
+                        // a hold.
+                        let bare = status == StatusCode::SERVICE_UNAVAILABLE
+                            && !resp.headers().contains_key(reqwest::header::RETRY_AFTER)
+                            && sent.elapsed() < ITEM_ERROR_FAST;
                         // On the storage service, where 503s under load
-                        // look the same, only a second one for the same
-                        // file, after a hold, can be an item error.
-                        let may_be_item = server == Server::Api || attempt > 1;
-                        if let (Some(title), Some(_), true) =
-                            (title, self.health(server), may_be_item)
+                        // look the same, only a second fast, bare 503 for
+                        // the same file in a row, after the first held, can
+                        // be an item error.
+                        let may_be_item = server == Server::Api || bare_before;
+                        bare_before = bare;
+                        if let (Some(title), Some(_), true, true) =
+                            (title, self.health(server), may_be_item, bare)
                         {
-                            // Any Retry-After, even one that can't be
-                            // read, is a hold.
-                            if status == StatusCode::SERVICE_UNAVAILABLE
-                                && !resp.headers().contains_key(reqwest::header::RETRY_AFTER)
-                                && sent.elapsed() < ITEM_ERROR_FAST
-                            {
-                                match self.item_error(server, url, title).await {
-                                    Ok(()) => {
-                                        tracing::warn!(
-                                            url,
-                                            title,
-                                            server = server.name(),
-                                            "loc.gov answered 503 at once for this item while serving others: an item error, not holding"
-                                        );
-                                        return Err(FetchError::Item(format!(
-                                            "{url} returned HTTP 503 at once while other items answered"
-                                        )));
-                                    }
-                                    Err(d) => checked = d,
+                            match self.item_error(server, url, title).await {
+                                Ok(()) => {
+                                    tracing::warn!(
+                                        url,
+                                        title,
+                                        server = server.name(),
+                                        "loc.gov answered 503 at once for this item while serving others: an item error, not holding"
+                                    );
+                                    return Err(FetchError::Item(format!(
+                                        "{url} returned HTTP 503 at once while other items answered"
+                                    )));
                                 }
+                                Err(d) => checked = d,
                             }
                         }
                         let capped = asked.is_some_and(|(_, c)| c);
@@ -1089,7 +1091,7 @@ impl LocClient {
 
     /// seq → frame for an issue of `bag`, from its METS (checked against
     /// the bag's md5), kept on disk and in memory. `None` if the METS isn't
-    /// there or can't be read.
+    /// there; one that doesn't parse is an error.
     async fn issue_frames(
         &self,
         bag: &Bag,
@@ -1145,8 +1147,12 @@ impl LocClient {
                 match batch::mets_pages(&body) {
                     Ok(p) => Ok(Some(Arc::new(p))),
                     Err(e) => {
-                        tracing::warn!(url, error = e, "can't read the issue's METS");
-                        Ok(None)
+                        // Not a page the batch route can't place: the METS
+                        // is the bag's, so something is wrong; fail it
+                        // rather than go round through the item API.
+                        Err(FetchError::Transient(format!(
+                            "{url}: can't read the issue's METS: {e}"
+                        )))
                     }
                 }
             })
@@ -2204,6 +2210,68 @@ mod tests {
         assert_eq!(
             loc.storage_health.lock().unwrap().known_good.as_deref(),
             Some(jp2.replace("0001.jp2", "1890050301_1.xml").as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn only_two_bare_503s_in_a_row_on_storage_make_an_item_error() {
+        let s = StandIn::start().await;
+        one_issue(&s);
+        s.add_issue(
+            BATCH,
+            "sn2",
+            "0002A",
+            "1890050301",
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: b"x",
+            }],
+        );
+        let mets2 = format!("{BATCH}data/sn2/0002A/1890050301/1890050301.xml");
+        let mut cfg = batch_client(&s, Duration::from_millis(10), None, false).cfg;
+        cfg.attempts = 2;
+        let loc = LocClient::new(cfg).unwrap();
+        loc.resolve(&key(1), "xx_test", 1).await.unwrap().unwrap();
+        // A 503 with Retry-After, then a bare one: the bare one is the
+        // first of its kind, so it holds; the request gives up transient.
+        s.script(&mets2, Scripted::RetryAfter(503, 1));
+        s.script(&mets2, Scripted::Status(503));
+        let sn2: PageKey = "sn2/1890-05-03/ed-1/seq-1".parse().unwrap();
+        let e = loc.resolve(&sn2, "xx_test", 1).await.unwrap_err();
+        assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
+    }
+
+    #[tokio::test]
+    async fn a_mets_that_doesnt_parse_fails_rather_than_going_round() {
+        let s = StandIn::start().await;
+        let mets = s.add_issue(
+            BATCH,
+            "sn1",
+            "0001A",
+            "1890050301",
+            &[Page {
+                seq: 1,
+                frame: "0001",
+                jp2: b"x",
+            }],
+        );
+        // A broken METS with the bag's md5 for it.
+        let broken = b"<mets><dmdSec".to_vec();
+        s.put(&mets, broken.clone());
+        s.put(
+            &format!("{BATCH}manifest-md5.txt"),
+            format!(
+                "{}  data/sn1/0001A/1890050301/1890050301.xml\n{}  data/sn1/0001A/1890050301/0001.jp2\n",
+                batch::md5_hex(&broken),
+                batch::md5_hex(b"x")
+            ),
+        );
+        let loc = batch_client(&s, Duration::from_millis(10), None, false);
+        let e = loc.resolve(&key(1), "xx_test", 1).await.unwrap_err();
+        assert!(
+            matches!(e, FetchError::Transient(ref m) if m.contains("METS")),
+            "{e:?}"
         );
     }
 }

@@ -1255,8 +1255,11 @@ pub async fn run(
         .iter()
         .flat_map(|t| last_fetched(&opts.out.join(format!("index-{t}.jsonl"))))
         .collect();
+    // Only a full-size JPEG came through the item API (or from before the
+    // batch route); a JP2 or a scaled JPEG proves nothing about its item.
     if let Some(key) = last
         .iter()
+        .filter(|s| s.format == ScanFormat::Jpeg.name() && s.resolution == "full")
         .max_by_key(|s| s.fetched_at)
         .and_then(|s| PageKey::from_doc_id(&s.doc_id).ok())
     {
