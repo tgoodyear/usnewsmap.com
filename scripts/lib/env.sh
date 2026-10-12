@@ -107,6 +107,12 @@ deploy_stack() (
     v=$(aget "$k") || exit 1
     [ -z "$v" ] || export "$k=$v"
   done
+  # The VNet's address space has no default anywhere: private addresses
+  # aren't committed (scripts/ci/no-private-addresses.sh).
+  [ -n "${USNM_VNET_ADDRESS_PREFIX:-}" ] || {
+    echo "error: USNM_VNET_ADDRESS_PREFIX isn't set for $ENV_NAME: the VNet's address space, a private IPv4 block in CIDR, /26 or larger. Set it with scripts/settings.sh --env $ENV_NAME --key USNM_VNET_ADDRESS_PREFIX --value <cidr> (an existing environment: its VNet's current block, az network vnet show)" >&2
+    exit 1
+  }
   # The stack's name comes from the environment's; the template's must match.
   export AZURE_ENV_NAME=$ENV_NAME
   local location
