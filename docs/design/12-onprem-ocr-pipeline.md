@@ -640,7 +640,7 @@ After the pilot, as #296 orders it. Rust in `usnm-api` and in `ocr-sync`; Bicep.
 
 ### Step 13: Node 2 (ops, S)
 
-**State, 12 October 2026.** Node 2 was replaced by node 3, a RHEL 10.2 VM on pve-big, and deleted (§12.2.1). Before that, on 11 October: node 2 is onboarded early (`usnm-ocr-node2-arcs-prod`, 10 October): VM 200 on pve-big with 8 vCPUs and 40 GiB, the default key store, in the group, and it ran part of the engine survey. Installing the worker on both nodes with `--nodes 2` still waits for the pilot.
+**State, 12 October 2026.** Done, and since replaced. Node 2 (`usnm-ocr-node2-arcs-prod`, VM 200 on pve-big with 8 vCPUs and 40 GiB) was onboarded on 10 October and ran part of the engine survey. On 11 October both nodes got the worker with `--nodes 2` for the German pilot, at a pacing multiplier of 4 (Step 11). On 12 October node 2 was replaced by node 3, a RHEL 10.2 VM on pve-big, and deleted (§12.2.1).
 
 `proxmox-create-vm.sh` if it is a Proxmox VM, otherwise a plain AlmaLinux 9 or RHEL 10 install; then `onboard.sh`, which adds it to the group and attaches monitoring; then `install-worker.sh --nodes 2` on both nodes, so each runs with 7,000 ms and 2,000 ms gaps. Set its concurrency from its cores and raise `USNM_OCR_BULK_WINDOW` by the measured throughput.
 
