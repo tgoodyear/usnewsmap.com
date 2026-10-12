@@ -62,6 +62,10 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_BROWSE_PAGES": {
+      "x-usnm-visibility": "public",
+      "type": "boolean"
+    },
     "USNM_CONGRESS": {
       "x-usnm-visibility": "public",
       "type": "boolean"
