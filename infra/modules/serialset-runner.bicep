@@ -88,11 +88,12 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
 
 resource grant 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: account::blobService::curated
-  name: guid(account::blobService::curated.id, principalId, writer.id)
+  name: guid(account::blobService::curated.id, principalId, 'usnm-sset-writer')
   properties: {
     principalId: principalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: writer.id
+    // Custom roles are addressed at subscription level wherever they're defined.
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
     description: 'The on-prem Serial Set runner (#229): list, read and create blobs under congress/serialset/ only; no delete.'
     conditionVersion: '2.0'
     condition: condition

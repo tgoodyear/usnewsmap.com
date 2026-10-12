@@ -642,7 +642,8 @@ import re, sys
 err, ids = sys.argv[1], sys.argv[2].split()
 names = {i.rstrip("/").rsplit("/", 1)[-1].lower() for i in ids}
 refused = re.findall(r"Resource \x27([^\x27]+)\x27 was disallowed by policy", err)
-codes = set(re.findall(r"\"code\":\s*\"([A-Za-z]+)\"", err)) | set(re.findall(r"\(([A-Za-z]+)\)", err))
+codes = (set(re.findall(r"\"code\":\s*\"([A-Za-z]+)\"", err)) | set(re.findall(r"\(([A-Za-z]+)\)", err))
+         | set(re.findall(r"^(?:ERROR: )?([A-Za-z]+) - ", err, re.M)))
 wrappers = {"InvalidTemplateDeployment", "DeploymentStackValidationFailed", "RequestDisallowedByPolicy"}
 ok = refused and all(r.lower() in names for r in refused) and codes <= wrappers
 sys.exit(0 if ok else 1)

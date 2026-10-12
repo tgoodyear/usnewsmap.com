@@ -636,6 +636,7 @@ class PolicyExemptions(Stubbed):
         self.assertEqual(self.pending(self.REFUSED.format("stusnmd1"), ""), 1)
         self.assertEqual(self.pending(self.REFUSED.format("stusnmd1") + "\nERROR: (InvalidTemplate) bad", self.LAKE), 1)
         self.assertEqual(self.pending("ERROR: (AuthorizationFailed) no", self.LAKE), 1)
+        self.assertEqual(self.pending(self.REFUSED.format("stusnmd1") + "\nERROR: AuthorizationFailed - no", self.LAKE), 1)
 
     def test_the_stacks_what_if_accepts_only_those(self):
         script = 'deploy_stack --what-if --exempting "$IDS"'

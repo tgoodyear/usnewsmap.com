@@ -510,6 +510,12 @@ The same fetch can run on an OCR node instead of as `usnm-sset-caj-<env>`, to sp
      cargo build --release --locked -p usnm-ingest --bin usnm-ingest
    sudo dnf install -y poppler-utils
    sudo install -m 0755 src/target/release/usnm-ingest /usr/local/bin/
+   sudo install -m 0755 src/scripts/ocr-node/sset-status.py /usr/local/bin/usnm-sset-status
+   sudo install -m 0644 src/scripts/ocr-node/usnm-sset.service src/scripts/ocr-node/usnm-sset-status.service \
+     src/scripts/ocr-node/usnm-sset-status.timer /etc/systemd/system/
+   sudo install -d -o usnm -g usnm -m 0750 /var/lib/usnm-sset /var/lib/usnm-sset/raw /var/lib/usnm-sset/reference
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now usnm-sset-status.timer
    ```
 
    `/etc/usnm/sset.env` (mode 0640, group `usnm`) sets `USNM_CURATED_URL=https://<lake>.blob.core.windows.net/curated`, `USNM_RAW_URL=/var/lib/usnm-sset/raw`, `USNM_STATE_FILE=/var/lib/usnm-sset/state.json` and `USNM_REFERENCE_URL=/var/lib/usnm-sset/reference` (an empty directory; the fetch reads nothing there). The raw store holds the MODS and page texts, about 20 GB, so a stopped volume resumes without its PDFs. Before the lake is open, `USNM_CURATED_URL` can be a local directory: the fetch then fills the raw store, and a later run against the lake reads every volume back from it without asking GovInfo for the PDFs again.
