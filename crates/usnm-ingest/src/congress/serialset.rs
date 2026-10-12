@@ -8,10 +8,11 @@
 //!    is the whole bound volume and duplicates its documents, so only the
 //!    document packages (`SERIALSET-00033_00_00-009-0042-0000`) are fetched,
 //!    grouped by their volume, the unit a curated attempt holds.
-//! 2. **Decide.** A volume is fetched when it has no finished attempt, or
-//!    when one of its packages has a later `lastmod` than the attempt
-//!    recorded (`Counts::source_lastmod`): a document GPO changed or added.
-//!    `--refetch` fetches finished volumes again.
+//! 2. **Decide.** A volume is fetched when it has no finished or empty
+//!    attempt, or when one of its packages has a later `lastmod` than the
+//!    newer of them recorded (`Counts::source_lastmod`,
+//!    `curated::Empty::source_lastmod`): a document GPO changed or added.
+//!    `--refetch` fetches finished and empty volumes again.
 //! 3. **Fetch.** Per document, its MODS (`/metadata/pkg/{id}/mods.xml`) and
 //!    its PDF (`/content/pkg/{id}/pdf/{id}.pdf`), one request at a time,
 //!    about a second apart ([`super::fetch::Http`]), backing off on 429 and
@@ -35,6 +36,10 @@
 //!    run fetches it again, since a finished attempt records the volume's
 //!    latest `lastmod` and would not be fetched again. A volume stopped by
 //!    the deadline also writes nothing and is fetched again by the next run.
+//!    A volume all of whose documents are left out for good gets an empty
+//!    attempt (`empty.json`, [`curated::Empty`]) with its `lastmod` and what
+//!    was left out, and no pages: later runs skip it like a finished one,
+//!    and the release leaves out any earlier attempt of it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -817,9 +822,10 @@ pub struct Report {
     /// Volumes with documents, and their documents (after `--serials`).
     pub volumes: usize,
     pub documents: usize,
-    /// Volumes with a finished attempt and nothing newer, not fetched again.
+    /// Volumes with a finished (or empty) attempt and nothing newer, not
+    /// fetched again.
     pub already: usize,
-    /// Volumes with a finished attempt whose packages changed since.
+    /// Volumes with a finished (or empty) attempt whose packages changed since.
     pub changed: usize,
     /// Volumes written, with their attempt and pages.
     pub written: Vec<(String, u32, u64)>,
@@ -843,7 +849,8 @@ pub struct Report {
     /// changes their MODS, and with it their `lastmod`).
     pub undated: Vec<String>,
     /// Volumes all of whose documents are left out for good (`no_pdf`,
-    /// `undated`): nothing written.
+    /// `undated`): an empty attempt (`curated::Empty`) is written in place
+    /// of pages, so later runs skip them until their `lastmod` moves.
     pub empty_volumes: Vec<String>,
     /// Volumes left for the next run: the deadline, `--max-volumes` or a lost lock.
     pub left: usize,
@@ -1001,6 +1008,8 @@ struct Read {
     /// Documents not read this time (missing or unreadable): the volume
     /// isn't finished while there are any.
     unread: usize,
+    /// Documents left out for good, with why (`{id}: undated`).
+    left_out: Vec<String>,
 }
 
 /// Fetch and read one volume's documents.
@@ -1015,6 +1024,7 @@ async fn fetch_volume(
 ) -> anyhow::Result<Result<Read, Stopped>> {
     let mut rows = Vec::new();
     let mut unread = 0;
+    let mut left_out = Vec::new();
     for doc in &volume.documents {
         if lost.load(Ordering::SeqCst) {
             return Ok(Err(Stopped::Lost));
@@ -1027,6 +1037,7 @@ async fn fetch_volume(
             Got::NoPdf => {
                 tracing::warn!(id = %id, "a Serial Set document whose MODS names no PDF, and GovInfo has none; left out");
                 report.no_pdf.push(id.clone());
+                left_out.push(format!("{id}: no_pdf"));
             }
             Got::Missing(what) => {
                 tracing::warn!(id = %id, what, "GovInfo answered 404 for a file it lists; the volume is left for the next run");
@@ -1049,11 +1060,16 @@ async fn fetch_volume(
                 None => {
                     tracing::warn!(id = %id, date = ?mods.date_issued, "a Serial Set document without a date; left out");
                     report.undated.push(id.clone());
+                    left_out.push(format!("{id}: undated"));
                 }
             },
         }
     }
-    Ok(Ok(Read { rows, unread }))
+    Ok(Ok(Read {
+        rows,
+        unread,
+        left_out,
+    }))
 }
 
 /// Run the fetch (steps 1 to 5). `lost` is set when the lock that keeps two
@@ -1093,20 +1109,31 @@ pub async fn run(
         .filter(|f| f.series == SERIES)
         .map(|f| (f.unit.clone(), f))
         .collect();
+    // A volume whose documents were all left out has an empty attempt:
+    // the newer of it and the finished one says what was read, and when.
+    let empties: BTreeMap<String, curated::Empty> = curated::empties(curated)
+        .await?
+        .into_iter()
+        .filter(|((series, _), _)| series == SERIES)
+        .map(|((_, unit), e)| (unit, e))
+        .collect();
     let mut todo: Vec<&Volume> = Vec::new();
     for v in &p.volumes {
-        match finished.get(&v.volume) {
+        let recorded = match (finished.get(&v.volume), empties.get(&v.volume)) {
+            (Some(f), e) if e.is_none_or(|e| e.attempt < f.attempt) => {
+                Some(curated::read_counts(curated, f).await?.0.source_lastmod)
+            }
+            (_, Some(e)) => Some(e.source_lastmod.clone()),
+            (_, None) => None,
+        };
+        match recorded {
             None => todo.push(v),
             Some(_) if opts.refetch => todo.push(v),
-            Some(f) => {
-                let (counts, _) = curated::read_counts(curated, f).await?;
-                if v.lastmod() > counts.source_lastmod {
-                    report.changed += 1;
-                    todo.push(v);
-                } else {
-                    report.already += 1;
-                }
+            Some(lastmod) if v.lastmod() > lastmod => {
+                report.changed += 1;
+                todo.push(v);
             }
+            Some(_) => report.already += 1,
         }
     }
     tracing::info!(
@@ -1116,6 +1143,7 @@ pub async fn run(
         documents = report.documents,
         volume_packages = report.volume_packages,
         finished = finished.len(),
+        empty = empties.len(),
         changed = report.changed,
         to_fetch = todo.len(),
         "Serial Set volumes"
@@ -1151,8 +1179,23 @@ pub async fn run(
                     v.documents.len()
                 ));
             }
+            // Recorded as an empty attempt, so later runs skip the volume
+            // until its `lastmod` moves (or `--refetch`), and the release
+            // drops an earlier attempt of it.
             Ok(read) if read.rows.is_empty() => {
-                tracing::warn!(volume = %v.volume, "every document of the volume is left out; nothing written");
+                let empty = curated::write_empty(
+                    curated,
+                    SERIES,
+                    &v.volume,
+                    Utc::now(),
+                    v.lastmod(),
+                    read.left_out,
+                )
+                .await?;
+                tracing::warn!(
+                    volume = %v.volume, attempt = empty.attempt,
+                    "every document of the volume is left out; an empty attempt written"
+                );
                 report.empty_volumes.push(v.volume.clone());
             }
             Ok(Read { rows, .. }) => {
@@ -1756,13 +1799,13 @@ mod tests {
     }
 
     /// The recorded responses, answering 404 the first time a URL with one
-    /// of `fail_once` in it is asked for, and with `no_pdf_named`'s MODS
-    /// naming no PDF.
+    /// of `fail_once` in it is asked for, and with the documents in `no_pdf`
+    /// having no PDF (404), which their MODS doesn't name.
     #[derive(Default)]
     struct Flaky {
         inner: Recorded,
         fail_once: std::sync::Mutex<Vec<String>>,
-        no_pdf_named: Option<&'static str>,
+        no_pdf: Vec<&'static str>,
     }
 
     #[async_trait::async_trait]
@@ -1773,20 +1816,19 @@ mod tests {
                 let at = fail.iter().position(|p| url.contains(p.as_str()));
                 at.map(|i| fail.remove(i)).is_some()
             };
-            if failed {
+            let no_pdf = self.no_pdf.iter().any(|id| url.contains(id));
+            if failed || (no_pdf && url.ends_with(".pdf")) {
                 self.inner.asked.lock().unwrap().push(url.to_owned());
                 return Ok(None);
             }
             let body = self.inner.get(url).await?;
-            match self.no_pdf_named {
-                Some(id) if url.contains(id) && url.ends_with("mods.xml") => {
-                    let s = String::from_utf8(body.unwrap()).unwrap();
-                    Ok(Some(
-                        s.replace("PDF rendition", "Other rendition").into_bytes(),
-                    ))
-                }
-                _ => Ok(body),
+            if no_pdf && url.ends_with("mods.xml") {
+                let s = String::from_utf8(body.unwrap()).unwrap();
+                return Ok(Some(
+                    s.replace("PDF rendition", "Other rendition").into_bytes(),
+                ));
             }
+            Ok(body)
         }
     }
 
@@ -1905,8 +1947,7 @@ mod tests {
             ..options(dir.path())
         };
         let gi = Flaky {
-            fail_once: std::sync::Mutex::new(vec!["0053-0000.pdf".into()]),
-            no_pdf_named: Some(D53),
+            no_pdf: vec![D53],
             ..Flaky::default()
         };
         let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
@@ -1917,6 +1958,123 @@ mod tests {
         let f = curated::finished(&curated).await.unwrap();
         let (counts, _) = curated::read_counts(&curated, &f[0]).await.unwrap();
         assert!(counts.pages < 6, "{}", counts.pages);
+    }
+
+    /// A volume all of whose documents are left out for good gets an empty
+    /// attempt: the next run skips it (no MODS or PDF asked for) and the
+    /// release lists nothing for it; a later `lastmod` or `--refetch` fetches
+    /// it again, and an empty attempt after a finished one takes the volume
+    /// out of the release.
+    #[tokio::test]
+    async fn an_all_left_out_volume_is_finished_empty() {
+        use super::super::release::Listing;
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::LocalStore::new(dir.path().join("curated"));
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let opts = Options {
+            serials: vec![33],
+            ..options(dir.path())
+        };
+        let key = (SERIES.to_owned(), "00033_00_00".to_owned());
+        let none = || Flaky {
+            no_pdf: vec![D42, D53],
+            ..Flaky::default()
+        };
+        let gi = none();
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!(r.empty_volumes, ["00033_00_00"]);
+        assert_eq!(r.no_pdf, [D42, D53]);
+        assert!(r.written.is_empty() && r.incomplete.is_empty());
+        assert!(curated::finished(&curated).await.unwrap().is_empty());
+        let e = curated::empties(&curated).await.unwrap();
+        assert_eq!(e[&key].attempt, 1);
+        assert_eq!(
+            e[&key].source_lastmod.as_deref(),
+            Some("2024-11-06T03:15:00.159Z")
+        );
+        assert_eq!(
+            e[&key].left_out,
+            [format!("{D42}: no_pdf"), format!("{D53}: no_pdf")]
+        );
+        let l = Listing::load(&curated).await.unwrap();
+        assert!(l.units.is_empty() && l.left_out.is_empty());
+
+        // Skipped by the next run: nothing asked for but the sitemaps.
+        let again = none();
+        let r = run(&again, &text, &curated, None, &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!((r.already, r.changed), (1, 0));
+        assert!(r.empty_volumes.is_empty() && r.no_pdf.is_empty());
+        assert_eq!(again.inner.asked("/metadata/pkg/"), 0);
+        assert_eq!(again.inner.asked("/content/pkg/"), 0);
+
+        // `--refetch` fetches it again: another empty attempt.
+        let refetch = Options {
+            refetch: true,
+            ..opts.clone()
+        };
+        let gi = none();
+        let r = run(&gi, &text, &curated, None, &refetch, &lost)
+            .await
+            .unwrap();
+        assert_eq!(r.empty_volumes, ["00033_00_00"]);
+        assert_eq!(gi.inner.asked("/metadata/pkg/"), 2);
+        assert_eq!(curated::empties(&curated).await.unwrap()[&key].attempt, 2);
+
+        // A later `lastmod`: fetched again, and now with PDFs, finished.
+        let touched = || Recorded {
+            touched: Some((D53, "2026-10-01T00:00:00.000Z")),
+            ..Recorded::default()
+        };
+        let gi = Flaky {
+            inner: touched(),
+            ..Flaky::default()
+        };
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!((r.changed, r.already), (1, 0));
+        assert_eq!(r.written, [("00033_00_00".to_owned(), 3, 6)]);
+        let l = Listing::load(&curated).await.unwrap();
+        assert_eq!(l.refs().len(), 1);
+        assert_eq!(l.refs()[0].attempt, 3);
+
+        // The finished attempt is newer than the empty one: skipped.
+        let gi = Flaky {
+            inner: touched(),
+            ..Flaky::default()
+        };
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!((r.already, r.changed), (1, 0));
+        assert_eq!(gi.inner.asked("/metadata/pkg/"), 0);
+
+        // Fetched again with no PDFs: the empty attempt after the finished
+        // one takes the volume out of the release.
+        let gi = Flaky {
+            inner: touched(),
+            no_pdf: vec![D42, D53],
+            ..Flaky::default()
+        };
+        let r = run(&gi, &text, &curated, None, &refetch, &lost)
+            .await
+            .unwrap();
+        assert_eq!(r.empty_volumes, ["00033_00_00"]);
+        let e = curated::empties(&curated).await.unwrap();
+        assert_eq!(e[&key].attempt, 4);
+        assert_eq!(
+            e[&key].source_lastmod.as_deref(),
+            Some("2026-10-01T00:00:00.000Z")
+        );
+        let l = Listing::load(&curated).await.unwrap();
+        assert!(l.units.is_empty());
+        assert_eq!(l.left_out, ["serialset/00033_00_00"]);
+        let gi = Flaky {
+            inner: touched(),
+            ..Flaky::default()
+        };
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!((r.already, r.changed), (1, 0));
+        assert_eq!(gi.inner.asked("/content/pkg/"), 0);
     }
 
     #[test]
