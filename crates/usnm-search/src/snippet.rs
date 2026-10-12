@@ -276,8 +276,9 @@ pub fn matched_in(
 pub const OPENING: usize = 2 * CONTEXT;
 
 /// A page listed without a query (`/v1/hits?lccn=…` with no `q`, #274):
-/// the first [`OPENING`] characters of its text, cut at the end of a word,
-/// with columns' line breaks and runs of spaces as one space, `…` when the
+/// at most the first [`OPENING`] characters of its text, cut before the
+/// word the limit falls in (or at the limit when that word is the first, as
+/// an over-long OCR run can be), with columns' line breaks and runs of spaces as one space, `…` when the
 /// text goes on, and HTML-escaped with no `<mark>`. No fragment for a page
 /// with no text. Both backends use it, on the text the hit already carries.
 pub fn opening_snippet(text: &str) -> Vec<String> {
@@ -293,7 +294,14 @@ pub fn opening_snippet(text: &str) -> Vec<String> {
     if chars.is_empty() {
         return Vec::new();
     }
-    let to = word_end(&chars, OPENING.min(chars.len()));
+    // Back to the start of the word the limit falls in, never forward: an
+    // OCR run with no break can go on for most of a page, and the excerpt
+    // must stay within the limit whatever the text.
+    let limit = OPENING.min(chars.len());
+    let to = match word_start(&chars, limit) {
+        0 => limit,
+        start => start,
+    };
     let mut excerpt = chars[..to].iter().collect::<String>().trim_end().to_owned();
     if to < chars.len() {
         excerpt.push_str(" …");
@@ -335,13 +343,25 @@ mod tests {
         );
         assert!(opening_snippet("").is_empty());
         assert!(opening_snippet(" \n ").is_empty());
-        // A long text is cut at the end of the word the limit falls in.
+        // A long text is cut between words, within the limit.
         let long = format!("{} tail", "word ".repeat(40));
         let cut = &opening_snippet(&long)[0];
         assert!(cut.ends_with("word …"), "{cut}");
         assert!(cut.chars().count() <= OPENING + 2, "{cut}");
-        let word = "x".repeat(OPENING + 10);
-        assert_eq!(opening_snippet(&format!("{word} y")), [format!("{word} …")]);
+        // The word the limit falls in is left out, not finished.
+        let lead = "a".repeat(OPENING - 5);
+        assert_eq!(
+            opening_snippet(&format!("{lead} straddling words")),
+            [format!("{lead} …")]
+        );
+        // An over-long OCR run after the first word is left out whole, and
+        // one that starts the text is cut at the limit.
+        let run = "x".repeat(100_000);
+        assert_eq!(opening_snippet(&format!("The {run} y")), ["The …"]);
+        assert_eq!(
+            opening_snippet(&format!("{run} y")),
+            [format!("{} …", "x".repeat(OPENING))]
+        );
     }
 
     #[test]
