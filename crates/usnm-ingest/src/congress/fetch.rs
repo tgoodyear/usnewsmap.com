@@ -35,15 +35,65 @@ pub trait Fetch: Send + Sync {
 }
 
 /// A server over HTTPS: one request at a time, `delay` apart, retrying 429,
-/// 5xx and transport errors (a body cut short included) with a growing wait
-/// (`Retry-After` when given).
+/// 5xx, transport errors (a body cut short included) and tries that run past
+/// their timeout, with a growing wait (`Retry-After` when given).
+///
+/// Each try of [`Fetch::get`] may take [`GET_TIMEOUT`], each try of
+/// [`Fetch::download`] [`DOWNLOAD_TIMEOUT`] ([`Http::with_timeouts`]). With a
+/// cutoff ([`Http::with_cutoff`]: the run's deadline and [`REQUEST_GRACE`]),
+/// no try starts with less than [`MIN_TRY`] left before it, a try's timeout
+/// is cut to what is left, and the request fails rather than wait to retry
+/// past it, so a request started near the deadline can't hold the replica
+/// past the job's hard timeout.
 pub struct Http {
     client: reqwest::Client,
     delay: Duration,
     retries: u32,
+    get_timeout: Duration,
+    download_timeout: Duration,
+    cutoff: Option<tokio::time::Instant>,
     /// Who the server is, in the logs (`UNT`, `GovInfo`).
     server: &'static str,
     last: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+}
+
+/// How long one try of a page (a sitemap, MODS, the Globe's OCR) may take.
+pub const GET_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long one try of a download may take: 30 minutes covers a 500 MB PDF
+/// at under 300 KB/s.
+pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// How long after the run's deadline a request may still run. The jobs stop
+/// between documents at 22 hours and are killed at 24, so every request has
+/// ended an hour before that, leaving the rest for writing what was read and
+/// the unlock.
+pub const REQUEST_GRACE: Duration = Duration::from_secs(3600);
+
+/// The least time a try is started with.
+pub const MIN_TRY: Duration = Duration::from_secs(5);
+
+/// How long a try starting at `start` may take: `timeout`, cut to what is
+/// left before `cutoff`; `None` when less than [`MIN_TRY`] (or `timeout`, if
+/// shorter) is left, and the try isn't started.
+pub fn try_budget(
+    start: tokio::time::Instant,
+    cutoff: Option<tokio::time::Instant>,
+    timeout: Duration,
+) -> Option<Duration> {
+    let Some(cutoff) = cutoff else {
+        return Some(timeout);
+    };
+    let left = cutoff.checked_duration_since(start)?;
+    (left >= MIN_TRY.min(timeout)).then(|| left.min(timeout))
+}
+
+/// One try's outcome.
+enum Try<T> {
+    Done(T),
+    NotFound,
+    /// Try again, after at least this long when the server said.
+    Again(Option<Duration>),
 }
 
 impl Http {
@@ -53,20 +103,39 @@ impl Http {
             client: reqwest::Client::builder()
                 .user_agent(user_agent)
                 .connect_timeout(Duration::from_secs(30))
-                // A whole response, a large PDF included, at a slow rate:
-                // 30 minutes covers 500 MB at under 300 KB/s.
-                .timeout(Duration::from_secs(1800))
                 .build()?,
             delay,
             retries: 6,
+            get_timeout: GET_TIMEOUT,
+            download_timeout: DOWNLOAD_TIMEOUT,
+            cutoff: None,
             server,
             last: tokio::sync::Mutex::new(None),
         })
     }
 
+    /// How long one try of a page, and of a download, may take.
+    pub fn with_timeouts(mut self, get: Duration, download: Duration) -> Self {
+        self.get_timeout = get;
+        self.download_timeout = download;
+        self
+    }
+
+    /// The time every request has ended by (see [`Http`]).
+    pub fn with_cutoff(mut self, cutoff: Option<tokio::time::Instant>) -> Self {
+        self.cutoff = cutoff;
+        self
+    }
+
     /// One request, paced from the end of the last and retried; `body`
-    /// reads a successful response (and may fail, which is retried).
-    async fn request<T, F, Fut>(&self, url: &str, mut body: F) -> anyhow::Result<Option<T>>
+    /// reads a successful response (and may fail, which is retried). Each
+    /// try, its body included, may take `timeout` (see [`try_budget`]).
+    async fn request<T, F, Fut>(
+        &self,
+        url: &str,
+        timeout: Duration,
+        mut body: F,
+    ) -> anyhow::Result<Option<T>>
     where
         F: FnMut(reqwest::Response) -> Fut + Send,
         Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
@@ -75,47 +144,25 @@ impl Http {
         for attempt in 0..=self.retries {
             // Paced from the end of the last request, across retries too.
             let mut last = self.last.lock().await;
-            if let Some(t) = *last {
-                tokio::time::sleep_until(t + wait).await;
-            }
-            let sent = self.client.get(url).send().await;
+            let now = tokio::time::Instant::now();
+            let start = last.map_or(now, |t| (t + wait).max(now));
+            let Some(budget) = try_budget(start, self.cutoff, timeout) else {
+                bail!(
+                    "`{url}`: no time left before the run's cutoff for try {} of {}",
+                    attempt + 1,
+                    self.retries + 1
+                );
+            };
+            tokio::time::sleep_until(start).await;
+            let tried = tokio::time::timeout(budget, self.try_once(url, attempt, &mut body)).await;
             *last = Some(tokio::time::Instant::now());
-            let retry_after = match sent {
-                // The body can fail after the headers (a dropped
-                // connection): an attempt like a failed send.
-                Ok(r) if r.status().is_success() => {
-                    let read = body(r).await;
-                    *last = Some(tokio::time::Instant::now());
-                    match read {
-                        Ok(b) => return Ok(Some(b)),
-                        Err(e) => {
-                            tracing::warn!(url, server = self.server, error = %format!("{e:#}"), attempt, "reading the response failed");
-                            None
-                        }
-                    }
-                }
-                Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => return Ok(None),
-                Ok(r)
-                    if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || r.status().is_server_error() =>
-                {
-                    tracing::warn!(
-                        url,
-                        server = self.server,
-                        status = r.status().as_u16(),
-                        attempt,
-                        "the server asked us to wait"
-                    );
-                    r.headers()
-                        .get(reqwest::header::RETRY_AFTER)
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| {
-                            usnm_core::retry_after::parse(v, std::time::SystemTime::now())
-                        })
-                }
-                Ok(r) => bail!("`{url}` answered {}", r.status()),
-                Err(e) => {
-                    tracing::warn!(url, server = self.server, error = %e, attempt, "request failed");
+            let retry_after = match tried {
+                Ok(Ok(Try::Done(b))) => return Ok(Some(b)),
+                Ok(Ok(Try::NotFound)) => return Ok(None),
+                Ok(Ok(Try::Again(after))) => after,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    tracing::warn!(url, server = self.server, timeout = ?budget, attempt, "the request ran past its timeout");
                     None
                 }
             };
@@ -123,18 +170,70 @@ impl Http {
         }
         bail!("`{url}` failed {} times", self.retries + 1)
     }
+
+    /// One try: sent, and its body read when it succeeds.
+    async fn try_once<T, F, Fut>(
+        &self,
+        url: &str,
+        attempt: u32,
+        body: &mut F,
+    ) -> anyhow::Result<Try<T>>
+    where
+        F: FnMut(reqwest::Response) -> Fut + Send,
+        Fut: std::future::Future<Output = anyhow::Result<T>> + Send,
+    {
+        match self.client.get(url).send().await {
+            // The body can fail after the headers (a dropped connection): a
+            // try like a failed send.
+            Ok(r) if r.status().is_success() => match body(r).await {
+                Ok(b) => Ok(Try::Done(b)),
+                Err(e) => {
+                    tracing::warn!(url, server = self.server, error = %format!("{e:#}"), attempt, "reading the response failed");
+                    Ok(Try::Again(None))
+                }
+            },
+            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => Ok(Try::NotFound),
+            Ok(r)
+                if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || r.status().is_server_error() =>
+            {
+                tracing::warn!(
+                    url,
+                    server = self.server,
+                    status = r.status().as_u16(),
+                    attempt,
+                    "the server asked us to wait"
+                );
+                Ok(Try::Again(
+                    r.headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| {
+                            usnm_core::retry_after::parse(v, std::time::SystemTime::now())
+                        }),
+                ))
+            }
+            Ok(r) => bail!("`{url}` answered {}", r.status()),
+            Err(e) => {
+                tracing::warn!(url, server = self.server, error = %e, attempt, "request failed");
+                Ok(Try::Again(None))
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl Fetch for Http {
     async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
-        self.request(url, |r| async move { Ok(r.bytes().await?.to_vec()) })
-            .await
+        self.request(url, self.get_timeout, |r| async move {
+            Ok(r.bytes().await?.to_vec())
+        })
+        .await
     }
 
     async fn download(&self, url: &str, dest: &Path) -> anyhow::Result<Option<u64>> {
         let got = self
-            .request(url, |mut r| async move {
+            .request(url, self.download_timeout, |mut r| async move {
                 // Each try starts the file again.
                 let mut f = tokio::fs::File::create(dest)
                     .await
@@ -184,7 +283,8 @@ pub const RAW_MISSING: &[u8] = b"";
 /// there). `None` when the server has no such page. Only a response `valid`
 /// accepts is kept, since the raw store is create-only: a bad answer kept
 /// there would be read back on every resumed fetch. A kept copy `valid`
-/// refuses (one kept before the check) is passed over and fetched again.
+/// refuses (one kept before the check) is passed over and fetched again. A
+/// 404 is kept too ([`RAW_MISSING`]): a page the Globe's server has not.
 pub async fn cached(
     fetch: &dyn Fetch,
     raw: Option<&dyn ObjectStore>,
@@ -192,20 +292,51 @@ pub async fn cached(
     url: &str,
     valid: fn(&[u8]) -> bool,
 ) -> anyhow::Result<Option<Vec<u8>>> {
+    cache(fetch, raw, path, url, valid, true).await
+}
+
+/// [`cached`], keeping only a response the server has: a 404 is never kept,
+/// and one kept by an earlier run is passed over, so a page missing for now
+/// is asked for again by every run (and `--refetch`).
+pub async fn cached_found(
+    fetch: &dyn Fetch,
+    raw: Option<&dyn ObjectStore>,
+    path: &str,
+    url: &str,
+    valid: fn(&[u8]) -> bool,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    cache(fetch, raw, path, url, valid, false).await
+}
+
+async fn cache(
+    fetch: &dyn Fetch,
+    raw: Option<&dyn ObjectStore>,
+    path: &str,
+    url: &str,
+    valid: fn(&[u8]) -> bool,
+    keep_404: bool,
+) -> anyhow::Result<Option<Vec<u8>>> {
     if let Some(raw) = raw {
         if let Some(body) = read_kept(raw, path).await? {
             if body == RAW_MISSING {
-                return Ok(None);
-            }
-            if valid(&body) {
+                if keep_404 {
+                    return Ok(None);
+                }
+                tracing::debug!(path, "a kept 404; asking again");
+            } else if valid(&body) {
                 return Ok(Some(body));
+            } else {
+                tracing::warn!(path, "a kept response isn't usable; fetching it again");
             }
-            tracing::warn!(path, "a kept response isn't usable; fetching it again");
         }
     }
     let body = fetch.get(url).await?;
     if let Some(raw) = raw {
-        if body.as_deref().is_none_or(valid) {
+        let keep_it = match body.as_deref() {
+            Some(b) => valid(b),
+            None => keep_404,
+        };
+        if keep_it {
             keep(raw, path, body.as_deref().unwrap_or(RAW_MISSING)).await?;
         }
     }
@@ -312,5 +443,143 @@ mod tests {
             .unwrap();
         assert_eq!(n, None);
         assert!(std::fs::read(&dest).unwrap().is_empty());
+    }
+
+    /// A try gets its timeout, cut to what is left before the cutoff; none
+    /// starts with less than `MIN_TRY` left, or after the cutoff.
+    #[tokio::test(start_paused = true)]
+    async fn tries_fit_before_the_cutoff() {
+        let now = tokio::time::Instant::now();
+        let s = Duration::from_secs;
+        assert_eq!(
+            try_budget(now, None, DOWNLOAD_TIMEOUT),
+            Some(DOWNLOAD_TIMEOUT)
+        );
+        let cutoff = Some(now + s(3600));
+        assert_eq!(try_budget(now, cutoff, GET_TIMEOUT), Some(GET_TIMEOUT));
+        assert_eq!(
+            try_budget(now, cutoff, DOWNLOAD_TIMEOUT),
+            Some(DOWNLOAD_TIMEOUT)
+        );
+        // Ten minutes left: a download may take ten minutes, not thirty.
+        assert_eq!(
+            try_budget(now + s(3000), cutoff, DOWNLOAD_TIMEOUT),
+            Some(s(600))
+        );
+        assert_eq!(
+            try_budget(now + s(3600) - MIN_TRY, cutoff, GET_TIMEOUT),
+            Some(MIN_TRY)
+        );
+        assert_eq!(try_budget(now + s(3597), cutoff, GET_TIMEOUT), None);
+        assert_eq!(try_budget(now + s(3600), cutoff, GET_TIMEOUT), None);
+        assert_eq!(try_budget(now + s(4000), cutoff, GET_TIMEOUT), None);
+        // A timeout shorter than MIN_TRY needs only itself.
+        let short = Duration::from_millis(200);
+        assert_eq!(try_budget(now + s(3599), cutoff, short), Some(short));
+        // The defaults: pages as the Globe had them, a longer allowance for PDFs.
+        let http = Http::new(Duration::from_secs(1), "usnm-test", "test").unwrap();
+        assert_eq!((http.get_timeout, http.download_timeout), (s(120), s(1800)));
+        assert_eq!(http.cutoff, None);
+    }
+
+    /// A server that never answers: each try stops at its timeout, and no
+    /// retry starts that the cutoff leaves no time for, so the request fails
+    /// by the cutoff rather than after seven tries and their waits.
+    #[tokio::test]
+    async fn a_hung_server_is_given_up_on_by_the_cutoff() {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        let app = axum::Router::new().fallback(move || {
+            let h = h.clone();
+            async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                "late"
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let started = tokio::time::Instant::now();
+        // Tries of 300 ms; retries wait 2 s, then 4 s: the cutoff at 3 s
+        // leaves room for the second try and not the third.
+        let http = Http::new(Duration::from_millis(10), "usnm-test", "test")
+            .unwrap()
+            .with_timeouts(Duration::from_millis(300), Duration::from_millis(300))
+            .with_cutoff(Some(started + Duration::from_secs(3)));
+        let err = http
+            .get(&format!("http://{addr}/mods.xml"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cutoff"), "{err:#}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        // Past the cutoff, nothing is asked.
+        let http = Http::new(Duration::from_millis(10), "usnm-test", "test")
+            .unwrap()
+            .with_cutoff(Some(tokio::time::Instant::now()));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(http
+            .download(&format!("http://{addr}/a.pdf"), &dir.path().join("a.pdf"))
+            .await
+            .is_err());
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    /// The Globe's cache keeps a 404; `cached_found` neither keeps one nor
+    /// trusts one an earlier run kept.
+    #[tokio::test]
+    async fn only_cached_keeps_a_404() {
+        struct Answers(std::sync::Mutex<Vec<Option<&'static [u8]>>>, AtomicUsizeRef);
+        type AtomicUsizeRef = Arc<std::sync::atomic::AtomicUsize>;
+        #[async_trait::async_trait]
+        impl Fetch for Answers {
+            async fn get(&self, _url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                Ok(self.0.lock().unwrap().remove(0).map(<[u8]>::to_vec))
+            }
+        }
+        let valid = |b: &[u8]| b.starts_with(b"<mods");
+        let dir = tempfile::tempdir().unwrap();
+        let raw = usnm_store::LocalStore::new(dir.path());
+        let asked = AtomicUsizeRef::default();
+        let gi = Answers(
+            std::sync::Mutex::new(vec![None, Some(b"<mods/>"), None]),
+            asked.clone(),
+        );
+        // A 404, not kept: asked again, and found.
+        assert_eq!(
+            cached_found(&gi, Some(&raw), "a.zst", "u", valid)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(!raw.exists("a.zst").await.unwrap());
+        let got = cached_found(&gi, Some(&raw), "a.zst", "u", valid)
+            .await
+            .unwrap();
+        assert_eq!(got.as_deref(), Some(&b"<mods/>"[..]));
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        // The Globe's keeps the 404 and reads it back without asking.
+        assert_eq!(
+            cached(&gi, Some(&raw), "b.zst", "u", valid).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            cached(&gi, Some(&raw), "b.zst", "u", valid).await.unwrap(),
+            None
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 3);
+        // A 404 an earlier run kept is passed over by `cached_found`.
+        let again = Answers(std::sync::Mutex::new(vec![Some(b"<mods/>")]), asked.clone());
+        let got = cached_found(&again, Some(&raw), "b.zst", "u", valid)
+            .await
+            .unwrap();
+        assert_eq!(got.as_deref(), Some(&b"<mods/>"[..]));
+        assert_eq!(asked.load(Ordering::SeqCst), 4);
     }
 }

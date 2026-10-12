@@ -1464,16 +1464,20 @@ async fn command(
                      stopped by the deadline is fetched again from its first page"
                 );
             }
+            let run_deadline = deadline(start, *max_runtime_secs);
+            // 120 s a try, and every request ends within the grace after the
+            // deadline, short of the job's hard timeout.
             let fetch = globe::Http::new(
                 std::time::Duration::from_secs(*crawl_delay_secs),
                 globe::USER_AGENT,
                 "UNT",
-            )?;
+            )?
+            .with_cutoff(run_deadline.map(|d| d + usnm_ingest::congress::fetch::REQUEST_GRACE));
             let opts = globe::Options {
                 base: unt_url.trim_end_matches('/').to_owned(),
                 items: items.clone(),
                 refetch: *refetch,
-                deadline: deadline(start, *max_runtime_secs),
+                deadline: run_deadline,
                 max_items: *max_items,
                 ..globe::Options::default()
             };
@@ -1522,18 +1526,22 @@ async fn command(
             let scratch = cli.stores.work_dir.join("serialset");
             std::fs::create_dir_all(&scratch)
                 .with_context(|| format!("creating {}", scratch.display()))?;
+            let run_deadline = deadline(start, *max_runtime_secs);
+            // Sitemaps and MODS get 120 s a try, a PDF 30 minutes; every
+            // request ends within the grace after the deadline.
             let fetch = usnm_ingest::congress::fetch::Http::new(
                 std::time::Duration::from_secs(*delay_secs),
                 serialset::USER_AGENT,
                 "GovInfo",
-            )?;
+            )?
+            .with_cutoff(run_deadline.map(|d| d + usnm_ingest::congress::fetch::REQUEST_GRACE));
             let pdf = serialset::Pdftotext::new(pdftotext.clone());
             let opts = serialset::Options {
                 base: govinfo_url.trim_end_matches('/').to_owned(),
                 years: years.clone(),
                 serials: serials.clone(),
                 refetch: *refetch,
-                deadline: deadline(start, *max_runtime_secs),
+                deadline: run_deadline,
                 max_volumes: *max_volumes,
                 scratch,
             };

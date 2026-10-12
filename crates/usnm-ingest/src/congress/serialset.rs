@@ -28,8 +28,13 @@
 //!    or the title name ([`states_of`]).
 //! 5. **Write.** One curated attempt per volume
 //!    (`congress/serialset/{volume}/…`, [`super::curated`]) once every
-//!    document is read; a volume stopped by the deadline writes nothing and
-//!    is fetched again by the next run.
+//!    document is read or left out for good: undated, or with no PDF where
+//!    its MODS names none. A volume with a document GovInfo answered 404
+//!    for (its MODS, or a PDF its MODS names) or that couldn't be read is
+//!    `incomplete`: nothing is written, the 404 isn't kept, and the next
+//!    run fetches it again, since a finished attempt records the volume's
+//!    latest `lastmod` and would not be fetched again. A volume stopped by
+//!    the deadline also writes nothing and is fetched again by the next run.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -45,7 +50,7 @@ use sha2::{Digest, Sha256};
 use usnm_store::ObjectStore;
 
 use super::curated::{self, CuratedPage};
-use super::fetch::{self, cached, Fetch};
+use super::fetch::{self, cached_found, Fetch};
 use super::StateRef;
 
 /// GovInfo: the links on hits, and where the fetch goes by default.
@@ -303,6 +308,8 @@ pub struct Mods {
     pub serial_title: Option<String>,
     /// `subject/geographic`, each once, in order.
     pub geographic: Vec<String>,
+    /// Whether `location` names a `PDF rendition`: a PDF GovInfo should have.
+    pub pdf_rendition: bool,
 }
 
 /// Read a package's MODS. A response whose root isn't `mods` is refused.
@@ -345,6 +352,14 @@ pub fn parse_mods(xml: &[u8]) -> anyhow::Result<Mods> {
             ("extension", "citation") => set(&mut m.citation),
             ("extension", "serialTitle") => set(&mut m.serial_title),
             ("physicalDescription", "extent") => set(&mut m.extent),
+            ("location", "url")
+                if path.len() == 3
+                    && attrs
+                        .iter()
+                        .any(|(k, v)| k == "displayLabel" && v == "PDF rendition") =>
+            {
+                m.pdf_rendition = true;
+            }
             (_, "geographic")
                 if path.iter().any(|p| p == "subject")
                     && !text.is_empty()
@@ -812,13 +827,23 @@ pub struct Report {
     pub pages: u64,
     /// Documents by how precisely they are dated.
     pub date_precision: BTreeMap<String, u64>,
-    /// Documents GovInfo has no MODS or PDF for (404), with which.
+    /// Documents GovInfo answered 404 for the MODS or a PDF its MODS names,
+    /// with which: their volumes are left for the next run.
     pub missing: Vec<String>,
-    /// Documents whose MODS or PDF couldn't be read, with why.
+    /// Documents whose MODS or PDF couldn't be read, with why: their volumes
+    /// are left for the next run.
     pub unreadable: Vec<String>,
-    /// Documents without a usable date.
+    /// Volumes not written because a document of theirs is in `missing` or
+    /// `unreadable`, with how many: fetched again by the next run.
+    pub incomplete: Vec<String>,
+    /// Documents whose MODS names no PDF and that have none (404): left out
+    /// for good, as they have no text.
+    pub no_pdf: Vec<String>,
+    /// Documents without a usable date: left out for good (until GPO
+    /// changes their MODS, and with it their `lastmod`).
     pub undated: Vec<String>,
-    /// Volumes none of whose documents could be read: nothing written.
+    /// Volumes all of whose documents are left out for good (`no_pdf`,
+    /// `undated`): nothing written.
     pub empty_volumes: Vec<String>,
     /// Volumes left for the next run: the deadline, `--max-volumes` or a lost lock.
     pub left: usize,
@@ -883,13 +908,19 @@ async fn list(
 /// One document, read.
 enum Got {
     Pages(Box<Mods>, Vec<String>),
-    /// GovInfo has no `mods` or `pdf` for it (404).
+    /// Its MODS names no PDF, and GovInfo has none (404): no text, for good.
+    NoPdf,
+    /// GovInfo answered 404 for its `mods`, or for a `pdf` its MODS names:
+    /// taken as passing (the sitemap lists the package), so asked again.
     Missing(&'static str),
+    /// Not read this time (MODS that isn't MODS, a PDF pdftotext can't
+    /// read): asked again.
     Unreadable(String),
 }
 
 /// Fetch one document's MODS and page texts, from the raw store when it
-/// holds them.
+/// holds them. A 404 is never kept, so the next run (or `--refetch`) asks
+/// again.
 async fn fetch_document(
     fetch: &dyn Fetch,
     pdf: &dyn PdfText,
@@ -899,7 +930,7 @@ async fn fetch_document(
 ) -> anyhow::Result<Got> {
     let dir = raw_dir(doc);
     let id = &doc.id.id;
-    let Some(body) = cached(
+    let Some(body) = cached_found(
         fetch,
         raw,
         &format!("{dir}/mods.xml.zst"),
@@ -935,7 +966,11 @@ async fn fetch_document(
         .download(&pdf_url(&opts.base, id), file.path())
         .await?
     else {
-        return Ok(Got::Missing("pdf"));
+        return Ok(if mods.pdf_rendition {
+            Got::Missing("pdf")
+        } else {
+            Got::NoPdf
+        });
     };
     let pages = match pdf.pages(file.path()).await {
         Ok(p) if !p.is_empty() => p,
@@ -960,6 +995,14 @@ fn past(deadline: Option<tokio::time::Instant>) -> bool {
     deadline.is_some_and(|d| tokio::time::Instant::now() >= d)
 }
 
+/// One volume's documents, read.
+struct Read {
+    rows: Vec<CuratedPage>,
+    /// Documents not read this time (missing or unreadable): the volume
+    /// isn't finished while there are any.
+    unread: usize,
+}
+
 /// Fetch and read one volume's documents.
 async fn fetch_volume(
     fetch: &dyn Fetch,
@@ -969,8 +1012,9 @@ async fn fetch_volume(
     volume: &Volume,
     lost: &AtomicBool,
     report: &mut Report,
-) -> anyhow::Result<Result<Vec<CuratedPage>, Stopped>> {
+) -> anyhow::Result<Result<Read, Stopped>> {
     let mut rows = Vec::new();
+    let mut unread = 0;
     for doc in &volume.documents {
         if lost.load(Ordering::SeqCst) {
             return Ok(Err(Stopped::Lost));
@@ -980,13 +1024,19 @@ async fn fetch_volume(
         }
         let id = &doc.id.id;
         match fetch_document(fetch, pdf, raw, opts, doc).await? {
+            Got::NoPdf => {
+                tracing::warn!(id = %id, "a Serial Set document whose MODS names no PDF, and GovInfo has none; left out");
+                report.no_pdf.push(id.clone());
+            }
             Got::Missing(what) => {
-                tracing::warn!(id = %id, what, "GovInfo has no such file; the document is left out");
+                tracing::warn!(id = %id, what, "GovInfo answered 404 for a file it lists; the volume is left for the next run");
                 report.missing.push(format!("{id}: {what}"));
+                unread += 1;
             }
             Got::Unreadable(why) => {
-                tracing::warn!(id = %id, why = %why, "a Serial Set document couldn't be read; left out");
+                tracing::warn!(id = %id, why = %why, "a Serial Set document couldn't be read; the volume is left for the next run");
                 report.unreadable.push(format!("{id}: {why}"));
+                unread += 1;
             }
             Got::Pages(mods, pages) => match document_rows(&doc.id, &mods, &pages, Utc::now()) {
                 Some(mut r) => {
@@ -1003,7 +1053,7 @@ async fn fetch_volume(
             },
         }
     }
-    Ok(Ok(rows))
+    Ok(Ok(Read { rows, unread }))
 }
 
 /// Run the fetch (steps 1 to 5). `lost` is set when the lock that keeps two
@@ -1086,11 +1136,26 @@ pub async fn run(
                 tracing::warn!(volume = %v.volume, "the fetch lock was lost; stopping");
                 break;
             }
-            Ok(rows) if rows.is_empty() => {
-                tracing::warn!(volume = %v.volume, "no document of the volume could be read; nothing written");
+            // A finished attempt records the volume's latest `lastmod`, and
+            // a later run skips it: written only when every document is
+            // read or left out for good.
+            Ok(read) if read.unread > 0 => {
+                tracing::warn!(
+                    volume = %v.volume, unread = read.unread, documents = v.documents.len(),
+                    "documents of the volume weren't read; nothing written, and the next run fetches it again"
+                );
+                report.incomplete.push(format!(
+                    "{}: {} of {}",
+                    v.volume,
+                    read.unread,
+                    v.documents.len()
+                ));
+            }
+            Ok(read) if read.rows.is_empty() => {
+                tracing::warn!(volume = %v.volume, "every document of the volume is left out; nothing written");
                 report.empty_volumes.push(v.volume.clone());
             }
-            Ok(rows) => {
+            Ok(Read { rows, .. }) => {
                 let counts = curated::write_attempt_from(
                     curated,
                     SERIES,
@@ -1339,6 +1404,7 @@ mod tests {
             .unwrap()
             .starts_with("Letter from the Secretary of the Treasury"));
         assert_eq!(m.geographic, ["Spain"]);
+        assert!(m.pdf_rendition);
         let m = parse_mods(&recorded("SERIALSET-13993_00_00-021-0183-0000-mods.xml")).unwrap();
         assert_eq!(
             (m.date_issued.as_deref(), m.congress, m.session.as_deref()),
@@ -1471,7 +1537,9 @@ mod tests {
             report.missing,
             ["SERIALSET-00025_00_00-001-0000-0000: mods"]
         );
-        assert_eq!(report.empty_volumes, ["00025_00_00"]);
+        // A 404 for a package the sitemap lists: not finished, fetched again.
+        assert_eq!(report.incomplete, ["00025_00_00: 1 of 1"]);
+        assert!(report.empty_volumes.is_empty());
         assert_eq!(report.written, [("00033_00_00".to_owned(), 1, 6)]);
         assert_eq!(report.documents_read, 2);
         assert_eq!(report.date_precision["day"], 2);
@@ -1563,6 +1631,9 @@ mod tests {
             .unwrap();
         assert_eq!((r.already, r.changed, r.written.len()), (1, 0, 0));
         assert_eq!(again.asked("/content/pkg/"), 0);
+        // Serial 25, unfinished, is asked for again: its 404 wasn't kept.
+        assert_eq!(again.asked("/metadata/pkg/SERIALSET-00025"), 1);
+        assert_eq!(r.incomplete, ["00025_00_00: 1 of 1"]);
 
         // Fetched again on request, from the raw store's copies alone.
         let kept = Recorded {
@@ -1635,7 +1706,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        // --max-volumes 1 writes nothing for serial 25 (empty), and leaves 33.
+        // --max-volumes 1 writes nothing for serial 25 (incomplete), and leaves 33.
         let one = Options {
             max_volumes: Some(1),
             ..options(dir.path())
@@ -1643,7 +1714,7 @@ mod tests {
         let r = run(&Recorded::default(), &text, &curated, None, &one, &lost)
             .await
             .unwrap();
-        assert_eq!((r.empty_volumes.len(), r.written.len(), r.left), (1, 0, 1));
+        assert_eq!((r.incomplete.len(), r.written.len(), r.left), (1, 0, 1));
         // The 1990 volume, on its own.
         let later = Options {
             years: vec![1990],
@@ -1682,6 +1753,170 @@ mod tests {
         assert!(run(&gi, &text, &curated, None, &opts, &lost).await.is_err());
         assert!(lost.load(Ordering::SeqCst), "the last PDF was asked for");
         assert!(curated::finished(&curated).await.unwrap().is_empty());
+    }
+
+    /// The recorded responses, answering 404 the first time a URL with one
+    /// of `fail_once` in it is asked for, and with `no_pdf_named`'s MODS
+    /// naming no PDF.
+    #[derive(Default)]
+    struct Flaky {
+        inner: Recorded,
+        fail_once: std::sync::Mutex<Vec<String>>,
+        no_pdf_named: Option<&'static str>,
+    }
+
+    #[async_trait::async_trait]
+    impl Fetch for Flaky {
+        async fn get(&self, url: &str) -> anyhow::Result<Option<Vec<u8>>> {
+            let failed = {
+                let mut fail = self.fail_once.lock().unwrap();
+                let at = fail.iter().position(|p| url.contains(p.as_str()));
+                at.map(|i| fail.remove(i)).is_some()
+            };
+            if failed {
+                self.inner.asked.lock().unwrap().push(url.to_owned());
+                return Ok(None);
+            }
+            let body = self.inner.get(url).await?;
+            match self.no_pdf_named {
+                Some(id) if url.contains(id) && url.ends_with("mods.xml") => {
+                    let s = String::from_utf8(body.unwrap()).unwrap();
+                    Ok(Some(
+                        s.replace("PDF rendition", "Other rendition").into_bytes(),
+                    ))
+                }
+                _ => Ok(body),
+            }
+        }
+    }
+
+    const D42: &str = "SERIALSET-00033_00_00-009-0042-0000";
+    const D53: &str = "SERIALSET-00033_00_00-020-0053-0000";
+
+    /// A 404 for a document the sitemap lists (its MODS, or a PDF its MODS
+    /// names) leaves the volume unfinished; the next run fetches it again
+    /// and finishes it, reading what was read before from the raw store.
+    #[tokio::test]
+    async fn a_passing_404_leaves_the_volume_for_the_next_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let opts = Options {
+            serials: vec![33],
+            ..options(dir.path())
+        };
+        for (i, fail) in [format!("{D42}/mods.xml"), format!("{D53}.pdf")]
+            .into_iter()
+            .enumerate()
+        {
+            let fail = fail.as_str();
+            let curated = usnm_store::LocalStore::new(dir.path().join(format!("curated-{i}")));
+            let raw = usnm_store::LocalStore::new(dir.path().join(format!("raw-{i}")));
+            let gi = Flaky {
+                fail_once: std::sync::Mutex::new(vec![fail.to_owned()]),
+                ..Flaky::default()
+            };
+            let r = run(&gi, &text, &curated, Some(&raw), &opts, &lost)
+                .await
+                .unwrap();
+            assert_eq!(r.incomplete, ["00033_00_00: 1 of 2"], "{fail}");
+            assert_eq!(r.missing.len(), 1, "{fail}");
+            assert!(r.written.is_empty());
+            assert!(
+                curated::finished(&curated).await.unwrap().is_empty(),
+                "{fail}"
+            );
+            // The next run asks again, and finishes the volume.
+            let r = run(&gi, &text, &curated, Some(&raw), &opts, &lost)
+                .await
+                .unwrap();
+            assert!(r.incomplete.is_empty() && r.missing.is_empty(), "{fail}");
+            assert_eq!(r.written, [("00033_00_00".to_owned(), 1, 6)], "{fail}");
+            assert_eq!(gi.inner.asked(fail), 2, "{fail}");
+            // Each PDF was read once: the second run read the first's pages back.
+            assert_eq!(text.0.load(Ordering::SeqCst), 2 * (i + 1), "{fail}");
+        }
+        // Without a raw store too.
+        let curated = usnm_store::LocalStore::new(dir.path().join("curated"));
+        let gi = Flaky {
+            fail_once: std::sync::Mutex::new(vec!["0042-0000.pdf".into()]),
+            ..Flaky::default()
+        };
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!(r.incomplete, ["00033_00_00: 1 of 2"]);
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!(r.written, [("00033_00_00".to_owned(), 1, 6)]);
+    }
+
+    /// `--refetch` asks again for a MODS whose 404 an earlier run kept.
+    #[tokio::test]
+    async fn refetch_asks_again_for_a_kept_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::LocalStore::new(dir.path().join("curated"));
+        let raw = usnm_store::LocalStore::new(dir.path().join("raw"));
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let opts = Options {
+            serials: vec![33],
+            ..options(dir.path())
+        };
+        let r = run(&Recorded::default(), &text, &curated, None, &opts, &lost)
+            .await
+            .unwrap();
+        assert_eq!(r.written.len(), 1);
+        // A 404 kept for D42's MODS, as the first version of the fetch did.
+        let urls = parse_urlset(&recorded("SERIALSET_1820_sitemap.xml")).unwrap();
+        let p = plan(urls);
+        let d42 = p.volumes[1]
+            .documents
+            .iter()
+            .find(|d| d.id.id == D42)
+            .unwrap();
+        fetch::keep(
+            &raw,
+            &format!("{}/mods.xml.zst", raw_dir(d42)),
+            fetch::RAW_MISSING,
+        )
+        .await
+        .unwrap();
+        let gi = Recorded::default();
+        let refetch = Options {
+            refetch: true,
+            ..opts.clone()
+        };
+        let r = run(&gi, &text, &curated, Some(&raw), &refetch, &lost)
+            .await
+            .unwrap();
+        assert_eq!(gi.asked(&format!("{D42}/mods.xml")), 1);
+        assert!(r.missing.is_empty() && r.incomplete.is_empty());
+        assert_eq!(r.written, [("00033_00_00".to_owned(), 2, 6)]);
+    }
+
+    /// A document whose MODS names no PDF, and that has none, is left out
+    /// for good: the volume is finished without it.
+    #[tokio::test]
+    async fn a_document_without_a_pdf_is_left_out_for_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::LocalStore::new(dir.path());
+        let lost = AtomicBool::new(false);
+        let text = RecordedText::default();
+        let opts = Options {
+            serials: vec![33],
+            ..options(dir.path())
+        };
+        let gi = Flaky {
+            fail_once: std::sync::Mutex::new(vec!["0053-0000.pdf".into()]),
+            no_pdf_named: Some(D53),
+            ..Flaky::default()
+        };
+        let r = run(&gi, &text, &curated, None, &opts, &lost).await.unwrap();
+        assert_eq!(r.no_pdf, [D53]);
+        assert!(r.incomplete.is_empty() && r.missing.is_empty());
+        assert_eq!(r.written.len(), 1);
+        assert_eq!(r.documents_read, 1);
+        let f = curated::finished(&curated).await.unwrap();
+        let (counts, _) = curated::read_counts(&curated, &f[0]).await.unwrap();
+        assert!(counts.pages < 6, "{}", counts.pages);
     }
 
     #[test]
