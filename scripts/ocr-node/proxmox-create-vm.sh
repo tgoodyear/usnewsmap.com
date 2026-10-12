@@ -10,6 +10,8 @@
 #     --ssh-key 'ssh-ed25519 AAAA... you@example'
 #
 # Optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm
+#           --balloon-mib 0 (a floor below --memory-mib lets the host take
+#             memory back when it runs short; 0 turns ballooning off)
 #           --bridge vmbr0 --snippets-storage local
 #           --mac 52:54:00:12:34:56 (keeps a DHCP reservation across rebuilds)
 #           --image-file /var/lib/vz/template/cache/rhel-10.2-x86_64-kvm.qcow2
@@ -29,8 +31,8 @@
 set -euo pipefail
 
 VMID="" NAME="" SSH_KEY="" IMAGE_FILE="" IMAGE_SHA256="" MAC=""
-CORES=4 MEMORY_MIB=8192 DISK_GIB=64 STORAGE=local-lvm BRIDGE=vmbr0 SNIPPETS=local
-usage() { sed -n '2,29s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+CORES=4 MEMORY_MIB=8192 BALLOON_MIB=0 DISK_GIB=64 STORAGE=local-lvm BRIDGE=vmbr0 SNIPPETS=local
+usage() { sed -n '2,31s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --vmid) VMID=$2; shift 2 ;;
@@ -38,6 +40,7 @@ while [ $# -gt 0 ]; do
     --ssh-key) SSH_KEY=$2; shift 2 ;;
     --cores) CORES=$2; shift 2 ;;
     --memory-mib) MEMORY_MIB=$2; shift 2 ;;
+    --balloon-mib) BALLOON_MIB=$2; shift 2 ;;
     --disk-gib) DISK_GIB=$2; shift 2 ;;
     --storage) STORAGE=$2; shift 2 ;;
     --bridge) BRIDGE=$2; shift 2 ;;
@@ -152,7 +155,7 @@ EOF
 qm create "$VMID" --name "$NAME" --ostype l26 --machine q35 --bios ovmf \
   --efidisk0 "$STORAGE:1,efitype=4m,pre-enrolled-keys=1" \
   --tpmstate0 "$STORAGE:1,version=v2.0" \
-  --cpu host --cores "$CORES" --sockets 1 --memory "$MEMORY_MIB" --balloon 0 \
+  --cpu host --cores "$CORES" --sockets 1 --memory "$MEMORY_MIB" --balloon "$BALLOON_MIB" \
   --net0 "virtio${MAC:+=$MAC},bridge=$BRIDGE" --scsihw virtio-scsi-single \
   --serial0 socket --vga serial0 --agent enabled=1 --onboot 1 \
   --description "usnewsmap on-prem OCR node (#296)"
