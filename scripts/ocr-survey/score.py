@@ -222,8 +222,11 @@ def main() -> None:
                 "median_words_ratio": med(r.get("words_ratio") for r in ok),
                 "median_known_words_ratio": med(r.get("known_words_ratio") for r in ok),
                 "pages_more_known_words": sum(1 for r in ok if (r.get("known_words_ratio") or 0) > 1),
-                "loc_median_damage_same_pages": med(loc[r["page_id"]]["damage_rate"] for r in ok),
-                "loc_median_known_share_same_pages": med(loc[r["page_id"]]["known_share"] for r in ok),
+                # over the pages where the engine's own metric exists, as for its median above
+                "loc_median_damage_same_pages": med(loc[r["page_id"]]["damage_rate"] for r in ok
+                                                    if r.get("damage_rate") is not None),
+                "loc_median_known_share_same_pages": med(loc[r["page_id"]]["known_share"] for r in ok
+                                                         if r.get("known_share") is not None),
                 "median_seconds": med(r.get("seconds") for r in ok),
                 "median_peak_rss_mb": med(r.get("peak_rss_mb") for r in ok),
                 "max_peak_rss_mb": max((r["peak_rss_mb"] for r in rs if r.get("peak_rss_mb")), default=None),

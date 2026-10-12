@@ -26,7 +26,12 @@ seeded random issue of the title that month.
 
 Writes OUT/manifest.jsonl (one row per page, with the selection details),
 OUT/images/, OUT/alto/ and OUT/loctext/. A page already in the manifest is
-not fetched again, so it can be stopped and rerun.
+not fetched again, so it can be stopped and rerun. Each pick has its own
+seeded PRNG, so a rerun draws what an uninterrupted run would.
+
+Round 1's sample was drawn by an earlier version with one PRNG per source,
+whose rerun after an error could draw differently from an uninterrupted run. So
+seed 296 doesn't reproduce it: the sample is the archived manifest.jsonl.
 """
 
 from __future__ import annotations
@@ -190,8 +195,9 @@ def main() -> None:
             rnd.shuffle(order)
             for pick in range(picks):
                 if (group, value, pick) in done:
-                    rnd.random()
                     continue
+                # each pick draws from its own PRNG, so a resumed run draws what an uninterrupted one would
+                rnd = random.Random(f"{a.seed}:{group}:{facet}:{value}:{pick}")
                 issue = None
                 for j in range(len(order)):  # a decade with only the title record (or used up): the next one
                     if facet == "title_month":

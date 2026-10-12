@@ -16,10 +16,10 @@
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | docTR | 14 of 15 (1 timed out) | 0.589 | 0.357 | 0.162 | 0 of 14 | -0.163 | 1.22 | 0.72; 2 | 257 |  | 4808 |
 | Surya | 1 of 2 (1 timed out) | 0.030 | 0.607 | -0.577 | 1 of 1 | 0.374 | 1.49 | 3.44; 1 | 2383 |  | 7082 |
-| Tesseract `deu` | 15 of 15 (2 with no text) | 0.239 | 0.343 | -0.164 | 9 of 13 | 0.113 | 1.06 | 1.57; 10 | 100 | 333 | 310 |
-| Tesseract `deu_latf` | 15 of 15 (2 with no text) | 0.163 | 0.343 | -0.208 | 10 of 13 | 0.191 | 1.06 | 1.82; 10 | 98 | 282 | 314 |
+| Tesseract `deu` | 15 of 15 (2 with no text) | 0.239 | 0.371 | -0.164 | 9 of 13 | 0.113 | 1.06 | 1.57; 10 | 100 | 333 | 310 |
+| Tesseract `deu_latf` | 15 of 15 (2 with no text) | 0.163 | 0.371 | -0.208 | 10 of 13 | 0.191 | 1.06 | 1.82; 10 | 98 | 282 | 314 |
 | Tesseract `deu_latf`, 50% scale | 15 of 15 | 0.162 | 0.343 | -0.220 | 11 of 15 | 0.203 | 1.03 | 1.78; 12 | 73 | 263 | 310 |
-| Tesseract `frak2021` | 15 of 15 (2 with no text) | 0.086 | 0.343 | -0.285 | 13 of 13 | 0.230 | 1.09 | 1.94; 12 | 52 | 228 | 303 |
+| Tesseract `frak2021` | 15 of 15 (2 with no text) | 0.086 | 0.371 | -0.285 | 13 of 13 | 0.230 | 1.09 | 1.94; 12 | 52 | 228 | 303 |
 
 ## worst-english
 
@@ -135,6 +135,6 @@ xychart-beta
     title "Median damage rate: LoC (bars) and the best engine (line)"
     x-axis ["german", "worst-english", "control", "serbian", "russian", "czech", "polish"]
     y-axis "Damage rate" 0 --> 0.6
-    bar [0.343, 0.564, 0.038, 0.201, 0.217, 0.500, 0.123]
+    bar [0.371, 0.564, 0.038, 0.201, 0.217, 0.500, 0.123]
     line [0.086, 0.143, 0.033, 0.031, 0.290, 0.237, 0.154]
 ```

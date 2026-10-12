@@ -11,7 +11,7 @@ As §13.9 says, round 1 is indicative only. It ran on the Python harness, not on
 # Summary
 
 - **No ground truth, so no CER or WER.** No crops were hand-transcribed. Accuracy is the language audit's damage metric (`ja-ocr/quality.py`): each text's damage rate and its known words, compared with LoC's text of the same page. Lower damage is better. More known words than LoC means more words a search could match.
-- **Tesseract with cleared models improves German, Czech and Serbian on most pages.** The median damage rate drops from 0.343 to 0.086 for German with `frak2021` (0.163 with `deu_latf`), from 0.500 to 0.288 for Czech (`ces`) and from 0.217 to 0.126 for Serbian (`srp`). With `ces` and `srp`, every page has more known words than LoC's text.
+- **Tesseract with cleared models improves German, Czech and Serbian on most pages.** The median damage rate drops from 0.371 to 0.086 for German with `frak2021` (0.163 with `deu_latf`, on the same 13 pages), from 0.500 to 0.288 for Czech (`ces`) and from 0.217 to 0.126 for Serbian (`srp`). With `ces` and `srp`, every page has more known words than LoC's text.
 - **NDNP Open OCR is the only engine that read all 15 of the worst English pages and beat LoC on every one.** Its median damage was 0.194 against LoC's 0.532, and it found 1.53 times LoC's known words. The variant surveyed uses American Stories' layout model, which has no explicit licence. Since 11 October that model is in the attributed tier, so it can go to production once the site has a credits page (#372).
 - **On the Polish, Russian and control pages, no engine's median damage was clearly below LoC's,** except Surya on the one Russian page it finished.
 - **UB Mannheim's `frak2021` model scored best on German** (median damage 0.086, lower than LoC on all 13 pages it read). It is cleared: UB Mannheim deposited the same file on Zenodo under CC0 1.0 ([10.5281/zenodo.10125246](https://zenodo.org/records/10125246)). The German pilot runs it (see What happened next).
@@ -23,7 +23,7 @@ xychart-beta
     title "Median damage rate: LoC (bars) and Tesseract with a cleared model (line)"
     x-axis ["german frak2021", "worst-english eng", "control eng", "serbian srp", "russian rus", "czech ces", "polish pol"]
     y-axis "Damage rate" 0 --> 0.6
-    bar [0.343, 0.532, 0.038, 0.217, 0.217, 0.500, 0.123]
+    bar [0.371, 0.532, 0.038, 0.217, 0.217, 0.500, 0.123]
     line [0.086, 0.280, 0.060, 0.126, 0.290, 0.288, 0.155]
 ```
 
@@ -67,7 +67,7 @@ The tiers are those of 13 §13.7.2 and ADR-0016, as of the licence decisions of 
 
 Node 1 is VM 120 on the NUC (Intel i5-4250U, 2 cores, 4 threads). Node 2 is VM 200 on pve-big (Intel i7-7700K, 8 vCPUs, 40 GiB). Both run AlmaLinux 9.8.
 
-**Scoring.** Node 1's results were copied to node 2, and `score.py` ran there on 11 October at 2:07 PM ET, in a `python:3.12-slim` container with wordfreq 3.1.1 and lxml 6.1.3 (`data/run-score.sh`, `data/pip-freeze.txt`), using `ja-ocr/quality.py` as of 5ced3c6. For each page, it scores LoC's text and each engine's text in the group's language:
+**Scoring.** Node 1's results were copied to node 2, and `score.py` ran there on 11 October at 2:07 PM ET, in a `python:3.12-slim` container with wordfreq 3.1.1 and lxml 6.1.3 (`data/run-score.sh`), using `ja-ocr/quality.py` as of 5ced3c6. It ran again on 12 October at 7:07 AM ET with `score.py`'s fix to the "LoC, same pages" baseline and `dedup.py` (`data/run-score-r2.sh`, `data/pip-freeze.txt`). `scores.jsonl`, `alto.jsonl` and `timing.jsonl` came out byte for byte the same, and only three German baselines in `summary.json` changed. For each page, it scores LoC's text and each engine's text in the group's language:
 
 - `damage_rate`: near-misses of the language's 20 most frequent words, over near-misses plus those words.
 - `known_share` and `known_words`: the share and the number of the text's words that are in the language's top 5,000.
@@ -77,17 +77,20 @@ Only pages with status `ok` count in the medians. Partial text from a timed-out 
 
 # Results by group
 
-These tables are `tables.py`'s output, with some columns left out. "Pages better" counts pages where the engine's damage is lower than LoC's. "Known words vs LoC" gives the median ratio, then the number of pages above 1. Peak RSS is the largest seen in any run of that engine on that group, including runs with 4 containers at once.
+These tables are `tables.py`'s output, with some columns left out. "LoC, same pages" is LoC's median over the pages where the engine's text has a damage rate, so pages it read with no text are left out of both. "Pages better" counts pages where the engine's damage is lower than LoC's. "Known words vs LoC" gives the median ratio, then the number of pages above 1. Peak RSS is the largest seen in any run of that engine on that group, including runs with 4 containers at once.
+
+**docTR and Surya kept some words twice.** Both read large pages in 1,280 px tiles overlapping by 256 px, and a word was kept from the tile whose core held its centre. The cores were cut 128 px in from each inner edge, so where a page's last tile started less than a full step after the one before it, the cores of the two overlapped, and a word in that strip could be kept from both. The Copilot review of #370 found this. In docTR's text, 8% to 19% of the words (median by group) were in such a strip and overlapped an earlier word's box by at least half. The "duplicates removed" rows score docTR's text without them (`dedup.py`, `data/doctr-dedup.jsonl`). Duplicates barely move the damage rate, which is a ratio, but they inflated docTR's words and known words. Surya's output has no boxes, so its duplicates can't be removed. Its text repeats 0 to 5 lines of more than 40 characters per page. `engine_runner.py` now splits each overlap at its midpoint. Tesseract, NDNP Open OCR and American Stories read whole pages and aren't affected.
 
 ## German
 
 | Engine | Pages read | Damage (median) | LoC, same pages | Change (median) | Pages better | Known words vs LoC; pages above 1 | Peak RSS MB |
 |---|---|---|---|---|---|---|---|
-| Tesseract `frak2021` | 15 of 15 (2 with no text) | 0.086 | 0.343 | -0.285 | 13 of 13 | 1.94; 12 | 303 |
-| Tesseract `deu_latf` | 15 of 15 (2 with no text) | 0.163 | 0.343 | -0.208 | 10 of 13 | 1.82; 10 | 314 |
+| Tesseract `frak2021` | 15 of 15 (2 with no text) | 0.086 | 0.371 | -0.285 | 13 of 13 | 1.94; 12 | 303 |
+| Tesseract `deu_latf` | 15 of 15 (2 with no text) | 0.163 | 0.371 | -0.208 | 10 of 13 | 1.82; 10 | 314 |
 | Tesseract `deu_latf`, 50% scale | 15 of 15 | 0.162 | 0.343 | -0.220 | 11 of 15 | 1.78; 12 | 310 |
-| Tesseract `deu` | 15 of 15 (2 with no text) | 0.239 | 0.343 | -0.164 | 9 of 13 | 1.57; 10 | 310 |
+| Tesseract `deu` | 15 of 15 (2 with no text) | 0.239 | 0.371 | -0.164 | 9 of 13 | 1.57; 10 | 310 |
 | docTR | 14 of 15 (1 timed out) | 0.589 | 0.357 | 0.162 | 0 of 14 | 0.72; 2 | 4808 |
+| docTR, duplicates removed | 14 | 0.579 | 0.357 | 0.172 | 0 of 14 | 0.56; 2 | |
 | Surya | 1 of 2 (1 timed out) | 0.030 | 0.607 | -0.577 | 1 of 1 | 3.44; 1 | 7082 |
 
 - The same two pages (Tennessee Staatszeitung, 1868-11-19, and Hermanner Volksblatt, 1869-09-24) gave no text at full scale with all three models, returning `ok` in 30 to 54 s. At 50% scale `deu_latf` read both, which is why that row has 15 pages with text. Why full scale failed on them wasn't checked.
@@ -100,6 +103,7 @@ These tables are `tables.py`'s output, with some columns left out. "Pages better
 |---|---|---|---|---|---|---|---|
 | NDNP Open OCR | 15 of 15 | 0.194 | 0.532 | -0.330 | 15 of 15 | 1.53; 13 | 1307 |
 | docTR | 8 of 15 (7 timed out) | 0.143 | 0.564 | -0.360 | 8 of 8 | 1.72; 7 | 4914 |
+| docTR, duplicates removed | 8 | 0.145 | 0.564 | -0.362 | 8 of 8 | 1.58; 7 | |
 | American Stories | 15 of 15 | 0.256 | 0.532 | -0.238 | 13 of 15 | 0.84; 6 | 4856 |
 | Tesseract `eng` | 13 of 15 (2 timed out) | 0.280 | 0.532 | -0.245 | 12 of 13 | 1.17; 7 | 344 |
 | Tesseract `eng`, 50% scale | 15 of 15 | 0.288 | 0.532 | -0.224 | 13 of 15 | 0.69; 3 | 289 |
@@ -115,11 +119,12 @@ These tables are `tables.py`'s output, with some columns left out. "Pages better
 |---|---|---|---|---|---|---|---|
 | American Stories | 10 of 10 | 0.033 | 0.038 | -0.002 | 5 of 10 | 0.88; 0 | 5087 |
 | docTR | 10 of 10 | 0.042 | 0.038 | 0.007 | 2 of 10 | 1.06; 9 | 3300 |
+| docTR, duplicates removed | 10 | 0.041 | 0.038 | 0.006 | 2 of 10 | 0.98; 1 | |
 | Tesseract `eng`, 50% scale | 10 of 10 | 0.060 | 0.038 | 0.018 | 2 of 10 | 0.97; 2 | 373 |
 | Tesseract `eng` | 10 of 10 | 0.060 | 0.038 | 0.024 | 1 of 10 | 0.99; 3 | 429 |
 | NDNP Open OCR | 10 of 10 | 0.071 | 0.038 | 0.025 | 1 of 10 | 1.01; 7 | 1426 |
 
-The control pages were picked because LoC read them well, and no engine does clearly better. docTR finds slightly more known words (1.06) at slightly higher damage.
+The control pages were picked because LoC read them well, and no engine does clearly better. docTR's 1.06 times LoC's known words comes from words it kept twice; with those removed it is 0.98.
 
 ## Serbian
 
@@ -144,16 +149,18 @@ The Latin-script model makes these pages worse, and at 50% scale `srp` has more 
 | Engine | Pages read | Damage (median) | LoC, same pages | Change (median) | Pages better | Known words vs LoC; pages above 1 | Peak RSS MB |
 |---|---|---|---|---|---|---|---|
 | docTR | 15 of 15 | 0.237 | 0.500 | -0.290 | 14 of 15 | 1.44; 15 | 5218 |
+| docTR, duplicates removed | 15 | 0.236 | 0.500 | -0.302 | 15 of 15 | 1.28; 15 | |
 | Tesseract `ces`, 50% scale | 15 of 15 | 0.247 | 0.500 | -0.218 | 15 of 15 | 1.46; 14 | 294 |
 | Tesseract `ces` | 15 of 15 | 0.288 | 0.500 | -0.234 | 14 of 15 | 1.44; 15 | 425 |
 
-The three runs find about the same share of known words. Tesseract at 50% scale took 95 s for its timed page, against 147 s at full scale.
+Both Tesseract runs find about 1.45 times LoC's known words, and docTR 1.28 once its duplicates are removed. Tesseract at 50% scale took 95 s for its timed page, against 147 s at full scale.
 
 ## Polish
 
 | Engine | Pages read | Damage (median) | LoC, same pages | Change (median) | Pages better | Known words vs LoC; pages above 1 | Peak RSS MB |
 |---|---|---|---|---|---|---|---|
 | docTR | 5 of 5 | 0.154 | 0.123 | 0.031 | 1 of 5 | 1.15; 5 | 3345 |
+| docTR, duplicates removed | 5 | 0.163 | 0.123 | 0.026 | 1 of 5 | 0.98; 1 | |
 | Tesseract `pol` | 5 of 5 | 0.155 | 0.123 | 0.030 | 0 of 5 | 1.00; 4 | 402 |
 
 # Speed and memory
@@ -232,7 +239,7 @@ The tiers below are those of 13 §13.7.2 and ADR-0016's Consequences, as they st
 - **German:** Tesseract `frak2021`, which is cleared and had the lowest damage on every page it read. `deu_latf` is the fallback; at 50% scale it also read the two pages that gave no text at full scale with every model, with about the same median damage.
 - **Worst English:** NDNP Open OCR with segmentation had the best result over all 15 pages, and its layout model is now attributed, so it can go to production once the credits page exists. Until then Tesseract `eng` is the choice, with lower damage than LoC on 12 of 13 pages and 1.17 times LoC's known words. NDNP Open OCR kept a median 2.4 cores busy and used up to 1.4 GB, against one core and at most 0.4 GB for Tesseract. Whether NDNP Open OCR's default profile, which is cleared, does as well wasn't measured.
 - **Serbian:** Tesseract `srp` at full scale, which is cleared. Surya scored better on 2 pages and is allowed once the credits page exists, but it used about 230 times Tesseract's CPU time per page (18,753 against 81 CPU-seconds, on different nodes).
-- **Czech:** Tesseract `ces`, which is cleared. At 50% scale it was better than LoC on 15 of 15 pages, and faster. docTR is about as good, and is attributed.
+- **Czech:** Tesseract `ces`, which is cleared. At 50% scale it was better than LoC on 15 of 15 pages, and faster. docTR, which is attributed, had a little less damage but fewer known words once its duplicates are removed (1.28 against 1.44).
 - **Russian, Polish and the control pages:** Keep LoC's text. No engine's median damage was clearly below LoC's on these groups, except Surya on the one Russian page it finished.
 
 This agrees with the Tesseract-only pilot path approved on 10 October (#296), and the clearance of `frak2021` made it the pilot's German model.
@@ -249,13 +256,13 @@ The pilot's numbers are from the pilot comment on #296 and `ocr-sync --report` (
 
 The scan prefetch (#368) had to choose a resolution, and this survey is the only evidence. Its 50% images were the full IIIF JPEG shrunk on the node with Lanczos, not LoC's own `pct:50` JPEG, so it shows how a half-size image reads and not how LoC's half-size file reads.
 
-| Group | Model | Full | 50% | LoC, same pages | Known words vs LoC, full / 50% |
+| Group | Model | Full | 50% | LoC, same pages, full / 50% | Known words vs LoC, full / 50% |
 |---|---|---|---|---|---|
-| German | `deu_latf` | 0.163 (13 pages with text) | 0.162 (15 with text) | 0.343 | 1.82 / 1.78 |
-| Worst English | `eng` | 0.280 (2 timed out) | 0.288 | 0.532 | 1.17 / 0.69 |
-| Control | `eng` | 0.060 | 0.060 | 0.038 | 0.99 / 0.97 |
-| Serbian | `srp` | 0.126 | 0.265 | 0.217 | 1.27 / 1.06 |
-| Czech | `ces` | 0.288 | 0.247 | 0.500 | 1.44 / 1.46 |
+| German | `deu_latf` | 0.163 (13 pages with text) | 0.162 (15 with text) | 0.371 / 0.343 | 1.82 / 1.78 |
+| Worst English | `eng` | 0.280 (2 timed out) | 0.288 | 0.532 / 0.532 | 1.17 / 0.69 |
+| Control | `eng` | 0.060 | 0.060 | 0.038 / 0.038 | 0.99 / 0.97 |
+| Serbian | `srp` | 0.126 | 0.265 | 0.217 / 0.217 | 1.27 / 1.06 |
+| Czech | `ces` | 0.288 | 0.247 | 0.500 / 0.500 | 1.44 / 1.46 |
 
 Half size read German about as well and Czech a little better, lost text on the worst English pages (0.69 of LoC's known words against 1.17) and made Serbian worse than LoC's own text. It was faster for every model timed. `frak2021`, Russian and Polish weren't run at 50%.
 
@@ -285,6 +292,7 @@ The prefetch fetches full-size scans for both its sets, as posted on #368: a ful
 - `data/timing.jsonl`: the timing passes. `data/alto.jsonl`: the ALTO checks.
 - `data/tables.md`: the output of `tables.py --data data`. The group tables above come from it.
 - `derive.py --data data`: the speed, failure and ALTO tables, the typeface counts and the speed chart.
-- `data/run-score.sh` and `data/pip-freeze.txt`: how the scoring ran.
+- `data/run-score.sh`, `data/run-score-r2.sh` and `data/pip-freeze.txt`: how the scoring ran.
+- `dedup.py`: docTR's scores without the words its tiling kept twice, in `data/doctr-dedup.jsonl` and `data/doctr-dedup.md`.
 
 The full survey directories from both nodes (sample pages, LoC's ALTO and text, engine outputs, logs and these scores) are on pve-big at `/tank/ocr-survey/2026-10-11/`, with a `SHA256SUMS` manifest computed on each node and checked against the copy.

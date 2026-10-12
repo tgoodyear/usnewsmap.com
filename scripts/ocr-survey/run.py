@@ -111,11 +111,17 @@ def throughput(sample: Path, work: Path, n: int, pages: int) -> None:
             "variant": "deu_latf", "scale": 1.0, "timeout": 3600}) + "\n" for r in shard))
         cmd = podman("tesseract", sample, work, jobs, d / f"results-{i}.jsonl", d / "out")
         procs.append(subprocess.Popen(cmd))
-    for p in procs:
-        p.wait()
+    codes = [p.wait() for p in procs]
     wall = time.time() - t0
-    row = {"containers": n, "pages": len(manifest), "wall_seconds": round(wall, 1),
-           "pages_per_day": round(len(manifest) / wall * 86400), "engine": "tesseract", "variant": "deu_latf",
+    if any(codes):
+        raise SystemExit(f"throughput x{n}: a container failed (exit codes {codes}); no row written")
+    results = [json.loads(x) for i in range(n) if (d / f"results-{i}.jsonl").exists()
+               for x in (d / f"results-{i}.jsonl").read_text().splitlines() if x.strip()]
+    ok = sum(r["status"] == "ok" for r in results)
+    if ok != len(manifest):
+        raise SystemExit(f"throughput x{n}: {ok} of {len(manifest)} pages ok; no row written")
+    row = {"containers": n, "pages": ok, "wall_seconds": round(wall, 1),
+           "pages_per_day": round(ok / wall * 86400), "engine": "tesseract", "variant": "deu_latf",
            "threads_per_container": 1, "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     with (work / "results" / "throughput.jsonl").open("a") as f:
         f.write(json.dumps(row) + "\n")

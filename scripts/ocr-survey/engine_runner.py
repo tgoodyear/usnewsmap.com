@@ -47,8 +47,12 @@ def load_image(path: str, scale: float):
 
 
 def tiles(w: int, h: int, size: int = TILE, overlap: int = OVERLAP):
-    """(x0, y0, x1, y1, core box) for tiles covering the page. A word belongs to the tile whose core (the tile
-    less half the overlap on each inner side) holds its centre, so each word is kept once."""
+    """(x0, y0, x1, y1, core box) for tiles covering the page. A word belongs to the tile whose core holds its
+    centre. Cores split each overlap at its midpoint between the actual adjacent tile starts, so they partition
+    the page and each word is kept once, even where the last tile overlaps its neighbour by more than `overlap`.
+
+    Round 1 of the survey ran with cores that took half of `overlap` from each inner side instead. Where the
+    last gap was shorter than a step, those cores overlapped, and words there were kept twice (see the report)."""
     step = size - overlap
 
     def starts(n):
@@ -57,14 +61,15 @@ def tiles(w: int, h: int, size: int = TILE, overlap: int = OVERLAP):
         out = list(range(0, n - size, step)) + [n - size]
         return sorted(set(out))
 
+    def cuts(ss, n):
+        # core edges: 0, the midpoint of each adjacent pair's overlap, n
+        return [0] + [(b + a + size) // 2 for a, b in zip(ss, ss[1:])] + [n]
+
     xs, ys = starts(w), starts(h)
+    cxs, cys = cuts(xs, w), cuts(ys, h)
     for yi, y in enumerate(ys):
         for xi, x in enumerate(xs):
-            cx0 = x + (overlap // 2 if xi > 0 else 0)
-            cy0 = y + (overlap // 2 if yi > 0 else 0)
-            cx1 = x + size - (overlap // 2 if xi < len(xs) - 1 else 0)
-            cy1 = y + size - (overlap // 2 if yi < len(ys) - 1 else 0)
-            yield x, y, min(x + size, w), min(y + size, h), (cx0, cy0, min(cx1, w), min(cy1, h))
+            yield x, y, min(x + size, w), min(y + size, h), (cxs[xi], cys[yi], cxs[xi + 1], cys[yi + 1])
 
 
 def inside(core, cx: float, cy: float) -> bool:
