@@ -60,6 +60,7 @@ RESUME=/var/lib/usnm-ocr-reboot/resume
 
 if [ "$RESUME_MODE" = true ]; then
   [ -s "$RESUME" ] || { log "nothing to start again"; exit 0; }
+  failed=false
   while read -r unit; do
     case " $UNITS " in *" $unit "*) ;; *) warn "warning: $unit isn't one of $UNITS; not started"; continue ;; esac
     if [ "$DRY_RUN" = true ]; then
@@ -70,9 +71,15 @@ if [ "$RESUME_MODE" = true ]; then
         log "started $unit again"
       else
         warn "warning: couldn't start $unit"
+        failed=true
       fi
     fi
   done < "$RESUME"
+  # Kept when a start was refused, so the next boot (or a rerun) tries again.
+  if [ "$failed" = true ]; then
+    warn "warning: $RESUME kept; start what's listed there by hand"
+    exit 1
+  fi
   [ "$DRY_RUN" = true ] || rm -f "$RESUME"
   exit 0
 fi
@@ -120,12 +127,14 @@ if [ -n "$running" ]; then
   # shellcheck disable=SC2086 # a list of unit names
   timeout "$DRAIN_TIMEOUT" systemctl stop $running ||
     warn "warning: systemctl stop $running returned $? after $(($(date +%s) - start)) s"
+  left=false
   for unit in $running; do
     if systemctl is-active --quiet "$unit"; then
       warn "warning: $unit still $(systemctl is-active "$unit" || true) after $DRAIN_TIMEOUT s; rebooting anyway"
+      left=true
     fi
   done
-  log "stopped after $(($(date +%s) - start)) s"
+  [ "$left" = true ] || log "stopped after $(($(date +%s) - start)) s"
 else
   log "none of $UNITS is running"
 fi
