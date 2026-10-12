@@ -19,7 +19,8 @@
    shows up as a reviewed change to that file, never as a side effect.
 4. exceptions.json: keys sorted, each with a reason, the ADR section and an
    `until` (phase-0 to phase-4, never, or an issue #N); and with --base, no
-   key that the base revision's file doesn't have (the list only shrinks).
+   key that the base revision's file doesn't have, and no scope widened
+   from prod to all (the list only shrinks).
    A --base that doesn't resolve or can't be read is a problem; CI also
    passes --require-base, so the check can't run without one.
 5. infra/main.bicep and infra/modules/*.bicep build no resource name from a
@@ -27,6 +28,13 @@
    groupShortName, SyntheticMonitorId), and every guid() seed containing
    usnm is one of the frozen seeds below. Each file is read whole, with its
    comments blanked, so a value or a guid() call split over lines counts.
+   An identifier in a name (directly or in a ${...} interpolation) that is
+   a var, a parameter's default or a func defined in the same file is
+   followed to its definition, and that is checked the same way.
+6. The status sanitizer's abbreviation lists (TYPE_ABBREVIATIONS and
+   COMPACT_ABBREVIATIONS in crates/usnm-api/src/status/sanitize.rs) equal
+   naming.bicep's: every type abbreviation but the `display: true` ones,
+   and the `form: 'compact'` ones.
 
 Standard library only. Exits 1 listing every problem.
 """
@@ -43,6 +51,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 CHECK_PARAMS = ROOT / "infra" / "names" / "check.bicepparam"
 PROD = ROOT / "infra" / "names" / "prod.json"
 EXCEPTIONS = ROOT / "infra" / "names" / "exceptions.json"
+SANITIZER = ROOT / "crates" / "usnm-api" / "src" / "status" / "sanitize.rs"
 
 ENV_RE = re.compile(r"^(prod|dev|x[a-z0-9]{1,4})$")
 UNTIL_RE = re.compile(r"^(phase-[0-4]|never|#[0-9]+)$")
@@ -158,7 +167,7 @@ def conforms(value: str, abbr: str, env: str, sfx: str, words: list, abbrs: dict
     if form == "title":
         if not TITLE_RE.match(value) or not value.endswith(f"({env})"):
             return f"not a title `usnm {{Title}} ({env})`"
-        return None
+        return None if len(value) <= limit else f"{len(value)} characters, over the {limit} {abbr} allows"
     if form == "shortName":
         if value != f"usnm-{env}":
             return f"not `usnm-{env}`"
@@ -240,6 +249,13 @@ def check_exceptions(exceptions: dict, base: dict | None) -> list[str]:
     if base is not None:
         for key in sorted(set(exceptions) - set(base)):
             out.append(f"exception {key} is new: the list only shrinks (ADR-0017, \"Enforcement\")")
+        # A wider scope excuses more names: as new as a new key.
+        for key in sorted(set(exceptions) & set(base)):
+            was = base[key].get("scope", "prod") if isinstance(base[key], dict) else "prod"
+            now = exceptions[key].get("scope", "prod") if isinstance(exceptions[key], dict) else "prod"
+            if was == "prod" and now != "prod":
+                out.append(f"exception {key} widened from scope prod to {now}: as good as a new "
+                           "exception, and the list only shrinks (ADR-0017, \"Enforcement\")")
     return out
 
 
@@ -291,10 +307,97 @@ def value_at(code: str, i: int) -> str:
     return code[i:j]
 
 
+# Definitions a name can come from in the same file: a var, a parameter's
+# default and a func's body (Bicep declares each at the top level).
+DEFINITION = re.compile(
+    r"^[ \t]*(?:var[ \t]+(\w+)[ \t]*=|param[ \t]+(\w+)[ \t]+[^=\n]*?=|"
+    r"func[ \t]+(\w+)[ \t]*\([^)]*\)[^=\n]*=>)[ \t]*", re.M)
+IDENT = re.compile(r"[A-Za-z_]\w*")
+
+
+def definitions(code: str) -> dict[str, tuple[int, str]]:
+    """Each var, parameter default and func in `code`: its offset and its
+    expression."""
+    out = {}
+    for m in DEFINITION.finditer(code):
+        name = m.group(1) or m.group(2) or m.group(3)
+        out.setdefault(name, (m.start(), value_at(code, m.end())))
+    return out
+
+
+def interpolations(body: str) -> list[str]:
+    """The ${...} expressions in a string literal's body, with balanced
+    braces (strings inside them included)."""
+    out, i = [], 0
+    while True:
+        i = body.find("${", i)
+        if i < 0:
+            return out
+        depth, j = 1, i + 2
+        while j < len(body) and depth:
+            if body[j] == "'":
+                j = string_end(body, j)
+                continue
+            depth += {"{": 1, "}": -1}.get(body[j], 0)
+            j += 1
+        out.append(body[i + 2:j - 1])
+        i = j
+
+
+def references(expr: str) -> list[str]:
+    """The identifiers `expr` refers to, outside string literals and inside
+    their ${...} interpolations; not a property after `.`, nor an object key."""
+    out, i = [], 0
+    while i < len(expr):
+        if expr[i] == "'":
+            j = string_end(expr, i)
+            for inner in interpolations(expr[i + 1:j - 1]):
+                out += references(inner)
+            i = j
+            continue
+        m = IDENT.match(expr, i)
+        if m:
+            prev = expr[:i].rstrip()
+            key = re.match(r"\s*:", expr[m.end():]) and not prev.endswith("?")
+            if not (expr[i - 1:i] == "." or key):
+                out.append(m.group())
+            i = m.end()
+            continue
+        i += 1
+    return out
+
+
+def origins(expr: str, defs: dict, seen: set | None = None) -> list[tuple[str, tuple[str, ...]]]:
+    """The string literals `expr` is built from, each with the chain of
+    definitions it came through: its own (an empty chain), and those of each
+    var, parameter default or func it refers to in the same file, followed
+    through further definitions."""
+    seen = set() if seen is None else seen
+    out = [(lit, ()) for lit in LITERAL.findall(expr)]
+    for ident in references(expr):
+        if ident in seen or ident not in defs:
+            continue
+        seen.add(ident)
+        out += [(lit, (ident, *via)) for lit, via in origins(defs[ident][1], defs, seen)]
+    return out
+
+
+def resolved(expr: str, defs: dict) -> str:
+    """`expr`, through any chain of bare identifiers defined in the file."""
+    expr, seen = expr.strip(), set()
+    while re.fullmatch(r"[A-Za-z_]\w*", expr) and expr in defs and expr not in seen:
+        seen.add(expr)
+        expr = defs[expr][1].strip()
+    return expr
+
+
 def check_sources(paths: list[Path]) -> list[str]:
     """Resource names built from a usnm string, and unknown guid() seeds. Each
     file is read whole, so a property or a guid() call split over lines is
-    checked like one on a single line; line numbers are the file's."""
+    checked like one on a single line; line numbers are the file's. A name
+    that refers to a var, a parameter default or a func of the same file is
+    checked through it, at any depth (names() is defined in naming.bicep, so
+    a name taken from it is never followed into a usnm literal)."""
     out = []
     for path in paths:
         rel = path.relative_to(ROOT)
@@ -310,14 +413,47 @@ def check_sources(paths: list[Path]) -> list[str]:
         # of the same length and line breaks, so offsets still match.
         for start, end in calls:
             code = code[:start] + "_" + re.sub(r"[^\n]", " ", code[start + 1:end]) + code[end:]
+        defs = definitions(code)
         for m in NAME_PROP.finditer(code):
-            for lit in LITERAL.findall(value_at(code, m.end())):
+            value = value_at(code, m.end())
+            # The Cosmos database is a child, named in code: exactly 'usnm'.
+            if m.group(1) == "name" and resolved(value, defs) == "'usnm'":
+                continue
+            for lit, via in origins(value, defs):
                 if "usnm" in lit or "usnewsmap" in lit:
-                    # The Cosmos database is a child, named in code.
-                    if m.group(1) == "name" and lit == "usnm":
-                        continue
-                    out.append(f"{rel}:{line_of(code, m.start(1))}: {m.group(1)} built from {lit!r}: "
-                               "take it from names() in infra/naming.bicep (ADR-0017)")
+                    steps = [f"{d} (line {line_of(code, defs[d][0])})" for d in via]
+                    through = f" (through {' then '.join(steps)})" if via else ""
+                    out.append(f"{rel}:{line_of(code, m.start(1))}: {m.group(1)} built from {lit!r}"
+                               f"{through}: take it from names() in infra/naming.bicep (ADR-0017)")
+    return out
+
+
+def rust_list(text: str, name: str) -> list[str] | None:
+    """The items of `const {name}: [&str; N] = [...];` in Rust source,
+    leaving out any in a // comment."""
+    m = re.search(r"const " + name + r": \[&str; \d+\] = \[(.*?)\];", text, re.S)
+    return None if m is None else re.findall(r'"([^"\\]*)"', re.sub(r"//[^\n]*", "", m.group(1)))
+
+
+def check_sanitizer(abbrs: dict, text: str) -> list[str]:
+    """The status sanitizer's abbreviation lists against naming.bicep's
+    table (ADR-0017, "Enforcement")."""
+    rel = SANITIZER.relative_to(ROOT)
+    expected = {
+        "TYPE_ABBREVIATIONS": {a for a, spec in abbrs.items() if not spec.get("display")},
+        "COMPACT_ABBREVIATIONS": {a for a, spec in abbrs.items() if spec["form"] == "compact"},
+    }
+    out = []
+    for name, want in expected.items():
+        got = rust_list(text, name)
+        if got is None:
+            out.append(f"{rel}: no `const {name}: [&str; N] = [...]` to compare with infra/naming.bicep")
+            continue
+        if len(got) != len(set(got)):
+            out.append(f"{rel}: {name} lists an abbreviation twice")
+        if set(got) != want:
+            out.append(f"{rel}: {name} differs from infra/naming.bicep's typeAbbreviations: missing "
+                       f"{sorted(want - set(got))}, extra {sorted(set(got) - want)}")
     return out
 
 
@@ -377,6 +513,7 @@ def main() -> int:
         problems += check_names(p["conventional"][env], env, p["sampleSuffix"], False, p, exceptions)
     sources = [ROOT / "infra" / "main.bicep"] + sorted((ROOT / "infra" / "modules").glob("*.bicep"))
     problems += check_sources(sources)
+    problems += check_sanitizer(p["typeAbbreviations"], SANITIZER.read_text(encoding="utf-8"))
 
     for line in problems:
         print(line)
@@ -385,7 +522,7 @@ def main() -> int:
         return 1
     n = len(p["prodPinned"])
     print(f"ok: {n} names for prod (pinned) and in ADR-0017's form for {', '.join(envs)}; "
-          f"{len(exceptions)} exceptions; {len(sources)} templates"
+          f"{len(exceptions)} exceptions; {len(sources)} templates; sanitizer lists match"
           + (f"; exceptions only shrink against {a.base}" if base is not None else ""))
     return 0
 

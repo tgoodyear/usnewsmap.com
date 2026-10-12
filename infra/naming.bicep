@@ -89,8 +89,11 @@ var functionWords = [
 ]
 
 // Type abbreviations (ADR-0017, "Type abbreviations"): each one's form and
-// Azure's length limit for the name. role, title and shortName are display
-// names, not resource names (ADR-0017, "Display names").
+// Azure's length limit for the name. role, scopeEnv, title and shortName are
+// display names or parts of them, not resource names (ADR-0017, "Display
+// names"): `display: true`. The other abbreviations must equal
+// TYPE_ABBREVIATIONS in crates/usnm-api/src/status/sanitize.rs, and the
+// compact ones COMPACT_ABBREVIATIONS (scripts/ci/check-names.py checks).
 @export()
 var typeAbbreviations = {
   ag: { type: 'Microsoft.Insights/actionGroups', form: 'hyphenated', maxLength: 260 }
@@ -110,11 +113,11 @@ var typeAbbreviations = {
   nic: { type: 'Microsoft.Network/networkInterfaces', form: 'hyphenated', maxLength: 80 }
   pep: { type: 'Microsoft.Network/privateEndpoints', form: 'hyphenated', maxLength: 64 }
   rg: { type: 'Microsoft.Resources/resourceGroups', form: 'hyphenated', maxLength: 90 }
-  role: { type: 'Microsoft.Authorization/roleDefinitions roleName', form: 'hyphenated', maxLength: 512 }
-  scopeEnv: { type: 'part of a roleName: empty in ADR-0017\'s form', form: 'empty', maxLength: 0 }
-  shortName: { type: 'Microsoft.Insights/actionGroups groupShortName', form: 'shortName', maxLength: 12 }
+  role: { type: 'Microsoft.Authorization/roleDefinitions roleName', form: 'hyphenated', maxLength: 512, display: true }
+  scopeEnv: { type: 'part of a roleName: empty in ADR-0017\'s form', form: 'empty', maxLength: 0, display: true }
+  shortName: { type: 'Microsoft.Insights/actionGroups groupShortName', form: 'shortName', maxLength: 12, display: true }
   st: { type: 'Microsoft.Storage/storageAccounts', form: 'compact', maxLength: 24 }
-  title: { type: 'Microsoft.Insights/workbooks displayName', form: 'title', maxLength: 260 }
+  title: { type: 'Microsoft.Insights/workbooks displayName', form: 'title', maxLength: 260, display: true }
   vnet: { type: 'Microsoft.Network/virtualNetworks', form: 'hyphenated', maxLength: 64 }
   webtest: { type: 'Microsoft.Insights/webtests', form: 'hyphenated', maxLength: 260 }
 }

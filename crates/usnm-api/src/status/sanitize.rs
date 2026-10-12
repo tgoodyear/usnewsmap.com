@@ -44,15 +44,17 @@ const RESOURCE_PREFIXES: [&str; 18] = [
 ];
 
 /// ADR-0017's type abbreviations for resources (infra/naming.bicep,
-/// `typeAbbreviations`, less the display names): the token before the
-/// environment in `usnm-{desc}-{abbr}-{env}[-{suffix}]`.
+/// `typeAbbreviations`, less the `display: true` ones): the token before the
+/// environment in `usnm-{desc}-{abbr}-{env}[-{suffix}]`. scripts/ci/check-names.py
+/// fails when this list, or [`COMPACT_ABBREVIATIONS`], differs from naming.bicep.
 const TYPE_ABBREVIATIONS: [&str; 20] = [
     "ag", "alert", "appi", "budget", "ca", "caj", "cae", "cosno", "cr", "dcr", "di", "id", "kv",
     "log", "nic", "pep", "rg", "st", "vnet", "webtest",
 ];
 
 /// The abbreviations of the types whose names are compact,
-/// `usnm{fn}{abbr}{env}{suffix}` (letters and digits only).
+/// `usnm{fn}{abbr}{env}{suffix}` (letters and digits only): naming.bicep's
+/// `form: 'compact'` ones.
 const COMPACT_ABBREVIATIONS: [&str; 3] = ["st", "cr", "kv"];
 
 /// `error` with private details replaced and cut to [`MAX_CHARS`].
