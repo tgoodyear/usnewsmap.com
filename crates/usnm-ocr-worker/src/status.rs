@@ -25,7 +25,14 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
-pub use usnm_ocr_contract::status::{Completion, InFlight, Outcomes, WorkerStatus, RECENT_MAX};
+use usnm_core::ids::PageKey;
+pub use usnm_ocr_contract::status::{
+    Completion, DeadLetterView, InFlight, Outcomes, QueueStats, WorkerStatus, DEAD_LETTERS_MAX,
+    RECENT_MAX,
+};
+
+use crate::message::{clean_error, decode_dead_letter};
+use crate::queue::{Queue, BULK, DEADLETTER, PRIORITY};
 
 use crate::worker::ScanSource;
 
@@ -54,6 +61,7 @@ struct Inner {
     routes: BTreeMap<String, String>,
     /// Where each page in flight got its scan: `cache` or `loc`.
     sources: HashMap<String, &'static str>,
+    queues: Option<QueueStats>,
 }
 
 /// The worker's record of its pages. Cheap: a lock and a few counters per
@@ -160,6 +168,10 @@ impl Tracker {
         }
     }
 
+    pub fn set_queues(&self, q: QueueStats) {
+        self.inner.lock().expect("tracker lock").queues = Some(q);
+    }
+
     /// Where a page's scan came from.
     pub fn scanned(&self, doc_id: &str, from_cache: bool) {
         self.inner
@@ -261,6 +273,7 @@ impl Tracker {
             recent: i.recent.iter().cloned().collect(),
             journal_bytes: journal.as_ref().map_or(0, |m| m.len()),
             journal_id: journal.as_ref().map_or_else(String::new, journal_id),
+            queues: i.queues.clone(),
         }
     }
 
@@ -284,6 +297,62 @@ impl Tracker {
         }
         Ok(buf)
     }
+}
+
+/// How often a worker looks at the queues for its status.
+pub const QUEUE_LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A dead letter as the dashboard shows it: its page, cause, kind, error,
+/// count, node and time; nothing else of its message.
+pub fn dead_letter_view(text: &str) -> DeadLetterView {
+    match decode_dead_letter(text) {
+        Ok(d) => DeadLetterView {
+            message_id: clean_error(&d.message_id).chars().take(64).collect(),
+            doc_id: d
+                .message
+                .as_ref()
+                .and_then(|m| m.page.parse::<PageKey>().ok())
+                .map(|k| k.doc_id())
+                .unwrap_or_default(),
+            from: clean_error(&d.from).chars().take(32).collect(),
+            cause: d.cause.map(|c| c.as_str().to_owned()).unwrap_or_default(),
+            kind: d.kind.map(|k| clean_error(&k).chars().take(32).collect()),
+            error: clean_error(&d.error),
+            dequeue_count: d.dequeue_count,
+            node: clean_error(&d.node).chars().take(32).collect(),
+            at: clean_error(&d.at).chars().take(40).collect(),
+        },
+        Err(e) => DeadLetterView {
+            error: format!("a dead letter this worker can't read ({e})"),
+            ..DeadLetterView::default()
+        },
+    }
+}
+
+/// Look at the queues: each one's length, and the dead letters at the
+/// front of `ocr-deadletter`. Peeks only; takes nothing.
+pub async fn look_at_queues(queue: &dyn Queue) -> QueueStats {
+    let mut q = QueueStats {
+        checked_at: Utc::now(),
+        ..QueueStats::default()
+    };
+    let mut errors = Vec::new();
+    for name in [PRIORITY, BULK, DEADLETTER] {
+        match queue.approximate_count(name).await {
+            Ok(n) => {
+                q.counts.insert(name.to_owned(), n);
+            }
+            Err(e) => errors.push(format!("{e:#}")),
+        }
+    }
+    match queue.peek(DEADLETTER, DEAD_LETTERS_MAX as u32).await {
+        Ok(texts) => q.dead_letters = texts.iter().map(|t| dead_letter_view(t)).collect(),
+        Err(e) => errors.push(format!("{e:#}")),
+    }
+    if !errors.is_empty() {
+        q.error = Some(clean_error(&errors.join("; ")));
+    }
+    q
 }
 
 #[derive(Clone)]
@@ -455,6 +524,56 @@ mod tests {
         t.end(page("sn1_1890-01-01_ed-1_seq-3", "done", "loc"));
         let all = String::from_utf8(t.journal_from(0).unwrap()).unwrap();
         assert_eq!(all.lines().count(), 3);
+    }
+
+    #[tokio::test]
+    async fn looks_at_the_queues_without_taking_anything() {
+        use crate::message::{Cause, DeadLetter, OcrMessage, Reason};
+        use crate::queue::LocalQueue;
+        let dir = tempfile::tempdir().unwrap();
+        let q = LocalQueue::new(dir.path());
+        q.send(BULK, "x").await.unwrap();
+        let m = OcrMessage {
+            v: 1,
+            page: "sn83045462/1890-05-03/ed-1/seq-7".into(),
+            batch: "nbu_gage".into(),
+            language: "deu".into(),
+            reason: Reason::Bulk,
+            score: None,
+            queued_at: "2026-10-11T23:00:00Z".into(),
+        };
+        let d = DeadLetter::new(
+            BULK,
+            "m1",
+            Some(&m),
+            Cause::Permanent,
+            None,
+            None,
+            "HTTP 404",
+            1,
+            "node1",
+        );
+        q.send(DEADLETTER, &d.encode()).await.unwrap();
+        q.send(DEADLETTER, "not a dead letter").await.unwrap();
+        let s = look_at_queues(&q).await;
+        assert_eq!(s.counts[BULK], 1);
+        assert_eq!(s.counts[DEADLETTER], 2);
+        assert_eq!(s.dead_letters.len(), 2);
+        let v = s
+            .dead_letters
+            .iter()
+            .find(|v| v.message_id == "m1")
+            .unwrap();
+        assert_eq!(v.doc_id, "sn83045462_1890-05-03_ed-1_seq-7");
+        assert_eq!(v.cause, "permanent");
+        assert_eq!(v.error, "HTTP 404");
+        assert!(s
+            .dead_letters
+            .iter()
+            .any(|v| v.doc_id.is_empty() && v.error.contains("can't read")));
+        // Nothing was taken.
+        assert_eq!(q.approximate_count(DEADLETTER).await.unwrap(), 2);
+        assert!(s.error.is_none());
     }
 
     #[test]

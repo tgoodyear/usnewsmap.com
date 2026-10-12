@@ -518,11 +518,25 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 Some(scans.clone()),
             )?);
             let stop = stop_signal();
+            let queue = queue::open(&queue_url)?;
             if let Some(listen) = status_listen {
                 anyhow::ensure!(
                     !status_allow.is_empty(),
                     "--status-listen needs --status-allow (the dashboard's address)"
                 );
+                // The queues' lengths and the front of the dead letters, for
+                // the dashboard: a look a minute, peeks only.
+                {
+                    let (tracker, queue) = (tracker.clone(), queue.clone());
+                    tokio::spawn(async move {
+                        let mut every = tokio::time::interval(status::QUEUE_LOOK_EVERY);
+                        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        loop {
+                            every.tick().await;
+                            tracker.set_queues(status::look_at_queues(queue.as_ref()).await);
+                        }
+                    });
+                }
                 let (tracker, stop) = (tracker.clone(), stop.clone());
                 tokio::spawn(async move {
                     if let Err(e) = status::serve(listen, tracker, status_allow, stop).await {
@@ -533,7 +547,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 });
             }
             let worker = Arc::new(Worker {
-                queue: queue::open(&queue_url)?,
+                queue,
                 out: usnm_store::open(&out_url)?,
                 scans,
                 engine,
