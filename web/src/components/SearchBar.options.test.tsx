@@ -1,10 +1,31 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { Meta } from "../api/types";
+import { PHONE } from "../lib/useMediaQuery";
 import { DEFAULTS, type ViewState } from "../state/url";
 import { SearchBar, activeFilters } from "./SearchBar";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+/** A matchMedia whose phone query can be switched, as when a phone is turned sideways. */
+function viewport(phone: boolean) {
+  const listeners = new Set<() => void>();
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    get matches() {
+      return query === PHONE && phone;
+    },
+    media: query,
+    addEventListener: (_: string, f: () => void) => listeners.add(f),
+    removeEventListener: (_: string, f: () => void) => listeners.delete(f),
+  }));
+  return (next: boolean) => {
+    phone = next;
+    act(() => listeners.forEach((f) => f()));
+  };
+}
 
 const meta = {
   bounds: { from: "1736-01-01", to: "1963-12-31" },
@@ -117,6 +138,41 @@ describe("SearchBar's Options button on wide screens", () => {
     expect(panel.hidden).toBe(false);
     fireEvent.pointerDown(screen.getByRole("searchbox"));
     expect(panel.hidden).toBe(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("opens to show States when the browser finds it invalid on submit", () => {
+    const { toggle, panel } = setup();
+    fireEvent.click(toggle);
+    const states = screen.getByRole("textbox", { name: "States" });
+    fireEvent.change(states, { target: { value: "Georgia" } });
+    // Pressing Search is a press outside the panel, so it closes first.
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Search" }));
+    expect(panel.hidden).toBe(true);
+    fireEvent.invalid(states);
+    expect(panel.hidden).toBe(false);
+  });
+});
+
+describe("SearchBar's Options button across the phone breakpoint", () => {
+  it("closes the wide-screen panel when the layout changes", () => {
+    const resize = viewport(true);
+    const { toggle } = setup({ from: "1890-01-01" });
+    // A phone opens with its options showing: the search uses a date.
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.textContent).toBe("Options (1)");
+    resize(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toBe("Options");
+    resize(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("stays closed on a phone when no option is in use", () => {
+    const resize = viewport(false);
+    const { toggle } = setup();
+    fireEvent.click(toggle);
+    resize(true);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
   });
 });

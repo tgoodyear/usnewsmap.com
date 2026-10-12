@@ -165,6 +165,14 @@ export function SearchBar({
     state: states.split(/[\s,]+/).filter(Boolean),
   };
   const active = phone ? activeOptions(options) : activeFilters(options);
+  // Crossing the breakpoint (a phone turned sideways, a window resized)
+  // changes what the button holds: start again as that layout would, so a
+  // wide-screen panel isn't left open, nor a phone's options in use hidden.
+  const [wasPhone, setWasPhone] = useState(phone);
+  if (wasPhone !== phone) {
+    setWasPhone(phone);
+    setOpen(phone && activeOptions(options) > 0);
+  }
   const toggleRef = useRef<HTMLButtonElement>(null);
   const filtersRef = useRef<HTMLDivElement>(null);
   // On wide screens the filters open over the page, so a click elsewhere
@@ -232,6 +240,9 @@ export function SearchBar({
     });
   };
 
+  // The browser checks States (and the "within" count) before submitting;
+  // show a box it finds invalid, so it can be focused and its problem shown.
+  const reveal = () => flushSync(() => setOpen(true));
   // A click on the pages list closes the filters on wide screens: reopen
   // them when the list closes, so focus can go back to the newspaper filter.
   const browsePaper =
@@ -331,6 +342,7 @@ export function SearchBar({
                 max={meta?.limits.max_slop ?? 20}
                 value={draft.near}
                 onChange={(e) => setDraft({ ...draft, near: Number(e.target.value) || 1 })}
+                onInvalid={reveal}
               />
               words
             </label>
@@ -380,6 +392,7 @@ export function SearchBar({
                 placeholder="e.g. GA, SC"
                 value={states}
                 onChange={(e) => setStates(e.target.value)}
+                onInvalid={reveal}
                 pattern="^\s*([A-Za-z]{2}([\s,]+|$))*$"
                 title="Two-letter state codes, separated by commas"
               />

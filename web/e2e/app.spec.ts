@@ -297,6 +297,13 @@ test("wide screens keep the search on one row, with the filters behind Options",
   // A press elsewhere closes it.
   await box.click();
   await expect(states).toBeHidden();
+  // A States entry the browser rejects opens the panel again when Search is pressed.
+  await toggle.click();
+  await states.fill("Georgia");
+  await go.click();
+  await expect(states).toBeVisible();
+  await expect(states).toBeFocused();
+  await states.fill("");
 
   // A link with filters shows how many on the button.
   await page.goto("/?q=gold&state=GA,SC&lang=ger");
