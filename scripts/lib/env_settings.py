@@ -36,7 +36,11 @@ VISIBILITIES = ("public", "private", "local")
 TYPES = {"boolean": bool, "integer": int, "string": str}
 # The schema's own key, for editors.
 SCHEMA_KEY = "$schema"
-ENV_NAME = re.compile(r"^[a-z][a-z0-9]{0,15}$")
+# ADR-0017's closed list, as scripts/lib/env-name.sh (ENV_NAME_RE) and
+# infra/naming.bicep (validEnvName) have it: prod, dev, or x plus 1-4
+# lowercase letters or digits (fullmatch, so a trailing newline fails too).
+ENV_NAME = re.compile(r"prod|dev|x[a-z0-9]{1,4}")
+ENV_NAME_RULE = "prod, dev, or x plus 1-4 lowercase letters or digits (ADR-0017)"
 
 
 class Invalid(Exception):
@@ -123,8 +127,8 @@ def load_env(directory, kinds, path):
 
 
 def env_file(directory, env):
-    if not ENV_NAME.match(env):
-        raise Invalid(f"invalid environment name: {env}")
+    if not ENV_NAME.fullmatch(env):
+        raise Invalid(f"invalid environment name: {env}; it must be {ENV_NAME_RULE}")
     return directory / f"{env}.json"
 
 
@@ -154,8 +158,8 @@ def check(directory):
             errors.append(f"infra/env/schema.json: {key} is a {spec['type']}; infra/main.bicepparam reads a {params[key]}")
     files = sorted(p for p in directory.glob("*.json") if p.name != "schema.json")
     for path in files:
-        if not ENV_NAME.match(path.stem):
-            errors.append(f"{path}: not an environment name (1-16 lowercase letters and digits)")
+        if not ENV_NAME.fullmatch(path.stem):
+            errors.append(f"{path}: not an environment name: {ENV_NAME_RULE}")
             continue
         try:
             load_env(directory, kinds, path)

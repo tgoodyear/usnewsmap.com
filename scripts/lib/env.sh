@@ -152,7 +152,7 @@ aget() {
 # takes an unreadable setting for an unset one.
 vault_get() {
   local vault out
-  vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  vault=$(settings_vault_name) || return 1
   [ -n "$vault" ] || { echo; return 0; }
   if ! out=$(az keyvault secret show --vault-name "$vault" --name "$(vault_secret_name "$1")" --query value -o tsv 2>&1); then
     grep -q SecretNotFound <<< "$out" && { echo; return 0; }
@@ -171,19 +171,28 @@ vault_get() {
 # collide with the assignment the stack then makes), removed once the list
 # has them.
 vault_access_hint() {
-  local rg
-  # The stack's group, from the local file; without it, the name the current
-  # prod (pinned, ADR-0017) or any other environment has (infra/naming.bicep).
+  local rg g scope
+  # The stack's group, from the local file; without it, whichever of the
+  # project group's two names (PROJECT_GROUPS) exists: infra/main.bicep
+  # pins the legacy one only in the current prod's subscription, so a
+  # rebuilt prod has ADR-0017's. When neither exists, or az can't tell, both.
   rg=$(local_get AZURE_RESOURCE_GROUP 2> /dev/null) || rg=""
   if [ -z "$rg" ]; then
-    rg="usnm-core-rg-$ENV_NAME"
-    [ "$ENV_NAME" != prod ] || rg="rg-usnm-prod"
+    for g in $PROJECT_GROUPS; do
+      if [ "$(az group exists -n "$g" -o tsv 2> /dev/null)" = true ]; then rg=$g; break; fi
+    done
+  fi
+  if [ -n "$rg" ]; then
+    scope="on $rg"
+  else
+    rg="<group>"
+    scope="on the project group (<group>: ${PROJECT_GROUPS// / or })"
   fi
   cat >&2 << EOF
 $1 gives Key Vault Secrets Officer to the operators in USNM_SETTINGS_VAULT_ADMINS and to whoever provisioned last. Either:
   - ask one of them to add your object id (az ad signed-in-user show --query id -o tsv) to that list, comma separated, and provision:
       az keyvault secret set --vault-name $1 --name $(vault_secret_name USNM_SETTINGS_VAULT_ADMINS) --value "<ids>" -o none
-  - or, as an Owner of the subscription, grant it to yourself on $rg, add yourself to the list as above, provision, then delete the grant (a new role takes a few minutes to apply):
+  - or, as an Owner of the subscription, grant it to yourself $scope, add yourself to the list as above, provision, then delete the grant (a new role takes a few minutes to apply):
       az role assignment create --assignee-object-id "\$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User --role "Key Vault Secrets Officer" --scope "/subscriptions/\$(az account show --query id -o tsv)/resourceGroups/$rg"
 EOF
 }
@@ -207,7 +216,7 @@ aset() {
   fi
   if is_private "$1" && [ -n "$2" ]; then
     local vault
-    vault=$(local_get SETTINGS_KEYVAULT) || return 1
+    vault=$(settings_vault_name) || return 1
     if [ -n "$vault" ]; then
       vault_set "$vault" "$1" "$2" || return 1
       local_del "$1"
@@ -282,13 +291,7 @@ vault_secret_name() { printf '%s' "${1//_/-}"; }
 load_vault() {
   local vault names n key v lines=""
   VAULT_SETTINGS="" VAULT_KEYS=""
-  vault=$(local_get SETTINGS_KEYVAULT) || return 1
-  # A local file without it (another operator's machine, a new checkout)
-  # takes it from the stack, so the private settings aren't deployed empty.
-  if [ -z "$vault" ]; then
-    vault=$(stack_settings_vault) || return 1
-    [ -z "$vault" ] || local_set SETTINGS_KEYVAULT "$vault" || return 1
-  fi
+  vault=$(settings_vault_name) || return 1
   [ -n "$vault" ] || { VAULT_LOADED=true; return 0; }
   names=$(az keyvault secret list --vault-name "$vault" --query "[].name" -o tsv) ||
     { echo "error: can't list the secrets in the settings vault $vault" >&2; vault_access_hint "$vault"; return 1; }
@@ -303,6 +306,20 @@ load_vault() {
     VAULT_KEYS+=" $key"
   done
   VAULT_SETTINGS=$lines VAULT_LOADED=true
+}
+# The settings vault's name: the local file's SETTINGS_KEYVAULT, or, when
+# the local file lacks it (another operator's machine, a new checkout), the
+# stack's output, which is then recorded there. Empty before the first
+# provision that creates the vault. Every read and write of a private
+# setting goes through it, so none takes a vault it can't name for no vault.
+settings_vault_name() {
+  local vault
+  vault=$(local_get SETTINGS_KEYVAULT) || return 1
+  if [ -z "$vault" ]; then
+    vault=$(stack_settings_vault) || return 1
+    [ -z "$vault" ] || local_set SETTINGS_KEYVAULT "$vault" || return 1
+  fi
+  printf '%s\n' "$vault"
 }
 # The settings vault's name from the stack's outputs (SETTINGS_KEYVAULT,
 # whose case the stack may change): empty without a stack or that output.

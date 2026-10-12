@@ -17,10 +17,13 @@ fails with that message), STUB_SHOW_ERROR (reading a secret's value fails
 with that message), STUB_OUTPUTS (the stack's outputs as JSON),
 STUB_DELETED_VAULTS (soft-deleted vaults, one per line: the name, a tab
 and the vault id) and
-STUB_GROUP_EXISTS (`az group exists`; unset: false).
+STUB_GROUP_EXISTS (`az group exists`, for any group; unset: false) or
+STUB_EXISTING_GROUPS (when set, the only groups `az group exists` finds,
+one per line).
 `az account set` selects a subscription (STUB_ACCOUNTS: the ones az is
 signed in to, one per line; unset: any), and each vault call is logged with
-the selected one to STUB_LOG.vault. It logs each call to STUB_LOG.
+the selected one to STUB_LOG.vault. STUB_OUTPUTS_ERROR makes reading the
+stack's outputs fail with that message. It logs each call to STUB_LOG.
 
 The committed settings (infra/env/<env>.json) are read from a directory of
 each test's own (USNM_ENV_DIR, a git repository holding a copy of the
@@ -52,7 +55,8 @@ case "$1 $2" in
       *"--query location"*) echo eastus2 ;;
       *"keys(parameters"*) printf '%s\n' "${STUB_PARAMS:-}" ;;
       *"--query outputs -o json"*)
-        if [ -n "${STUB_OUTPUTS:-}" ]; then printf '%s\n' "$STUB_OUTPUTS"
+        if [ -n "${STUB_OUTPUTS_ERROR:-}" ]; then echo "$STUB_OUTPUTS_ERROR" >&2; exit 1
+        elif [ -n "${STUB_OUTPUTS:-}" ]; then printf '%s\n' "$STUB_OUTPUTS"
         elif [ -n "${STUB_STACK:-}" ]; then echo '{}'
         else echo "ERROR: DeploymentStackNotFound: usnm-dev could not be found." >&2; exit 3; fi ;;
       *) if [ -n "${STUB_STACK:-}" ]; then echo "$STUB_STACK"
@@ -71,7 +75,10 @@ case "$1 $2" in
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
-  "group exists") echo "${STUB_GROUP_EXISTS:-false}" ;;
+  "group exists")
+    if [ -n "${STUB_EXISTING_GROUPS+x}" ]; then
+      if printf '%b\n' "$STUB_EXISTING_GROUPS" | grep -qx "$4"; then echo true; else echo false; fi
+    else echo "${STUB_GROUP_EXISTS:-false}"; fi ;;
   "group create") ;;
   "keyvault list-deleted") [ -z "${STUB_DELETED_VAULTS:-}" ] || printf '%b\n' "$STUB_DELETED_VAULTS" ;;
   "keyvault recover") ;;
@@ -513,7 +520,9 @@ class TitlesSeed(Stubbed):
         r = self.seed()
         self.assertEqual(r.returncode, 1)
         self.assertIn("USNM_ARCHIVE_ACCOUNT", r.stderr)
-        self.assertFalse(os.path.exists(self.log))
+        # A private setting: the only call looks for the settings vault in
+        # the stack's outputs, which has none.
+        self.assertEqual(self.calls(), ["stack sub show -n usnm-dev --query outputs -o json"])
 
     def test_needs_the_ingest_job(self):
         self.settings_file(self.SETTINGS.replace('INGEST_JOB="caj-usnm-ingest-dev"\n', ""))
@@ -636,16 +645,49 @@ class CommittedSettings(Stubbed):
         self.assertEqual(r.stdout.strip(), "ops@example.org")
         self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
 
+    def test_a_single_read_without_a_local_name_asks_the_stack(self):
+        # settings.sh, group.sh, ...: one secret, from the vault the stack
+        # names, which is then recorded.
+        self.local(API_URL="x")
+        r = self.lib("aget USNM_ALERT_EMAILS; aget USNM_OCR_NODE_GROUP",
+                     STUB_OUTPUTS='{"settingS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}',
+                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["ops@example.org", ""])
+        self.assertIn("keyvault secret show --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS --query value -o tsv",
+                      self.calls())
+        self.assertIn('SETTINGS_KEYVAULT="usnmcorekvdevabc123"', self.local_text())
+        # Recorded once: the second read doesn't ask the stack again.
+        self.assertEqual(sum(c.startswith("stack sub show") for c in self.calls()), 1)
+
+    def test_a_single_read_with_an_unreadable_stack_fails(self):
+        # Not "unset": a script never takes an unreadable setting for an
+        # empty one.
+        self.local(API_URL="x")
+        r = self.lib("aget USNM_ALERT_EMAILS",
+                     STUB_OUTPUTS_ERROR="ERROR: (AuthorizationFailed) The client does not have authorization")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't read the stack usnm-dev's outputs", r.stderr)
+        self.assertFalse(any(c.startswith("keyvault") for c in self.calls()))
+
+    def test_a_private_write_without_a_local_name_goes_to_the_stacks_vault(self):
+        self.local(API_URL="x")
+        r = self.lib("aset USNM_ALERT_EMAILS ops@example.org",
+                     STUB_OUTPUTS='{"SETTINGS_KEYVAULT": {"type": "String", "value": "usnmcorekvdevabc123"}}')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("set USNM_ALERT_EMAILS in the settings vault usnmcorekvdevabc123", r.stdout)
+        self.assertNotIn("USNM_ALERT_EMAILS=", self.local_text())
+
     def test_an_operator_without_access_is_told_how_to_get_it(self):
         self.local(**self.VAULT)
-        r = self.lib("load_vault", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac")
+        r = self.lib("load_vault", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac",
+                     STUB_EXISTING_GROUPS="usnm-core-rg-dev")
         self.assertEqual(r.returncode, 1)
         self.assertIn("USNM_SETTINGS_VAULT_ADMINS", r.stderr)
         self.assertIn("--name USNM-SETTINGS-VAULT-ADMINS", r.stderr)
         self.assertIn('az role assignment create --assignee-object-id "$(az ad signed-in-user show', r.stderr)
-        # Dev's group is usnm-core-rg-dev (ADR-0017) when the local file
-        # doesn't name one.
-        self.assertIn("/resourceGroups/usnm-core-rg-dev", r.stderr)
+        # Without one in the local file, the project group that exists.
+        self.assertIn("/resourceGroups/usnm-core-rg-dev\"", r.stderr)
 
     def test_a_vault_secret_that_isnt_a_private_setting_stops(self):
         self.local(**self.VAULT)
@@ -714,6 +756,25 @@ class CommittedSettings(Stubbed):
         r = self.lib("load_vault", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac")
         self.assertEqual(r.returncode, 1)
         self.assertIn("/resourceGroups/rg-usnm-dev\"", r.stderr)
+        # The recorded group wins: az isn't asked which one exists.
+        self.assertFalse(any(c.startswith("group exists") for c in self.calls()))
+
+    def test_without_a_recorded_group_the_access_hint_names_the_one_that_exists(self):
+        # infra/main.bicep pins prod's legacy names only in the current
+        # prod's subscription; a rebuilt prod has ADR-0017's.
+        denied = "ERROR: (Forbidden) Caller is not authorized. ForbiddenByRbac"
+        for existing in ("rg-usnm-prod", "usnm-core-rg-prod"):
+            with self.subTest(existing=existing):
+                self.settings_file('SETTINGS_KEYVAULT="usnmcorekvprodabc123"\n', env="prod")
+                r = self.lib("load_vault", env_name="prod", STUB_VAULT_ERROR=denied, STUB_EXISTING_GROUPS=existing)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(f"grant it to yourself on {existing},", r.stderr)
+                self.assertIn(f"/resourceGroups/{existing}\"", r.stderr)
+        # Neither (or az can't tell): both names.
+        r = self.lib("load_vault", env_name="prod", STUB_VAULT_ERROR=denied, STUB_EXISTING_GROUPS="")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("<group>: usnm-core-rg-prod or rg-usnm-prod", r.stderr)
+        self.assertIn("/resourceGroups/<group>\"", r.stderr)
 
     def test_a_rebuild_recovers_the_soft_deleted_settings_vault(self):
         # After a teardown, prod's local file is new: no resource group, no
@@ -1098,6 +1159,25 @@ class CheckCommitted(unittest.TestCase):
         r = self.check("{}\n")
         self.assertEqual(r.returncode, 1)
         self.assertIn("reads USNM_JA_LATIN", r.stderr)
+
+    def test_a_file_for_a_name_outside_adr_0017s_list_fails(self):
+        # scripts/lib/env-name.sh's rule: prod, dev or x plus 1-4.
+        for name in ("foo", "xabcde", "x", "Prod", "dev2"):
+            with self.subTest(name=name):
+                r = self.check("{}\n", name=f"{name}.json")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("not an environment name", r.stderr)
+                os.remove(os.path.join(self.dir, f"{name}.json"))
+        r = self.check("{}\n", name="x1a2.json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_env_refuses_a_name_outside_adr_0017s_list(self):
+        for name in ("foo", "xabcde", "dev\n"):
+            with self.subTest(name=name):
+                r = subprocess.run(["python3", os.path.join(HERE, "lib", "env_settings.py"), "--env", name, "--shell"],
+                                   env={**os.environ, "USNM_ENV_DIR": self.dir}, capture_output=True, text=True)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("invalid environment name", r.stderr)
 
 
 if __name__ == "__main__":
