@@ -22,19 +22,10 @@
 #
 # A setting in the wrong place, or in two, stops provision (settings_check).
 #
-# The name becomes part of resource names (the registry allows only
-# lowercase letters and digits), the stack's name and the settings path.
-# "guardrails" is taken: usnm-guardrails is the shared policy stack.
-valid_env_name() {
-  [[ $1 =~ ^[a-z][a-z0-9]{0,15}$ ]] || {
-    echo "error: the environment name must be 1-16 lowercase letters and digits, starting with a letter" >&2
-    exit 2
-  }
-  # usnm-<name> would be another stack's name, and rg-usnm-<name> its group.
-  case "$1" in
-    guardrails | archive) echo "error: \"$1\" is reserved" >&2; exit 2 ;;
-  esac
-}
+# The environment name: prod, dev or x plus 1-4 lowercase letters or digits
+# (ADR-0017; valid_env_name).
+# shellcheck source=scripts/lib/env-name.sh
+. scripts/lib/env-name.sh
 valid_env_name "$ENV_NAME"
 # need_stack_az, GUARDRAILS_STACK, stack_param and deploy_guardrails.
 # shellcheck source=scripts/lib/guardrails.sh
@@ -164,7 +155,14 @@ vault_get() {
 # collide with the assignment the stack then makes), removed once the list
 # has them.
 vault_access_hint() {
-  local rg="rg-usnm-$ENV_NAME"
+  local rg
+  # The stack's group, from the local file; without it, the name the current
+  # prod (pinned, ADR-0017) or any other environment has (infra/naming.bicep).
+  rg=$(local_get AZURE_RESOURCE_GROUP 2> /dev/null) || rg=""
+  if [ -z "$rg" ]; then
+    rg="usnm-core-rg-$ENV_NAME"
+    [ "$ENV_NAME" != prod ] || rg="rg-usnm-prod"
+  fi
   cat >&2 << EOF
 $1 gives Key Vault Secrets Officer to the operators in USNM_SETTINGS_VAULT_ADMINS and to whoever provisioned last. Either:
   - ask one of them to add your object id (az ad signed-in-user show --query id -o tsv) to that list, comma separated, and provision:
@@ -415,6 +413,17 @@ committed_clean() {
   [ -z "$out" ] || { printf '%s\n' "$out" >&2; return 1; }
 }
 
+# The environment's resource groups by name (ADR-0017; infra/naming.bicep's
+# rg, containerEnvInfraRg and spotRg), in both forms: dev and experiments
+# use ADR-0017's, and the current prod keeps its legacy names until its
+# rebuild. The project group, which carries the experiment tag, comes first
+# in each form. A legacy Container Apps environment's own group is Azure's
+# ME_<environment>_<group>_<region>, which starts with LEGACY_INFRA_GROUP.
+PROJECT_GROUPS="usnm-core-rg-$ENV_NAME rg-usnm-$ENV_NAME"
+# shellcheck disable=SC2034 # used by scripts/dev-status.sh
+ENV_GROUPS="$PROJECT_GROUPS usnm-core-infra-rg-$ENV_NAME rg-usnm-$ENV_NAME-spot"
+# shellcheck disable=SC2034 # used by scripts/dev-status.sh
+LEGACY_INFRA_GROUP="ME_cae-usnm-${ENV_NAME}_"
 # One deployment stack per environment, at subscription scope (it holds the
 # resource groups). Resources dropped from the template are deleted; deny
 # settings stop anyone deleting a managed resource outside the stack.
@@ -496,34 +505,49 @@ ocr_nodes_off_check() {
 # it's recovered when they're on; the settings vault
 # (usnmcorekv<env><suffix>, #295) always, as the stack always has one.
 # Prod's have purge protection and are recovered the same way.
-# Both are in rg-usnm-<env>, whose name is fixed (main.bicep), so this
-# doesn't need the local file's AZURE_RESOURCE_GROUP: a rebuild after a
-# teardown starts from a local file without it. A vault is recovered into
-# its old group, so a group the teardown deleted is created first, as the
-# stack would (the stack then takes it over, with its tags). A recovered
-# settings vault is recorded (SETTINGS_KEYVAULT, RECOVERED_SETTINGS_VAULT),
-# so load_vault reads it before a stack exists to name it.
+# Both are in the environment's project group, in either of its name forms
+# (PROJECT_GROUPS; infra/naming.bicep's rg: usnm-core-rg-<env>, or the
+# current prod's legacy rg-usnm-<env>), so this doesn't need the local
+# file's AZURE_RESOURCE_GROUP: a rebuild after a teardown starts from a
+# local file without it. A vault is recovered into its old group, the one
+# its deleted vault id names, so that group, if the teardown deleted it, is
+# created first, as the stack would (the stack then takes it over, with its
+# tags). A recovered settings vault is recorded (SETTINGS_KEYVAULT,
+# RECOVERED_SETTINGS_VAULT), so load_vault reads it before a stack exists to
+# name it.
 RECOVERED_SETTINGS_VAULT=""
 vaults_recover() {
-  local nodes out v exists location rg="rg-usnm-$ENV_NAME" want="starts_with(name, 'usnmcorekv')"
+  local nodes out v id g rg exists location in_groups="" checked=" "
+  local want="starts_with(name, 'usnmcorekv')"
   nodes=$(aget USNM_OCR_NODES) || return 1
   [ "$nodes" != true ] || want="($want || starts_with(name, 'usnmocrkv'))"
   # Only a vault deleted from this environment's own group: the name prefix
   # alone could match another environment's vault (the suffix comes from the
   # full environment name), so the original vault id must name this group.
+  for g in $PROJECT_GROUPS; do
+    in_groups="${in_groups:+$in_groups || }contains(to_lower(properties.vaultId), to_lower('/resourceGroups/$g/providers/'))"
+  done
   out=$(az keyvault list-deleted --resource-type vault \
-    --query "[?$want && contains(to_lower(properties.vaultId), to_lower('/resourceGroups/$rg/providers/'))].name" \
-    -o tsv 2>&1) ||
+    --query "[?$want && ($in_groups)].[name, properties.vaultId]" -o tsv 2>&1) ||
     { echo "error: can't list deleted Key Vaults: $out" >&2; return 1; }
   [ -n "$out" ] || return 0
-  exists=$(az group exists -n "$rg" -o tsv) || { echo "error: can't check whether $rg exists" >&2; return 1; }
-  if [ "$exists" != true ]; then
-    location=$(stack_location) || return 1
-    echo "creating $rg to recover its soft-deleted Key Vaults into"
-    az group create -n "$rg" -l "$location" --tags project=usnewsmap "environment=$ENV_NAME" -o none || return 1
-  fi
-  while IFS= read -r v; do
-    echo "recovering soft-deleted Key Vault $v before the deployment re-creates it"
+  while IFS=$'\t' read -r v id; do
+    [ -n "$v" ] || continue
+    rg=""
+    for g in $PROJECT_GROUPS; do
+      if [[ ${id,,} == *"/resourcegroups/${g,,}/providers/"* ]]; then rg=$g; break; fi
+    done
+    [ -n "$rg" ] || { echo "error: can't tell the resource group of the deleted Key Vault $v from its id $id" >&2; return 1; }
+    if [[ $checked != *" $rg "* ]]; then
+      exists=$(az group exists -n "$rg" -o tsv) || { echo "error: can't check whether $rg exists" >&2; return 1; }
+      if [ "$exists" != true ]; then
+        location=$(stack_location) || return 1
+        echo "creating $rg to recover its soft-deleted Key Vaults into"
+        az group create -n "$rg" -l "$location" --tags project=usnewsmap "environment=$ENV_NAME" -o none || return 1
+      fi
+      checked="$checked$rg "
+    fi
+    echo "recovering soft-deleted Key Vault $v into $rg before the deployment re-creates it"
     az keyvault recover --name "$v" -o none || return 1
     if [[ $v == usnmcorekv* ]]; then
       local_set SETTINGS_KEYVAULT "$v" || return 1
@@ -553,12 +577,13 @@ settings_vault_current() {
 }
 # dev exists only while an experiment runs (#275; docs/operations.md, "Dev
 # environment lifecycle"), so its provision needs USNM_EXPERIMENT, the
-# experiment's issue number. The template tags rg-usnm-<env> with it and
-# with USNM_EXPERIMENT_STARTED, set here: the group's own `started` while
-# its `experiment` is the same, otherwise now. teardown.sh's provision sets
-# NO_EXPERIMENT_CHECK, since it only takes the environment apart.
+# experiment's issue number. The template tags the project group
+# (usnm-core-rg-<env>) with it and with USNM_EXPERIMENT_STARTED, set here:
+# the group's own `started` while its `experiment` is the same, otherwise
+# now. teardown.sh's provision sets NO_EXPERIMENT_CHECK, since it only takes
+# the environment apart.
 experiment_marker() {
-  local exp out tagged started=""
+  local exp out g tagged started=""
   [ "$ENV_NAME" = dev ] || return 0
   # Teardown's provision reads and checks nothing: a bad marker or a tag it
   # can't read mustn't stop the detach.
@@ -569,13 +594,17 @@ experiment_marker() {
     return 1
   fi
   [[ $exp =~ ^[0-9]+$ ]] || { echo "error: USNM_EXPERIMENT is an issue number, not \"$exp\"" >&2; return 1; }
-  if out=$(az group show -n "rg-usnm-$ENV_NAME" --query "[tags.experiment, tags.started]" -o tsv 2>&1); then
-    IFS=$'\t' read -r tagged started <<< "$out"
-    [ "$tagged" = "$exp" ] || started=""
-  elif ! grep -qiE 'ResourceGroupNotFound|could not be found' <<< "$out"; then
-    echo "error: can't read the tags of rg-usnm-$ENV_NAME: $out" >&2
-    return 1
-  fi
+  # The project group in either name form: the first one that exists.
+  for g in $PROJECT_GROUPS; do
+    if out=$(az group show -n "$g" --query "[tags.experiment, tags.started]" -o tsv 2>&1); then
+      IFS=$'\t' read -r tagged started <<< "$out"
+      [ "$tagged" = "$exp" ] || started=""
+      break
+    elif ! grep -qiE 'ResourceGroupNotFound|could not be found' <<< "$out"; then
+      echo "error: can't read the tags of $g: $out" >&2
+      return 1
+    fi
+  done
   [ -n "$started" ] || started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   aset USNM_EXPERIMENT_STARTED "$started"
 }
