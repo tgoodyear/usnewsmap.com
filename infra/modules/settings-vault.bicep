@@ -13,8 +13,9 @@
 // so every operator keeps access whoever provisions, and to the account
 // deploying the stack, so the first provision (an empty list) can fill it.
 // Another deployer's assignment lasts until the next provision by someone
-// else, which the stack then removes: list every operator. The
-// environment's CI identity gets Key Vault Secrets User (read).
+// else, which the stack then removes: list every operator. Nothing else
+// reads it: the CI identity only rolls the apps to new images (no data
+// access, 08 §8.4), so it has no role here.
 //
 // Network: a public endpoint with no firewall, like the registry and Log
 // Analytics, so laptops and GitHub runners reach it; a private endpoint
@@ -30,15 +31,11 @@ param tags object
 param name string
 @description('Keep deleted vaults and secrets for 90 days and refuse purges (prod). Off: 7 days, purgeable. Both are fixed when the vault is created.')
 param purgeProtection bool
-@description('The CI identity\'s principal id, given Key Vault Secrets User.')
-param ciPrincipalId string
 @description('Entra object ids (people or groups) given Key Vault Secrets Officer, besides the deploying account.')
 param admins array = []
 
 // https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/security#key-vault-secrets-officer
 var secretsOfficer = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
-// https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/security#key-vault-secrets-user
-var secretsUser = '4633458b-17de-408a-b874-0445c86b69e6'
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: name
@@ -80,15 +77,5 @@ resource officers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
     }
   }
 ]
-
-resource ciReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: vault
-  name: guid(vault.id, ciPrincipalId, secretsUser)
-  properties: {
-    principalId: ciPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretsUser)
-  }
-}
 
 output name string = vault.name

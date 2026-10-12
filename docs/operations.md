@@ -20,20 +20,21 @@ An environment's settings live in three places ([`infra/README.md`](../infra/REA
 
   CI's "stack change needs a provision" warning on the merge stays until you run that provision. Every `scripts/settings.sh` example below that sets a public setting works this way. In dev, an experiment's settings go in its own pull request; to try one before committing it, `scripts/provision.sh --env dev --allow-dirty`.
 
-- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_SETTINGS_VAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the environment's settings vault, `usnmcorekv<env><suffix>`, which only the operators can reach with Entra ID (and the environment's CI identity, to read). The secret's name is the setting's with hyphens: `USNM_ALERT_EMAILS` is `USNM-ALERT-EMAILS`. `scripts/settings.sh` reads them and prints the command that sets one:
+- **Private settings** (`USNM_ALERT_EMAILS`, `USNM_SEARCH_LOG_READERS`, `USNM_OCR_USERS`, `USNM_OCR_NODE_IPS`, `USNM_OCR_NODE_GROUP`, `USNM_OCR_KEYVAULT_ADMINS`, `USNM_SETTINGS_VAULT_ADMINS`, `USNM_ARCHIVE_ACCOUNT`, the certificate ids and `USNM_GITHUB_REPO_IDS`) are in the environment's settings vault, `usnmcorekv<env><suffix>`, which only the operators can reach, with Entra ID; CI never reads it. The secret's name is the setting's with hyphens: `USNM_ALERT_EMAILS` is `USNM-ALERT-EMAILS`. `scripts/settings.sh` reads and sets them with your sign-in (in the vault, removing any local copy), or `az` does directly:
 
   ```sh
-  vault=$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)
-  az keyvault secret set --vault-name "$vault" --name USNM-ALERT-EMAILS --value ops@example.org -o none
+  scripts/settings.sh --env prod --key USNM_ALERT_EMAILS --value ops@example.org
+  # or: vault=$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)
+  #     az keyvault secret set --vault-name "$vault" --name USNM-ALERT-EMAILS --value ops@example.org -o none
   scripts/provision.sh --env prod
   ```
 
-  A deleted secret's name stays reserved (soft delete) until it's recovered (`az keyvault secret recover`) or, outside prod, purged (`az keyvault secret purge`). Until the first provision creates the vault, private settings stay in the local file, and later provisions list the commands that move them. Once it exists, a script that sets a private setting (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` the nodes' group) writes it to the vault, only if the value changed, and removes any local copy, so a re-run never leaves it in two places. An empty value stays a local `""`, which hides the vault's value (`teardown.sh` detaches the archive that way).
+  A deleted secret's name stays reserved (soft delete) until it's recovered (`az keyvault secret recover`) or, outside prod, purged (`az keyvault secret purge`). Until the first provision creates the vault, private settings stay in the local file, and later provisions list the commands that move them. Once it exists, a script that sets a private setting (`bootstrap.sh` sets the repository's ids every run, and the certificate ids and alert addresses; `group.sh` the nodes' group; `settings.sh` the one you give it) writes it to the vault, only if the value changed, and removes any local copy, so a re-run never leaves it in two places. An empty value stays a local `""`, which hides the vault's value (`teardown.sh` detaches the archive that way).
 
   **Who can read the vault.** Key Vault Secrets Officer goes to the Entra object ids in `USNM_SETTINGS_VAULT_ADMINS` (comma separated, kept in the vault itself) and to the account that runs the provision. Any other operator's grant is removed by the next provision someone else runs, so list everyone who provisions the environment; the first provision, before the list exists, gives it to you. A provision reads the vault before it deploys anything, and an operator without access stops there with the commands that fix it. To add someone, one of the operators adds their object id (`az ad signed-in-user show --query id -o tsv`, run by them) and provisions:
 
   ```sh
-  az keyvault secret set --vault-name "$vault" --name USNM-SETTINGS-VAULT-ADMINS --value "<id>,<id>" -o none
+  scripts/settings.sh --env prod --key USNM_SETTINGS_VAULT_ADMINS --value "<id>,<id>"
   scripts/provision.sh --env prod
   ```
 
@@ -968,7 +969,7 @@ settings_vault=$(scripts/settings.sh --env prod --key SETTINGS_KEYVAULT)
 az keyvault secret set --vault-name "$settings_vault" --name USNM-OCR-NODE-IPS --value 203.0.113.7 -o none   # the home IP
 scripts/settings.sh --env prod --key USNM_OCR_NODES --value true   # committed: pull request, merge, then provision from main
 scripts/ocr-node/group.sh --env prod --dry-run
-scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the local file; the provision then says how to move it to the vault
+scripts/ocr-node/group.sh --env prod   # writes USNM_OCR_NODE_GROUP to the settings vault (the local file until the vault exists)
 scripts/provision.sh --env prod        # writes OCR_EXCHANGE_ACCOUNT, OCR_NODE_DCR_ID and OCR_NODE_APPINSIGHTS, grants the group
 ```
 

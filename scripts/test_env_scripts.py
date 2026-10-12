@@ -13,7 +13,9 @@ STUB_EXEC_STATUS (its status). For the settings vault (#295): STUB_SECRETS
 (the secrets' names, one per line), STUB_SECRET_<NAME> (a secret's value,
 its hyphens as underscores), STUB_VAULT_ERROR (listing or setting secrets
 fails with that message) and STUB_OUTPUTS (the stack's outputs as JSON).
-It logs each call to STUB_LOG.
+`az account set` selects a subscription (STUB_ACCOUNTS: the ones az is
+signed in to, one per line; unset: any), and each vault call is logged with
+the selected one to STUB_LOG.vault. It logs each call to STUB_LOG.
 
 The committed settings (infra/env/<env>.json) are read from a directory of
 each test's own (USNM_ENV_DIR, a git repository holding a copy of the
@@ -34,6 +36,11 @@ STUB_AZ = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
 case "$1 $2" in
   "account show") case "$*" in *"--query id"*) echo sub-1 ;; esac ;;
+  "account set") s=$(sed 's/.*--subscription \([^ ]*\).*/\1/' <<< "$*")
+    if [ -n "${STUB_ACCOUNTS:-}" ] && ! printf '%b\n' "$STUB_ACCOUNTS" | grep -qx "$s"; then
+      echo "ERROR: The subscription of '$s' doesn't exist in cloud 'AzureCloud'." >&2; exit 1
+    fi
+    echo "$s" > "$STUB_LOG.account" ;;
   "stack sub")
     case "$*" in
       "stack sub create"*) ;;
@@ -47,6 +54,7 @@ case "$1 $2" in
          else echo "ERROR: DeploymentStackNotFound: usnm-dev could not be found." >&2; exit 3; fi ;;
     esac ;;
   "keyvault secret")
+    printf '%s %s\n' "$(cat "$STUB_LOG.account" 2> /dev/null || echo none)" "$3" >> "$STUB_LOG.vault"
     case "$3" in
       list) if [ -n "${STUB_VAULT_ERROR:-}" ]; then echo "$STUB_VAULT_ERROR" >&2; exit 1; fi
         [ -z "${STUB_SECRETS:-}" ] || printf '%b\n' "$STUB_SECRETS" ;;
@@ -675,6 +683,45 @@ class CommittedSettings(Stubbed):
         self.assertEqual(r.returncode, 1)
         self.assertIn("SETTINGS_KEYVAULT", self.local_text())
 
+    def test_a_move_reads_the_old_vault_in_the_old_subscription(self):
+        # bootstrap.sh --move into another tenant: the old vault is read
+        # with the old subscription selected, then the new one is again.
+        self.local(**self.VAULT, AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
+        r = self.lib("vault_detach_from sub-old sub-new", STUB_SECRETS="USNM-ALERT-EMAILS",
+                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.log + ".vault") as f:
+            self.assertEqual(f.read().splitlines(), ["sub-old list", "sub-old show"])
+        with open(self.log + ".account") as f:
+            self.assertEqual(f.read().strip(), "sub-new")
+        self.assertIn('USNM_ALERT_EMAILS="ops@example.org"', self.local_text())
+        self.assertNotIn("SETTINGS_KEYVAULT", self.local_text())
+
+    def test_a_move_from_a_tenant_az_isnt_signed_in_to_says_how(self):
+        self.local(**self.VAULT, AZURE_SUBSCRIPTION_ID="sub-old", AZURE_TENANT_ID="tenant-old")
+        r = self.lib("vault_detach_from sub-old sub-new", STUB_ACCOUNTS="sub-new")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("az login --tenant tenant-old", r.stderr)
+        self.assertIn("--subscription sub-new", r.stderr)
+        self.assertFalse(os.path.exists(self.log + ".vault"))
+        self.assertIn("SETTINGS_KEYVAULT", self.local_text())
+
+    def test_a_failed_move_selects_the_new_subscription_again(self):
+        self.local(**self.VAULT)
+        r = self.lib("vault_detach_from sub-old sub-new", STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
+        self.assertEqual(r.returncode, 1)
+        with open(self.log + ".account") as f:
+            self.assertEqual(f.read().strip(), "sub-new")
+        self.assertIn("SETTINGS_KEYVAULT", self.local_text())
+
+    def test_bootstrap_detaches_before_selecting_the_new_subscription(self):
+        with open(os.path.join(HERE, "bootstrap.sh")) as f:
+            text = f.read()
+        detach = text.index('vault_detach_from "$previous" "$SUBSCRIPTION"')
+        select = text.index('az account set --subscription "$SUBSCRIPTION"')
+        self.assertLess(detach, select)
+        self.assertEqual(text.count("az account set"), 1)
+
     def test_migrate_moves_the_public_settings(self):
         self.local(USNM_JA_LATIN="true", USNM_INGEST_SCRATCH_GIB="64", USNM_API_IMAGE="",
                    USNM_ALERT_EMAILS="ops@example.org", API_URL="x")
@@ -713,12 +760,28 @@ class SettingsScript(Stubbed):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("USNM_JA_LATIN", self.committed_data())
 
-    def test_a_private_setting_with_a_vault_says_how(self):
-        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+    def test_a_private_setting_with_a_vault_goes_there(self):
+        # A local copy (from before the vault) goes, so it can't hide the
+        # vault's value and stop the provision.
+        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\nUSNM_ALERT_EMAILS="old@example.org"\n')
         r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("scripts/provision.sh --env dev", r.stdout)
+        self.assertEqual(self.local_text(), 'SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')
+        self.assertIn("keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS "
+                      "--value ops@example.org -o none", self.calls())
+        r = self.lib("load_vault; settings_check", STUB_SECRETS="USNM-ALERT-EMAILS",
+                     STUB_SECRET_USNM_ALERT_EMAILS="ops@example.org")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("USNM_ALERT_EMAILS", r.stderr)
+
+    def test_a_refused_vault_write_keeps_the_local_copy(self):
+        self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\nUSNM_ALERT_EMAILS="old@example.org"\n')
+        r = self.run_settings("--env", "dev", "--key", "USNM_ALERT_EMAILS", "--value", "ops@example.org",
+                              STUB_VAULT_ERROR="ERROR: (Forbidden) Caller is not authorized.")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("az keyvault secret set --vault-name usnmcorekvdevabc123 --name USNM-ALERT-EMAILS", r.stderr)
-        self.assertNotIn("USNM_ALERT_EMAILS", self.local_text())
+        self.assertIn("can't set USNM_ALERT_EMAILS", r.stderr)
+        self.assertIn('USNM_ALERT_EMAILS="old@example.org"', self.local_text())
 
     def test_a_private_setting_is_read_from_the_vault(self):
         self.settings_file('SETTINGS_KEYVAULT="usnmcorekvdevabc123"\n')

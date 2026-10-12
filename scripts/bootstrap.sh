@@ -72,25 +72,19 @@ cd "$(dirname "$0")/.."
 
 step "Checking sign-ins"
 az account show -o none 2> /dev/null || die "run: az login [--tenant TENANT]"
-[ -n "$SUBSCRIPTION" ] && az account set --subscription "$SUBSCRIPTION"
-SUBSCRIPTION=$(az account show --query id -o tsv)
-TENANT=$(az account show --query tenantId -o tsv)
+# The target, not selected yet: a move first reads the old subscription's
+# settings vault, with that subscription's tenant (below).
+if [ -n "$SUBSCRIPTION" ]; then
+  SUBSCRIPTION=$(az account show --subscription "$SUBSCRIPTION" --query id -o tsv) ||
+    die "az isn't signed in to that subscription: az login --tenant TENANT (az keeps your other sign-ins)"
+else
+  SUBSCRIPTION=$(az account show --query id -o tsv)
+fi
+TENANT=$(az account show --subscription "$SUBSCRIPTION" --query tenantId -o tsv)
 gh auth status > /dev/null 2>&1 || die "run: gh auth login"
 [ -n "$REPO" ] || REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 echo "subscription $SUBSCRIPTION (tenant $TENANT), repository $REPO, environment $ENV_NAME"
-
-step "Registering resource providers"
-for ns in Microsoft.App Microsoft.ContainerRegistry Microsoft.DocumentDB Microsoft.Web \
-  Microsoft.Network Microsoft.Storage Microsoft.OperationalInsights Microsoft.Insights \
-  Microsoft.ManagedIdentity Microsoft.Consumption Microsoft.PolicyInsights; do
-  [ "$(az provider show -n "$ns" --query registrationState -o tsv 2> /dev/null)" = Registered ] ||
-    az provider register -n "$ns" --wait -o none
-done
-
-step "Configuring environment settings"
 . scripts/lib/env.sh
-need_stack_az
-aset AZURE_ENV_NAME "$ENV_NAME"
 # Settings that describe what exists in one subscription can't carry over to
 # another: moving starts again from an empty registry, with no certificate
 # and a fresh look at the Cosmos DB free tier.
@@ -101,9 +95,25 @@ if [ -n "$previous" ] && [ "$previous" != "$SUBSCRIPTION" ]; then
     die "environment $ENV_NAME is in subscription $previous; pass --move to rebuild it in $SUBSCRIPTION (it starts with no data)"
   MOVING=true
   # The new subscription gets a settings vault of its own (#295): the old
-  # one's private settings come back to the local file until it exists.
-  vault_detach ||
-    die "can't read the private settings in the old settings vault, $(aget SETTINGS_KEYVAULT); sign in where you can read it (az login --tenant …) and run this again, or delete SETTINGS_KEYVAULT from $ENV_FILE and set them again once the new vault exists"
+  # one's private settings come back to the local file until it exists,
+  # read while the old subscription (and its tenant) is selected.
+  vault_detach_from "$previous" "$SUBSCRIPTION" ||
+    die "can't read the private settings in the old settings vault, $(local_get SETTINGS_KEYVAULT); sign in where you can read it (az login --tenant …) and run this again, or delete SETTINGS_KEYVAULT from $ENV_FILE and set them again once the new vault exists"
+fi
+az account set --subscription "$SUBSCRIPTION"
+
+step "Registering resource providers"
+for ns in Microsoft.App Microsoft.ContainerRegistry Microsoft.DocumentDB Microsoft.Web \
+  Microsoft.Network Microsoft.Storage Microsoft.OperationalInsights Microsoft.Insights \
+  Microsoft.ManagedIdentity Microsoft.Consumption Microsoft.PolicyInsights; do
+  [ "$(az provider show -n "$ns" --query registrationState -o tsv 2> /dev/null)" = Registered ] ||
+    az provider register -n "$ns" --wait -o none
+done
+
+step "Configuring environment settings"
+need_stack_az
+aset AZURE_ENV_NAME "$ENV_NAME"
+if [ "$MOVING" = true ]; then
   aset USNM_USE_ACR false
   aset USNM_API_IMAGE ""
   aset USNM_API_CERT_ID ""

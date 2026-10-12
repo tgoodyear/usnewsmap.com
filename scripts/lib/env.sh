@@ -259,9 +259,10 @@ local_del() {
 # letters, digits and hyphens, so USNM_ALERT_EMAILS is USNM-ALERT-EMAILS.
 vault_secret_name() { printf '%s' "${1//_/-}"; }
 # Read the settings vault's secrets into VAULT_SETTINGS, with the
-# operator's sign-in (Key Vault Secrets User or Officer, which the stack
-# gives the account that deploys it). The vault's name is a stack output;
-# before the first provision that creates it, there's nothing to read. A
+# operator's sign-in (Key Vault Secrets Officer, which the stack gives the
+# operators in USNM_SETTINGS_VAULT_ADMINS and the account that deploys it).
+# The vault's name is a stack output; before the first provision that
+# creates it, there's nothing to read. A
 # secret that isn't a private setting stops here, like an unknown key in a
 # committed file.
 load_vault() {
@@ -326,6 +327,23 @@ vault_detach() {
   local_del SETTINGS_KEYVAULT || return 1
   VAULT_SETTINGS="" VAULT_KEYS="" VAULT_LOADED=false
   echo "the private settings of $vault are in $ENV_FILE until the new settings vault exists"
+}
+# vault_detach for a move from subscription $1 to $2: az takes a Key Vault
+# token from the selected subscription's tenant, so the old vault is read
+# with the old subscription selected (in another tenant, az must be signed
+# in there too; az login keeps the other sign-ins), then $2 is selected
+# again, whatever happened.
+vault_detach_from() {
+  local old=$1 target=$2 tenant rc=0
+  [ -n "$(local_get SETTINGS_KEYVAULT)" ] || return 0
+  tenant=$(local_get AZURE_TENANT_ID) || return 1
+  if ! az account set --subscription "$old" 2> /dev/null; then
+    echo "error: az can't select the old subscription $old, where the settings vault is: az login --tenant ${tenant:-<its tenant>} (az keeps your other sign-ins), then run this again with --subscription $target" >&2
+    return 1
+  fi
+  vault_detach || rc=1
+  az account set --subscription "$target" || return 1
+  return $rc
 }
 # Each setting in its place, before a deployment reads them: a public one
 # only in the committed file, a private one in the vault or the local file

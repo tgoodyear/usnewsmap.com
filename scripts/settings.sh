@@ -9,15 +9,16 @@
 #
 # A public setting (infra/env/schema.json) is set in infra/env/<env>.json:
 # commit it, merge it through a pull request, then scripts/provision.sh
-# deploys it. A private one goes in the settings vault, with az (it prints
-# the command); until the vault exists, in the local file. A cleared setting
-# takes its default (infra/main.bicepparam). The template's outputs
-# (API_URL, ACR_NAME, ...) are rewritten by every deployment. Where the
-# environment lives (subscription, region, repository) is bootstrap's to
-# set: see its --move. --migrate moves an environment's public settings
-# from the local file into infra/env/<env>.json (#295).
+# deploys it. A private one goes in the settings vault, with your az
+# sign-in, and out of the local file; until the vault exists, in the local
+# file. A cleared setting takes its default (infra/main.bicepparam). The
+# template's outputs (API_URL, ACR_NAME, ...) are rewritten by every
+# deployment. Where the environment lives (subscription, region,
+# repository) is bootstrap's to set: see its --move. --migrate moves an
+# environment's public settings from the local file into
+# infra/env/<env>.json (#295).
 set -euo pipefail
-usage() { sed -n '2,18s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,19s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 # The positional form (`settings.sh prod KEY [VALUE]`, "" clearing) works
 # for one release, with a warning (#277).
 if [ $# -ge 1 ] && [ $# -le 3 ] && [[ $1 != -* ]]; then
@@ -77,19 +78,18 @@ case "$KEY" in
       exit 1
     fi ;;
 esac
-# A private setting is set in the vault, with the operator's own sign-in;
-# this script never writes one there. Clearing the local copy is how one
-# finishes moving there.
-if is_private "$KEY" && $SET && [ -n "$vault" ]; then
-  echo "error: $KEY is private: set it in the settings vault, then provision:" >&2
-  echo "  az keyvault secret set --vault-name $vault --name $(vault_secret_name "$KEY") --value <value> -o none" >&2
-  exit 1
-fi
+# Once the vault exists, aset writes a private setting there, with the
+# operator's own sign-in, and removes any local copy, which would otherwise
+# hide the vault's value (an empty value stays a local "", which does).
 if $UNSET; then adel "$KEY"; else aset "$KEY" "$VALUE"; fi
 if is_public "$KEY"; then
   next_steps
 elif is_private "$KEY" && $UNSET && [ -n "$vault" ]; then
   echo "cleared $KEY in $ENV_FILE; if the settings vault has it too: az keyvault secret delete --vault-name $vault --name $(vault_secret_name "$KEY")"
-elif is_private "$KEY" && $SET; then
+elif is_private "$KEY" && [ -n "$vault" ] && [ -n "$VALUE" ]; then
+  echo "next: scripts/provision.sh --env $ENV_NAME"
+elif is_private "$KEY" && [ -n "$vault" ]; then
+  echo "note: an empty $KEY stays in $ENV_FILE as \"\", which hides the settings vault's value; --unset clears it"
+elif is_private "$KEY"; then
   echo "note: $KEY is private; it's in $ENV_FILE until the settings vault exists (the next provision creates it)"
 fi

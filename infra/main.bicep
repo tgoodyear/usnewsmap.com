@@ -436,7 +436,6 @@ module settingsVault 'modules/settings-vault.bicep' = {
     tags: tags
     name: settingsVaultName
     purgeProtection: env == 'prod'
-    ciPrincipalId: registry.outputs.ciPrincipalId
     admins: filter(map(split(settingsVaultAdmins, ','), a => trim(a)), a => !empty(a))
   }
 }
