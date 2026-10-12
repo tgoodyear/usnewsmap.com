@@ -627,7 +627,7 @@ deploy_stack() (
       what_if_args=(--validation-level Template)
     fi
     echo "stack $STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
-    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam "${what_if_args[@]}" --only-show-errors
+    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam ${what_if_args[@]+"${what_if_args[@]}"} --only-show-errors
     exit
   fi
   az stack sub create "${stack_args[@]}" --yes --only-show-errors -o none
