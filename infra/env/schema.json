@@ -193,6 +193,10 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_OCR_SEED_MANIFEST": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
     "USNM_OCR_SEED_MAX_PAGES": {
       "x-usnm-visibility": "public",
       "type": "string"
@@ -210,6 +214,10 @@
       "type": "string"
     },
     "USNM_OCR_SEED_SKIP_AMERICAN_STORIES": {
+      "x-usnm-visibility": "public",
+      "type": "string"
+    },
+    "USNM_OCR_SEED_SOURCE": {
       "x-usnm-visibility": "public",
       "type": "string"
     },
