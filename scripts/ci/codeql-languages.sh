@@ -2,7 +2,8 @@
 # Which CodeQL languages a change touches, as the step output
 # languages=<JSON array> for codeql.yml's analysis matrix. A change to HTML,
 # CSS, Markdown, images, Bicep or JSON data alone gives [], and no analysis
-# runs. The changed files are worked out as scripts/ci/changes.sh does.
+# runs (package.json, the lock files and tsconfig*.json are JavaScript's).
+# The changed files are worked out as scripts/ci/changes.sh does.
 # Every language runs for a schedule or workflow_dispatch, for a change to
 # codeql.yml or this script, and whenever the changed files can't be worked
 # out.
@@ -33,7 +34,7 @@ grep -Eq '^(\.github/workflows/codeql\.yml|scripts/ci/codeql-languages\.sh)$' <<
 pattern() {
   case $1 in
     actions) echo '^\.github/(workflows|actions)/' ;;
-    javascript-typescript) echo '\.(js|jsx|ts|tsx|mjs|cjs)$|(^|/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$' ;;
+    javascript-typescript) echo '\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$|(^|/)(package\.json|tsconfig[^/]*\.json|jsconfig\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$' ;;
     python) echo '\.py$|(^|/)requirements[^/]*\.txt$|(^|/)pyproject\.toml$' ;;
     rust) echo '\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)rust-toolchain(\.toml)?$' ;;
   esac

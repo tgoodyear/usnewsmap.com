@@ -2,7 +2,8 @@ name: codeql
 
 # CodeQL's advanced setup, in place of default setup, so a change analyses
 # only the languages it touches (scripts/ci/codeql-languages.sh): an HTML,
-# CSS, Markdown, Bicep or JSON-only change runs no analysis. The weekly run
+# CSS, Markdown, Bicep or JSON data change runs no analysis (package.json,
+# lock files and tsconfig*.json count as JavaScript). The weekly run
 # analyses every language on main, as default setup did. Same languages,
 # query suite and build mode as default setup, and the same categories
 # (/language:<lang>), so the alerts it raised carry over.
