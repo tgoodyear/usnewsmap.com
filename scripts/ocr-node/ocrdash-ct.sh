@@ -9,8 +9,8 @@
 #     [--template local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst]
 #     [--data /tank/ocr] [--hoststats /var/lib/usnm-hoststats]
 #   ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7> [--ctid 212]
-#   ocrdash-ct.sh --configure [--allow 192.168.0.0/24]
-#     [--worker <name>=http://<address>:<port>]... [--host-push <host>=<address>]...
+#   ocrdash-ct.sh --configure [--allow lan|<range>]
+#     [--worker <name>=http://<host>:<port>]... [--host-push <host>=<its name>]...
 #     [--workbook-url URL] [--port 80] [--ctid 212]
 #
 # --create makes the container (onboot, one NIC on --bridge with DHCP,
@@ -25,8 +25,10 @@
 # --configure installs nftables with an input policy that drops everything
 # but --allow (and loopback, replies and IPv6 neighbour discovery), writes
 # /etc/usnm/ocrdash.env and the unit usnm-ocrdash.service (beside this
-# script), and starts it. A --host-push host may PUT its own stats; the
-# dashboard checks the address.
+# script), and starts it. --allow lan (the default) is the subnet the
+# container is on, read when it runs; the dashboard reads it too. A
+# --host-push host may PUT its own stats; the dashboard resolves its name
+# and checks the address. No address goes into the repository.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '2,29s/^# \{0,1\}//p' "$0" >&2; exit 2; }
@@ -36,7 +38,7 @@ CTID=212 NAME=usnm-ocrdash STORAGE=ssd BRIDGE=vmbr0 CORES=1 MEMORY=768 SWAP=256
 TEMPLATE=local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst DATA=/tank/ocr
 HOSTSTATS=/var/lib/usnm-hoststats
 CREATE=false INSTALL=false CONFIGURE=false RELEASE=""
-ALLOW=192.168.0.0/24 PORT=80 WORKBOOK_URL=""
+ALLOW=lan PORT=80 WORKBOOK_URL=""
 WORKERS=() PUSHERS=()
 REPO=tgoodyear/usnewsmap.com
 DASH_UID=2001
@@ -123,13 +125,18 @@ if $INSTALL; then
 fi
 
 if $CONFIGURE; then
-  [[ $ALLOW =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || die "--allow: an IPv4 range (192.168.0.0/24)"
+  if [ "$ALLOW" = lan ]; then
+    NFT_ALLOW=$(in_ct ip -4 -o route show scope link proto kernel dev eth0 | awk '{print $1}' | head -n 1)
+  else
+    NFT_ALLOW=$ALLOW
+  fi
+  [[ $NFT_ALLOW =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || die "--allow: lan, or an IPv4 range (<address>/<bits>)"
   [[ $PORT =~ ^[0-9]+$ ]] || die "--port: a number"
   for w in "${WORKERS[@]}"; do
-    [[ $w =~ ^[A-Za-z0-9-]+=http://[0-9.]+:[0-9]+$ ]] || die "--worker: <name>=http://<address>:<port>, not $w"
+    [[ $w =~ ^[A-Za-z0-9-]+=http://[A-Za-z0-9.-]+:[0-9]+$ ]] || die "--worker: <name>=http://<host>:<port>, not $w"
   done
   for p in "${PUSHERS[@]}"; do
-    [[ $p =~ ^[A-Za-z0-9-]+=[0-9.]+$ ]] || die "--host-push: <host>=<address>, not $p"
+    [[ $p =~ ^[A-Za-z0-9-]+=[A-Za-z0-9.-]+$ ]] || die "--host-push: <host>=<its name>, not $p"
   done
   [ -z "$WORKBOOK_URL" ] || [[ $WORKBOOK_URL =~ ^https://portal\.azure\.com/[^[:space:]\"\'\<\>]+$ ]] ||
     die "--workbook-url: an https://portal.azure.com/ link"
@@ -142,7 +149,7 @@ table inet usnm {
     type filter hook input priority 0; policy drop;
     iif lo accept
     ct state established,related accept
-    ip saddr $ALLOW accept
+    ip saddr $NFT_ALLOW accept
     meta l4proto ipv6-icmp accept
   }
 }

@@ -1,7 +1,7 @@
 //! `usnm-ocrdash`: the on-prem OCR pipeline's LAN dashboard (12 §12.2.5).
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -10,7 +10,7 @@ use anyhow::{bail, Context};
 use clap::Parser;
 use usnm_ocr_dash::fetch::Fetch;
 use usnm_ocr_dash::hosts::Hosts;
-use usnm_ocr_dash::net::Cidr;
+use usnm_ocr_dash::net::{Allow, Source};
 use usnm_ocr_dash::nodes::{check_name, Nodes};
 use usnm_ocr_dash::view::Settings;
 use usnm_ocr_dash::{router, App};
@@ -33,7 +33,8 @@ struct Cli {
     /// Where to listen.
     #[arg(long, env = "USNM_OCRDASH_LISTEN", default_value = "0.0.0.0:80")]
     listen: SocketAddr,
-    /// Address ranges allowed to ask anything (`192.168.0.0/24`),
+    /// Who may ask anything: address ranges, host names (resolved at start
+    /// and every five minutes) or `lan` (the subnets this machine is on),
     /// comma-separated or repeated.
     #[arg(
         long,
@@ -41,7 +42,7 @@ struct Cli {
         value_delimiter = ',',
         required = true
     )]
-    allow: Vec<Cidr>,
+    allow: Vec<Source>,
     /// The fetcher's output (`status-full.json`, `index-full.jsonl`,
     /// `failures-full.jsonl`), read-only.
     #[arg(long, env = "USNM_OCRDASH_SCANS", default_value = "/tank/ocr/scans")]
@@ -53,7 +54,7 @@ struct Cli {
     /// repeated.
     #[arg(long, env = "USNM_OCRDASH_HOST_FILE", value_delimiter = ',')]
     host_file: Vec<PathBuf>,
-    /// A host that pushes its stats, as `<name>=<its address>`.
+    /// A host that pushes its stats, as `<name>=<its host name or address>`.
     #[arg(long, env = "USNM_OCRDASH_HOST_PUSH", value_delimiter = ',')]
     host_push: Vec<String>,
     /// An OCR node's worker status, as `<name>=http://<address>:<port>`.
@@ -113,11 +114,11 @@ async fn main() -> anyhow::Result<()> {
     }
     let mut pushers = BTreeMap::new();
     for p in &cli.host_push {
-        let (name, ip) = pair(p, "--host-push")?;
-        let ip: IpAddr = ip
+        let (name, host) = pair(p, "--host-push")?;
+        let source: Source = host
             .parse()
-            .with_context(|| format!("--host-push {p:?}: not an address"))?;
-        pushers.insert(name, ip);
+            .map_err(|e| anyhow::anyhow!("--host-push {p:?}: {e}"))?;
+        pushers.insert(name, Allow::new(vec![source]));
     }
     let app = Arc::new(App {
         fetch: Mutex::new(Fetch::new(cli.scans.clone(), cli.manifest.clone())),
@@ -131,9 +132,26 @@ async fn main() -> anyhow::Result<()> {
             workbook_url: cli.workbook_url.clone(),
             refresh_secs: cli.refresh_secs.max(5),
         },
-        allow: cli.allow.clone(),
+        allow: Allow::new(cli.allow.clone()),
         pushers,
     });
+    // Names and subnets now, then every five minutes.
+    let refresh = |app: Arc<App>| async move {
+        app.allow.refresh().await;
+        for a in app.pushers.values() {
+            a.refresh().await;
+        }
+    };
+    refresh(app.clone()).await;
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(300)).await;
+                refresh(app.clone()).await;
+            }
+        });
+    }
     let client = reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(Duration::from_secs(2))

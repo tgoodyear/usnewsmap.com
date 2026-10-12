@@ -13,7 +13,7 @@ pub mod tail;
 pub mod view;
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -28,7 +28,7 @@ use chrono::Utc;
 
 use crate::fetch::Fetch;
 use crate::hosts::Hosts;
-use crate::net::Cidr;
+use crate::net::Allow;
 use crate::nodes::Nodes;
 use crate::view::{Settings, View};
 
@@ -40,9 +40,9 @@ pub struct App {
     pub seed_plan: Mutex<Option<BTreeMap<String, String>>>,
     pub settings: Settings,
     /// Who may ask anything.
-    pub allow: Vec<Cidr>,
-    /// Host name → the one address that may push its stats.
-    pub pushers: BTreeMap<String, IpAddr>,
+    pub allow: Allow,
+    /// Host → the addresses that may push its stats (its own).
+    pub pushers: BTreeMap<String, Allow>,
 }
 
 impl App {
@@ -107,7 +107,7 @@ async fn allow_only(
     next: Next,
 ) -> Response {
     let ip = peer.ip().to_canonical();
-    if app.allow.iter().any(|c| c.contains(ip)) {
+    if app.allow.contains(ip) {
         next.run(req).await
     } else {
         tracing::info!(peer = %ip, path = req.uri().path(), "refused: not on --allow");
@@ -164,7 +164,7 @@ async fn put_host(
     body: Bytes,
 ) -> Response {
     let ip = peer.ip().to_canonical();
-    if app.pushers.get(&name) != Some(&ip) {
+    if !app.pushers.get(&name).is_some_and(|a| a.contains(ip)) {
         tracing::info!(peer = %ip, host = name, "refused a host push");
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -209,8 +209,12 @@ mod tests {
                 guest_prefix: "usnm-".into(),
                 workbook_url: None,
             },
-            allow: vec!["192.168.0.0/24".parse().unwrap()],
-            pushers: [("pve".to_owned(), "192.168.0.12".parse().unwrap())].into(),
+            allow: Allow::new(vec!["198.51.100.0/24".parse().unwrap()]),
+            pushers: [(
+                "pve".to_owned(),
+                Allow::new(vec!["198.51.100.12".parse().unwrap()]),
+            )]
+            .into(),
         })
     }
 
@@ -242,34 +246,34 @@ mod tests {
     async fn serves_the_lan_only_and_takes_a_host_push_from_that_host_only() {
         let dir = tempfile::tempdir().unwrap();
         let a = app(dir.path());
-        let (s, body) = call(a.clone(), "192.168.0.50", "GET", "/", "").await;
+        let (s, body) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
         assert_eq!(s, StatusCode::OK);
         assert!(body.contains("Scan downloads"));
         assert_eq!(
-            call(a.clone(), "10.1.2.3", "GET", "/", "").await.0,
+            call(a.clone(), "203.0.113.3", "GET", "/", "").await.0,
             StatusCode::FORBIDDEN
         );
         assert_eq!(
-            call(a.clone(), "192.168.0.50", "GET", "/api/fetch.json", "")
+            call(a.clone(), "198.51.100.50", "GET", "/api/fetch.json", "")
                 .await
                 .0,
             StatusCode::OK
         );
         assert_eq!(
-            call(a.clone(), "192.168.0.50", "GET", "/api/other.json", "")
+            call(a.clone(), "198.51.100.50", "GET", "/api/other.json", "")
                 .await
                 .0,
             StatusCode::NOT_FOUND
         );
         let stats = r#"{"schema":1,"host":"pve","pools":[{"name":"<script>","health":"ONLINE"}]}"#;
         assert_eq!(
-            call(a.clone(), "192.168.0.50", "PUT", "/api/host/pve", stats)
+            call(a.clone(), "198.51.100.50", "PUT", "/api/host/pve", stats)
                 .await
                 .0,
             StatusCode::FORBIDDEN
         );
         assert_eq!(
-            call(a.clone(), "192.168.0.12", "PUT", "/api/host/pve", stats)
+            call(a.clone(), "198.51.100.12", "PUT", "/api/host/pve", stats)
                 .await
                 .0,
             StatusCode::NO_CONTENT
@@ -277,7 +281,7 @@ mod tests {
         assert_eq!(
             call(
                 a.clone(),
-                "192.168.0.12",
+                "198.51.100.12",
                 "PUT",
                 "/api/host/pve",
                 r#"{"host":"pve-big"}"#
@@ -286,10 +290,10 @@ mod tests {
             .0,
             StatusCode::BAD_REQUEST
         );
-        let (_, body) = call(a.clone(), "192.168.0.50", "GET", "/", "").await;
+        let (_, body) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
         assert!(body.contains("&lt;script&gt;"));
         assert!(!body.contains("<code><script>"));
-        let (_, json) = call(a, "192.168.0.50", "GET", "/api/hosts.json", "").await;
+        let (_, json) = call(a, "198.51.100.50", "GET", "/api/hosts.json", "").await;
         assert!(json.contains("\"name\":\"pve\""));
     }
 }

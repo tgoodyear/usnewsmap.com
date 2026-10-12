@@ -36,8 +36,8 @@ done
 $COLLECT || $INSTALL || usage
 [ -n "$OUT" ] || die "--out is needed"
 [[ $OUT == /* ]] || die "--out: an absolute path"
-[ -z "$PUSH_URL" ] || [[ $PUSH_URL =~ ^http://[0-9.]+(:[0-9]+)?/api/host/[A-Za-z0-9-]+$ ]] ||
-  die "--push-url: http://<address>[:port]/api/host/<host>"
+[ -z "$PUSH_URL" ] || [[ $PUSH_URL =~ ^http://[A-Za-z0-9.-]+(:[0-9]+)?/api/host/[A-Za-z0-9-]+$ ]] ||
+  die "--push-url: http://<dashboard>[:port]/api/host/<host>"
 for n in "${POOLS[@]}" "${DATASETS[@]}"; do
   [[ $n =~ ^[A-Za-z0-9_./-]+$ ]] || die "not a pool or dataset name: $n"
 done

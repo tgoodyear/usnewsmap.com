@@ -1107,7 +1107,7 @@ scripts/provision.sh --env prod
 
 ## The OCR dashboard on the LAN (#296)
 
-`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at `http://192.168.0.105/`, from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. The address comes from DHCP. There is no DNS name, and internal names never go in the public `tjg.fyi` zone.
+`usnm-ocrdash` shows the scan fetch, the OCR nodes and the Proxmox hosts on one page that refreshes itself, at `http://<CT 212's address>/` (`pct exec 212 -- hostname -I` on pve-big), from the home LAN only ([12 §12.2.5](design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). The same data is at `/api/view.json`, and per panel at `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json` and `/api/ocred.json`. The address comes from DHCP. There is no DNS name, and internal names never go in the public `tjg.fyi` zone. The commands below name hosts by their LAN DNS names (`pve.tjg.fyi`, `usnm-ocr-node1-arcs-prod.tjg.fyi`), which resolve only through the gateway's local DNS; the dashboard's own address is written only into the hosts' configuration, never into the repository.
 
 **Host stats.** As root on each Proxmox host, from a checkout of the scripts:
 
@@ -1117,7 +1117,7 @@ scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve-big.js
   --pool tank --dataset tank/ocr --dataset tank/ocr/scans --dataset tank/ocr/text
 # the NUC host: pushes its stats to the dashboard
 scripts/ocr-node/hoststats.sh --install --out /var/lib/usnm-hoststats/pve.json \
-  --push-url http://192.168.0.105/api/host/pve
+  --push-url http://<CT 212's address>/api/host/pve
 ```
 
 Each installs `usnm-hoststats.timer`, which runs every minute.
@@ -1127,12 +1127,13 @@ Each installs `usnm-hoststats.timer`, which runs every minute.
 ```sh
 scripts/ocr-node/ocrdash-ct.sh --create
 scripts/ocr-node/ocrdash-ct.sh --install --release ocr-worker-<yyyymmdd>-<sha7>
-scripts/ocr-node/ocrdash-ct.sh --configure --allow 192.168.0.0/24 \
-  --worker usnm-ocr-node1=http://192.168.0.192:8381 --worker usnm-ocr-node2=http://192.168.0.243:8381 \
-  --host-push pve=192.168.0.12 --workbook-url '<the OCR nodes workbook link>'
+scripts/ocr-node/ocrdash-ct.sh --configure --allow lan \
+  --worker usnm-ocr-node1=http://usnm-ocr-node1-arcs-prod.tjg.fyi:8381 \
+  --worker usnm-ocr-node2=http://usnm-ocr-node2-arcs-prod.tjg.fyi:8381 \
+  --host-push pve=pve.tjg.fyi --workbook-url '<the OCR nodes workbook link>'
 ```
 
-`--create` makes CT 212 (unprivileged Debian 12, 1 core, 768 MB, onboot) with `tank/ocr/scans`, `tank/ocr/manifests` and `/var/lib/usnm-hoststats` bind-mounted read-only. `--install` takes `usnm-ocrdash` from a worker release; every release since the dashboard was merged has it. `--configure` sets the nftables input policy to drop everything but `--allow`, writes `/etc/usnm/ocrdash.env` and starts `usnm-ocrdash.service`. The worker link is the OCR nodes workbook's portal link, from `az resource list --resource-group rg-usnm-prod --resource-type microsoft.insights/workbooks`.
+`--create` makes CT 212 (unprivileged Debian 12, 1 core, 768 MB, onboot) with `tank/ocr/scans`, `tank/ocr/manifests` and `/var/lib/usnm-hoststats` bind-mounted read-only. `--install` takes `usnm-ocrdash` from a worker release; every release since the dashboard was merged has it. `--configure` sets the nftables input policy to drop everything but `--allow` (`lan`: the container's subnet), writes `/etc/usnm/ocrdash.env` and starts `usnm-ocrdash.service`. The worker link is the OCR nodes workbook's portal link, from `az resource list --resource-group rg-usnm-prod --resource-type microsoft.insights/workbooks`.
 
 **When it shows something odd.**
 
