@@ -21,11 +21,11 @@
 //   for with NDLOCR-Lite (04 §4.8, #128). Replicas claim issues through
 //   create-only blobs, and pace loc.gov together. Started again until every
 //   target issue has a part.
-// - `usnm-ocrsync-caj-{env}` (when `ocrSync`, with the on-prem OCR nodes):
-//   `usnm-ingest ocr-sync` on `ocrSyncCron` (hourly), one replica, as
-//   id-usnm-ingest: picks the nodes' output up from the exchange account,
-//   checks it and imports it into curated/ocr-local/ (12 §12.5 Step 8).
-//   Named by ADR-0017. With a seed plan (`ocrSeed`), each run then tops
+// - `ocrSyncJobName`, `usnm-ocrs-caj-{env}` (when `ocrSync`, with the
+//   on-prem OCR nodes): `usnm-ingest ocr-sync` on `ocrSyncCron` (hourly),
+//   one replica, as id-usnm-ingest: picks the nodes' output up from the
+//   exchange account, checks it and imports it into curated/ocr-local/
+//   (12 §12.5 Step 8). Named by ADR-0017 (main.bicep builds the name). With a seed plan (`ocrSeed`), each run then tops
 //   `ocr-bulk` up with the pages LoC read worst (12 §12.5 Step 10).
 //   `ocr-enqueue`, `ocr-requeue` and `ocr-seed` run as one-off executions of
 //   it (scripts/start-job.sh --job OCR_SYNC_JOB), since it has the exchange
@@ -127,15 +127,18 @@ param jaOcrImage string = ''
 param jaOcrReplicas int = 2
 @description('Where curation retains the batch archives it downloads (the `raw` container URL, `retainRaw`); empty keeps none.')
 param rawUrl string = ''
-@description('Deploy the OCR pickup job, usnm-ocrsync-caj-<env> (12 §12.5 Step 8). Needs the exchange account (ocrNodes).')
+@description('Deploy the OCR pickup job, `ocrSyncJobName` (12 §12.5 Step 8). Needs the exchange account (ocrNodes).')
 param ocrSync bool = false
+@description('The OCR pickup job\'s name (with ocrSync), usnm-ocrs-caj-<env>; a Container Apps job name is under 32 characters (ADR-0017).')
+@maxLength(31)
+param ocrSyncJobName string = ''
 @description('The OCR exchange account\'s queue endpoint (OCR_QUEUE_ENDPOINT).')
 param ocrQueueEndpoint string = ''
 @description('The OCR exchange account\'s blob endpoint (OCR_BLOB_ENDPOINT), with its trailing slash.')
 param ocrBlobEndpoint string = ''
 @description('Schedule for the OCR pickup job (UTC cron). Empty: manual only.')
 param ocrSyncCron string = '17 * * * *'
-@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name: USNM_OCR_SEED_PLAN (empty: no seeding), USNM_OCR_SEED_BATCHES, USNM_OCR_SEED_LANGUAGES, USNM_OCR_SEED_YEARS, USNM_OCR_SEED_MIN_DAMAGE, USNM_OCR_SEED_MAX_PAGES, USNM_OCR_SEED_PILOT, USNM_OCR_SEED_SKIP_AMERICAN_STORIES, USNM_OCR_BULK_WINDOW, USNM_OCR_BULK_REFILL_BELOW. Empty values are left out, so the job\'s defaults apply.')
+@description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name: USNM_OCR_SEED_PLAN (empty: no seeding), USNM_OCR_SEED_BATCHES, USNM_OCR_SEED_LANGUAGES, USNM_OCR_SEED_YEARS, USNM_OCR_SEED_MIN_DAMAGE, USNM_OCR_SEED_MAX_PAGES, USNM_OCR_SEED_PILOT, USNM_OCR_SEED_SKIP_AMERICAN_STORIES, USNM_OCR_SEED_SOURCE (damage or fetched), USNM_OCR_SEED_MANIFEST, USNM_OCR_BULK_WINDOW, USNM_OCR_BULK_REFILL_BELOW. Empty values are left out, so the job\'s defaults apply.')
 param ocrSeed object = {}
 
 // Both jobs: the platform kills a replica after replicaTimeout, which the
@@ -509,7 +512,7 @@ var ocrSyncMaxRuntimeSecs = 3000
 var ocrSeedEnv = filter(map(items(ocrSeed), s => { name: s.key, value: string(s.value) }), e => !empty(e.value))
 
 resource ocrSyncJob 'Microsoft.App/jobs@2025-01-01' = if (ocrSync) {
-  name: 'usnm-ocrsync-caj-${jobNameSuffix}'
+  name: ocrSyncJobName
   location: location
   tags: tags
   identity: {
@@ -534,6 +537,8 @@ resource ocrSyncJob 'Microsoft.App/jobs@2025-01-01' = if (ocrSync) {
     template: {
       containers: [
         {
+          // Not renamed with the job (usnm-ocrsync-caj-{env} before #309):
+          // the alerts and saved queries find its logs by this name.
           name: 'ocrsync'
           image: image
           args: ['ocr-sync', '--max-runtime-secs', string(ocrSyncMaxRuntimeSecs)]
