@@ -1790,3 +1790,5 @@ details.status-error > summary {
     white-space: normal;
   }
 }
+
+/* CodeQL skip test, do not merge */
