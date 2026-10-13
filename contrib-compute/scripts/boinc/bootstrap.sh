@@ -110,7 +110,7 @@ domain="${project_url#https://}"; domain="${domain%/}"
 [ -n "$operator_oid" ] || die "--operator-object-id is required"
 [[ "$operator_oid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || die "--operator-object-id must be a GUID"
 [ -n "$operator_login" ] || die "--operator-login is required"
-[[ "$operator_login" =~ ^[A-Za-z0-9._@+-]+$ ]] || die "--operator-login has characters an Entra sign-in name does not"
+[[ "$operator_login" =~ ^[[:print:]]+$ ]] || die "--operator-login must be a single-line Entra user name or group display name"
 [ -n "$registry_rg" ] || registry_rg="$rg"
 # The registry is named by the image: <registry>.azurecr.io/<repository>@sha256:...
 registry_host="${image%%/*}"
@@ -139,11 +139,14 @@ az deployment group what-if \\
   --parameters name=$name location=$location image=$image \\
                masterHost=$domain registryResourceGroup=$registry_rg \\
                operatorPrincipalIds='["$operator_oid"]' \\
-               entraAdminObjectId=$operator_oid entraAdminLogin=$operator_login \\
                mysqlAdminPassword=<generated, from Key Vault>
    The registry is ${registry_host%%.*} (the identity gets AcrPull on it only). Key Vault and the
    Files account are private-endpoint only; run step 2 from a machine with a network path into the VNet.
 PLAN
+echo
+note "1a. MySQL Entra administrator (real run, after the deployment; not in the template)"
+printf '   The server needs a user-assigned identity that holds Directory Readers (or Graph\n   permissions) first; a template cannot grant that. Then:\n'
+printf '       az mysql flexible-server ad-admin create --resource-group %q --server-name <mysql server> \\\n         --display-name %q --object-id %q --identity <user-assigned identity resource id>\n' "$rg" "$operator_login" "$operator_oid"
 echo
 note "1b. Custom domain $domain (real run; this script touches no DNS)"
 label="${domain%%.*}"

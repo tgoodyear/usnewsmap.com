@@ -91,8 +91,9 @@ choose it now. Notes:
   generated at deploy time and stored as a Key Vault secret. Container Apps reads it through
   the app's user-assigned managed identity as a Key Vault secret reference. The password
   appears in the running container's environment and in the rendered `config.xml`, so
-  `config.xml` is rendered into tmpfs at start, never into an image layer or the repo. Entra
-  admin is still set for human access. This is the one place where the "no keys in config"
+  `config.xml` is rendered into tmpfs at start, never into an image layer or the repo. The Entra
+  admin for human access is a separate bootstrap step after deployment (bootstrap.sh 1a), because
+  the server's identity needs Directory Readers first, which a template cannot grant. This is the one place where the "no keys in config"
   rule is not fully met, and it is documented as a gap.
 - MyISAM. `post`, `thread` and `profile` are MyISAM in `schema.sql`. We turn off forums and
   profiles. Whether the server rejects MyISAM is UNVERIFIED; the `schema.sql` we apply is
@@ -254,7 +255,7 @@ every volunteer's attachment and cannot change.
 - Registry and operator access: both Container App resources pull the image with the shared
   identity, which has AcrPull scoped to the one registry named by the image (the registry has no
   admin user and no anonymous pull). The operator named by `--operator-object-id` gets Key Vault
-  Secrets Officer, to create the four secrets, and is the MySQL Entra administrator. Because the
+  Secrets Officer, to create the four secrets, and is made the MySQL Entra administrator in the separate step above. Because the
   vault and the Files account are private, the operator needs a network path into the VNet to
   create secrets or copy to the share; none is provisioned here (open question 11).
 - Policy: the repository's guardrails deny a storage account with shared key access and a

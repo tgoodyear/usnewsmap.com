@@ -30,12 +30,6 @@ param registryResourceGroup string = resourceGroup().name
 @description('Entra object ids (people or groups) given Key Vault Secrets Officer, so the bootstrap script can create the secrets.')
 param operatorPrincipalIds array
 
-@description('Entra object id of the MySQL Entra administrator (an operator or a group).')
-param entraAdminObjectId string
-
-@description('Entra sign-in name of that administrator.')
-param entraAdminLogin string
-
 // The registry is named by the image: <registry>.azurecr.io/<repository>@sha256:...
 var registryServer = split(image, '/')[0]
 var registryName = split(registryServer, '.')[0]
@@ -96,9 +90,6 @@ module mysql 'modules/mysql.bicep' = {
     subnetId: network.outputs.mysqlSubnetId
     privateDnsZoneId: network.outputs.mysqlDnsZoneId
     adminPassword: mysqlAdminPassword
-    identityId: identity.id
-    entraAdminObjectId: entraAdminObjectId
-    entraAdminLogin: entraAdminLogin
   }
 }
 
