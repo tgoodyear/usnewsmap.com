@@ -637,6 +637,7 @@ impl Worker {
             }
             let t = Instant::now();
             let mut jpeg_fallback = false;
+            let mut evict_jp2 = None;
             let (scan, out) = match self.read_scan(&scan, m, work.path()).await {
                 Ok(out) => (scan, out),
                 // Some intact JP2s crash the engine with status 136 (#454);
@@ -660,10 +661,8 @@ impl Worker {
                         .read_scan(&jpeg, m, &again)
                         .await
                         .map_err(|e| engine_failure(e, &self.cfg.node_id))?;
-                    // The JP2 (a buffer-set copy) isn't needed now; best effort.
-                    if let Some(url) = &scan.evict {
-                        self.scans.evict(url).await;
-                    }
+                    // The JP2's buffer copy goes with the JPEG's, after the upload.
+                    evict_jp2 = scan.evict.clone();
                     jpeg_fallback = true;
                     (jpeg, out)
                 }
@@ -692,9 +691,10 @@ impl Worker {
                 scan.evict,
                 out,
                 jpeg_fallback,
+                evict_jp2,
             ))
         };
-        let (iiif_base, scan_url, scan_sha256, scan_md5, evict, out, jpeg_fallback) =
+        let (iiif_base, scan_url, scan_sha256, scan_md5, evict, out, jpeg_fallback, evict_jp2) =
             tokio::time::timeout_at(deadline.into(), read)
                 .await
                 .map_err(|_| Failure::Abandoned)??;
@@ -734,7 +734,7 @@ impl Worker {
                 .map_err(|_| Failure::Abandoned)??;
         // The output is uploaded: a buffer-set scan isn't needed any more.
         // Best effort; a failure is logged, never the page's.
-        if let Some(url) = evict {
+        for url in evict.into_iter().chain(evict_jp2) {
             // Within the page's deadline, so a slow server can't push the
             // message past its hide.
             let _ = tokio::time::timeout_at(deadline.into(), self.scans.evict(&url)).await;
