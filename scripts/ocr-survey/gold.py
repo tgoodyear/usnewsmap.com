@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import random
 import re
@@ -59,6 +60,7 @@ DEFAULT_TARGET = 60
 DEFAULT_SEED = 296
 HINT_NOTE = "HINT, NOT TRUTH: each engine's current text for this box. Do not copy it; read the image."
 UNKNOWN = "[?]"
+SKIPPED = "[...]"  # not allowed: validation rejects crops that skip printed text
 GUESS = re.compile(r"\[\?([^\[\]\n]+)\]")
 MAX_UNKNOWN_SHARE = 0.02
 
@@ -200,7 +202,11 @@ def cmd_cut(a: argparse.Namespace) -> int:
         if sm is None:
             print(f"skipped, not in the sample: {pid}", file=sys.stderr)
             continue
-        img = Image.open(a.sample / "images" / f"{pid}.jpg")
+        page_bytes = (a.sample / "images" / f"{pid}.jpg").read_bytes()
+        if sm.get("image_sha256") and sha256(page_bytes) != sm["image_sha256"]:
+            print(f"skipped, local page image doesn't match the sample checksum: {pid}", file=sys.stderr)
+            continue
+        img = Image.open(io.BytesIO(page_bytes))
         loc = crops.alto_words(a.sample / "alto" / f"{pid}.xml", img.width)
         box = crops.pick_box(loc, img.size, random.Random(f"{a.seed}:gold-box:{pid}"))
         if box is None:
@@ -210,7 +216,6 @@ def cmd_cut(a: argparse.Namespace) -> int:
         crop_id = f"{s['group']}-{counters[s['group']]:02d}"
         data = encode_crop(img, box)
         (a.out / "images" / f"{crop_id}.jpg").write_bytes(data)
-        page_bytes = (a.sample / "images" / f"{pid}.jpg").read_bytes()
         row = {
             "crop_id": crop_id, "page_id": pid, "group": s["group"], "lang": s["lang"], "era": s["era"],
             "stratum": s["stratum"], "lccn": s["lccn"], "date": s["date"], "edition": s["edition"], "seq": s["seq"],
@@ -334,6 +339,8 @@ def validate_rows(rows: list[dict], manifest: list[dict] | None = None, images: 
         stripped = GUESS.sub("", t).replace(UNKNOWN, "")
         if "[?" in stripped:
             errors.append(f"{cid}: unbalanced uncertain-character marker")
+        if SKIPPED in t:
+            errors.append(f"{cid}: skipped-span marker {SKIPPED}; the scorer can't align around it, drop the crop")
         if unknown_share(t) > MAX_UNKNOWN_SHARE:
             errors.append(f"{cid}: more than {MAX_UNKNOWN_SHARE:.0%} unknown characters; drop the crop")
         nt = normalize(t, truth=True)

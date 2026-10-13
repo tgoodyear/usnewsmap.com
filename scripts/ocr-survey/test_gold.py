@@ -75,6 +75,9 @@ class Validate(unittest.TestCase):
         self.assertTrue(gold.validate_rows([self.row(transcription="a[?]" * 10)])[0])
         self.assertTrue(gold.validate_rows([self.row(transcription="abc [?de")])[0])
 
+    def test_skipped_span_marker_fails(self):
+        self.assertTrue(gold.validate_rows([self.row(transcription="abc\n[...]\ndef")])[0])
+
 
 class Agree(unittest.TestCase):
     def test_pairwise_and_mean(self):

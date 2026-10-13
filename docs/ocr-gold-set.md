@@ -81,7 +81,7 @@ The page checksum pins the pixels. `page_image_sha256` is the checksum of the pa
 2. **Lines.** One line of the transcription per printed line in the crop, in reading order for the crop's column. If the crop cuts through a line at its edge, transcribe only the characters wholly inside the crop and note it in `notes`.
 3. **Hyphenation.** Keep the hyphen at the end of a line as printed and don't join the word. The scorer joins it (see below).
 4. **Uncertain characters.** `[?]` stands for one character that can't be read. `[?x]` stands for characters read as `x` with doubt. More than 2% of a crop's characters marked this way fails validation; drop the crop and add another page instead.
-5. **Out of scope.** Leave out ornaments, rules and the text of images. Mark a gap with a line `[...]` only if it falls inside a line of text that was skipped.
+5. **Out of scope.** Leave out ornaments, rules and the text of images. Don't skip printed text inside the crop. The scorer can't align around a gap, so validation rejects a `[...]` marker; drop such a crop and add another page instead.
 6. **Who.** The maintainer transcribes, or a person they name. Set `transcriber` to that person. An engine's text, or a model's reading of the image, is never the transcription.
 7. **Second pass.** A different person reads every transcription against the image, fixes it, and sets `reviewer`. The validator rejects a reviewer equal to the transcriber. If only one person is available, run validate with `--allow-unreviewed`, and say so wherever scores are quoted.
 8. **Hint copies.** A transcription equal to a hint after normalization fails validation. If the hint really is right, check the image and set `hint_copy_reviewed` to true.
