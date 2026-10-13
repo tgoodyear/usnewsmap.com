@@ -10,6 +10,8 @@ param environmentId string
 param identityId string
 param identityClientId string
 param image string
+@description('Registry login server, taken from the image reference. The app pulls with its identity (AcrPull); the registry has no admin user or anonymous pull.')
+param registryServer string
 param keyVaultName string
 param mysqlHost string
 param databaseName string
@@ -30,6 +32,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
     environmentId: environmentId
     workloadProfileName: workloadProfileName
     configuration: {
+      registries: [ { server: registryServer, identity: identityId } ]
       triggerType: 'Manual'
       replicaTimeout: timeoutSeconds
       replicaRetryLimit: 0 // submit must never be retried by the platform (usnm-boinc journals and refuses replays)

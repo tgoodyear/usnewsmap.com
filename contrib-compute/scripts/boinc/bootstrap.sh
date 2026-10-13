@@ -5,7 +5,8 @@
 #
 #   bootstrap.sh --what-if --resource-group RG --image REGISTRY/NAME@sha256:... \
 #                --worker-image REGISTRY/NAME@sha256:... --signing-key-dir DIR \
-#                [--location eastus] [--name boinc]
+#                --operator-object-id GUID --operator-login NAME \
+#                [--registry-resource-group RG] [--location eastus] [--name boinc]
 #
 # It sets up the STOCK BOINC server that PR #441's usnm-boinc bridge submits to; it builds no
 # BOINC code. What a real run will do, in order (printed below as the plan):
@@ -23,15 +24,20 @@
 # there; the signed files (*.sig) come back to this machine.
 set -euo pipefail
 
-SCRIPT_VERSION="0.2.0"
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_VERSION="0.3.0"
+# contrib_root is contrib-compute/ (where infra/boinc lives). repo_root is the Git repository
+# root, found with physical paths (symlinks resolved) so the offline-key check below compares
+# real locations.
+contrib_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+repo_root="$(git -C "$contrib_root" rev-parse --show-toplevel 2>/dev/null)" || repo_root="$(cd -P "$contrib_root/.." && pwd -P)"
+repo_root="$(cd -P "$repo_root" && pwd -P)"
 
 die() { echo "bootstrap.sh: $*" >&2; exit 1; }
 note() { echo "== $*"; }
 
 usage() {
   cat <<'USAGE'
-Usage: bootstrap.sh --what-if --resource-group RG --image IMAGE --worker-image IMAGE --signing-key-dir DIR [options]
+Usage: bootstrap.sh --what-if --resource-group RG --image IMAGE --worker-image IMAGE --signing-key-dir DIR --project-url URL --operator-object-id GUID --operator-login NAME [options]
 
 Required:
   --what-if              preview only. This version cannot deploy, so the flag is mandatory
@@ -43,18 +49,26 @@ Required:
   --signing-key-dir DIR  offline directory that holds code_sign_private (it is only checked
                          for, never read or copied)
 
+  --project-url URL      master URL: https://boinc.usnewsmap.com/ (prod) or
+                         https://boinc-dev.usnewsmap.com/ (dev/experiment). It cannot change
+                         once volunteers attach. Its host is passed to the template as masterHost
+  --operator-object-id GUID
+                         Entra object id of the operator (or group) who gets Key Vault Secrets
+                         Officer and is the MySQL Entra administrator
+  --operator-login NAME  that administrator's Entra sign-in name
+
 Options:
+  --registry-resource-group RG
+                         resource group of the image's registry, if not --resource-group
+                         (the identity gets AcrPull on that one registry)
   --location NAME        Azure region (default eastus)
   --name NAME            short resource name prefix, 3 to 12 lower-case letters/digits (default boinc)
-  --project-url URL      master URL, required: https://boinc.usnewsmap.com/ (prod) or
-                         https://boinc-dev.usnewsmap.com/ (dev/experiment). It cannot change
-                         once volunteers attach
   --help                 this text
   --version              print the script version
 USAGE
 }
 
-what_if=0 rg="" image="" worker_image="" key_dir="" location="eastus" name="boinc" project_url=""
+what_if=0 rg="" image="" worker_image="" key_dir="" location="eastus" name="boinc" project_url="" operator_oid="" operator_login="" registry_rg=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,6 +80,9 @@ while [ $# -gt 0 ]; do
     --location) [ $# -ge 2 ] || die "$1 needs a value"; location="$2"; shift 2 ;;
     --name) [ $# -ge 2 ] || die "$1 needs a value"; name="$2"; shift 2 ;;
     --project-url) [ $# -ge 2 ] || die "$1 needs a value"; project_url="$2"; shift 2 ;;
+    --operator-object-id) [ $# -ge 2 ] || die "$1 needs a value"; operator_oid="$2"; shift 2 ;;
+    --operator-login) [ $# -ge 2 ] || die "$1 needs a value"; operator_login="$2"; shift 2 ;;
+    --registry-resource-group) [ $# -ge 2 ] || die "$1 needs a value"; registry_rg="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     --version) echo "$SCRIPT_VERSION"; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
@@ -90,11 +107,24 @@ case "$project_url" in
   *) die "--project-url must be https://boinc.usnewsmap.com/ or https://boinc-dev.usnewsmap.com/ (https, trailing slash)" ;;
 esac
 domain="${project_url#https://}"; domain="${domain%/}"
+[ -n "$operator_oid" ] || die "--operator-object-id is required"
+[[ "$operator_oid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || die "--operator-object-id must be a GUID"
+[ -n "$operator_login" ] || die "--operator-login is required"
+[[ "$operator_login" =~ ^[A-Za-z0-9._@+-]+$ ]] || die "--operator-login has characters an Entra sign-in name does not"
+[ -n "$registry_rg" ] || registry_rg="$rg"
+# The registry is named by the image: <registry>.azurecr.io/<repository>@sha256:...
+registry_host="${image%%/*}"
+case "$registry_host" in *.azurecr.io) ;; *) die "--image must be in an Azure Container Registry (<name>.azurecr.io/...): the app pulls with its identity" ;; esac
 
 # The signing key must be offline: refuse a path inside this repository.
-key_abs="$(cd "$key_dir" 2>/dev/null && pwd)" || die "--signing-key-dir $key_dir does not exist"
-case "$key_abs/" in "$repo_root"/*) die "--signing-key-dir is inside this repository; use an offline location" ;; esac
+# Compare real paths: the directory with symlinks resolved, and the key file itself (a symlink
+# that points back into the repository is refused too).
+key_abs="$(cd -P "$key_dir" 2>/dev/null && pwd -P)" || die "--signing-key-dir $key_dir does not exist"
 [ -f "$key_abs/code_sign_private" ] || die "no code_sign_private in $key_abs"
+key_real="$(realpath "$key_abs/code_sign_private")" || die "cannot resolve $key_abs/code_sign_private"
+for p in "$key_abs" "$key_real"; do
+  case "$p/" in "$repo_root"/*) die "--signing-key-dir is inside this repository ($repo_root); use an offline location" ;; esac
+done
 if [ -n "$(find "$key_abs/code_sign_private" -perm -004 2>/dev/null)" ]; then
   echo "bootstrap.sh: warning: code_sign_private is readable by everyone; chmod 600 it" >&2
 fi
@@ -105,9 +135,14 @@ note "1. Preview the Azure deployment (read-only; run it yourself)"
 cat <<PLAN
 az deployment group what-if \\
   --resource-group $rg \\
-  --template-file $repo_root/infra/boinc/main.bicep \\
+  --template-file $contrib_root/infra/boinc/main.bicep \\
   --parameters name=$name location=$location image=$image \\
+               masterHost=$domain registryResourceGroup=$registry_rg \\
+               operatorPrincipalIds='["$operator_oid"]' \\
+               entraAdminObjectId=$operator_oid entraAdminLogin=$operator_login \\
                mysqlAdminPassword=<generated, from Key Vault>
+   The registry is ${registry_host%%.*} (the identity gets AcrPull on it only). Key Vault and the
+   Files account are private-endpoint only; run step 2 from a machine with a network path into the VNet.
 PLAN
 echo
 note "1b. Custom domain $domain (real run; this script touches no DNS)"

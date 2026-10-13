@@ -1,4 +1,5 @@
-// One VNet: a subnet for the Container Apps environment and a delegated subnet for MySQL.
+// One VNet: a subnet for the Container Apps environment, a delegated subnet for MySQL, and a
+// subnet for the private endpoints of the Files account and the Key Vault (neither is public).
 // MySQL flexible server access mode (private or public) cannot be changed after creation,
 // so the private choice is made here from the start.
 param name string
@@ -19,6 +20,10 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           addressPrefix: '10.${vnetOctet}.0.0/27'
           delegations: [ { name: 'aca', properties: { serviceName: 'Microsoft.App/environments' } } ]
         }
+      }
+      {
+        name: 'pe'
+        properties: { addressPrefix: '10.${vnetOctet}.2.0/28' }
       }
       {
         name: 'mysql'
@@ -49,3 +54,38 @@ resource dnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-
 output acaSubnetId string = '${vnet.id}/subnets/aca'
 output mysqlSubnetId string = '${vnet.id}/subnets/mysql'
 output mysqlDnsZoneId string = dns.id
+
+// Private DNS for the two private endpoints.
+resource filesDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.file.${environment().suffixes.storage}'
+  location: 'global'
+}
+
+resource filesDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: filesDns
+  name: 'link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: vnet.id }
+  }
+}
+
+resource vaultDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink${environment().suffixes.keyvaultDns}'
+  location: 'global'
+}
+
+resource vaultDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: vaultDns
+  name: 'link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: vnet.id }
+  }
+}
+
+output peSubnetId string = '${vnet.id}/subnets/pe'
+output filesDnsZoneId string = filesDns.id
+output vaultDnsZoneId string = vaultDns.id

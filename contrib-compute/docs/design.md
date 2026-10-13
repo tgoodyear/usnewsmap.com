@@ -233,7 +233,8 @@ execs `usnm-boinc`; it is part of the server image work, section 9).
 ### 5.2 Security
 
 Attack surface: the public scheduler CGI, `file_upload_handler` and the PHP web UI. The MySQL
-server has private access only; nothing else in the project is public. The public name is
+server has private access only. The Key Vault and the Files account have public network access
+off and are reached through private endpoints in the project's VNet; nothing else in the project is public. The public name is
 `boinc.usnewsmap.com` with a managed certificate (section 3, UNVERIFIED); the master URL is part of
 every volunteer's attachment and cannot change.
 
@@ -250,6 +251,16 @@ every volunteer's attachment and cannot change.
   the Container Apps mount takes it (the template reads it from the account it creates, so no
   key is passed in or committed); and the Log Analytics shared key that the Container Apps
   environment is configured with. No connection strings in Bicep outputs.
+- Registry and operator access: both Container App resources pull the image with the shared
+  identity, which has AcrPull scoped to the one registry named by the image (the registry has no
+  admin user and no anonymous pull). The operator named by `--operator-object-id` gets Key Vault
+  Secrets Officer, to create the four secrets, and is the MySQL Entra administrator. Because the
+  vault and the Files account are private, the operator needs a network path into the VNet to
+  create secrets or copy to the share; none is provisioned here (open question 11).
+- Policy: the repository's guardrails deny a storage account with shared key access and a
+  Log Analytics workspace with local auth. This stack needs both (the three ADR-0009 exceptions
+  in decision 5 of ADR-0019). The guardrail definitions have no way to exempt a resource yet, so
+  the stack cannot be deployed into a guarded group until the maintainer decides how to add one.
 - Images: our own build from the BOINC `server_release/1.6/1.6.2` tag; the Docker Hub images
   are stale.
 
@@ -393,7 +404,13 @@ the images would be preferred if one exists. It is not planned until the maintai
    change.
 9. Who builds the server image and `bridge-job` wrapper, and where does the build live?
 10. Should `submit` get a remote mode in #441, or is the manual hand-off enough for the pilot?
-11. Does the maintainer accept `require_secure_transport = OFF` inside the private network if
+11. What network path does the operator use into the VNet to create the Key Vault secrets and to
+    reach the Files share (for the hand-off in section 4)? Candidates: `az containerapp exec`
+    into the bridge job's environment, a point-to-site VPN, or a jump host. None is chosen.
+12. How are the three ADR-0009 exceptions expressed in the guardrail policies (ADR-0019,
+    decision 5)? Not implemented: the maintainer decides whether to add an exempt-ids parameter
+    to the two definitions, as the public-network policy has.
+13. Does the maintainer accept `require_secure_transport = OFF` inside the private network if
     the BOINC clients cannot use TLS?
 
 ## 10. First deployment step

@@ -12,6 +12,12 @@ param name string
 param location string
 param subnetId string
 param privateDnsZoneId string
+@description('Resource id of the user-assigned identity the server uses for Entra authentication.')
+param identityId string
+@description('Entra object id of the operator or group that administers the server by Entra.')
+param entraAdminObjectId string
+@description('Entra sign-in name of that administrator (user principal name or group name).')
+param entraAdminLogin string
 param adminLogin string = 'usnmboincadmin'
 @secure()
 param adminPassword string
@@ -25,6 +31,7 @@ resource server 'Microsoft.DBforMySQL/flexibleServers@2024-12-30' = {
   name: take('usnm-${name}-mysql-${uniqueString(resourceGroup().id, name)}', 63)
   location: location
   sku: { name: skuName, tier: 'Burstable' }
+  identity: { type: 'UserAssigned', userAssignedIdentities: { '${identityId}': {} } }
   properties: {
     version: '8.4'
     administratorLogin: adminLogin
@@ -42,6 +49,21 @@ resource secureTransport 'Microsoft.DBforMySQL/flexibleServers/configurations@20
   parent: server
   name: 'require_secure_transport'
   properties: { value: 'ON', source: 'user-override' }
+}
+
+// The documented Entra administrator (docs/design.md, 5.1): human setup and recovery use it,
+// not the static password the BOINC daemons need.
+resource entraAdmin 'Microsoft.DBforMySQL/flexibleServers/administrators@2024-12-30' = {
+  parent: server
+  name: 'ActiveDirectory'
+  properties: {
+    administratorType: 'ActiveDirectory'
+    login: entraAdminLogin
+    sid: entraAdminObjectId
+    tenantId: subscription().tenantId
+    identityResourceId: identityId
+  }
+  dependsOn: [ secureTransport ]
 }
 
 output host string = server.properties.fullyQualifiedDomainName

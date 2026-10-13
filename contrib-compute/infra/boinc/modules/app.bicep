@@ -13,6 +13,8 @@ param logAnalyticsSharedKey string
 param identityId string
 param identityClientId string
 param image string
+@description('Registry login server, taken from the image reference. The app pulls with its identity (AcrPull); the registry has no admin user or anonymous pull.')
+param registryServer string
 param keyVaultName string
 param filesAccountName string
 param shareName string
@@ -65,6 +67,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
     workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [ { server: registryServer, identity: identityId } ]
       ingress: {
         external: true
         targetPort: 80

@@ -20,8 +20,25 @@ param image string
 @description('MySQL admin password. The bootstrap script generates it and keeps it in Key Vault.')
 param mysqlAdminPassword string
 
-@description('Public host name of the BOINC master URL. Defaults to the Container App address when empty.')
-param masterHost string = ''
+@description('Public host name of the BOINC master URL, for example boinc.usnewsmap.com. Required: bootstrap.sh derives it from --project-url. It cannot change once volunteers attach.')
+@minLength(4)
+param masterHost string
+
+@description('Resource group of the registry that holds the image (infra/modules/registry.bicep). The registry must be in this subscription.')
+param registryResourceGroup string = resourceGroup().name
+
+@description('Entra object ids (people or groups) given Key Vault Secrets Officer, so the bootstrap script can create the secrets.')
+param operatorPrincipalIds array
+
+@description('Entra object id of the MySQL Entra administrator (an operator or a group).')
+param entraAdminObjectId string
+
+@description('Entra sign-in name of that administrator.')
+param entraAdminLogin string
+
+// The registry is named by the image: <registry>.azurecr.io/<repository>@sha256:...
+var registryServer = split(image, '/')[0]
+var registryName = split(registryServer, '.')[0]
 
 // Computed here, not read from the storage module, so listKeys() below can resolve at the start of the deployment.
 var filesAccountName = take('usnm${name}fil${uniqueString(resourceGroup().id, name)}', 24)
@@ -29,6 +46,12 @@ var filesAccountName = take('usnm${name}fil${uniqueString(resourceGroup().id, na
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: 'usnm-${name}-id'
   location: location
+}
+
+module acrPull 'modules/acr-pull.bicep' = {
+  name: 'acr-pull'
+  scope: resourceGroup(registryResourceGroup)
+  params: { registryName: registryName, principalId: identity.properties.principalId }
 }
 
 module monitor 'modules/monitor.bicep' = {
@@ -47,13 +70,22 @@ module vault 'modules/keyvault.bicep' = {
     name: name
     location: location
     readerPrincipalId: identity.properties.principalId
+    peSubnetId: network.outputs.peSubnetId
+    dnsZoneId: network.outputs.vaultDnsZoneId
+    operatorPrincipalIds: operatorPrincipalIds
     logAnalyticsWorkspaceId: monitor.outputs.id
   }
 }
 
 module storage 'modules/storage.bicep' = {
   name: 'storage'
-  params: { location: location, filesAccountName: filesAccountName }
+  params: {
+    name: name
+    location: location
+    filesAccountName: filesAccountName
+    peSubnetId: network.outputs.peSubnetId
+    dnsZoneId: network.outputs.filesDnsZoneId
+  }
 }
 
 module mysql 'modules/mysql.bicep' = {
@@ -64,6 +96,9 @@ module mysql 'modules/mysql.bicep' = {
     subnetId: network.outputs.mysqlSubnetId
     privateDnsZoneId: network.outputs.mysqlDnsZoneId
     adminPassword: mysqlAdminPassword
+    identityId: identity.id
+    entraAdminObjectId: entraAdminObjectId
+    entraAdminLogin: entraAdminLogin
   }
 }
 
@@ -84,6 +119,7 @@ resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existin
 
 module app 'modules/app.bicep' = {
   name: 'app'
+  dependsOn: [ acrPull ]
   params: {
     name: name
     location: location
@@ -93,6 +129,7 @@ module app 'modules/app.bicep' = {
     identityId: identity.id
     identityClientId: identity.properties.clientId
     image: image
+    registryServer: registryServer
     keyVaultName: vault.outputs.name
     filesAccountName: storage.outputs.filesAccountName
     shareName: storage.outputs.shareName
@@ -105,6 +142,7 @@ module app 'modules/app.bicep' = {
 
 module bridgeJob 'modules/bridge-job.bicep' = {
   name: 'bridge-job'
+  dependsOn: [ acrPull ]
   params: {
     name: name
     location: location
@@ -112,6 +150,7 @@ module bridgeJob 'modules/bridge-job.bicep' = {
     identityId: identity.id
     identityClientId: identity.properties.clientId
     image: image
+    registryServer: registryServer
     keyVaultName: vault.outputs.name
     mysqlHost: mysql.outputs.host
     databaseName: mysql.outputs.databaseName
