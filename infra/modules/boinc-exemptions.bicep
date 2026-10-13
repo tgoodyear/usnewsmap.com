@@ -1,44 +1,36 @@
-// Waivers for the BOINC server stack (ADR-0019, decision 5), each scoped to
-// one resource and one policy. The Container Apps Azure Files mount takes the
-// account key, and the environment's log configuration takes the workspace's
-// shared key, so the two deny policies would otherwise refuse the stack.
-// The policy definitions are unchanged and still apply to everything else.
+// Waivers for the BOINC server stack (ADR-0019, decision 5), deployed into
+// the dedicated BOINC resource group. The Container Apps Azure Files mount
+// takes the storage account key, and the environment's log configuration
+// takes the workspace's shared key, so the two deny policies would otherwise
+// refuse the stack.
+//
+// The scope is the group, not the two resources: a resource-scoped exemption
+// can't exist before its target, and the policy denies the target without it.
+// So the group must hold only BOINC resources, and these exemptions are
+// deployed before the BOINC stack. Each waives one assignment only; every
+// other guardrail still applies. The policy definitions are unchanged.
 
-@description('Name of the BOINC Azure Files storage account (contrib-compute/infra/boinc). Empty: no exemption.')
-param filesAccountName string = ''
-@description('Name of the BOINC Log Analytics workspace (usnm-<name>-log). Empty: no exemption.')
-param workspaceName string = ''
-@description('Name of the shared-key storage policy assignment in this group.')
-param noStorageKeysAssignmentName string
-@description('Name of the monitor local-auth policy assignment in this group.')
-param noMonitorKeysAssignmentName string
+@description('Full id of the shared-key storage policy assignment the group is covered by.')
+param noStorageKeysAssignmentId string
+@description('Full id of the monitor local-auth policy assignment the group is covered by.')
+param noMonitorKeysAssignmentId string
 
-resource filesAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = if (!empty(filesAccountName)) {
-  name: filesAccountName
-}
-
-resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = if (!empty(workspaceName)) {
-  name: workspaceName
-}
-
-resource filesExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = if (!empty(filesAccountName)) {
-  scope: filesAccount
-  name: guid(filesAccount.id, noStorageKeysAssignmentName)
+resource storageExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = {
+  name: guid(resourceGroup().id, noStorageKeysAssignmentId)
   properties: {
-    policyAssignmentId: resourceId('Microsoft.Authorization/policyAssignments', noStorageKeysAssignmentName)
+    policyAssignmentId: noStorageKeysAssignmentId
     exemptionCategory: 'Waiver'
-    displayName: 'BOINC Files account: shared key access'
-    description: 'The Container Apps Azure Files mount takes the account key. The account is private-endpoint only and the key stays in the platform configuration. ADR-0019 decision 5, ADR-0009 addendum.'
+    displayName: 'BOINC group: shared key access on the Files account'
+    description: 'The Container Apps Azure Files mount takes the account key. The account is private-endpoint only and the key stays in the platform configuration. The group holds only BOINC resources. ADR-0019 decision 5, ADR-0009 addendum.'
   }
 }
 
-resource workspaceExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = if (!empty(workspaceName)) {
-  scope: workspace
-  name: guid(workspace.id, noMonitorKeysAssignmentName)
+resource monitorExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = {
+  name: guid(resourceGroup().id, noMonitorKeysAssignmentId)
   properties: {
-    policyAssignmentId: resourceId('Microsoft.Authorization/policyAssignments', noMonitorKeysAssignmentName)
+    policyAssignmentId: noMonitorKeysAssignmentId
     exemptionCategory: 'Waiver'
-    displayName: 'BOINC Log Analytics workspace: shared key'
-    description: 'The Container Apps environment log configuration takes the workspace shared key. The key stays in the platform configuration. ADR-0019 decision 5, ADR-0009 addendum.'
+    displayName: 'BOINC group: shared key on the Log Analytics workspace'
+    description: 'The Container Apps environment log configuration takes the workspace shared key. The key stays in the platform configuration. The group holds only BOINC resources. ADR-0019 decision 5, ADR-0009 addendum.'
   }
 }

@@ -67,4 +67,4 @@ The search experiment's share (`qw-search`, #251) is the same exception for a te
 
 ## Addendum: BOINC server exemptions (ADR-0019)
 
-The BOINC server's Azure Files mount takes the account key, and its Container Apps environment takes the Log Analytics shared key. Two Waiver exemptions, passed as resource ids to `infra/main.bicep` and empty by default, scope the shared-key and monitor local-auth policies to that one storage account and that one workspace. The definitions are not weakened, and the keys live only in the platform configuration.
+The BOINC server's Azure Files mount takes the account key, and its Container Apps environment takes the Log Analytics shared key. Two Waiver exemptions, one per policy (shared-key storage and monitor local-auth), are scoped to the dedicated BOINC resource group, which holds only BOINC resources. `infra/main.bicep` writes them only when `boincResourceGroup` is set; it is empty by default. The definitions are not weakened, and the keys live only in the platform configuration.
