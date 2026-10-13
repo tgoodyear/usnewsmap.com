@@ -21,9 +21,9 @@ What it is:
 
 - `crates/usnm-boinc/src/validate.rs` and the helper `usnm-boinc-validate`. BOINC's `script_validator` runs it with bare file paths and no flags: three paths check one result, six compare two.
 - A result is valid when `result.json` parses as the pilot's `ResultManifest` with an RFC 3339 `completed_at`, both digests match the files, the text is UTF-8 and the ALTO passes `usnm_alto::check`.
-- Two results agree when they name the same job, scan and engine, and both their text and the words in their ALTO (the `CONTENT` values, in order) score at least 0.95 on a word-bigram Dice measure (case and whitespace ignored). Counting adjacent word pairs makes the measure order-sensitive, so a shuffled replica fails, and a single changed word in fifty still passes. ALTO is compared by its words, not byte for byte, because the manifest digests already bind each replica to its own files. The threshold is a constant in code, not a setting. Tesseract is deterministic for one image, so honest replicas score 1.0; the slack covers float and thread differences between CPUs.
+- Two results agree when they name the same job, scan and engine, and both their text and the words in their ALTO (the `CONTENT` values of `String` elements, parsed as XML, in order) score at least 0.95 on a word-bigram Dice measure (case and whitespace ignored). Counting adjacent word pairs makes the measure order-sensitive, so a shuffled replica fails, and a single changed word in fifty still passes. ALTO is compared by its words, not byte for byte, because the manifest digests already bind each replica to its own files. The threshold is a constant in code, not a setting. Tesseract is deterministic for one image, so honest replicas score 1.0; the slack covers float and thread differences between CPUs.
 - It has no job file, so it cannot run `ResultManifest::matches`. The collector still does, so this is only an early filter.
-- Off by default. `usnm-boinc submit --replicas N` (1 to 3, default 1) sets `min_quorum` and `target_nresults`. `ocr/boinc/daemons-fuzzy.xml` is the daemon line to use instead of the trivial validator.
+- Off by default. `usnm-boinc submit --replicas N` (1 to 3, default 1) sets `min_quorum` and `target_nresults`; `max_success_results` equals `max_total_results` (5), so a disagreeing replica can be replaced by a further one and still reach quorum. `ocr/boinc/daemons-fuzzy.xml` is the daemon line to use instead of the trivial validator.
 
 Not done: adaptive replication, where trusted hosts skip replication. It is BOINC server configuration, and how it behaves here is UNVERIFIED.
 
@@ -50,7 +50,7 @@ Letting volunteers fetch the scan from the source themselves, instead of receivi
 ADR-0018 (issue #442, PR #443) defines the scan-archive contract, and this pilot does not change it:
 
 - The bridge reads the archive with its own Entra identity, not through volunteers.
-- It verifies the bytes against the existing `Scan` fields (`sha256` and `bytes`).
+- It verifies the bytes against the existing `Scan` fields (`sha256`, `bytes` and, when present, `md5`).
 - It falls back to the current source when the archive has no copy.
 - `scan.url` stays as the LoC provenance of the scan.
 

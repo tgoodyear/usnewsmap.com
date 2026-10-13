@@ -81,7 +81,7 @@ pub async fn submit_replicated(
                 "--max_total_results",
                 "5",
                 "--max_success_results",
-                "3",
+                "5",
                 "--rsc_fpops_est",
                 "1e12",
                 "--rsc_fpops_bound",

@@ -2645,6 +2645,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "quick-xml",
  "rustix",
  "serde",
  "serde_json",

@@ -90,18 +90,30 @@ fn similarity_words(a: &[String], b: &[String]) -> f64 {
     2.0 * f64::from(shared) / f64::from(na + nb)
 }
 
-/// The `CONTENT` values of an ALTO file's words, in document order. A plain
-/// scan, not a parser: `usnm_alto::check` has already shown the file is
-/// well-formed, and entity escapes compare equal on both sides.
+/// The `CONTENT` values of the `String` elements in an ALTO file, in
+/// document order, parsed as XML so comments, other elements and any quoting
+/// style are handled. Attribute values are unescaped and lowercased.
 fn alto_words(alto: &[u8]) -> Vec<String> {
-    let s = String::from_utf8_lossy(alto);
+    use quick_xml::events::Event;
     let mut out = Vec::new();
-    let mut rest: &str = &s;
-    while let Some(i) = rest.find(" CONTENT=\"") {
-        rest = &rest[i + 10..];
-        let Some(j) = rest.find('"') else { break };
-        out.push(rest[..j].to_lowercase());
-        rest = &rest[j..];
+    let Ok(text) = std::str::from_utf8(alto) else {
+        return out;
+    };
+    let mut reader = quick_xml::NsReader::from_str(text);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == "String" => {
+                for attr in e.attributes().flatten() {
+                    if attr.key.local_name().as_ref() == "CONTENT" {
+                        if let Ok(v) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
+                            out.push(v.to_lowercase());
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
     }
     out
 }
@@ -251,6 +263,41 @@ mod tests {
             "5",
             &words,
             &other,
+            "2026-01-01T00:00:00Z",
+        ))
+        .unwrap();
+        assert!(compare(&a, &b).is_err());
+    }
+
+    #[test]
+    fn alto_words_come_from_string_elements_only() {
+        let x = br#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><!-- <String CONTENT="fake"/> x CONTENT="evil" --><Layout><Page WIDTH="1" HEIGHT="1"><PrintSpace><TextBlock><TextLine><String  ID='a'   CONTENT='One'/><String CONTENT = "t&amp;o"></String><Other CONTENT="no"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+        assert_eq!(alto_words(x), ["one", "t&o"]);
+    }
+
+    #[test]
+    fn comment_injection_cannot_mask_divergent_alto() {
+        let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let words = (0..60)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let a = open(&write(d1.path(), "j", "5", &words)).unwrap();
+        let honest = alto_for(&words);
+        let injected = honest.replace(
+            "<Layout>",
+            &format!(
+                "<!--{}--><Layout>",
+                alto_for(&words).replace('<', " ").replace("/>", "")
+            ),
+        );
+        let forged = injected.replace(r#"CONTENT="w"#, r#"CONTENT="x"#);
+        let b = open(&write_with(
+            d2.path(),
+            "j",
+            "5",
+            &words,
+            &forged,
             "2026-01-01T00:00:00Z",
         ))
         .unwrap();
