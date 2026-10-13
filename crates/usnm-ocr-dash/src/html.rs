@@ -231,16 +231,19 @@ const selecting = (el) => {
   const sel = window.getSelection();
   return !!sel && !sel.isCollapsed && sel.containsNode(el, true);
 };
+const rowKeys = (panel) => {
+  const texts = [...panel.querySelectorAll('details')].map((d) => (d.querySelector('summary') || {}).textContent || '');
+  return texts.map((t, i) => texts.indexOf(t) === texts.lastIndexOf(t) ? t : i + ':' + t);
+};
 const swap = (old, fresh) => {
   const scrolls = [...old.querySelectorAll('.scroll')].map((e) => [e.getAttribute('aria-label'), e.scrollTop, e.scrollLeft]);
-  const open = [...old.querySelectorAll('details')].map((d, i) => d.open ? i + ':' + (d.querySelector('summary') || {}).textContent : null).filter(Boolean);
+  const open = rowKeys(old).filter((k, i) => old.querySelectorAll('details')[i].open).filter(Boolean);
   const focused = old.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
   const left = old.scrollLeft;
   const node = document.importNode(fresh, true);
   localTimes(node);
-  node.querySelectorAll('details').forEach((d, i) => {
-    if (open.includes(i + ':' + (d.querySelector('summary') || {}).textContent)) d.open = true;
-  });
+  const keys = rowKeys(node);
+  node.querySelectorAll('details').forEach((d, i) => { if (open.includes(keys[i])) d.open = true; });
   old.replaceWith(node);
   node.scrollLeft = left;
   for (const [label, top, lf] of scrolls) {
