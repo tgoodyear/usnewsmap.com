@@ -72,7 +72,7 @@ jobs:
       - run: cargo test -p usnm-core --features damage --locked
 
   # The hosting for the stock BOINC server (ADR-0019): shell scripts, XML
-  # templates and Bicep. No Rust: the client and bridge are crates/usnm-boinc.
+  # templates and Bicep. No Rust: the client and bridge are crates/usnm-boinc, whose changes also run this job.
   contrib-compute:
     name: contrib-compute (xml, shell, bicep)
     needs: changes

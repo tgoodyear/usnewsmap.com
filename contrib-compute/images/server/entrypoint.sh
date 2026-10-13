@@ -42,6 +42,8 @@ init_project() {
   # deleted below: the real upload keys come from Key Vault and the code-signing private key
   # must never exist on this server.
   mkdir -p "$scratch"
+  # Removed on any exit, including a make_project failure under set -e.
+  trap 'rm -rf "$scratch" "$PROJ/keys"' EXIT
   (cd "$BOINC_SRC" && tools/make_project --no_query --srcdir "$BOINC_SRC" \
       --project_root "$PROJ" --key_dir "$scratch" \
       --url_base "https://$MASTER_HOST/" --html_user_url "https://$MASTER_HOST/$PROJECT/" \
@@ -50,6 +52,7 @@ init_project() {
       --db_passwd "$(cat "$SECRETS/db-admin")" --user_name boincadm \
       "$PROJECT" 'usnewsmap OCR')
   rm -rf "$scratch" "$PROJ/config.xml" "$PROJ/keys"
+  trap - EXIT
   # The run-time user needs no schema rights. UNVERIFIED that these grants are enough.
   local rt; rt="$(cat "$SECRETS/db-runtime")"
   mysql --defaults-extra-file="$mycnf" <<SQL

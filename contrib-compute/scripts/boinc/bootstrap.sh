@@ -124,6 +124,9 @@ if [ "$apply" -eq 1 ]; then
   [ -n "$subscription" ] || die "--apply needs --subscription GUID (the default subscription is never used)"
   [ "$confirm" -eq 1 ] || die "--apply needs --yes-deploy, to confirm that resources and secrets will be created"
   [[ "$subscription" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || die "--subscription must be a GUID"
+  # Compare in lower case, so 8D356797-... cannot slip past the guard. The pattern above already
+  # excludes braces, URNs and padding, so a GUID in any other spelling is rejected, not matched.
+  subscription="$(printf '%s' "$subscription" | tr '[:upper:]' '[:lower:]')"
   case "$subscription" in 8d356797-*) die "refusing subscription 8d356797...: it holds other production resources" ;; esac
 else
   [ -z "$subscription" ] && [ "$confirm" -eq 0 ] || die "--subscription and --yes-deploy belong to --apply"
@@ -220,7 +223,12 @@ apply_all() {
   if ! have upload-private-key || ! have upload-public-key; then
     az_ acr login --name "${registry_host%%.*}" -o none || die "az acr login failed for ${registry_host%%.*}"
     mkdir "$work/keys"
-    "$runtime" run --rm -v "$work/keys:/out" "$image" --make-upload-keys --dir /out > /dev/null ||
+    # Files must belong to the invoking user, or az cannot read them below. Docker: --user.
+    # Podman rootless: --userns=keep-id maps the invoking user in (a plain --user would be a
+    # subordinate uid on the host). UNVERIFIED for Podman.
+    local own=(--user "$(id -u):$(id -g)")
+    case "$runtime" in podman) own=(--userns=keep-id --user "$(id -u):$(id -g)") ;; esac
+    "$runtime" run --rm "${own[@]}" -v "$work/keys:/out" "$image" --make-upload-keys --dir /out > /dev/null ||
       die "could not run $image to generate the upload keys"
     put upload-private-key "$work/keys/upload_private"
     put upload-public-key "$work/keys/upload_public"
@@ -316,4 +324,8 @@ url="$project_url"
 echo "   curl -fsS ${url}usnmocr/get_project_config.php"
 echo "   then submit one reserved job with the bridge job (docs/design.md section 4) and watch it finish"
 echo
-note "done: previewed only. Re-run with --apply --subscription GUID --yes-deploy to deploy."
+if [ "$apply" -eq 1 ]; then
+  note "done: deployed and secrets written. Do the manual steps above; do not re-run --apply (it rotates the MySQL admin password)."
+else
+  note "done: previewed only. Re-run with --apply --subscription GUID --yes-deploy to deploy."
+fi
