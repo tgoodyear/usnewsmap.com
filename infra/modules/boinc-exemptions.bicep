@@ -23,7 +23,7 @@ resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existin
 
 resource filesExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = if (!empty(filesAccountName)) {
   scope: filesAccount
-  name: 'usnm-boinc-files-shared-key'
+  name: guid(filesAccount.id, noStorageKeysAssignmentName)
   properties: {
     policyAssignmentId: resourceId('Microsoft.Authorization/policyAssignments', noStorageKeysAssignmentName)
     exemptionCategory: 'Waiver'
@@ -34,7 +34,7 @@ resource filesExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-pre
 
 resource workspaceExemption 'Microsoft.Authorization/policyExemptions@2022-07-01-preview' = if (!empty(workspaceName)) {
   scope: workspace
-  name: 'usnm-boinc-log-local-auth'
+  name: guid(workspace.id, noMonitorKeysAssignmentName)
   properties: {
     policyAssignmentId: resourceId('Microsoft.Authorization/policyAssignments', noMonitorKeysAssignmentName)
     exemptionCategory: 'Waiver'
