@@ -297,6 +297,13 @@ class Bln600(unittest.TestCase):
             self.assertEqual((out / "LICENSES" / "LICENSE").read_text(), "licence text")
 
 
+class NewsEye(unittest.TestCase):
+    def test_subset_flag_and_download_gate(self):
+        self.assertEqual(gold.main(["public-fetch", "--dataset", "newseye-nlf-fi", "--subset", "validation",
+                                    "--src", "/nonexistent-gold-test"]), 2)
+        self.assertEqual(set(gold.NEWSEYE), {"austrian", "newseye-bnf", "newseye-nlf-fi", "newseye-nlf-sv"})
+
+
 
 try:
     import PIL  # noqa: F401

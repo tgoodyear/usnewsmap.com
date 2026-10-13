@@ -545,6 +545,26 @@ PUBLIC: dict[str, dict] = {
         "policy": "text only: the Trove page images are not fetched (licence unverified), so no engine can be run",
         "license_files": ("README-overproof.md", "README-hipe.md"),
     },
+    "newseye-bnf": {
+        "group": "pub-newseye-bnf", "lang": "fra", "license": "CC-BY-4.0 (Zenodo record)",
+        "url": "https://doi.org/10.5281/zenodo.4293602",
+        "attribution": "NewsEye / READ OCR training dataset from French Newspapers, BnF, CC BY 4.0",
+        "chars": (200, 2500), "scoring": True, "policy": "passes",
+    },
+    "newseye-nlf-fi": {
+        "group": "pub-newseye-nlf-fi", "lang": "fin", "license": "CC-BY-4.0 (Zenodo record)",
+        "url": "https://doi.org/10.5281/zenodo.4599472",
+        "attribution": "NewsEye / READ OCR training dataset from Finnish Newspapers, National Library of Finland, "
+                       "CC BY 4.0",
+        "chars": (200, 2500), "scoring": True, "policy": "passes",
+    },
+    "newseye-nlf-sv": {
+        "group": "pub-newseye-nlf-sv", "lang": "swe", "license": "CC-BY-4.0 (Zenodo record)",
+        "url": "https://doi.org/10.5281/zenodo.4599624",
+        "attribution": "NewsEye / READ OCR training dataset from Swedish Newspapers, National Library of Finland, "
+                       "CC BY 4.0",
+        "chars": (200, 2500), "scoring": True, "policy": "passes",
+    },
 }
 
 
@@ -843,6 +863,7 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
 
 
 PAGE_XML_SETS = ("reichsanzeiger", "austrian",
+                 "newseye-bnf", "newseye-nlf-fi", "newseye-nlf-sv",
                  )
 
 
@@ -1060,6 +1081,13 @@ def fetch_overproof_ca_pages(src: Path, pages: int) -> int:
     return len(index)
 
 
+# Zenodo record and the zips in it: validation (small) and training (up to 5.4 GB).
+NEWSEYE = {
+    "austrian": (3387369, "ValidationSet_ONB_Newseye_GT_M1+.zip", "TrainingSet_ONB_Newseye_GT_M1+.zip"),
+    "newseye-bnf": (4293602, "ATR_ValidationSet_BnF_Newseye_M2+.zip", "ATR_TrainingSet_BnF_Newseye_M2+.zip"),
+    "newseye-nlf-fi": (4599472, "ATR_ValidationSet_NLF_Newseye_GT_FI_M2+.zip", "ATR_TrainingSet_NLF_Newseye_GT_FI_M2+.zip"),
+    "newseye-nlf-sv": (4599624, "ATR_ValidationSet_NLF_Newseye_GT_SV_M2+.zip", "ATR_TrainingSet_NLF_Newseye_GT_SV_M2+.zip"),
+}
 
 
 def cmd_public_fetch(a: argparse.Namespace) -> int:
@@ -1086,11 +1114,15 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         random.Random("public-fetch").shuffle(lines)  # a fixed order, so --pages N is the same pages every time
         for url, name in lines[: a.pages]:
             download(REICHSANZEIGER_IMAGES + url, a.src / "images" / name)
-    elif a.dataset == "austrian":
-        for name in ("TrainingSet_ONB_Newseye_GT_M1+.zip", "ValidationSet_ONB_Newseye_GT_M1+.zip"):
+    elif a.dataset in NEWSEYE:
+        # --subset: validation is 16 to 122 MB per set; training is 0.17 to 5.4 GB (the Finnish one).
+        rec, val, train = NEWSEYE[a.dataset]
+        subset = a.subset or ("all" if a.dataset == "austrian" else "validation")
+        for name in {"validation": (val,), "training": (train,), "all": (val, train)}[subset]:
             z = a.src / name
-            download(ZENODO_FILE.format(rec=3387369, name=name.replace("+", "%2B")), z)
+            download(ZENODO_FILE.format(rec=rec, name=name.replace("+", "%2B")), z)
             zipfile.ZipFile(z).extractall(a.src / name.removesuffix(".zip"))
+        write_source_note(a.src, a.dataset, subset=subset)
     elif a.dataset == "ndl-pdm":
         z = a.src / "tosho_all_linejson.zip"
         download(NDL_PDM_JSON, z)  # 5.2 GB
@@ -1173,6 +1205,8 @@ def main(argv: list[str] | None = None) -> int:
         if name == "public-fetch":
             q.add_argument("--confirm-download", action="store_true", help="agree to a download of up to several GB")
             q.add_argument("--pages", type=int, default=20, help="page images to download (datasets with separate images)")
+            q.add_argument("--subset", choices=("validation", "training", "all"),
+                           help="NewsEye sets: which zips (default validation; all for austrian)")
         else:
             q.add_argument("--out", type=Path, required=True)
             q.add_argument("--count", type=int, default=60)
