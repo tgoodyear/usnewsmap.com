@@ -57,6 +57,9 @@ enum Commands {
         project: PathBuf,
         #[arg(long)]
         job: String,
+        /// Agreeing results to require (1 to 3); above 1 needs the fuzzy validator.
+        #[arg(long, default_value_t = 1)]
+        replicas: u8,
     },
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile {
@@ -142,9 +145,12 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Work { dir } => usnm_boinc::worker::run(&dir).await?,
-        Commands::Submit { root, project, job } => {
-            usnm_boinc::submit::submit(&root, &project, &job).await?
-        }
+        Commands::Submit {
+            root,
+            project,
+            job,
+            replicas,
+        } => usnm_boinc::submit::submit_replicated(&root, &project, &job, replicas).await?,
         Commands::Reconcile { root, job, found } => {
             usnm_boinc::submit::reconcile(&root, &job, matches!(found, Found::Present))?
         }

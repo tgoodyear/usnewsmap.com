@@ -5,6 +5,19 @@ use std::path::Path;
 use tokio::process::Command;
 
 pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()> {
+    submit_replicated(root, project, id, 1).await
+}
+
+/// As [`submit`], asking BOINC for `replicas` agreeing results. More than one
+/// needs a comparing validator such as `usnm-boinc-validate`.
+pub async fn submit_replicated(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    replicas: u8,
+) -> anyhow::Result<()> {
+    ensure!((1..=3).contains(&replicas), "replicas must be 1 to 3");
+    let replicas = replicas.to_string();
     let _lock = Lock::take(root)?;
     let project = project.canonicalize()?;
     let mut record = load(root, id)?;
@@ -60,15 +73,15 @@ pub async fn submit(root: &Path, project: &Path, id: &str) -> anyhow::Result<()>
                 "--result_template",
                 "templates/usnm_ocr_out",
                 "--min_quorum",
-                "1",
+                &replicas,
                 "--target_nresults",
-                "1",
+                &replicas,
                 "--max_error_results",
                 "3",
                 "--max_total_results",
                 "5",
                 "--max_success_results",
-                "3",
+                "5",
                 "--rsc_fpops_est",
                 "1e12",
                 "--rsc_fpops_bound",

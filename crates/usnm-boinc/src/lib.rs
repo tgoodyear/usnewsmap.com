@@ -28,6 +28,7 @@ use usnm_state::state::State;
 use usnm_store::ObjectStore;
 
 pub mod submit;
+pub mod validate;
 pub mod worker;
 
 /// Bounded regular-file reads, also used for untrusted volunteer output.

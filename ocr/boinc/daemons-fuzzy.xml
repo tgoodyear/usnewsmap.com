@@ -1,0 +1,4 @@
+<!-- Optional, for public volunteers. Use in place of the sample_trivial_validator
+     line of daemons.xml; keep the assimilator line. Needs usnm-boinc-validate
+     in the project's bin/ and replicas above 1 (usnm-boinc submit --replicas 2). -->
+<daemon><cmd>script_validator --app usnm_ocr --init_script "usnm-boinc-validate files" --compare_script "usnm-boinc-validate files files2"</cmd></daemon>
