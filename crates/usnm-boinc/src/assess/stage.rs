@@ -128,6 +128,8 @@ async fn page(
     opts: &Options,
     installed: &BTreeSet<String>,
 ) -> anyhow::Result<bool> {
+    // First, so a page LoC does not have still shows in the nonresponse list.
+    atomic(&unit.join("sample.json"), &serde_json::to_vec(row)?)?;
     let key = PageKey::from_doc_id(&row.doc_id)?;
     let profile = engine::route(&row.lang, installed).context("no locked model for language")?;
     let resolved = match loc.resolve(&key, &row.batch, row.batch_version).await {
@@ -216,7 +218,6 @@ async fn page(
     };
     job.id = job.identity()?;
     job.validate()?;
-    atomic(&unit.join("sample.json"), &serde_json::to_vec(row)?)?;
     atomic(&unit.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(true)
 }

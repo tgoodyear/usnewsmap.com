@@ -10,7 +10,9 @@
 //!   `aggregate.py` read from `run_ocr.py`'s output
 //! - `crash.jsonl`: the JP2 outcome of every unit (OCR and crash) that
 //!   crashed or read, in `crash_scan.py`'s shape
-//! - `units.jsonl`: every unit with its stratum and weight, and the outcome,
+//! - `nonresponse.jsonl`: sampled pages with no result (LoC had no file,
+//!   BOINC gave up, or still pending), with their strata
+//! - `units.jsonl`: every unit with its stratum and weights, and the outcome,
 //!   time and memory per format, for corpus estimates
 //!
 //! Then `score.py --sample sample.jsonl --dir <out> --results results.jsonl`
@@ -65,11 +67,38 @@ fn spool_files(spool: &Path, workunit: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The stratum a unit was drawn from.
+fn stratum_key(s: &usnm_ocr_contract::assess::Stratum) -> (String, i32, String, String) {
+    (s.lang.clone(), s.decade, s.prefix.clone(), s.damage.clone())
+}
+
+fn nonresponse(row: &SampleRow, status: &str) -> serde_json::Value {
+    json!({
+        "damage": row.damage, "decade": row.decade, "doc_id": row.doc_id, "lang": row.lang,
+        "mode": row.mode, "prefix": row.prefix, "status": status,
+    })
+}
+
 pub fn run(opts: &Options) -> anyhow::Result<Summary> {
     let mut summary = Summary::default();
-    let (mut sample, mut results, mut crash, mut all) =
+    let (mut sample, mut results, mut crash, mut missing) =
         (String::new(), String::new(), String::new(), String::new());
+    let mut all: Vec<serde_json::Value> = Vec::new();
     let mut n = 0usize;
+    // Numbers move as pending units complete: start from an empty tree so
+    // no file of an earlier run is scored against another page.
+    if opts.out.exists() {
+        for e in std::fs::read_dir(&opts.out)? {
+            let p = e?.path();
+            let numbered = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.parse::<usize>().is_ok());
+            if numbered && p.is_dir() {
+                std::fs::remove_dir_all(&p)?;
+            }
+        }
+    }
     for mode in [Mode::Ocr, Mode::Crash] {
         let dir = units(&opts.root, mode);
         if !dir.exists() {
@@ -78,10 +107,18 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         let mut unit_dirs: Vec<_> = std::fs::read_dir(&dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.join("submitted").exists())
+            .filter(|p| p.join("submitted").exists() || p.join("missing").exists())
             .collect();
         unit_dirs.sort();
         for unit in unit_dirs {
+            if unit.join("missing").exists() {
+                if let Ok(b) = read(&unit.join("sample.json"), MAX_JSON) {
+                    let row: SampleRow = serde_json::from_slice(&b)?;
+                    missing.push_str(&serde_json::to_string(&nonresponse(&row, "missing"))?);
+                    missing.push('\n');
+                }
+                continue;
+            }
             let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JSON)?)?;
             let row: SampleRow =
                 serde_json::from_slice(&read(&unit.join("sample.json"), MAX_JSON)?)?;
@@ -90,11 +127,15 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 || opts.spool.join(format!("{wu}_no_output_files")).exists()
             {
                 summary.failed += 1;
+                missing.push_str(&serde_json::to_string(&nonresponse(&row, "failed"))?);
+                missing.push('\n');
                 continue;
             }
             let files = spool_files(&opts.spool, &wu);
             if !files.iter().all(|f| f.exists()) {
                 summary.pending += 1;
+                missing.push_str(&serde_json::to_string(&nonresponse(&row, "pending"))?);
+                missing.push('\n');
                 continue;
             }
             let got = validate::load(&files).with_context(|| format!("canonical result {wu}"))?;
@@ -120,11 +161,10 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 }))?);
                 crash.push('\n');
             }
-            all.push_str(&serde_json::to_string(&json!({
+            all.push(json!({
                 "n": n, "doc_id": job.doc_id, "mode": job.mode, "stratum": job.stratum,
                 "engine": job.engine, "runs": got.result.runs,
-            }))?);
-            all.push('\n');
+            }));
             if mode == Mode::Crash {
                 summary.crash += 1;
                 continue;
@@ -160,12 +200,38 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             }
         }
     }
+    // Weights over the units that came back, so pages LoC did not have and
+    // units BOINC gave up on do not leave their strata under-represented.
+    let mut back: std::collections::BTreeMap<_, (usize, usize)> = Default::default();
+    for u in &all {
+        let s: usnm_ocr_contract::assess::Stratum = serde_json::from_value(u["stratum"].clone())?;
+        let e = back.entry(stratum_key(&s)).or_default();
+        e.1 += 1;
+        if u["mode"] == json!(Mode::Ocr) {
+            e.0 += 1;
+        }
+    }
+    let mut units = String::new();
+    for u in &mut all {
+        let s: usnm_ocr_contract::assess::Stratum = serde_json::from_value(u["stratum"].clone())?;
+        let (o, c) = back[&stratum_key(&s)];
+        let pages = s.pages as f64;
+        u["realized_crash_weight"] = json!(pages / c as f64);
+        u["realized_weight"] = if o > 0 {
+            json!(pages / o as f64)
+        } else {
+            json!(null)
+        };
+        units.push_str(&serde_json::to_string(u)?);
+        units.push('\n');
+    }
     std::fs::create_dir_all(&opts.out)?;
     for (name, text) in [
+        ("nonresponse.jsonl", &missing),
         ("sample.jsonl", &sample),
         ("results.jsonl", &results),
         ("crash.jsonl", &crash),
-        ("units.jsonl", &all),
+        ("units.jsonl", &units),
     ] {
         atomic(&opts.out.join(name), text.as_bytes())?;
     }
