@@ -59,6 +59,7 @@ var names = {
   identity: usnmName('boinc', 'id', envName)
   mysql: usnmGlobalName('boinc', 'mysql', envName, sfx)
   mysqlDnsZone: 'usnm-boinc-${envName}.private.mysql.database.azure.com'
+  initJob: usnmName('boinc-init', 'caj', envName)
   secretsIdentity: usnmName('boinc-secrets', 'id', envName)
   secretsJob: usnmName('boinc-secrets', 'caj', envName)
   site: usnmName('boinc', 'swa', envName)
@@ -196,6 +197,30 @@ module bridgeJob 'modules/bridge-job.bicep' = if (withApp) {
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
+  }
+}
+
+// Project init (the schema and the project tree on the share) as its own manual job: the same
+// mounts and settings as the bridge, which a per-run command override would drop. The
+// entrypoint refuses to initialise twice.
+module initJob 'modules/bridge-job.bicep' = if (withApp) {
+  name: 'init-job'
+  dependsOn: [ registry ]
+  params: {
+    jobName: names.initJob
+    location: location
+    environmentId: app!.outputs.environmentId
+    identityId: identity.id
+    identityClientId: identity.properties.clientId
+    image: image
+    registryServer: registryServer
+    keyVaultName: vault.outputs.name
+    mysqlHost: mysql.outputs.host
+    databaseName: mysql.outputs.databaseName
+    masterHost: masterHost
+    projectStorageName: app!.outputs.projectStorageName
+    workloadProfileName: app!.outputs.workloadProfileName
+    command: [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--init-project' ]
   }
 }
 

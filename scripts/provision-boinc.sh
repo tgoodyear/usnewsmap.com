@@ -130,11 +130,9 @@ cat << STEPS
 == Done by this script: the stack, the secrets. Next, by hand, once each:
 
 1. Project init (creates the schema and the project tree on the share; refuses to run twice).
-   It runs the server image's entrypoint in the bridge job, which has the share, the database
-   and the vault:
-       az containerapp job start --subscription $SUBSCRIPTION --resource-group $BOINC_RG --name $bridge_job \\
-         --image $BRIDGE_IMAGE --container-name bridge \\
-         --command /usr/local/lib/usnm-boinc/entrypoint.sh --args --init-project
+   It runs the server image's entrypoint in its own job, with the bridge's share, database
+   and vault settings:
+       az containerapp job start --subscription $SUBSCRIPTION --resource-group $BOINC_RG --name usnm-boinc-init-caj-$ENV_NAME
    Until it has run, the app answers its probe with a placeholder.
 
 2. Custom domain $MASTER_HOST (this script touches no DNS). In the usnewsmap.com zone:

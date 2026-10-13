@@ -18,6 +18,8 @@ param databaseName string
 param masterHost string
 param projectStorageName string
 param workloadProfileName string
+@description('The container command. The default runs the bridge; the project-init job passes the entrypoint\'s --init-project.')
+param command array = [ '/usr/local/bin/bridge-job' ]
 @description('Seconds before a run is stopped.')
 param timeoutSeconds int = 1800
 
@@ -43,7 +45,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
         {
           name: 'bridge'
           image: image
-          command: [ '/usr/local/bin/bridge-job' ]
+          command: command
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
             { name: 'AZURE_CLIENT_ID', value: identityClientId }
