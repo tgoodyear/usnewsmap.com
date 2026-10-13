@@ -6,7 +6,10 @@
 #   --init-project       once, by hand (az containerapp exec): create the schema and the project
 #                        tree on the share with the stock make_project, register the app
 #   --make-upload-keys --dir DIR
-#                        write upload_private and upload_public into DIR (operator machine)
+#                        write upload_private and upload_public into DIR
+#   --ensure-secrets     the secrets job (infra/boinc/modules/secrets-job.bicep): create
+#                        mysql-runtime-password and the upload key pair in Key Vault, each only
+#                        if absent. A failed lookup stops the job; it is never read as absence
 #
 # UNVERIFIED: none of this has run; see contrib-compute/docs/images.md.
 set -euo pipefail
@@ -16,6 +19,7 @@ while [ $# -gt 0 ]; do
     --serve) mode=serve; shift ;;
     --init-project) mode=init-project; shift ;;
     --make-upload-keys) mode=make-upload-keys; shift ;;
+    --ensure-secrets) mode=ensure-secrets; shift ;;
     --dir) [ $# -ge 2 ] || { echo "--dir needs a value" >&2; exit 2; }; keydir="$2"; shift 2 ;;
     *) echo "entrypoint.sh: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -25,6 +29,13 @@ if [ "$mode" = make-upload-keys ]; then
   [ -n "$keydir" ] || { echo "--make-upload-keys needs --dir DIR" >&2; exit 2; }
   umask 077
   exec /usr/local/boinc/lib/crypt_prog -genkey 1024 "$keydir/upload_private" "$keydir/upload_public"
+fi
+
+if [ "$mode" = ensure-secrets ]; then
+  # shellcheck source=secrets.sh
+  . /usr/local/lib/usnm-boinc/secrets.sh
+  ensure_secrets
+  exit 0
 fi
 
 # shellcheck source=lib.sh

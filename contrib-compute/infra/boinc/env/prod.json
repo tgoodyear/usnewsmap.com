@@ -1,0 +1,16 @@
+{
+  "$schema": "./schema.json",
+  "codeSignPublicKey": "",
+  "images": {
+    "bridge": "",
+    "server": "",
+    "worker": ""
+  },
+  "location": "eastus2",
+  "operator": {
+    "login": "Trevor Goodyear",
+    "objectId": "0b398b81-9e13-427f-9dc2-e38d890554bc"
+  },
+  "projectUrl": "https://boinc.usnewsmap.com/",
+  "subscriptionId": "25bf257c-c94e-4d61-bba3-edc635f46602"
+}

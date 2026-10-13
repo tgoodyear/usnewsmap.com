@@ -43,7 +43,7 @@ RUN apt-get update \
  && useradd --create-home --uid 1000 boincadm \
  && adduser www-data boincadm
 COPY --from=build /usr/local/boinc /usr/local/boinc
-COPY images/server/lib.sh images/server/entrypoint.sh images/server/apache-project.conf.template \
+COPY images/server/lib.sh images/server/secrets.sh images/server/entrypoint.sh images/server/apache-project.conf.template \
      images/server/supervisord.conf images/server/boinc-daemons.sh /usr/local/lib/usnm-boinc/
 COPY images/server/bridge-job.sh /usr/local/bin/bridge-job
 COPY boinc/config.xml.template boinc/project.xml boinc/plan_class_spec.xml /usr/local/lib/usnm-boinc/

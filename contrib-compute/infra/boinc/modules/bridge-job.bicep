@@ -4,7 +4,7 @@
 // project tree, config.xml and the database, so they cannot run anywhere else. The job
 // holds no ocr-out or curated credential: export and collect stay on the maintainer's side.
 // Nothing starts it on a schedule.
-param name string
+param jobName string
 param location string
 param environmentId string
 param identityId string
@@ -22,7 +22,7 @@ param workloadProfileName string
 param timeoutSeconds int = 1800
 
 resource job 'Microsoft.App/jobs@2024-03-01' = {
-  name: 'usnm-${name}-caj'
+  name: jobName
   location: location
   identity: {
     type: 'UserAssigned'

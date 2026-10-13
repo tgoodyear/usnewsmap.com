@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Deploy the BOINC server (ADR-0019) from its committed settings, as scripts/provision.sh
+# deploys the app:
+#
+#   # edit contrib-compute/infra/boinc/env/prod.json, open a pull request, merge, pull
+#   scripts/provision-boinc.sh --env prod --what-if
+#   scripts/provision-boinc.sh --env prod
+#
+# It deploys contrib-compute/infra/boinc/main.bicep as the deployment stack usnm-boinc-<env>
+# into the existing group usnm-boinc-rg-<env> (the main stack creates it, with the guardrails
+# and the two waivers of ADR-0019 decision 5), what-if first. It refuses while the settings
+# file or its schema has uncommitted changes; --allow-dirty deploys them anyway, in dev only.
+#
+# First run: with no images in the settings it deploys the base resources (registry, network,
+# vault, storage, database, monitoring). Then scripts/build-boinc-images.sh --env <env> builds
+# the server and bridge images in Azure and writes their digests to the settings; commit them
+# and run this again to deploy the app and the jobs.
+#
+# Secrets, none of which pass through this machine:
+# - mysql-admin-password: a new random value made inside each deployment (main.bicep's
+#   parameter default) and written to Key Vault by the same deployment;
+# - mysql-runtime-password and the upload key pair: created inside the VNet by the secrets job
+#   (infra/boinc/modules/secrets-job.bicep), which this script starts after each deployment.
+#   Each is created only if absent, and a failed lookup stops the job;
+# - code-sign-public-key: the PUBLIC half of the offline code-signing key, from the settings.
+#   The private half never comes here or to Azure.
+# The steps that stay by hand (project init, DNS and certificate, the app version and its
+# offline signing, the check) are printed at the end.
+#
+# --what-if changes nothing: Azure's preflight validation of the stack, then the template's
+# changes. Needs az 2.61+ and jq, signed in to the settings' subscription with Owner on the
+# group (the stack writes role assignments).
+set -euo pipefail
+usage() { echo "usage: scripts/provision-boinc.sh --env <prod|dev> [--allow-dirty] [--what-if]" >&2; exit 2; }
+ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false
+while [ $# -gt 0 ]; do
+  case $1 in
+    --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --allow-dirty) ALLOW_DIRTY=true; shift ;;
+    --what-if) WHAT_IF=true; shift ;;
+    -h | --help) usage ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+[ -n "$ENV_NAME" ] || usage
+die() { echo "error: $*" >&2; exit 1; }
+cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/boinc.sh
+. scripts/lib/boinc.sh
+boinc_clean_check
+boinc_load_settings
+boinc_az_check
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# No secret goes in the parameters: the template makes the admin password itself.
+jq -n --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" \
+  --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  contentVersion: "1.0.0.0",
+  parameters: {
+    env: {value: $env}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b},
+    masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
+    codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)}
+  }}' > "$work/params.json"
+
+# The images must be in this group's registry: the app and the jobs pull with their identities,
+# which have AcrPull there only.
+if [ -n "$SERVER_IMAGE" ]; then
+  registry=$(boinc_output registryServer)
+  [ -n "$registry" ] || die "the settings name images, but the stack $BOINC_STACK has no registry yet: empty images.server and images.bridge, deploy the base resources, then run scripts/build-boinc-images.sh --env $ENV_NAME"
+  for img in "$SERVER_IMAGE" "$BRIDGE_IMAGE"; do
+    [ "${img%%/*}" = "$registry" ] || die "$img is not in the group's registry $registry"
+  done
+fi
+
+stack_args=(--name "$BOINC_STACK" --resource-group "$BOINC_RG"
+  --template-file "$BOINC_DIR/main.bicep" --parameters "@$work/params.json"
+  --action-on-unmanage deleteResources --deny-settings-mode denyDelete
+  --description "usnewsmap BOINC server $ENV_NAME (scripts/provision-boinc.sh)")
+
+echo "validating stack $BOINC_STACK (preflight; a guardrail denial fails here)"
+baz stack group validate "${stack_args[@]}" -o none || die "the stack $BOINC_STACK fails preflight"
+echo "stack $BOINC_STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
+baz deployment group what-if --resource-group "$BOINC_RG" --template-file "$BOINC_DIR/main.bicep" \
+  --parameters "@$work/params.json" || die "the what-if of $BOINC_STACK failed"
+if $WHAT_IF; then
+  [ -n "$SERVER_IMAGE" ] || echo "no images in $BOINC_SETTINGS yet: this deploys the base resources only; then scripts/build-boinc-images.sh --env $ENV_NAME"
+  exit 0
+fi
+
+echo "deploying stack $BOINC_STACK"
+baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed"
+echo "deployed stack $BOINC_STACK"
+
+if [ -z "$SERVER_IMAGE" ]; then
+  echo "base resources deployed. Next: scripts/build-boinc-images.sh --env $ENV_NAME, commit $BOINC_SETTINGS, then run this again."
+  exit 0
+fi
+
+# The secrets job, inside the VNet. It changes nothing when every secret exists.
+secrets_job=$(boinc_output secretsJobName)
+[ -n "$secrets_job" ] || die "the stack has no secretsJobName output"
+echo "starting $secrets_job (creates the absent secrets inside the VNet; values never leave it)"
+execution=$(baz containerapp job start --name "$secrets_job" --resource-group "$BOINC_RG" --query name -o tsv) ||
+  die "could not start $secrets_job"
+status=""
+for _ in $(seq 1 60); do
+  status=$(baz containerapp job execution show --name "$secrets_job" --resource-group "$BOINC_RG" \
+    --job-execution-name "$execution" --query properties.status -o tsv) || die "could not read $execution"
+  case "$status" in Succeeded | Failed | Stopped | Degraded) break ;; esac
+  sleep 10
+done
+[ "$status" = Succeeded ] ||
+  die "$secrets_job execution $execution ended $status: see its logs in Log Analytics (ContainerAppConsoleLogs_CL, ContainerJobName_s == \"$secrets_job\")"
+echo "secrets complete ($execution)"
+
+fqdn=$(boinc_output appFqdn)
+bridge_job=$(boinc_output bridgeJobName)
+vault=$(boinc_output keyVaultName)
+label=${MASTER_HOST%%.*}
+cat << STEPS
+
+== Done by this script: the stack, the secrets. Next, by hand, once each:
+
+1. Project init (creates the schema and the project tree on the share; refuses to run twice).
+   It runs the server image's entrypoint in the bridge job, which has the share, the database
+   and the vault:
+       az containerapp job start --subscription $SUBSCRIPTION --resource-group $BOINC_RG --name $bridge_job \\
+         --image $BRIDGE_IMAGE --container-name bridge \\
+         --command /usr/local/lib/usnm-boinc/entrypoint.sh --args --init-project
+   Until it has run, the app answers its probe with a placeholder.
+
+2. Custom domain $MASTER_HOST (this script touches no DNS). In the usnewsmap.com zone:
+       CNAME  $label        ->  $fqdn
+       TXT    asuid.$label  ->  az containerapp show -g $BOINC_RG -n <app> --query properties.customDomainVerificationId
+   then bind $MASTER_HOST to the app with a Container Apps managed certificate. The master URL
+   cannot change after volunteers attach.
+
+3. App version and code signing; the private key stays offline. On a trusted machine, from a
+   checkout of this repository, against a scratch project directory:
+       docker create --name w $SERVER_IMAGE && docker cp w:/usr/local/lib/usnm-boinc/docker_wrapper ./docker_wrapper
+       mkdir -p scratch && touch scratch/config.xml
+       python3 scripts/boinc/install.py --project scratch --wrapper ./docker_wrapper \\
+         --image ${WORKER_IMAGE:-ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest, ADR-0019 addendum>} --version 1.0
+   On the OFFLINE machine, for each file F in the version directory:
+       sign_executable F code_sign_private > F.sig
+   Put the PUBLIC key, code_sign_public, in codeSignPublicKey in $BOINC_SETTINGS (commit,
+   then run this script: the deployment writes it to Key Vault $vault). Copy the version
+   directory and templates, with the .sig files, to the project on the share from inside the
+   VNet (a bridge job run), then run bin/update_versions there.
+
+4. Check:
+       curl -fsS https://$fqdn/usnmocr/get_project_config.php
+       curl -fsS ${PROJECT_URL}usnmocr/get_project_config.php    (after step 2)
+   then submit one reserved job with the bridge job (contrib-compute/docs/design.md, section 4).
+
+5. Optional: the MySQL Entra administrator ($OPERATOR_LOGIN, $OPERATOR_ID) needs a server
+   identity with Directory Readers first, which a template cannot grant (design.md, 5.1).
+STEPS

@@ -4,7 +4,8 @@
 // a host: the feeder and scheduler use shared memory, and every daemon uses the same
 // project filesystem. So: one replica, never scaled out, never scaled to zero
 // (clients poll constantly and the feeder cache is in memory).
-param name string
+param environmentName string
+param appName string
 param location string
 param acaSubnetId string
 param logAnalyticsCustomerId string
@@ -28,7 +29,7 @@ param cpu string = '1.0'
 param memory string = '2Gi'
 
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: 'usnm-${name}-cae'
+  name: environmentName
   location: location
   properties: {
     // Declared so the environment is a workload-profiles one (a /27 subnet is enough for it);
@@ -56,7 +57,7 @@ resource projectStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' 
 }
 
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'usnm-${name}-app'
+  name: appName
   location: location
   identity: {
     type: 'UserAssigned'
