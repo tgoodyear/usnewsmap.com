@@ -10,7 +10,7 @@
 #   bootstrap.sh [--what-if] --resource-group RG --image REGISTRY/NAME@sha256:... \
 #                --worker-image REGISTRY/NAME@sha256:... --signing-key-dir DIR \
 #                --project-url URL --operator-object-id GUID --operator-login NAME \
-#                [--bridge-image REGISTRY/NAME@sha256:...] [--registry-resource-group RG] \
+#                --bridge-image REGISTRY/NAME@sha256:... [--registry-resource-group RG] \
 #                [--location eastus] [--name boinc]
 #   bootstrap.sh --apply --subscription GUID --yes-deploy  (same options)
 #
@@ -78,7 +78,7 @@ Apply only:
   --yes-deploy           confirms that you mean to create resources and secrets
 
 Options:
-  --bridge-image IMAGE   bridge job image (images/bridge), by digest, same registry as --image
+  --bridge-image IMAGE   (required) bridge job image (images/bridge), by digest, same registry as --image
                          (default: --image, which has no usnm-boinc binary)
   --registry-resource-group RG
                          resource group of the image's registry, if not --resource-group
@@ -135,7 +135,7 @@ fi
 [ -n "$image" ] || die "--image is required"
 [ -n "$worker_image" ] || die "--worker-image is required"
 [ -n "$key_dir" ] || die "--signing-key-dir is required"
-[ -n "$bridge_image" ] || bridge_image="$image"
+[ -n "$bridge_image" ] || die "--bridge-image is required: the server image has no usnm-boinc binary, so the bridge job would fail (build images/bridge from crates/usnm-boinc)"
 for img in "$image" "$worker_image" "$bridge_image"; do
   # exactly "<repository>@sha256:" and 64 lower-case hex characters, nothing after
   [[ "$img" =~ ^[^@[:space:]]+@sha256:[0-9a-f]{64}$ ]] || die "images must be pinned by digest: name@sha256:<64 lower-case hex>"

@@ -49,18 +49,23 @@ fetch_secrets() {
 # render_config: fills config.xml.template from the environment and the fetched runtime
 # password into tmpfs, and links it into the project tree. The code-signing PRIVATE key is not
 # fetched, rendered or linked anywhere.
+# <host> is the container's own short hostname, not the public name: sched/start (at the pinned
+# BOINC commit, lines 662-663 and 787) starts a daemon only when its host equals
+# socket.gethostname().split('.')[0]. config.xml is rendered on every start, so a replaced replica
+# gets its new name. The public URL stays in <master_url>. UNVERIFIED: that a Container Apps
+# replica's hostname is stable for the life of its process (it is re-rendered at each start).
 render_config() {
   local daemons
   daemons='<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd></daemon>'
   DB_PASSWD="$(cat "$SECRETS/db-runtime")" python3 - "$TEMPLATES/config.xml.template" "$SECRETS/config.xml" "$daemons" <<'PY'
-import os, sys
+import os, socket, sys
 from xml.sax.saxutils import escape
 src, dst, daemons = sys.argv[1:4]
 v = {
     "DB_HOST": os.environ["DB_HOST"], "DB_NAME": os.environ["DB_NAME"],
     "DB_USER": os.environ["DB_RUNTIME_USER"], "DB_PASSWD": os.environ["DB_PASSWD"],
-    "MASTER_URL": "https://%s/" % os.environ["MASTER_HOST"], "PROJECT_HOST": os.environ["MASTER_HOST"],
+    "MASTER_URL": "https://%s/" % os.environ["MASTER_HOST"], "PROJECT_HOST": socket.gethostname().split(".")[0],
     "PROJECT_DIR": os.path.join(os.environ["PROJECT_DIR"], os.environ["PROJECT"]), "PROJECT": os.environ["PROJECT"],
 }
 t = open(src).read()

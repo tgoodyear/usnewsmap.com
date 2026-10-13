@@ -194,7 +194,7 @@ choices were:
   need the database credential on a person's machine.
 
 The job's image is the server image plus the bridge binary (`images/bridge/Containerfile`;
-`bridgeImage` in `main.bicep`). `bridge-job` (`images/server/bridge-job.sh`) renders `config.xml`
+`bridgeImage` in `main.bicep`, a required parameter with no default; `bootstrap.sh` requires `--bridge-image`). `bridge-job` (`images/server/bridge-job.sh`) renders `config.xml`
 into tmpfs and runs `usnm-boinc submit` or `reconcile` for the job id in `JOB_ID`. Written, not run
 (docs/images.md).
 
