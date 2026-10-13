@@ -25,7 +25,9 @@ reading. Instead the words of each text are counted as a multiset:
                    OCR words of the same first letter and near length, best
                    first; each pair costs its edit distance, each word left
                    over costs its length; divided by the reference's
-                   characters. A floor on the true CER.
+                   characters. A heuristic, not a bound on the true CER:
+                   first-letter pairing and greedy matching can cost more
+                   than the true edit distance.
   seq_agree        the two OCR texts aligned as word sequences
                    (difflib, no junk heuristic): 2 * matched / (words of both)
   line_agree       the same on the texts' non-empty lines, compared whole

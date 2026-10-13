@@ -3,8 +3,9 @@
 Runs the worker's `ocr-file` on each page's JP2 with a 20 s page timeout. A
 JP2 the engine cannot read fails in a few seconds with "tesseract exited with
 exit status: 136"; one it can read runs on until the 20 s limit kills it. The
-two are told apart by the message, so no page is OCRed to the end. Same user,
-nice and ionice settings, and engine settings as run_ocr.py.
+two are told apart by the message, so no page is OCRed to the end. Same user and
+engine settings as run_ocr.py. Unlike run_ocr.py it does not renice the
+Tesseract process inside the container, so the engine ran at normal priority.
 """
 import argparse
 import json
