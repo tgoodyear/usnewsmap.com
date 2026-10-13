@@ -8,10 +8,10 @@ Status: written and unit-tested. No campaign has run, and nothing here has been 
 
 One page per workunit, in one of two modes:
 
-| Mode    | Inputs                                     | What the host runs                                 | Page deadline |
-| ------- | ------------------------------------------ | -------------------------------------------------- | ------------- |
-| `ocr`   | the JP2, the full-size IIIF JPEG, the job  | Tesseract on the JP2, then on the JPEG, to the end | 1200 s        |
-| `crash` | the JP2, the job                           | Tesseract on the JP2 until it crashes or the deadline passes | 20 s  |
+| Mode    | Inputs                                    | What the host runs                                           | Page deadline |
+| ------- | ----------------------------------------- | ------------------------------------------------------------ | ------------- |
+| `ocr`   | the JP2, the full-size IIIF JPEG, the job | Tesseract on the JP2, then on the JPEG, to the end           | 1200 s        |
+| `crash` | the JP2, the job                          | Tesseract on the JP2 until it crashes or the deadline passes | 20 s          |
 
 Every result has the same three files: `text-jp2.txt`, `text-jpeg.txt` (empty for a crash unit) and `result.json`. For each format, `result.json` records the outcome (`ok`, `crash_136`, `timeout`, `other`), the exit code or signal, engine milliseconds, peak memory (the highest `VmHWM` of the Tesseract process, sampled every 100 ms) and the text's SHA-256. The types are in `crates/usnm-ocr-contract/src/assess.rs`.
 
