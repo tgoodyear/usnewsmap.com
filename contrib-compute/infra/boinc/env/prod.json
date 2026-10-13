@@ -2,8 +2,8 @@
   "$schema": "./schema.json",
   "codeSignPublicKey": "",
   "images": {
-    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:cb06a7632dc72a7507cb2b4f53d05c63d0c23aa7796e709f00a6e029d3157771",
-    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:cc43dabc6b81fd3404a99b9edb4d4136a6056a50bdd42eb3942f094b0a2aea93",
+    "bridge": "crusnmprodffapzy.azurecr.io/usnm-boinc-bridge@sha256:21bc7bf1bc8944b8d8a8fc0ef9ea1e51f8e54d2adb0103849de167777b2543ee",
+    "server": "crusnmprodffapzy.azurecr.io/usnm-boinc-server@sha256:ed04ecb0e67a7091418676f847aaca67663f1e568a1ca878dd226c7cf053b4c3",
     "worker": ""
   },
   "location": "westus2",
