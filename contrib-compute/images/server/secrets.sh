@@ -31,9 +31,15 @@ kv_auth_header() {
 # kv_names HEADER: every secret name in the vault, one per line, following nextLink.
 # Fails on any error; an empty vault is an empty, successful listing.
 kv_names() {
-  local hdr=$1 url="https://$KEY_VAULT_NAME.vault.azure.net/secrets?api-version=$KV_API&maxresults=25" page
+  local hdr=$1 url="https://$KEY_VAULT_NAME.vault.azure.net/secrets?api-version=$KV_API&maxresults=25" page code
   while [ -n "$url" ]; do
-    page="$(curl -fsS -H @"$hdr" "$url")" || return 1
+    page="$(curl -sS -w '\n%{http_code}' -H @"$hdr" "$url")" || return 1
+    code="${page##*$'\n'}"; page="${page%$'\n'*}"
+    if [ "$code" != 200 ]; then
+      # Key Vault's error code and message name the cause (network, RBAC); they hold no secret.
+      echo "Key Vault answered $code: $(jq -c '.error | {code, message, inner: .innererror.code}' <<< "$page" 2>/dev/null || echo "${page:0:300}")" >&2
+      return 1
+    fi
     jq -er '.value | map(.id | split("/") | last) | .[]' <<< "$page" 2>/dev/null || jq -e '.value == []' <<< "$page" > /dev/null || return 1
     url="$(jq -r '.nextLink // empty' <<< "$page")" || return 1
   done
