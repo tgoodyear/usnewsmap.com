@@ -185,6 +185,30 @@ class PublicPick(unittest.TestCase):
         self.assertEqual(gold.main(["public-fetch", "--dataset", "austrian", "--src", "/nonexistent-gold-test"]), 2)
 
 
+# PAGE 2010 (Europeana): Point children, text on the region only.
+PAGE_2010 = """<?xml version="1.0"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2010-03-19">
+ <Page imageFilename="p1.tif" imageWidth="40" imageHeight="30">
+  <TextRegion id="r1" type="paragraph"><Coords><Point x="2" y="3"/><Point x="22" y="3"/><Point x="22" y="13"/>
+   <Point x="2" y="13"/></Coords><TextEquiv><Unicode>Erſte Zeile
+zweite</Unicode></TextEquiv></TextRegion>
+  <TextRegion id="r2"><Coords><Point x="0" y="0"/><Point x="4" y="4"/></Coords></TextRegion>
+ </Page></PcGts>"""
+
+
+class PageXml2010(unittest.TestCase):
+    def test_points_and_region_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "p.xml"
+            f.write_text(PAGE_2010)
+            name, regs = gold.parse_page_xml(f)
+        self.assertEqual(name, "p1.tif")
+        self.assertEqual([(r["box"], r["text"]) for r in regs], [([2, 3, 22, 13], "Erſte Zeile\nzweite")])
+
+    def test_europeana_is_not_for_scoring(self):
+        self.assertFalse(gold.PUBLIC["enp-berlin"]["scoring"])
+
+
 def hipe_doc(doc_id: str, truth: list[str], ocr: list[str], which: str = "dataset3") -> dict:
     def unit(lines):
         text, offs, pos = "\n".join(lines), [], 0

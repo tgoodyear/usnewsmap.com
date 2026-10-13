@@ -565,6 +565,14 @@ PUBLIC: dict[str, dict] = {
                        "CC BY 4.0",
         "chars": (200, 2500), "scoring": True, "policy": "passes",
     },
+    "enp-berlin": {
+        "group": "pub-enp-berlin", "lang": "deu", "license": "CC0-1.0 (Zenodo record)",
+        "url": "https://doi.org/10.5281/zenodo.2583866",
+        "attribution": "Europeana Newspapers ground truth, Berlin State Library subset, CC0",
+        "chars": (200, 2500), "scoring": False,
+        "policy": "fails (b): the region text drops the ch and ck ligatures, has U+FFFD in 42 of 50 files and "
+                  "keeps OCR errors (checked 2026-10-13)",
+    },
 }
 
 
@@ -864,6 +872,7 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
 
 PAGE_XML_SETS = ("reichsanzeiger", "austrian",
                  "newseye-bnf", "newseye-nlf-fi", "newseye-nlf-sv",
+                 "enp-berlin",
                  )
 
 
@@ -1147,6 +1156,12 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         if a.dataset == "overproof-ca":
             extra["pages_fetched"] = fetch_overproof_ca_pages(a.src, a.pages)
         write_source_note(a.src, a.dataset, **extra)
+    elif a.dataset == "enp-berlin":
+        for name in ("gt_page.zip", "img_full.zip"):
+            z = a.src / name
+            download(ZENODO_FILE.format(rec=2583866, name=name), z)
+            zipfile.ZipFile(z).extractall(a.src / name.removesuffix(".zip"))
+        write_source_note(a.src, a.dataset)
     else:
         print(f"unknown dataset {a.dataset!r}", file=sys.stderr)
         return 2
