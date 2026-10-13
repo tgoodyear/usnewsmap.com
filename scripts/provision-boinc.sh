@@ -81,8 +81,8 @@ stack_args=(--name "$BOINC_STACK" --resource-group "$BOINC_RG"
   --action-on-unmanage deleteResources --deny-settings-mode denyDelete
   # Private endpoints manage their own A records in the stack's DNS zones; denyDelete
   # would otherwise block that and leave a zone group with no record.
-  --deny-settings-excluded-actions Microsoft.Network/privateDnsZones/A/delete
-  Microsoft.Network/privateEndpoints/privateDnsZoneGroups/delete
+  --deny-settings-excluded-actions
+  "Microsoft.Network/privateDnsZones/A/delete Microsoft.Network/privateEndpoints/privateDnsZoneGroups/delete"
   --description "usnewsmap BOINC server $ENV_NAME (scripts/provision-boinc.sh)")
 
 echo "validating stack $BOINC_STACK (preflight; a guardrail denial fails here)"
