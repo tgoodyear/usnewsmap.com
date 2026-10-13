@@ -584,6 +584,7 @@ PUBLIC: dict[str, dict] = {
         "attribution": "Neue Zürcher Zeitung black letter ground truth (c) Phillip Ströbel and Simon Clematide",
         "chars": (20, 300), "scoring": True, "policy": "passes (research use; nothing committed)",
         "level": "line", "license_files": ("LICENSE.txt", "README.md"),
+        "xml_dir": "NZZ_groundtruth",  # the archive also holds uncorrected ABBYY PAGE XML for the same pages
     },
 }
 
@@ -845,7 +846,10 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
                 out.append({**r, "page_id": f"americanstories-gold-{Path(r['page']).stem}", "image": index[r["page"]]})
     elif dataset in PAGE_XML_SETS:
         level = PUBLIC[dataset].get("level", "region")
+        xml_dir = PUBLIC[dataset].get("xml_dir")
         for x in sorted(src.rglob("*.xml")):
+            if xml_dir and xml_dir not in x.parts:
+                continue
             try:
                 name, regs = parse_page_xml(x, level)
             except Exception:  # noqa: BLE001 -- not a PAGE file (METS, metadata)

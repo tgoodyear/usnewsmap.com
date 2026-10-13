@@ -230,6 +230,20 @@ class LineLevel(unittest.TestCase):
             _, regs = gold.parse_page_xml(f, "line")
         self.assertEqual([(r["region"], r["box"], r["text"]) for r in regs], [("r1/l1", [2, 3, 22, 8], "Zürich, 1. Mai.")])
 
+    def test_nzz_reads_only_the_ground_truth_tree(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d)
+            for sub, text in (("NZZ_groundtruth", "Zürich, 1. Mai."), ("ABBYY_FineReader_Server11", "Zürih, l. Mai")):
+                (src / "xml" / sub).mkdir(parents=True)
+                (src / "xml" / sub / "p.xml").write_text(PAGE_WORDS.replace("Zürich, 1. Mai.", text))
+            (src / "img").mkdir()
+            Image.new("L", (40, 30), 200).save(src / "img" / "p1.png")
+            self.assertEqual([r["text"] for r in gold.public_regions("nzz", src)], ["Zürich, 1. Mai."])
+
     def test_nzz_is_line_level(self):
         self.assertEqual(gold.PUBLIC["nzz"]["level"], "line")
 
