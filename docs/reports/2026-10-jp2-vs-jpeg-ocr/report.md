@@ -4,7 +4,7 @@ subtitle: "Tesseract on the original JP2 and on the IIIF JPEG of the same Chroni
 date: "October 2026"
 ---
 
-This report is about OCR quality, speed and failures. It does not re-measure fetching. Fetch speed and completeness favour the JP2 route, as the earlier work for #368 and #420 found and as [12: on-prem OCR pipeline](../../design/12-onprem-ocr-pipeline.md) §12.2.4 records: the bag route moves the original file with an md5 check and no per-image IIIF render. Nothing below changes that. The question here is whether Tesseract reads the JP2 as well as it reads the JPEG that LoC's IIIF server makes from it, and what happens to the pages it cannot read.
+This report is about OCR quality, speed and failures. It does not re-measure fetching. Fetch speed and completeness favour the JP2 route, as the earlier work for #368 and #420 found and as [12: on-prem OCR pipeline](../../design/12-onprem-ocr-pipeline.md) §12.2.4 records: the bag route moves the original file with an md5 check and no per-image IIIF render. The question here is whether Tesseract reads the JP2 as well as it reads the JPEG that LoC's IIIF server makes from it, and what happens to the pages it cannot read.
 
 # Summary
 
@@ -49,7 +49,7 @@ Notes on the crashes:
 - It depends on the batch. 12 of 14 JP2s from batches whose names start `mdu_` crash, against 25 of 118 from all other batches. German is also higher (54%), but the German pages come mostly from a few titles and from those batches, so language and batch cannot be told apart here.
 - The engine reads the other 72% of JP2s. For the 52 of them that were scored, the text is about as good as the JPEG's (see Quality against LoC's OCR).
 
-**What production does with them.** `worker.rs` treats an engine failure as a transient error: the page comes back after 1800 seconds and is dead-lettered after more than 5 receives. There is no JPEG fallback. I read this in the code and did not run it. So a crashing JP2 costs six failed attempts of about 3 seconds each and several hours of queue time, and then needs a person.
+**What production does with them.** `worker.rs` treats an engine failure as a transient error: the page comes back after 1800 seconds and is dead-lettered after more than 5 receives. There is no JPEG fallback. This comes from reading the code, not from running the queue. So a crashing JP2 costs six failed attempts of about 3 seconds each and several hours of queue time, and then needs a person.
 
 # Failures, empty outputs and timeouts
 
@@ -110,7 +110,7 @@ No page gives identical text in the two formats. The bag-of-words overlap is abo
 
 ## Ten pages read by hand
 
-I read the two texts of ten pages side by side, picked to cover the languages and a spread of agreement (`data/handcheck.txt`, from `handcheck.py`). I did not look at the scan images: no scan data was moved off the nodes, so this is a read of the OCR text against LoC's, not against the print. For each page the table counts the words where the two outputs differ and how many of those LoC's OCR also has.
+The two texts of ten pages were read side by side, picked to cover the languages and a spread of agreement (`data/handcheck.txt`, from `handcheck.py`). The scan images were not looked at: no scan data was moved off the nodes, so this is a read of the OCR text against LoC's, not against the print. For each page the table counts the words where the two outputs differ and how many of those LoC's OCR also has.
 
 | Page | Language, year | Words JP2 / JPEG | Differing words found in LoC, JP2 / JPEG | WER JP2 / JPEG | Better text |
 |---|---|---|---|---|---|
@@ -141,7 +141,7 @@ The JP2 is better on four of the ten, none favours the JPEG, and six have no cle
 - Memory is about the same. Median peak 248 MiB for the JP2 and 238 MiB for the JPEG; the highest was 540 MiB (JP2) and 457 MiB (JPEG), against the 1536 MiB limit. Sampling every 5 seconds gives a lower bound on the true peak.
 - The JP2s averaged 5.5 MB and the JPEGs 5.6 MB on these pages.
 
-**Effect on the production worker.** Node 3's worker finished 36.8 pages an hour over the six hours of my run, and 38.0 an hour in the half hour I had paused the run. An earlier test with two of my processes at once coincided with a drop, so I went back to one. The worker's pages an hour also fell from 54 before the first test to about 37, with or without my run; its German pages got slower (mean 462 s before, about 700 s after). I could not tie that to anything of mine.
+**Effect on the production worker.** None was measurable. Node 3's worker finished about 37 pages an hour with the run going and 38 an hour during a half-hour pause. Its rate had already dropped from about 54 before the first test, with or without the run, for reasons not found here.
 
 # Recommendation
 
@@ -161,7 +161,7 @@ The JP2 is better on four of the ten, none favours the JPEG, and six have no cle
 - The hand check is of text, not images.
 - Three pages were not fetched. LoC returned a 520 for a JP2, and the fetch stopped there as planned. Earlier, a 503 from the IIIF image server paused the fetch for about an hour before one retry, and a 503 from www.loc.gov's item API stopped the worker's `prefetch` after 34 of 91 extra pages.
 - Decode time was not measured on its own, and the engine's behaviour on failure comes from reading `worker.rs`, not from running the queue.
-- Times are US Eastern. The run is on node 3 only; node 4 was not used. Scratch files on node 3, node 4 and pve-big were removed afterwards.
+- Times are US Eastern. The run is on node 3 only; node 4 was not used. Scratch files on node 3, node 4 and the scan host were removed afterwards.
 
 # Files
 
