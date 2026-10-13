@@ -338,17 +338,23 @@ fn compare(p: &Props, size: u64, local_md5: &str, local_sha256: &str, mode: Mode
             Outcome::Conflict
         };
     }
-    if p.md5_b64.as_deref().is_some_and(|m| m != local_md5) {
-        return if mode == Mode::Verify {
-            Outcome::Mismatch("md5 differs".into())
-        } else {
-            Outcome::Conflict
-        };
+    // The stored MD5 must be there and equal in every mode: a same-sized
+    // blob without one is not known to hold these bytes.
+    match p.md5_b64.as_deref() {
+        Some(m) if m == local_md5 => {}
+        other => {
+            return if mode == Mode::Verify {
+                Outcome::Mismatch(if other.is_none() {
+                    "no stored md5".into()
+                } else {
+                    "md5 differs".into()
+                })
+            } else {
+                Outcome::Conflict
+            };
+        }
     }
     if mode == Mode::Verify {
-        if p.md5_b64.is_none() {
-            return Outcome::Mismatch("no stored md5".into());
-        }
         if p.tier.as_deref() != Some(TIER) {
             return Outcome::Mismatch(format!(
                 "tier is {}",
@@ -862,6 +868,31 @@ mod tests {
         assert!(r.problems[0].contains("sha256 metadata differs"));
         let r = verify_with_meta(Some(sha256(b"abc"))).await;
         assert_eq!((r.present, r.mismatched), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_same_sized_blob_without_md5_is_not_present_or_cached() {
+        for mode in [Mode::Upload, Mode::DryRun] {
+            let dir = tempfile::tempdir().unwrap();
+            put_scan(dir.path(), "keep/b/s/d/e/seq-1.jp2", b"abc", true);
+            let m = Arc::new(Mock::default());
+            m.blobs.lock().unwrap().insert(
+                "scans/keep/b/s/d/e/seq-1.jp2".into(),
+                Stored {
+                    body: b"xyz".to_vec(),
+                    headers: HashMap::from([("x-ms-access-tier".into(), "Cold".into())]),
+                },
+            );
+            let url = serve(m.clone()).await;
+            let state = dir.path().join("state.tsv");
+            let mut o = opts(dir.path(), url, mode);
+            o.state = Some(state.clone());
+            let r = run(o, cred()).await.unwrap();
+            assert_eq!((r.present, r.conflicts, r.uploaded), (0, 1, 0), "{mode:?}");
+            assert_eq!(*m.puts.lock().unwrap(), 0);
+            let cached = std::fs::read_to_string(&state).unwrap_or_default();
+            assert!(cached.is_empty(), "{mode:?}: {cached}");
+        }
     }
 
     #[tokio::test]
