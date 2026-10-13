@@ -1195,14 +1195,32 @@ The keep-set scans are copied to a Cold-tier container, `scans` in the storage a
 3. **The unit.** Install the worker binary of a release on pve-big (the scan-fetch container has it; the host needs its own copy at `/usr/local/bin/usnm-ocr-worker`), the user `usnm` in the `himds` group (as for the Serial Set unit), and the units:
 
    ```sh
-   sudo install -m 0644 scripts/ocr-node/usnm-scan-archive.service scripts/ocr-node/usnm-scan-archive.timer /etc/systemd/system/
+   sudo install -m 0644 scripts/ocr-node/usnm-scan-archive.service scripts/ocr-node/usnm-scan-archive.timer \
+     scripts/ocr-node/usnm-scan-archive-verify.service scripts/ocr-node/usnm-scan-archive-verify.timer /etc/systemd/system/
    printf 'USNM_ARCHIVE_URL=%s\n' "<SCAN_ARCHIVE_BLOB_ENDPOINT>scans" | sudo tee /etc/usnm/scan-archive.env
    sudo systemctl daemon-reload
    ```
 
-4. **Look first.** `usnm-ocr-worker archive-scans --dry-run --limit 100` prints a JSON report and writes nothing (a dry run still reads the archive for each scan). Then one small real run: `--limit 100`, and `--verify --limit 100`, which compares each blob's size, md5 and tier from its properties without downloading it. A Cold read is billed per GB, so `--verify` never reads the bytes.
-5. **The first upload.** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. Then `sudo systemctl enable --now usnm-scan-archive.timer` for a daily top-up as the fetcher adds scans.
-6. **What a report means.** `bad_local` is a scan whose sidecar is missing or doesn't match its bytes (not uploaded: fetch it again). `conflicts` is a blob of that name that differs from the local file (never overwritten: look before doing anything). `errors` are failed requests: run it again. The command exits non-zero unless all are zero.
+4. **Look first.** Run the checks as the `usnm` user with the unit's environment and groups. `systemd-run` does that without copying the unit's settings by hand: it loads `/etc/usnm/scan-archive.env`, adds the Arc endpoints and the `himds` group, and prints the JSON report:
+
+   ```sh
+   run_archive() {
+     sudo systemd-run --pipe --wait --collect --quiet \
+       --uid=usnm --gid=usnm -p SupplementaryGroups=himds \
+       -p EnvironmentFile=/etc/usnm/scan-archive.env \
+       -p Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token \
+       -p Environment=IMDS_ENDPOINT=http://localhost:40342 \
+       /usr/local/bin/usnm-ocr-worker archive-scans "$@"
+   }
+   run_archive --dry-run --limit 100
+   run_archive --limit 100
+   run_archive --verify --limit 100
+   ```
+
+   The dry run writes nothing (it still reads the archive for each scan); the real run uploads 100 scans; `--verify` compares each blob's size, md5, tier and stored sha256 with the local file from its properties, without downloading it (a Cold read is billed per GB). These runs pass no `--state`, so they check every scan they list and do not touch the unit's state file.
+
+5. **The first upload.** `sudo systemctl start usnm-scan-archive` uploads the whole keep set, 1.16 TB when the fetcher is done (about 26 hours at 100 Mbps, UNVERIFIED for this uplink); `journalctl -u usnm-scan-archive` shows progress every 1000 scans and the report at the end. It can be stopped and started: it skips what is there. The unit keeps `/var/lib/usnm-scan-archive/archived.tsv`, one line per scan it has archived (name, size, modification time); on later runs a listed, unchanged scan is not read and gets no request, so a day with nothing new makes none. Delete that file to make the next run look every scan up again. Then `sudo systemctl enable --now usnm-scan-archive.timer` for a daily top-up as the fetcher adds scans, and `sudo systemctl enable --now usnm-scan-archive-verify.timer` for the full check on the first of each month. The verify unit reads and hashes every local scan and makes one properties request per blob; run it by hand with `sudo systemctl start usnm-scan-archive-verify`.
+6. **What a report means.** `bad_local` is a scan whose sidecar is missing or doesn't match its bytes (not uploaded: fetch it again). `conflicts` is a blob of that name that differs from the local file (never overwritten: look before doing anything). `errors` are failed requests: run it again. `skipped` (upload runs with the state file) are scans recorded as archived and unchanged; they are not counted in `scanned`. In `--verify`, `mismatched` includes a blob with no stored sha256 metadata or one that differs. The command exits non-zero unless all are zero.
 
 The buffer set is not archived (ADR-0018, decision 11): `--set buffer` exists for a test only.
 

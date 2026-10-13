@@ -390,6 +390,11 @@ enum Command {
         /// Scans in flight.
         #[arg(long, default_value_t = 4)]
         concurrency: usize,
+        /// File of the scans already archived. A scan recorded there with
+        /// the same size and mtime is not read or looked up again; an
+        /// upload run appends to it. Ignored by --verify.
+        #[arg(long, env = "USNM_ARCHIVE_STATE")]
+        state: Option<PathBuf>,
     },
     /// Project a manifest's size and fetch time from a sample's index
     /// (`index-<tag>.jsonl` from `prefetch --sample`). Prints JSON.
@@ -766,6 +771,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             verify,
             limit,
             concurrency,
+            state,
         } => {
             let mode = if verify {
                 usnm_ocr_worker::archive::Mode::Verify
@@ -782,6 +788,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     mode,
                     limit,
                     concurrency,
+                    state,
                 },
                 usnm_store::credential::from_env(),
             )

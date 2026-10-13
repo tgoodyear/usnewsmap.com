@@ -25,7 +25,10 @@ SupplementaryGroups=himds
 Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 Environment=IMDS_ENDPOINT=http://localhost:40342
 EnvironmentFile=/etc/usnm/scan-archive.env
-ExecStart=/usr/local/bin/usnm-ocr-worker archive-scans --concurrency 4
+# The state file lists the scans already archived (name, size, mtime); a
+# listed, unchanged scan is not read or looked up again.
+StateDirectory=usnm-scan-archive
+ExecStart=/usr/local/bin/usnm-ocr-worker archive-scans --concurrency 4 --state /var/lib/usnm-scan-archive/archived.tsv
 # The first upload of the keep set is days of transfer.
 TimeoutStartSec=infinity
 KillSignal=SIGTERM

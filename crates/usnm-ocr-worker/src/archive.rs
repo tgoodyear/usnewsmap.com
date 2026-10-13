@@ -15,7 +15,8 @@
 //! Access is by Entra ID only (`usnm_store::credential`), as for every
 //! account here: no key, no SAS.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,12 +58,19 @@ pub struct Options {
     pub limit: usize,
     /// Scans in flight.
     pub concurrency: usize,
+    /// A file of the scans already archived (name, size, mtime). A scan
+    /// listed there with the same size and mtime is skipped without being
+    /// read or looked up, so a run with nothing new costs no requests.
+    /// Verify ignores it and checks every scan.
+    pub state: Option<PathBuf>,
 }
 
 /// What a run did, printed as JSON.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct Report {
     pub scanned: u64,
+    /// Recorded as archived in the state file and unchanged: not read.
+    pub skipped: u64,
     pub uploaded: u64,
     pub uploaded_bytes: u64,
     /// Already in the archive and matching.
@@ -145,6 +153,8 @@ struct Props {
     size: u64,
     md5_b64: Option<String>,
     tier: Option<String>,
+    /// The `sha256` metadata the uploader stored.
+    sha256: Option<String>,
 }
 
 pub struct Archive {
@@ -197,6 +207,9 @@ impl Archive {
     }
 
     async fn request(&self, method: Method, name: &str) -> anyhow::Result<reqwest::RequestBuilder> {
+        // The same rule as `usnm_store::blob::BlobStore`: plain segments only.
+        usnm_store::validate_path(name)
+            .map_err(|_| anyhow::anyhow!("not a plain blob path: {name}"))?;
         let token = self.credential.token().await?;
         Ok(self
             .http
@@ -222,6 +235,7 @@ impl Archive {
                         .context("no content-length")?,
                     md5_b64: get("content-md5"),
                     tier: get("x-ms-access-tier"),
+                    sha256: get("x-ms-meta-sha256"),
                 }))
             }
             s => bail!("head returned {s}"),
@@ -288,7 +302,7 @@ impl Archive {
         let local_md5 = base64::engine::general_purpose::STANDARD.encode(batch::md5(&bytes));
         let existing = self.head(name).await?;
         if let Some(p) = &existing {
-            return Ok((compare(p, size, &local_md5, mode), size));
+            return Ok((compare(p, size, &local_md5, &side.sha256, mode), size));
         }
         match mode {
             Mode::Verify => Ok((Outcome::Missing, size)),
@@ -298,7 +312,10 @@ impl Archive {
                 PutResult::Exists => {
                     // Written between our HEAD and our PUT.
                     let p = self.head(name).await?.context("blob vanished")?;
-                    Ok((compare(&p, size, &local_md5, Mode::Upload), size))
+                    Ok((
+                        compare(&p, size, &local_md5, &side.sha256, Mode::Upload),
+                        size,
+                    ))
                 }
             },
         }
@@ -313,7 +330,7 @@ enum PutResult {
 /// An existing blob against the local file. In verify mode the tier must
 /// also be Cold; elsewhere it is left alone (the lifecycle rule moves a
 /// stray blob to Cold, and a rewrite would cost an early delete).
-fn compare(p: &Props, size: u64, local_md5: &str, mode: Mode) -> Outcome {
+fn compare(p: &Props, size: u64, local_md5: &str, local_sha256: &str, mode: Mode) -> Outcome {
     if p.size != size {
         return if mode == Mode::Verify {
             Outcome::Mismatch(format!("size {} in the archive, {size} here", p.size))
@@ -337,6 +354,13 @@ fn compare(p: &Props, size: u64, local_md5: &str, mode: Mode) -> Outcome {
                 "tier is {}",
                 p.tier.as_deref().unwrap_or("unknown")
             ));
+        }
+        match p.sha256.as_deref() {
+            None => return Outcome::Mismatch("no stored sha256 metadata".into()),
+            Some(m) if !m.eq_ignore_ascii_case(local_sha256) => {
+                return Outcome::Mismatch("sha256 metadata differs".into())
+            }
+            Some(_) => {}
         }
     }
     Outcome::Present
@@ -391,11 +415,13 @@ pub fn list(scans: &Path, set: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
     }
     let root = scans.join(set);
     let mut out = Vec::new();
-    let mut stack = vec![root];
+    let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         let rd = match std::fs::read_dir(&dir) {
             Ok(rd) => rd,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            // A directory that vanishes mid-walk is skipped; a missing
+            // root is a wrong path or an unmounted pool, not an empty set.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir != root => continue,
             Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
         };
         for entry in rd {
@@ -419,6 +445,41 @@ pub fn list(scans: &Path, set: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
     Ok(out)
 }
 
+/// The archived-scans file: one `name<TAB>size<TAB>mtime-seconds` per line.
+/// A missing file is an empty state; a damaged line is ignored (the scan is
+/// then checked against the archive again, which is safe).
+fn load_state(path: &Path) -> anyhow::Result<HashMap<String, (u64, u64)>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut m = HashMap::new();
+    for line in text.lines() {
+        let mut f = line.split('\t');
+        if let (Some(n), Some(Ok(s)), Some(Ok(t))) = (
+            f.next(),
+            f.next().map(str::parse::<u64>),
+            f.next().map(str::parse::<u64>),
+        ) {
+            m.insert(n.to_owned(), (s, t));
+        }
+    }
+    Ok(m)
+}
+
+/// Size and modification time (whole seconds) of a scan.
+fn stat(path: &Path) -> Option<(u64, u64)> {
+    let md = std::fs::metadata(path).ok()?;
+    let t = md
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some((md.len(), t))
+}
+
 fn is_scan(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
@@ -434,6 +495,28 @@ pub async fn run(opts: Options, credential: Arc<Credential>) -> anyhow::Result<R
         files.truncate(opts.limit);
     }
     let mut report = Report::default();
+    // Verify checks everything; the other modes skip what is recorded.
+    let use_state = opts.mode != Mode::Verify;
+    let done_before = match (&opts.state, use_state) {
+        (Some(p), true) => load_state(p)?,
+        _ => HashMap::new(),
+    };
+    let mut state_out = match (&opts.state, opts.mode) {
+        (Some(p), Mode::Upload) => {
+            if let Some(dir) = p.parent() {
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("creating {}", dir.display()))?;
+            }
+            Some(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .with_context(|| format!("opening {}", p.display()))?,
+            )
+        }
+        _ => None,
+    };
     let mut tasks = tokio::task::JoinSet::new();
     let mut next = files.into_iter();
     let width = opts.concurrency.max(1);
@@ -442,17 +525,28 @@ pub async fn run(opts: Options, credential: Arc<Credential>) -> anyhow::Result<R
             let Some((path, name)) = next.next() else {
                 break;
             };
+            let st = stat(&path);
+            if st.is_some() && done_before.get(&name) == st.as_ref() {
+                report.skipped += 1;
+                continue;
+            }
             let a = archive.clone();
             let mode = opts.mode;
             tasks.spawn(async move {
                 let (o, bytes) = a.one(&path, &name, mode).await;
-                (o, name, bytes)
+                (o, name, bytes, st)
             });
         }
         let Some(done) = tasks.join_next().await else {
             break;
         };
-        let (o, name, bytes) = done?;
+        let (o, name, bytes, st) = done?;
+        if let (Some(f), Some((size, mtime)), Outcome::Uploaded | Outcome::Present) =
+            (state_out.as_mut(), st, &o)
+        {
+            // A failed append only means the scan is looked up again.
+            let _ = writeln!(f, "{name}\t{size}\t{mtime}");
+        }
         report.add(o, &name, bytes);
         if report.scanned % 1000 == 0 {
             tracing::info!(
@@ -512,6 +606,9 @@ mod tests {
                         .header("x-ms-access-tier", b.headers["x-ms-access-tier"].clone());
                     if let Some(md5) = b.headers.get("content-md5") {
                         r = r.header("content-md5", md5);
+                    }
+                    if let Some(sha) = b.headers.get("x-ms-meta-sha256") {
+                        r = r.header("x-ms-meta-sha256", sha);
                     }
                     r.body(axum::body::Body::empty()).unwrap()
                 }
@@ -586,6 +683,7 @@ mod tests {
             mode,
             limit: 0,
             concurrency: 2,
+            state: None,
         }
     }
 
@@ -727,6 +825,94 @@ mod tests {
             .unwrap();
         assert_eq!(r.mismatched, 1);
         assert!(r.problems[0].contains("tier is Hot"));
+    }
+
+    async fn verify_with_meta(sha: Option<String>) -> Report {
+        let dir = tempfile::tempdir().unwrap();
+        put_scan(dir.path(), "keep/b/s/d/e/seq-1.jp2", b"abc", true);
+        let m = Arc::new(Mock::default());
+        let md5 = base64::engine::general_purpose::STANDARD.encode(batch::md5(b"abc"));
+        let mut headers = HashMap::from([
+            ("x-ms-access-tier".into(), "Cold".into()),
+            ("content-md5".into(), md5),
+        ]);
+        if let Some(s) = sha {
+            headers.insert("x-ms-meta-sha256".into(), s);
+        }
+        m.blobs.lock().unwrap().insert(
+            "scans/keep/b/s/d/e/seq-1.jp2".into(),
+            Stored {
+                body: b"abc".to_vec(),
+                headers,
+            },
+        );
+        let url = serve(m).await;
+        run(opts(dir.path(), url, Mode::Verify), cred())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn verify_checks_the_sha256_metadata() {
+        let r = verify_with_meta(None).await;
+        assert_eq!(r.mismatched, 1);
+        assert!(r.problems[0].contains("no stored sha256"));
+        let r = verify_with_meta(Some("f".repeat(64))).await;
+        assert_eq!(r.mismatched, 1);
+        assert!(r.problems[0].contains("sha256 metadata differs"));
+        let r = verify_with_meta(Some(sha256(b"abc"))).await;
+        assert_eq!((r.present, r.mismatched), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_missing_scans_root_fails_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = Arc::new(Mock::default());
+        let url = serve(m).await;
+        // No keep/ directory at all.
+        assert!(run(opts(dir.path(), url, Mode::Upload), cred())
+            .await
+            .is_err());
+        assert!(list(&dir.path().join("nope"), "keep").is_err());
+    }
+
+    #[tokio::test]
+    async fn requests_reject_names_the_store_would() {
+        let a = Archive::new("https://acct.blob.core.windows.net/scans", cred()).unwrap();
+        for bad in ["keep/../x.jp2", "keep//x.jp2", "/keep/x.jp2", "keep/./x"] {
+            assert!(a.request(Method::HEAD, bad).await.is_err(), "{bad}");
+        }
+        assert!(a
+            .request(Method::HEAD, "keep/b/s/d/e/seq-1.jp2")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_state_file_makes_a_rerun_free() {
+        let dir = tempfile::tempdir().unwrap();
+        put_scan(dir.path(), "keep/b/s/d/e/seq-1.jp2", b"abc", true);
+        let m = Arc::new(Mock::default());
+        let url = serve(m.clone()).await;
+        let state = dir.path().join("state/archived.tsv");
+        let mut o = opts(dir.path(), url.clone(), Mode::Upload);
+        o.state = Some(state.clone());
+        let r = run(o, cred()).await.unwrap();
+        assert_eq!((r.uploaded, r.skipped), (1, 0));
+
+        // Nothing new: skipped with no read and no request.
+        m.blobs.lock().unwrap().clear();
+        let mut o = opts(dir.path(), url.clone(), Mode::Upload);
+        o.state = Some(state.clone());
+        let r = run(o, cred()).await.unwrap();
+        assert_eq!((r.scanned, r.skipped, r.uploaded), (0, 1, 0));
+        assert!(m.blobs.lock().unwrap().is_empty());
+
+        // Verify ignores the state and finds the blob gone.
+        let mut o = opts(dir.path(), url, Mode::Verify);
+        o.state = Some(state);
+        let r = run(o, cred()).await.unwrap();
+        assert_eq!((r.skipped, r.missing), (0, 1));
     }
 
     #[test]
