@@ -60,7 +60,7 @@ if [ -n "$files" ] && grep -E '^infra/' <<< "$files" | grep -Evq '^infra/quickwi
 fi
 # The index version snapshots and the index history must match their schemas
 # (and what writes them); searches.sh's date-span summary has its tests there too.
-matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history|test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$|\.github/workflows/ci\.yml$)' && ops=true
+matches '^(ops/version-snapshots/|ops/index-history(\.schema)?\.json$|scripts/(check-version-snapshots|test_check_version_snapshots|compare-versions|check-index-history|test_check_index_history|reconstruct-index-history|test_date_spans)\.py$|scripts/lib/date-spans\.jq$|scripts/ci/requirements-ops\.txt$)' && ops=true
 # Another workflow or dependabot.yml defines no job here. An edit to ci.yml
 # outside a job (triggers, env) or to the changes job runs everything; an edit
 # inside other jobs forces just the flags those jobs' `if:` lines read.
@@ -79,10 +79,14 @@ matches '^\.github/workflows/ci\.yml$' && {
         while (match($0, /outputs\.[a-z_]+/)) { flags[cur] = flags[cur] " " substr($0, RSTART + 8, RLENGTH - 8); $0 = substr($0, RSTART + RLENGTH) } }
       END { for (j in hitjob) if (hitjob[j]) { if (j == "ALL") print "ALL"; else print flags[j] } }' .github/workflows/ci.yml | tr -s ' \n' ' ')
   rm -f "$lines"
-  case " $forced " in *" ALL "*) all "workflow changed" ;; esac
-  [[ " $forced " == *" markdown "* ]] && markdown=true
+  case " $forced " in *" ALL "*) ops=true; all "workflow changed" ;; esac
+  for flag in markdown ops provision; do
+    if [[ " $forced " == *" $flag "* ]]; then printf -v "$flag" true; fi
+  done
   echo "workflow jobs changed, forcing:$forced"
 }
+# Workflow files are settled above; they are not code for the file rules below.
+files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # The Rust build and tests: the crates, the files compiled into binaries
 # (index config, place overrides, the example searches the API warms, the
 # reconstructed index history), the fixtures the tests read, and the Python
@@ -117,5 +121,5 @@ for part in rust quickwit web image fixtures ocr_worker page_language contrib; d
 done
 echo "ops=$ops" >> "$out"
 echo "markdown=$markdown" >> "$out"
-if [ -n "$files" ]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
+if [ -n "$files" ] || [[ " $forced " == *" code "* ]]; then echo "code=true" >> "$out"; else echo "code=false" >> "$out"; fi
 echo "provision=$provision" >> "$out"
