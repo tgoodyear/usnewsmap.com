@@ -1,0 +1,27 @@
+<!-- Template for the app version's version.xml. The release procedure (docs/design.md
+     5.4) copies this with the real file names and puts the offline-made .sig files beside
+     each file before `bin/update_versions` runs. Do not put a private key anywhere near it.
+     Platform: x86_64-pc-linux-gnu. Version 1.00. No plan class. -->
+<version>
+    <file>
+        <physical_name>wrapper_@WRAPPER_VERSION@_x86_64-pc-linux-gnu</physical_name>
+        <main_program/>
+    </file>
+    <file>
+        <physical_name>usnm_ocr_1.00_x86_64-pc-linux-gnu__usnm-ocr-run</physical_name>
+        <logical_name>usnm-ocr-run</logical_name>
+    </file>
+    <file>
+        <physical_name>usnm_ocr_1.00_x86_64-pc-linux-gnu__tesseract</physical_name>
+        <logical_name>tesseract</logical_name>
+    </file>
+    <file>
+        <physical_name>usnm_ocr_1.00_x86_64-pc-linux-gnu__frak2021.traineddata</physical_name>
+        <logical_name>frak2021.traineddata</logical_name>
+        <sticky/>
+    </file>
+    <file>
+        <physical_name>usnm_ocr_1.00_x86_64-pc-linux-gnu__job.xml</physical_name>
+        <logical_name>job.xml</logical_name>
+    </file>
+</version>

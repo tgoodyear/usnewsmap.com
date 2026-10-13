@@ -1,0 +1,12 @@
+<!-- Job description for BOINC's generic wrapper. The wrapper runs usnm-ocr-run, which reads
+     manifest.json and the page images from the slot directory, runs the static Tesseract on
+     each page and writes result.json. Logical file names match version.xml. -->
+<job_desc>
+    <task>
+        <application>usnm-ocr-run</application>
+        <command_line>--manifest manifest.json --tesseract tesseract --tessdata-dir tessdata --engine-version 5.5.0 --out result.json</command_line>
+        <stdout_filename>stdout.txt</stdout_filename>
+        <stderr_filename>stderr.txt</stderr_filename>
+        <weight>1</weight>
+    </task>
+</job_desc>

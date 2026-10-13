@@ -1,0 +1,17 @@
+<!-- Workunit input template for fetch-and-ocr workunits. The only input is the manifest, which
+     lists the page URLs, sizes and checksums; the client downloads the scans itself. There are
+     no page images on the project's storage. See docs/design.md, "Job types". -->
+<input_template>
+    <file_info>
+        <number>0</number>
+    </file_info>
+    <workunit>
+        <file_ref>
+            <file_number>0</file_number>
+            <open_name>manifest.json</open_name>
+            <copy_file/>
+        </file_ref>
+        <min_quorum>1</min_quorum>
+        <target_nresults>1</target_nresults>
+    </workunit>
+</input_template>

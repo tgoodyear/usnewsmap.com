@@ -1,0 +1,45 @@
+<!-- Workunit input template. Input 0 is the per-workunit manifest; inputs 1 to 4 are the page
+     images (remote files, served from the staging blob account). The page count here must
+     equal the work generator's pages-per-wu setting. Resource bounds are set by create_work. -->
+<input_template>
+    <file_info>
+        <number>0</number>
+    </file_info>
+    <file_info>
+        <number>1</number>
+    </file_info>
+    <file_info>
+        <number>2</number>
+    </file_info>
+    <file_info>
+        <number>3</number>
+    </file_info>
+    <file_info>
+        <number>4</number>
+    </file_info>
+    <workunit>
+        <file_ref>
+            <file_number>0</file_number>
+            <open_name>manifest.json</open_name>
+            <copy_file/>
+        </file_ref>
+        <file_ref>
+            <file_number>1</file_number>
+            <open_name>page0.jp2</open_name>
+        </file_ref>
+        <file_ref>
+            <file_number>2</file_number>
+            <open_name>page1.jp2</open_name>
+        </file_ref>
+        <file_ref>
+            <file_number>3</file_number>
+            <open_name>page2.jp2</open_name>
+        </file_ref>
+        <file_ref>
+            <file_number>4</file_number>
+            <open_name>page3.jp2</open_name>
+        </file_ref>
+        <min_quorum>1</min_quorum>
+        <target_nresults>1</target_nresults>
+    </workunit>
+</input_template>
