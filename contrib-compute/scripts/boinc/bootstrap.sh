@@ -214,13 +214,19 @@ apply_all() {
   [ -n "$vault" ] || die "the deployment returned no keyVaultName"
 
   note "B. Secrets into Key Vault $vault (values are never printed)"
-  az_ keyvault secret list --vault-name "$vault" --query '[].name' -o none ||
-    die "cannot reach Key Vault $vault: it is private-endpoint only. The deployment is done and the MySQL admin password was set by it; run this script again from a machine with a network path into the VNet (it redeploys and rotates the admin password)"
+  # One successful listing is the only evidence of absence: a failed lookup (throttling, a
+  # network or permission error) must never read as "missing", or an existing runtime password
+  # or upload key pair would be overwritten.
+  existing="$(az_ keyvault secret list --vault-name "$vault" --query '[].name' -o tsv)" ||
+    die "cannot list secrets in Key Vault $vault: it is private-endpoint only. The deployment is done and the MySQL admin password was set by it; run this script again from a machine with a network path into the VNet (it redeploys and rotates the admin password)"
   put() { az_ keyvault secret set --vault-name "$vault" --name "$1" --file "$2" --query id -o none; }
-  have() { az_ keyvault secret show --vault-name "$vault" --name "$1" --query id -o tsv >/dev/null 2>&1; }
+  have() { printf '%s\n' "$existing" | grep -qxF -- "$1"; }
   put mysql-admin-password "$work/admin-pw"
   have mysql-runtime-password || { genpw > "$work/runtime-pw"; put mysql-runtime-password "$work/runtime-pw"; }
-  if ! have upload-private-key || ! have upload-public-key; then
+  if have upload-private-key || have upload-public-key; then
+    have upload-private-key && have upload-public-key ||
+      die "only one of upload-private-key and upload-public-key exists in $vault; refusing to overwrite it. Resolve by hand"
+  else
     az_ acr login --name "${registry_host%%.*}" -o none || die "az acr login failed for ${registry_host%%.*}"
     mkdir "$work/keys"
     # Files must belong to the invoking user, or az cannot read them below. Docker: --user.
