@@ -69,6 +69,7 @@ var functionWords = [
   'api'
   'archive'
   'backfill'
+  'boinc'
   'ci'
   'cong'
   'core'
