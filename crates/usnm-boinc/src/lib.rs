@@ -27,6 +27,7 @@ use usnm_ocr_worker::{
 use usnm_state::state::State;
 use usnm_store::ObjectStore;
 
+pub mod gold;
 pub mod submit;
 pub mod worker;
 
