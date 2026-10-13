@@ -91,31 +91,52 @@ fn similarity_words(a: &[String], b: &[String]) -> f64 {
 }
 
 /// The `CONTENT` values of the `String` elements in an ALTO file, in
-/// document order, parsed as XML so comments, other elements and any quoting
-/// style are handled. Attribute values are unescaped and lowercased.
+/// document order. The file is parsed as namespace-aware XML, so comments,
+/// quoting style and prefixes are handled: a `String` counts only when it
+/// resolves to the namespace of the document root, and only an unqualified
+/// `CONTENT` attribute counts. Values are unescaped and lowercased.
 fn alto_words(alto: &[u8]) -> Vec<String> {
     use quick_xml::events::Event;
+    use quick_xml::name::ResolveResult;
     let mut out = Vec::new();
     let Ok(text) = std::str::from_utf8(alto) else {
         return out;
     };
     let mut reader = quick_xml::NsReader::from_str(text);
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e) | Event::Empty(e)) if e.local_name().as_ref() == "String" => {
+    let mut root: Option<String> = None;
+    while let Ok((ns, event)) = reader.read_resolved_event() {
+        match event {
+            Event::Start(e) | Event::Empty(e) => {
+                let bound = match ns {
+                    ResolveResult::Bound(n) => Some(n.as_ref().to_owned()),
+                    _ => None,
+                };
+                if root.is_none() {
+                    root = bound.clone();
+                }
+                if bound.is_none() || bound != root || e.local_name().as_ref() != "String" {
+                    continue;
+                }
                 for attr in e.attributes().flatten() {
-                    if attr.key.local_name().as_ref() == "CONTENT" {
+                    if attr.key.prefix().is_none() && attr.key.local_name().as_ref() == "CONTENT" {
                         if let Ok(v) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
                             out.push(v.to_lowercase());
                         }
                     }
                 }
             }
-            Ok(Event::Eof) | Err(_) => break,
+            Event::Eof => break,
             _ => {}
         }
     }
     out
+}
+
+/// Is this failure a storage problem rather than bad result content? The
+/// validator binary reports these as transient so BOINC retries later
+/// instead of marking the volunteer's result invalid.
+pub fn is_transient(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<std::io::Error>())
 }
 
 /// Do two replicas of one task agree? Same job, scan and engine, and both
@@ -302,6 +323,26 @@ mod tests {
         ))
         .unwrap();
         assert!(compare(&a, &b).is_err());
+    }
+
+    #[test]
+    fn spoofed_namespace_and_attribute_prefix_are_ignored() {
+        let x = br#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#" xmlns:evil="urn:evil"><Layout><Page WIDTH="1" HEIGHT="1"><PrintSpace><TextBlock><TextLine><evil:String CONTENT="bad"/><String evil:CONTENT="bad2"/><String CONTENT="good"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+        assert_eq!(alto_words(x), ["good"]);
+        let y = br#"<a:alto xmlns:a="http://www.loc.gov/standards/alto/ns-v3#"><a:String CONTENT="p"/></a:alto>"#;
+        assert_eq!(alto_words(y), ["p"]);
+    }
+
+    #[test]
+    fn io_errors_are_transient_and_bad_content_is_not() {
+        let d = tempfile::tempdir().unwrap();
+        let missing = open(&[d.path().join("x"), d.path().join("y"), d.path().join("z")])
+            .err()
+            .unwrap();
+        assert!(is_transient(&missing));
+        let p = write(d.path(), "j", "5", "hello");
+        std::fs::write(&p[2], "{}").unwrap();
+        assert!(!is_transient(&open(&p).err().unwrap()));
     }
 
     #[test]

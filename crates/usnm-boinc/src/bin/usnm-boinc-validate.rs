@@ -1,10 +1,11 @@
 //! `script_validator` helper. BOINC runs it with the bare output-file paths
 //! (no flags are possible), in the result template's order: text.txt,
 //! layout.xml, result.json. Three paths check one result; six compare two
-//! results. Exit 0 accepts, 1 rejects. Reasons go to stderr and never carry
+//! results. Exit 0 accepts, 1 rejects, 3 reports a transient
+//! I/O failure so BOINC retries later instead of invalidating the result. Reasons go to stderr and never carry
 //! file content.
 use std::{path::Path, process::ExitCode};
-use usnm_boinc::validate::{compare, load, Outputs};
+use usnm_boinc::validate::{compare, is_transient, load, Outputs};
 
 fn one(p: &[String]) -> anyhow::Result<Outputs> {
     load(Path::new(&p[0]), Path::new(&p[1]), Path::new(&p[2]))
@@ -23,7 +24,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("usnm-boinc-validate: {e:#}");
-            ExitCode::from(1)
+            ExitCode::from(if is_transient(&e) { 3 } else { 1 })
         }
     }
 }
