@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
 # Container entrypoint for the stock BOINC server image.
 #
-#   serve              (default) wait for the project, render config.xml into tmpfs, start
-#                      Apache and the daemons under supervisord
-#   init-project       once, by hand (az containerapp exec): create the schema and the project
-#                      tree on the share with the stock make_project, register the app
-#   make-upload-keys DIR   write upload_private and upload_public into DIR (operator machine)
+#   --serve              (default) wait for the project, render config.xml into tmpfs, start
+#                        Apache and the daemons under supervisord
+#   --init-project       once, by hand (az containerapp exec): create the schema and the project
+#                        tree on the share with the stock make_project, register the app
+#   --make-upload-keys --dir DIR
+#                        write upload_private and upload_public into DIR (operator machine)
 #
 # UNVERIFIED: none of this has run; see contrib-compute/docs/images.md.
 set -euo pipefail
-mode="${1:-serve}"
-[ $# -eq 0 ] || shift
+mode=serve keydir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --serve) mode=serve; shift ;;
+    --init-project) mode=init-project; shift ;;
+    --make-upload-keys) mode=make-upload-keys; shift ;;
+    --dir) [ $# -ge 2 ] || { echo "--dir needs a value" >&2; exit 2; }; keydir="$2"; shift 2 ;;
+    *) echo "entrypoint.sh: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
 
 if [ "$mode" = make-upload-keys ]; then
-  [ $# -eq 1 ] || { echo "usage: make-upload-keys DIR" >&2; exit 2; }
+  [ -n "$keydir" ] || { echo "--make-upload-keys needs --dir DIR" >&2; exit 2; }
   umask 077
-  exec /usr/local/boinc/lib/crypt_prog -genkey 1024 "$1/upload_private" "$1/upload_public"
+  exec /usr/local/boinc/lib/crypt_prog -genkey 1024 "$keydir/upload_private" "$keydir/upload_public"
 fi
 
 # shellcheck source=lib.sh
@@ -85,5 +94,4 @@ PY
 case "$mode" in
   init-project) init_project ;;
   serve) serve ;;
-  *) exec "$mode" "$@" ;;
 esac

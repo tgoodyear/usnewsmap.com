@@ -18,7 +18,7 @@
 # are built from contrib-compute/images (docs/images.md). What a real run does, in order:
 #   1. az deployment group what-if, then create, for infra/boinc/main.bicep (apply does these)
 #   2. generate the MySQL and upload-key secrets and store them in Key Vault (apply does this)
-#   3. create the stock project: `entrypoint.sh init-project` inside the app (printed, run by hand)
+#   3. create the stock project: `entrypoint.sh --init-project` inside the app (printed, run by hand)
 #   4. install the docker_wrapper app version with #441's scripts/boinc/install.py, sign it
 #      OFFLINE, and register it with update_versions (printed, run by hand)
 #   5. check that the project's get_project_config.php answers (printed)
@@ -220,7 +220,7 @@ apply_all() {
   if ! have upload-private-key || ! have upload-public-key; then
     az_ acr login --name "${registry_host%%.*}" -o none || die "az acr login failed for ${registry_host%%.*}"
     mkdir "$work/keys"
-    "$runtime" run --rm -v "$work/keys:/out" "$image" make-upload-keys /out > /dev/null ||
+    "$runtime" run --rm -v "$work/keys:/out" "$image" --make-upload-keys --dir /out > /dev/null ||
       die "could not run $image to generate the upload keys"
     put upload-private-key "$work/keys/upload_private"
     put upload-public-key "$work/keys/upload_public"
@@ -281,7 +281,7 @@ echo
 note "3. The stock project (real run, by hand, inside the Container App)"
 cat <<PLAN
    az containerapp exec --subscription <sub> --resource-group $rg --name usnm-$name-app \\
-     --command "/usr/local/lib/usnm-boinc/entrypoint.sh init-project"
+     --command "/usr/local/lib/usnm-boinc/entrypoint.sh --init-project"
    It runs the stock make_project (creates the schema and the project tree on the share, with its
    key directory on tmpfs so no code-signing key is kept), creates the run-time MySQL user, renders
    config.xml from the template with the daemons from ocr/boinc/daemons.xml, runs bin/xadd with

@@ -16,7 +16,8 @@ ARG BUILD_JOBS=2
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl dh-autoreconf g++ git libcurl4-gnutls-dev default-libmysqlclient-dev \
-      libssl-dev libzip-dev libfmt-dev nlohmann-json3-dev m4 make pkg-config python3 \
+      libssl-dev libzip-dev libfmt-dev nlohmann-json3-dev m4 make pkg-config python3 python3-dev \
+      python3-distutils python3-setuptools \
  && rm -rf /var/lib/apt/lists/*
 RUN git init /usr/local/boinc \
  && cd /usr/local/boinc \
@@ -52,4 +53,4 @@ RUN cp /usr/local/boinc/samples/docker_wrapper/docker_wrapper /usr/local/lib/usn
  && chmod 0755 /usr/local/lib/usnm-boinc/entrypoint.sh /usr/local/lib/usnm-boinc/boinc-daemons.sh /usr/local/bin/bridge-job
 EXPOSE 80
 ENTRYPOINT ["/usr/local/lib/usnm-boinc/entrypoint.sh"]
-CMD ["serve"]
+CMD ["--serve"]

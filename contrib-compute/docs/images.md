@@ -18,9 +18,9 @@ One container holds Apache and the daemons because the feeder and the scheduler 
 
 ### Facts about the stock tools that shaped the entry point
 
-- `make_project` creates the schema, the project tree, and a code-signing key pair and an upload key pair in its key directory (`py/Boinc/setup_project.py`). The `init-project` mode points the key directory at tmpfs and deletes it afterwards, so no code-signing private key exists on the server. The upload keys that run the project come from Key Vault.
+- `make_project` creates the schema, the project tree, and a code-signing key pair and an upload key pair in its key directory (`py/Boinc/setup_project.py`). The `--init-project` mode points the key directory at tmpfs and deletes it afterwards, so no code-signing private key exists on the server. The upload keys that run the project come from Key Vault.
 - `make_project` refuses an existing project root, so the project lives in a subdirectory of the share: `/project/usnmocr`. `/project/handoff` is its sibling.
-- BOINC's key generator is `crypt_prog -genkey 1024`, built with the server. `entrypoint.sh make-upload-keys DIR` wraps it, and `bootstrap.sh --apply` runs the image locally to make the upload keys, so the private key is generated on the operator's machine and written only to Key Vault.
+- BOINC's key generator is `crypt_prog -genkey 1024`, built with the server. `entrypoint.sh --make-upload-keys --dir DIR` wraps it, and `bootstrap.sh --apply` runs the image locally to make the upload keys, so the private key is generated on the operator's machine and written only to Key Vault.
 - The `docker_wrapper` that `install.py` copies into the app version is built from the same source (`samples/docker_wrapper`) and left at `/usr/local/lib/usnm-boinc/docker_wrapper`. UNVERIFIED that it builds in this configuration, and that a binary linked on Debian 12 runs on volunteers' older glibc.
 
 ## Build
@@ -58,7 +58,7 @@ Each step is the operator's. `bootstrap.sh` without `--apply` prints this plan w
 2. Create the resource group. The script does not.
 3. `scripts/boinc/bootstrap.sh --apply --subscription GUID --yes-deploy ...` (same options as `--what-if`). It checks the subscription, runs the what-if, deploys `infra/boinc/main.bicep`, generates the secrets, and writes them to Key Vault: `mysql-admin-password`, `mysql-runtime-password`, `upload-private-key`, `upload-public-key`, and the public half of the code-signing key, `code-sign-public-key`. It never reads `code_sign_private`, never prints a secret, and passes secrets to `az` only through mode-0600 files in a temporary directory that is removed on exit. A rerun redeploys, rotates the MySQL admin password and rewrites it; it keeps an existing run-time password and upload keys.
 4. DNS and the managed certificate for the project host (bootstrap step 1b).
-5. `az containerapp exec ... entrypoint.sh init-project` (bootstrap step 3). Until it has run, the app answers the health probe with a placeholder.
+5. `az containerapp exec ... entrypoint.sh --init-project` (bootstrap step 3). Until it has run, the app answers the health probe with a placeholder.
 6. App version, offline signing, `update_versions` (bootstrap step 4).
 7. `curl` the project config and submit one reserved job (bootstrap step 5).
 

@@ -34,6 +34,6 @@ if find / -xdev -name code_sign_private 2>/dev/null | grep -q .; then echo "code
 echo "tools ok"'
 out=$(mktemp -d)
 chmod 777 "$out"
-docker run --rm -v "$out:/out" "$image" make-upload-keys /out > /dev/null
+docker run --rm -v "$out:/out" "$image" --make-upload-keys --dir /out > /dev/null
 [ -s "$out/upload_private" ] && [ -s "$out/upload_public" ] || { echo "make-upload-keys wrote no keys" >&2; exit 1; }
 echo "upload keys ok"
