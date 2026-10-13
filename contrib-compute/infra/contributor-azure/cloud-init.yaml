@@ -1,0 +1,25 @@
+#cloud-config
+# Rendered by vmss-spot.bicep. The @@...@@ markers are replaced with base64.
+write_files:
+  - path: /etc/usnm/node.env
+    permissions: '0644'
+    encoding: b64
+    content: @@NODE_ENV@@
+  - path: /opt/usnm/boinc-config.sh
+    permissions: '0755'
+    encoding: b64
+    content: @@CONFIG@@
+  - path: /opt/usnm/boinc-evict.sh
+    permissions: '0755'
+    encoding: b64
+    content: @@EVENTS@@
+  - path: /opt/usnm/vm-setup.sh
+    permissions: '0755'
+    encoding: b64
+    content: @@SETUP@@
+  - path: /etc/systemd/system/usnm-boinc-evict.service
+    permissions: '0644'
+    encoding: b64
+    content: @@EVICT_UNIT@@
+runcmd:
+  - [bash, /opt/usnm/vm-setup.sh, --env-file, /etc/usnm/node.env]

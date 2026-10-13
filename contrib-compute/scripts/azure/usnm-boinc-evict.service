@@ -1,0 +1,12 @@
+[Unit]
+Description=Suspend BOINC on Azure scheduled events (eviction)
+After=network-online.target boinc-client.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/usnm/boinc-evict.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

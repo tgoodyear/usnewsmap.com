@@ -6,8 +6,7 @@ in [verified-facts.md](verified-facts.md); each is cited there with a fetch date
 
 BOINC is the work-distribution layer for every contribution route. The Proxmox LXC template,
 the docker/podman container and the Azure Spot VM or container group (see [interface.md](interface.md)) each run a BOINC client attached to this
-project server. A volunteer on a plain machine uses `scripts/boinc/attach.sh` instead. The client scripts and
-their guides are in a follow-up pull request; this directory holds the server.
+project server. A volunteer on a plain machine uses `scripts/boinc/attach.sh` instead.
 The trust model:
 
 - Contributors never hold an Azure credential.

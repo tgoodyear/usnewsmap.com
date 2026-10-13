@@ -102,7 +102,11 @@ jobs:
           for f in boinc/project.xml boinc/apps/usnm_ocr/job.xml boinc/apps/usnm_ocr/templates/*; do
             python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
           done
-      - run: shellcheck -x -S warning scripts/boinc/*.sh
+      - run: shellcheck -x -S warning scripts/*.sh scripts/lib/*.sh scripts/azure/*.sh scripts/boinc/*.sh
+      - name: The preference values agree between the helper and the Azure script
+        run: scripts/check-prefs-consistent.sh
+      - name: Dry runs print the commands, never the key
+        run: scripts/check-dry-runs.sh
       - name: Install Bicep
         working-directory: .
         run: scripts/ci/install-bicep.sh

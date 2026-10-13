@@ -7,9 +7,8 @@ names they can rely on. Design reasons are in [design.md](design.md).
 Status: names below are fixed for the first version. Nothing is deployed; the project URL is a
 placeholder that the maintainer fills in when the server exists.
 
-The scripts that use this page are the client scripts for Proxmox, Docker or Podman, Azure and
-plain Linux machines. They are in a follow-up pull request, not in this directory yet, and the
-script names below are the planned ones.
+The scripts that use this page: `scripts/enroll.sh` (Proxmox), `scripts/run-container.sh`
+(Docker or Podman) and `scripts/deploy-azure.sh` with `scripts/azure/` (Azure).
 
 ## Names
 
