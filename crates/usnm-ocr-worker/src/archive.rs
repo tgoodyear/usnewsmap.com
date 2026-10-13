@@ -295,7 +295,12 @@ impl Archive {
         let bytes = tokio::fs::read(scan)
             .await
             .with_context(|| format!("reading {}", scan.display()))?;
-        let Some(side) = side.filter(|s| matches_sidecar(&bytes, s)) else {
+        // The sidecar must describe this file: its extension's format and
+        // the full resolution, as `prefetch::verified` requires.
+        let ext = scan.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let Some(side) = side
+            .filter(|s| s.resolution == "full" && s.format == ext && matches_sidecar(&bytes, s))
+        else {
             return Ok((Outcome::BadLocal, 0));
         };
         let size = bytes.len() as u64;
@@ -451,10 +456,17 @@ pub fn list(scans: &Path, set: &str) -> anyhow::Result<Vec<(PathBuf, String)>> {
     Ok(out)
 }
 
-/// The archived-scans file: one `name<TAB>size<TAB>mtime-seconds` per line.
-/// A missing file is an empty state; a damaged line is ignored (the scan is
-/// then checked against the archive again, which is safe).
-fn load_state(path: &Path) -> anyhow::Result<HashMap<String, (u64, u64)>> {
+/// What identifies one version of a local file: size, mtime in
+/// nanoseconds, inode and ctime in nanoseconds. A same-sized replacement
+/// (written to a new file and renamed over the old one) changes the inode,
+/// ctime and mtime.
+type Stamp = (u64, u64, u64, u64);
+
+/// The archived-scans file: one `name<TAB>size<TAB>mtime-ns<TAB>inode<TAB>
+/// ctime-ns` per line. A missing file is an empty state; a line in any other
+/// shape (the earlier three-field form, or a damaged one) is ignored, so
+/// that scan is checked against the archive again, which is safe.
+fn load_state(path: &Path) -> anyhow::Result<HashMap<String, Stamp>> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -462,28 +474,32 @@ fn load_state(path: &Path) -> anyhow::Result<HashMap<String, (u64, u64)>> {
     };
     let mut m = HashMap::new();
     for line in text.lines() {
-        let mut f = line.split('\t');
-        if let (Some(n), Some(Ok(s)), Some(Ok(t))) = (
-            f.next(),
-            f.next().map(str::parse::<u64>),
-            f.next().map(str::parse::<u64>),
-        ) {
-            m.insert(n.to_owned(), (s, t));
+        let f: Vec<&str> = line.split('\t').collect();
+        if let [n, a, b, c, d] = f[..] {
+            if let (Ok(a), Ok(b), Ok(c), Ok(d)) = (a.parse(), b.parse(), c.parse(), d.parse()) {
+                m.insert(n.to_owned(), (a, b, c, d));
+            }
         }
     }
     Ok(m)
 }
 
-/// Size and modification time (whole seconds) of a scan.
-fn stat(path: &Path) -> Option<(u64, u64)> {
+/// The stamp of a scan's file.
+fn stat(path: &Path) -> Option<Stamp> {
+    use std::os::unix::fs::MetadataExt;
     let md = std::fs::metadata(path).ok()?;
-    let t = md
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    Some((md.len(), t))
+    let ns = |sec: i64, nsec: i64| {
+        u64::try_from(sec)
+            .ok()?
+            .checked_mul(1_000_000_000)?
+            .checked_add(u64::try_from(nsec).ok()?)
+    };
+    Some((
+        md.len(),
+        ns(md.mtime(), md.mtime_nsec())?,
+        md.ino(),
+        ns(md.ctime(), md.ctime_nsec())?,
+    ))
 }
 
 fn is_scan(path: &Path) -> bool {
@@ -547,11 +563,11 @@ pub async fn run(opts: Options, credential: Arc<Credential>) -> anyhow::Result<R
             break;
         };
         let (o, name, bytes, st) = done?;
-        if let (Some(f), Some((size, mtime)), Outcome::Uploaded | Outcome::Present) =
+        if let (Some(f), Some((size, mtime, ino, ctime)), Outcome::Uploaded | Outcome::Present) =
             (state_out.as_mut(), st, &o)
         {
             // A failed append only means the scan is looked up again.
-            let _ = writeln!(f, "{name}\t{size}\t{mtime}");
+            let _ = writeln!(f, "{name}\t{size}\t{mtime}\t{ino}\t{ctime}");
         }
         report.add(o, &name, bytes);
         if report.scanned % 1000 == 0 {
@@ -893,6 +909,68 @@ mod tests {
             let cached = std::fs::read_to_string(&state).unwrap_or_default();
             assert!(cached.is_empty(), "{mode:?}: {cached}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_must_match_the_extension_and_be_full_size() {
+        let dir = tempfile::tempdir().unwrap();
+        // A jp2 file whose sidecar says jpg.
+        put_scan(dir.path(), "keep/b/s/d/e/seq-1.jp2", b"abc", true);
+        let p = dir.path().join("keep/b/s/d/e/seq-1.jp2");
+        let mut side: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&p)).unwrap()).unwrap();
+        side.format = "jpg".into();
+        std::fs::write(sidecar_path(&p), serde_json::to_vec(&side).unwrap()).unwrap();
+        // A sidecar for a scaled copy.
+        put_scan(dir.path(), "keep/b/s/d/e/seq-2.jp2", b"abd", true);
+        let p2 = dir.path().join("keep/b/s/d/e/seq-2.jp2");
+        let mut side: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&p2)).unwrap()).unwrap();
+        side.resolution = "pct50".into();
+        std::fs::write(sidecar_path(&p2), serde_json::to_vec(&side).unwrap()).unwrap();
+        let m = Arc::new(Mock::default());
+        let url = serve(m.clone()).await;
+        let r = run(opts(dir.path(), url, Mode::Upload), cred())
+            .await
+            .unwrap();
+        assert_eq!((r.bad_local, r.uploaded), (2, 0));
+        assert!(m.blobs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_same_size_replacement_in_the_same_second_is_rechecked() {
+        let dir = tempfile::tempdir().unwrap();
+        put_scan(dir.path(), "keep/b/s/d/e/seq-1.jp2", b"abc", true);
+        let m = Arc::new(Mock::default());
+        let url = serve(m.clone()).await;
+        let state = dir.path().join("archived.tsv");
+        let go = |mode| {
+            let mut o = opts(dir.path(), url.clone(), mode);
+            o.state = Some(state.clone());
+            o
+        };
+        let r = run(go(Mode::Upload), cred()).await.unwrap();
+        assert_eq!(r.uploaded, 1);
+        // Replace with other bytes of the same length, through a rename.
+        let tmp = dir.path().join("new.jp2");
+        put_scan(dir.path(), "new.jp2", b"xyz", true);
+        let live = dir.path().join("keep/b/s/d/e/seq-1.jp2");
+        std::fs::rename(&tmp, &live).unwrap();
+        std::fs::rename(sidecar_path(&tmp), sidecar_path(&live)).unwrap();
+        let r = run(go(Mode::Upload), cred()).await.unwrap();
+        assert_eq!(r.skipped, 0);
+        // Looked up again: the blob differs, so it is reported.
+        assert_eq!(r.conflicts, 1);
+    }
+
+    #[test]
+    fn old_three_field_state_lines_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s.tsv");
+        std::fs::write(&p, "keep/a.jp2\t3\t100\nkeep/b.jp2\t3\t1\t2\t3\n").unwrap();
+        let m = load_state(&p).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m["keep/b.jp2"], (3, 1, 2, 3));
     }
 
     #[tokio::test]
