@@ -227,7 +227,7 @@ fn builds_reproducibly_and_respects_the_licences() {
     let cache = f.root.join("cache");
     std::fs::create_dir_all(&cache).unwrap();
     let (ready, skipped) =
-        bundle::materialize(&m2, &unpacked, &cache, &f.root.join("work")).unwrap();
+        bundle::materialize(&m2, &unpacked, &cache, &f.root.join("work"), None).unwrap();
     assert_eq!(ready.len(), 4);
     assert_eq!(skipped.len(), 2, "remotes not staged yet: {skipped:?}");
     for r in &m2.remotes {
@@ -238,7 +238,7 @@ fn builds_reproducibly_and_respects_the_licences() {
         std::fs::write(bundle::cache_path(&cache, r), bytes).unwrap();
     }
     let (ready, skipped) =
-        bundle::materialize(&m2, &unpacked, &cache, &f.root.join("work")).unwrap();
+        bundle::materialize(&m2, &unpacked, &cache, &f.root.join("work"), None).unwrap();
     assert!(skipped.is_empty(), "{skipped:?}");
     let op = ready.iter().find(|r| r.source == "overproof-ca").unwrap();
     let cut = image::open(&op.image).unwrap();
@@ -258,8 +258,11 @@ fn verify_rejects_tampering() {
         .iter()
         .find(|x| x.path.starts_with("crops/"))
         .unwrap();
+    let original = std::fs::read(a.dir.join(&crop.path)).unwrap();
     std::fs::write(a.dir.join(&crop.path), b"changed").unwrap();
     assert!(bundle::verify(&a.dir).is_err());
+    std::fs::write(a.dir.join(&crop.path), original).unwrap();
+    assert!(bundle::verify(&a.dir).is_ok());
     std::fs::write(a.dir.join("extra.txt"), b"x").unwrap();
     assert!(bundle::verify(&a.dir).is_err());
 }

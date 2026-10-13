@@ -912,12 +912,23 @@ pub fn materialize(
     bundle: &Path,
     cache: &Path,
     work: &Path,
+    limit: Option<usize>,
 ) -> anyhow::Result<(Vec<Ready>, Vec<Skipped>)> {
     std::fs::create_dir_all(work)?;
+    let limit = limit.unwrap_or(usize::MAX);
     let mut ready = Vec::new();
     let mut skipped = Vec::new();
-    for c in &m.crops {
-        match prepare(m, c, bundle, cache, work) {
+    // Each remote is hashed once per call, not once per crop that uses it.
+    let mut valid: BTreeMap<String, bool> = BTreeMap::new();
+    for (n, c) in m.crops.iter().enumerate() {
+        if n >= limit {
+            skipped.push(Skipped {
+                crop_id: c.crop_id.clone(),
+                reason: "not run: over --limit".into(),
+            });
+            continue;
+        }
+        match prepare(m, c, bundle, cache, work, &mut valid) {
             Ok(r) => ready.push(r),
             Err(e) => skipped.push(Skipped {
                 crop_id: c.crop_id.clone(),
@@ -932,10 +943,14 @@ fn remote_file<'a>(
     m: &'a Manifest,
     cache: &Path,
     id: &str,
+    valid: &mut BTreeMap<String, bool>,
 ) -> anyhow::Result<(PathBuf, Option<&'a str>)> {
     let r = m.remote(id)?;
+    let ok = *valid
+        .entry(id.to_string())
+        .or_insert_with(|| cached(cache, r));
     ensure!(
-        cached(cache, r),
+        ok,
         "{id} is not staged (run the stage step) or its checksum differs"
     );
     Ok((cache_path(cache, r), r.password.as_deref()))
@@ -947,6 +962,7 @@ fn prepare(
     bundle: &Path,
     cache: &Path,
     work: &Path,
+    valid: &mut BTreeMap<String, bool>,
 ) -> anyhow::Result<Ready> {
     let transcription = match &c.transcription {
         CropText::Inline { text, .. } => text.clone(),
@@ -955,7 +971,7 @@ fn prepare(
             remote,
             sha256,
         } => {
-            let (zip, password) = remote_file(m, cache, remote)?;
+            let (zip, password) = remote_file(m, cache, remote, valid)?;
             let t = read_text_member(&zip_member(&zip, password, member, 1 << 20)?)?;
             ensure!(
                 &sha256_hex(t.as_bytes()) == sha256,
@@ -971,7 +987,7 @@ fn prepare(
             remote,
             sha256,
         } => {
-            let (zip, password) = remote_file(m, cache, remote)?;
+            let (zip, password) = remote_file(m, cache, remote, valid)?;
             let bytes = zip_member(&zip, password, member, MAX_REMOTE)?;
             ensure!(&sha256_hex(&bytes) == sha256, "{member}: checksum differs");
             let ext = Path::new(member)
@@ -983,8 +999,8 @@ fn prepare(
             p
         }
         CropImage::PageRegion { region, remote } => {
-            let page =
-                image::open(remote_file(m, cache, remote)?.0).context("decoding the page image")?;
+            let page = image::open(remote_file(m, cache, remote, valid)?.0)
+                .context("decoding the page image")?;
             let [x0, y0, x1, y1] = *region;
             ensure!(
                 x1 <= page.width() && y1 <= page.height(),

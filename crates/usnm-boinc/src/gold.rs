@@ -90,7 +90,7 @@ pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
     std::fs::create_dir_all(&opts.work)?;
     let (dir, m) = open(&opts.bundle, &opts.work)?;
     let crops_dir = opts.work.join("crops");
-    let (ready, mut skipped) = bundle::materialize(&m, &dir, &opts.cache, &crops_dir)?;
+    let (ready, mut skipped) = bundle::materialize(&m, &dir, &opts.cache, &crops_dir, opts.limit)?;
     let tess = Tesseract::detect(TesseractOptions {
         runner: Runner::Host(opts.tesseract.clone()),
         psm: opts.psm,
@@ -100,15 +100,7 @@ pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
     })
     .await?;
     let mut crops = Vec::new();
-    let limit = opts.limit.unwrap_or(usize::MAX);
-    for (n, r) in ready.into_iter().enumerate() {
-        if n >= limit {
-            skipped.push(bundle::Skipped {
-                crop_id: r.crop_id,
-                reason: "not run: over --limit".into(),
-            });
-            continue;
-        }
+    for r in ready {
         let Some(profile) = engine::route(&r.lang, tess.installed()) else {
             skipped.push(bundle::Skipped {
                 crop_id: r.crop_id,
