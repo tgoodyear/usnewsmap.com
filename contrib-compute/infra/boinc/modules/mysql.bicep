@@ -36,12 +36,14 @@ resource server 'Microsoft.DBforMySQL/flexibleServers@2024-12-30' = {
   }
 }
 
-// BOINC's server code cannot negotiate TLS with every client library; this is the
-// open question in the design doc (section 9). It is left ON (the default) until tested.
+// OFF: BOINC's clients (make_project's MySQLdb, the PHP pages, the C++ daemons) never ask for
+// TLS, and Debian bookworm's MariaDB Connector/C does not use it unasked; tested 2026-10-13,
+// make_project failed with error 3159. The server has no public endpoint (VNet integration,
+// private DNS), so the traffic stays inside the VNet. Design doc section 9.
 resource secureTransport 'Microsoft.DBforMySQL/flexibleServers/configurations@2024-12-30' = {
   parent: server
   name: 'require_secure_transport'
-  properties: { value: 'ON', source: 'user-override' }
+  properties: { value: 'OFF', source: 'user-override' }
 }
 
 // The Entra administrator is NOT created here: it needs a server identity that already holds
