@@ -73,7 +73,7 @@ resource filesDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@202
 }
 
 resource vaultDns 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink${environment().suffixes.keyvaultDns}'
+  name: 'privatelink.vaultcore.azure.net' // Key Vault's private link zone; keyvaultDns (vault.azure.net) is not it
   location: 'global'
 }
 

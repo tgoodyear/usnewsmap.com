@@ -50,19 +50,10 @@ resource endpoint 'Microsoft.Network/privateEndpoints@2024-01-01' = {
   }
 }
 
-// The vault's A record, written by the stack. A zone group on this endpoint reported success
-// but left the zone with no record (2026-10-13), so the record is declared here instead.
-resource dnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' existing = {
-  name: last(split(dnsZoneId, '/'))
-}
-
-resource vaultRecord 'Microsoft.Network/privateDnsZones/A@2020-06-01' = {
-  parent: dnsZone
-  name: vaultName
-  properties: {
-    ttl: 10
-    aRecords: [ { ipv4Address: endpoint.properties.customDnsConfigs[0].ipAddresses[0] } ]
-  }
+resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-01-01' = {
+  parent: endpoint
+  name: 'default'
+  properties: { privateDnsZoneConfigs: [ { name: 'vault', properties: { privateDnsZoneId: dnsZoneId } } ] }
 }
 
 // Key Vault Secrets User
