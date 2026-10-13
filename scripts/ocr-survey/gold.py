@@ -513,6 +513,19 @@ PUBLIC: dict[str, dict] = {
         "chars": (12, 300), "scoring": False,
         "policy": "fails: README does not say the transcriptions were made or checked by people",
     },
+    # BLN600 is No-Derivatives: nothing from it is committed, the crop is the dataset's own image file
+    # copied unchanged (never re-encoded), and its LICENSE and readme travel with every output directory.
+    # BOINC clients (#457) must download the original zip and cut or copy locally; the project cannot
+    # ship derived crops.
+    "bln600": {
+        "group": "pub-bln600", "lang": "eng",
+        "license": "CC BY-NC-ND 4.0 (figshare record and the LICENSE file in the zip)",
+        "url": "https://doi.org/10.15131/shef.data.25439023.v2",
+        "attribution": "BLN600 by Callum Booth, Alan Thomas, and Robert Gaizauskas (University of Sheffield), "
+                       "CC BY-NC-ND 4.0",
+        "chars": (200, 8000), "scoring": True, "policy": "passes (research use; nothing committed)",
+        "original_image": True, "license_files": ("LICENSE", "readme.md"),
+    },
 }
 
 
@@ -534,32 +547,54 @@ def parse_coco_gold(json_path: Path, kinds: tuple[int, ...] = (1,)) -> list[dict
     return out
 
 
-def parse_page_xml(xml_path: Path) -> tuple[str | None, list[dict]]:
-    """PAGE XML (any schema year): the image name, and one region per TextRegion that holds TextLines.
+def _local(e) -> str:
+    return e.tag.rsplit("}", 1)[-1]
 
-    The region's text is its lines' TextEquiv/Unicode, one per line, in file order.
+
+def _page_points(el) -> list[tuple[float, float]]:
+    """An element's Coords: the `points` attribute (PAGE 2013 and later) or Point children (PAGE 2010)."""
+    c = next((c for c in el if _local(c) == "Coords"), None)
+    if c is None:
+        return []
+    if c.get("points"):
+        return [tuple(float(v) for v in p.split(",")) for p in c.get("points").split()]
+    return [(float(p.get("x")), float(p.get("y"))) for p in c if _local(p) == "Point"]
+
+
+def _page_text(el) -> str:
+    """The element's own TextEquiv/Unicode (a direct child: a line's text, never its words')."""
+    u = next((u for te in el if _local(te) == "TextEquiv" for u in te if _local(u) == "Unicode"), None)
+    return (u.text or "").strip() if u is not None else ""
+
+
+def parse_page_xml(xml_path: Path, level: str = "region") -> tuple[str | None, list[dict]]:
+    """PAGE XML (any schema year): the image name, and the transcribed regions or lines.
+
+    level "region": one entry per TextRegion; its text is its lines' TextEquiv, one per line, in file order,
+    or the region's own TextEquiv when it has no transcribed lines (the Europeana set is transcribed per
+    region). level "line": one entry per TextLine with text and coordinates. Word and Glyph text is never
+    read: in some sets (NZZ) only the line text was corrected.
     """
     import xml.etree.ElementTree as ET
 
     root = ET.parse(xml_path).getroot()
-
-    def local(e):
-        return e.tag.rsplit("}", 1)[-1]
-
-    page = next((e for e in root.iter() if local(e) == "Page"), None)
+    page = next((e for e in root.iter() if _local(e) == "Page"), None)
     name = page.get("imageFilename") if page is not None else None
     regions = []
-    for reg in (e for e in root.iter() if local(e) == "TextRegion"):
-        lines, pts = [], []
-        for ln in (c for c in reg if local(c) == "TextLine"):
-            u = next((u for te in ln if local(te) == "TextEquiv" for u in te if local(u) == "Unicode"), None)
-            if u is not None and (u.text or "").strip():
-                lines.append(u.text.strip())
-        c = next((c for c in reg if local(c) == "Coords"), None)
-        if c is not None and c.get("points"):
-            pts = [tuple(float(v) for v in p.split(",")) for p in c.get("points").split()]
-        if lines and pts:
-            regions.append({"region": reg.get("id") or str(len(regions)), "box": box_of(pts), "text": "\n".join(lines)})
+    for reg in (e for e in root.iter() if _local(e) == "TextRegion"):
+        lines = [ln for ln in reg if _local(ln) == "TextLine"]
+        if level == "line":
+            for ln in lines:
+                text, pts = _page_text(ln), _page_points(ln)
+                if text and pts:
+                    regions.append({"region": f"{reg.get('id')}/{ln.get('id') or len(regions)}", "box": box_of(pts),
+                                    "text": text})
+            continue
+        texts = [t for t in (_page_text(ln) for ln in lines) if t]
+        text = "\n".join(texts) if texts else _page_text(reg)
+        pts = _page_points(reg)
+        if text and pts:
+            regions.append({"region": reg.get("id") or str(len(regions)), "box": box_of(pts), "text": text})
     return name, regions
 
 
@@ -576,6 +611,29 @@ def parse_ndl_json(json_path: Path) -> list[dict]:
     return out
 
 
+def parse_bln600(root: Path) -> list[dict]:
+    """BLN600: `Ground Truth/<id>.txt` with its image at `Images/<id>.tif` or `.jpg`; dates from metadata.json.
+
+    Each image is already one excerpt, so the region is the whole image (box None) and its text is the file.
+    """
+    meta = {}
+    mj = root / "metadata.json"
+    if mj.exists():
+        meta = {str(m.get("short_id")): m for m in json.loads(mj.read_text(encoding="utf-8"))}
+    out = []
+    for t in sorted((root / "Ground Truth").glob("*.txt")):
+        img = next((root / "Images" / f"{t.stem}{e}" for e in (".tif", ".tiff", ".jpg", ".jpeg", ".png")
+                    if (root / "Images" / f"{t.stem}{e}").exists()), None)
+        text = t.read_text(encoding="utf-8-sig").replace("\r\n", "\n").strip()
+        if img is None or not text:
+            continue
+        m = meta.get(t.stem, {})
+        d = str(m.get("date") or "")
+        out.append({"page_id": f"bln600-{t.stem}", "region": t.stem, "box": None, "image": img, "text": text,
+                    "date": f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else None, "title": m.get("publication")})
+    return out
+
+
 def public_regions(dataset: str, src: Path) -> list[dict]:
     """Every transcribed region in a downloaded dataset: page (image path), page_id, region, box, text."""
     out: list[dict] = []
@@ -588,14 +646,19 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
         for r in parse_coco_gold(gold_json) if gold_json else []:
             if r["page"] in index:
                 out.append({**r, "page_id": f"americanstories-gold-{Path(r['page']).stem}", "image": index[r["page"]]})
-    elif dataset in ("reichsanzeiger", "austrian"):
+    elif dataset in PAGE_XML_SETS:
+        level = PUBLIC[dataset].get("level", "region")
         for x in sorted(src.rglob("*.xml")):
             try:
-                name, regs = parse_page_xml(x)
+                name, regs = parse_page_xml(x, level)
             except Exception:  # noqa: BLE001 -- not a PAGE file (METS, metadata)
                 continue
-            if name and name in index and regs:
-                out += [{**r, "page_id": f"{dataset}-{Path(name).stem}", "image": index[name]} for r in regs]
+            img = index.get(name) if name else None
+            if img is None and name:  # some sets name a .tif in the XML and ship another format
+                img = next((index[Path(name).stem + e] for e in (".tif", ".tiff", ".jpg", ".jpeg", ".png")
+                            if Path(name).stem + e in index), None)
+            if img is not None and regs:
+                out += [{**r, "page_id": f"{dataset}-{Path(name).stem}", "image": img} for r in regs]
     elif dataset == "ndl-pdm":
         # json/<dir>/<name>.json with its image at img/<dir>/<name>.jpg (layout from the README; unchecked).
         for j in sorted(src.rglob("*.json")):
@@ -605,9 +668,16 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
                     out += [{**r, "page_id": f"ndl-pdm-{j.parent.name}-{j.stem}", "image": img}
                             for r in parse_ndl_json(j)]
                     break
+    elif dataset == "bln600":
+        root = next((p.parent for p in sorted(src.rglob("metadata.json")) if (p.parent / "Ground Truth").is_dir()), None)
+        out = parse_bln600(root) if root else []
     else:
         raise ValueError(f"unknown dataset {dataset!r}")
     return out
+
+
+PAGE_XML_SETS = ("reichsanzeiger", "austrian",
+                 )
 
 
 def pick_public(regions: list[dict], count: int, per_page: int, seed: int, min_chars: int, max_chars: int) -> list[dict]:
@@ -630,59 +700,115 @@ def pick_public(regions: list[dict], count: int, per_page: int, seed: int, min_c
     return picked
 
 
-def public_rows(dataset: str, pick: dict, n: int, crop: bytes, box: list[int], page_sha: str, encoder: str) -> tuple[dict, dict]:
+def public_rows(dataset: str, pick: dict, n: int, crop: bytes | None, box: list[int] | None, page_sha: str | None,
+                encoder: str | None, ext: str = ".jpg") -> tuple[dict, dict]:
+    """The manifest row and the crops.jsonl row for one picked region. crop None: a text-only row, no image."""
     meta = PUBLIC[dataset]
     crop_id = f"{meta['group']}-{n:03d}"
     who = f"{dataset}: published ground truth"
+    image = f"images/{crop_id}{ext}" if crop is not None else None
     m = {"crop_id": crop_id, "page_id": pick["page_id"], "group": meta["group"], "lang": meta["lang"], "era": None,
-         "stratum": meta["group"], "box": box, "image": f"images/{crop_id}.jpg", "crop_sha256": sha256(crop),
-         "crop_bytes": len(crop), "encoder": encoder, "page_image_sha256": page_sha, "source_image": pick["image"].name,
+         "stratum": meta["group"], "box": box, "image": image, "crop_sha256": sha256(crop) if crop is not None else None,
+         "crop_bytes": len(crop) if crop is not None else 0, "encoder": encoder, "page_image_sha256": page_sha,
+         "source_image": pick["image"].name if pick.get("image") else None,
          "region": pick["region"], "source_dataset": dataset, "source_url": meta["url"], "source_license": meta["license"],
-         "for_scoring": meta["scoring"]}
-    t = {"crop_id": crop_id, "group": meta["group"], "lang": meta["lang"], "date": None, "title": pick["page_id"],
-         "image": m["image"], "hints": {"is_truth": False, "note": "none: the truth is the dataset's own", "texts": {}},
+         "source_attribution": meta.get("attribution"), "for_scoring": meta["scoring"]}
+    if pick.get("page_url"):
+        m["page_url"] = pick["page_url"]
+    t = {"crop_id": crop_id, "group": meta["group"], "lang": meta["lang"], "date": pick.get("date"),
+         "title": pick.get("title") or pick["page_id"],
+         "image": image, "hints": {"is_truth": False, "note": "none: the truth is the dataset's own", "texts": {}},
          "transcription": pick["text"], "transcriber": who, "reviewer": "not applicable: published ground truth",
          "hint_copy_reviewed": False, "truth_source": dataset, "for_scoring": meta["scoring"],
          "notes": "" if meta["scoring"] else f"not for scoring: source policy {meta['policy']}"}
     return m, t
 
 
+SOURCE_NOTE = "SOURCE.json"
+
+
+def write_source_note(src: Path, dataset: str, **extra) -> None:
+    """Licence and attribution kept next to the downloaded data, so they travel with it."""
+    meta = PUBLIC[dataset]
+    note = {"dataset": dataset, "url": meta["url"], "license": meta["license"], "attribution": meta.get("attribution"),
+            "policy": meta["policy"], **extra}
+    (src / SOURCE_NOTE).write_text(json.dumps(note, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+
+
+def copy_licences(dataset: str, src: Path, out: Path) -> list[str]:
+    """Copies the dataset's licence and readme files and SOURCE.json from src into out/LICENSES/."""
+    import shutil
+
+    names = (SOURCE_NOTE, *PUBLIC[dataset].get("license_files", ()))
+    copied = []
+    for name in names:
+        hit = next(iter(sorted(src.rglob(name), key=lambda p: len(p.parts))), None)
+        if hit is not None and hit.is_file():
+            (out / "LICENSES").mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(hit, out / "LICENSES" / name)
+            copied.append(name)
+    return copied
+
+
 def cmd_public_convert(a: argparse.Namespace) -> int:
-    if not PUBLIC[a.dataset]["scoring"] and not a.not_for_scoring:
-        print(f"{a.dataset} does not meet the source policy ({PUBLIC[a.dataset]['policy']}); "
+    meta = PUBLIC[a.dataset]
+    if not meta["scoring"] and not a.not_for_scoring:
+        print(f"{a.dataset} does not meet the source policy ({meta['policy']}); "
               "pass --not-for-scoring to convert it for comparison only", file=sys.stderr)
         return 2
     import PIL
     from PIL import Image
 
     Image.MAX_IMAGE_PIXELS = None
+    stats = None
     regions = public_regions(a.dataset, a.src)
     if not regions:
         print(f"error: no transcribed regions found under {a.src} for {a.dataset}", file=sys.stderr)
         return 1
-    lo, hi = PUBLIC[a.dataset]["chars"]
+    lo, hi = meta["chars"]
     pick = pick_public(regions, a.count, a.per_page, a.seed, a.min_chars or lo, a.max_chars or hi)
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "images").mkdir(exist_ok=True)
     manifest, template, page_sha = [], [], {}
-    for n, p in enumerate(pick, 1):
-        img = Image.open(p["image"])
-        x0, y0, x1, y1 = p["box"]
-        box = [max(0, x0), max(0, y0), min(img.width, x1), min(img.height, y1)]
-        if box[2] <= box[0] or box[3] <= box[1]:
-            print(f"skipped, box outside the image: {p['page_id']} {p['region']}", file=sys.stderr)
+    for p in pick:
+        n = len(manifest) + 1
+        if p.get("image") is None:  # text only (Overproof dataset 2): nothing to cut
+            m, t = public_rows(a.dataset, p, n, None, None, None, None)
+            manifest.append(m)
+            template.append(t)
             continue
-        data = encode_crop(img, box)
         if p["image"] not in page_sha:
             page_sha[p["image"]] = sha256(p["image"].read_bytes())
-        m, t = public_rows(a.dataset, p, len(manifest) + 1, data, box, page_sha[p["image"]], f"Pillow {PIL.__version__}")
+        if meta.get("original_image"):
+            # No-Derivatives licence: the dataset's own file, byte for byte, never cropped or re-encoded.
+            data = p["image"].read_bytes()
+            with Image.open(p["image"]) as img:
+                box = [0, 0, img.width, img.height]
+            m, t = public_rows(a.dataset, p, n, data, box, page_sha[p["image"]], "original file, unchanged",
+                               p["image"].suffix.lower())
+        else:
+            img = Image.open(p["image"])
+            x0, y0, x1, y1 = p["box"] or (0, 0, img.width, img.height)
+            box = [max(0, x0), max(0, y0), min(img.width, x1), min(img.height, y1)]
+            if box[2] <= box[0] or box[3] <= box[1]:
+                print(f"skipped, box outside the image: {p['page_id']} {p['region']}", file=sys.stderr)
+                continue
+            data = encode_crop(img, box)
+            m, t = public_rows(a.dataset, p, n, data, box, page_sha[p["image"]], f"Pillow {PIL.__version__}")
         (a.out / m["image"]).write_bytes(data)
         manifest.append(m)
         template.append(t)
     write_jsonl(a.out / "manifest.jsonl", manifest)
     write_jsonl(a.out / "crops.jsonl", template)
+    licences = copy_licences(a.dataset, a.src, a.out)
+    if stats is not None:
+        (a.out / "match.json").write_text(json.dumps(stats, indent=1) + "\n", encoding="utf-8")
+        rate = stats["lines_matched"] / stats["lines"] if stats["lines"] else 0
+        print(f"line match against today's LoC ALTO: {stats['lines_matched']} of {stats['lines']} lines "
+              f"({rate:.1%}); {stats['articles_with_page']} of {stats['articles']} articles had their page fetched")
     print(f"{len(manifest)} crops from {len({m['page_id'] for m in manifest})} pages "
-          f"({len(regions)} transcribed regions in the download), {sum(m['crop_bytes'] for m in manifest) / 1e6:.1f} MB")
+          f"({len(regions)} transcribed regions in the download), {sum(m['crop_bytes'] for m in manifest) / 1e6:.1f} MB; "
+          f"licence files in {a.out / 'LICENSES'}: {', '.join(licences) or 'none found'}")
     return 0
 
 
@@ -701,6 +827,37 @@ def download(url: str, dest: Path, gap: float = 1.0) -> None:
         while chunk := r.read(1 << 20):
             f.write(chunk)
     tmp.rename(dest)
+
+
+def file_sha256(p: Path) -> str:
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# figshare file 49365928 of article 25439023 v2 (api.figshare.com/v2/articles/25439023), checked 2026-10-13.
+BLN600_ZIP = "https://ndownloader.figshare.com/files/49365928"
+BLN600_SHA256 = "1ed1d12959c1adfccab66a2b96a59eb219a7e73086f06f03a48d41c6a5825aad"
+BLN600_PASSWORD = "BLN600"  # printed on the dataset page and in its readme; it is there to deter scrapers
+
+
+def extract_encrypted_zip(z: Path, dest: Path, password: str) -> None:
+    """The BLN600 zip is AES encrypted, which Python's zipfile can't read: use bsdtar (libarchive) or 7-Zip."""
+    import shutil
+    import subprocess
+
+    dest.mkdir(parents=True, exist_ok=True)
+    if shutil.which("bsdtar"):
+        cmd = ["bsdtar", "-x", "-f", str(z), "-C", str(dest), "--passphrase", password]
+    elif shutil.which("7z") or shutil.which("7zz"):
+        cmd = [shutil.which("7z") or shutil.which("7zz"), "x", "-y", f"-p{password}", f"-o{dest}", str(z)]
+    else:
+        raise RuntimeError("need bsdtar (libarchive-tools) or 7-Zip to open the AES-encrypted BLN600 zip")
+    subprocess.run(cmd, check=True)
+
+
 
 
 def cmd_public_fetch(a: argparse.Namespace) -> int:
@@ -736,6 +893,17 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         z = a.src / "tosho_all_linejson.zip"
         download(NDL_PDM_JSON, z)  # 5.2 GB
         zipfile.ZipFile(z).extractall(a.src / "tosho_all_linejson")
+    elif a.dataset == "bln600":
+        z = a.src / "BLN600.zip"
+        download(BLN600_ZIP, z)
+        got = file_sha256(z)
+        if got != BLN600_SHA256:
+            print(f"BLN600.zip sha256 {got} is not the expected {BLN600_SHA256}; not extracting", file=sys.stderr)
+            return 1
+        extract_encrypted_zip(z, a.src / "BLN600", BLN600_PASSWORD)
+        write_source_note(a.src, a.dataset, file=BLN600_ZIP, sha256=got,
+                          note="No-Derivatives: do not commit or redistribute crops or re-encoded images; "
+                               "share the original zip's URL instead")
     else:
         print(f"unknown dataset {a.dataset!r}", file=sys.stderr)
         return 2

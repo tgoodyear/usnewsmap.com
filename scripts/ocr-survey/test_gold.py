@@ -185,6 +185,47 @@ class PublicPick(unittest.TestCase):
         self.assertEqual(gold.main(["public-fetch", "--dataset", "austrian", "--src", "/nonexistent-gold-test"]), 2)
 
 
+class Bln600(unittest.TestCase):
+    def test_fetch_checks_the_checksum(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "BLN600.zip").write_bytes(b"not the real zip")  # download() keeps a file that is there
+            self.assertEqual(gold.main(["public-fetch", "--dataset", "bln600", "--src", d, "--confirm-download"]), 1)
+            self.assertFalse((Path(d) / "BLN600").exists())
+
+    def test_fetch_needs_the_download_flag(self):
+        self.assertEqual(gold.main(["public-fetch", "--dataset", "bln600", "--src", "/nonexistent-gold-test"]), 2)
+
+    def test_convert_copies_the_original_image_and_the_licence(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        with tempfile.TemporaryDirectory() as d:
+            src, out = Path(d) / "src", Path(d) / "out"
+            root = src / "BLN600"
+            (root / "Ground Truth").mkdir(parents=True)
+            (root / "Images").mkdir()
+            text = "A made-up excerpt for the test.\r\nIt is not from the dataset, and it is long enough." * 5
+            (root / "Ground Truth" / "1000000001.txt").write_text(text, encoding="utf-8")
+            (root / "Ground Truth" / "1000000002.txt").write_text("no image for this one", encoding="utf-8")
+            Image.new("L", (30, 20), 255).save(root / "Images" / "1000000001.tif")
+            (root / "metadata.json").write_text(json.dumps([{"short_id": "1000000001", "date": "18820527",
+                                                              "publication": "A Weekly"}]))
+            (root / "LICENSE").write_text("licence text")
+            self.assertEqual(gold.main(["public-convert", "--dataset", "bln600", "--src", str(src), "--out", str(out)]), 0)
+            man = gold.read_jsonl(out / "manifest.jsonl")
+            rows = gold.read_jsonl(out / "crops.jsonl")
+            self.assertEqual(len(man), 1)
+            self.assertEqual(man[0]["image"], "images/pub-bln600-001.tif")
+            self.assertEqual((out / man[0]["image"]).read_bytes(), (root / "Images" / "1000000001.tif").read_bytes())
+            self.assertEqual(man[0]["box"], [0, 0, 30, 20])
+            self.assertEqual(rows[0]["date"], "1882-05-27")
+            self.assertNotIn("\r", rows[0]["transcription"])
+            self.assertEqual(gold.validate_rows(rows, man, out / "images"), ([], []))
+            self.assertEqual((out / "LICENSES" / "LICENSE").read_text(), "licence text")
+
+
+
 try:
     import PIL  # noqa: F401
 except ImportError:
