@@ -41,7 +41,7 @@ param operatorPrincipalIds array
 param codeSignPublicKey string = ''
 
 var envName = checkedEnvName(env)
-var sfx = take(uniqueString(subscription().id, envName, 'boinc'), 6)
+var sfx = take(uniqueString(subscription().id, envName, 'boinc', location), 6)
 var withApp = !empty(image)
 
 var names = {

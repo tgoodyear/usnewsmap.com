@@ -6,7 +6,7 @@
     "server": "",
     "worker": ""
   },
-  "location": "eastus2",
+  "location": "westus2",
   "operator": {
     "login": "Trevor Goodyear",
     "objectId": "0b398b81-9e13-427f-9dc2-e38d890554bc"
