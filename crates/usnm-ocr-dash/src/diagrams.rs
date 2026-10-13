@@ -172,16 +172,9 @@ impl StepState {
 pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
     let mut m = BTreeMap::new();
 
-    // What was published and what is waiting for the rebuild are not read
-    // from anywhere. They follow 12 §12.2 and §12.3.4: a published index
-    // exists, and our text goes live at the next full rebuild (#283).
-    // Change these when the rebuild has run.
-    for k in ["ingest", "release-loc", "index-loc"] {
-        m.insert(k, StepState::new("done"));
-    }
-    for k in ["rebuild", "index-ocr"] {
-        m.insert(k, StepState::new("waiting"));
-    }
+    // Nothing in Azure is read here, so the ingest, the release, the
+    // published index, the rebuild and the index with our text are left
+    // out and draw as "not tracked here".
     // Step 12: the API queuing pages users find.
     m.insert("users", StepState::new("not-built"));
 
@@ -195,7 +188,11 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
         m.insert("damage", StepState::new("done"));
     }
 
-    let running = v.fetch.status.as_ref().map(|s| s.state.as_str());
+    // The fetcher takes the keep set first, then the buffer set, so the
+    // run's state belongs to the first set that isn't complete; a set
+    // behind it is waiting. A finished set is done whatever the run says.
+    let run = v.fetch.status.as_ref().map(|s| s.state.as_str());
+    let mut active_taken = false;
     for (set, fetch_key, store_key) in [
         ("keep", "fetch-keep", "store-keep"),
         ("buffer", "fetch-buffer", "store-buffer"),
@@ -204,12 +201,17 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
             continue;
         };
         let complete = s.total > 0 && s.fetched >= s.total;
-        let fetch_class = match running {
-            _ if complete => "done",
-            Some("running") => "running",
-            Some("done") => "done",
-            Some("waiting" | "budget" | "stopped") => "waiting",
-            _ => "none",
+        let (fetch_class, store_class) = if complete {
+            ("done", "done")
+        } else if active_taken {
+            ("waiting", "waiting")
+        } else {
+            active_taken = true;
+            match run {
+                Some("running") => ("running", "running"),
+                Some("done" | "waiting" | "budget" | "stopped") => ("waiting", "waiting"),
+                _ => ("none", "waiting"),
+            }
         };
         m.insert(
             fetch_key,
@@ -218,16 +220,7 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
                 format!("{} of {} pages", int(s.fetched), int(s.total)),
             ),
         );
-        m.insert(
-            store_key,
-            StepState::new(if complete {
-                "done"
-            } else if running == Some("running") {
-                "running"
-            } else {
-                "waiting"
-            }),
-        );
+        m.insert(store_key, StepState::new(store_class));
     }
 
     // Queues, from the nodes' look.
@@ -271,7 +264,7 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
     }
 
     // The Serial Set, from the status its node pushes.
-    if let Some(x) = v.serial_set.first() {
+    if let Some(x) = v.serial_set.iter().find(|x| !x.stale) {
         let st = &x.status;
         let class = match x.state.as_str() {
             "finished" => "done",
@@ -535,6 +528,25 @@ mod tests {
             for name in ["pve", "unifi", ".tjg.fyi"] {
                 assert!(!t.to_lowercase().contains(name), "internal name {name}");
             }
+        }
+    }
+
+    #[test]
+    fn a_stale_status_and_an_unread_step_are_not_shown_as_live() {
+        let mut v = empty_view();
+        v.serial_set.push(SsetView {
+            name: "usnm-sset".into(),
+            received: Utc::now(),
+            age_secs: 99_999,
+            stale: true,
+            state: "running".into(),
+            status: SsetStatus::default(),
+            done: 0,
+        });
+        let st = steps(&v);
+        assert!(!st.contains_key("sset-fetch"));
+        for k in ["rebuild", "index-ocr", "ingest", "release-loc", "index-loc"] {
+            assert!(!st.contains_key(k), "{k} is not read from anywhere");
         }
     }
 }
