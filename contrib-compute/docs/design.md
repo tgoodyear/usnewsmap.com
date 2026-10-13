@@ -264,7 +264,6 @@ every volunteer's attachment and cannot change.
   in decision 5 of ADR-0019). `infra/main.bicep` waives exactly those two policies for the
   dedicated BOINC resource group when `USNM_BOINC_RESOURCE_GROUP` is set. The group must hold only
   BOINC resources, and provisioning runs before this stack is deployed.
-- Images: our own build from the BOINC `server_release/1.6/1.6.2` tag; the Docker Hub images
 - Images: our own build (`images/`) from a pinned BOINC master commit, because the 1.6.2 tag has no
   `batch_collect_assimilator`; the Docker Hub images are stale.
 
