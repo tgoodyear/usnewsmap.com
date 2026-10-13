@@ -11,6 +11,9 @@
 # applies), so scripts/provision.sh must run. Documentation (Markdown
 # anywhere, anything under docs/) counts for no output but markdown: a change
 # to it alone runs only the Markdown format check.
+# ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/), whose
+# unit tests run in the infra job. fixtures/ocr-gold/ is read by no build, test
+# or generator, so it counts for none of rust/quickwit/web/image/fixtures.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
 # XML and Bicep; ADR-0019), which no other job builds.
 # Everything runs for a workflow_dispatch (scripts/bootstrap.sh dispatches ci
@@ -26,7 +29,7 @@ out=${GITHUB_OUTPUT:-/dev/stdout}
 provision=false
 ops=false
 all() {
-  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\n' "$ops" "$provision" >> "$out"
+  printf 'rust=true\nquickwit=true\nweb=true\nimage=true\nfixtures=true\nops=%s\ncode=true\nmarkdown=true\nprovision=%s\nocr_worker=true\npage_language=true\ncontrib=true\nocr_gold=true\n' "$ops" "$provision" >> "$out"
   echo "running everything: $1"
   exit 0
 }
@@ -51,6 +54,9 @@ if grep -Eq '\.md$' <<< "$files"; then markdown=true; else markdown=false; fi
 # into a binary or an image.
 files=$(grep -Ev '\.md$|^docs/' <<< "$files" || true)
 matches() { [ -n "$files" ] && grep -Eq "$1" <<< "$files"; }
+# The gold set's crops and selection: nothing builds, tests or generates them.
+built=$(grep -Ev '^fixtures/ocr-gold/' <<< "$files" || true)
+matches_built() { [ -n "$built" ] && grep -Eq "$1" <<< "$built"; }
 # infra/quickwit/ holds the index configs (read by the ingest image) and the
 # searcher config (applied on deploy). Everything else under infra/ needs a
 # provision, an environment's committed settings (infra/env/) included.
@@ -90,7 +96,11 @@ page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
 contrib='^contrib-compute/'
-for part in rust quickwit web image fixtures ocr_worker page_language contrib; do
+ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/)'
+for part in rust quickwit web image fixtures; do
+  if matches_built "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
+done
+for part in ocr_worker page_language contrib ocr_gold; do
   if matches "${!part}"; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
 echo "ops=$ops" >> "$out"
