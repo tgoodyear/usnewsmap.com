@@ -314,8 +314,11 @@ def cer_wer(truth: str, hyp: str) -> dict:
 
 
 def unknown_share(text: str) -> float:
-    n = len(text.replace(UNKNOWN, "").replace("\n", "")) or 1
-    return (text.count(UNKNOWN) + len(GUESS.findall(text))) / n
+    """Share of the resolved text's characters that are unknown or guessed; [?abc] counts 3."""
+    guessed = sum(len(g) for g in GUESS.findall(text))
+    unknown = GUESS.sub("", text).count(UNKNOWN)
+    resolved = GUESS.sub(lambda m: m.group(1), text).replace(UNKNOWN, "?").replace("\n", "")
+    return (unknown + guessed) / (len(resolved) or 1)
 
 
 def validate_rows(rows: list[dict], manifest: list[dict] | None = None, images: Path | None = None,
@@ -354,6 +357,8 @@ def validate_rows(rows: list[dict], manifest: list[dict] | None = None, images: 
         m = by_id.get(cid)
         if manifest is not None and m is None:
             errors.append(f"{cid}: not in the manifest")
+        if m is not None and r.get("image") is not None and r["image"] != m["image"]:
+            errors.append(f"{cid}: image {r['image']!r} differs from the manifest's {m['image']!r}")
         if m is not None and images is not None:
             p = images / Path(m["image"]).name
             if not p.exists():
@@ -579,7 +584,8 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
         if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
             index.setdefault(p.name, p)
     if dataset == "americanstories":
-        for r in parse_coco_gold(next(iter(sorted(src.rglob("gold_hand_transcription.json"))))):
+        gold_json = next(iter(sorted(src.rglob("gold_hand_transcription.json"))), None)
+        for r in parse_coco_gold(gold_json) if gold_json else []:
             if r["page"] in index:
                 out.append({**r, "page_id": f"americanstories-gold-{Path(r['page']).stem}", "image": index[r["page"]]})
     elif dataset in ("reichsanzeiger", "austrian"):
@@ -651,6 +657,9 @@ def cmd_public_convert(a: argparse.Namespace) -> int:
 
     Image.MAX_IMAGE_PIXELS = None
     regions = public_regions(a.dataset, a.src)
+    if not regions:
+        print(f"error: no transcribed regions found under {a.src} for {a.dataset}", file=sys.stderr)
+        return 1
     lo, hi = PUBLIC[a.dataset]["chars"]
     pick = pick_public(regions, a.count, a.per_page, a.seed, a.min_chars or lo, a.max_chars or hi)
     a.out.mkdir(parents=True, exist_ok=True)

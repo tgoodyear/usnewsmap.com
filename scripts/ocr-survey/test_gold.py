@@ -75,6 +75,15 @@ class Validate(unittest.TestCase):
         self.assertTrue(gold.validate_rows([self.row(transcription="a[?]" * 10)])[0])
         self.assertTrue(gold.validate_rows([self.row(transcription="abc [?de")])[0])
 
+    def test_multi_character_guess_counts_each_character(self):
+        self.assertAlmostEqual(gold.unknown_share("[?abc]" + "x" * 97), 0.03)
+        self.assertTrue(gold.validate_rows([self.row(transcription="[?abc]" + "x" * 97)])[0])
+
+    def test_image_must_match_manifest(self):
+        m = [{"crop_id": "g-01", "image": "images/g-01.jpg", "crop_sha256": ""}]
+        self.assertEqual(gold.validate_rows([self.row(image="images/g-01.jpg")], manifest=m)[0], [])
+        self.assertTrue(gold.validate_rows([self.row(image="images/g-02.jpg")], manifest=m)[0])
+
     def test_skipped_span_marker_fails(self):
         self.assertTrue(gold.validate_rows([self.row(transcription="abc\n[...]\ndef")])[0])
 
@@ -184,6 +193,11 @@ except ImportError:
 
 @unittest.skipUnless(PIL, "Pillow is not installed")
 class PublicConvert(unittest.TestCase):
+    def test_no_regions_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(gold.main(["public-convert", "--dataset", "americanstories", "--src", d, "--not-for-scoring",
+                                        "--out", str(Path(d) / "out")]), 1)
+
     def test_americanstories_and_page_xml_end_to_end(self):
         from PIL import Image
 
