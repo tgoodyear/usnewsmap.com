@@ -154,7 +154,9 @@ section { background:var(--surface); border:1px solid var(--ring); border-radius
 section > :last-child { margin-bottom:0; }
 /* The diagrams need the page's width. */
 section.wide { column-span:all; }
-section.wide svg { margin:6px 0 10px; }
+section.wide figure { overflow-x:auto; }
+section.wide svg { margin:6px 0 10px; min-width:760px; }
+.sr { position:absolute; width:1px; height:1px; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 /* Long lists scroll inside their panel, under a header that stays put. */
 .scroll { max-height:360px; overflow:auto; border-bottom:1px solid var(--grid); }
 .scroll th { position:sticky; top:0; background:var(--surface); box-shadow:inset 0 -1px var(--grid); z-index:1; }

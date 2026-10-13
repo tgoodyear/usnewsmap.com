@@ -150,6 +150,7 @@ impl StepState {
             "running" => "running",
             "waiting" => "waiting",
             "not-built" => "not built",
+            "failed" => "failed",
             _ => "not tracked here",
         };
         StepState {
@@ -200,7 +201,7 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
         let Some(s) = v.fetch.sets.iter().find(|s| s.name == set) else {
             continue;
         };
-        let complete = s.total > 0 && s.fetched >= s.total;
+        let complete = s.fetched >= s.total;
         let (fetch_class, store_class) = if complete {
             ("done", "done")
         } else if active_taken {
@@ -209,7 +210,10 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
             active_taken = true;
             match run {
                 Some("running") => ("running", "running"),
-                Some("done" | "waiting" | "budget" | "stopped") => ("waiting", "waiting"),
+                Some("failed") => ("failed", "waiting"),
+                Some("done" | "waiting" | "cooling" | "budget" | "stopped") => {
+                    ("waiting", "waiting")
+                }
                 _ => ("none", "waiting"),
             }
         };
@@ -289,6 +293,34 @@ pub fn steps(v: &View) -> BTreeMap<&'static str, StepState> {
     m
 }
 
+/// The boxes of a diagram with a live state, as plain text for screen
+/// readers: each box's title and what it says.
+pub fn summary(svg: &str, steps: &BTreeMap<&'static str, StepState>) -> String {
+    let mut out = String::new();
+    let mut rest = svg;
+    while let Some(i) = rest.find("data-state=\"@@cls:") {
+        let after = &rest[i + "data-state=\"@@cls:".len()..];
+        let Some(j) = after.find("@@") else { break };
+        let key = &after[..j];
+        rest = &after[j..];
+        let title = rest
+            .find("class=\"ttl\"")
+            .and_then(|t| rest[t..].split_once('>'))
+            .and_then(|(_, r)| r.split_once("</text>"))
+            .map(|(t, _)| t.trim_start_matches(|c: char| c.is_ascii_digit() || c == ' '));
+        let Some(title) = title else { continue };
+        let (label, text) = steps
+            .get(key)
+            .map_or(("not tracked here", ""), |s| (s.label, s.text.as_str()));
+        out.push_str(&format!("<li>{}: {}", title, esc(label)));
+        if !text.is_empty() {
+            out.push_str(&format!(" ({})", esc(text)));
+        }
+        out.push_str("</li>");
+    }
+    out
+}
+
 /// A diagram with its markers filled in from `steps`. A marker for a step
 /// not in the map reads "not tracked here"; none is left in the output.
 pub fn fill(svg: &str, steps: &BTreeMap<&'static str, StepState>) -> String {
@@ -332,10 +364,12 @@ pub fn section(v: &View) -> String {
         let _ = std::fmt::Write::write_fmt(
             &mut o,
             format_args!(
-                "<h3 id=\"pipeline-{}\">{}</h3><figure style=\"margin:0\">{}</figure><table class=\"kv\">",
+                "<h3 id=\"pipeline-{}\">{}</h3><figure style=\"margin:0\">{}</figure>\
+                 <ul class=\"sr\" aria-label=\"Live state of each step\">{}</ul><table class=\"kv\">",
                 d.id,
                 esc(d.heading),
-                fill(d.svg, &st)
+                fill(d.svg, &st),
+                summary(d.svg, &st)
             ),
         );
         for (k, val) in d.answers {
@@ -548,5 +582,37 @@ mod tests {
         for k in ["rebuild", "index-ocr", "ingest", "release-loc", "index-loc"] {
             assert!(!st.contains_key(k), "{k} is not read from anywhere");
         }
+    }
+
+    #[test]
+    fn an_empty_set_is_complete_and_the_run_state_goes_to_the_next() {
+        let mut v = empty_view();
+        for (name, total) in [("keep", 0), ("buffer", 50)] {
+            v.fetch.sets.push(SetView {
+                name,
+                total,
+                fetched: 0,
+                bytes: 0,
+            });
+        }
+        v.fetch.status = Some(crate::fetch::FetchStatus {
+            state: "cooling".into(),
+            ..Default::default()
+        });
+        let st = steps(&v);
+        assert_eq!(st["fetch-keep"].class, "done");
+        assert_eq!(st["fetch-buffer"].class, "waiting");
+        v.fetch.status.as_mut().unwrap().state = "failed".into();
+        assert_eq!(steps(&v)["fetch-buffer"].class, "failed");
+    }
+
+    #[test]
+    fn screen_readers_get_the_live_state_as_text() {
+        let st = steps(&empty_view());
+        let s = summary(DIAGRAMS[3].svg, &st);
+        assert!(s.contains("<li>"));
+        assert!(s.contains("not tracked here"));
+        let html = crate::html::render(&empty_view());
+        assert_eq!(html.matches("class=\"sr\"").count(), DIAGRAMS.len());
     }
 }

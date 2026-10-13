@@ -17,7 +17,7 @@
 .dg .st { font-style:italic; fill:var(--k2); }
 .dg .bar { fill:var(--none); }
 .dg [data-state="done"] .bar { fill:var(--good); } .dg [data-state="running"] .bar { fill:var(--run); }
-.dg [data-state="waiting"] .bar { fill:var(--wait); }
+.dg [data-state="waiting"] .bar { fill:var(--wait); } .dg [data-state="failed"] .bar { fill:#d03b3b; }
 .dg [data-state="not-built"] .card { stroke-dasharray:6 4; }
 .dg .arrow { fill:none; stroke:var(--k2); stroke-width:1.5; }
 .dg .tip { fill:var(--k2); }
