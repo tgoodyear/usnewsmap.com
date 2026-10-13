@@ -46,7 +46,9 @@ Required:
 Options:
   --location NAME        Azure region (default eastus)
   --name NAME            short resource name prefix, 3 to 12 lower-case letters/digits (default boinc)
-  --project-url URL      public master URL, https:// with trailing slash (default: the Container App address)
+  --project-url URL      master URL, required: https://boinc.usnewsmap.com/ (prod) or
+                         https://boinc-dev.usnewsmap.com/ (dev/experiment). It cannot change
+                         once volunteers attach
   --help                 this text
   --version              print the script version
 USAGE
@@ -81,9 +83,13 @@ for img in "$image" "$worker_image"; do
 done
 case "$name" in *[!a-z0-9]*|'') die "--name must be lower-case letters and digits" ;; esac
 [ "${#name}" -ge 3 ] && [ "${#name}" -le 12 ] || die "--name must be 3 to 12 characters"
-if [ -n "$project_url" ]; then
-  case "$project_url" in https://*/) ;; *) die "--project-url must start with https:// and end with /" ;; esac
-fi
+[ -n "$project_url" ] || die "--project-url is required"
+case "$project_url" in
+  https://boinc.usnewsmap.com/) domain_env=prod ;;
+  https://boinc-dev.usnewsmap.com/) domain_env=dev ;;
+  *) die "--project-url must be https://boinc.usnewsmap.com/ or https://boinc-dev.usnewsmap.com/ (https, trailing slash)" ;;
+esac
+domain="${project_url#https://}"; domain="${domain%/}"
 
 # The signing key must be offline: refuse a path inside this repository.
 key_abs="$(cd "$key_dir" 2>/dev/null && pwd)" || die "--signing-key-dir $key_dir does not exist"
@@ -103,6 +109,21 @@ az deployment group what-if \\
   --parameters name=$name location=$location image=$image \\
                mysqlAdminPassword=<generated, from Key Vault>
 PLAN
+echo
+note "1b. Custom domain $domain (real run; this script touches no DNS)"
+label="${domain%%.*}"
+cat <<PLAN
+   In the usnewsmap.com zone:
+       CNAME  $label  ->  <Container App FQDN, from the deployment output>
+       TXT    asuid.$label  ->  <customDomainVerificationId of the Container Apps environment>
+   Then bind $domain to the app with a Container Apps managed certificate.
+   UNVERIFIED that a managed certificate works with this environment (it needs the CNAME to
+   resolve publicly before validation). If it does not, bring a certificate from Key Vault.
+   The master URL cannot change after volunteers attach, so settle it before the first volunteer.
+PLAN
+if [ "$domain_env" = dev ]; then
+  echo "   dev rule: $domain holds no resources unless a focused experiment is running; tear it all down after."
+fi
 echo
 note "2. Secrets (real run): generated locally, written straight to Key Vault, never printed"
 echo "   mysql-admin-password, mysql-runtime-password, and the upload key pair (make_keys output)"
@@ -134,7 +155,7 @@ cat <<PLAN
 PLAN
 echo
 note "5. Check (real run)"
-url="${project_url:-https://<container app address>/}"
+url="$project_url"
 echo "   curl -fsS ${url}usnmocr/get_project_config.php"
 echo "   then submit one reserved job with the bridge job (docs/design.md section 4) and watch it finish"
 echo

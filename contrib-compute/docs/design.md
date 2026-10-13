@@ -123,7 +123,7 @@ Scope: very little.
 
 Decision:
 
-1. The master URL is `https://boinc.<project domain>/`, a custom domain on the Container App.
+1. The master URL is `https://boinc.usnewsmap.com/` for production and `https://boinc-dev.usnewsmap.com/` for dev and experiments, both custom domains on the Container App in the usnewsmap.com zone.
    A changed master URL forces every volunteer to reattach, so it must not change. The domain is ours, so we can move the app behind it.
 2. Static Web Apps, Free plan, hosts the human-facing pages: what the project is, how to
    join, the privacy notice, the terms of use. These are plain HTML built from files in the
@@ -131,7 +131,17 @@ Decision:
 3. File transfer: both directions go through the dynamic app, which reads and writes the
    Files share. Downloads are the cached scans that the bridge stages with `create_work`;
    uploads go to `file_upload_handler`, which cannot be redirected to blob storage.
-4. Scheduler RPC goes to the dynamic app at `https://boinc.<project domain>/<project>_cgi/cgi`.
+4. Scheduler RPC goes to the dynamic app at `https://boinc.usnewsmap.com/<project>_cgi/cgi`.
+
+Custom-domain steps (nothing here is done yet; `bootstrap.sh` prints them as a plan):
+
+1. DNS `CNAME boinc` to the Container App's FQDN (`boinc-dev` for dev).
+2. DNS `TXT asuid.boinc` holding the environment's custom-domain verification id.
+3. Bind the domain to the app with a Container Apps managed certificate. UNVERIFIED that a
+   managed certificate works with this environment; the fallback is a certificate from Key Vault.
+4. The master URL cannot change after volunteers attach; every client would have to reattach.
+5. `boinc-dev` follows the repo's dev rule: it holds nothing unless a focused experiment is
+   running, and is torn down fully afterwards.
 
 This differs from a "static frontend" as first asked for.
 
@@ -223,7 +233,9 @@ execs `usnm-boinc`; it is part of the server image work, section 9).
 ### 5.2 Security
 
 Attack surface: the public scheduler CGI, `file_upload_handler` and the PHP web UI. The MySQL
-server has private access only; nothing else in the project is public.
+server has private access only; nothing else in the project is public. The public name is
+`boinc.usnewsmap.com` with a managed certificate (section 3, UNVERIFIED); the master URL is part of
+every volunteer's attachment and cannot change.
 
 - Keep the PHP surface small: disable forums, profiles, private messages and teams in
   `html/project/project.inc`. Account creation can use `INVITE_CODES` so the project starts
