@@ -132,7 +132,7 @@ def generate(out: Path) -> None:
             rc = gold.main(["score", "--crops", str(inp / "crops.jsonl"), *argv, "--out", str(exp)])
         if rc:
             raise SystemExit(f"gold.py score failed for {name}")
-        (exp / "table.md").write_text(buf.getvalue(), encoding="utf-8")
+        (exp / "table.txt").write_text(buf.getvalue(), encoding="utf-8")
         (exp / "args.json").write_text(json.dumps([a.replace(str(inp), "input") for a in argv]) + "\n",
                                        encoding="utf-8")
 

@@ -43,7 +43,7 @@ fn rust_scorer_matches_gold_py() {
             read("cer-summary.csv"),
             "{name}: cer-summary.csv"
         );
-        assert_eq!(score::table(&s.summary), read("table.md"), "{name}: table");
+        assert_eq!(score::table(&s.summary), read("table.txt"), "{name}: table");
         cases += 1;
     }
     assert_eq!(cases, 3);
