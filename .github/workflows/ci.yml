@@ -438,6 +438,8 @@ jobs:
         run: |
           scripts/ci/no-positional-args.py
           python3 -m unittest -v scripts/ci/test_no_positional_args.py
+      - name: The OCR gold set's tests pass (#296)
+        run: python3 -m unittest -v scripts/ocr-survey/test_gold.py
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's
