@@ -288,6 +288,6 @@ Checked in public documentation only, nobody contacted.
 
 - A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only.
 - Run `public-fetch` and `public-convert` for Reichsanzeiger and Austrian, and check the readers against the real files.
-- BOINC: send the gold check as BOINC work and collect its reports ([Volunteer bundle](#volunteer-bundle); follow-up issue linked from #457).
+- BOINC: send the gold check as BOINC work and collect its reports ([Volunteer bundle](#volunteer-bundle); [#462](https://github.com/tgoodyear/usnewsmap.com/issues/462)).
 - Decide whether to commit the images once `cut` has run and the total is known.
 - `usnm-ocr-survey score` takes over the span-finding for whole-page runs and reads this format as `--truth`.
