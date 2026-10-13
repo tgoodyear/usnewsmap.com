@@ -59,7 +59,9 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
           volumeMounts: [ { volumeName: 'project', mountPath: '/project' } ]
         }
       ]
-      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorageName } ]
+      // SMB has no symlinks or POSIX owners: mfsymlinks stores BOINC's symlinks (bin/stop ->
+      // bin/start), and the share appears owned by boincadm (uid 1000).
+      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorageName, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' } ]
     }
   }
 }

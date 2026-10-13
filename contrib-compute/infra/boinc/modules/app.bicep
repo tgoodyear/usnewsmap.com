@@ -101,7 +101,9 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           ]
         }
       ]
-      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorage.name } ]
+      // SMB has no symlinks or POSIX owners: mfsymlinks stores BOINC's symlinks (bin/stop ->
+      // bin/start), and the share appears owned by boincadm (uid 1000).
+      volumes: [ { name: 'project', storageType: 'AzureFile', storageName: projectStorage.name, mountOptions: 'mfsymlinks,uid=1000,gid=1000,dir_mode=0775,file_mode=0775,cache=strict' } ]
       scale: { minReplicas: 1, maxReplicas: 1 }
     }
   }

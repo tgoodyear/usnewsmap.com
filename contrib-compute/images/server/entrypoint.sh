@@ -56,8 +56,9 @@ init_project() {
   # Removed on any exit, including a make_project failure under set -e.
   # Expanded now: the locals are gone by the time an EXIT trap runs under set -u.
   trap "rm -rf '$scratch' '$PROJ/keys'" EXIT
+  # No marker means no finished init: a failed run's tree and database are started afresh.
   # make_project reads $USER, which a container is not given.
-  (cd "$BOINC_SRC" && USER="${USER:-$(id -un)}" tools/make_project --no_query --srcdir "$BOINC_SRC" \
+  (cd "$BOINC_SRC" && USER="${USER:-$(id -un)}" tools/make_project --no_query --delete_prev_inst --drop_db_first --srcdir "$BOINC_SRC" \
       --project_root "$PROJ" --key_dir "$scratch" \
       --url_base "https://$MASTER_HOST/" --html_user_url "https://$MASTER_HOST/$PROJECT/" \
       --html_ops_url "https://$MASTER_HOST/${PROJECT}_ops/" --project_host "$MASTER_HOST" \
