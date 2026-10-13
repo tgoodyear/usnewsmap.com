@@ -30,7 +30,7 @@ pub fn load(files: &[PathBuf]) -> anyhow::Result<Loaded> {
     let result: ResultManifest =
         serde_json::from_slice(&read(&files[2], MAX_JSON)?).context("result.json")?;
     result.check(&texts)?;
-    if result.runs.len() == 1 {
+    if result.mode == assess::Mode::Crash {
         ensure!(
             texts[&Format::Jpeg].is_empty(),
             "crash unit returned JPEG text"
@@ -76,6 +76,7 @@ mod tests {
         let r = ResultManifest {
             v: VERSION,
             job_id: "e".repeat(64),
+            mode: assess::Mode::Ocr,
             engine: crate::assess::work::tests::job(assess::Mode::Ocr).engine,
             runs: vec![
                 run(Format::Jp2, jp2, jp2_text),

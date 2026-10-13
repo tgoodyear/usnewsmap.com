@@ -232,6 +232,7 @@ pub struct Run {
 pub struct ResultManifest {
     pub v: u32,
     pub job_id: String,
+    pub mode: Mode,
     pub engine: Engine,
     pub runs: Vec<Run>,
     pub completed_at: String,
@@ -244,9 +245,13 @@ impl ResultManifest {
         ensure!(is_sha256(&self.job_id), "invalid job id");
         chrono::DateTime::parse_from_rfc3339(&self.completed_at)?;
         let formats: Vec<Format> = self.runs.iter().map(|r| r.format).collect();
+        let want: &[Format] = match self.mode {
+            Mode::Ocr => &[Format::Jp2, Format::Jpeg],
+            Mode::Crash => &[Format::Jp2],
+        };
         ensure!(
-            formats == [Format::Jp2, Format::Jpeg] || formats == [Format::Jp2],
-            "runs must be JP2 then JPEG, or JP2 alone"
+            formats == want,
+            "runs must be JP2 then JPEG for an OCR unit, JP2 alone for a crash unit"
         );
         for r in &self.runs {
             let text = texts.get(&r.format).map(Vec::as_slice).unwrap_or(b"");
@@ -313,13 +318,13 @@ pub fn agree(
     b: &ResultManifest,
     b_texts: &BTreeMap<Format, Vec<u8>>,
 ) -> Result<(), String> {
-    if a.job_id != b.job_id || a.engine != b.engine {
+    if a.job_id != b.job_id || a.mode != b.mode || a.engine != b.engine {
         return Err("different job or engine".into());
     }
     if a.runs.len() != b.runs.len() {
         return Err("different runs".into());
     }
-    let crash_unit = a.runs.len() == 1;
+    let crash_unit = a.mode == Mode::Crash;
     for (ra, rb) in a.runs.iter().zip(&b.runs) {
         if ra.format != rb.format {
             return Err("different formats".into());
@@ -386,6 +391,11 @@ mod tests {
         ResultManifest {
             v: VERSION,
             job_id: "b".repeat(64),
+            mode: if runs.len() == 1 {
+                Mode::Crash
+            } else {
+                Mode::Ocr
+            },
             engine: engine(),
             runs,
             completed_at: "2026-10-13T00:00:00Z".into(),
@@ -447,6 +457,13 @@ mod tests {
         assert!(agree(&a, &t, &b, &t).is_ok());
         let c = result(vec![run(Format::Jp2, Outcome::Crash136, "")]);
         assert!(agree(&a, &t, &c, &t).is_err());
+    }
+
+    #[test]
+    fn shape_must_match_mode() {
+        let mut r = result(vec![run(Format::Jp2, Outcome::Ok, "")]);
+        r.mode = Mode::Ocr;
+        assert!(r.check(&BTreeMap::new()).is_err());
     }
 
     #[test]

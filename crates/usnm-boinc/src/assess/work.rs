@@ -88,6 +88,7 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     let result = ResultManifest {
         v: VERSION,
         job_id: job.id.clone(),
+        mode: job.mode,
         engine: job.engine.clone(),
         runs,
         completed_at: chrono::Utc::now().to_rfc3339(),

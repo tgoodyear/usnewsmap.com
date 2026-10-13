@@ -6,14 +6,15 @@
 #   BRIDGE_STEP=submit       or: reconcile (then BRIDGE_FOUND=present|absent is required)
 #
 # The JP2 against IIIF JPEG assessment (#456, docs/boinc-assessment.md), under
-# $PROJECT_DIR/assess on the share:
+# $PROJECT_DIR/assess/<ASSESS_CAMPAIGN> on the share (one campaign per engine build;
+# ASSESS_CAMPAIGN is required, lower-case letters, digits and hyphens):
 #   BRIDGE_STEP=assess-stage    ASSESS_MODE=ocr|crash ASSESS_ENGINE_IMAGE=sha256:... (worker image)
 #                               ASSESS_ENGINE_BASE=<its TESSERACT_IMAGE> [ASSESS_ENGINE_VERSION=5.5.0]
 #                               [ASSESS_MAX=100]
 #                               fetches from LoC, one request at a time, 5 s apart
 #   BRIDGE_STEP=assess-submit   ASSESS_MODE=ocr|crash [ASSESS_MAX=500]
 #   BRIDGE_STEP=assess-collect  ASSESS_SPOOL=<assimilator results directory>; runs score.py
-#                               and aggregate.py into $PROJECT_DIR/assess/out
+#                               and aggregate.py into <campaign>/out
 #
 # Settled by this script, open in design.md section 9 (question 4): the job id is read from
 # the environment, so each run needs a start with an environment override. UNVERIFIED.
@@ -21,8 +22,12 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . /usr/local/lib/usnm-boinc/lib.sh
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
-ASSESS="$SHARE_DIR/assess"
 step="${BRIDGE_STEP:-submit}"
+ASSESS=""
+if [[ "$step" == assess-* ]]; then
+  [[ "${ASSESS_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "ASSESS_CAMPAIGN must be 1-41 of [a-z0-9-]"
+  ASSESS="$SHARE_DIR/assess/$ASSESS_CAMPAIGN"
+fi
 assess_mode() {
   case "${ASSESS_MODE:-}" in ocr|crash) ;; *) fail "ASSESS_MODE must be ocr or crash" ;; esac
 }

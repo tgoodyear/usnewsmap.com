@@ -25,16 +25,18 @@ The engine build is pinned and can be swapped. Each job carries the worker image
 
 1. Build the worker image `FROM` the new Tesseract image (`--build-arg TESSERACT_IMAGE=...`).
 2. Install it as a new `usnm_assess` app version (`scripts/boinc/install.py --app usnm_assess --version 2.0 --image ...`), sign it, and run `bin/update_versions`.
-3. Stage with `--engine-image` and `--engine-base` set to the new digests (and `--engine-version` if the version changed) into a fresh `--root`. Job ids include the engine, so the two campaigns never mix.
+3. Stage with `--engine-image` and `--engine-base` set to the new digests (and `--engine-version` if the version changed) into a fresh `--root` (a new `ASSESS_CAMPAIGN` on the bridge job). Job ids include the engine, so the two campaigns never mix.
 
 ## Sample
 
-`usnm-boinc assess sample` reads the prefetch manifest (`manifest.parquet`) and writes two JSON Lines files:
+`usnm-boinc assess sample` reads a prefetch manifest (`manifest.parquet`) and writes two JSON Lines files:
 
 - the OCR sample (`--ocr-pages`, default 3000), and
 - the crash-only list (`--crash-pages`, default 20000), drawn from pages not in the OCR sample.
 
 Strata are language (ISO 639-3, as the production message carries it) × decade × batch prefix (the batch name up to its first `_`, such as `mdu`) × LoC damage rate in three bins (`low` under 0.1, `mid` under 0.5, `high`). Each stratum gets pages in proportion to its size, with a floor of `--min-per-stratum` (default 2) or the whole stratum if it is smaller. Each row carries the stratum's size (`stratum_pages`) and two weights: `weight`, the stratum's pages divided by the OCR pages drawn from it, for quality and speed; and `crash_weight`, the stratum's pages divided by all pages drawn from it (OCR and crash), for crash rates, since every unit reads the JP2. The draw orders each stratum by SHA-256 of `--seed` and the doc id, so the same manifest and seed give the same sample. Output is in that hash order, so any prefix of a run is mixed.
+
+The usual prefetch manifest holds only pages above a damage rate of 0.25, which is not the corpus. Build one for the sample with `usnm-ingest ocr-prefetch-manifest --min-damage 0`; the sampler refuses a manifest whose lowest damage rate is 0.1 or more. That tool keeps pages whose rate is above the minimum, so pages with a rate of exactly 0 are still left out, and it keeps one copy of each duplicated page. Estimates cover that population.
 
 Pages without a detected language use the title's first language if `--title-languages` (a JSON object, LCCN to MARC codes) is given; otherwise they are left out. Pages whose language has no locked model are left out too, as production leaves them. The counts go to stderr.
 
@@ -57,11 +59,13 @@ It resolves the JP2 through the batch's bag manifest and checks its md5, then (O
 
 `batch_collect_assimilator --app usnm_assess` copies the canonical result into the spool.
 
-The validator needs `usnm-boinc` in the server container. The server image does not carry it, so a server that runs the assessment uses the bridge image: deploy `contrib-compute/infra/boinc` with `assessment=true`. `images/server/lib.sh` then adds the two daemons and links the scripts into the project's `bin/`.
+The validator needs `usnm-boinc` in the server container. The server image does not carry it, so a server that runs the assessment uses the bridge image: deploy with `bootstrap.sh --assessment` (Bicep parameter `assessment=true`). `images/server/lib.sh` then adds the two daemons and links the scripts into the project's `bin/`.
 
 ## Scoring
 
-`usnm-boinc assess collect` reads the canonical results and writes, under `--out`, the files the #435 report's scripts read: `sample.jsonl`, `results.jsonl`, `crash.jsonl`, and `<n>/loc.xml` with `<n>/out-jp2/page.txt` and `<n>/out-jpg/page.txt`. `score.py` and `aggregate.py` then run unchanged against LoC's ALTO. It also writes `units.jsonl`: every unit with its stratum, weights, engine and per-format outcome, time and memory, for weighted corpus estimates and confidence intervals in the follow-up report.
+Campaigns are kept apart by `ASSESS_CAMPAIGN`: the bridge job stages, submits and collects under `<share>/assess/<campaign>/`, so a campaign per engine build never shares units or output with another.
+
+`usnm-boinc assess collect` reads the canonical results and writes, under `--out`, the files the #435 report's scripts read: `sample.jsonl`, `results.jsonl`, `crash.jsonl`, and `<n>/loc.xml` with `<n>/out-jp2/page.txt` and `<n>/out-jpg/page.txt`. `score.py` and `aggregate.py` then run unchanged against LoC's ALTO. A JP2 run that ended in `other` (neither a crash nor a read, such as an out-of-memory kill) is left out of `crash.jsonl`, because `aggregate.py` would count it as read. It also writes `units.jsonl`: every unit with its stratum, weights, engine and per-format outcome, time and memory, for weighted corpus estimates and confidence intervals in the follow-up report.
 
 ## Running a campaign
 
@@ -71,17 +75,17 @@ Nothing here starts on its own. With the server deployed with `assessment=true`,
 # Anywhere with the manifest.
 usnm-boinc assess sample --manifest manifest.parquet --seed 456 \
   --out-ocr sample-ocr.jsonl --out-crash sample-crash.jsonl
-# Copy both to <share>/assess/ on the project share.
+# Copy both to <share>/assess/<campaign>/ on the project share.
 
 # Bridge job runs, repeated until stage reports nothing left (each run is bounded).
-az containerapp job start ... --env-vars BRIDGE_STEP=assess-stage ASSESS_MODE=crash \
+az containerapp job start ... --env-vars BRIDGE_STEP=assess-stage ASSESS_MODE=crash ASSESS_CAMPAIGN=tess550 \
   ASSESS_ENGINE_IMAGE=sha256:... ASSESS_ENGINE_BASE=sha256:...
-az containerapp job start ... --env-vars BRIDGE_STEP=assess-submit ASSESS_MODE=crash
+az containerapp job start ... --env-vars BRIDGE_STEP=assess-submit ASSESS_MODE=crash ASSESS_CAMPAIGN=tess550
 # The same for ASSESS_MODE=ocr.
 
 # When the units have been assimilated:
-az containerapp job start ... --env-vars BRIDGE_STEP=assess-collect ASSESS_SPOOL=/project/usnmocr/results/<batch>
-# Tables: <share>/assess/out/tables.md
+az containerapp job start ... --env-vars BRIDGE_STEP=assess-collect ASSESS_CAMPAIGN=tess550 ASSESS_SPOOL=/project/usnmocr/results/<batch>
+# Tables: <share>/assess/tess550/out/tables.md
 ```
 
 If `create_work` fails, the unit keeps a `submitting` marker and later runs skip it. Look the workunit up on the server by its name (`usnm_assess_<job id>`); if it is there, rename the marker to `submitted`, otherwise delete it.

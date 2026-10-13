@@ -8,8 +8,8 @@
 //! - `<n>/loc.xml`, `<n>/out-jp2/page.txt`, `<n>/out-jpg/page.txt`
 //! - `results.jsonl`: one line per OCR run, the fields `score.py` and
 //!   `aggregate.py` read from `run_ocr.py`'s output
-//! - `crash.jsonl`: the JP2 outcome of every unit (OCR and crash), in
-//!   `crash_scan.py`'s shape
+//! - `crash.jsonl`: the JP2 outcome of every unit (OCR and crash) that
+//!   crashed or read, in `crash_scan.py`'s shape
 //! - `units.jsonl`: every unit with its stratum and weight, and the outcome,
 //!   time and memory per format, for corpus estimates
 //!
@@ -36,6 +36,8 @@ pub struct Summary {
     pub crash: usize,
     pub pending: usize,
     pub failed: usize,
+    /// Units whose JP2 run ended neither in a crash nor a read.
+    pub inconclusive: usize,
 }
 
 fn rc(o: Outcome, code: Option<i32>) -> i32 {
@@ -96,18 +98,28 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 continue;
             }
             let got = validate::load(&files).with_context(|| format!("canonical result {wu}"))?;
-            if got.result.job_id != job.id || got.result.engine != job.engine {
+            if got.result.job_id != job.id
+                || got.result.mode != job.mode
+                || got.result.engine != job.engine
+            {
                 anyhow::bail!("{wu}: result does not belong to its job");
             }
             n += 1;
             let jp2 = &got.result.runs[0];
-            crash.push_str(&serde_json::to_string(&json!({
-                "n": n, "doc_id": job.doc_id, "lang": job.language, "decade": row.decade,
-                "batch": job.batch, "bytes": job.inputs[&Format::Jp2].bytes,
-                "wall": jp2.engine_ms as f64 / 1000.0, "rc": rc(jp2.outcome, jp2.code),
-                "verdict": verdict(jp2.outcome), "tail": jp2.stderr_tail,
-            }))?);
-            crash.push('\n');
+            // aggregate.py counts every verdict but crash_136 as read; an
+            // `other` exit (an out-of-memory kill, say) shows neither, so it
+            // stays out of crash.jsonl and is counted in units.jsonl only.
+            if jp2.outcome == Outcome::Other {
+                summary.inconclusive += 1;
+            } else {
+                crash.push_str(&serde_json::to_string(&json!({
+                    "n": n, "doc_id": job.doc_id, "lang": job.language, "decade": row.decade,
+                    "batch": job.batch, "bytes": job.inputs[&Format::Jp2].bytes,
+                    "wall": jp2.engine_ms as f64 / 1000.0, "rc": rc(jp2.outcome, jp2.code),
+                    "verdict": verdict(jp2.outcome), "tail": jp2.stderr_tail,
+                }))?);
+                crash.push('\n');
+            }
             all.push_str(&serde_json::to_string(&json!({
                 "n": n, "doc_id": job.doc_id, "mode": job.mode, "stratum": job.stratum,
                 "engine": job.engine, "runs": got.result.runs,

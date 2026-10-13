@@ -150,6 +150,18 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         .map(str::to_owned)
         .collect();
     let rows = decode_where(bytes::Bytes::from(std::fs::read(&opts.manifest)?), |_| true)?;
+    // The usual prefetch manifest holds only pages above a damage rate
+    // (`ocr-prefetch-manifest --min-damage`, 0.25 by default): a sample of
+    // that is not a sample of the corpus.
+    let lowest = rows
+        .iter()
+        .map(|r| r.damage_rate)
+        .fold(f64::INFINITY, f64::min);
+    ensure!(
+        rows.is_empty() || lowest < 0.1,
+        "the manifest's lowest damage rate is {lowest:.3}: it looks filtered by damage. \
+         Build one with `usnm-ingest ocr-prefetch-manifest --min-damage 0`"
+    );
     let mut summary = Summary {
         manifest_pages: rows.len(),
         ..Default::default()
