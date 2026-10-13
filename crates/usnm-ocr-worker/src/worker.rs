@@ -648,8 +648,16 @@ impl Worker {
                         "the engine crashed on the JP2 (status 136); reading the IIIF JPEG instead"
                     );
                     let jpeg = self.scans.jpeg(key, &m.batch, &scan.iiif_base).await?;
+                    // The scan read is the JPEG now, wherever it came from.
+                    self.tracker.scanned(token, jpeg.from_cache);
+                    // A directory of its own, so nothing the crashed run
+                    // left behind is read as this run's output.
+                    let again = work.path().join("jpeg");
+                    tokio::fs::create_dir(&again)
+                        .await
+                        .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
                     let out = self
-                        .read_scan(&jpeg, m, work.path())
+                        .read_scan(&jpeg, m, &again)
                         .await
                         .map_err(|e| engine_failure(e, &self.cfg.node_id))?;
                     // The JP2 (a buffer-set copy) isn't needed now; best effort.
@@ -1233,6 +1241,7 @@ mod tests {
         );
         assert!(alto.contains(&crate::prefetch::sha256(b"jpeg")), "{alto}");
         assert!(!alto.contains("md5"), "{alto}");
+        assert_eq!(st.since_start.from_loc, 1);
         assert_eq!(out.list("pages").await.unwrap().len(), 1);
     }
 
