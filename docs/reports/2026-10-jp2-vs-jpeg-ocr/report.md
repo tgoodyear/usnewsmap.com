@@ -141,7 +141,7 @@ The JP2 is better on four of the ten, none favours the JPEG, and six have no cle
 - Memory is about the same. Median peak 248 MiB for the JP2 and 238 MiB for the JPEG; the highest was 540 MiB (JP2) and 457 MiB (JPEG), against the 1536 MiB limit. Sampling every 5 seconds gives a lower bound on the true peak.
 - The JP2s averaged 5.5 MB and the JPEGs 5.6 MB on these pages.
 
-**Effect on the production worker.** None was measurable. Node 3's worker finished about 37 pages an hour with the run going and 38 an hour during a half-hour pause. Its rate had already dropped from about 54 before the first test, with or without the run, for reasons not found here.
+**Effect on the production worker.** None was measurable. Node 3's worker logged about 37 journal entries an hour with the run going and 38 an hour during a half-hour pause. These count every outcome, not only pages that got text. Its rate had already dropped from about 54 before the first test, with or without the run, for reasons not found here.
 
 # Recommendation
 

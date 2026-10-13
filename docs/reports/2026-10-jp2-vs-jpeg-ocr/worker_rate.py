@@ -1,3 +1,8 @@
+"""Worker journal entries an hour on node 3 around the run (#296).
+
+Counts every journal entry in each window, whatever its outcome, so the
+rate is attempts finished, not pages that got text.
+"""
 import json,datetime,sys
 def p(s): return datetime.datetime.fromisoformat(s[:26]+"+00:00")
 rs=[]
