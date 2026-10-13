@@ -92,7 +92,7 @@ files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # reconstructed index history), the fixtures the tests read, and the Python
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
-rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/(ci/|quickwit-fixtures\.sh))'
+rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer): the code those tests run and what they load. Not catalog/,
 # web/src/examples.json, ops/index-history.json or other CI scripts, which
@@ -100,9 +100,9 @@ rust='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickw
 # is asked to do.
 quickwit='^(crates/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|fixtures/|infra/quickwit/|scripts/quickwit-fixtures\.sh$|scripts/ci/install-quickwit\.sh$)'
 # The web job also checks the format, so Prettier's config counts.
-web='^(web/|fixtures/|scripts/ci/|\.prettier(rc\.json|ignore)$)'
+web='^(web/|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc\.json|ignore)$)'
 # The Quickwit pin is the ingest image's base, so a new one republishes it.
-image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$)"
+image="$rust|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 # The OCR worker's release: the worker and the LAN dashboard, the crates they use, the workspace's
@@ -115,7 +115,7 @@ ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-core|
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|crates/usnm-boinc/)'
+contrib='^(contrib-compute/|crates/usnm-boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 for part in rust quickwit web image fixtures ocr_worker page_language contrib; do
   if matches "${!part}" || [[ " $forced " == *" $part "* ]]; then echo "$part=true" >> "$out"; else echo "$part=false" >> "$out"; fi
 done
