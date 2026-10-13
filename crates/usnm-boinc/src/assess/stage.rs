@@ -156,7 +156,10 @@ async fn page(
         },
     );
     if opts.mode == Mode::Ocr {
-        let jpg = match loc.iiif_scan(resolved.iiif_base.clone(), ImageSize::Full).await {
+        let jpg = match loc
+            .iiif_scan(resolved.iiif_base.clone(), ImageSize::Full)
+            .await
+        {
             Ok(s) => s,
             Err(FetchError::Permanent(m)) => return missing(unit, &m),
             Err(e) => return Err(stop(e)),
