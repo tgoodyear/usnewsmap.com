@@ -735,7 +735,7 @@ mod tests {
             "https://192.0.2.1/scans",
             "https://example.com/scans",
             "http://acct.blob.core.windows.net/scans",
-            "https://acct.blob.core.windows.net/scans?sv=2022&sig=x",
+            "https://acct.blob.core.windows.net/scans?sv=2022",
             "https://acct.blob.core.windows.net/",
             "https://acct.blob.core.windows.net/scans/keep",
             "https://user:pw@acct.blob.core.windows.net/scans",
