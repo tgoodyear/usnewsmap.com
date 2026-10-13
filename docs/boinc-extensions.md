@@ -20,8 +20,8 @@ Why it exists: the pilot's `sample_trivial_validator` accepts any result. That i
 What it is:
 
 - `crates/usnm-boinc/src/validate.rs` and the helper `usnm-boinc-validate`. BOINC's `script_validator` runs it with bare file paths and no flags: three paths check one result, six compare two.
-- A result is valid when `result.json` parses as the pilot's `ResultManifest`, both digests match the files, the text is UTF-8 and the ALTO passes `usnm_alto::check`.
-- Two results agree when they name the same job, scan and engine, and their text scores at least 0.98 on a word-multiset Dice measure (case and whitespace ignored). The threshold is a constant in code, not a setting. Tesseract is deterministic for one image, so honest replicas score 1.0; the slack covers float and thread differences between CPUs.
+- A result is valid when `result.json` parses as the pilot's `ResultManifest` with an RFC 3339 `completed_at`, both digests match the files, the text is UTF-8 and the ALTO passes `usnm_alto::check`.
+- Two results agree when they name the same job, scan and engine, and both their text and the words in their ALTO (the `CONTENT` values, in order) score at least 0.95 on a word-bigram Dice measure (case and whitespace ignored). Counting adjacent word pairs makes the measure order-sensitive, so a shuffled replica fails, and a single changed word in fifty still passes. ALTO is compared by its words, not byte for byte, because the manifest digests already bind each replica to its own files. The threshold is a constant in code, not a setting. Tesseract is deterministic for one image, so honest replicas score 1.0; the slack covers float and thread differences between CPUs.
 - It has no job file, so it cannot run `ResultManifest::matches`. The collector still does, so this is only an early filter.
 - Off by default. `usnm-boinc submit --replicas N` (1 to 3, default 1) sets `min_quorum` and `target_nresults`. `ocr/boinc/daemons-fuzzy.xml` is the daemon line to use instead of the trivial validator.
 
@@ -47,9 +47,11 @@ Letting volunteers fetch the scan from the source themselves, instead of receivi
 
 ## 6. Scan-archive read path (future)
 
-ADR-0018 (issue #442, PR #443) describes an archive of scans. If tasks should read from it, the job would need two fields beyond the pilot's `Scan`:
+ADR-0018 (issue #442, PR #443) defines the scan-archive contract, and this pilot does not change it:
 
-- `scan.archive_url`: where the scan can be read, under the same `https` and host rules as `scan.url`.
-- `scan.ticket`: a signed, per-task, time-limited token that allows that one read.
+- The bridge reads the archive with its own Entra identity, not through volunteers.
+- It verifies the bytes against the existing `Scan` fields (`sha256` and `bytes`).
+- It falls back to the current source when the archive has no copy.
+- `scan.url` stays as the LoC provenance of the scan.
 
-The worker would try the archive with the ticket first and fall back to `scan.url`. The scan's `sha256` and `bytes` stay the check on whatever arrives, so the result contract does not change. This needs a contract version bump, and the archive's signing design is not settled. Not implemented.
+So the job gains no `archive_url` or ticket, and the result contract is unchanged. Only a future client-side fetch, where a volunteer reads a scan directly, would need a per-task ticket in the task inputs. That is not planned, and it would be a contract version change decided then. Not implemented.

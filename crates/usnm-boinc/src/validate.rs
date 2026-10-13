@@ -9,11 +9,13 @@ use anyhow::{bail, ensure, Context};
 use std::{collections::HashMap, path::Path};
 use usnm_ocr_contract::boinc::{self, ResultManifest};
 
-/// Two replicas agree when the word-multiset Dice score of their text is at
-/// least this. Tesseract is deterministic for one image and version, so
-/// honest replicas score 1.0; the slack covers float and thread differences
-/// between CPUs, not a different engine.
-pub const SIMILARITY_THRESHOLD: f64 = 0.98;
+/// Two replicas agree when the word-bigram Dice score of their text, and of
+/// the words in their ALTO, is at least this. Bigrams make the measure
+/// order-sensitive: shuffled words share all their words but few pairs.
+/// Tesseract is deterministic for one image and version, so honest replicas
+/// score 1.0; the slack covers float and thread differences between CPUs
+/// (one changed word in fifty still passes), not a different engine.
+pub const SIMILARITY_THRESHOLD: f64 = 0.95;
 
 /// One result's three output files, in the order of the result template.
 pub struct Outputs {
@@ -31,6 +33,8 @@ pub fn load(text: &Path, alto: &Path, manifest: &Path) -> anyhow::Result<Outputs
     let manifest: ResultManifest = serde_json::from_slice(&read(manifest, boinc::MAX_JSON)?)
         .context("result.json is not a result manifest")?;
     ensure!(manifest.v == boinc::VERSION, "unknown result version");
+    chrono::DateTime::parse_from_rfc3339(&manifest.completed_at)
+        .context("completed_at is not an RFC 3339 timestamp")?;
     ensure!(
         manifest.text_sha256 == boinc::sha256(&text)
             && manifest.alto_sha256 == boinc::sha256(&alto),
@@ -46,32 +50,65 @@ pub fn load(text: &Path, alto: &Path, manifest: &Path) -> anyhow::Result<Outputs
     })
 }
 
-/// Word-multiset Dice score of two texts, ignoring case and whitespace.
-/// Linear in the text size. Two empty texts score 1.0.
+/// Word-bigram Dice score of two texts, ignoring case and whitespace. Word
+/// order matters: the score counts adjacent word pairs. A text of one word
+/// has no pairs, so it is compared as a single unigram. Linear in the text
+/// size. Two empty texts score 1.0.
 pub fn similarity(a: &str, b: &str) -> f64 {
-    fn count(s: &str) -> (HashMap<String, u32>, u32) {
+    fn words(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_lowercase).collect()
+    }
+    similarity_words(&words(a), &words(b))
+}
+
+fn similarity_words(a: &[String], b: &[String]) -> f64 {
+    fn grams(w: &[String]) -> (HashMap<String, u32>, u32) {
         let mut m = HashMap::new();
+        if w.len() == 1 {
+            m.insert(w[0].clone(), 1);
+            return (m, 1);
+        }
         let mut n = 0;
-        for w in s.split_whitespace() {
-            *m.entry(w.to_lowercase()).or_insert(0) += 1;
+        for p in w.windows(2) {
+            *m.entry(format!("{}\u{1}{}", p[0], p[1])).or_insert(0) += 1;
             n += 1;
         }
         (m, n)
     }
-    let (ca, na) = count(a);
-    let (cb, nb) = count(b);
-    if na + nb == 0 {
+    if a.is_empty() && b.is_empty() {
         return 1.0;
+    }
+    let (ca, na) = grams(a);
+    let (cb, nb) = grams(b);
+    if na + nb == 0 {
+        return 0.0;
     }
     let shared: u32 = ca
         .iter()
-        .map(|(w, n)| (*n).min(cb.get(w).copied().unwrap_or(0)))
+        .map(|(g, n)| (*n).min(cb.get(g).copied().unwrap_or(0)))
         .sum();
     2.0 * f64::from(shared) / f64::from(na + nb)
 }
 
-/// Do two replicas of one task agree? Same job, scan and engine, and text
-/// above [`SIMILARITY_THRESHOLD`].
+/// The `CONTENT` values of an ALTO file's words, in document order. A plain
+/// scan, not a parser: `usnm_alto::check` has already shown the file is
+/// well-formed, and entity escapes compare equal on both sides.
+fn alto_words(alto: &[u8]) -> Vec<String> {
+    let s = String::from_utf8_lossy(alto);
+    let mut out = Vec::new();
+    let mut rest: &str = &s;
+    while let Some(i) = rest.find(" CONTENT=\"") {
+        rest = &rest[i + 10..];
+        let Some(j) = rest.find('"') else { break };
+        out.push(rest[..j].to_lowercase());
+        rest = &rest[j..];
+    }
+    out
+}
+
+/// Do two replicas of one task agree? Same job, scan and engine, and both
+/// the text and the ALTO words at or above [`SIMILARITY_THRESHOLD`]. Returns
+/// the lower of the two scores.
 pub fn compare(a: &Outputs, b: &Outputs) -> anyhow::Result<f64> {
     let (x, y) = (&a.manifest, &b.manifest);
     ensure!(
@@ -82,7 +119,11 @@ pub fn compare(a: &Outputs, b: &Outputs) -> anyhow::Result<f64> {
     if score < SIMILARITY_THRESHOLD {
         bail!("text similarity below threshold");
     }
-    Ok(score)
+    let alto = similarity_words(&alto_words(&a.alto), &alto_words(&b.alto));
+    if alto < SIMILARITY_THRESHOLD {
+        bail!("ALTO similarity below threshold");
+    }
+    Ok(score.min(alto))
 }
 
 #[cfg(test)]
@@ -118,20 +159,57 @@ mod tests {
         assert!(similarity("a a a a", "a") < 0.5);
     }
 
-    const ALTO: &str = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Layout><Page WIDTH="10" HEIGHT="10"/></Layout></alto>"#;
+    #[test]
+    fn shuffled_words_fail() {
+        let base: Vec<String> = (0..60).map(|i| format!("w{i}")).collect();
+        let mut rev = base.clone();
+        rev.reverse();
+        assert!(similarity(&base.join(" "), &rev.join(" ")) < SIMILARITY_THRESHOLD);
+        let mut swap = base.clone();
+        swap.rotate_left(30);
+        assert!(similarity(&base.join(" "), &swap.join(" ")) >= 0.9);
+    }
+
+    fn alto_for(text: &str) -> String {
+        let strings: String = text
+            .split_whitespace()
+            .map(|w| format!(r#"<String CONTENT="{w}"/>"#))
+            .collect();
+        format!(
+            r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Layout><Page WIDTH="10" HEIGHT="10"><PrintSpace><TextBlock><TextLine>{strings}</TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#
+        )
+    }
 
     fn write(dir: &Path, job: &str, engine: &str, text: &str) -> [std::path::PathBuf; 3] {
+        write_with(
+            dir,
+            job,
+            engine,
+            text,
+            &alto_for(text),
+            "2026-01-01T00:00:00Z",
+        )
+    }
+
+    fn write_with(
+        dir: &Path,
+        job: &str,
+        engine: &str,
+        text: &str,
+        alto: &str,
+        completed_at: &str,
+    ) -> [std::path::PathBuf; 3] {
         let manifest = serde_json::json!({
             "v": 1, "job_id": job, "scan_sha256": "0".repeat(64),
             "engine": {"image": "r/i@sha256:".to_owned() + &"1".repeat(64), "version": engine,
                 "profile": "eng", "models": "m", "psm": 1, "dpi": 300, "timeout_secs": 60},
             "text_sha256": boinc::sha256(text.as_bytes()),
-            "alto_sha256": boinc::sha256(ALTO.as_bytes()),
-            "elapsed_ms": 1, "completed_at": "2026-01-01T00:00:00Z"
+            "alto_sha256": boinc::sha256(alto.as_bytes()),
+            "elapsed_ms": 1, "completed_at": completed_at
         });
         let p = [dir.join("t"), dir.join("a"), dir.join("r")];
         std::fs::write(&p[0], text).unwrap();
-        std::fs::write(&p[1], ALTO).unwrap();
+        std::fs::write(&p[1], alto).unwrap();
         std::fs::write(&p[2], manifest.to_string()).unwrap();
         p
     }
@@ -156,6 +234,36 @@ mod tests {
         assert!(compare(&a, &engine).is_err());
         let job = open(&write(d2.path(), "k", "5", &words)).unwrap();
         assert!(compare(&a, &job).is_err());
+    }
+
+    #[test]
+    fn divergent_alto_fails() {
+        let (d1, d2) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let words = (0..60)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let a = open(&write(d1.path(), "j", "5", &words)).unwrap();
+        let other = alto_for("entirely different words in the layout of this page here");
+        let b = open(&write_with(
+            d2.path(),
+            "j",
+            "5",
+            &words,
+            &other,
+            "2026-01-01T00:00:00Z",
+        ))
+        .unwrap();
+        assert!(compare(&a, &b).is_err());
+    }
+
+    #[test]
+    fn bad_timestamp_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        for ts in ["yesterday", "", "2026-13-40T00:00:00Z"] {
+            let p = write_with(d.path(), "j", "5", "hello", &alto_for("hello"), ts);
+            assert!(open(&p).is_err(), "{ts}");
+        }
     }
 
     #[test]
