@@ -97,7 +97,7 @@ OUT/bln600/
   match.json      overproof-ca only: how many lines matched today's LoC ALTO
 ```
 
-Each `crops.jsonl` row has `crop_id` (such as `pub-bln600-001`), `group` (`pub-bln600`), `lang`, `image` (the path relative to `--out`, `images/pub-bln600-001.jpg`), `transcription`, and the source fields. Crop images are grayscale JPEG at quality 85, except BLN600's, which are the dataset's own files byte for byte. Overproof dataset 2 rows have `image: null` and nothing for an engine to read.
+Each `crops.jsonl` row has `crop_id` (such as `pub-bln600-001`), `group` (`pub-bln600`), `lang`, `image` (the path relative to `--out`, `images/pub-bln600-001.jpg`), `transcription`, `truth_source` and `for_scoring`. The source fields (`source_dataset`, `source_url`, `source_license`, `source_attribution`) are in `manifest.jsonl`, keyed by the same `crop_id`. Crop images are grayscale JPEG at quality 85, except BLN600's, which are the dataset's own files byte for byte. Overproof dataset 2 rows have `image: null` and nothing for an engine to read.
 
 Run your engine on each `image` and write one JSON object per line:
 
@@ -149,7 +149,7 @@ def main() -> int:
                 continue
             image = base / row["image"]
             r = subprocess.run(["tesseract", str(image), "stdout", "-l", a.lang, "--psm", a.psm],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8")
             if r.returncode != 0:
                 print(f"tesseract failed on {row['crop_id']}: {r.stderr.strip()}", file=sys.stderr)
                 continue
@@ -177,7 +177,7 @@ scripts/ocr-survey/gold.py validate --crops OUT/bln600/crops.jsonl --manifest OU
 scripts/ocr-survey/gold.py score --crops OUT/bln600/crops.jsonl --hyp tesseract-5.5=OUT/bln600/tesseract.jsonl --out OUT/bln600/scores
 ```
 
-`validate` checks the transcriptions and that each image is present. It prints each error and warning, then a count, and exits with status 1 on any error. A warning that image bytes differ from the manifest's checksum is expected if your Pillow version encodes JPEGs differently from the one that converted the set. The real runs listed in [ocr-gold-set.md](ocr-gold-set.md#fetch-and-convert) validated with 0 errors.
+`validate` checks the transcriptions and that each image is present. It prints each error and warning, then a count, and exits with status 1 on any error. `crop_sha256` in the manifest is the checksum of the bytes `public-convert` wrote, so a warning that an image differs from it means the file changed after conversion; convert again. The real runs listed in [ocr-gold-set.md](ocr-gold-set.md#fetch-and-convert) validated with 0 errors.
 
 `score` takes one `--hyp NAME=FILE.jsonl` per engine; repeat the flag to score several engines in one run. `NAME` is your label for the engine and its settings, and it's what the output shows, so put the version and profile in it (`tesseract-5.5-psm6`). `score` leaves out crops that fail validation and prints how many it used on stderr. It prints the summary as a Markdown table and, with `--out`, writes two CSV files.
 
