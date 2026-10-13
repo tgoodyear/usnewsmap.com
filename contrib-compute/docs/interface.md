@@ -8,7 +8,7 @@ Where this page and #441 differ, #441 wins; it is the client base.
 
 | Item             | Value                                                                                                                                                |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| App name         | `usnm_ocr` (`boinc/project.xml` registers it with `target_nresults` 1)                                                                               |
+| App name         | `usnm_ocr` (`boinc/project.xml` registers it with `target_nresults` 1); `usnm_assess` for #456, redundancy 2 ([docs/boinc-assessment.md](../../docs/boinc-assessment.md)) |
 | App type         | Docker wrapper; the worker image is built from `ocr/boinc/Containerfile` and runs `usnm-boinc work`                                                  |
 | App version      | installed by `scripts/boinc/install.py --project --wrapper --image --version` into `apps/usnm_ocr/<version>/x86_64-pc-linux-gnu__docker`             |
 | Plan class       | `docker`, from `boinc/plan_class_spec.xml` here (minimum client 9.0)                                                                                 |

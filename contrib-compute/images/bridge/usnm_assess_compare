@@ -1,0 +1,5 @@
+#!/bin/sh
+# script_validator's compare script for usnm_assess (#456), called as
+# `usnm_assess_compare --files files --files2 files2`: two results' files, three each, in
+# output template order. Exit 0 when the two agree on outcomes and text. Linked into bin/.
+exec /usr/local/bin/usnm-boinc assess compare "$@"
