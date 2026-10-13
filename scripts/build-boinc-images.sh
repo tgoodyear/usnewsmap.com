@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the BOINC server and bridge images in Azure (ACR Tasks) into the BOINC group's own
+# Build the BOINC server and bridge images in Azure (ACR Tasks) into the app's shared
 # registry, and write their registry digests to contrib-compute/infra/boinc/env/<env>.json:
 #
 #   scripts/build-boinc-images.sh --env prod
@@ -41,8 +41,7 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 fi
 [ -f crates/usnm-boinc/Cargo.toml ] || die "no crates/usnm-boinc: the bridge image needs it"
 sha=$(git rev-parse HEAD)
-registry=$(boinc_output registryName)
-[ -n "$registry" ] || die "the stack $BOINC_STACK has no registry yet: run scripts/provision-boinc.sh --env $ENV_NAME first (with no images in the settings, it deploys the base resources)"
+registry=$(jq -er .registry "$(dirname "$0")/../infra/names/$ENV_NAME.json") || die "no registry in infra/names/$ENV_NAME.json"
 server="$registry.azurecr.io/usnm-boinc-server"
 bridge="$registry.azurecr.io/usnm-boinc-bridge"
 

@@ -20,7 +20,13 @@ param env string
 
 param location string = resourceGroup().location
 
-@description('Server image (images/server), by digest, in this group\'s registry. Empty: deploy the base resources only.')
+@description('The app\'s shared registry (infra/names/<env>.json), which holds the server and bridge images.')
+param registryName string
+
+@description('The shared registry\'s resource group.')
+param registryResourceGroup string
+
+@description('Server image (images/server), by digest, in the shared registry. Empty: deploy the base resources only.')
 param image string = ''
 
 @description('Bridge job image (images/bridge), by digest, in the same registry. Required with image: the server image has no usnm-boinc binary.')
@@ -53,7 +59,6 @@ var names = {
   identity: usnmName('boinc', 'id', envName)
   mysql: usnmGlobalName('boinc', 'mysql', envName, sfx)
   mysqlDnsZone: 'usnm-boinc-${envName}.private.mysql.database.azure.com'
-  registry: usnmCompactName('boinc', 'cr', envName, sfx)
   secretsIdentity: usnmName('boinc-secrets', 'id', envName)
   secretsJob: usnmName('boinc-secrets', 'caj', envName)
   site: usnmName('boinc', 'swa', envName)
@@ -63,7 +68,7 @@ var names = {
   workspace: usnmName('boinc', 'log', envName)
 }
 
-var registryServer = '${names.registry}${environment().suffixes.acrLoginServer}'
+var registryServer = '${registryName}${environment().suffixes.acrLoginServer}'
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: names.identity
@@ -77,10 +82,10 @@ resource secretsIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-
 }
 
 module registry 'modules/registry.bicep' = {
-  name: 'registry'
+  name: 'boinc-registry-pull'
+  scope: resourceGroup(registryResourceGroup)
   params: {
-    registryName: names.registry
-    location: location
+    registryName: registryName
     pullPrincipalIds: [ identity.properties.principalId, secretsIdentity.properties.principalId ]
   }
 }
@@ -214,7 +219,7 @@ output appFqdn string = withApp ? app!.outputs.fqdn : ''
 output bridgeJobName string = withApp ? bridgeJob!.outputs.name : ''
 output keyVaultName string = vault.outputs.name
 output mysqlHost string = mysql.outputs.host
-output registryName string = names.registry
+output registryName string = registryName
 output registryServer string = registryServer
 output secretsJobName string = withApp ? secretsJob!.outputs.name : ''
 output staticSiteHost string = frontend.outputs.defaultHostname

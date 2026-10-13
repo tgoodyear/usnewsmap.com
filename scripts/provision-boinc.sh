@@ -54,23 +54,25 @@ boinc_az_check
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # No secret goes in the parameters: the template makes the admin password itself.
-jq -n --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" \
+names_file="$(dirname "$0")/../infra/names/$ENV_NAME.json"
+REGISTRY_NAME=$(jq -er .registry "$names_file") || die "no registry in $names_file"
+REGISTRY_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
+jq -n --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" \
   --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   contentVersion: "1.0.0.0",
   parameters: {
-    env: {value: $env}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b},
+    env: {value: $env}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)}
   }}' > "$work/params.json"
 
-# The images must be in this group's registry: the app and the jobs pull with their identities,
-# which have AcrPull there only.
+# The images must be in the shared registry: the app and the jobs pull with their identities,
+# which this stack gives AcrPull there only.
+registry="$REGISTRY_NAME.azurecr.io"
 if [ -n "$SERVER_IMAGE" ]; then
-  registry=$(boinc_output registryServer)
-  [ -n "$registry" ] || die "the settings name images, but the stack $BOINC_STACK has no registry yet: empty images.server and images.bridge, deploy the base resources, then run scripts/build-boinc-images.sh --env $ENV_NAME"
   for img in "$SERVER_IMAGE" "$BRIDGE_IMAGE"; do
-    [ "${img%%/*}" = "$registry" ] || die "$img is not in the group's registry $registry"
+    [ "${img%%/*}" = "$registry" ] || die "$img is not in the shared registry $registry"
   done
 fi
 
