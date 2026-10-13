@@ -573,6 +573,15 @@ PUBLIC: dict[str, dict] = {
         "policy": "fails (b): the region text drops the ch and ck ligatures, has U+FFFD in 42 of 50 files and "
                   "keeps OCR errors (checked 2026-10-13)",
     },
+    # Line level only: for pages corrected per line, the Word text in the XML is still uncorrected OCR (README).
+    "nzz": {
+        "group": "pub-nzz", "lang": "deu",
+        "license": "CC-BY-4.0 (Zenodo record 3333627); LICENSE.txt in the archive: CC BY-NC 4.0",
+        "url": "https://doi.org/10.5281/zenodo.3333627",
+        "attribution": "Neue Zürcher Zeitung black letter ground truth (c) Phillip Ströbel and Simon Clematide",
+        "chars": (20, 300), "scoring": True, "policy": "passes (research use; nothing committed)",
+        "level": "line", "license_files": ("LICENSE.txt", "README.md"),
+    },
 }
 
 
@@ -873,6 +882,7 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
 PAGE_XML_SETS = ("reichsanzeiger", "austrian",
                  "newseye-bnf", "newseye-nlf-fi", "newseye-nlf-sv",
                  "enp-berlin",
+                 "nzz",
                  )
 
 
@@ -1161,6 +1171,11 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
             z = a.src / name
             download(ZENODO_FILE.format(rec=2583866, name=name), z)
             zipfile.ZipFile(z).extractall(a.src / name.removesuffix(".zip"))
+        write_source_note(a.src, a.dataset)
+    elif a.dataset == "nzz":
+        z = a.src / "NZZ-black-letter-ground-truth-master.zip"
+        download(ZENODO_FILE.format(rec=3333627, name=z.name), z)  # 472 MB
+        zipfile.ZipFile(z).extractall(a.src / "nzz")
         write_source_note(a.src, a.dataset)
     else:
         print(f"unknown dataset {a.dataset!r}", file=sys.stderr)

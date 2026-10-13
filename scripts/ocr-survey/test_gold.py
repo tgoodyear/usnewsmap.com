@@ -209,6 +209,31 @@ class PageXml2010(unittest.TestCase):
         self.assertFalse(gold.PUBLIC["enp-berlin"]["scoring"])
 
 
+# Line level, with word text that differs from the corrected line text (as on NZZ pages corrected per line).
+PAGE_WORDS = """<?xml version="1.0"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15">
+ <Page imageFilename="p1.png" imageWidth="40" imageHeight="30">
+  <TextRegion id="r1"><Coords points="0,0 40,0 40,30 0,30"/>
+   <TextLine id="l1"><Coords points="2,3 22,3 22,8 2,8"/>
+    <Word id="w1"><Coords points="2,3 8,3 8,8 2,8"/><TextEquiv><Unicode>Zürih</Unicode></TextEquiv></Word>
+    <TextEquiv><Unicode>Zürich, 1. Mai.</Unicode></TextEquiv></TextLine>
+   <TextLine id="l2"><Coords points="2,9 22,9 22,14 2,14"/><TextEquiv><Unicode></Unicode></TextEquiv></TextLine>
+  </TextRegion>
+ </Page></PcGts>"""
+
+
+class LineLevel(unittest.TestCase):
+    def test_lines_use_line_text_never_words(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "p.xml"
+            f.write_text(PAGE_WORDS)
+            _, regs = gold.parse_page_xml(f, "line")
+        self.assertEqual([(r["region"], r["box"], r["text"]) for r in regs], [("r1/l1", [2, 3, 22, 8], "Zürich, 1. Mai.")])
+
+    def test_nzz_is_line_level(self):
+        self.assertEqual(gold.PUBLIC["nzz"]["level"], "line")
+
+
 def hipe_doc(doc_id: str, truth: list[str], ocr: list[str], which: str = "dataset3") -> dict:
     def unit(lines):
         text, offs, pos = "\n".join(lines), [], 0
