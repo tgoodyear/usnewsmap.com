@@ -185,6 +185,78 @@ class PublicPick(unittest.TestCase):
         self.assertEqual(gold.main(["public-fetch", "--dataset", "austrian", "--src", "/nonexistent-gold-test"]), 2)
 
 
+def hipe_doc(doc_id: str, truth: list[str], ocr: list[str], which: str = "dataset3") -> dict:
+    def unit(lines):
+        text, offs, pos = "\n".join(lines), [], 0
+        for ln in lines:
+            offs.append([pos, pos + len(ln)])
+            pos += len(ln) + 1
+        return {"transcription_unit": text, "line_offsets": offs}
+
+    return {"document_metadata": {"document_id": doc_id, "date": "1872", "publication_title": "A TITLE",
+                                  "primary_dataset_filename": f"data/overproof/{which}/x.txt"},
+            "ground_truth": unit(truth), "ocr_hypothesis": unit(ocr)}
+
+
+ALTO = """<?xml version="1.0"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v2#"><Layout><Page WIDTH="400" HEIGHT="300"><PrintSpace>
+ <TextBlock>
+  <TextLine><String HPOS="10" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="Tho"/>
+   <String HPOS="120" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="cat"/></TextLine>
+  <TextLine><String HPOS="10" VPOS="40" WIDTH="200" HEIGHT="20" CONTENT="sat"/><HYP CONTENT="-"/></TextLine>
+  <TextLine><String HPOS="10" VPOS="70" WIDTH="200" HEIGHT="20" CONTENT="down."/></TextLine>
+ </TextBlock></PrintSpace></Page></Layout></alto>"""
+
+
+class Overproof(unittest.TestCase):
+    def test_doc_id(self):
+        self.assertEqual(gold.ca_page("sn88074142-11-00280761485-1872040501-1138"),
+                         {"lccn": "sn88074142", "date": "1872-04-05", "edition": 1,
+                          "tail": "/00280761485/1872040501/1138", "key": "sn88074142-00280761485-1872040501-1138"})
+        self.assertEqual(gold.ca_page("sn85066387-3-noissue-190001011-0003")["tail"], "/190001011/0003")
+        self.assertEqual(gold.ca_page("sn84026749-5-0028076484A-1922030801-0007")["date"], "1922-03-08")
+        self.assertIsNone(gold.ca_page("13990000"))
+
+    def test_soft_hyphen_becomes_a_hyphen(self):
+        self.assertEqual(gold.hipe_lines(hipe_doc("x", ["in¬", "stalled"], ["a", "b"]), "ground_truth"), ["in-", "stalled"])
+
+    def test_match_lines(self):
+        alto = [{"text": t} for t in ("Tho cat", "sat", "down.", "other line entirely")]
+        self.assertEqual(gold.match_lines(["Tho  cat", "sat-", "d0wn.", "nothing like it"], alto), [0, 1, None, None])
+        long = [{"text": "the quick brown fox jumps"}, {"text": "over the lazy dog again"}]
+        self.assertEqual(gold.match_lines(["the quick brown fox jumps", "ovor the lazy dog again"], long), [0, 1])
+
+    def test_regions_from_matched_lines(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d)
+            (src / "hipe").mkdir()
+            (src / "loc").mkdir()
+            key = "sn1-00001-1872040501-0002"
+            doc = hipe_doc("sn1-11-00001-1872040501-0002", ["The cat", "sat-", "down.", "Lost line"],
+                           ["Tho cat", "sat-", "down.", "zzzz qqqq"])
+            smh = hipe_doc("999000", ["Text only"], ["Tcxt only"], "dataset2")
+            (src / "hipe" / "a.jsonl").write_text(json.dumps(doc) + "\n" + json.dumps(smh) + "\n")
+            (src / "loc" / f"{key}.xml").write_text(ALTO)
+            Image.new("L", (400, 300), 200).save(src / "loc" / f"{key}.jpg")
+            (src / "loc" / "pages.json").write_text(json.dumps({key: {"image": f"{key}.jpg", "alto": f"{key}.xml"}}))
+            regs, stats = gold.overproof_ca_regions(src)
+            self.assertEqual(stats, {"articles": 1, "articles_with_page": 1, "lines": 4, "lines_matched": 3})
+            self.assertEqual([(r["box"], r["text"]) for r in regs], [([10, 10, 220, 90], "The cat\nsat-\ndown.")])
+            smh_regs = gold.public_regions("overproof-smh", src)
+            self.assertEqual([(r["image"], r["text"]) for r in smh_regs], [(None, "Text only")])
+
+    def test_text_only_rows_validate(self):
+        p = {"page_id": "overproof-smh-1", "region": "1", "text": "Some text", "box": None, "image": None}
+        m, t = gold.public_rows("overproof-smh", p, 1, None, None, None, None)
+        self.assertIsNone(m["image"])
+        self.assertFalse(t["for_scoring"])
+        self.assertEqual(gold.validate_rows([t], [m])[0], [])
+
+
 class Bln600(unittest.TestCase):
     def test_fetch_checks_the_checksum(self):
         with tempfile.TemporaryDirectory() as d:

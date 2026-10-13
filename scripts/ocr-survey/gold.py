@@ -526,6 +526,25 @@ PUBLIC: dict[str, dict] = {
         "chars": (200, 8000), "scoring": True, "policy": "passes (research use; nothing committed)",
         "original_image": True, "license_files": ("LICENSE", "readme.md"),
     },
+    "overproof-ca": {
+        "group": "pub-overproof-ca", "lang": "eng",
+        "license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data",
+        "attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 "
+                       "(CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "chars": (200, 2500), "scoring": True, "policy": "passes (research use; nothing committed)",
+        "license_files": ("README-overproof.md", "README-hipe.md"),
+    },
+    "overproof-smh": {
+        "group": "pub-overproof-smh", "lang": "eng",
+        "license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); Trove image licence UNVERIFIED",
+        "url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data",
+        "attribution": "Overproof dataset 2 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 "
+                       "(CC BY-NC-SA 4.0); Sydney Morning Herald text from Trove, National Library of Australia",
+        "chars": (200, 100000), "scoring": False, "text_only": True,
+        "policy": "text only: the Trove page images are not fetched (licence unverified), so no engine can be run",
+        "license_files": ("README-overproof.md", "README-hipe.md"),
+    },
 }
 
 
@@ -634,6 +653,144 @@ def parse_bln600(root: Path) -> list[dict]:
     return out
 
 
+# HIPE-OCRepair-2026, pinned to one commit so a later release can't change what is scored.
+HIPE_RAW = "https://raw.githubusercontent.com/hipe-eval/HIPE-OCRepair-2026-data/1bfecaf96caa01f7b80736101baad9f691904e77/"
+HIPE_OVERPROOF = [f"data/v0.9/overproof/en/hipe-ocrepair-bench_v0.9_overproof-combined_v1.0_{s}_en.jsonl"
+                  for s in ("train", "dev", "test")]
+HIPE_DOCS = {"README-overproof.md": "documentation/README-overproof.md", "README-hipe.md": "README.md"}
+# Overproof dataset 3 ids: LCCN, a number, reel ("noissue" where the batch has no reel folder), the issue
+# folder (date and edition, YYYYMMDDE or YYYYMMDDEE) and the page image file, as in the batch's path.
+CA_DOC_ID = re.compile(r"^(?P<lccn>sn\d+)-\d+-(?P<reel>[0-9A-Za-z]+)-(?P<folder>(?P<date>\d{8})(?P<ed>\d{1,2}))-"
+                       r"(?P<file>\d{4})$")
+
+
+def hipe_docs(src: Path, which: str) -> list[dict]:
+    """The Overproof articles in the downloaded HIPE files: which "ca" (dataset 3) or "smh" (dataset 2)."""
+    out = []
+    for f in sorted((src / "hipe").glob("*.jsonl")):
+        for d in read_jsonl(f):
+            fn = d["document_metadata"].get("primary_dataset_filename", "")
+            if ("/dataset3/" in fn) == (which == "ca"):
+                out.append(d)
+    return out
+
+
+def hipe_lines(d: dict, key: str) -> list[str]:
+    """One string per original line; HIPE writes a soft hyphen at a line end as ¬, the scorer joins on -."""
+    unit = d[key]["transcription_unit"]
+    return [unit[a:b].replace("¬", "-") for a, b in d[key]["line_offsets"]]
+
+
+def ca_page(doc_id: str) -> dict | None:
+    m = CA_DOC_ID.match(doc_id)
+    if not m:
+        return None
+    dt = m["date"]
+    tail = f"/{m['folder']}/{m['file']}" if m["reel"] == "noissue" else f"/{m['reel']}/{m['folder']}/{m['file']}"
+    return {"lccn": m["lccn"], "date": f"{dt[:4]}-{dt[4:6]}-{dt[6:]}", "edition": int(m["ed"]), "tail": tail,
+            "key": f"{m['lccn']}-{m['reel']}-{m['folder']}-{m['file']}"}
+
+
+def alto_lines(xml: bytes, image_width: int) -> list[dict]:
+    """LoC ALTO as lines in reading (file) order: text (Strings joined by spaces) and box in image pixels."""
+    import crops
+
+    w = crops.page_width(xml)
+    import altotext
+
+    scale = image_width / w if w else altotext.pixel_scale(xml)
+    lines: dict[int, list] = {}
+    for x, y, ww, h, c, ln in altotext.parse(xml, scale)[1]:
+        lines.setdefault(ln, []).append((x, y, ww, h, c))
+    out = []
+    for ln in sorted(lines):
+        ws = lines[ln]
+        out.append({"text": " ".join(c for *_, c in ws if c),
+                    "box": box_of([(x, y) for x, y, *_ in ws] + [(x + ww, y + h) for x, y, ww, h, _ in ws])})
+    return out
+
+
+def _squash(t: str) -> str:
+    """Spaces removed and a line-end hyphen dropped: the ALTO's HYP is not a String, so its line text has none."""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFC", t)).rstrip("-¬")
+
+
+def match_lines(ocr: list[str], alto: list[dict], min_ratio: float = 0.9) -> list[int | None]:
+    """For each 2013 OCR line of an article, the index of the same line in today's ALTO, or None.
+
+    A line matches when its text, spaces removed, equals an ALTO line's; failing that, when one of the
+    three ALTO lines after the previous match is at least min_ratio similar (difflib). Overproof's OCR
+    side is the text LoC served in 2013, so on an unchanged page nearly every line matches exactly.
+    """
+    import difflib
+
+    index: dict[str, list[int]] = {}
+    for i, a in enumerate(alto):
+        index.setdefault(_squash(a["text"]), []).append(i)
+    out: list[int | None] = []
+    prev = None
+    for line in ocr:
+        key, hit = _squash(line), None
+        cands = index.get(key, []) if key else []
+        if cands:
+            hit = min(cands, key=lambda i: abs(i - (prev + 1))) if prev is not None else cands[0]
+        elif prev is not None and key:
+            best = max(range(prev + 1, min(prev + 4, len(alto))), default=None,
+                       key=lambda i: difflib.SequenceMatcher(None, key, _squash(alto[i]["text"])).ratio())
+            if best is not None and difflib.SequenceMatcher(None, key, _squash(alto[best]["text"])).ratio() >= min_ratio:
+                hit = best
+        out.append(hit)
+        prev = hit if hit is not None else prev
+    return out
+
+
+def overproof_ca_regions(src: Path, max_lines: int = 8) -> tuple[list[dict], dict]:
+    """Crops from Overproof dataset 3: runs of consecutive matched lines (consecutive in the ALTO too), up
+    to max_lines each, boxed by the ALTO lines and holding the human text of those lines. Unmatched lines
+    give no crop. Also returns the match counts."""
+    from PIL import Image
+
+    pages = json.loads((src / "loc" / "pages.json").read_text(encoding="utf-8")) if (src / "loc" / "pages.json").exists() else {}
+    out, stats = [], {"articles": 0, "articles_with_page": 0, "lines": 0, "lines_matched": 0}
+    for d in hipe_docs(src, "ca"):
+        stats["articles"] += 1
+        pg = ca_page(d["document_metadata"]["document_id"])
+        truth, ocr = hipe_lines(d, "ground_truth"), hipe_lines(d, "ocr_hypothesis")
+        stats["lines"] += len(truth)
+        info = pages.get(pg["key"]) if pg else None
+        if not info or len(truth) != len(ocr):
+            continue
+        img_path, alto_path = src / "loc" / info["image"], src / "loc" / info["alto"]
+        if not img_path.exists() or not alto_path.exists():
+            continue
+        stats["articles_with_page"] += 1
+        with Image.open(img_path) as im:
+            width = im.width
+        alto = alto_lines(alto_path.read_bytes(), width)
+        hits = match_lines(ocr, alto)
+        stats["lines_matched"] += sum(h is not None for h in hits)
+        run: list[int] = []
+
+        def flush():
+            if run:
+                boxes = [alto[hits[i]]["box"] for i in run]
+                out.append({"page_id": f"overproof-ca-{pg['key']}", "image": img_path,
+                            "region": f"{d['document_metadata']['document_id']}/{run[0]}",
+                            "box": [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes),
+                                    max(b[3] for b in boxes)],
+                            "text": "\n".join(truth[i] for i in run), "date": pg["date"],
+                            "title": d["document_metadata"].get("publication_title"), "page_url": info.get("page_url")})
+            run.clear()
+
+        for i, h in enumerate(hits):
+            if h is None or not truth[i].strip() or (run and (hits[run[-1]] + 1 != h or len(run) >= max_lines)):
+                flush()
+            if h is not None and truth[i].strip():
+                run.append(i)
+        flush()
+    return out, stats
+
+
 def public_regions(dataset: str, src: Path) -> list[dict]:
     """Every transcribed region in a downloaded dataset: page (image path), page_id, region, box, text."""
     out: list[dict] = []
@@ -671,6 +828,15 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
     elif dataset == "bln600":
         root = next((p.parent for p in sorted(src.rglob("metadata.json")) if (p.parent / "Ground Truth").is_dir()), None)
         out = parse_bln600(root) if root else []
+    elif dataset == "overproof-ca":
+        out = overproof_ca_regions(src)[0]
+    elif dataset == "overproof-smh":
+        for d in hipe_docs(src, "smh"):
+            m = d["document_metadata"]
+            out.append({"page_id": f"overproof-smh-{m['document_id']}", "region": m["document_id"], "box": None,
+                        "image": None, "text": "\n".join(hipe_lines(d, "ground_truth")), "date": m.get("date"),
+                        "title": m.get("publication_title"),
+                        "page_url": f"https://trove.nla.gov.au/newspaper/article/{m['document_id']}"})
     else:
         raise ValueError(f"unknown dataset {dataset!r}")
     return out
@@ -761,7 +927,10 @@ def cmd_public_convert(a: argparse.Namespace) -> int:
 
     Image.MAX_IMAGE_PIXELS = None
     stats = None
-    regions = public_regions(a.dataset, a.src)
+    if a.dataset == "overproof-ca":
+        regions, stats = overproof_ca_regions(a.src)
+    else:
+        regions = public_regions(a.dataset, a.src)
     if not regions:
         print(f"error: no transcribed regions found under {a.src} for {a.dataset}", file=sys.stderr)
         return 1
@@ -858,6 +1027,39 @@ def extract_encrypted_zip(z: Path, dest: Path, password: str) -> None:
     subprocess.run(cmd, check=True)
 
 
+LOC_ITEM = "https://www.loc.gov/item/{lccn}/{date}/ed-{ed}/?fo=json"
+
+
+def fetch_overproof_ca_pages(src: Path, pages: int) -> int:
+    """For each Overproof dataset 3 page: loc.gov's issue JSON, then that page's ALTO and full image, paced
+    as locfetch does. Writes loc/pages.json (page key -> files and URLs). Returns the pages fetched."""
+    import locfetch
+
+    want = sorted({pg["key"]: pg for d in hipe_docs(src, "ca")
+                   if (pg := ca_page(d["document_metadata"]["document_id"]))}.values(), key=lambda p: p["key"])
+    loc = src / "loc"
+    loc.mkdir(parents=True, exist_ok=True)
+    index_path = loc / "pages.json"
+    index = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else {}
+    for pg in want[:pages]:
+        if pg["key"] in index and (loc / index[pg["key"]]["image"]).exists():
+            continue
+        item = json.loads(locfetch.fetch(LOC_ITEM.format(lccn=pg["lccn"], date=pg["date"], ed=pg["edition"]), locfetch.API))
+        images, altos = locfetch.page_images(item), locfetch.page_altos(item)
+        seq = next((s for s, u in altos.items() if u.endswith(pg["tail"] + ".xml")), None)
+        if seq is None or seq not in images:
+            print(f"page not found in loc.gov's issue JSON: {pg['key']}", file=sys.stderr)
+            continue
+        (loc / f"{pg['key']}.xml").write_bytes(locfetch.fetch(altos[seq], locfetch.TILE))
+        image_url = images[seq] + "/full/full/0/default.jpg"
+        (loc / f"{pg['key']}.jpg").write_bytes(locfetch.fetch(image_url, locfetch.TILE))
+        index[pg["key"]] = {"image": f"{pg['key']}.jpg", "alto": f"{pg['key']}.xml", "seq": seq,
+                            "image_url": image_url, "alto_url": altos[seq],
+                            "page_url": f"https://www.loc.gov/resource/{pg['lccn']}/{pg['date']}/ed-{pg['edition']}/?sp={seq}"}
+        index_path.write_text(json.dumps(index, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return len(index)
+
+
 
 
 def cmd_public_fetch(a: argparse.Namespace) -> int:
@@ -904,6 +1106,15 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         write_source_note(a.src, a.dataset, file=BLN600_ZIP, sha256=got,
                           note="No-Derivatives: do not commit or redistribute crops or re-encoded images; "
                                "share the original zip's URL instead")
+    elif a.dataset in ("overproof-ca", "overproof-smh"):
+        for path in HIPE_OVERPROOF:
+            download(HIPE_RAW + path, a.src / "hipe" / Path(path).name)
+        for name, path in HIPE_DOCS.items():
+            download(HIPE_RAW + path, a.src / name)
+        extra = {"files": [HIPE_RAW + p for p in HIPE_OVERPROOF]}
+        if a.dataset == "overproof-ca":
+            extra["pages_fetched"] = fetch_overproof_ca_pages(a.src, a.pages)
+        write_source_note(a.src, a.dataset, **extra)
     else:
         print(f"unknown dataset {a.dataset!r}", file=sys.stderr)
         return 2
