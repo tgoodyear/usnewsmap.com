@@ -49,7 +49,9 @@ COPY images/server/bridge-job.sh /usr/local/bin/bridge-job
 COPY boinc/config.xml.template boinc/project.xml boinc/plan_class_spec.xml /usr/local/lib/usnm-boinc/
 # The docker_wrapper that install.py (PR #441) puts in the signed app version: built here from the
 # same pinned source, so the wrapper has the workdir and create_args settings job.toml needs.
-RUN cp /usr/local/boinc/samples/docker_wrapper/docker_wrapper /usr/local/lib/usnm-boinc/docker_wrapper \
+# (the Makefile may add a release suffix to the binary's name, so find it)
+RUN w="$(find /usr/local/boinc/samples/docker_wrapper -maxdepth 1 -type f -perm -u+x -name 'docker_wrapper*' | head -n 1)" \
+ && test -n "$w" && cp "$w" /usr/local/lib/usnm-boinc/docker_wrapper \
  && chmod 0755 /usr/local/lib/usnm-boinc/entrypoint.sh /usr/local/lib/usnm-boinc/boinc-daemons.sh /usr/local/bin/bridge-job
 EXPOSE 80
 ENTRYPOINT ["/usr/local/lib/usnm-boinc/entrypoint.sh"]
