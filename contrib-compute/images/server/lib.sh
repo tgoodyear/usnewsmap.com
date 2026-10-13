@@ -62,7 +62,7 @@ render_config() {
   # A server run from that image adds its daemons and links the validator scripts into bin/.
   if command -v usnm-boinc >/dev/null 2>&1; then
     daemons="$daemons
-        <daemon><cmd>script_validator --app usnm_assess --init_script &quot;usnm_assess_check --files files&quot; --compare_script &quot;usnm_assess_compare --files files --files2 files2&quot;</cmd></daemon>
+        <daemon><cmd>script_validator --app usnm_assess --init_script &quot;usnm_assess_check files&quot; --compare_script &quot;usnm_assess_compare files files2&quot;</cmd></daemon>
         <daemon><cmd>batch_collect_assimilator --app usnm_assess</cmd></daemon>"
     if [ -d "$PROJ/bin" ]; then
       ln -sfn "$TEMPLATES/usnm_assess_check" "$PROJ/bin/usnm_assess_check"

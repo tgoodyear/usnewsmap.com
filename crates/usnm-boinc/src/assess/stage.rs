@@ -37,6 +37,7 @@ pub struct Options {
     pub root: PathBuf,
     pub mode: Mode,
     pub engine_image: String,
+    pub engine_base: String,
     pub engine_version: String,
     pub timeout_secs: u32,
     pub gap: Duration,
@@ -191,9 +192,11 @@ async fn page(
         batch_version: row.batch_version,
         language: row.lang.clone(),
         stratum: Stratum {
+            crash_weight: row.crash_weight,
             damage: row.damage.clone(),
             decade: row.decade,
             lang: row.lang.clone(),
+            pages: row.stratum_pages,
             prefix: row.prefix.clone(),
             weight: row.weight,
         },
@@ -209,6 +212,7 @@ async fn page(
             dpi: 300,
             timeout_secs: opts.timeout_secs,
         },
+        engine_base: opts.engine_base.clone(),
     };
     job.id = job.identity()?;
     job.validate()?;

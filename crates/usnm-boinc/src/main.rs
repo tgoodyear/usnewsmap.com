@@ -122,6 +122,9 @@ enum Assess {
         /// The worker image's full digest (sha256:...), the pinned engine build.
         #[arg(long)]
         engine_image: String,
+        /// The Tesseract image the worker image was built on (its TESSERACT_IMAGE).
+        #[arg(long)]
+        engine_base: String,
         #[arg(long, default_value = "5.5.0")]
         engine_version: String,
         /// Page deadline; defaults to 1200 for ocr and 20 for crash.
@@ -296,6 +299,7 @@ async fn assess(a: Assess) -> anyhow::Result<()> {
             root,
             mode,
             engine_image,
+            engine_base,
             engine_version,
             timeout_secs,
             gap_secs,
@@ -308,6 +312,7 @@ async fn assess(a: Assess) -> anyhow::Result<()> {
                 root,
                 mode,
                 engine_image,
+                engine_base,
                 engine_version,
                 timeout_secs: timeout_secs.unwrap_or(match mode {
                     usnm_ocr_contract::assess::Mode::Ocr => 1200,

@@ -69,11 +69,14 @@ pub struct Input {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stratum {
+    /// Weight for crash rates: stratum pages / all units drawn from it.
+    pub crash_weight: f64,
     pub damage: String,
     pub decade: i32,
     pub lang: String,
+    pub pages: usize,
     pub prefix: String,
-    /// Pages in the corpus stratum divided by pages drawn from it.
+    /// Weight for quality and speed: stratum pages / OCR units drawn.
     pub weight: f64,
 }
 
@@ -92,6 +95,11 @@ pub struct Job {
     /// Keyed by format; a crash unit holds the JP2 only.
     pub inputs: BTreeMap<Format, Input>,
     pub engine: Engine,
+    /// The Tesseract image the worker image was built on (its
+    /// `TESSERACT_IMAGE`), pinned by digest. The worker image carries it as
+    /// `USNM_TESSERACT_IMAGE` and refuses a unit staged for another, so a
+    /// change of decoder libraries inside the engine image is never mixed in.
+    pub engine_base: String,
 }
 impl Job {
     pub fn identity(&self) -> anyhow::Result<String> {
@@ -104,6 +112,7 @@ impl Job {
             &self.language,
             &self.inputs,
             &self.engine,
+            &self.engine_base,
         ))?))
     }
     pub fn workunit(&self) -> String {
@@ -142,6 +151,17 @@ impl Job {
                 .strip_prefix("sha256:")
                 .is_some_and(is_sha256),
             "engine image must be a full digest"
+        );
+        ensure!(
+            self.engine_base
+                .rsplit_once("sha256:")
+                .is_some_and(|(_, d)| is_sha256(d))
+                && self.engine_base.len() <= 256
+                && !self
+                    .engine_base
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace()),
+            "engine base must be pinned by full digest"
         );
         ensure!(
             self.engine.psm == 3 && self.engine.dpi == 300,
@@ -236,10 +256,13 @@ impl ResultManifest {
                 r.text_sha256 == sha256(text) && r.text_bytes == text.len() as u64,
                 "returned text checksum mismatch"
             );
-            ensure!(
-                r.outcome == Outcome::of(r.code, r.signal, r.outcome == Outcome::Timeout),
-                "outcome does not match the exit status"
-            );
+            // The worker records a timeout with neither code nor signal.
+            let consistent = if r.outcome == Outcome::Timeout {
+                r.code.is_none() && r.signal.is_none()
+            } else {
+                r.outcome == Outcome::of(r.code, r.signal, false)
+            };
+            ensure!(consistent, "outcome does not match the exit status");
             ensure!(
                 r.outcome == Outcome::Ok || text.is_empty(),
                 "a failed run returned text"
@@ -344,7 +367,7 @@ mod tests {
         let (code, signal) = match outcome {
             Outcome::Ok => (Some(0), None),
             Outcome::Crash136 => (None, Some(8)),
-            Outcome::Timeout => (None, Some(9)),
+            Outcome::Timeout => (None, None),
             Outcome::Other => (Some(1), None),
         };
         Run {
@@ -444,9 +467,11 @@ mod tests {
             batch_version: 1,
             language: "eng".into(),
             stratum: Stratum {
+                crash_weight: 1.0,
                 damage: "low".into(),
                 decade: 1900,
                 lang: "eng".into(),
+                pages: 1,
                 prefix: "test".into(),
                 weight: 1.0,
             },
@@ -459,6 +484,7 @@ mod tests {
                 },
             )]),
             engine: engine(),
+            engine_base: format!("sha256:{}", "f".repeat(64)),
         };
         j.id = j.identity().unwrap();
         j.validate().unwrap();

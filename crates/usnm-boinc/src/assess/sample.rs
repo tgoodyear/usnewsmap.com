@@ -4,8 +4,9 @@
 //! gets pages in proportion to its size, at least `min_per_stratum` (or
 //! all of it, if smaller). "Random" is an order by SHA-256 of the seed and
 //! the doc id, so the same manifest and seed give the same sample. Each
-//! page carries its weight (stratum pages / drawn pages) for corpus
-//! estimates. The crash list is drawn the same way with its own seed,
+//! page carries the stratum's size and two weights for corpus estimates:
+//! `weight` (stratum pages / OCR pages drawn) for quality and speed, and
+//! `crash_weight` (stratum pages / all pages drawn) for crash rates. The crash list is drawn the same way with its own seed,
 //! from pages not in the OCR sample, and both files are written in hash
 //! order so any prefix of a run is mixed.
 use super::SampleRow;
@@ -98,13 +99,13 @@ fn draw(
     let mut out = Vec::new();
     for (k, pool) in &pools {
         let t = take[k];
-        let weight = pool.len() as f64 / t as f64;
         for (r, lang) in pool.iter().take(t) {
             out.push((
                 order(seed, salt, &r.doc_id),
                 SampleRow {
                     batch: r.batch.clone(),
                     batch_version: r.batch_version,
+                    crash_weight: 0.0,
                     damage: k.3.clone(),
                     damage_rate: r.damage_rate,
                     decade: r.decade(),
@@ -112,7 +113,8 @@ fn draw(
                     lang: lang.clone(),
                     mode,
                     prefix: k.2.clone(),
-                    weight,
+                    stratum_pages: strata[k].len(),
+                    weight: 0.0,
                     year: chrono::Datelike::year(&r.date),
                 },
             ));
@@ -198,6 +200,8 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             Mode::Crash,
         )
     };
+    let (mut ocr, mut crash) = (ocr, crash);
+    weigh(&mut ocr, &mut crash);
     summary.ocr = ocr.len();
     summary.crash = crash.len();
     for (path, rows) in [(&opts.out_ocr, &ocr), (&opts.out_crash, &crash)] {
@@ -209,6 +213,31 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         atomic(path, text.as_bytes())?;
     }
     Ok(summary)
+}
+
+fn key_of(r: &SampleRow) -> Key {
+    (r.lang.clone(), r.decade, r.prefix.clone(), r.damage.clone())
+}
+
+/// Fills both weights from the stratum sizes and the two draws.
+fn weigh(ocr: &mut [(String, SampleRow)], crash: &mut [(String, SampleRow)]) {
+    let mut drawn: BTreeMap<Key, (usize, usize)> = BTreeMap::new();
+    for (_, r) in ocr.iter() {
+        drawn.entry(key_of(r)).or_default().0 += 1;
+    }
+    for (_, r) in crash.iter() {
+        drawn.entry(key_of(r)).or_default().1 += 1;
+    }
+    for (_, r) in ocr.iter_mut().chain(crash.iter_mut()) {
+        let (o, c) = drawn[&key_of(r)];
+        let n = r.stratum_pages as f64;
+        r.crash_weight = n / (o + c) as f64;
+        r.weight = if r.mode == Mode::Ocr {
+            n / o as f64
+        } else {
+            r.crash_weight
+        };
+    }
 }
 
 #[cfg(test)]

@@ -43,6 +43,13 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
             "input {f:?} checksum mismatch"
         );
     }
+    let base = std::env::var("USNM_TESSERACT_IMAGE")
+        .context("the worker image does not name its Tesseract image")?;
+    ensure!(
+        base == job.engine_base,
+        "the unit was staged for engine {}, this image is built on {base}",
+        job.engine_base
+    );
     crate::worker::check_models(&job.engine)?;
     let tesseract = Tesseract::detect(TesseractOptions {
         runner: Runner::Host("tesseract".into()),
@@ -163,12 +170,11 @@ pub fn ocr(
     let code = status.code();
     let outcome = Outcome::of(code, signal, timed_out);
     let text = if outcome == Outcome::Ok {
-        let t = read(&scratch.join("page.txt"), MAX_TEXT).unwrap_or_default();
-        if std::str::from_utf8(&t).is_ok() {
-            t
-        } else {
-            Vec::new()
-        }
+        // Exit 0 without a readable text is a broken engine, not a result.
+        let t = read(&scratch.join("page.txt"), MAX_TEXT)
+            .context("tesseract exited 0 but its text is missing or over the limit")?;
+        std::str::from_utf8(&t).context("tesseract's text is not UTF-8")?;
+        t
     } else {
         Vec::new()
     };
@@ -231,9 +237,11 @@ pub(crate) mod tests {
             batch_version: 1,
             language: "eng".into(),
             stratum: Stratum {
+                crash_weight: 1.0,
                 damage: "low".into(),
                 decade: 1900,
                 lang: "eng".into(),
+                pages: 1,
                 prefix: "test".into(),
                 weight: 1.0,
             },
@@ -247,6 +255,7 @@ pub(crate) mod tests {
                 dpi: 300,
                 timeout_secs: 2,
             },
+            engine_base: format!("sha256:{}", "f".repeat(64)),
         };
         j.id = j.identity().unwrap();
         j

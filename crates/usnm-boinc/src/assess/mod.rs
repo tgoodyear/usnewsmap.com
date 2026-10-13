@@ -32,6 +32,9 @@ pub const APP: &str = "usnm_assess";
 pub struct SampleRow {
     pub batch: String,
     pub batch_version: u16,
+    /// Pages in the stratum / (OCR pages + crash pages drawn from it): the
+    /// weight for crash rates, which every unit measures.
+    pub crash_weight: f64,
     /// `low` (< 0.1), `mid` (< 0.5) or `high`: LoC's damage rate, binned.
     pub damage: String,
     pub damage_rate: f64,
@@ -42,6 +45,10 @@ pub struct SampleRow {
     pub mode: usnm_ocr_contract::assess::Mode,
     /// The batch name up to its first `_`: the awardee (`mdu`).
     pub prefix: String,
+    /// Pages in the corpus stratum.
+    pub stratum_pages: usize,
+    /// Pages in the stratum / OCR pages drawn from it: the weight for
+    /// quality and speed. On a crash row it equals `crash_weight`.
     pub weight: f64,
     pub year: i32,
 }

@@ -21,11 +21,11 @@ The engine's exit is a result, not an error. A JP2 that makes Tesseract exit wit
 
 The host runs `usnm-boinc work` in the same worker image as the OCR pilot (`ocr/boinc/Containerfile`); the presence of `assess.json` in the slot selects the assessment. Tesseract runs with the production worker's arguments: `<image> page -l <profile> --psm 3 --dpi 300 txt alto`, one thread, the language profile the worker's router picks (`frak2021` for German), inside the Docker wrapper's 1536 MiB, one-CPU container (`ocr/boinc/job.toml`).
 
-The engine build is pinned and can be swapped. Each job carries the worker image's full digest, the Tesseract version, the profile and the model digest; the host refuses a unit whose installed engine differs, and the validator refuses to pair results from different engines. To test another engine build (for example a fix from #455):
+The engine build is pinned and can be swapped. Each job carries the worker image's full digest, the digest of the Tesseract image it was built on, the Tesseract version, the profile and the model digest. The worker image records its Tesseract image as `USNM_TESSERACT_IMAGE` at build time; the host refuses a unit staged for another one, or whose installed version or model files differ, and the validator refuses to pair results from different engines. The worker image cannot read its own digest, so that field is the operator's record of which app version the units were staged for. To test another engine build (for example a fix from #455):
 
 1. Build the worker image `FROM` the new Tesseract image (`--build-arg TESSERACT_IMAGE=...`).
 2. Install it as a new `usnm_assess` app version (`scripts/boinc/install.py --app usnm_assess --version 2.0 --image ...`), sign it, and run `bin/update_versions`.
-3. Stage with `--engine-image` set to the new digest (and `--engine-version` if the version changed) into a fresh `--root`. Job ids include the engine, so the two campaigns never mix.
+3. Stage with `--engine-image` and `--engine-base` set to the new digests (and `--engine-version` if the version changed) into a fresh `--root`. Job ids include the engine, so the two campaigns never mix.
 
 ## Sample
 
@@ -34,7 +34,7 @@ The engine build is pinned and can be swapped. Each job carries the worker image
 - the OCR sample (`--ocr-pages`, default 3000), and
 - the crash-only list (`--crash-pages`, default 20000), drawn from pages not in the OCR sample.
 
-Strata are language (ISO 639-3, as the production message carries it) × decade × batch prefix (the batch name up to its first `_`, such as `mdu`) × LoC damage rate in three bins (`low` under 0.1, `mid` under 0.5, `high`). Each stratum gets pages in proportion to its size, with a floor of `--min-per-stratum` (default 2) or the whole stratum if it is smaller. Each row carries its `weight`: pages in the stratum divided by pages drawn from it, so corpus rates are weighted means. The draw orders each stratum by SHA-256 of `--seed` and the doc id, so the same manifest and seed give the same sample. Output is in that hash order, so any prefix of a run is mixed.
+Strata are language (ISO 639-3, as the production message carries it) × decade × batch prefix (the batch name up to its first `_`, such as `mdu`) × LoC damage rate in three bins (`low` under 0.1, `mid` under 0.5, `high`). Each stratum gets pages in proportion to its size, with a floor of `--min-per-stratum` (default 2) or the whole stratum if it is smaller. Each row carries the stratum's size (`stratum_pages`) and two weights: `weight`, the stratum's pages divided by the OCR pages drawn from it, for quality and speed; and `crash_weight`, the stratum's pages divided by all pages drawn from it (OCR and crash), for crash rates, since every unit reads the JP2. The draw orders each stratum by SHA-256 of `--seed` and the doc id, so the same manifest and seed give the same sample. Output is in that hash order, so any prefix of a run is mixed.
 
 Pages without a detected language use the title's first language if `--title-languages` (a JSON object, LCCN to MARC codes) is given; otherwise they are left out. Pages whose language has no locked model are left out too, as production leaves them. The counts go to stderr.
 
@@ -61,7 +61,7 @@ The validator needs `usnm-boinc` in the server container. The server image does 
 
 ## Scoring
 
-`usnm-boinc assess collect` reads the canonical results and writes, under `--out`, the files the #435 report's scripts read: `sample.jsonl`, `results.jsonl`, `crash.jsonl`, and `<n>/loc.xml` with `<n>/out-jp2/page.txt` and `<n>/out-jpg/page.txt`. `score.py` and `aggregate.py` then run unchanged against LoC's ALTO. It also writes `units.jsonl`: every unit with its stratum, weight, engine and per-format outcome, time and memory, for weighted corpus estimates and confidence intervals in the follow-up report.
+`usnm-boinc assess collect` reads the canonical results and writes, under `--out`, the files the #435 report's scripts read: `sample.jsonl`, `results.jsonl`, `crash.jsonl`, and `<n>/loc.xml` with `<n>/out-jp2/page.txt` and `<n>/out-jpg/page.txt`. `score.py` and `aggregate.py` then run unchanged against LoC's ALTO. It also writes `units.jsonl`: every unit with its stratum, weights, engine and per-format outcome, time and memory, for weighted corpus estimates and confidence intervals in the follow-up report.
 
 ## Running a campaign
 
@@ -74,7 +74,8 @@ usnm-boinc assess sample --manifest manifest.parquet --seed 456 \
 # Copy both to <share>/assess/ on the project share.
 
 # Bridge job runs, repeated until stage reports nothing left (each run is bounded).
-az containerapp job start ... --env-vars BRIDGE_STEP=assess-stage ASSESS_MODE=crash ASSESS_ENGINE_IMAGE=sha256:...
+az containerapp job start ... --env-vars BRIDGE_STEP=assess-stage ASSESS_MODE=crash \
+  ASSESS_ENGINE_IMAGE=sha256:... ASSESS_ENGINE_BASE=sha256:...
 az containerapp job start ... --env-vars BRIDGE_STEP=assess-submit ASSESS_MODE=crash
 # The same for ASSESS_MODE=ocr.
 

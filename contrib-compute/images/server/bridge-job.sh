@@ -7,7 +7,9 @@
 #
 # The JP2 against IIIF JPEG assessment (#456, docs/boinc-assessment.md), under
 # $PROJECT_DIR/assess on the share:
-#   BRIDGE_STEP=assess-stage    ASSESS_MODE=ocr|crash ASSESS_ENGINE_IMAGE=sha256:... [ASSESS_MAX=100]
+#   BRIDGE_STEP=assess-stage    ASSESS_MODE=ocr|crash ASSESS_ENGINE_IMAGE=sha256:... (worker image)
+#                               ASSESS_ENGINE_BASE=<its TESSERACT_IMAGE> [ASSESS_ENGINE_VERSION=5.5.0]
+#                               [ASSESS_MAX=100]
 #                               fetches from LoC, one request at a time, 5 s apart
 #   BRIDGE_STEP=assess-submit   ASSESS_MODE=ocr|crash [ASSESS_MAX=500]
 #   BRIDGE_STEP=assess-collect  ASSESS_SPOOL=<assimilator results directory>; runs score.py
@@ -30,6 +32,8 @@ case "$step" in
     assess_mode
     exec usnm-boinc assess stage --sample "$ASSESS/sample-$ASSESS_MODE.jsonl" --root "$ASSESS" \
       --mode "$ASSESS_MODE" --engine-image "${ASSESS_ENGINE_IMAGE:?set ASSESS_ENGINE_IMAGE}" \
+      --engine-base "${ASSESS_ENGINE_BASE:?set ASSESS_ENGINE_BASE}" \
+      --engine-version "${ASSESS_ENGINE_VERSION:-5.5.0}" \
       --max-pages "${ASSESS_MAX:-100}" --batch-cache "$ASSESS/batch-cache" ;;
   assess-collect)
     usnm-boinc assess collect --root "$ASSESS" --spool "${ASSESS_SPOOL:?set ASSESS_SPOOL}" --out "$ASSESS/out"
