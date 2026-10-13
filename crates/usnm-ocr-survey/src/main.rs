@@ -181,7 +181,13 @@ async fn main() -> anyhow::Result<()> {
             gap_secs,
         } => {
             let m = bundle::verify(&dir)?;
-            let s = bundle::stage(&m, &cache, std::time::Duration::from_secs_f64(gap_secs)).await?;
+            let s = bundle::stage(
+                &m,
+                &cache,
+                std::time::Duration::try_from_secs_f64(gap_secs)
+                    .context("--gap-secs must be a non-negative number of seconds")?,
+            )
+            .await?;
             println!("{}", serde_json::to_string(&s)?);
             anyhow::ensure!(s.failed.is_empty(), "{} downloads failed", s.failed.len());
         }

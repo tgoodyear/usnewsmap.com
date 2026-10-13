@@ -217,7 +217,11 @@ impl Manifest {
                     Some((remote, RemoteKind::PageImage))
                 }
             };
-            if let Some((id, kind)) = r {
+            let t = match &c.transcription {
+                CropText::ZipMember { remote, .. } => Some((remote, RemoteKind::Zip)),
+                CropText::Inline { .. } => None,
+            };
+            for (id, kind) in r.into_iter().chain(t) {
                 ensure!(
                     self.remote(id)?.kind == kind,
                     "{}: remote {id} is not a {kind:?}",
@@ -584,6 +588,13 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<Built> {
                         .map(|x| x.as_u64().and_then(|x| u32::try_from(x).ok()))
                         .collect::<Option<_>>()
                         .context("bad box")?;
+                    ensure!(
+                        sha.len() == 64
+                            && sha
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                        "{cid}: page_image_sha256 is not 64 lowercase hex digits"
+                    );
                     let id = format!("{}-{}", input.source, &sha[..16]);
                     remotes.entry(id.clone()).or_insert_with(|| Remote {
                         bytes: None,

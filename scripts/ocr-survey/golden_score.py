@@ -28,8 +28,8 @@ sys.path.insert(0, str(HERE))
 import gold  # noqa: E402
 
 SEED = 457
-# Python's str.isspace set, plus characters that are not whitespace but look like it.
-SPACES = "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0        　"
+# Every character Python's str.isspace accepts, plus characters that are not whitespace but look like it.
+SPACES = "".join(c for c in map(chr, range(0x110000)) if c.isspace())
 NOT_SPACES = "​᠎﻿"
 ALPHABET = ("abcdefghijklmnopqrstuvwxyz ABCDEFGHIJ .,;:'\"-" "äöüßéèçñſﬁﬂ" "æøåþ" "ДЖЯ" "日本" "😀𝔄")
 

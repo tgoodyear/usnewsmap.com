@@ -78,6 +78,8 @@ pub struct Report {
     pub completed_at: String,
     pub crops: Vec<CropRun>,
     pub engine: EngineInfo,
+    /// The `--limit` the run had; a limited run is partial and not comparable with a full one.
+    pub limit: Option<usize>,
     pub manifest_sha256: String,
     pub report_version: u32,
     pub skipped: Vec<bundle::Skipped>,
@@ -98,7 +100,15 @@ pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
     })
     .await?;
     let mut crops = Vec::new();
-    for r in ready.into_iter().take(opts.limit.unwrap_or(usize::MAX)) {
+    let limit = opts.limit.unwrap_or(usize::MAX);
+    for (n, r) in ready.into_iter().enumerate() {
+        if n >= limit {
+            skipped.push(bundle::Skipped {
+                crop_id: r.crop_id,
+                reason: "not run: over --limit".into(),
+            });
+            continue;
+        }
         let Some(profile) = engine::route(&r.lang, tess.installed()) else {
             skipped.push(bundle::Skipped {
                 crop_id: r.crop_id,
@@ -141,6 +151,7 @@ pub async fn run(opts: &RunOptions) -> anyhow::Result<Report> {
             psm: opts.psm,
             version: tess.version().to_string(),
         },
+        limit: opts.limit,
         manifest_sha256: m.digest()?,
         report_version: REPORT_VERSION,
         skipped,

@@ -358,8 +358,10 @@ usnm-boinc gold-run --bundle usnm-ocr-gold-v1.tar --cache CACHE --work WORK \
 `gold-result.json` holds `bundle_version`, the manifest's sha256, the engine
 (name, version, psm, dpi), one row per crop (counts only: reference characters,
 character edits, reference words, word edits, the model profile and the time),
-a summary per source and overall, and the crops that were skipped with the
-reason (not staged, checksum mismatch, no installed model, engine error). It
+a summary per source and overall, the `--limit` if one was given (a limited
+run is partial), and the crops that were skipped with the
+reason (not staged, checksum mismatch, no installed model, engine error,
+over the limit). It
 holds no page text and no transcription. The project ships no BLN600 crop and
 no LoC image: the client gets them from their publishers and cuts them itself.
 
