@@ -10,7 +10,7 @@ Design and rules are in docs/ocr-gold-set.md. Every option is a named flag.
     gold.py validate --crops DIR/crops.jsonl [--manifest DIR/manifest.jsonl --images DIR/images]
     gold.py score    --crops DIR/crops.jsonl [--hyp ENGINE=FILE.jsonl ...] [--hints] [--out DIR]
     gold.py agree    --crops DIR/crops.jsonl [--out DIR]
-    gold.py public-fetch   --dataset NAME --src DIR --confirm-download [--pages N]
+    gold.py public-fetch   --dataset NAME --src DIR --confirm-download [--pages N] [--subset validation]
     gold.py public-convert --dataset NAME --src DIR --out DIR [--count N] [--per-page N] [--seed N] [--not-for-scoring]
 
 select  Seeded stratified choice of pages, one crop per page: the target is shared equally between the
@@ -33,10 +33,13 @@ agree   For crops with no transcription: the engines' texts for the same box com
 public-fetch    Downloads one public ground-truth dataset (docs/ocr-gold-set.md, "Public ground truth") into
         --src. Some are gigabytes, so --confirm-download is required; run it where the data is to be kept.
 public-convert  Turns the downloaded dataset into the layout `score` reads: images/ (crops), manifest.jsonl
-        and crops.jsonl, with the dataset's own human transcription filled in. NAME is one of
-        reichsanzeiger or austrian, the two that meet the source policy (docs/ocr-gold-set.md). The
-        readers for americanstories and ndl-pdm stay for comparison only: they need --not-for-scoring,
-        and their rows carry for_scoring false.
+        and crops.jsonl, with the dataset's own human transcription filled in, and copies the dataset's
+        licence files and SOURCE.json into LICENSES/. Scoring sources (docs/ocr-gold-set.md, "Source
+        policy"): bln600, overproof-ca, reichsanzeiger, austrian, newseye-bnf, newseye-nlf-fi,
+        newseye-nlf-sv and nzz. americanstories, ndl-pdm, enp-berlin and overproof-smh (text only) stay
+        for comparison: they need --not-for-scoring, and their rows carry for_scoring false. Nothing a
+        dataset holds is committed; BLN600 is No-Derivatives, so its images are copied unchanged, and
+        BOINC clients (#457) must ship the original files and cut crops locally.
 """
 
 from __future__ import annotations
