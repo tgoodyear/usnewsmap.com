@@ -209,7 +209,7 @@ code { font-size:12.5px; overflow-wrap:anywhere; } a { color:var(--fill); }
 }
 "#;
 
-/// Turns each `<time>` into the reader's local time, then keeps the page
+/// Turns each `<time>` into US Eastern time, then keeps the page
 /// current: every `data-refresh` seconds it fetches the page again in the
 /// background and swaps in only the panels that changed, keeping each
 /// list's scroll position, open rows and any text being selected, so
@@ -223,25 +223,24 @@ const localTimes = (root) => {
 };
 const panels = () => [...document.querySelectorAll('.grid > section')];
 const titleOf = (s) => (s.querySelector('h2') || {}).textContent || '';
-let rawSub = document.querySelector('.sub').innerHTML;
+let rawSub = (document.querySelector('.sub time') || {outerHTML: ''}).outerHTML;
 let raw = panels().map((s) => s.outerHTML);
 localTimes(document);
 
-const keepSelection = (el) => {
+const selecting = (el) => {
   const sel = window.getSelection();
-  return sel && !sel.isCollapsed && el.contains(sel.anchorNode);
+  return !!sel && !sel.isCollapsed && sel.containsNode(el, true);
 };
 const swap = (old, fresh) => {
   const scrolls = [...old.querySelectorAll('.scroll')].map((e) => [e.getAttribute('aria-label'), e.scrollTop, e.scrollLeft]);
-  const open = [...old.querySelectorAll('details[open] > summary')].map((e) => e.textContent);
+  const open = [...old.querySelectorAll('details')].map((d, i) => d.open ? i + ':' + (d.querySelector('summary') || {}).textContent : null).filter(Boolean);
   const focused = old.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
   const left = old.scrollLeft;
   const node = document.importNode(fresh, true);
   localTimes(node);
-  for (const d of node.querySelectorAll('details')) {
-    const s = d.querySelector('summary');
-    if (s && open.includes(s.textContent)) d.open = true;
-  }
+  node.querySelectorAll('details').forEach((d, i) => {
+    if (open.includes(i + ':' + (d.querySelector('summary') || {}).textContent)) d.open = true;
+  });
   old.replaceWith(node);
   node.scrollLeft = left;
   for (const [label, top, lf] of scrolls) {
@@ -266,19 +265,23 @@ const update = async () => {
     const then = [...next.querySelectorAll('.grid > section')];
     const nextSub = next.querySelector('.sub');
     if (!nextSub || !then.length) throw new Error('not the dashboard');
-    if (nextSub.innerHTML !== rawSub) {
-      sub.innerHTML = nextSub.innerHTML;
-      rawSub = nextSub.innerHTML;
+    const t = sub.querySelector('time'), nt = nextSub.querySelector('time');
+    if (t && nt && nt.outerHTML !== rawSub) {
+      t.setAttribute('datetime', nt.getAttribute('datetime'));
+      t.textContent = nt.textContent;
+      rawSub = nt.outerHTML;
       localTimes(sub);
     }
+    sub.querySelector('.stale')?.remove();
     if (now.length === then.length && now.every((s, i) => titleOf(s) === titleOf(then[i]))) {
       then.forEach((fresh, i) => {
-        if (raw[i] === fresh.outerHTML || keepSelection(now[i])) return;
+        if (raw[i] === fresh.outerHTML || selecting(now[i])) return;
         raw[i] = fresh.outerHTML;
         swap(now[i], fresh);
       });
     } else {
       const grid = document.querySelector('.grid');
+      if (selecting(grid)) return;
       grid.replaceChildren(...then.map((s) => document.importNode(s, true)));
       localTimes(grid);
       raw = then.map((s) => s.outerHTML);
