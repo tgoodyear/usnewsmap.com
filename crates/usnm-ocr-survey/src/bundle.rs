@@ -234,6 +234,11 @@ impl Manifest {
         }
         for r in &self.remotes {
             ensure!(
+                is_sha256_hex(&r.sha256),
+                "{}: sha256 is not 64 lowercase hex digits",
+                r.id
+            );
+            ensure!(
                 r.url.starts_with("https://"),
                 "{}: remote URL must be https",
                 r.id
@@ -247,6 +252,16 @@ impl Manifest {
         Ok(sha256_hex(&to_json(self)?))
     }
 }
+
+/// 64 lowercase hex digits: a sha256 as the manifest writes it, and safe as a cache file name.
+pub fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The largest bundle tar a client unpacks.
+pub const MAX_BUNDLE: u64 = 256 << 20;
 
 fn safe_name(s: &str) -> bool {
     !s.is_empty()
@@ -742,6 +757,7 @@ fn write_tar(dir: &Path, tar: &Path) -> anyhow::Result<()> {
 /// bundle directory.
 pub fn unpack(tar: &Path, dest: &Path) -> anyhow::Result<PathBuf> {
     let mut a = tar::Archive::new(std::fs::File::open(tar)?);
+    let mut total: u64 = 0;
     let mut top = None;
     for e in a.entries()? {
         let mut e = e?;
@@ -749,6 +765,10 @@ pub fn unpack(tar: &Path, dest: &Path) -> anyhow::Result<PathBuf> {
             e.header().entry_type() == tar::EntryType::Regular,
             "bundle tar may hold only regular files"
         );
+        total = total
+            .checked_add(e.header().size()?)
+            .filter(|t| *t <= MAX_BUNDLE)
+            .context("bundle tar unpacks to more than the size limit")?;
         let p = e.path()?.to_path_buf();
         let s = p.to_str().context("non-UTF-8 path")?.to_string();
         ensure!(safe_path(&s), "unsafe path in tar: {s}");
