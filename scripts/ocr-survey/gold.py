@@ -362,7 +362,7 @@ def validate_rows(rows: list[dict], manifest: list[dict] | None = None, images: 
             errors.append(f"{cid}: not in the manifest")
         if m is not None and r.get("image") is not None and r["image"] != m["image"]:
             errors.append(f"{cid}: image {r['image']!r} differs from the manifest's {m['image']!r}")
-        if m is not None and images is not None:
+        if m is not None and images is not None and m.get("image") is not None:
             p = images / Path(m["image"]).name
             if not p.exists():
                 errors.append(f"{cid}: image missing ({p.name})")
@@ -771,9 +771,9 @@ def match_lines(ocr: list[str], alto: list[dict], min_ratio: float = 0.9) -> lis
     prev = None
     for line in ocr:
         key, hit = _squash(line), None
-        cands = index.get(key, []) if key else []
-        if cands:
-            hit = min(cands, key=lambda i: abs(i - (prev + 1))) if prev is not None else cands[0]
+        cands = [i for i in index.get(key, []) if prev is None or i > prev] if key else []
+        if cands:  # one-to-one and in order: never a line at or before the previous match
+            hit = cands[0]
         elif prev is not None and key:
             best = max(range(prev + 1, min(prev + 4, len(alto))), default=None,
                        key=lambda i: difflib.SequenceMatcher(None, key, _squash(alto[i]["text"])).ratio())
@@ -950,6 +950,8 @@ def copy_licences(dataset: str, src: Path, out: Path) -> list[str]:
 
     names = (SOURCE_NOTE, *PUBLIC[dataset].get("license_files", ()))
     copied = []
+    if not any(src.rglob(SOURCE_NOTE)):  # fetched by hand or by an older gold.py: the note comes from PUBLIC
+        write_source_note(src, dataset, note="written at conversion; the download had no SOURCE.json")
     for name in names:
         hit = next(iter(sorted(src.rglob(name), key=lambda p: len(p.parts))), None)
         if hit is not None and hit.is_file():
@@ -1124,6 +1126,7 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         download(HF_AS_TRAIN + "gold_data/gold_hand_transcription.json", j)
         for img in json.loads(j.read_text(encoding="utf-8"))["images"][: a.pages]:
             download(HF_AS_TRAIN + "gold_data/gold_images/" + img["file_name"], a.src / img["file_name"])
+        write_source_note(a.src, a.dataset)
     elif a.dataset == "reichsanzeiger":
         z = a.src / "reichsanzeiger-gt-1.0.0.zip"
         download(ZENODO_FILE.format(rec=10144428, name="UB-Mannheim/reichsanzeiger-gt-1.0.0.zip"), z)
@@ -1136,6 +1139,7 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         random.Random("public-fetch").shuffle(lines)  # a fixed order, so --pages N is the same pages every time
         for url, name in lines[: a.pages]:
             download(REICHSANZEIGER_IMAGES + url, a.src / "images" / name)
+        write_source_note(a.src, a.dataset)
     elif a.dataset in NEWSEYE:
         # --subset: validation is 16 to 122 MB per set; training is 0.17 to 5.4 GB (the Finnish one).
         rec, val, train = NEWSEYE[a.dataset]
@@ -1149,6 +1153,7 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         z = a.src / "tosho_all_linejson.zip"
         download(NDL_PDM_JSON, z)  # 5.2 GB
         zipfile.ZipFile(z).extractall(a.src / "tosho_all_linejson")
+        write_source_note(a.src, a.dataset)
     elif a.dataset == "bln600":
         z = a.src / "BLN600.zip"
         download(BLN600_ZIP, z)

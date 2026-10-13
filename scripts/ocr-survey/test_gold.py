@@ -304,6 +304,11 @@ class Overproof(unittest.TestCase):
         self.assertIsNone(m["image"])
         self.assertFalse(t["for_scoring"])
         self.assertEqual(gold.validate_rows([t], [m])[0], [])
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(gold.validate_rows([t], [m], Path(d)), ([], []))
+
+    def test_matches_are_one_to_one(self):
+        self.assertEqual(gold.match_lines(["foo", "foo"], [{"text": "foo"}]), [0, None])
 
 
 class Bln600(unittest.TestCase):
@@ -344,6 +349,7 @@ class Bln600(unittest.TestCase):
             self.assertNotIn("\r", rows[0]["transcription"])
             self.assertEqual(gold.validate_rows(rows, man, out / "images"), ([], []))
             self.assertEqual((out / "LICENSES" / "LICENSE").read_text(), "licence text")
+            self.assertEqual(json.loads((out / "LICENSES" / "SOURCE.json").read_text())["dataset"], "bln600")
 
 
 class NewsEye(unittest.TestCase):
