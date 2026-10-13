@@ -5,13 +5,13 @@ Design and rules are in docs/ocr-gold-set.md. Every option is a named flag.
 
     gold.py select   --scores docs/reports/2026-10-ocr-engine-survey/data/scores.jsonl --out selection.jsonl
     gold.py select   --manifest SAMPLE/manifest-final.jsonl --out selection.jsonl [--target 60] [--seed 296]
-    gold.py cut      --selection selection.jsonl --sample SAMPLE --out DIR [--work WORK]   (on a node)
-    gold.py fetch    --manifest DIR/manifest.jsonl --out DIR/images                          (on a node)
+    gold.py cut      --selection selection.jsonl --sample SAMPLE --out DIR [--work WORK]
+    gold.py fetch    --manifest DIR/manifest.jsonl --out DIR/images
     gold.py validate --crops DIR/crops.jsonl [--manifest DIR/manifest.jsonl --images DIR/images]
     gold.py score    --crops DIR/crops.jsonl [--hyp ENGINE=FILE.jsonl ...] [--hints] [--out DIR]
     gold.py agree    --crops DIR/crops.jsonl [--out DIR]
-    gold.py public-fetch   --dataset NAME --src DIR --confirm-node [--pages N]                (on a node)
-    gold.py public-convert --dataset NAME --src DIR --out DIR [--count N] [--per-page N] [--seed N]
+    gold.py public-fetch   --dataset NAME --src DIR --confirm-download [--pages N]
+    gold.py public-convert --dataset NAME --src DIR --out DIR [--count N] [--per-page N] [--seed N] [--not-for-scoring]
 
 select  Seeded stratified choice of pages, one crop per page: the target is shared equally between the
         survey's groups (a group with fewer pages gives all of them and the rest goes to the others),
@@ -31,10 +31,12 @@ agree   For crops with no transcription: the engines' texts for the same box com
         (pairwise CER, and each engine's mean CER against the others). This is agreement, not accuracy:
         two engines can agree and both be wrong.
 public-fetch    Downloads one public ground-truth dataset (docs/ocr-gold-set.md, "Public ground truth") into
-        --src. Run it on a node: --confirm-node is required so it is not run on a laptop by accident.
+        --src. Some are gigabytes, so --confirm-download is required; run it where the data is to be kept.
 public-convert  Turns the downloaded dataset into the layout `score` reads: images/ (crops), manifest.jsonl
         and crops.jsonl, with the dataset's own human transcription filled in. NAME is one of
-        americanstories, reichsanzeiger, austrian, ndl-pdm.
+        reichsanzeiger or austrian, the two that meet the source policy (docs/ocr-gold-set.md). The
+        readers for americanstories and ndl-pdm stay for comparison only: they need --not-for-scoring,
+        and their rows carry for_scoring false.
 """
 
 from __future__ import annotations
@@ -187,7 +189,8 @@ def cmd_cut(a: argparse.Namespace) -> int:
     results = []
     if a.work:
         for res in sorted((a.work / "results").glob("*.jsonl")):
-            results += read_jsonl(res)
+            if not res.stem.startswith("throughput"):  # aggregate rows, no page_id (as score.py skips them)
+                results += read_jsonl(res)
     a.out.mkdir(parents=True, exist_ok=True)
     (a.out / "images").mkdir(exist_ok=True)
     manifest, template, counters = [], [], {}
@@ -478,23 +481,25 @@ PUBLIC: dict[str, dict] = {
         "group": "pub-americanstories", "lang": "eng",
         "license": "Apache-2.0 (Hugging Face repository metadata)",
         "url": "https://huggingface.co/datasets/dell-research-harvard/AmericanStoriesTraining",
-        "chars": (200, 2500),
+        "chars": (200, 2500), "scoring": False,
+        "policy": "fails: card empty, source and years of the 10 pages undocumented",
     },
     "reichsanzeiger": {
         "group": "pub-reichsanzeiger", "lang": "deu",
         "license": "CC0-1.0 (GitHub LICENSE file); CC-BY-4.0 (Zenodo record); images Public Domain Mark 1.0",
         "url": "https://doi.org/10.5281/zenodo.10144094",
-        "chars": (200, 2500),
+        "chars": (200, 2500), "scoring": True, "policy": "passes",
     },
     "austrian": {
         "group": "pub-austrian", "lang": "deu", "license": "CC-BY-4.0 (Zenodo record)",
         "url": "https://doi.org/10.5281/zenodo.3387369",
-        "chars": (200, 2500),
+        "chars": (200, 2500), "scoring": True, "policy": "passes",
     },
     "ndl-pdm": {
         "group": "pub-ndl-pdm", "lang": "jpn", "license": "Public Domain Mark 1.0 (repository README)",
         "url": "https://github.com/ndl-lab/pdmocrdataset-part1",
-        "chars": (12, 300),
+        "chars": (12, 300), "scoring": False,
+        "policy": "fails: README does not say the transcriptions were made or checked by people",
     },
 }
 
@@ -579,7 +584,7 @@ def public_regions(dataset: str, src: Path) -> list[dict]:
             if name and name in index and regs:
                 out += [{**r, "page_id": f"{dataset}-{Path(name).stem}", "image": index[name]} for r in regs]
     elif dataset == "ndl-pdm":
-        # json/<dir>/<name>.json with its image at img/<dir>/<name>.jpg (layout from the README; check on the node).
+        # json/<dir>/<name>.json with its image at img/<dir>/<name>.jpg (layout from the README; unchecked).
         for j in sorted(src.rglob("*.json")):
             for ext in (".jpg", ".jpeg", ".png"):
                 img = index.get(j.stem + ext)
@@ -619,15 +624,21 @@ def public_rows(dataset: str, pick: dict, n: int, crop: bytes, box: list[int], p
     m = {"crop_id": crop_id, "page_id": pick["page_id"], "group": meta["group"], "lang": meta["lang"], "era": None,
          "stratum": meta["group"], "box": box, "image": f"images/{crop_id}.jpg", "crop_sha256": sha256(crop),
          "crop_bytes": len(crop), "encoder": encoder, "page_image_sha256": page_sha, "source_image": pick["image"].name,
-         "region": pick["region"], "source_dataset": dataset, "source_url": meta["url"], "source_license": meta["license"]}
+         "region": pick["region"], "source_dataset": dataset, "source_url": meta["url"], "source_license": meta["license"],
+         "for_scoring": meta["scoring"]}
     t = {"crop_id": crop_id, "group": meta["group"], "lang": meta["lang"], "date": None, "title": pick["page_id"],
          "image": m["image"], "hints": {"is_truth": False, "note": "none: the truth is the dataset's own", "texts": {}},
          "transcription": pick["text"], "transcriber": who, "reviewer": "not applicable: published ground truth",
-         "hint_copy_reviewed": False, "truth_source": dataset, "notes": ""}
+         "hint_copy_reviewed": False, "truth_source": dataset, "for_scoring": meta["scoring"],
+         "notes": "" if meta["scoring"] else f"not for scoring: source policy {meta['policy']}"}
     return m, t
 
 
 def cmd_public_convert(a: argparse.Namespace) -> int:
+    if not PUBLIC[a.dataset]["scoring"] and not a.not_for_scoring:
+        print(f"{a.dataset} does not meet the source policy ({PUBLIC[a.dataset]['policy']}); "
+              "pass --not-for-scoring to convert it for comparison only", file=sys.stderr)
+        return 2
     import PIL
     from PIL import Image
 
@@ -679,8 +690,8 @@ def download(url: str, dest: Path, gap: float = 1.0) -> None:
 def cmd_public_fetch(a: argparse.Namespace) -> int:
     import zipfile
 
-    if not a.confirm_node:
-        print("public-fetch downloads up to several GB; run it on a node and pass --confirm-node", file=sys.stderr)
+    if not a.confirm_download:
+        print("public-fetch downloads up to several GB; pass --confirm-download", file=sys.stderr)
         return 2
     a.src.mkdir(parents=True, exist_ok=True)
     if a.dataset == "americanstories":
@@ -765,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
         q.add_argument("--dataset", required=True, choices=sorted(PUBLIC))
         q.add_argument("--src", type=Path, required=True, help="where the dataset is (or goes)")
         if name == "public-fetch":
-            q.add_argument("--confirm-node", action="store_true", help="say this runs on a node, not a laptop")
+            q.add_argument("--confirm-download", action="store_true", help="agree to a download of up to several GB")
             q.add_argument("--pages", type=int, default=20, help="page images to download (datasets with separate images)")
         else:
             q.add_argument("--out", type=Path, required=True)
@@ -774,6 +785,8 @@ def main(argv: list[str] | None = None) -> int:
             q.add_argument("--seed", type=int, default=DEFAULT_SEED)
             q.add_argument("--min-chars", type=int, help="shortest region, in normalized characters (default per dataset)")
             q.add_argument("--max-chars", type=int, help="longest region (default per dataset)")
+            q.add_argument("--not-for-scoring", action="store_true",
+                           help="allow a dataset that fails the source policy, for comparison only")
         q.set_defaults(fn=fn)
 
     a = ap.parse_args(argv)

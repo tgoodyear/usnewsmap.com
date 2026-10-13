@@ -6,7 +6,7 @@ The transcriptions of the 60 crops are not written yet. Every `transcription` fi
 
 ## Selection
 
-- **Source.** The survey's 80 scored pages (`data/scores.jsonl`; the sample itself is on pve-big). One crop per page.
+- **Source.** The survey's 80 scored pages (`data/scores.jsonl`; the sample's images are not in the repository). One crop per page.
 - **Target.** 60 crops. The target is shared equally between the survey's groups; a group with fewer pages gives all of them and the others share the rest. The first selection is 10 each for German, worst-English, Serbian, Czech and control, and 5 each for Polish and Russian (all their pages).
 - **Strata.** Group (which stands for language and print type: the survey groups were chosen as the worst-read cases per language, and the control is well-read English dailies), then era. Inside a group the picks cycle through decades in a seeded order, so a group spans as many decades as it has pages in. The era runs from the 1850s to the 1960s.
 - **Seeded.** `gold.py select` with seed 296 reproduces `fixtures/ocr-gold/selection.jsonl`.
@@ -16,7 +16,7 @@ The transcriptions of the 60 crops are not written yet. Every `transcription` fi
 ```sh
 scripts/ocr-survey/gold.py select --scores docs/reports/2026-10-ocr-engine-survey/data/scores.jsonl \
   --out fixtures/ocr-gold/selection.jsonl --target 60 --seed 296
-# on a node, with the survey's sample and work directories:
+# where the survey's sample and work directories are:
 scripts/ocr-survey/gold.py cut --selection fixtures/ocr-gold/selection.jsonl --sample SAMPLE --work WORK --out OUT
 ```
 
@@ -24,18 +24,18 @@ scripts/ocr-survey/gold.py cut --selection fixtures/ocr-gold/selection.jsonl --s
 
 ## Japanese crops
 
-The 24 Japanese crops of the [#128](https://github.com/tgoodyear/usnewsmap.com/issues/128) comparison are not in the 60. `~/code/usnm-ja-ocr/crops/refs/` holds 23 text files for them, and `refs-excluded/` one more. Their provenance, from the files and logs on the Mac (read only):
+The 24 Japanese crops of the [#128](https://github.com/tgoodyear/usnewsmap.com/issues/128) comparison are not in the 60. Reference texts exist for them outside the repository: 23 files, and one more set aside. What their files and logs show about provenance:
 
-- No script, log or note in that directory or in the repository records how the refs were made. `ja-ocr/crops.py` says "transcribe each crop into refs/<page_id>.txt" and nothing more; the commit that added it has no message beyond its title.
+- No script, log or note beside them or in the repository records how the refs were made. `ja-ocr/crops.py` says "transcribe each crop into refs/<page_id>.txt" and nothing more; the commit that added it has no message beyond its title.
 - None is identical to any engine's text for the crop (best similarity per file 0.36 to 0.93 against NDLOCR-Lite, the prototype NDLOCR run, or Azure), so they are not copies of one engine's output.
 - The files were written between 10:35:20 and 10:50:46 on 4 October, 20 to 60 seconds apart, some of 1,400 to 1,700 characters, and two in the same second. That pace is not typing by a person. It fits transcription by a program or an AI model reading the images, but nothing on disk says which.
 - Fifteen lines contain the geta mark 〓 for an unreadable character. No engine's output contains it.
 
-Verdict: not verified as hand-made, and most likely machine-made. They are not ground truth. The survey report is right that no crops were hand-transcribed. Until a person transcribes them from the images, they are a hint, like an engine's text. The images are only on the Mac, so they are not in the manifest yet.
+Verdict: not verified as hand-made, and most likely machine-made. They are not ground truth. The survey report is right that no crops were hand-transcribed. Until a person transcribes them from the images, they are a hint, like an engine's text. The crop images are not in the repository, so they are not in the manifest yet.
 
 Needs transcription (crop from `sample.csv`, all unverified):
 
-| page                                | group   | file on the Mac                         |
+| page                                | group   | reference text                          |
 | ----------------------------------- | ------- | --------------------------------------- |
 | `sn83025518_1945-06-16_ed-1_seq-2`  | typeset | ref                                     |
 | `sn83025518_1945-08-14_ed-1_seq-3`  | typeset | ref                                     |
@@ -73,7 +73,7 @@ The scorer for these is `scripts/ja-ocr/score.py`, which folds old character for
 
 ## Where the images live
 
-The page checksum pins the pixels. `page_image_sha256` is the checksum of the page JPEG the survey fetched, and `gold.py fetch` downloads each page (paced as the survey's `locfetch.py` does), checks it, and cuts the box. The crop JPEGs themselves are committed under `fixtures/ocr-gold/` only if the total is under about 10 MB; `cut` prints the total. Otherwise the repository holds the manifest, and `fetch` rebuilds the images on a node. JPEG bytes can differ between Pillow versions, so a differing `crop_sha256` with a matching page checksum is a warning, not an error. 60 pages are about 60 full-resolution downloads from loc.gov, so `fetch` belongs on a node, not on a laptop.
+The page checksum pins the pixels. `page_image_sha256` is the checksum of the page JPEG the survey fetched, and `gold.py fetch` downloads each page (paced as the survey's `locfetch.py` does), checks it, and cuts the box. The crop JPEGs themselves are committed under `fixtures/ocr-gold/` only if the total is under about 10 MB; `cut` prints the total. Otherwise the repository holds the manifest, and `fetch` rebuilds the images. JPEG bytes can differ between Pillow versions, so a differing `crop_sha256` with a matching page checksum is a warning, not an error. 60 pages are about 60 full-resolution downloads from loc.gov, so run `fetch` on a machine with the bandwidth and disk for them.
 
 ## Transcription rules
 
@@ -114,6 +114,25 @@ The 60-page selection stays untranscribed: the maintainer will not hand-transcri
 
 Accuracy needs a human transcription, so this section looks for public datasets that have one. Checked on 13 October 2026 from public documentation, dataset cards and repository metadata only; nobody was contacted. Anything I could not confirm is marked UNVERIFIED. Licences are quoted from the source named in the table.
 
+### Source policy
+
+Other people use this repository, so every source used for scoring must be one anyone can check and that we can publish. A source is used for scoring only if all three hold:
+
+1. **Public download.** Anyone can download it without a login, request form or agreement.
+2. **High confidence.** The transcriptions were made or verified by people, and the source documents how.
+3. **Redistributable.** The licence allows public redistribution, so the files or fixtures derived from them can be committed or published.
+
+Checked on 13 October 2026 against each source's own licence and download pages:
+
+| Source                    | URL                                                                                                           | Licence                                                                                                           | Provenance                                                                                                                                             | Confidence | Policy                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------- |
+| Reichsanzeiger-GT         | [GitHub](https://github.com/UB-Mannheim/reichsanzeiger-gt), [Zenodo](https://doi.org/10.5281/zenodo.10144094) | CC0-1.0 on GitHub, CC-BY-4.0 on Zenodo; images Public Domain Mark 1.0. We follow CC-BY-4.0 and credit UB Mannheim | Transcribed in Transkribus to the OCR-D Level 2 guidelines, documented in the README and paper                                                         | High       | Passes. Used for scoring                                 |
+| Austrian newspapers       | [Zenodo](https://doi.org/10.5281/zenodo.3387369)                                                              | CC-BY-4.0; credit ONB, NewsEye and READ                                                                           | Page images from the Austrian National Library; text corrected by people in Transkribus for NewsEye and READ, per the record                           | High       | Passes. Used for scoring                                 |
+| American Stories gold set | [Hugging Face](https://huggingface.co/datasets/dell-research-harvard/AmericanStoriesTraining)                 | `apache-2.0` in repository metadata only; the card is empty                                                       | The paper says two annotators hand-entered 10 pages, but nothing says where the pages come from or what years, so the rights in the images are unknown | Medium     | Fails (b) and, for the images, (c). Not used for scoring |
+| NDL PDM OCR set           | [GitHub](https://github.com/ndl-lab/pdmocrdataset-part1)                                                      | Public Domain Mark 1.0                                                                                            | The README says characters were "entered as visually recognized" but not who entered or checked them. Books, not newspapers                            | Unknown    | Fails (b). Not used for scoring                          |
+
+Our own 60-page selection has empty transcriptions, so it gives engine agreement only, never accuracy. Its page images come from Chronicling America and are public; see [Licensing](#licensing).
+
 ### What American Stories evaluated on
 
 The [GitHub README](https://github.com/dell-research-harvard/AmericanStories) says: "Its vast size and silver quality make it ideal for innovation and research in this domain." It mentions no test data. The paper ([arXiv:2308.12477](https://arxiv.org/abs/2308.12477), read as the [ar5iv HTML](https://ar5iv.labs.arxiv.org/html/2308.12477) through a summarising fetch tool, so check the wording against the paper before quoting it elsewhere) and the Hugging Face repositories say this:
@@ -149,11 +168,10 @@ No public Japanese newspaper dataset with line transcriptions turned up (UNVERIF
 
 ### Recommendation
 
-1. **Reichsanzeiger-GT, for German Fraktur.** The only dataset here with Fraktur, line-level human transcription, page images that are fetched on demand, and a licence with no non-commercial clause on either of its two statements. Its pages are a gazette, so layouts are denser and plainer than a daily paper's. Use the Austrian newspapers set next to it for newspaper layouts.
-2. **American Stories gold set, for English.** Ten pages, small enough to run everywhere, human-entered text, Apache-2.0 on the repository. Years and source are unconfirmed, so report it as "English, 19th and 20th century newspapers" and not as Chronicling America.
-3. **NDL public-domain OCR set, for Japanese.** Public Domain Mark, line-level, vertical text, 1870 to the 1940s. It is books, so it checks the engines on the printing of the period and says nothing about newspaper layout or the smaller type of wartime papers.
+1. **Reichsanzeiger-GT, for German Fraktur.** Line-level human transcription, page images fetched on demand, and a licence that allows redistribution under either statement. Its pages are a gazette, so layouts are denser and plainer than a daily paper's.
+2. **Austrian newspapers, for German Fraktur newspaper layouts.** Real newspapers, corrected by people, CC-BY-4.0.
 
-BLN600, NZZ and GT4HistOCR are held back for licence or fit, as the table says. The Europeana set cannot give CER.
+There is no English or Japanese scoring source yet. American Stories and NDL fail the source policy below and are kept only as comparison readers. BLN600, NZZ and GT4HistOCR are held back for licence or fit, as the table says. The Europeana set cannot give CER.
 
 ### How it complements the 60 crops
 
@@ -164,24 +182,23 @@ BLN600, NZZ and GT4HistOCR are held back for licence or fit, as the table says. 
 | Number it gives | Agreement between engines, labelled as such | CER and WER: accuracy                                                                         |
 | Use             | Which engine is the outlier on our material | Whether an engine is any good at the language and script, and whether a profile change helped |
 
-The two do not substitute. A public-set CER says nothing certain about our worst pages, and agreement on our pages says nothing about accuracy. Report them in separate tables with those labels. `score` prints the group per row (`pub-reichsanzeiger`, `pub-americanstories`, `pub-ndl-pdm`), so the public rows can't be read as the own-crop rows.
+The two do not substitute. A public-set CER says nothing certain about our worst pages, and agreement on our pages says nothing about accuracy. Report them in separate tables with those labels. `score` prints the group per row (`pub-reichsanzeiger`, `pub-austrian`), so the public rows can't be read as the own-crop rows.
 
 ### Fetch and convert
 
-`public-fetch` downloads a dataset to `--src` on a node. It will not run without `--confirm-node`, and none of this goes through the Mac: the Reichsanzeiger images are 101 page JPEGs from Mannheim's server (paced one second apart, `--pages N` of them, 20 by default, in a fixed seeded order), the NDL zip is 5.2 GB, and the Austrian zips 183 MB. `public-convert` reads what was downloaded and writes the layout `score` reads: `images/`, `manifest.jsonl`, `crops.jsonl`, with the dataset's transcription in `transcription`.
+`public-fetch` downloads a dataset to `--src`. It will not run without `--confirm-download`, because some downloads are large: the Reichsanzeiger images are 101 page JPEGs from Mannheim's server (paced one second apart, `--pages N` of them, 20 by default, in a fixed seeded order), the Austrian zips 183 MB, and the NDL zip 5.2 GB. Run it on any machine with network access and room for the files. `public-convert` reads what was downloaded and writes the layout `score` reads: `images/`, `manifest.jsonl`, `crops.jsonl`, with the dataset's transcription in `transcription`.
 
 ```sh
-# on a node
-scripts/ocr-survey/gold.py public-fetch --dataset reichsanzeiger --src /data/gold/reichsanzeiger --confirm-node --pages 20
-scripts/ocr-survey/gold.py public-convert --dataset reichsanzeiger --src /data/gold/reichsanzeiger --out OUT/reichsanzeiger --count 60
+scripts/ocr-survey/gold.py public-fetch --dataset reichsanzeiger --src DATA/reichsanzeiger --confirm-download --pages 20
+scripts/ocr-survey/gold.py public-convert --dataset reichsanzeiger --src DATA/reichsanzeiger --out OUT/reichsanzeiger --count 60
 scripts/ocr-survey/gold.py validate --crops OUT/reichsanzeiger/crops.jsonl --manifest OUT/reichsanzeiger/manifest.jsonl --images OUT/reichsanzeiger/images
 # engines' texts for the crops go in as --hyp ENGINE=FILE.jsonl, as for the own crops
 scripts/ocr-survey/gold.py score --crops OUT/reichsanzeiger/crops.jsonl --hyp tesseract-5.5=tess.jsonl --out OUT/reichsanzeiger/scores
 ```
 
-`--dataset` is one of `americanstories`, `reichsanzeiger`, `austrian`, `ndl-pdm`. A crop is one transcribed region (a block of lines for the first three, one line for NDL), chosen by seed: regions inside a length window (200 to 2,500 normalized characters; 12 to 300 for NDL lines, overridable with `--min-chars` and `--max-chars`), at most `--per-page` (3) per page, taking one from each page before a second from any. Each crop row carries `source_dataset`, `source_url` and `source_license`, and `transcriber` reads "`<dataset>`: published ground truth" with `reviewer` "not applicable: published ground truth", which is what lets `validate` accept it. Nobody here reviewed those transcriptions; the dataset's authors did, by the process they describe.
+`--dataset` is `reichsanzeiger` or `austrian` for scoring. `americanstories` and `ndl-pdm` fail the [source policy](#source-policy); `public-convert` refuses them unless `--not-for-scoring` is given, and their rows then carry `for_scoring: false`. Don't quote their numbers as accuracy. A crop is one transcribed region (a block of lines for the first three, one line for NDL), chosen by seed: regions inside a length window (200 to 2,500 normalized characters; 12 to 300 for NDL lines, overridable with `--min-chars` and `--max-chars`), at most `--per-page` (3) per page, taking one from each page before a second from any. Each crop row carries `source_dataset`, `source_url` and `source_license`, and `transcriber` reads "`<dataset>`: published ground truth" with `reviewer` "not applicable: published ground truth", which is what lets `validate` accept it. Nobody here reviewed those transcriptions; the dataset's authors did, by the process they describe.
 
-What was tested: unit tests on tiny synthetic inputs for every reader, the pick, and the end-to-end conversion (the last one needs Pillow, so it is skipped where Pillow is missing), and a real run of `public-convert` on the American Stories JSON and one of its page images (0015.jpg, 1.7 MB), which cut readable crops that line up with their text. Not run against real data: the Reichsanzeiger conversion (its PAGE files were read, its images were not downloaded), and the Austrian and NDL ones (the zips are too big to fetch here; the NDL reader follows the README's example and expects `json/<dir>/<name>.json` beside `img/<dir>/<name>.jpg`, UNVERIFIED until it runs on a node).
+What was tested: unit tests on tiny synthetic inputs for every reader, the pick, and the end-to-end conversion (the last one needs Pillow, so it is skipped where Pillow is missing), and a real run of `public-convert` on the American Stories JSON and one of its page images (0015.jpg, 1.7 MB), which cut readable crops that line up with their text. Not run against real data: the Reichsanzeiger conversion (its PAGE files were read, its images were not downloaded), and the Austrian and NDL ones (the zips are too big to fetch here; the NDL reader follows the README's example and expects `json/<dir>/<name>.json` beside `img/<dir>/<name>.jpg`, UNVERIFIED until it runs on the real files).
 
 Caveats when reading the CER of a public set:
 
@@ -191,7 +208,7 @@ Caveats when reading the CER of a public set:
 
 ## Licensing
 
-The library believes the newspapers in Chronicling America are in the public domain or have no known copyright restrictions, and that those published more than 95 years ago are in the public domain in their entirety; newer ones may hold copyrighted third-party material ([Rights and Access](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/)). Pages in the sample run to 1963, so crops from pages after 1931 carry that caveat. Transcriptions are original work and go in under the repository's licence.
+The library believes the newspapers in Chronicling America are in the public domain or have no known copyright restrictions, and that those published more than 95 years ago are in the public domain in their entirety; newer ones may hold copyrighted third-party material ([Rights and Access](https://www.loc.gov/collections/chronicling-america/about-this-collection/rights-and-access/)). Pages in the sample run to 1963, so in 2026 crops from pages published in 1931 or later carry that caveat. Transcriptions are original work and go in under the repository's licence.
 
 ## Human-corrected text from LoC
 
@@ -205,6 +222,6 @@ Checked in public documentation only, nobody contacted.
 ## Open
 
 - A person transcribes the 60 crops and the Japanese crops, or the 60 stay scored as agreement only.
-- Run `public-fetch` and `public-convert` on a node for Reichsanzeiger, Austrian and NDL, and check the readers against the real files.
-- Decide whether to commit the images once `cut` has run on a node and the total is known.
+- Run `public-fetch` and `public-convert` for Reichsanzeiger and Austrian, and check the readers against the real files.
+- Decide whether to commit the images once `cut` has run and the total is known.
 - `usnm-ocr-survey score` takes over the span-finding for whole-page runs and reads this format as `--truth`.

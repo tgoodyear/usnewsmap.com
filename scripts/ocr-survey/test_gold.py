@@ -165,7 +165,11 @@ class PublicPick(unittest.TestCase):
         self.assertEqual(m["crop_id"], t["crop_id"])
         self.assertEqual(gold.validate_rows([t], [m])[0], [])
 
-    def test_fetch_needs_the_node_flag(self):
+    def test_convert_refuses_off_policy_source(self):
+        self.assertEqual(gold.main(["public-convert", "--dataset", "ndl-pdm", "--src", "/nonexistent-gold-test",
+                                    "--out", "/nonexistent-gold-test/out"]), 2)
+
+    def test_fetch_needs_the_download_flag(self):
         self.assertEqual(gold.main(["public-fetch", "--dataset", "austrian", "--src", "/nonexistent-gold-test"]), 2)
 
 
@@ -190,7 +194,7 @@ class PublicConvert(unittest.TestCase):
                 else:
                     (src / "p1.xml").write_text(PAGE)
                 self.assertEqual(gold.main(["public-convert", "--dataset", dataset, "--src", str(src), "--out", str(out),
-                                            "--min-chars", "5"]), 0)
+                                            "--min-chars", "5", "--not-for-scoring"]), 0)
                 man = gold.read_jsonl(out / "manifest.jsonl")
                 self.assertEqual(len(man), 1)
                 self.assertEqual(man[0]["box"], [2, 3, 22, 13])
