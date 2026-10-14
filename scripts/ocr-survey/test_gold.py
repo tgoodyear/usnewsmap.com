@@ -463,6 +463,17 @@ class DownloadZip(unittest.TestCase):
         self.assertTrue(__import__("zipfile").is_zipfile(__import__("io").BytesIO(bytes(bad))))
         self.assertEqual(len(self.run_with(bytes(bad), good)), 2)
 
+    def test_damaged_deflate_stream_refetched(self):
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("x.txt", b"hello world " * 200)
+        bad = bytearray(buf.getvalue())
+        start = 30 + len("x.txt")  # local header, then the compressed data
+        bad[start] = 0xFF  # an invalid deflate block type: zlib.error, not BadZipFile
+        self.assertEqual(len(self.run_with(bytes(bad), self.make_zip())), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
