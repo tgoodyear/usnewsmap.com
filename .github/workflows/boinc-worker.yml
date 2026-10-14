@@ -22,6 +22,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/boinc-worker.yml"
+      - ".github/actions/boinc-worker-build/**"
       - "ocr/engines/tesseract/**"
       - "ocr/boinc/Containerfile"
       - "crates/**"
@@ -41,8 +42,24 @@ env:
   IMAGE: ghcr.io/tgoodyear/usnm-boinc-worker
 
 jobs:
-  worker:
-    name: worker image (build${{ github.event_name == 'workflow_dispatch' && ', push' || '' }})
+  # Pull requests: build and check only, with a read-only token.
+  check:
+    name: worker image (build)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/boinc-worker-build
+        with:
+          image: ${{ env.IMAGE }}
+          tag: ${{ github.sha }}
+
+  # A manual run: the same build, then the push. Only this job can write packages.
+  publish:
+    name: worker image (build, push)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,66 +67,30 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       image: ${{ steps.push.outputs.image }}
-      tesseract_image: ${{ steps.engine.outputs.tesseract_image }}
+      tesseract_image: ${{ steps.build.outputs.tesseract_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The plain docker builder: ocr/boinc/Containerfile is FROM the engine's
-      # local image id, which only the daemon's own image store can resolve.
-      - name: Build the Tesseract engine image
-        id: engine
-        run: |
-          docker build -f ocr/engines/tesseract/Containerfile -t usnm-ocr/tesseract:worker ocr/engines/tesseract
-          id=$(docker image inspect --format '{{.Id}}' usnm-ocr/tesseract:worker)
-          [[ $id =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::unexpected engine image id $id"; exit 1; }
-          echo "tesseract_image=$id" >> "$GITHUB_OUTPUT"
-          echo "engine image $id"
-      - name: Build the worker image on it
-        env:
-          TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
-          SHA: ${{ github.sha }}
-        run: |
-          docker build -f ocr/boinc/Containerfile --build-arg "TESSERACT_IMAGE=$TESSERACT_IMAGE" \
-            --build-arg TESSERACT_FROM=usnm-ocr/tesseract:worker \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=$SHA" \
-            --label "org.opencontainers.image.description=usnewsmap BOINC OCR worker (Tesseract and usnm-boinc)" \
-            -t "$IMAGE:$SHA" .
-      # FROM resolved the engine's tag: its layers must be the engine's, in order.
-      - name: The image is built on the engine image
-        env:
-          TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
-          SHA: ${{ github.sha }}
-        run: |
-          engine=$(docker image inspect --format '{{json .RootFS.Layers}}' "$TESSERACT_IMAGE")
-          worker=$(docker image inspect --format '{{json .RootFS.Layers}}' "$IMAGE:$SHA")
-          jq -e --argjson e "$engine" '.[0:($e | length)] == $e' <<< "$worker" > /dev/null ||
-            { echo "::error::the worker image is not built on $TESSERACT_IMAGE"; exit 1; }
-      - name: The image names its engine and runs usnm-boinc
-        env:
-          TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
-          SHA: ${{ github.sha }}
-        run: |
-          got=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$IMAGE:$SHA" |
-            sed -n 's/^USNM_TESSERACT_IMAGE=//p')
-          [ "$got" = "$TESSERACT_IMAGE" ] || { echo "::error::USNM_TESSERACT_IMAGE is '$got', not $TESSERACT_IMAGE"; exit 1; }
-          docker run --rm --network=none "$IMAGE:$SHA" /usr/local/bin/usnm-boinc --help > /dev/null
-          docker run --rm --network=none "$IMAGE:$SHA" tesseract --version
+      - id: build
+        uses: ./.github/actions/boinc-worker-build
+        with:
+          image: ${{ env.IMAGE }}
+          tag: ${{ github.sha }}
       - name: Push to GHCR
         id: push
-        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
           SHA: ${{ github.sha }}
-          TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
+          TESSERACT_IMAGE: ${{ steps.build.outputs.tesseract_image }}
         run: |
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
           docker push "$IMAGE:$SHA"
-          ref=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$SHA" | grep "^$IMAGE@" | head -n 1)
-          digest=${ref#"$IMAGE@"}
-          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest after the push ($ref)"; exit 1; }
+          # The registry's digest for the tag, as volunteers pull it (RepoDigests is empty
+          # with the containerd image store).
+          digest=$(docker buildx imagetools inspect "$IMAGE:$SHA" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest for $IMAGE:$SHA after the push"; exit 1; }
           docker logout ghcr.io
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
