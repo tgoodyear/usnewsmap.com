@@ -48,6 +48,21 @@ die() { log "$*"; exit 1; }
 [ -f "$LOCK" ] || die "no lock at $LOCK"
 sha256() { sha256sum "$1" | cut -d' ' -f1; }
 
+# One build at a time: executions of a manual job can overlap, and they share build-v1 and the
+# destination. mkdir is atomic on the share. A lock older than the job's six-hour timeout is
+# from a killed run: of two runs that see it, only the one whose rename succeeds takes over.
+mkdir -p "$SHARE/gold"
+lock="$SHARE/gold/.build-v1.lock"
+if ! mkdir "$lock" 2> /dev/null; then
+  [ -n "$(find "$lock" -maxdepth 0 -mmin +420 2> /dev/null)" ] || die "another gold-bundle run holds $lock; wait for it to end"
+  stale="$lock.stale.$$.$(date +%s)"
+  mv "$lock" "$stale" 2> /dev/null || die "another run took over $lock first"
+  rm -rf "$stale"
+  mkdir "$lock" 2> /dev/null || die "another run took $lock first"
+  log "took over $lock, left by a run more than 7 hours ago"
+fi
+trap 'rm -rf "$lock"' EXIT
+
 dest="$SHARE/gold/$CAMPAIGN/bundle.tar"
 if [ -e "$dest" ]; then
   [ "$(sha256 "$dest")" = "$TAR_SHA" ] || die "$dest exists with another sha256; move it away first"

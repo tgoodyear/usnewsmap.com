@@ -547,9 +547,11 @@ A unit left with a `submitting` marker is handled as for the assessment.
 ### Build the gold bundle
 
 The bundle tar can be built inside the VNet, so nothing passes through an
-operator's machine. With `"goldBundle": true` in
-`contrib-compute/infra/boinc/env/<env>.json` and `scripts/provision-boinc.sh`
-run, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
+operator's machine. The job needs a bridge image that has the step, so build it first
+(`scripts/build-boinc-images.sh`, which rewrites `images.bridge`). Then set
+`"goldBundle": true` in `contrib-compute/infra/boinc/env/<env>.json` in the same
+commit as the new digest; it is false until then. After
+`scripts/provision-boinc.sh`, the stack has the gold bundle job (`usnm-boinc-gold-caj-<env>`, the stack's
 output `goldBundleJobName`). It runs the bridge image's `gold-bundle` step with
 `GOLD_CAMPAIGN=v1-tess550` set in the job itself, so it needs no override:
 
@@ -577,7 +579,8 @@ The step (`contrib-compute/images/bridge/gold-bundle.sh`):
    manifest's is `150e20d75a5357caeeb6eb63911a3d94348e617879f7b0de16c7b1a54670fe3a`;
 5. writes `<share>/gold/v1-tess550/bundle.tar` (beside it first, then renamed).
    A bundle already there with that sha256 ends the run at once; one with another
-   sha256 is refused.
+   sha256 is refused. One run at a time: a second run stops on the lock
+   `<share>/gold/.build-v1.lock`.
 
 The image carries Pillow 11.3.0 (the CI's version, from its manylinux wheel)
 and bsdtar for BLN600's AES zip. The crops are JPEG re-encodes, so a different

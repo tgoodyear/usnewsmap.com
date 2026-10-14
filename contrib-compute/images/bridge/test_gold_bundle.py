@@ -141,6 +141,18 @@ class GoldBundle(unittest.TestCase):
         self.assertIn("exists with another sha256", r.stderr)
         self.assertEqual(self.dest().read_text(), "other")
 
+    def test_a_second_run_stops_on_the_lock(self):
+        (self.share / "gold" / ".build-v1.lock").mkdir(parents=True)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("holds", r.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertTrue((self.share / "gold" / ".build-v1.lock").is_dir())
+
+    def test_the_lock_is_released(self):
+        self.assertEqual(self.run_script().returncode, 0)
+        self.assertFalse((self.share / "gold" / ".build-v1.lock").exists())
+
     def test_defaults_are_the_committed_lock(self):
         lock = json.loads((ROOT / "fixtures/ocr-gold/bundle-v1.lock.json").read_text())
         text = SCRIPT.read_text()
