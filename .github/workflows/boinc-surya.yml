@@ -20,6 +20,12 @@ on:
       - ".github/workflows/boinc-surya.yml"
       - ".github/actions/boinc-surya-build/**"
       - "ocr/boinc/surya/**"
+      # The image builds usnm-boinc from this checkout.
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".dockerignore"
 
 permissions:
   contents: read

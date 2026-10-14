@@ -237,7 +237,10 @@ fn container_info(host: &mut Host, diag: &mut Diag) {
     diag.section("container", &body, 2048);
 }
 
-fn gpu_info(host: &mut Host, diag: &mut Diag) -> bool {
+/// What the container sees of NVIDIA GPUs. Returns the index to run on:
+/// BOINC's `gpu_device_num` when the container sees that GPU (the wrapper
+/// passes all of them), else the first; none when nvidia-smi sees no GPU.
+fn gpu_info(host: &mut Host, diag: &mut Diag) -> Option<u32> {
     let mut body = String::new();
     let mut devices: Vec<String> = std::fs::read_dir("/dev")
         .map(|d| {
@@ -284,7 +287,7 @@ fn gpu_info(host: &mut Host, diag: &mut Diag) -> bool {
         }
     }
     diag.section("gpu devices", &body, 4096);
-    let mut visible = false;
+    let mut chosen = None;
     match quick(
         "nvidia-smi",
         &[
@@ -294,10 +297,16 @@ fn gpu_info(host: &mut Host, diag: &mut Diag) -> bool {
         Duration::from_secs(30),
     ) {
         Ok((true, out)) => {
-            let first = out.lines().next().unwrap_or("");
-            let f: Vec<&str> = first.split(',').map(str::trim).collect();
+            let gpus: Vec<&str> = out.lines().filter(|l| l.contains(',')).collect();
+            let index = host
+                .gpu_device_num
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|n| (*n as usize) < gpus.len())
+                .unwrap_or(0);
+            let line = gpus.get(index as usize).copied().unwrap_or("");
+            let f: Vec<&str> = line.split(',').map(str::trim).collect();
             if f.len() == 4 && !f[0].is_empty() {
-                visible = true;
+                chosen = Some(index);
                 host.gpu = Some(f[0].chars().take(64).collect());
                 host.gpu_driver = Some(f[1].chars().take(32).collect());
                 host.gpu_mem_total_mib = f[2].parse().ok();
@@ -317,7 +326,17 @@ fn gpu_info(host: &mut Host, diag: &mut Diag) -> bool {
         Ok((false, out)) => diag.section("nvidia-smi (failed)", &out, 4096),
         Err(e) => diag.section("nvidia-smi (did not run)", &e, 1024),
     }
-    visible
+    if let Some(i) = chosen {
+        diag.section(
+            "gpu used",
+            &format!(
+                "index {i} of the GPUs nvidia-smi lists (BOINC's gpu_device_num {:?})",
+                host.gpu_device_num
+            ),
+            256,
+        );
+    }
+    chosen
 }
 
 /// Python's view: torch and its CUDA check, surya's version and settings.
@@ -400,6 +419,14 @@ fn others(pgid: i32) -> Vec<i32> {
         .collect()
 }
 
+/// As pid 1, collects orphans that exited (llama-server once its parent is
+/// gone), so they leave /proc.
+fn reap() {
+    if std::process::id() == 1 {
+        while let Ok(Some(_)) = rustix::process::wait(rustix::process::WaitOptions::NOHANG) {}
+    }
+}
+
 /// Kills the runner's process group and, in a container, every other
 /// process (llama-server among them).
 fn kill_all(pgid: i32) {
@@ -437,10 +464,15 @@ fn runner_stats(pgid: i32, cpu: &mut BTreeMap<i32, u64>) -> u64 {
     rss
 }
 
-fn gpu_mem_used() -> Option<u64> {
+fn gpu_mem_used(index: u32) -> Option<u64> {
     let (ok, out) = quick(
         "nvidia-smi",
-        &["--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        &[
+            "-i",
+            &index.to_string(),
+            "--query-gpu=memory.used",
+            "--format=csv,noheader,nounits",
+        ],
         Duration::from_secs(10),
     )
     .ok()?;
@@ -496,7 +528,7 @@ fn run_mode(
     mode: InputMode,
     deadline: Duration,
     threads: u32,
-    gpu: bool,
+    gpu: Option<u32>,
     home: &Path,
     diag: &mut Diag,
 ) -> anyhow::Result<ModeRun> {
@@ -506,8 +538,15 @@ fn run_mode(
     let stderr_path = scratch.path().join("stderr.txt");
     let log = home.join(".cache/datalab/surya/llamacpp_server.log");
     let _ = std::fs::remove_file(&log);
-    let gpu_before = if gpu { gpu_mem_used() } else { None };
-    let mut child = Command::new("python3")
+    let gpu_before = gpu.and_then(gpu_mem_used);
+    let mut cmd = Command::new("python3");
+    if let Some(i) = gpu {
+        // Only BOINC's GPU, as nvidia-smi numbers them (llama.cpp's CUDA
+        // order is the same with CUDA_DEVICE_ORDER=PCI_BUS_ID).
+        cmd.env("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+            .env("CUDA_VISIBLE_DEVICES", i.to_string());
+    }
+    let mut child = cmd
         .arg(RUNNER)
         .args(["--image", &work.join(PAGE_FILE).to_string_lossy()])
         .args(["--mode", mode.name()])
@@ -533,9 +572,9 @@ fn run_mode(
     let mut timed_out = false;
     let waited: std::io::Result<std::process::ExitStatus> = loop {
         peak_rss = peak_rss.max(runner_stats(pgid, &mut cpu));
-        if gpu && last_gpu.elapsed() >= Duration::from_secs(2) {
+        if let Some(i) = gpu.filter(|_| last_gpu.elapsed() >= Duration::from_secs(2)) {
             last_gpu = Instant::now();
-            if let Some(u) = gpu_mem_used() {
+            if let Some(u) = gpu_mem_used(i) {
                 gpu_peak = Some(gpu_peak.map_or(u, |p| p.max(u)));
             }
         }
@@ -551,9 +590,14 @@ fn run_mode(
         }
         std::thread::sleep(Duration::from_millis(500));
     };
-    // Whatever is left of the group (llama-server, when Python died first),
-    // also when waiting failed.
+    // Whatever is left (llama-server, when Python died first), also when
+    // waiting failed; the next mode starts only once it has gone.
     kill_group();
+    let gone = Instant::now();
+    while !others(pgid).is_empty() && gone.elapsed() < Duration::from_secs(15) {
+        reap();
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let status = match waited {
         Ok(s) => s,
         Err(e) => {
@@ -674,7 +718,8 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
     let mut host = Host::default();
     boinc_info(work, &mut host, &mut diag);
     container_info(&mut host, &mut diag);
-    let visible = gpu_info(&mut host, &mut diag);
+    let gpu = gpu_info(&mut host, &mut diag);
+    let visible = gpu.is_some();
     python_probe(&mut host, &mut diag);
     let gpu_version = host
         .plan_class
@@ -718,7 +763,7 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
                     mode,
                     Duration::from_secs(deadline.into()),
                     threads,
-                    visible,
+                    gpu,
                     &home,
                     &mut diag,
                 ) {

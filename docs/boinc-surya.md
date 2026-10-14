@@ -44,7 +44,7 @@ The stock `docker_wrapper` adds `--gpus all` to `docker create` (or `podman crea
 
 Without these, the container either fails to start (the wrapper's stderr, which BOINC returns with the result, holds the runtime's error) or starts without a GPU. In the second case the unit returns `no_gpu` for each mode, quickly, with the diagnostics.
 
-The wrapper passes every GPU, not only the one BOINC assigned (`gpu_device_num`); the diagnostics record both. llama.cpp's CUDA build needs a driver that supports CUDA 12.
+The wrapper passes every GPU, not only the one BOINC assigned (`gpu_device_num`). The worker runs llama-server on the assigned one (`CUDA_VISIBLE_DEVICES`, taking BOINC's number as nvidia-smi's index, which may differ on a host with mixed GPUs) and measures that GPU's memory; the diagnostics record which. llama.cpp's CUDA build needs a driver that supports CUDA 12.
 
 ## Diagnostics
 

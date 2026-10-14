@@ -74,7 +74,20 @@ pub fn run(root: &Path, seen: &Path, pairs: &Path) -> anyhow::Result<String> {
             };
             let job = v["job_id"].as_str().unwrap_or("");
             let doc = pages.get(job).map(|p| p.0.as_str()).unwrap_or("");
-            for m in v["modes"].as_array().into_iter().flatten() {
+            let modes = v["modes"].as_array().cloned().unwrap_or_default();
+            if modes.is_empty() {
+                // Two unit errors, no mode in common, or different jobs.
+                let _ = writeln!(
+                    out,
+                    "| {}… | {doc} | {} | {} | {} | {} | n/a |",
+                    job.get(..12).unwrap_or(job),
+                    v["a"]["device"],
+                    v["b"]["device"],
+                    v["agree"],
+                    v["reason"].as_str().unwrap_or("none compared"),
+                );
+            }
+            for m in &modes {
                 let _ = writeln!(
                     out,
                     "| {}… | {doc} | {} | {} | {} | {} | {} |",
