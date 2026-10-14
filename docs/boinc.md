@@ -346,7 +346,8 @@ go to the object id in the private setting `USNM_BOINC_HANDOFF_RUNNER`:
 | exchange `ocr-out` | the OCR nodes' writer role (list, read, create; no delete) | collect's ALTO and Parquet |
 | `usnm-boinc-log-<env>` workspace | Log Analytics Reader | the bridge jobs' logs |
 
-Set up once, from the operator's machine and the Proxmox host:
+Set up once, from the operator's machine and the Proxmox host, after the BOINC stack is
+deployed (the workspace grant needs `usnm-boinc-log-<env>` to exist):
 
 ```sh
 # On pve-big: the agent, locked down before it connects (no extensions, no
