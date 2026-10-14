@@ -888,6 +888,16 @@ impl LocClient {
         self.iiif_scan(base, size).await
     }
 
+    /// The page's IIIF service base, through the item API (one request per
+    /// issue), so a caller can pace the image request itself.
+    pub async fn iiif_base_of(&self, key: &PageKey) -> Result<String, FetchError> {
+        let pages = self.issue_pages(key).await?;
+        pages
+            .get(&key.seq)
+            .cloned()
+            .ok_or_else(|| FetchError::Permanent(format!("loc.gov lists no image for {key}")))
+    }
+
     /// A file on the storage service (an ALTO next to its JP2), paced like
     /// the JP2s; `None` for a 404 or 410.
     pub async fn storage_file(
