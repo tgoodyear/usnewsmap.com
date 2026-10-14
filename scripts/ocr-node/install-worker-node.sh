@@ -31,7 +31,9 @@
 # before switching, and exits 4 without switching if that fails; after
 # switching it restarts the worker and, if the unit isn't active with no
 # restarts --stay-up-secs later (default 300), rolls back to the release
-# before and exits 3. Either way the release is rejected.
+# before and exits 3. Either way the release is rejected. After a
+# successful update it removes all but the three newest installed releases
+# and the Tesseract images only the removed ones used.
 # --auto-update-delay HOURS turns the nightly update on (usnm-ocr-update.timer,
 # 03:15 US Eastern): it installs update-worker.sh (from DIR) as
 # /usr/local/sbin/usnm-ocr-update-worker and this script as
@@ -396,6 +398,21 @@ elif [ "$UPDATE" = true ]; then
   done
   if [ "$ok" = true ]; then
     echo "usnm-ocr-worker.service stayed up for $STAY_UP s on $RELEASE"
+    # Unattended updates keep the three newest installs (this one and two
+    # to roll back to), and the Tesseract images only those use.
+    keep=$(installed | head -n 3)
+    for r in $(installed | tail -n +4); do
+      [ "$r" != "$RELEASE" ] && [ "$r" != "$previous" ] || continue
+      image=$(cat "$LIB/$r/tesseract.image-id" 2> /dev/null || true)
+      rm -rf "${LIB:?}/$r"
+      echo "removed $r"
+      [ -n "$image" ] || continue
+      used=false
+      for k in $keep; do
+        [ "$(cat "$LIB/$k/tesseract.image-id" 2> /dev/null || true)" != "$image" ] || used=true
+      done
+      [ "$used" = true ] || engine_podman rmi "$image" > /dev/null 2>&1 || true
+    done
   else
     journalctl -u usnm-ocr-worker.service -n 20 --no-pager || true
     reject "$RELEASE"

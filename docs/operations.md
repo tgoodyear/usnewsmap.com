@@ -1153,7 +1153,7 @@ sudo /usr/local/sbin/usnm-ocr-reboot-if-needed --dry-run # what it would do now
 1. downloads the binary, the image id and `SHA256SUMS` from the release and verifies each one's attestation on the node (below), then checks the binary and the image id against `SHA256SUMS`;
 2. copies `/etc/usnm/ocr-worker.env` with only `USNM_OCR_TESSERACT_IMAGE` changed, and the installed unit as it is, so the node keeps its settings (`ocr-worker.local.env` isn't touched);
 3. runs `install-worker-node.sh --update` (installed as `/usr/local/libexec/usnm-ocr/install-worker-node.sh`): it installs the binary, downloads and loads the image (checked against `SHA256SUMS`), and runs `usnm-ocr-worker check-engine` with the new binary and image before switching anything;
-4. switches `/usr/local/bin/usnm-ocr-worker` and the image, restarts the worker, and rolls back to the release before if the unit isn't active, or has restarted, within 5 minutes.
+4. switches `/usr/local/bin/usnm-ocr-worker` and the image, restarts the worker, and rolls back to the release before if the unit isn't active, or has restarted, within 5 minutes. After a successful update it keeps the three newest installed releases and removes older ones with the Tesseract images only they used.
 
 A release that fails `check-engine` or is rolled back goes into `/var/lib/usnm-ocr-update/rejected`, and the node never tries it again; it waits for the next release. `install-worker.sh --rollback` rejects the release it leaves too, so a manual rollback sticks. To try a rejected release again, delete its line and install it with `install-worker.sh --release`.
 

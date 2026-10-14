@@ -61,9 +61,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ $DELAY =~ ^[0-9]{1,3}$ ]] || { echo "error: --delay-hours: 0 to 999" >&2; usage; }
+DELAY=$((10#$DELAY))
 [ -z "$LEADER" ] || [[ $LEADER =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9/_-]*$ ]] ||
   { echo "error: --leader-status: http://HOST:PORT/status" >&2; usage; }
 [[ $LEADER_UP =~ ^[0-9]{1,3}$ ]] || { echo "error: --leader-up-hours: 0 to 999" >&2; usage; }
+LEADER_UP=$((10#$LEADER_UP))
 [[ $STAY_UP =~ ^[1-9][0-9]{0,4}$ ]] || { echo "error: --stay-up-secs: 1 to 99999" >&2; usage; }
 [ "$DRY_RUN" = true ] || [ "$(id -u)" -eq 0 ] || { echo "error: run as root" >&2; exit 1; }
 
