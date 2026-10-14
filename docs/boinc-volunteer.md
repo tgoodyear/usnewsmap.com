@@ -2,14 +2,14 @@
 
 Volunteers run OCR on historical newspaper pages from Chronicling America (Library of Congress) on their own Linux machines, through a stock BOINC client. Each task reads one page image and returns its text. That text goes into the site's search index after the project's own checks. Two smaller apps measure the OCR engine itself.
 
-Status: a pilot for trusted friends. The project server is designed but not deployed, and no app version is published yet, so the attach step fails until it opens. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md).
+Status: a pilot for trusted friends. The project server is up and `usnm_ocr` and `usnm_gold` are published; work goes out only in small hand-picked cohorts. Every step below that has not been tried on a real host is marked UNVERIFIED. Operator docs: [boinc.md](boinc.md).
 
 ## 1. Check the prerequisites
 
 You need all of these ([boinc.md](boinc.md#boundaries)):
 
 - Linux on x86-64. No other platform has an app version.
-- A BOINC client, version 8.2.13 or later. Debian 13 and Ubuntu 24.04 ship 8.0.x, which is too old: use the BOINC project's own package repository (below).
+- A BOINC client, version 8.2.13 or later. Distribution packages are too old (Debian 13 ships 8.0.4, Ubuntu 24.04 ships 7.24.1): use the BOINC project's own package repository (below).
 - Docker, which the BOINC client's user is allowed to run. Every task runs in a Docker container started by the stock BOINC Docker wrapper. Hosts that can't run Docker can't take part. An unprivileged Proxmox LXC container with `nesting=1,keyctl=1` runs Docker (Debian's `docker.io`) well enough to pass the checks below.
 
 Check them:
