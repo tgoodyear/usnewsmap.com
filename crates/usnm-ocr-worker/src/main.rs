@@ -668,75 +668,80 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 }
             };
             let engine = engine.engine(&cfg.node_id).await?;
-            let tracker = Arc::new(Tracker::new(
-                About {
-                    node_id: cfg.node_id.clone(),
-                    version: VERSION.clone(),
-                    concurrency: u32::try_from(cfg.concurrency).unwrap_or(u32::MAX),
-                    engine: engine.source().to_owned(),
-                    scan_cache_url: scan_cache_url.clone(),
-                },
-                status_journal.filter(|p| !p.as_os_str().is_empty()),
-                Some(scans.clone()),
-            )?);
-            let stop = stop_signal();
-            let queue = queue::open(&queue_url)?;
-            if let Some(listen) = status_listen {
-                anyhow::ensure!(
-                    !status_allow.is_empty(),
-                    "--status-listen needs --status-allow (the dashboard's address)"
-                );
-                // The queues' lengths and the front of the dead letters, for
-                // the dashboard: a look a minute, peeks only.
-                {
-                    let (tracker, queue) = (tracker.clone(), queue.clone());
-                    tokio::spawn(async move {
-                        let mut every = tokio::time::interval(status::QUEUE_LOOK_EVERY);
-                        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                        loop {
-                            every.tick().await;
-                            tracker.set_queues(status::look_at_queues(queue.as_ref()).await);
-                        }
-                    });
+            // Every exit from here on, an error in the setup below included,
+            // waits for the engine's instances to stop.
+            let stopping = Arc::clone(&engine);
+            let done = async {
+                let tracker = Arc::new(Tracker::new(
+                    About {
+                        node_id: cfg.node_id.clone(),
+                        version: VERSION.clone(),
+                        concurrency: u32::try_from(cfg.concurrency).unwrap_or(u32::MAX),
+                        engine: engine.source().to_owned(),
+                        scan_cache_url: scan_cache_url.clone(),
+                    },
+                    status_journal.filter(|p| !p.as_os_str().is_empty()),
+                    Some(scans.clone()),
+                )?);
+                let stop = stop_signal();
+                let queue = queue::open(&queue_url)?;
+                if let Some(listen) = status_listen {
+                    anyhow::ensure!(
+                        !status_allow.is_empty(),
+                        "--status-listen needs --status-allow (the dashboard's address)"
+                    );
+                    // The queues' lengths and the front of the dead letters, for
+                    // the dashboard: a look a minute, peeks only.
+                    {
+                        let (tracker, queue) = (tracker.clone(), queue.clone());
+                        tokio::spawn(async move {
+                            let mut every = tokio::time::interval(status::QUEUE_LOOK_EVERY);
+                            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                            loop {
+                                every.tick().await;
+                                tracker.set_queues(status::look_at_queues(queue.as_ref()).await);
+                            }
+                        });
+                    }
+                    // Supervised apart from the OCR loop, which runs whatever
+                    // happens to it.
+                    status::supervise(
+                        listen,
+                        tracker.clone(),
+                        status_allow,
+                        stop.clone(),
+                        Metrics::global(),
+                        status::RESTART_FIRST,
+                    );
                 }
-                // Supervised apart from the OCR loop, which runs whatever
-                // happens to it.
-                status::supervise(
-                    listen,
-                    tracker.clone(),
-                    status_allow,
-                    stop.clone(),
-                    Metrics::global(),
-                    status::RESTART_FIRST,
-                );
-            }
-            let worker = Arc::new(Worker {
-                queue,
-                out: usnm_store::open(&out_url)?,
-                scans,
-                engine,
-                cfg,
-                metrics: Metrics::global(),
-                tracker,
-            });
-            if let Some(opts) = publish {
-                tracing::info_span!("ocr_worker_start").in_scope(|| {
-                    tracing::info!(
-                        manifest = opts.manifest,
-                        every_secs = publish_every_secs,
-                        "publishing the fetched list"
-                    )
+                let worker = Arc::new(Worker {
+                    queue,
+                    out: usnm_store::open(&out_url)?,
+                    scans,
+                    engine,
+                    cfg,
+                    metrics: Metrics::global(),
+                    tracker,
                 });
-                tokio::spawn(publish::every(
-                    Arc::clone(&worker.out),
-                    opts,
-                    Duration::from_secs(publish_every_secs),
-                    stop.clone(),
-                ));
+                if let Some(opts) = publish {
+                    tracing::info_span!("ocr_worker_start").in_scope(|| {
+                        tracing::info!(
+                            manifest = opts.manifest,
+                            every_secs = publish_every_secs,
+                            "publishing the fetched list"
+                        )
+                    });
+                    tokio::spawn(publish::every(
+                        Arc::clone(&worker.out),
+                        opts,
+                        Duration::from_secs(publish_every_secs),
+                        stop.clone(),
+                    ));
+                }
+                worker.run(stop).await
             }
-            let engine = Arc::clone(&worker.engine);
-            let done = worker.run(stop).await;
-            engine.shutdown().await;
+            .await;
+            stopping.shutdown().await;
             done
         }
         Command::PublishFetched {
@@ -949,13 +954,13 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 std::fs::create_dir_all(&out)?;
                 let work = tempfile::tempdir()?;
                 let t0 = Instant::now();
-                let result = engine.ocr(&image, &language, work.path()).await?;
+                let mut result = engine.ocr(&image, &language, work.path()).await?;
                 let secs = t0.elapsed().as_secs_f64();
                 // The same stored ALTO and text the worker uploads.
                 let sha = usnm_ocr_worker::prefetch::sha256(&std::fs::read(&image)?);
                 let url = image.display().to_string();
                 let stored = usnm_ocr_worker::stored::from_output(
-                    &result,
+                    &mut result,
                     &language,
                     engine.dpi(),
                     &usnm_ocr_worker::stored::Source {
@@ -995,10 +1000,10 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                 let image = work.path().join("check.pgm");
                 std::fs::write(&image, usnm_ocr_worker::testimg::text_image(CHECK_TEXT))?;
                 let t0 = Instant::now();
-                let result = engine.ocr(&image, "eng", work.path()).await?;
+                let mut result = engine.ocr(&image, "eng", work.path()).await?;
                 // Through the stored ALTO, as the worker stores a page.
                 let stored = usnm_ocr_worker::stored::from_output(
-                    &result,
+                    &mut result,
                     "eng",
                     engine.dpi(),
                     &usnm_ocr_worker::stored::Source {

@@ -180,23 +180,28 @@ impl Reader for Tesseract {
             let _ = stderr.read_to_end(&mut b);
             b
         });
+        // Stops the whole process group, so nothing it started keeps
+        // working into the next page (13 §13.6.5), then reaps the child.
+        let stop = |child: &mut std::process::Child| {
+            #[cfg(unix)]
+            if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        };
         let status = loop {
             match child.try_wait() {
                 Ok(Some(s)) => break s,
                 Ok(None) if Instant::now() >= deadline => {
-                    // Its whole process group, so nothing it started keeps
-                    // working into the next page (13 §13.6.5).
-                    #[cfg(unix)]
-                    if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
-                        let _ =
-                            rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-                    }
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    stop(&mut child);
                     return Err(ReadError::Timeout);
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => return Err(failed(format!("waiting for tesseract: {e}"))),
+                Err(e) => {
+                    stop(&mut child);
+                    return Err(failed(format!("waiting for tesseract: {e}")));
+                }
             }
         };
         let text = out.join().unwrap_or_default();

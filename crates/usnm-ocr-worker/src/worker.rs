@@ -708,8 +708,9 @@ impl Worker {
             sha256: &scan_sha256,
             md5: scan_md5.as_deref(),
         };
+        let mut out = out;
         let stored = crate::stored::from_output(
-            &out,
+            &mut out,
             &m.language,
             self.engine.dpi(),
             &source,

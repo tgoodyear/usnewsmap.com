@@ -75,17 +75,18 @@ pub fn from_engine_alto(
 
 /// The stored outputs for an engine's reading: its page when it wrote
 /// boxes, else its ALTO parsed.
+/// The page is taken from `out`, so a large reading isn't held twice.
 pub fn from_output(
-    out: &crate::engine::EngineOutput,
+    out: &mut crate::engine::EngineOutput,
     language: &str,
     dpi: u32,
     source: &Source<'_>,
     worker_version: &str,
     now: DateTime<Utc>,
 ) -> Result<Stored, ConvertError> {
-    match &out.page {
+    match out.page.take() {
         Some(page) => Ok(store_from(
-            page.clone(),
+            page,
             out.layout_from,
             &out.engine,
             language,

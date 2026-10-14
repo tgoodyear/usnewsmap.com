@@ -307,10 +307,10 @@ impl ContractEngine {
         };
         let cleanups = Cleanups::default();
         let first = spawn(&opts, sandbox.as_ref(), &cleanups).await?;
-        first
-            .hello
-            .check()
-            .map_err(|e| anyhow::anyhow!("the engine's hello: {e}"))?;
+        if let Err(e) = first.hello.check() {
+            first.retire().await;
+            bail!("the engine's hello: {e}");
+        }
         let hello = first.hello.clone();
         tracing::info!(
             engine = %hello.engine.id,
@@ -486,7 +486,14 @@ impl ContractEngine {
         }
         let wait = self.opts.page_timeout + KILL_GRACE;
         let reply = match tokio::time::timeout(wait, read_line(&mut inst.stdout)).await {
-            Err(_) => return Err(anyhow::anyhow!("no result from the engine in {wait:?}").into()),
+            Err(_) => {
+                // Killed now, not after retire's grace: the page's budget
+                // allows the deadline plus 15 s and no more.
+                if let Some(c) = inst.child.as_mut() {
+                    let _ = c.start_kill();
+                }
+                return Err(anyhow::anyhow!("no result from the engine in {wait:?}").into());
+            }
             Ok(Err(e)) => return Err(anyhow::anyhow!("engine protocol: {e}").into()),
             Ok(Ok(None)) => {
                 // Give its last stderr lines a moment to arrive.
@@ -574,7 +581,27 @@ impl ContractEngine {
                     dpi: Some(layout.alto_dpi.unwrap_or(f64::from(self.opts.dpi))),
                     ..usnm_alto::ParseOptions::default()
                 };
-                let page = usnm_alto::parse(&raw, &opts).map_err(|e| convert(e.to_string()))?;
+                let page = usnm_alto::parse(&raw, &opts).map_err(|e| {
+                    use usnm_alto::{AltoError, ParseError};
+                    // A broken limit is the protocol's; the instance goes.
+                    let limit = matches!(
+                        e,
+                        ParseError::Limit(_)
+                            | ParseError::Alto(
+                                AltoError::TooLarge
+                                    | AltoError::TooDeep
+                                    | AltoError::TooManyElements
+                                    | AltoError::TooManyAttributes
+                            )
+                    );
+                    if limit {
+                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
+                            "engine protocol: {e}"
+                        )))
+                    } else {
+                        convert(e.to_string())
+                    }
+                })?;
                 // Geometry at least as fine as the hello declared.
                 if page.granularity > inst.hello.granularity {
                     return Err(anyhow::anyhow!(

@@ -80,7 +80,7 @@ async fn a_text_only_engine_through_long_lived_instances() {
     let work = dir.path();
 
     for _ in 0..3 {
-        let out = e.ocr(&image, "eng", work).await.unwrap();
+        let mut out = e.ocr(&image, "eng", work).await.unwrap();
         assert!(
             out.engine
                 .starts_with("tesseract/5.5.9 profile=eng image=local models=sha256:"),
@@ -92,7 +92,7 @@ async fn a_text_only_engine_through_long_lived_instances() {
         assert_eq!(page.granularity, usnm_alto::Granularity::Page);
         assert_eq!((page.width, page.height), (260.0, 122.0));
         let s = stored::from_output(
-            &out,
+            &mut out,
             "eng",
             300,
             &Source {
@@ -171,9 +171,9 @@ async fn the_real_tesseract_as_a_text_only_engine() {
     let e = engine(Path::new("tesseract"), dir.path(), Duration::from_secs(60)).await;
     let image = dir.path().join("line.pgm");
     std::fs::write(&image, usnm_ocr_worker::testimg::text_image("HELLO")).unwrap();
-    let out = e.ocr(&image, "eng", dir.path()).await.unwrap();
+    let mut out = e.ocr(&image, "eng", dir.path()).await.unwrap();
     let s = stored::from_output(
-        &out,
+        &mut out,
         "eng",
         300,
         &Source {
