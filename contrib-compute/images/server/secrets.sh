@@ -63,6 +63,17 @@ kv_put() {
   log "created $name"
 }
 
+# kv_same HEADER NAME FILE: true when secret NAME holds exactly FILE's contents. Compared in tmpfs;
+# nothing is printed.
+kv_same() {
+  local hdr=$1 name=$2 file=$3 got
+  got="$(dirname "$file")/readback"
+  (umask 077; curl -fsS -H @"$hdr" "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=$KV_API" |
+    jq -j .value > "$got") || { rm -f "$got"; return 1; }
+  cmp -s "$got" "$file"; local rc=$?
+  rm -f "$got"; return $rc
+}
+
 ensure_secrets() {
   local work hdr names
   work="$(mktemp -d /dev/shm/secrets.XXXXXX)"; chmod 700 "$work"
@@ -89,6 +100,11 @@ ensure_secrets() {
       fail "crypt_prog could not make the upload keys"
     kv_put "$hdr" upload-private-key "$work/upload_private"
     kv_put "$hdr" upload-public-key "$work/upload_public"
+    # Key Vault has no create-if-absent, so an overlapping run could interleave the two PUTs
+    # (provision-boinc.sh refuses to start this job while an execution runs). Read both back:
+    # a pair that isn't the one just written fails here instead of serving mismatched keys.
+    kv_same "$hdr" upload-private-key "$work/upload_private" && kv_same "$hdr" upload-public-key "$work/upload_public" ||
+      fail "the upload key pair in $KEY_VAULT_NAME is not the pair this run wrote (an overlapping run?). Delete both secrets and run again"
   fi
   log "secrets in $KEY_VAULT_NAME are complete"
 }

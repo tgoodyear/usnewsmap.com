@@ -29,7 +29,8 @@
 #
 # --what-if changes nothing: Azure's preflight validation of the stack, then the template's
 # changes. Needs az 2.61+ and jq, signed in to the settings' subscription with Owner on the
-# group (the stack writes role assignments).
+# BOINC group and on the shared registry and DNS zone's group (infra/names/<env>.json rg): the
+# stack writes role assignments in both, and the custom domain's records in the zone.
 set -euo pipefail
 usage() { echo "usage: scripts/provision-boinc.sh --env <prod|dev> [--allow-dirty] [--what-if]" >&2; exit 2; }
 ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false
@@ -67,6 +68,8 @@ CERT_NAME="cert-${MASTER_HOST//./-}"
 domain_stage() {
   local record=${MASTER_HOST%".$DNS_ZONE"} state names
   [ -n "$DNS_ZONE" ] && [ -n "$SERVER_IMAGE" ] || { echo 0; return; }
+  # No app in the stack yet (a base-only deploy): no environment, so no certificate to read.
+  [ -n "$(boinc_output appFqdn)" ] || { echo 0; return; }
   # A failed read must stop the run: guessing a lower stage would unbind a working domain.
   state=$(baz containerapp env certificate list --name "usnm-boinc-cae-$ENV_NAME" --resource-group "$BOINC_RG" \
     --managed-certificates-only --query "[?name=='$CERT_NAME'].properties.provisioningState | [0]" -o tsv) ||
@@ -142,6 +145,9 @@ fi
 # The secrets job, inside the VNet. It changes nothing when every secret exists.
 secrets_job=$(boinc_output secretsJobName)
 [ -n "$secrets_job" ] || die "the stack has no secretsJobName output"
+running=$(baz containerapp job execution list --name "$secrets_job" --resource-group "$BOINC_RG" \
+  --query "[?properties.status=='Running'].name" -o tsv) || die "could not list the executions of $secrets_job"
+[ -z "$running" ] || die "$secrets_job is already running ($running); wait for it, so two runs can't interleave the upload key pair"
 echo "starting $secrets_job (creates the absent secrets inside the VNet; values never leave it)"
 execution=$(baz containerapp job start --name "$secrets_job" --resource-group "$BOINC_RG" --query name -o tsv) ||
   die "could not start $secrets_job"
