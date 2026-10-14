@@ -62,14 +62,49 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 /// Public BOINC inputs must be readable by the web-server identity before
 /// their final names become visible. Journals use the private `atomic` path.
 pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path.parent().context("no parent directory")?;
+    public_dirs(parent)?;
     #[cfg(unix)]
     let permissions = {
         use std::os::unix::fs::PermissionsExt;
         Some(std::fs::Permissions::from_mode(0o644))
     };
+    // Other platforms have no mode bits to set; the web server there is not BOINC's Apache.
     #[cfg(not(unix))]
     let permissions = None;
     atomic_with_permissions(path, bytes, permissions)
+}
+
+/// Creates missing directories as 0755 whatever the umask, so the web-server
+/// identity can traverse new download fan-out directories. The direct parent,
+/// which stock `dir_hier_path` may already have made under the same umask,
+/// also gains any missing 0755 bits; its other bits (setgid, group write) stay.
+pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut missing = Vec::new();
+        let mut cur = Some(dir);
+        while let Some(d) = cur.filter(|d| !d.as_os_str().is_empty() && !d.is_dir()) {
+            missing.push(d);
+            cur = d.parent();
+        }
+        for d in missing.into_iter().rev() {
+            match std::fs::create_dir(d) {
+                Ok(()) => std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755))?,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {}
+                Err(e) => return Err(e).with_context(|| format!("creating {}", d.display())),
+            }
+        }
+        let mode = std::fs::metadata(dir)?.permissions().mode() & 0o7777;
+        if mode & 0o755 != 0o755 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode | 0o755))?;
+        }
+    }
+    // Other platforms have no mode bits; plain creation is all there is to do.
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)?;
+    Ok(())
 }
 
 fn atomic_with_permissions(
