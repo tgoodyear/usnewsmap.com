@@ -67,5 +67,4 @@ An end-to-end test needs a BOINC client with Docker, attached to the master URL 
 account, that gets one reserved job submitted through the bridge job (design.md, section 4)
 and returns a result that validates and is assimilated. Container Apps cannot run Docker in a
 container, and neither can ACI. The plan is a small spot VM, defined in Bicep in its own group,
-created for the test and deleted after it, so nothing stands between tests. The follow-up
-issue has the design.
+created for the test and deleted after it, so nothing stands between tests. The design is in issue #484.
