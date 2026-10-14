@@ -73,4 +73,7 @@ runs:
         cat "$work/diag.txt"
         jq . "$work/result.json"
         jq -e '[.runs[] | select(.outcome == "ok" and .device == "cpu")] | length == 2' "$work/result.json" > /dev/null
+        # llama-server runs in a session of its own; its memory must be counted.
+        jq -e '[.runs[] | select(.peak_rss_kib > 1000000)] | length == 2' "$work/result.json" > /dev/null ||
+          { echo "::error::peak memory leaves out llama-server"; exit 1; }
         grep -qi 'newspaper' "$work/text-whole.txt" || { echo "::error::Surya did not read the line"; exit 1; }

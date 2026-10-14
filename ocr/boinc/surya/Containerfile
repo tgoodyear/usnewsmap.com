@@ -53,6 +53,10 @@ ENV PATH=/opt/venv/bin:/app:$PATH LLAMA_CPP_BINARY=/app/llama-server \
     FAST_ORDER_MODEL_CHECKPOINT=/opt/surya/models/layout2/order \
     HF_HUB_OFFLINE=1 DISABLE_TQDM=true PYTHONDONTWRITEBYTECODE=1 HOME=/tmp \
     USNM_SURYA_LLAMA_IMAGE=${LLAMA_DIGEST} USNM_SURYA_VERSION=0.22.1 USNM_SURYA_WEIGHTS=${SURYA_WEIGHTS}
+# The CUDA base asks the NVIDIA Container Toolkit's legacy hook (Docker) to refuse drivers older
+# than CUDA 12.8. CUDA 12's minor version compatibility runs this build on any CUDA 12 driver, so
+# the check is off; the plan class asks for CUDA 12.0 and the diagnostics record the driver.
+ENV NVIDIA_DISABLE_REQUIRE=1
 # Stock docker_wrapper mounts the BOINC slot at /work (job-cpu.toml, job-gpu.toml).
 ENTRYPOINT []
 CMD ["/usr/local/bin/usnm-boinc", "work", "--dir", "/work"]

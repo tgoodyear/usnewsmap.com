@@ -261,7 +261,7 @@ fn gpu_info(host: &mut Host, diag: &mut Diag) -> bool {
         "NVIDIA_VISIBLE_DEVICES",
         "NVIDIA_DRIVER_CAPABILITIES",
         "CUDA_VISIBLE_DEVICES",
-        "NVIDIA_REQUIRE_CUDA",
+        "NVIDIA_DISABLE_REQUIRE",
         "CUDA_VERSION",
     ] {
         let _ = writeln!(
@@ -366,16 +366,58 @@ fn prepare(work: &Path) -> anyhow::Result<Job> {
     Ok(job)
 }
 
-/// The process group's summed RSS (KiB) and CPU ticks per process, from /proc.
-fn group_stats(pgid: i32, cpu: &mut BTreeMap<i32, u64>) -> u64 {
+/// The runner's processes. Surya starts llama-server in a session of its
+/// own, outside the runner's process group, so when this process is pid 1
+/// (the container's own pid namespace, which holds only this unit) they are
+/// every other pid; otherwise, to be safe outside a container, only the
+/// runner's process group.
+fn others(pgid: i32) -> Vec<i32> {
+    let me = i32::try_from(std::process::id()).unwrap_or(-1);
+    let pids = std::fs::read_dir("/proc")
+        .map(|d| {
+            d.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok())
+                .filter(|p| *p != me)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if me == 1 {
+        return pids;
+    }
+    pids.into_iter()
+        .filter(|p| {
+            std::fs::read_to_string(format!("/proc/{p}/stat"))
+                .ok()
+                .and_then(|s| {
+                    s.rsplit_once(')')?
+                        .1
+                        .split_whitespace()
+                        .nth(2)?
+                        .parse()
+                        .ok()
+                })
+                == Some(pgid)
+        })
+        .collect()
+}
+
+/// Kills the runner's process group and, in a container, every other
+/// process (llama-server among them).
+fn kill_all(pgid: i32) {
+    if let Some(p) = rustix::process::Pid::from_raw(pgid) {
+        let _ = rustix::process::kill_process_group(p, rustix::process::Signal::KILL);
+    }
+    for pid in others(pgid) {
+        if let Some(p) = rustix::process::Pid::from_raw(pid) {
+            let _ = rustix::process::kill_process(p, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+/// The summed RSS (KiB) of the runner's processes ([`others`]), and their
+/// CPU ticks per process, from /proc.
+fn runner_stats(pgid: i32, cpu: &mut BTreeMap<i32, u64>) -> u64 {
     let mut rss = 0;
-    let Ok(dir) = std::fs::read_dir("/proc") else {
-        return 0;
-    };
-    for e in dir.filter_map(|e| e.ok()) {
-        let Ok(pid) = e.file_name().to_string_lossy().parse::<i32>() else {
-            continue;
-        };
+    for pid in others(pgid) {
         let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
             continue;
         };
@@ -384,7 +426,7 @@ fn group_stats(pgid: i32, cpu: &mut BTreeMap<i32, u64>) -> u64 {
             continue;
         };
         let f: Vec<&str> = rest.split_whitespace().collect();
-        if f.len() < 22 || f[2].parse::<i32>().ok() != Some(pgid) {
+        if f.len() < 22 {
             continue;
         }
         let ticks = f[11].parse::<u64>().unwrap_or(0) + f[12].parse::<u64>().unwrap_or(0);
@@ -482,11 +524,7 @@ fn run_mode(
         .spawn()
         .context("starting python3")?;
     let pgid = i32::try_from(child.id()).context("pid")?;
-    let kill_group = || {
-        if let Some(p) = rustix::process::Pid::from_raw(pgid) {
-            let _ = rustix::process::kill_process_group(p, rustix::process::Signal::KILL);
-        }
-    };
+    let kill_group = || kill_all(pgid);
     let started = Instant::now();
     let mut cpu = BTreeMap::new();
     let mut peak_rss = 0u64;
@@ -494,7 +532,7 @@ fn run_mode(
     let mut last_gpu = Instant::now() - Duration::from_secs(10);
     let mut timed_out = false;
     let waited: std::io::Result<std::process::ExitStatus> = loop {
-        peak_rss = peak_rss.max(group_stats(pgid, &mut cpu));
+        peak_rss = peak_rss.max(runner_stats(pgid, &mut cpu));
         if gpu && last_gpu.elapsed() >= Duration::from_secs(2) {
             last_gpu = Instant::now();
             if let Some(u) = gpu_mem_used() {
