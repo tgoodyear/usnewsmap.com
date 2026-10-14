@@ -41,11 +41,15 @@ pub const CHUNK: usize = 3000;
 /// The most encoded bytes one payload may print (a gzipped spool with the largest allowed
 /// ALTO fits; Log Analytics query answers stop at 64 MB).
 pub const MAX_ENCODED: usize = 32 << 20;
-/// The most a payload may inflate to: the three result files at their limits, and slack.
-const MAX_INFLATED: u64 = (boinc::MAX_ALTO + boinc::MAX_TEXT + 4 * boinc::MAX_JSON) as u64;
 const MAX_TRUST: usize = 16 << 20;
 const MAX_MARKER: usize = 64 * 1024;
-
+/// The most a payload's JSON may inflate to: every spool file at its limit (or trust.json),
+/// in base64, with room for the JSON around them.
+const MAX_INFLATED: u64 = {
+    let spool = boinc::MAX_ALTO + boinc::MAX_TEXT + boinc::MAX_JSON + 2 * MAX_MARKER;
+    let files = if spool > MAX_TRUST { spool } else { MAX_TRUST };
+    (files.div_ceil(3) * 4 + 64 * 1024) as u64
+};
 /// The bridge-job settings for one reserved job: `JOB_ID`, the request and the record.
 pub fn vars(root: &Path, id: &str) -> anyhow::Result<Vec<(String, String)>> {
     let record = load(root, id)?;
@@ -237,7 +241,7 @@ pub fn trust_payload(path: &Path) -> anyhow::Result<Payload> {
 /// USNM-HANDOFF v1 part <sha256> <index from 0> <base64>
 /// ```
 pub fn emit(payload: &Payload, out: &mut impl Write) -> anyhow::Result<()> {
-    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     gz.write_all(&serde_json::to_vec(payload)?)?;
     let encoded = STANDARD.encode(gz.finish()?);
     ensure!(

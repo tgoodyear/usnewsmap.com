@@ -1425,3 +1425,44 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
         assert_eq!(calls.contains("\nsubmit --root"), submits, "{calls}");
     }
 }
+
+/// A spool at the ALTO size limit survives the console channel (base64 inside the JSON
+/// counts toward the inflation bound).
+#[test]
+fn console_payload_at_the_alto_limit_round_trips() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use usnm_boinc::handoff::{self, Kind, Payload};
+    let id = "c".repeat(64);
+    let wu = format!("usnm_{id}");
+    let alto: Vec<u8> = b"<String CONTENT=\"WORD\"/>"
+        .iter()
+        .copied()
+        .cycle()
+        .take(boinc::MAX_ALTO)
+        .collect();
+    let p = Payload {
+        v: 1,
+        kind: Kind::Spool,
+        job: Some(id.clone()),
+        host_id: Some(7),
+        files: [
+            (format!("{wu}__file_layout.xml"), STANDARD.encode(&alto)),
+            (
+                format!("{wu}__file_text.txt"),
+                STANDARD.encode(vec![b'a'; boinc::MAX_TEXT]),
+            ),
+            (format!("{wu}__file_result.json"), STANDARD.encode(b"{}")),
+        ]
+        .into(),
+    };
+    let mut out = Vec::new();
+    handoff::emit(&p, &mut out).unwrap();
+    let back = handoff::absorb(std::str::from_utf8(&out).unwrap()).unwrap();
+    assert_eq!(back, vec![p.clone()]);
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(handoff::write_spool(&back[0], &id, dir.path()).unwrap(), 3);
+    assert_eq!(
+        std::fs::read(dir.path().join(format!("{wu}__file_layout.xml"))).unwrap(),
+        alto
+    );
+}
