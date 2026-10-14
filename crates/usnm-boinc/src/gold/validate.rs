@@ -9,6 +9,7 @@
 //! transcriptions, runs a partial bundle, or edits the numbers by hand fails here. It does not
 //! prove which engine ran; that is the trusted-volunteer rule in docs/boinc.md.
 use super::{prepare, Report, REPORT_VERSION};
+use crate::gold::job::{Engine, Job, MAX_RESULT};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
-use usnm_ocr_contract::gold::{Engine, Job, MAX_RESULT};
 use usnm_ocr_survey::bundle;
 
 /// A hypothesis's edits beyond its reference length that still count as sane. The output text

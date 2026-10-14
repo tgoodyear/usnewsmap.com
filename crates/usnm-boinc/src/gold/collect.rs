@@ -11,11 +11,11 @@
 //!
 //! Counts only: no page text and no transcription is in the results or in these files.
 use super::{submit, validate};
+use crate::gold::job::{Job, JOB_FILE, MAX_JSON, RESULT_FILE};
 use crate::{atomic, read};
 use anyhow::Context;
 use serde_json::json;
 use std::path::PathBuf;
-use usnm_ocr_contract::gold::{Job, JOB_FILE, MAX_JSON, RESULT_FILE};
 
 #[derive(Debug, Clone)]
 pub struct Options {

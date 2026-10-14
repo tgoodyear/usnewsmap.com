@@ -430,7 +430,7 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
                 root,
                 project,
                 units,
-                engine: usnm_ocr_contract::gold::Engine {
+                engine: usnm_boinc::gold::job::Engine {
                     base: engine_base,
                     dpi: 300,
                     image: engine_image,

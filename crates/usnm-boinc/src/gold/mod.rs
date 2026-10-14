@@ -16,6 +16,7 @@ use usnm_ocr_survey::{bundle, score};
 use usnm_ocr_worker::engine::{self, Engine, Runner, Tesseract, TesseractOptions};
 
 pub mod collect;
+pub mod job;
 pub mod prepare;
 pub mod submit;
 pub mod validate;

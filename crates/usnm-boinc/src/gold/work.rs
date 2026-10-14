@@ -4,14 +4,12 @@
 //! The unit checks every input's size and sha256 against the job, the bundle's manifest digest
 //! and version, and the engine build, then runs [`super::run`] with the slot as the cache and
 //! writes `gold-result.json`: counts only, no page text and no transcription.
+use super::job::{Job, BUNDLE_FILE, JOB_FILE, MAX_JSON, MAX_RESULT, RESULT_FILE};
 use super::{BoincInfo, Report, RunOptions};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use std::{collections::BTreeSet, path::Path};
-use usnm_ocr_contract::{
-    boinc,
-    gold::{Job, BUNDLE_FILE, JOB_FILE, MAX_JSON, MAX_RESULT, RESULT_FILE},
-};
+use usnm_ocr_contract::boinc;
 use usnm_ocr_worker::engine;
 
 const OUTPUTS: [&str; 2] = [RESULT_FILE, "fraction_done"];
@@ -48,7 +46,7 @@ fn sha256_file(p: &Path, max: u64) -> anyhow::Result<(u64, String)> {
 }
 
 /// Checks a file of the unit against the job.
-pub fn check_file(dir: &Path, f: &usnm_ocr_contract::gold::File, max: u64) -> anyhow::Result<()> {
+pub fn check_file(dir: &Path, f: &crate::gold::job::File, max: u64) -> anyhow::Result<()> {
     let (bytes, sha) = sha256_file(&dir.join(&f.name), max)?;
     ensure!(
         bytes == f.bytes && sha == f.sha256,
@@ -67,9 +65,9 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     }
     let job: Job = serde_json::from_slice(&read(&work.join(JOB_FILE), MAX_JSON)?)?;
     job.validate()?;
-    check_file(work, &job.bundle, usnm_ocr_contract::gold::MAX_BUNDLE)?;
+    check_file(work, &job.bundle, crate::gold::job::MAX_BUNDLE)?;
     for r in &job.remotes {
-        check_file(work, r, usnm_ocr_contract::gold::MAX_REMOTE)?;
+        check_file(work, r, crate::gold::job::MAX_REMOTE)?;
     }
     let base = std::env::var("USNM_TESSERACT_IMAGE")
         .context("the worker image does not name its Tesseract image")?;

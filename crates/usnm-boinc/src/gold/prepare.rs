@@ -153,7 +153,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Prepared> {
         bundle: Staged {
             bytes,
             md5,
-            name: usnm_ocr_contract::gold::BUNDLE_FILE.into(),
+            name: crate::gold::job::BUNDLE_FILE.into(),
             sha256: sha,
             url: None,
         },

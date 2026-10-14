@@ -9,15 +9,13 @@
 //! Write-ahead, as for the assessment: `submitting` before `create_work`, `submitted` after. A
 //! unit left at `submitting` is skipped until a person checks the server for its workunit name
 //! (`usnm_gold_<job id>`) and either removes the marker (absent) or renames it to `submitted`.
+use super::job::{Engine, File, Job, JOB_FILE, MAX_JSON, VERSION};
 use super::{prepare, validate};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
-use usnm_ocr_contract::{
-    boinc::is_sha256,
-    gold::{Engine, File, Job, JOB_FILE, MAX_JSON, VERSION},
-};
+use usnm_ocr_contract::boinc::is_sha256;
 
 pub const APP: &str = "usnm_gold";
 pub const RESULT_TEMPLATE: &str = "templates/usnm_gold_out";

@@ -373,7 +373,7 @@ no LoC image: the client gets them from their publishers and cuts them itself.
 
 The third app, `usnm_gold` (#462), sends the same check to hosts as work. It
 runs in the same worker image; `gold.json` in the slot selects it. The job and
-its checks are `usnm_ocr_contract::gold`; the code is `crates/usnm-boinc/src/gold/`.
+its checks are `usnm_boinc::gold::job`; the code is `crates/usnm-boinc/src/gold/`.
 
 **Inputs and delivery.** A unit's inputs, in input template order:
 

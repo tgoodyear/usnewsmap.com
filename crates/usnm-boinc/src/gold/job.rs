@@ -5,9 +5,9 @@
 //! bundle names (the BLN600 zip, Library of Congress page images). The BOINC client downloads
 //! the originals from their publishers, not from the project server, and keeps them, and the
 //! tar, as sticky files, so a host fetches each once. The run step has no network.
-use crate::boinc::{is_sha256, sha256};
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};
+use usnm_ocr_contract::boinc::{is_sha256, sha256};
 
 pub const VERSION: u32 = 1;
 /// The job's open name in the slot. Its presence makes `usnm-boinc work` run a gold unit.
