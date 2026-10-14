@@ -8,11 +8,11 @@ Status: a probe of a few pages, to find out whether volunteers' container runtim
 
 One page per workunit: LoC's full-size IIIF JPEG (`page.jpg`) and the job (`surya.json`). The host reads the page in up to three input modes:
 
-| Mode | Input |
-| --- | --- |
-| `tiled` | 1,280 px tiles overlapping by 256 px, as round 1 read pages, with each overlap split at its midpoint so a block is kept from one tile only |
-| `whole` | the whole page in one request; the model scales it to its own image budget |
-| `capped` | the whole page, scaled first so its long side is at most 2,048 px |
+| Mode     | Input                                                                                                                                      |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tiled`  | 1,280 px tiles overlapping by 256 px, as round 1 read pages, with each overlap split at its midpoint so a block is kept from one tile only |
+| `whole`  | the whole page in one request; the model scales it to its own image budget                                                                 |
+| `capped` | the whole page, scaled first so its long side is at most 2,048 px                                                                          |
 
 A host with a usable GPU runs all three, each with a 1,800 s deadline. A CPU-only host runs `tiled` only, with a 5,400 s deadline: round 1 took a median 2,411 s per tiled page with about 8 cores busy.
 
@@ -28,10 +28,10 @@ The image is several GB (the weights alone are 1.6 GB), which a volunteer downlo
 
 ## App versions and plan classes
 
-| Version | Plan class | Sent to | Container |
-| --- | --- | --- | --- |
-| 1.0 | `docker_mt` | hosts with Docker or Podman and at least 4 usable CPUs; 4 to 8 threads | `--cpus` from the thread count, 12 GiB, no swap (`ocr/boinc/surya/job-cpu.toml`) |
-| 1.1 | `docker_nvidia_cuda` | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory | `--gpus all`, 2 CPUs, 8 GiB, no swap (`job-gpu.toml`) |
+| Version | Plan class           | Sent to                                                                                                                                        | Container                                                                        |
+| ------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 1.0     | `docker_mt`          | hosts with Docker or Podman and at least 4 usable CPUs; 4 to 8 threads                                                                         | `--cpus` from the thread count, 12 GiB, no swap (`ocr/boinc/surya/job-cpu.toml`) |
+| 1.1     | `docker_nvidia_cuda` | hosts with Docker or Podman whose client reports an NVIDIA GPU with CUDA 12.0 or later, compute capability 5.0 or later and 3,000 MB of memory | `--gpus all`, 2 CPUs, 8 GiB, no swap (`job-gpu.toml`)                            |
 
 Both classes need client 8.2.13 or later and are in `contrib-compute/boinc/plan_class_spec.xml`. The scheduler sends a host the version it expects to be fastest, so a host with a qualifying GPU gets the GPU version.
 
