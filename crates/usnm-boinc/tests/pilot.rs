@@ -1264,6 +1264,11 @@ async fn remote_handoff_round_trip_through_settings_and_console_lines() {
         handoff::install(&server, &incoming, &scan).unwrap(),
         Installed::Already(Stage::Submitted)
     );
+    // A replay is answered from the journal, before any fetch.
+    assert_eq!(
+        handoff::existing(&server, &incoming).unwrap(),
+        Some(Stage::Submitted)
+    );
     // The node's journal is untouched: still reserved.
     assert_eq!(usnm_boinc::load(node, &id).unwrap().stage, Stage::Reserved);
 

@@ -500,6 +500,11 @@ async fn handoff(h: Handoff) -> anyhow::Result<()> {
             record,
         } => {
             let incoming = x::decode(&job, &request, &record)?;
+            if let Some(stage) = x::existing(&root, &incoming)? {
+                // A replay: the server has it already, so LoC is not asked again.
+                println!("{}", serde_json::to_value(stage)?.as_str().unwrap_or("?"));
+                return Ok(());
+            }
             // One request, no retries, paced like the other LoC fetches.
             let gap = std::time::Duration::from_secs(5);
             let loc = usnm_ocr_worker::loc::LocClient::new(usnm_ocr_worker::loc::LocConfig {

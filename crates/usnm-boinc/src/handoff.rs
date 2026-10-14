@@ -134,15 +134,8 @@ pub fn install(root: &Path, job: &Incoming, scan: &[u8]) -> anyhow::Result<Insta
     );
     let _lock = Lock::take(root)?;
     let d = dir(root, &request.id)?;
-    if d.join("record.json").exists() {
-        let old = load(root, &request.id)?;
-        ensure!(
-            old.job == *request && old.plan == job.record.plan && old.stamp == job.record.stamp,
-            "the server's journal holds a different entry for this job"
-        );
-        if old.stage != Stage::Reserved {
-            return Ok(Installed::Already(old.stage));
-        }
+    if let Some(stage) = existing(root, job)? {
+        return Ok(Installed::Already(stage));
     }
     atomic(&d.join("page"), scan)?;
     atomic(
@@ -153,6 +146,21 @@ pub fn install(root: &Path, job: &Incoming, scan: &[u8]) -> anyhow::Result<Insta
     record.error = None;
     save(root, &record)?;
     Ok(Installed::Reserved)
+}
+
+/// The stage of this job in the server's journal when it is past reservation, so a repeated
+/// `submit-remote` can stop before asking LoC again; `None` for a new or reserved job. A
+/// journal entry for a different request, plan or stamp is an error.
+pub fn existing(root: &Path, job: &Incoming) -> anyhow::Result<Option<Stage>> {
+    if !dir(root, &job.request.id)?.join("record.json").exists() {
+        return Ok(None);
+    }
+    let old = load(root, &job.request.id)?;
+    ensure!(
+        old.job == job.request && old.plan == job.record.plan && old.stamp == job.record.stamp,
+        "the server's journal holds a different entry for this job"
+    );
+    Ok((old.stage != Stage::Reserved).then_some(old.stage))
 }
 
 /// What a payload carries.
