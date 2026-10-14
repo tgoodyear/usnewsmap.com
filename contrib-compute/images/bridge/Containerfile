@@ -33,7 +33,11 @@ RUN apt-get update \
  && rm /tmp/pillow.whl
 ENV PYTHONPATH=/usr/local/lib/usnm-boinc/gold/py
 COPY --from=bin /usnm-ocr-survey /usr/local/bin/usnm-ocr-survey
-COPY scripts/ocr-survey/gold.py /usr/local/lib/usnm-boinc/gold/gold.py
+# gold.py and the modules it imports, in the repository's layout: locfetch.py finds jaocr.py
+# and alto.py at ../../ja-ocr (their Azure imports are lazy and unused here).
+COPY scripts/ocr-survey/gold.py scripts/ocr-survey/locfetch.py scripts/ocr-survey/crops.py \
+     scripts/ocr-survey/altotext.py /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/
+COPY ja-ocr/jaocr.py ja-ocr/alto.py /usr/local/lib/usnm-boinc/gold/ja-ocr/
 COPY fixtures/ocr-gold/bundle-v1.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json
 COPY contrib-compute/images/bridge/gold-bundle.sh /usr/local/lib/usnm-boinc/gold-bundle.sh
 ENTRYPOINT ["/usr/local/bin/bridge-job"]

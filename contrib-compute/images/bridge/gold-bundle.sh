@@ -22,7 +22,7 @@ set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 SHARE="" CAMPAIGN=""
 LIB=/usr/local/lib/usnm-boinc
-GOLD_PY="$LIB/gold/gold.py"
+GOLD_PY="$LIB/gold/scripts/ocr-survey/gold.py"
 SURVEY=/usr/local/bin/usnm-ocr-survey
 LOCK="$LIB/gold/bundle-v1.lock.json"
 TAR_SHA=42520de42c7597bef4ea0ef3508797bfb7db129dd09c31e3d5a2236222be9183
