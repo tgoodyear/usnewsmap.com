@@ -444,6 +444,15 @@ module boincHandoffJob 'modules/boinc-handoff-job.bicep' = if (boincHandoff) {
   }
 }
 
+// The BOINC bridge's identity (contrib-compute/infra/boinc, usnm-boinc-id-<env>): its
+// hand-off steps (submit-remote, spool-out) get the node writer role on boinc-handoff. Granted
+// here, not in the BOINC stack, so that stack (the subnet's service endpoint, which the
+// exchange account's firewall rule needs) can deploy first.
+resource boincBridgeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = if (boincHandoff) {
+  scope: resourceGroup(n.boincRg)
+  name: n.boincBridgeIdentity
+}
+
 module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincHandoff || (ocrNodes && !empty(trim(boincHandoffRunner)))) {
   scope: rg
   name: 'boinc-handoff-runner'
@@ -492,7 +501,7 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
       ? resourceId(subscription().subscriptionId, n.boincRg, 'Microsoft.Network/virtualNetworks/subnets', n.boincVnet, 'aca')
       : ''
     handoffWriterIds: concat(
-      boincHandoff ? [boincHandoffJob!.outputs.principalId] : [],
+      boincHandoff ? [boincHandoffJob!.outputs.principalId, boincBridgeIdentity!.properties.principalId] : [],
       empty(trim(boincHandoffRunner)) ? [] : [trim(boincHandoffRunner)]
     )
     nodeGroupId: trim(ocrNodeGroupId)

@@ -18,6 +18,7 @@
   "backfillJob": "caj-usnm-backfill-prod",
   "backfillReplicaSilentAlert": "alert-usnm-backfill-replica-silent-prod",
   "backfillStalledAlert": "alert-usnm-backfill-stalled-prod",
+  "boincBridgeIdentity": "usnm-boinc-id-prod",
   "boincHandoffIdentity": "usnm-boinc-handoff-id-prod",
   "boincHandoffJob": "usnm-boinc-handoff-caj-prod",
   "boincLedgerRole": "usnm-boinc-ledger-role-prod",

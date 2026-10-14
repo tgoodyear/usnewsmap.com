@@ -19,7 +19,7 @@ param nodeIps array = []
 param subnetId string
 @description('The BOINC environment\'s `aca` subnet (contrib-compute/infra/boinc), allowed through its Microsoft.Storage.Global service endpoint, for the bridge\'s hand-off steps (#469). Empty: not allowed.')
 param boincSubnetId string = ''
-@description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity and the scan fetcher\'s Arc machine identity. The BOINC bridge\'s grant is the BOINC stack\'s (contrib-compute/infra/boinc/modules/handoff-grant.bicep).')
+@description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
 param handoffWriterIds array = []
 @description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
 param nodeGroupId string = ''
@@ -82,11 +82,12 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
           action: 'Allow'
         }
       ]
-      // The BOINC subnet is in another region and group: its Global endpoint is the BOINC
-      // stack's, which may deploy after this one, so a missing endpoint is not an error.
+      // The BOINC subnet is in another region and group, through its Global endpoint (the
+      // BOINC stack's network.bicep). Storage refuses the rule until that endpoint exists, so
+      // scripts/provision-boinc.sh goes first.
       virtualNetworkRules: concat(
         [{ id: subnetId, action: 'Allow' }],
-        empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow', ignoreMissingVnetServiceEndpoint: true }]
+        empty(boincSubnetId) ? [] : [{ id: boincSubnetId, action: 'Allow' }]
       )
     }
   }

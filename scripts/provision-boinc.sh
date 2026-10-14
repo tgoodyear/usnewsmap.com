@@ -63,7 +63,6 @@ trap 'rm -rf "$work"' EXIT
 names_file="$(dirname "$0")/../infra/names/$ENV_NAME.json"
 REGISTRY_NAME=$(jq -er .registry "$names_file") || die "no registry in $names_file"
 REGISTRY_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
-EXCHANGE_NAME=$(jq -er .ocrExchange "$names_file") || die "no ocrExchange in $names_file"
 # The custom domain (MASTER_HOST in the app's zone, infra/env/<env>.json USNM_DNS_ZONE) goes on
 # in stages, because each needs the last: 0, the DNS records (CNAME and asuid TXT, written by
 # this stack into the zone's group); 1, the name on the app unbound and its managed
@@ -87,12 +86,12 @@ domain_stage() {
 }
 # write_params STAGE: the deployment parameters, with the custom domain stage.
 write_params() {
-jq -n --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg ex "$EXCHANGE_NAME" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
+jq -n --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
   --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   contentVersion: "1.0.0.0",
   parameters: {
-    env: {value: $env}, assessment: {value: $assess}, goldBundle: {value: $gold}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, exchangeName: {value: $ex}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b}, publishImage: {value: $p},
+    env: {value: $env}, assessment: {value: $assess}, goldBundle: {value: $gold}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b}, publishImage: {value: $p},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
