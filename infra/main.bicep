@@ -453,7 +453,7 @@ resource boincBridgeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2
   name: n.boincBridgeIdentity
 }
 
-module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincHandoff || (ocrNodes && !empty(trim(boincHandoffRunner)))) {
+module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincHandoff) {
   scope: rg
   name: 'boinc-handoff-runner'
   dependsOn: [ocrExchange]
@@ -461,10 +461,7 @@ module boincHandoffRunnerGrant 'modules/boinc-handoff-runner.bicep' = if (boincH
     storageName: storage.outputs.name
     exchangeName: exchangeName
     cosmosName: cosmos.outputs.name
-    principalIds: concat(
-      boincHandoff ? [boincHandoffJob!.outputs.principalId] : [],
-      empty(trim(boincHandoffRunner)) ? [] : [trim(boincHandoffRunner)]
-    )
+    principalIds: [boincHandoffJob!.outputs.principalId]
     roleLabel: n.boincLedgerRole
   }
 }
