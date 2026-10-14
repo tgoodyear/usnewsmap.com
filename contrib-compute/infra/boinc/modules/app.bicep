@@ -24,10 +24,10 @@ param filesAccountKey string
 param mysqlHost string
 param databaseName string
 param masterHost string
-@description('vCPU for the single container. Memory must be 2 GiB per vCPU in the consumption profile.')
 @description('Custom domain stage for masterHost: 0 none; 1 the name on the app unbound plus its managed certificate (needs the DNS records); 2 bound with that certificate. provision-boinc.sh steps through them.')
 @allowed([0, 1, 2])
 param customDomainStage int = 0
+@description('vCPU for the single container. Memory must be 2 GiB per vCPU in the consumption profile.')
 param cpu string = '1.0'
 param memory string = '2Gi'
 
