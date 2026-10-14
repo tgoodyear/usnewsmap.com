@@ -101,6 +101,13 @@ jobs:
           for f in boinc/project.xml boinc/plan_class_spec.xml boinc/config.xml.template; do
             python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
           done
+      - name: project.xml has no quotes in its text
+        # xadd (BoincApp::insert) puts user_friendly_name into SQL unescaped; an apostrophe
+        # failed register-apps on prod (#469).
+        run: |
+          if grep -nE "['\"]" <(grep -v '^<?xml' boinc/project.xml | grep -v '^<!--'); then
+            echo "error: boinc/project.xml text has a quote; xadd inserts it into SQL unescaped"; exit 1
+          fi
       - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh images/bridge/*.sh
       - name: The gold-bundle step's tests pass
         run: python3 -m unittest -v images/bridge/test_gold_bundle.py
