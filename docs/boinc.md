@@ -375,8 +375,11 @@ only for a host that passed the gold check.
   exchange account in eastus2, and a plain `Microsoft.Storage` endpoint covers only its own
   region and its pair. A private endpoint is not an option: the main VNet's `privatelink.blob`
   zone would then fail to resolve the exchange account for `ocr-sync`. Storage refuses the
-  firewall rule until the endpoint exists, so on a new environment `scripts/provision-boinc.sh`
-  goes before `scripts/provision.sh`;
+  firewall rule until the endpoint exists, so the rule comes with the hand-off job (below). On
+  a new environment: `scripts/provision.sh` with `USNM_BOINC_GROUP` (the group), then
+  `scripts/provision-boinc.sh` (the network, the identity and the images), then
+  `USNM_BOINC_HANDOFF_IMAGE` and `scripts/provision.sh` again (the job, the rule and the
+  grants);
 - the hand-off job `usnm-boinc-handoff-caj-<env>` and its identity
   `usnm-boinc-handoff-id-<env>` in the main environment (`infra/modules/boinc-handoff-job.bicep`),
   with its own settings `AZURE_CLIENT_ID`, `HANDOFF_URL`, `COSMOS_ENDPOINT`, `CURATED_URL`,

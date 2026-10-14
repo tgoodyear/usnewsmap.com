@@ -91,11 +91,13 @@ if [ "$TARGET" = handoff ]; then
   job=$(jq -er .boincHandoffJob "$names_file") || die "no boincHandoffJob in $names_file"
   JOB_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
   PROVISION="scripts/provision.sh --env $ENV_NAME"
+  LOGS="the main environment's Log Analytics workspace (ContainerAppConsoleLogs)"
 else
   job=$(boinc_output bridgeJobName)
   [ -n "$job" ] || die "the stack $BOINC_STACK has no bridge job (are the images in $BOINC_SETTINGS deployed? scripts/provision-boinc.sh --env $ENV_NAME)"
   JOB_RG=$BOINC_RG
   PROVISION="scripts/provision-boinc.sh --env $ENV_NAME"
+  LOGS="the BOINC stack's Log Analytics workspace (ContainerAppConsoleLogs_CL)"
 fi
 template=$(baz containerapp job show --name "$job" --resource-group "$JOB_RG" --query properties.template -o json) ||
   die "can't read $job"
@@ -144,7 +146,7 @@ while :; do
     --job-execution-name "$execution" --query properties.status -o tsv) || die "can't read $execution's status"
   case $status in
     Succeeded) break ;;
-    Failed | Stopped | Degraded) die "$execution ended $status; its log is in its environment's Log Analytics workspace (ContainerAppConsoleLogs_CL)" ;;
+    Failed | Stopped | Degraded) die "$execution ended $status; its log is in $LOGS" ;;
   esac
   [ "$(date +%s)" -lt "$deadline" ] || die "$execution is still ${status:-starting} after $WAIT_MINS minutes"
   sleep 15

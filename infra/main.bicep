@@ -494,7 +494,9 @@ module ocrExchange 'modules/ocr-exchange.bicep' = if (ocrNodes) {
     name: exchangeName
     nodeIps: nodeIpList(ocrNodeIps)
     subnetId: network.outputs.caeSubnetId
-    boincSubnetId: deployBoincGroup
+    // Only with the hand-off job, which needs the BOINC stack (its bridge image) and so its
+    // subnet and service endpoint; never on the first provision that creates the BOINC group.
+    boincSubnetId: boincHandoff
       ? resourceId(subscription().subscriptionId, n.boincRg, 'Microsoft.Network/virtualNetworks/subnets', n.boincVnet, 'aca')
       : ''
     handoffWriterIds: concat(
