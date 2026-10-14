@@ -26,7 +26,7 @@ Install the client from your distribution or from https://boinc.berkeley.edu/dow
 sudo -u boinc docker run --rm hello-world   # expect: "Hello from Docker!"
 ```
 
-If that fails with a permission error, add the user to the `docker` group and restart the client: `sudo usermod --append --groups docker boinc && sudo systemctl restart boinc-client`.
+If that fails with a permission error, add the user to the `docker` group and restart the client (UNVERIFIED on distributions other than Debian and Ubuntu): `sudo usermod --append --groups docker boinc && sudo systemctl restart boinc-client`.
 
 ## 2. Attach to the project
 
@@ -46,7 +46,7 @@ boinccmd --create_account https://boinc.usnewsmap.com/ YOUR_EMAIL YOUR_PASSWORD 
 boinccmd --lookup_account https://boinc.usnewsmap.com/ YOUR_EMAIL YOUR_PASSWORD
 ```
 
-The server may ask for an invitation code at sign-up ([design](../contrib-compute/docs/design.md)); if so, use the web form on the project site. Then attach with the key:
+The server may ask for an invitation code at sign-up ([design](../contrib-compute/docs/design.md)); UNVERIFIED whether it does. Then attach with the key:
 
 ```sh
 boinccmd --project_attach https://boinc.usnewsmap.com/ ACCOUNT_KEY
@@ -57,7 +57,7 @@ Set idle-only processing and conservative limits in your BOINC preferences, as t
 
 ## 3. What you will run
 
-Work is sent in small, hand-picked batches, so it's normal to see no tasks for a while. All three apps use the same worker image, which the client pulls from a registry the project names in the app version.
+Work goes out in explicit cohorts of 1 to 100 pages that the project selects by hand ([boinc.md](boinc.md#boundaries)), so it's normal to see no tasks for a while. All three apps use the same worker image, which the client pulls from a registry the project names in the app version.
 
 | App           | What a task does                                                                                                                           | Downloads                                                             | Returns                                                                                                         |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -72,11 +72,11 @@ The OCR text from `usnm_ocr` is what the project uses. It is published as ALTO a
 - `bundle.tar`, 9.6 MB, from the project server: crops and transcriptions the licences allow us to share, with their licence files.
 - The BLN600 zip, 68 MB, from figshare, and 18 page images from tile.loc.gov. Your BOINC client fetches these from the publishers, not from us, and checks each one's size and md5.
 
-Your client keeps all of these as sticky files, so it fetches them once for every gold task it runs, not once per task. By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. Research use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
+Your client keeps all of these as sticky files, so it fetches them once for every gold task it runs, not once per task. By taking gold tasks you use these datasets under their licences: BLN600 under CC BY-NC-ND 4.0; Overproof transcriptions under CC BY-NC-SA 4.0, with Library of Congress page images; NewsEye under CC BY 4.0; NZZ under the licence in `licenses/nzz/` in the bundle. Each source's licence and attribution files are in `licenses/<source>/` in the bundle. The NC licences allow non-commercial use only. Nothing derived from BLN600 is shared: your host cuts the crops itself, and nothing it cuts leaves the machine.
 
-`gold-result.json` holds, per crop: reference characters, character edits, reference words, word edits, the model profile and the time; then a summary per source, the crops it skipped and why, the engine version, the bundle version and manifest checksum, the job id and your BOINC host id. It holds no page text and no transcription. Counts are enough to compare engines across hosts, and the licences (BLN600's No-Derivatives terms in particular) are why it sends nothing else. Crops in a language the worker image has no model for are listed as skipped.
+`gold-result.json` holds, per crop: reference characters, character edits, reference words, word edits, the model profile and the time; then a summary per source, the crops it skipped and why, the engine version, the bundle version and manifest checksum, the job id and your BOINC host id. It holds no page text and no transcription. Counts are enough to compare engines across hosts, and the licences (BLN600's No-Derivatives terms in particular) rule out sending anything else. Crops in a language the worker image has no model for are listed as skipped.
 
-**Why the gold check matters.** The OCR app's validator accepts any well-formed result. It doesn't compare text between hosts yet ([boinc.md](boinc.md#connect-a-stock-boinc-project)). A gold result shows how a host's engine does on known text, so it is the planned basis for trusting that host's OCR. Using it that way is tracked as a follow-up, not built.
+**How gold results will be used.** The OCR app's validator accepts any well-formed result. It doesn't compare text between hosts yet ([boinc.md](boinc.md#connect-a-stock-boinc-project)). A gold result shows how a host's engine does on known text, and the plan is to use it to decide whether to trust that host's OCR. That is a tracked follow-up and is not built yet.
 
 ## 4. Resources, network and privacy
 
@@ -93,7 +93,7 @@ Network, step by step:
 
 What leaves your machine: the result files in the table in section 3, and what any stock BOINC client sends its project (host description, account details). The project stores your email address, name, IP address and account key. Privacy is on by default, and you can delete your account ([design](../contrib-compute/docs/design.md), Privacy). Web server and scheduler logs keep IP addresses for 30 days.
 
-Disk: the gold check keeps about 80 MB of sticky files for as long as you stay attached, and each running gold task copies them into its slot.
+Disk: the gold check keeps about 78 MB of sticky files plus the 18 page images for as long as you stay attached, and each running gold task copies them into its slot.
 
 ## 5. Check that it works
 
@@ -102,13 +102,13 @@ boinccmd --get_tasks              # tasks with project URL https://boinc.usnewsm
 boinccmd --get_messages 0 | grep --ignore-case usnewsmap   # the event log for this project
 ```
 
-Success: a task moves from downloading to running to uploaded, and the event log shows no error for it. The project's website lists your host and tasks under your account (stock BOINC pages). Result files live in the task's slot only until they are uploaded; the client then removes them.
+Success: a task moves from downloading to running to uploaded, and the event log shows no error for it. The project's website lists your host and tasks under your account (stock BOINC pages).
 
 ## 6. Troubleshooting
 
-- **No tasks.** Work is sent in small batches; there may be none queued. Run `boinccmd --project https://boinc.usnewsmap.com/ update` and check the event log.
+- **No tasks.** Work goes out in small cohorts; there may be none queued. Run `boinccmd --project https://boinc.usnewsmap.com/ update` and check the event log.
 - **Tasks fail at once.** Check the event log for a Docker error. Run the `hello-world` check in section 1 as the BOINC user.
-- **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed; the project sees the failure and handles it. Nothing to do on your side unless every task fails.
+- **Tasks fail after a while.** A page may need more than 1536 MiB, or the engine may have crashed. Either is a failed task, which the project sees ([boinc.md](boinc.md#allocation-and-recovery)). If every task fails, detach and report it.
 - **Gold downloads fail.** The client fetches from figshare and tile.loc.gov; make sure your network allows both. UNVERIFIED: that the client follows figshare's redirect.
 
 ## Detach
