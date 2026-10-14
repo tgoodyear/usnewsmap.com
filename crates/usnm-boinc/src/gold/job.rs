@@ -202,5 +202,18 @@ mod tests {
         bad.id = bad.identity().unwrap();
         assert!(bad.validate().is_err());
         assert!(!remote_name_ok(&format!("{}.png", "e".repeat(64))));
+        for sha in [
+            "e".repeat(63),
+            "e".repeat(65),
+            "E".repeat(64),
+            "g".repeat(64),
+            String::new(),
+        ] {
+            let mut bad = j.clone();
+            bad.remotes[0].name = format!("{}.zip", "e".repeat(64));
+            bad.remotes[0].sha256 = sha.clone();
+            bad.id = bad.identity().unwrap();
+            assert!(bad.validate().is_err(), "remote sha256 {sha:?}");
+        }
     }
 }

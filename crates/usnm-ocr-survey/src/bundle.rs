@@ -1109,3 +1109,19 @@ pub fn lock(b: &Built) -> anyhow::Result<Value> {
         "tar_sha256": b.tar_sha256,
     }))
 }
+
+#[cfg(test)]
+mod sha_tests {
+    #[test]
+    fn remote_checksums_must_be_full_lowercase_hex() {
+        assert!(super::is_sha256_hex(&"a".repeat(64)));
+        for s in [
+            "a".repeat(63),
+            "a".repeat(65),
+            "A".repeat(64),
+            "z".repeat(64),
+        ] {
+            assert!(!super::is_sha256_hex(&s), "{s}");
+        }
+    }
+}
