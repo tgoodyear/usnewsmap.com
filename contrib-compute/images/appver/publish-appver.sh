@@ -18,8 +18,13 @@ dst="$PROJ/apps/$APPVER_APP/$APPVER_VERSION"
 lock="$PROJ/.usnm-publish.lock"
 if ! mkdir "$lock" 2> /dev/null; then
   if [ -n "$(find "$lock" -maxdepth 0 -mmin +120 2> /dev/null)" ]; then
-    log "taking over $lock, left by a run more than 2 hours ago"
-    rm -rf "$lock" && mkdir "$lock" || fail "can't take over $lock"
+    # Rename is atomic: of two runs that both see the stale lock, only one moves it away, and
+    # only that one may make the new lock (which mkdir again claims atomically).
+    stale="$lock.stale.$$.$(date +%s)"
+    mv "$lock" "$stale" 2> /dev/null || fail "another publish took over $lock first; wait for it to end"
+    rm -rf "$stale"
+    mkdir "$lock" 2> /dev/null || fail "another publish took $lock first; wait for it to end"
+    log "took over $lock, left by a run more than 2 hours ago"
   else
     fail "another publish holds $lock; wait for it to end"
   fi
