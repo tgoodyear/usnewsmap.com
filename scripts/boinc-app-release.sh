@@ -208,6 +208,7 @@ mkdir -p "$ctx/src"
 git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc | tar -x -C "$ctx/src"
 git show "HEAD:contrib-compute/images/appver/Containerfile" > "$ctx/Containerfile"
 git show "HEAD:contrib-compute/images/appver/publish-appver.sh" > "$ctx/publish-appver.sh"
+git show "HEAD:contrib-compute/images/appver/check_appver.py" > "$ctx/check_appver.py"
 mv "$work/sigs" "$ctx/sigs"
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \

@@ -52,13 +52,16 @@ flowchart LR
    files come back. The work directory on the signing host is removed on exit.
 4. **Publish.** ACR Tasks builds `usnm-boinc-appver:<app>-<version>` from
    `contrib-compute/images/appver/`: the server image with the version directory staged again
-   from the same inputs, the `.sig` files added, and each file checked with
-   `crypt_prog -verify` against `codeSignPublicKey`. A signature that does not match fails the
-   build. `provision-boinc.sh --publish-image <digest>` deploys the manual job
+   from the same inputs, the `.sig` files added, and the result checked by
+   `check_appver.py`. The build fails on a `.sig` with no staged file, a staged file without a
+   `.sig`, anything in the signatures that isn't a `.sig`, a `version.xml` that names a file
+   that wasn't staged, or a signature that `crypt_prog -verify` rejects against
+   `codeSignPublicKey`. `provision-boinc.sh --publish-image <digest>` deploys the manual job
    `usnm-boinc-publish-caj-<env>` with that image (it has the share, the database and the vault,
    as the init job does), and the script starts it. The job copies the version to the share,
    installs the app's templates and runs `bin/update_versions --noconfirm`. A version already on
-   the share must be identical: versions are immutable, so a change is a new version. The
+   the share must be identical, byte for byte (`diff -r`): a rerun with changed bytes is refused,
+   because versions are immutable and a change is a new version. The
    script then writes the image's digest to `images.appver` in the settings; commit it. Every
    `provision-boinc.sh` deploys the publish job on `images.appver`, so the job stays and always
    holds the last published version (rerunning it is safe: it changes nothing when the version
