@@ -83,6 +83,10 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     fn dpi(&self) -> u32 {
         300
     }
+    /// Stops what the engine keeps running between pages, after the last
+    /// page (long-lived instances); nothing for an engine that starts
+    /// one process per page.
+    async fn shutdown(&self) {}
     /// Read `image` (a file) for a page in `language` (ISO 639-3), using
     /// `work` for scratch files.
     async fn ocr(

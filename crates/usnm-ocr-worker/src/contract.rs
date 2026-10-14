@@ -92,10 +92,12 @@ struct Dirs {
     seen_out: String,
     /// Under the engine runtime, the slot's MCS level.
     level: Option<String>,
-    _slot: Slot,
+    /// Held until the instance is retired.
+    slot: Option<Slot>,
 }
 
-/// Held for its drop, which removes the directory.
+/// An instance's scratch: a temporary directory, or an engine runtime
+/// slot that [`Sandbox::release`] empties.
 #[derive(Debug)]
 #[allow(dead_code)]
 enum Slot {
@@ -113,7 +115,7 @@ struct Instance {
     dirs: Dirs,
     hello: Hello,
     /// Removes the container when the instance goes.
-    _container: Option<ContainerGuard>,
+    container: Option<ContainerGuard>,
     jobs: u32,
 }
 
@@ -127,6 +129,27 @@ impl std::fmt::Debug for Instance {
 }
 
 impl Instance {
+    /// Stops the instance and waits for it: closes its input (the contract's
+    /// "finish and exit"), gives it 10 s, kills it, removes its container,
+    /// then frees its scratch slot. Dropping an instance only starts a
+    /// kill; this finishes before a replacement or the worker's exit.
+    async fn retire(mut self, sandbox: Option<&Sandbox>) {
+        let _ = self.stdin.shutdown().await;
+        if tokio::time::timeout(Duration::from_secs(10), self.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = self.child.kill().await;
+        }
+        if let Some(mut c) = self.container.take() {
+            c.finish().await;
+        }
+        match (self.dirs.slot.take(), sandbox) {
+            (Some(Slot::Podman(dir)), Some(sb)) => sb.release(dir).await,
+            (other, _) => drop(other),
+        }
+    }
+
     fn stderr_tail(&self) -> String {
         let lines = self
             .stderr
@@ -347,9 +370,10 @@ impl ContractEngine {
         Ok(inst)
     }
 
-    fn give_back(&self, mut inst: Instance) {
+    async fn give_back(&self, mut inst: Instance) {
         inst.jobs += 1;
         if inst.jobs >= self.opts.max_jobs.max(1) {
+            inst.retire(self.sandbox.as_ref()).await;
             return;
         }
         if let Ok(mut v) = self.idle.lock() {
@@ -512,6 +536,16 @@ impl ContractEngine {
                 });
             }
         }
+        // The whole job directory, its unreferenced files included, within
+        // its cap (13 §13.4.7 step 1).
+        let used = dir_size(host_out, engine_files::JOB_DIR)?;
+        if used > engine_files::JOB_DIR {
+            return Err(anyhow::anyhow!(
+                "engine protocol: the page's out directory holds {used} bytes, over {}",
+                engine_files::JOB_DIR
+            )
+            .into());
+        }
         let file = |path: &str| {
             let name = usnm_ocr_contract::engine::file_name_in(&req.out, path)
                 .context("a file outside the page's out directory")?;
@@ -525,36 +559,95 @@ impl ContractEngine {
         };
         let raw = read_output(&file(&layout.path)?, engine_files::LAYOUT)?;
         let engine = self.tag(profile)?;
-        let out = match layout.kind {
-            Layout::Alto => EngineOutput {
-                text,
-                alto: raw,
-                page: None,
-                engine,
-            },
+        // A layout that doesn't convert is the page's `convert` failure and
+        // the instance stays; one that breaks a limit or the declared
+        // granularity is a broken protocol, and it goes.
+        let convert =
+            |e: String| PageError::Keep(EngineError::Failed(anyhow::anyhow!("convert: {e}")));
+        let full = (f64::from(width), f64::from(height));
+        let mut page = match layout.kind {
+            Layout::Alto => {
+                let opts = usnm_alto::ParseOptions {
+                    dpi: Some(layout.alto_dpi.unwrap_or(f64::from(self.opts.dpi))),
+                    ..usnm_alto::ParseOptions::default()
+                };
+                let page = usnm_alto::parse(&raw, &opts).map_err(|e| convert(e.to_string()))?;
+                // Geometry at least as fine as the hello declared.
+                if page.granularity > inst.hello.granularity {
+                    return Err(anyhow::anyhow!(
+                        "engine protocol: ALTO with {} geometry from an engine that declared {}",
+                        page.granularity.as_str(),
+                        inst.hello.granularity.as_str()
+                    )
+                    .into());
+                }
+                page
+            }
             Layout::Boxes => {
-                let b = boxes::parse(&raw, &BoxLimits::default())
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-                let page = boxes::to_page(
+                let b = boxes::parse(&raw, &BoxLimits::default()).map_err(|e| {
+                    if e.is_protocol() {
+                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
+                            "engine protocol: {e}"
+                        )))
+                    } else {
+                        convert(e.to_string())
+                    }
+                })?;
+                boxes::to_page(
                     &b,
                     &Convert {
                         granularity: inst.hello.granularity,
-                        full: (f64::from(width), f64::from(height)),
+                        full,
                         dir: usnm_alto::default_dir(language, None),
                         markup: result.markup,
                     },
                 )
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-                EngineOutput {
-                    text,
-                    alto: Vec::new(),
-                    page: Some(page),
-                    engine,
-                }
+                .map_err(|e| {
+                    if e.is_protocol() {
+                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
+                            "engine protocol: {e}"
+                        )))
+                    } else {
+                        convert(e.to_string())
+                    }
+                })?
             }
+        };
+        // In pixels of the image sent: ALTO in inch1200 converts at a dpi
+        // and may round.
+        if (page.width, page.height) != full {
+            page.rescale(full.0, full.1);
+        }
+        let out = EngineOutput {
+            text,
+            alto: Vec::new(),
+            page: Some(page),
+            engine,
         };
         Ok(out)
     }
+}
+
+/// The bytes in the regular files under `dir`, without following
+/// symlinks; it stops counting once past `max`.
+fn dir_size(dir: &Path, max: u64) -> anyhow::Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_owned()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).with_context(|| format!("listing {}", d.display()))? {
+            let e = e?;
+            let meta = std::fs::symlink_metadata(e.path())?;
+            if meta.is_dir() {
+                stack.push(e.path());
+            } else {
+                total = total.saturating_add(meta.len());
+            }
+            if total > max {
+                return Ok(total);
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// Creates a page's out directory: mode 0700, writable by the container
@@ -594,6 +687,63 @@ async fn make_out_dir(
     Ok(())
 }
 
+/// stderr lines kept per instance, the longest kept, and how many lines a
+/// second are kept before the rest are dropped and counted (13 §13.4.1).
+const STDERR_LINES: usize = 50;
+const STDERR_LINE: usize = 4096;
+const STDERR_PER_SEC: u32 = 200;
+
+/// Reads an adapter's stderr as it arrives, in fixed chunks, so neither a
+/// long line nor a flood can grow the worker's memory or stall the
+/// adapter: each line is cut at [`STDERR_LINE`] bytes, lines over
+/// [`STDERR_PER_SEC`] a second are dropped and counted, and the last
+/// [`STDERR_LINES`] are kept for a failure's message.
+async fn drain_reader(
+    mut err: impl tokio::io::AsyncRead + Unpin,
+    keep: Arc<Mutex<VecDeque<String>>>,
+) {
+    use tokio::io::AsyncReadExt;
+    let mut buf = vec![0u8; 8192];
+    let mut line: Vec<u8> = Vec::new();
+    let (mut window, mut in_window, mut dropped) = (std::time::Instant::now(), 0u32, 0u64);
+    let mut push = |line: &[u8], keep: &Arc<Mutex<VecDeque<String>>>| {
+        if window.elapsed() >= Duration::from_secs(1) {
+            if dropped > 0 {
+                tracing::warn!(dropped, "engine stderr lines dropped over the rate limit");
+            }
+            (window, in_window, dropped) = (std::time::Instant::now(), 0, 0);
+        }
+        in_window += 1;
+        if in_window > STDERR_PER_SEC {
+            dropped += 1;
+            return;
+        }
+        if let Ok(mut k) = keep.lock() {
+            if k.len() == STDERR_LINES {
+                k.pop_front();
+            }
+            k.push_back(String::from_utf8_lossy(line).into_owned());
+        }
+    };
+    loop {
+        let n = match err.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        for &b in &buf[..n] {
+            if b == b'\n' {
+                push(&line, &keep);
+                line.clear();
+            } else if line.len() < STDERR_LINE {
+                line.push(b);
+            }
+        }
+    }
+    if !line.is_empty() {
+        push(&line, &keep);
+    }
+}
+
 /// Starts an instance and reads its `hello`.
 async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Result<Instance> {
     let threads = opts.threads.max(1).to_string();
@@ -622,7 +772,7 @@ async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Res
                 host_in: i,
                 host_out: o,
                 level: None,
-                _slot: Slot::Local(tmp),
+                slot: Some(Slot::Local(tmp)),
             };
             (cmd, dirs, None)
         }
@@ -708,7 +858,7 @@ async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Res
                 seen_in: "/in".into(),
                 seen_out: "/out".into(),
                 level,
-                _slot: Slot::Podman(slot),
+                slot: Some(Slot::Podman(slot)),
             };
             (cmd, dirs, Some(guard))
         }
@@ -726,18 +876,7 @@ async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Res
         // Read as it comes, so a full stderr pipe never stalls the
         // adapter; keep the last 50 lines of at most 4 KiB.
         let keep = stderr.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(err).split(b'\n');
-            while let Ok(Some(l)) = lines.next_segment().await {
-                let l = String::from_utf8_lossy(&l[..l.len().min(4096)]).into_owned();
-                if let Ok(mut k) = keep.lock() {
-                    if k.len() == 50 {
-                        k.pop_front();
-                    }
-                    k.push_back(l);
-                }
-            }
-        });
+        tokio::spawn(drain_reader(err, keep));
     }
     let first = tokio::time::timeout(opts.start_timeout, read_line(&mut stdout))
         .await
@@ -765,7 +904,7 @@ async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Res
         stderr,
         dirs,
         hello,
-        _container: container,
+        container,
         jobs: 0,
     })
 }
@@ -791,6 +930,17 @@ impl Engine for ContractEngine {
         self.opts.dpi
     }
 
+    async fn shutdown(&self) {
+        let idle: Vec<Instance> = self
+            .idle
+            .lock()
+            .map(|mut v| v.drain(..).collect())
+            .unwrap_or_default();
+        for i in idle {
+            i.retire(self.sandbox.as_ref()).await;
+        }
+    }
+
     async fn ocr(
         &self,
         image: &Path,
@@ -809,16 +959,19 @@ impl Engine for ContractEngine {
         let mut inst = self.instance().await?;
         match self.read(&mut inst, image, language, &profile).await {
             Ok(out) => {
-                self.give_back(inst);
+                self.give_back(inst).await;
                 Ok(out)
             }
             Err(PageError::Keep(e)) => {
-                self.give_back(inst);
+                self.give_back(inst).await;
                 Err(e)
             }
             // The instance is dropped (killed and removed), and the next
             // page starts a new one.
-            Err(PageError::Drop(e)) => Err(e),
+            Err(PageError::Drop(e)) => {
+                inst.retire(self.sandbox.as_ref()).await;
+                Err(e)
+            }
         }
     }
 }
@@ -848,5 +1001,37 @@ mod tests {
         jp2.extend(5412u32.to_be_bytes());
         assert_eq!(image_size(&jp2), Some((5412, 7208)));
         assert_eq!(image_size(b"nothing"), None);
+    }
+
+    #[test]
+    fn counts_a_job_directory_without_following_links() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("a"), [0u8; 100]).unwrap();
+        std::fs::write(dir.path().join("sub/b"), [0u8; 50]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/", dir.path().join("root")).unwrap();
+        assert!(dir_size(dir.path(), 1000).unwrap() < 200);
+        assert!(dir_size(dir.path(), 120).unwrap() > 120);
+    }
+
+    #[tokio::test]
+    async fn stderr_is_bounded() {
+        // One 1 MiB line and 1,000 short ones: the kept lines are cut and
+        // capped, and the flood is cut by the rate limit.
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "head -c 1048576 /dev/zero | tr '\\0' x; echo; i=0; while [ $i -lt 1000 ]; do echo line $i; i=$((i+1)); done"])
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Drain the child's stdout through the same reader as stderr.
+        let out = child.stdout.take().unwrap();
+        let keep = Arc::new(Mutex::new(VecDeque::new()));
+        drain_reader(out, keep.clone()).await;
+        let k = keep.lock().unwrap();
+        assert_eq!(k.len(), STDERR_LINES);
+        assert!(k.iter().all(|l| l.len() <= STDERR_LINE));
+        assert!(k.back().unwrap().starts_with("line "));
     }
 }

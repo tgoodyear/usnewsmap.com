@@ -734,7 +734,10 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     stop.clone(),
                 ));
             }
-            worker.run(stop).await
+            let engine = Arc::clone(&worker.engine);
+            let done = worker.run(stop).await;
+            engine.shutdown().await;
+            done
         }
         Command::PublishFetched {
             scan_cache_url,

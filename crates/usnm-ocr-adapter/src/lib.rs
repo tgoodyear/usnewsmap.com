@@ -131,6 +131,41 @@ fn failure(
     }
 }
 
+/// The engine's own text from its boxes, at the finest level that holds
+/// text: words joined by spaces, a line per line, a blank line between
+/// blocks.
+pub fn boxes_text(boxes: &Boxes) -> String {
+    let blocks: Vec<String> = boxes
+        .blocks
+        .iter()
+        .filter_map(|b| {
+            let lines: Vec<String> = b
+                .lines
+                .iter()
+                .map(|l| {
+                    if l.words.is_empty() {
+                        l.text.clone().unwrap_or_default()
+                    } else {
+                        l.words
+                            .iter()
+                            .map(|w| w.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    }
+                })
+                .filter(|t| !t.is_empty())
+                .collect();
+            let t = if lines.is_empty() {
+                b.text.clone().unwrap_or_default()
+            } else {
+                lines.join("\n")
+            };
+            (!t.is_empty()).then_some(t)
+        })
+        .collect();
+    blocks.join("\n\n")
+}
+
 /// Writes a regular file, mode 0644, in the page's out directory.
 fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
@@ -210,12 +245,7 @@ pub fn answer<R: Reader>(
             markup,
         ),
         Reading::Boxes { boxes, markup } => {
-            let text = boxes
-                .blocks
-                .iter()
-                .filter_map(|b| b.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n\n");
+            let text = boxes_text(&boxes);
             (boxes, text, markup)
         }
     };
@@ -379,6 +409,15 @@ mod tests {
             script: None,
         };
         String::from_utf8(encode(&ToAdapter::Page(req))).unwrap()
+    }
+
+    #[test]
+    fn engine_text_from_the_finest_level() {
+        let json = r#"{"v":1,"units":"px","frame":{"width":100,"height":100},"granularity":"word","reading_order":"engine","blocks":[
+          {"bbox":[0,0,50,50],"kind":"text","lines":[{"bbox":[0,0,50,10],"words":[{"bbox":[0,0,10,10],"text":"Die"},{"bbox":[20,0,50,10],"text":"Zeitung"}]},{"bbox":[0,10,50,20],"text":"Seite zwei"}]},
+          {"bbox":[50,0,100,50],"kind":"text","text":"Block"}]}"#;
+        let b = usnm_alto::boxes::parse(json.as_bytes(), &Default::default()).unwrap();
+        assert_eq!(boxes_text(&b), "Die Zeitung\nSeite zwei\n\nBlock");
     }
 
     #[test]
