@@ -77,7 +77,8 @@ pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 
 /// Creates missing directories as 0755 whatever the umask, so the web-server
 /// identity can traverse new download fan-out directories. Every directory that
-/// was missing (made here or by a concurrent caller), and the direct parent, which
+/// was missing (made here or by a concurrent caller), the first existing ancestor
+/// when it has the same owner, and the direct parent, which
 /// stock `dir_hier_path` may already have made under the same umask, gains any
 /// missing 0755 bits; other bits (setgid, group write) stay.
 pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
@@ -97,6 +98,7 @@ pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
             missing.push(d);
             cur = d.parent();
         }
+        let ancestor = cur.filter(|_| !missing.is_empty());
         for d in missing.into_iter().rev() {
             match std::fs::create_dir(d) {
                 Ok(()) => {}
@@ -105,6 +107,15 @@ pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
                 Err(e) => return Err(e).with_context(|| format!("creating {}", d.display())),
             }
             traversable(d)?;
+        }
+        // A peer submitter may have just made the first existing ancestor under its
+        // umask. Repair it only if it has our new directory's owner, so a directory
+        // that belongs to someone else (the project root, say) is left alone.
+        if let Some(a) = ancestor {
+            use std::os::unix::fs::MetadataExt;
+            if std::fs::metadata(a)?.uid() == std::fs::metadata(dir)?.uid() {
+                traversable(a)?;
+            }
         }
         traversable(dir)?;
     }
