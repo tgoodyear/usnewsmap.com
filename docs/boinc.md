@@ -10,6 +10,11 @@ A second app, `usnm_assess`, runs the JP2 against IIIF JPEG comparison
 scores a host's engine on public ground truth ([Gold check](#gold-check)).
 Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">
+  <img alt="OCR and search pipeline with BOINC: LoC scans go through the on-prem scan fetcher and OCR nodes to ocr-out, ocr-sync, the curated lake, release, index and API. The node hands reserved pages to the Azure BOINC stack, volunteers run the pinned worker, and collect gates results on gold-check trust before publishing to the same ocr-out. Dashed parts are planned." src="images/pipeline-boinc.svg" width="960">
+</picture>
+
 ## Boundaries
 
 - Linux x86-64 first, with compatible recent stock BOINC and Docker. The stock
