@@ -11,6 +11,8 @@ pub mod archive;
 pub mod batch;
 /// Scans read from the prefetch cache over HTTP before LoC (#368).
 pub mod cache;
+/// Engines behind the engine contract: long-lived instances (#307).
+pub mod contract;
 pub mod engine;
 pub mod loc;
 /// Fetching scans ahead of the workers (#368).
@@ -25,6 +27,8 @@ pub mod queue;
 pub mod serve;
 /// The worker's status for the LAN dashboard (12 §12.2.5).
 pub mod status;
+/// The stored ALTO and text from an engine's reading (13 §13.4.7).
+pub mod stored;
 pub mod telemetry;
 pub mod worker;
 
