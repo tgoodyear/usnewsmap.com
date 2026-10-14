@@ -86,6 +86,16 @@ SQL
   log "project $PROJECT initialised; next: app version and signing (bootstrap.sh step 4)"
 }
 
+# project_tree: fixes to the project tree on the share, safe to repeat at every start.
+# - make_project made only cache/00..80 of the 256 the pages hash into (seen 2026-10-13);
+# - the stock project.inc names the project "REPLACE WITH PROJECT NAME".
+project_tree() {
+  local i inc="$PROJ/html/project/project.inc"
+  for i in $(seq 0 255); do mkdir -p "$PROJ/html/cache/$(printf %02x "$i")"; done
+  sed -i -e 's|"REPLACE WITH PROJECT NAME"|"usnewsmap OCR"|' \
+    -e 's|"REPLACE WITH COPYRIGHT HOLDER"|"Trevor Goodyear"|' "$inc"
+}
+
 serve() {
   local marker="$PROJ/.usnm-initialised" placeholder=""
   if [ ! -e "$marker" ]; then
@@ -103,6 +113,7 @@ PY
   fi
   fetch_secrets
   render_config
+  project_tree
   sed -e "s|@PROJ@|$PROJ|g" -e "s|@PROJECT@|$PROJECT|g" -e "s|@MASTER_HOST@|$MASTER_HOST|g" \
     "$TEMPLATES/apache-project.conf.template" > /etc/apache2/conf-enabled/boinc-project.conf
   exec /usr/bin/supervisord -n -c "$TEMPLATES/supervisord.conf"

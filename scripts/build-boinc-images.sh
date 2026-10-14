@@ -48,9 +48,9 @@ bridge="$registry.azurecr.io/usnm-boinc-bridge"
 if $WHAT_IF; then
   cat << PLAN
 would build, in registry $registry (ACR Tasks; nothing is built here):
-  $server:$sha    from contrib-compute/images/server/Containerfile, context contrib-compute/
-  $bridge:$sha    from contrib-compute/images/bridge/Containerfile, context the repository,
-                  on the server image by digest
+  usnm-boinc-base, usnm-boinc-bridge-bin   only when their key (a hash of their inputs) is new
+  $server:$sha    from contrib-compute/images/server/Containerfile, on the base image
+  $bridge:$sha    from contrib-compute/images/bridge/Containerfile, the server image plus the binary
 and write both digests to $BOINC_SETTINGS (images.server, images.bridge).
 PLAN
   exit 0
@@ -64,16 +64,49 @@ digest() {
   printf '%s' "$d"
 }
 
-echo "building usnm-boinc-server:$sha in $registry (BOINC from source: about 20 minutes)"
+# have REPOSITORY TAG: true when the registry already holds REPOSITORY:TAG.
+have() { baz acr repository show --name "$registry" --image "$1:$2" -o none 2> /dev/null; }
+
+# The slow layers are keyed on their inputs and built only when that key is new:
+# - usnm-boinc-base: BOINC compiled from the pinned commit plus the runtime packages, keyed on
+#   images/base/Containerfile (which pins both);
+# - usnm-boinc-bridge-bin: the usnm-boinc binary, keyed on the Rust sources and its Containerfile.
+# Keys are git object hashes of the committed tree, so they name exactly what was built.
+base_key=$(git rev-parse "HEAD:contrib-compute/images/base/Containerfile" | cut -c1-16)
+bin_key=$(git rev-parse HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:contrib-compute/images/bridge-bin/Containerfile \
+  $(git rev-parse -q --verify HEAD:rust-toolchain.toml) | git hash-object --stdin | cut -c1-16)
+
+if have usnm-boinc-base "$base_key"; then
+  echo "usnm-boinc-base:$base_key is in $registry; not rebuilding BOINC"
+else
+  echo "building usnm-boinc-base:$base_key in $registry (BOINC from source: about 20 minutes)"
+  baz acr build --registry "$registry" --image "usnm-boinc-base:$base_key" --platform linux/amd64 \
+    --timeout 7200 --file contrib-compute/images/base/Containerfile contrib-compute/images/base ||
+    die "the base image build failed"
+fi
+base_image="$registry.azurecr.io/usnm-boinc-base@$(digest usnm-boinc-base "$base_key")"
+
+if have usnm-boinc-bridge-bin "$bin_key"; then
+  echo "usnm-boinc-bridge-bin:$bin_key is in $registry; not recompiling usnm-boinc"
+else
+  echo "building usnm-boinc-bridge-bin:$bin_key in $registry (release build: about 10 minutes)"
+  baz acr build --registry "$registry" --image "usnm-boinc-bridge-bin:$bin_key" --platform linux/amd64 \
+    --timeout 7200 --file contrib-compute/images/bridge-bin/Containerfile . ||
+    die "the bridge binary build failed"
+fi
+bin_image="$registry.azurecr.io/usnm-boinc-bridge-bin@$(digest usnm-boinc-bridge-bin "$bin_key")"
+
+echo "building usnm-boinc-server:$sha in $registry"
 baz acr build --registry "$registry" --image "usnm-boinc-server:$sha" --platform linux/amd64 \
-  --timeout 7200 --file contrib-compute/images/server/Containerfile contrib-compute ||
+  --timeout 1800 --build-arg "BASE_IMAGE=$base_image" --file contrib-compute/images/server/Containerfile contrib-compute ||
   die "the server image build failed"
 server_image="$server@$(digest usnm-boinc-server "$sha")"
 echo "server image $server_image"
 
 echo "building usnm-boinc-bridge:$sha in $registry"
 baz acr build --registry "$registry" --image "usnm-boinc-bridge:$sha" --platform linux/amd64 \
-  --timeout 7200 --build-arg "SERVER_IMAGE=$server_image" --file contrib-compute/images/bridge/Containerfile . ||
+  --timeout 1800 --build-arg "SERVER_IMAGE=$server_image" --build-arg "BIN_IMAGE=$bin_image" \
+  --file contrib-compute/images/bridge/Containerfile contrib-compute/images/bridge ||
   die "the bridge image build failed"
 bridge_image="$bridge@$(digest usnm-boinc-bridge "$sha")"
 echo "bridge image $bridge_image"
