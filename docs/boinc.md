@@ -50,16 +50,16 @@ docker image inspect usnm-tesseract:pilot --format '{{.Id}}'
 
 docker build -f ocr/boinc/Containerfile \
   --build-arg TESSERACT_IMAGE=sha256:ENGINE_IMAGE_ID \
+  --build-arg TESSERACT_FROM=usnm-tesseract:pilot \
   -t usnm-boinc:pilot .
 ```
 
-Replace the placeholder with the full engine image ID. For remote volunteers,
-publish the BOINC image to a registry they can pull, and use its registry digest:
-`registry.example.org/usnm/boinc@sha256:FULL_DIGEST`. Record the full worker-image
-pin, not the engine base's pin. The registry is operator-supplied; this PR does
-not publish an image. Choose a registry such as GHCR or Docker Hub and verify an
-anonymous pull by the volunteer runtime before submitting work. The example
-registry below is a placeholder, not a deployed service. Rebuild/sign a new BOINC app version when changing
+Replace the placeholder with the full engine image ID. `TESSERACT_FROM` is
+needed with Docker's BuildKit, which can't resolve a bare local image id in
+`FROM`; podman can, and it defaults to `TESSERACT_IMAGE`. Volunteers pull the
+published image ([Publish the worker image](#publish-the-worker-image)); an app
+version records its registry digest, `ghcr.io/tgoodyear/usnm-boinc-worker@sha256:FULL_DIGEST`,
+not the engine base's pin. Rebuild/sign a new BOINC app version when changing
 code, models, image, or runtime configuration. The Rust build uses the repository's
 locked dependencies; capture the build revision and compiler in your release.
 
@@ -72,8 +72,14 @@ only when started by hand; a pull request that changes what the image is built
 from builds it without pushing:
 
 ```sh
-gh workflow run boinc-worker.yml --ref main
-gh run watch "$(gh run list --workflow boinc-worker.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+c="worker-$(date -u +%Y%m%dT%H%M%S)"
+gh workflow run boinc-worker.yml --ref main -f correlation="$c"
+# The run list is eventually consistent: wait for the run with this correlation id.
+until run=$(gh run list --workflow boinc-worker.yml --event workflow_dispatch --limit 20 \
+  --json databaseId,displayTitle -q "map(select(.displayTitle | endswith(\"($c)\")))[0].databaseId // empty") &&
+  [ -n "$run" ]; do sleep 5; done
+gh run watch "$run" --exit-status
+gh run view "$run" --json jobs -q '.jobs[0].url'   # the summary holds the digest
 ```
 
 The run's summary, and the job's outputs `digest`, `image` and `tesseract_image`, give:
@@ -193,7 +199,7 @@ candidate using a trusted stock wrapper and the pullable worker image digest:
 ```sh
 python3 scripts/boinc/install.py --project /srv/boinc/newspapers \
   --wrapper /path/to/docker_wrapper \
-  --image registry.example.org/usnm/boinc@sha256:FULL_DIGEST --version 1.0
+  --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:FULL_DIGEST --version 1.0
 ```
 
 The installer refuses an existing version directory. It does not alter running

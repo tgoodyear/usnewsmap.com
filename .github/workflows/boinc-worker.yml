@@ -9,8 +9,16 @@ name: boinc-worker
 # Publishing is manual on purpose: every pushed image needs its own signed app
 # version and a drained cohort before it is used (docs/boinc.md, "Build the
 # worker image"), so a push to main publishes nothing.
+# The run's name carries the dispatch's correlation id, so the one who started it
+# can find this run (docs/boinc.md, "Publish the worker image").
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-worker ({0})', inputs.correlation) || github.event.pull_request.title }}
 on:
   workflow_dispatch:
+    inputs:
+      correlation:
+        description: "Identifies this run, for finding it after the dispatch"
+        required: false
+        default: "manual"
   pull_request:
     paths:
       - ".github/workflows/boinc-worker.yml"
@@ -63,10 +71,21 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           docker build -f ocr/boinc/Containerfile --build-arg "TESSERACT_IMAGE=$TESSERACT_IMAGE" \
+            --build-arg TESSERACT_FROM=usnm-ocr/tesseract:worker \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=$SHA" \
             --label "org.opencontainers.image.description=usnewsmap BOINC OCR worker (Tesseract and usnm-boinc)" \
             -t "$IMAGE:$SHA" .
+      # FROM resolved the engine's tag: its layers must be the engine's, in order.
+      - name: The image is built on the engine image
+        env:
+          TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
+          SHA: ${{ github.sha }}
+        run: |
+          engine=$(docker image inspect --format '{{json .RootFS.Layers}}' "$TESSERACT_IMAGE")
+          worker=$(docker image inspect --format '{{json .RootFS.Layers}}' "$IMAGE:$SHA")
+          jq -e --argjson e "$engine" '.[0:($e | length)] == $e' <<< "$worker" > /dev/null ||
+            { echo "::error::the worker image is not built on $TESSERACT_IMAGE"; exit 1; }
       - name: The image names its engine and runs usnm-boinc
         env:
           TESSERACT_IMAGE: ${{ steps.engine.outputs.tesseract_image }}
