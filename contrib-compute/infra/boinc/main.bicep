@@ -32,6 +32,12 @@ param image string = ''
 @description('Bridge job image (images/bridge), by digest, in the same registry. Required with image: the server image has no usnm-boinc binary.')
 param bridgeImage string = ''
 
+@description('Run the server from the bridge image (the server image plus usnm-boinc), so the usnm_assess validator (#456) can run. Off by default.')
+param assessment bool = false
+
+@description('Seconds before a bridge job run is stopped. assess-stage fetches at 5 s per request, so a longer limit lets one run stage more pages.')
+param bridgeTimeoutSeconds int = 1800
+
 @secure()
 @description('MySQL admin password. A new one on every deployment, written to Key Vault by this template (mysql-admin-password); nothing outside the deployment sees it.')
 param mysqlAdminPassword string = 'Aa1-${newGuid()}'
@@ -176,7 +182,9 @@ module app 'modules/app.bicep' = if (withApp) {
     logAnalyticsSharedKey: workspace.listKeys().primarySharedKey
     identityId: identity.id
     identityClientId: identity.properties.clientId
-    image: image
+    image: assessment ? bridgeImage : image
+    // The bridge image's entry point is bridge-job; the server keeps its own.
+    command: assessment ? [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--serve' ] : []
     registryServer: registryServer
     keyVaultName: vault.outputs.name
     filesAccountName: storage.outputs.filesAccountName
@@ -217,6 +225,7 @@ module bridgeJob 'modules/bridge-job.bicep' = if (withApp) {
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
+    timeoutSeconds: bridgeTimeoutSeconds
   }
 }
 

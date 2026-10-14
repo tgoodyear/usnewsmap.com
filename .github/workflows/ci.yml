@@ -31,6 +31,7 @@ jobs:
       quickwit: ${{ steps.f.outputs.quickwit }}
       web: ${{ steps.f.outputs.web }}
       image: ${{ steps.f.outputs.image }}
+      e2e: ${{ steps.f.outputs.e2e }}
       fixtures: ${{ steps.f.outputs.fixtures }}
       ops: ${{ steps.f.outputs.ops }}
       code: ${{ steps.f.outputs.code }}
@@ -39,6 +40,7 @@ jobs:
       ocr_worker: ${{ steps.f.outputs.ocr_worker }}
       page_language: ${{ steps.f.outputs.page_language }}
       contrib: ${{ steps.f.outputs.contrib }}
+      ocr_gold: ${{ steps.f.outputs.ocr_gold }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,7 +147,7 @@ jobs:
             -f contrib-compute/images/bridge-bin/Containerfile .
           docker buildx build --builder default --load -t usnm-boinc-bridge:check \
             -f contrib-compute/images/bridge/Containerfile --build-arg SERVER_IMAGE=usnm-boinc-server:check \
-            --build-arg BIN_IMAGE=usnm-boinc-bridge-bin:check contrib-compute/images/bridge
+            --build-arg BIN_IMAGE=usnm-boinc-bridge-bin:check .
           docker run --rm --entrypoint usnm-boinc usnm-boinc-bridge:check --help > /dev/null
 
   # The page-language detector on text of known language (05 §5.5.8): behind
@@ -483,6 +485,21 @@ jobs:
         run: |
           scripts/ci/no-positional-args.py
           python3 -m unittest -v scripts/ci/test_no_positional_args.py
+      - name: changes.sh runs the Quickwit job only for what its tests build
+        run: python3 -m unittest -v scripts/ci/test_changes.py
+      - name: The OCR gold set's tests pass (#296)
+        if: needs.changes.outputs.ocr_gold == 'true'
+        run: |
+          python3 -m pip install --quiet --break-system-packages pillow==11.3.0
+          python3 -m unittest -v scripts/ocr-survey/test_gold.py
+      - name: The Rust scorer's golden files match gold.py (#457)
+        if: needs.changes.outputs.ocr_gold == 'true'
+        run: python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
+      - name: The OCR nodes' nightly update picks the right release (#471)
+        run: |
+          python3 -m unittest -v scripts/ocr-node/test_update_worker.py
+          shellcheck -x -S warning scripts/ocr-node/update-worker.sh scripts/ocr-node/install-worker-node.sh \
+            scripts/ocr-node/install-worker.sh scripts/ocr-node/reboot-if-needed.sh
       - name: The search cluster report's tests pass
         run: python3 -m unittest -v scripts/test_qwcluster_report.py
       # Against a stub az: the dev experiment marker, the guard-rail budget's
@@ -580,7 +597,7 @@ jobs:
   web-e2e:
     name: web end-to-end (Playwright + axe)
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

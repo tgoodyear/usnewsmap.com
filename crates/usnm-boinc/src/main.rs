@@ -80,11 +80,199 @@ enum Commands {
         #[arg(long)]
         out_url: String,
     },
+    /// Verify the gold bundle and download the original files it refers to (network; outside the
+    /// job container).
+    GoldStage {
+        /// The bundle directory, or its tar.
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        cache: PathBuf,
+        #[arg(long)]
+        work: PathBuf,
+    },
+    /// Score this host's Tesseract on the gold bundle, offline; writes counts only, no text.
+    GoldRun {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        cache: PathBuf,
+        #[arg(long)]
+        work: PathBuf,
+        /// Where gold-result.json goes.
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value = "tesseract")]
+        tesseract: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        psm: u8,
+        #[arg(long, default_value_t = 300)]
+        dpi: u32,
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u32,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// The JP2 against IIIF JPEG assessment (#456), app `usnm_assess`.
+    #[command(subcommand)]
+    Assess(Assess),
+    /// The gold check as BOINC work (#462), app `usnm_gold`.
+    #[command(subcommand)]
+    Gold(Gold),
     /// Inspect the local submission/publication journal; emits no page text.
     Status {
         #[arg(long)]
         root: PathBuf,
     },
+}
+#[derive(Subcommand)]
+enum Assess {
+    /// Draw the stratified OCR sample and the larger crash-only list.
+    Sample {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        out_ocr: PathBuf,
+        #[arg(long)]
+        out_crash: PathBuf,
+        #[arg(long, default_value_t = 3000)]
+        ocr_pages: usize,
+        #[arg(long, default_value_t = 20000)]
+        crash_pages: usize,
+        #[arg(long, default_value_t = 2)]
+        min_per_stratum: usize,
+        #[arg(long)]
+        seed: String,
+        /// JSON object: LCCN to the title's MARC language codes.
+        #[arg(long)]
+        title_languages: Option<PathBuf>,
+    },
+    /// Fetch sampled pages from LoC (one request at a time) into unit directories.
+    Stage {
+        #[arg(long)]
+        sample: PathBuf,
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long, value_enum)]
+        mode: AssessMode,
+        /// The worker image's full digest (sha256:...), the pinned engine build.
+        #[arg(long)]
+        engine_image: String,
+        /// The Tesseract image the worker image was built on (its TESSERACT_IMAGE).
+        #[arg(long)]
+        engine_base: String,
+        #[arg(long, default_value = "5.5.0")]
+        engine_version: String,
+        /// Page deadline; defaults to 1200 for ocr and 20 for crash.
+        #[arg(long)]
+        timeout_secs: Option<u32>,
+        #[arg(long, default_value_t = 5)]
+        gap_secs: u64,
+        #[arg(long, default_value_t = 100)]
+        max_pages: usize,
+        #[arg(long)]
+        batch_cache: Option<PathBuf>,
+    },
+    /// Submit staged units with stock create_work, two results each.
+    Submit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, value_enum)]
+        mode: AssessMode,
+        #[arg(long, default_value_t = 500)]
+        max_units: usize,
+    },
+    /// script_validator's init script: check one result's files.
+    Check {
+        #[arg(long, num_args = 3, required = true)]
+        files: Vec<PathBuf>,
+    },
+    /// script_validator's compare script: do two results agree?
+    Compare {
+        #[arg(long, num_args = 3, required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long, num_args = 3, required = true)]
+        files2: Vec<PathBuf>,
+    },
+    /// Write score.py/aggregate.py inputs from the canonical results.
+    Collect {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum Gold {
+    /// Server side, once per bundle: fetch the original files (one request at a time) to learn
+    /// their sizes and md5s and the crops' reference counts; writes prepared.json.
+    Prepare {
+        /// The bundle tar.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The campaign root.
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long, default_value_t = 5)]
+        gap_secs: u64,
+    },
+    /// Make units with stock create_work, one result each.
+    Submit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        /// How many units the campaign has; units already submitted are skipped.
+        #[arg(long, default_value_t = 20)]
+        units: u32,
+        /// The worker image's full digest (sha256:...).
+        #[arg(long)]
+        engine_image: String,
+        /// The Tesseract image the worker image was built on (its TESSERACT_IMAGE).
+        #[arg(long)]
+        engine_base: String,
+        #[arg(long, default_value = "5.5.0")]
+        engine_version: String,
+        /// Per crop.
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u32,
+    },
+    /// script_validator's init script: check one result against the bundle's expectations.
+    Check {
+        #[arg(long)]
+        file: PathBuf,
+        /// The project's gold/ directory, which submit writes.
+        #[arg(long)]
+        expected_dir: PathBuf,
+    },
+    /// Write per-host report tables from the canonical results.
+    Collect {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+#[derive(Clone, Copy, ValueEnum)]
+enum AssessMode {
+    Ocr,
+    Crash,
+}
+impl From<AssessMode> for usnm_ocr_contract::assess::Mode {
+    fn from(m: AssessMode) -> Self {
+        match m {
+            AssessMode::Ocr => Self::Ocr,
+            AssessMode::Crash => Self::Crash,
+        }
+    }
 }
 #[derive(Clone, Copy, ValueEnum)]
 enum Found {
@@ -159,6 +347,42 @@ async fn main() -> anyhow::Result<()> {
             let out = usnm_store::open(&out_url)?;
             usnm_boinc::collect(&root, &spool, &job, curated.as_ref(), out.as_ref()).await?;
         }
+        Commands::GoldStage {
+            bundle,
+            cache,
+            work,
+        } => {
+            let s = usnm_boinc::gold::stage(&bundle, &cache, &work).await?;
+            println!("{}", serde_json::to_string(&s)?);
+            anyhow::ensure!(s.failed.is_empty(), "{} downloads failed", s.failed.len());
+        }
+        Commands::GoldRun {
+            bundle,
+            cache,
+            work,
+            out,
+            tesseract,
+            psm,
+            dpi,
+            timeout_secs,
+            limit,
+        } => {
+            let report = usnm_boinc::gold::run(&usnm_boinc::gold::RunOptions {
+                bundle,
+                cache,
+                work,
+                tesseract,
+                psm,
+                dpi,
+                timeout_secs,
+                limit,
+            })
+            .await?;
+            usnm_boinc::atomic(&out, &serde_json::to_vec_pretty(&report)?)?;
+            println!("{}", serde_json::to_string(&report.summary)?);
+        }
+        Commands::Assess(a) => assess(a).await?,
+        Commands::Gold(g) => gold(g).await?,
         Commands::Status { root } => {
             for r in records(&root)? {
                 println!(
@@ -166,6 +390,153 @@ async fn main() -> anyhow::Result<()> {
                     serde_json::json!({"job":r.job.id,"workunit":r.job.workunit(),"page":r.job.message.page,"stage":r.stage,"error":r.error})
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+async fn gold(g: Gold) -> anyhow::Result<()> {
+    use usnm_boinc::gold as x;
+    match g {
+        Gold::Prepare {
+            bundle,
+            root,
+            gap_secs,
+        } => {
+            let p = x::prepare::run(&x::prepare::Options {
+                bundle,
+                root,
+                gap: std::time::Duration::from_secs(gap_secs),
+            })
+            .await?;
+            eprintln!(
+                "bundle v{} manifest {}: {} crops, {} original files",
+                p.bundle_version,
+                p.manifest_sha256,
+                p.crops.len(),
+                p.remotes.len()
+            );
+        }
+        Gold::Submit {
+            root,
+            project,
+            units,
+            engine_image,
+            engine_base,
+            engine_version,
+            timeout_secs,
+        } => {
+            let s = x::submit::run(&x::submit::Options {
+                root,
+                project,
+                units,
+                engine: usnm_boinc::gold::job::Engine {
+                    base: engine_base,
+                    dpi: 300,
+                    image: engine_image,
+                    psm: 3,
+                    timeout_secs,
+                    version: engine_version,
+                },
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Gold::Check { file, expected_dir } => x::validate::check(&file, &expected_dir)?,
+        Gold::Collect {
+            root,
+            project,
+            spool,
+            out,
+        } => {
+            let s = x::collect::run(&x::collect::Options {
+                root,
+                project,
+                spool,
+                out,
+            })?;
+            eprintln!("{s:?}");
+        }
+    }
+    Ok(())
+}
+
+async fn assess(a: Assess) -> anyhow::Result<()> {
+    use usnm_boinc::assess as x;
+    match a {
+        Assess::Sample {
+            manifest,
+            out_ocr,
+            out_crash,
+            ocr_pages,
+            crash_pages,
+            min_per_stratum,
+            seed,
+            title_languages,
+        } => {
+            let s = x::sample::run(&x::sample::Options {
+                manifest,
+                out_ocr,
+                out_crash,
+                ocr_pages,
+                crash_pages,
+                min_per_stratum,
+                seed,
+                title_languages,
+            })?;
+            eprintln!("{s:?}");
+        }
+        Assess::Stage {
+            sample,
+            root,
+            mode,
+            engine_image,
+            engine_base,
+            engine_version,
+            timeout_secs,
+            gap_secs,
+            max_pages,
+            batch_cache,
+        } => {
+            let mode = mode.into();
+            let s = x::stage::run(&x::stage::Options {
+                sample,
+                root,
+                mode,
+                engine_image,
+                engine_base,
+                engine_version,
+                timeout_secs: timeout_secs.unwrap_or(match mode {
+                    usnm_ocr_contract::assess::Mode::Ocr => 1200,
+                    usnm_ocr_contract::assess::Mode::Crash => 20,
+                }),
+                gap: std::time::Duration::from_secs(gap_secs),
+                max_pages,
+                batch_cache,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Assess::Submit {
+            root,
+            project,
+            mode,
+            max_units,
+        } => {
+            let s = x::submit::run(&x::submit::Options {
+                root,
+                project,
+                mode: mode.into(),
+                max_units,
+            })
+            .await?;
+            eprintln!("{s:?}");
+        }
+        Assess::Check { files } => x::validate::check(&files)?,
+        Assess::Compare { files, files2 } => x::validate::compare(&files, &files2)?,
+        Assess::Collect { root, spool, out } => {
+            let s = x::collect::run(&x::collect::Options { root, spool, out })?;
+            eprintln!("{s:?}");
         }
     }
     Ok(())

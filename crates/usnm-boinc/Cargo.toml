@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 usnm-core.workspace = true
 usnm-ocr-contract.workspace = true
+usnm-ocr-survey.workspace = true
 usnm-overlay.workspace = true
 usnm-store.workspace = true
 usnm-state.workspace = true
@@ -22,6 +23,8 @@ clap.workspace = true
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+md-5.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["process"] }
 

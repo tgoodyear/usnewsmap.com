@@ -106,7 +106,7 @@ echo "server image $server_image"
 echo "building usnm-boinc-bridge:$sha in $registry"
 baz acr build --registry "$registry" --image "usnm-boinc-bridge:$sha" --platform linux/amd64 \
   --timeout 1800 --build-arg "SERVER_IMAGE=$server_image" --build-arg "BIN_IMAGE=$bin_image" \
-  --file contrib-compute/images/bridge/Containerfile contrib-compute/images/bridge ||
+  --file contrib-compute/images/bridge/Containerfile . ||
   die "the bridge image build failed"
 bridge_image="$bridge@$(digest usnm-boinc-bridge "$sha")"
 echo "bridge image $bridge_image"

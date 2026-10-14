@@ -888,7 +888,22 @@ impl LocClient {
         self.iiif_scan(base, size).await
     }
 
-    async fn iiif_scan(&self, base: String, size: ImageSize) -> Result<Scan, FetchError> {
+    /// A file on the storage service (an ALTO next to its JP2), paced like
+    /// the JP2s; `None` for a 404 or 410.
+    pub async fn storage_file(
+        &self,
+        url: &str,
+        title: &str,
+        max: usize,
+    ) -> Result<Option<Bytes>, FetchError> {
+        Ok(self
+            .fetch(url, Server::Storage, max, Some(title), true)
+            .await?
+            .map(|g| g.body))
+    }
+
+    /// The JPEG at `size` of the page with IIIF base `base`.
+    pub async fn iiif_scan(&self, base: String, size: ImageSize) -> Result<Scan, FetchError> {
         let url = image_url(&base, size);
         let got = self.get(&url, Server::Tile, MAX_IMAGE_BYTES, None).await?;
         Ok(Scan {
