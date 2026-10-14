@@ -12,7 +12,7 @@ Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">
-  <img alt="OCR and search pipeline with BOINC: LoC scans go through the on-prem scan fetcher and OCR nodes to ocr-out, ocr-sync, the curated lake, release, index and API. The node hands reserved pages to the Azure BOINC stack, volunteers run the pinned worker, and collect gates results on gold-check trust before publishing to the same ocr-out. Dashed parts are planned." src="images/pipeline-boinc.svg" width="960">
+  <img alt="OCR and search pipeline with BOINC: LoC scans go through the on-prem scan fetcher and OCR nodes to ocr-out, ocr-sync, the curated lake, release, index and API. The scan fetcher pushes cached scans to a hand-off container; a hand-off job in the main environment reserves pages and later collects results; the BOINC bridge pulls each job from the container, volunteers run the pinned worker, and the result spool and gold trust list go back through the container, so collect publishes to the same ocr-out only for trusted hosts. Dashed parts are planned." src="images/pipeline-boinc.svg" width="960">
 </picture>
 
 ## Boundaries
@@ -330,136 +330,112 @@ journals on persistent local storage at each stage; Azure Files/SMB lock and
 atomic-rename durability have not been verified. Exercise the hand-off on a
 small cohort before using the Azure-hosted submission job from #439.
 
-## One page from the OCR node
+## One page from the scan cache
 
-This is the route for one page (#469) when the OCR node and the BOINC server share no
-filesystem. The server never reads `/tank/ocr` or the node's scan cache. `az containerapp
-exec` is not used either: its payloads break at about 2 KB. The project share has public
-access disabled, so nothing is copied onto it from outside.
+This is the route for one page (#469) when the scan cache, the services that reserve and
+publish work (Cosmos, the lake, `ocr-out`) and the BOINC server share no filesystem. One
+blob container, `boinc-handoff`, sits between them. Nothing reads `/tank/ocr` except the scan
+fetcher, and nothing asks LoC for a page again: the scan fetcher (CT 211) stays the only LoC
+fetcher, and volunteers download the page from our project server.
 
-- **Out:** the node's job (`request.json` and `record.json`) travels as two bridge-job
-  settings. The server fetches the page image again from the LoC URL in the request and
-  checks it against the request's size and sha256. Page bytes are never in the settings.
-- **Back:** a bridge step prints the job's spool files to its console as framed, gzipped,
-  chunked base64 lines. The node reads that execution's console log from the stack's Log
-  Analytics workspace and rebuilds the spool directory. `/project/gold/trust.json` comes
-  back the same way.
+| Who                                 | Runs                                                | Reads                                     | Writes                                       |
+| ----------------------------------- | --------------------------------------------------- | ----------------------------------------- | -------------------------------------------- |
+| Scan fetcher, CT 211 (Arc identity) | `scripts/ocr-node/push-boinc-scan.sh` (az only)     | `/tank/ocr/scans`, `/tank/ocr/manifests`  | `scans/`, `manifests/`                       |
+| Hand-off job, main environment      | `handoff-job.sh`: `export`, later `collect --trust` | `scans/`, `manifests/`, `spool/`, `gold/` | `dispatch/`, Cosmos lease, ledger, `ocr-out` |
+| BOINC bridge job, BOINC environment | `submit-remote`, later `spool-out`                  | `dispatch/jobs/<id>/`                     | `spool/<id>/`, `gold/trust.json`             |
 
-The node's journal stays the only one that publishes. The server's hand-off root gets its
-own copy of the job, which `submit` moves to `submitted` there. The node's copy stays
-`reserved`, which `collect` accepts.
+The hand-off job runs in the main Container Apps environment because that environment
+already reaches Cosmos and the lake through their private endpoints; neither is opened to
+the LAN. It uses the bridge image with the command
+`/usr/local/lib/usnm-boinc/handoff-job.sh`. Its dispatch root (the journal `export` and
+`collect` share) lives in the container under `dispatch/`: each run copies it down and
+writes it back.
 
-### The LoC request outside the scan fetcher
+`submit-remote` copies `dispatch/jobs/<id>/` (the page, `request.json` and `record.json`)
+into the server's own hand-off root. It checks that the record is that request's, that the
+request's identity is the job id, and that the page's size and sha256 are the request's.
+Then it runs the existing `submit`, which checks the page again and stages it as a BOINC
+download. A job the server already has past `reserved` is left alone, so a repeated run
+submits nothing. The dispatch root's copy stays `reserved`, which `collect` accepts.
 
-CT 211 `usnm-scanfetch` is meant to be the only LoC fetcher while it runs
-(`scripts/ocr-node/scanfetch-ct.sh`, design 12 "The fetcher"). `submit-remote` makes one more
-LoC request per page, from Azure, which that fetcher's gaps don't pace. Each request is one
-image GET with no retries. The bridge runs one execution at a time, so this adds at most one
-request per execution, minutes apart. It is still a second fetcher, so every run has to say
-it accepts that: the step refuses without `--var HANDOFF_LOC_FETCH=one-request`.
+`spool-out` writes the job's spool files (terminal error markers included), the canonical
+result's host id (`result.hostid` of the workunit's canonical result, read from the BOINC
+database; UNVERIFIED against a live database) and `/project/gold/trust.json` to the
+container. The hand-off job's `collect` step reads them back and publishes to `ocr-out`
+only for a host that passed the gold check.
 
-The ways around it need changes this route doesn't make:
+### Infrastructure this needs (not in this change)
 
-- **The scan server** (`usnm-ocr-worker serve-scans` in CT 211) serves only its `--allow`
-  hosts, and nftables lets in only its own LAN. The bridge job runs in the BOINC VNet in
-  Azure and can't reach it.
-- **The node pushes the page** to storage the bridge can read. The project share has public
-  access disabled. The exchange account's firewall allows the node IPs and `snet-cae`, not the
-  BOINC VNet, and its only container is `ocr-out`. A hand-off container would need a firewall
-  rule for the BOINC subnet (or a private endpoint), a node writer role and Blob Data Reader
-  for the bridge job's identity.
+The code above is merged; the infrastructure is not. It needs a reviewed Bicep change:
 
-Until one of those is built, decide per run, or pause `usnm-scanfetch` for the hand-off.
+- the container `boinc-handoff` on the exchange account (`stusnmo<suffix>`), with the
+  `boinc-handoff/scans/` prefix expiring after 30 days, like `ocr-out`;
+- the BOINC environment's `aca` subnet allowed on the exchange account's firewall, through a
+  `Microsoft.Storage.Global` service endpoint on that subnet (the BOINC VNet is in westus2,
+  the exchange account in eastus2, and a plain `Microsoft.Storage` endpoint covers only its
+  own region and its pair). A private endpoint is not an option: the main VNet's
+  `privatelink.blob` zone would then fail to resolve the exchange account for `ocr-sync`;
+- the hand-off job (`usnm-boinc-handoff-caj-<env>`) and its user-assigned identity
+  (`usnm-boinc-handoff-id-<env>`) in the main environment, with the job's own settings
+  `AZURE_CLIENT_ID`, `HANDOFF_URL`, `COSMOS_ENDPOINT`, `CURATED_URL`, `REFERENCE_URL` and
+  `OUT_URL`, and a way to start it with per-run settings (as `scripts/start-boinc-bridge.sh`
+  does for the bridge).
 
-### Sizes
+The role assignments it would make:
 
-`usnm-boinc handoff vars` prints compact JSON in base64. Measured on the test fixture
-(`remote_handoff_round_trip_through_settings_and_console_lines` in
-`crates/usnm-boinc/tests/pilot.rs`), `HANDOFF_REQUEST` is 980 characters and
-`HANDOFF_RECORD` 1,104. A real LoC URL pair adds about 150 characters to each. `vars`
-refuses a value over 8 KiB (`handoff::MAX_VAR`), and `receive` refuses one too. So both
-settings together stay under 3 KiB of the job template, and no splitting or compression is
-needed. The per-run settings stay on the job until the next run or the next
-`scripts/provision-boinc.sh`. They hold the request (LoC URLs, checksums, the engine pin)
-and the plan id, nothing secret.
+| Identity                                     | Scope                             | Role                                                       |
+| -------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
+| Hand-off job (`usnm-boinc-handoff-id-<env>`) | container `boinc-handoff`         | OCR node writer (list, read, create; no delete)            |
+| Hand-off job                                 | Cosmos `usnm/ops`                 | Cosmos DB Built-in Data Contributor (the `ocr-sync` lease) |
+| Hand-off job                                 | lake `curated`, `ocr-local/` only | `usnm-boinc-ledger-role-<env>` (list, read, create)        |
+| Hand-off job                                 | lake `reference`                  | Storage Blob Data Reader                                   |
+| Hand-off job                                 | exchange `ocr-out`                | OCR node writer                                            |
+| Hand-off job                                 | the shared registry               | AcrPull                                                    |
+| BOINC bridge (`usnm-boinc-id-<env>`)         | container `boinc-handoff`         | OCR node writer                                            |
+| Scan fetcher (`usnm-ocr-node5-arcs-<env>`)   | container `boinc-handoff`         | OCR node writer                                            |
 
-Console lines carry 3,000 base64 characters each, well under the 16 KiB at which container
-runtimes split a line. One payload may print at most 32 MiB of base64
-(`handoff::MAX_ENCODED`). That fits a spool with the largest allowed ALTO, gzipped, and
-stays under the 64 MB a Log Analytics query can return. Each payload names the sha256 of
-its encoded bytes, and each chunk carries its index. `absorb` accepts lines in any order,
-with log prefixes and repeats. It refuses a payload with a missing or conflicting chunk or
-a checksum mismatch, and spool file names other than the job's own.
-
-The console log holds the page's OCR text and ALTO for the workspace's retention, and
-anyone who can query the workspace can read them. The pages are public LoC scans, and no
-secret goes into these lines.
-
-### What the node's identity needs
-
-These are the permissions the node's Entra identity needs once it has one. This change
-grants none of them.
-
-- **Starting bridge steps** (`scripts/start-boinc-bridge.sh`): read the stack's outputs in
-  `usnm-boinc-rg-<env>` (Reader on the group), plus write, start, stop and read executions
-  on the bridge job `usnm-boinc-bridge-caj-<env>`. Contributor on that one job resource
-  covers it. The script updates the job's template, and Azure may also want
-  `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action` on the bridge job's
-  managed identity (Managed Identity Operator) for that update. This is UNVERIFIED.
-- **Reading the console lines** (`scripts/fetch-boinc-handoff.sh`): Log Analytics Reader on
-  the workspace `usnm-boinc-log-<env>`.
-- Nothing on the project share, Key Vault, MySQL, the registry or the server app.
-
-Being able to rewrite the bridge job's settings means being able to run any bridge step,
-and every step runs with the bridge job's own managed identity. Give the node's identity
-only to a node that is already trusted to submit work.
+The hand-off job's grants are the ones `infra/modules/boinc-handoff-runner.bicep` gives the
+scan fetcher today (#514). Once the job exists, the scan fetcher needs only the container
+write above. Its Cosmos, ledger, reference, `ocr-out` and BOINC workspace grants can then
+be removed.
 
 ### Runbook
 
-On the node, with a scratch dispatch root (`$R` below) and the usual export flags:
+On CT 211, signed in with `az login --identity --allow-no-subscriptions`:
 
 ```sh
-usnm-boinc export --root "$R" ... # prints JOB_ID
-usnm-boinc handoff vars --root "$R" --job JOB_ID > /scratch/JOB_ID.vars
-args=()
-while IFS= read -r v; do args+=(--var "$v"); done < /scratch/JOB_ID.vars
-scripts/start-boinc-bridge.sh --env prod --step submit-remote "${args[@]}" \
-  --var HANDOFF_LOC_FETCH=one-request --wait-mins 30
+scripts/ocr-node/push-boinc-scan.sh --account stusnmoffapzy \
+  --scan /tank/ocr/scans/keep/<batch>/<lccn>/<date>/<ed>/<seq>.jp2 \
+  --manifest /tank/ocr/manifests/<file>.parquet
 ```
 
-`submit-remote` checks that the record is a reserved entry for this very request and that
-the request's identity is `JOB_ID`. Then it fetches the page from LoC (one request, no
-retries) and refuses a page whose size or sha256 differs from the export's. It writes
-`jobs/JOB_ID/` into `$HANDOFF_DIR` and runs `submit`. If the server already has the job
-past `reserved`, the step logs that and submits nothing, so it is safe to repeat. An
-uncertain submission is reconciled on the server as usual (`--step reconcile --var
-JOB_ID=... --var BRIDGE_FOUND=present|absent`).
+Then, from the operator's machine, the hand-off job's export (with `HANDOFF_STEP=export`,
+`HANDOFF_PAGES=<page key>`, `HANDOFF_BATCH`, `HANDOFF_PLAN`, `HANDOFF_MANIFEST=<file>` and
+`ENGINE_IMAGE=sha256:<images.worker's digest>`). It prints the job id. Then the bridge:
 
-When the workunit's result is assimilated (the ops pages show the workunit as done):
+```sh
+scripts/start-boinc-bridge.sh --env prod --step submit-remote --var JOB_ID=JOB_ID \
+  --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff --wait-mins 30
+```
+
+When the workunit's result is assimilated (the ops pages show it done):
 
 ```sh
 scripts/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
-  --var HANDOFF_SPOOL=/project/usnmocr/results/0 --wait-mins 15   # prints the execution
-scripts/fetch-boinc-handoff.sh --env prod --execution EXECUTION --out /scratch/JOB_ID.log
-host=$(usnm-boinc handoff absorb --log /scratch/JOB_ID.log --job JOB_ID \
-  --spool /scratch/JOB_ID.spool --trust-out /scratch/trust.json)
-usnm-boinc collect --root "$R" --spool /scratch/JOB_ID.spool --job JOB_ID \
-  --curated-url CURATED_STORE --out-url OCR_OUT_STORE \
-  --trust /scratch/trust.json --host-id "$host"
+  --var HANDOFF_URL=https://stusnmoffapzy.blob.core.windows.net/boinc-handoff \
+  --var HANDOFF_SPOOL=/project/usnmocr/results/0 --wait-mins 15
 ```
 
-`spool-out` prints the job's spool files, including terminal error markers, and the
-canonical result's host id. It reads the host id from the BOINC database
-(`result.hostid` of the workunit's canonical result; UNVERIFIED against a live database).
-It also prints `trust.json` when the gold check has written one. `--step trust-out` prints
-only `trust.json`. `HANDOFF_SPOOL` must be under `/project/usnmocr/results`. Console lines
-reach the workspace a few minutes after the execution ends. If `absorb` reports missing
-chunks, run `fetch-boinc-handoff.sh` again. When `absorb` prints `unknown` as the host,
-read the host id from the ops pages before running `collect`. Keep the server's hand-off
-copy and spool until `collect` has published.
+Then the hand-off job's collect (`HANDOFF_STEP=collect`, `JOB_ID`, and `HOST_ID` only when
+the server recorded none). It publishes to `ocr-out` for a trusted host and writes the
+dispatch root back with the job `published`. An untrusted host's result is held in the
+dispatch root's `quarantine/<job>/`. Stop there: `ocr-sync` is the next step, as usual.
+
 ### The hand-off runner (scan-fetch container)
 
-`export` and `collect` run on the scan-fetch container (CT 211 on pve-big,
+Until the hand-off job above exists, these grants (#514) let `export` and `collect` run on
+the scan-fetch container. With the job, the scan fetcher only pushes scans, and all but a
+container write can go. `export` and `collect` run on the scan-fetch container (CT 211 on pve-big,
 `scripts/ocr-node/scanfetch-ct.sh`), which already holds the prefetch manifest and
 the scans under `/tank/ocr`, so no scan leaves the LAN. It is an unprivileged Debian 12
 LXC; the Azure Connected Machine agent runs in it like on a VM. Its Arc machine,
