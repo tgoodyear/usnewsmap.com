@@ -919,7 +919,7 @@ pub struct Ready {
 }
 
 /// A crop that could not be prepared, and why.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Skipped {
     pub crop_id: String,
     pub reason: String,
