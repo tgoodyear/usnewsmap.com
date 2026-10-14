@@ -47,12 +47,19 @@ kv_names() {
 
 # kv_put HEADER NAME FILE: sets secret NAME to FILE's contents. The body is built in a file.
 kv_put() {
-  local hdr=$1 name=$2 file=$3 body
-  body="$(dirname "$file")/body.json"
+  local hdr=$1 name=$2 file=$3 body resp code
+  body="$(dirname "$file")/body.json" resp="$(dirname "$file")/response.json"
   (umask 077; jq -n --rawfile v "$file" '{value: $v, contentType: "text/plain"}' > "$body")
-  curl -fsS -o /dev/null -X PUT -H @"$hdr" -H 'Content-Type: application/json' --data-binary @"$body" \
-    "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=$KV_API" || fail "cannot write Key Vault secret $name"
+  # The success response echoes the value, so it stays in the tmpfs file and is never printed;
+  # on an error only Key Vault's error fields are.
+  code="$(umask 077; curl -sS -o "$resp" -w '%{http_code}' -X PUT -H @"$hdr" -H 'Content-Type: application/json' \
+    --data-binary @"$body" "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=$KV_API")" || code=000
   rm -f "$body"
+  if [ "$code" != 200 ]; then
+    echo "Key Vault answered $code: $(jq -c '.error | {code, message, inner: .innererror.code}' "$resp" 2>/dev/null || echo unreadable)" >&2
+    rm -f "$resp"; fail "cannot write Key Vault secret $name"
+  fi
+  rm -f "$resp"
   log "created $name"
 }
 

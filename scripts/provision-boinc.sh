@@ -65,13 +65,16 @@ DNS_ZONE=$(jq -r '.USNM_DNS_ZONE // empty' "$(dirname "$0")/../infra/env/$ENV_NA
 [ -z "$DNS_ZONE" ] || [[ $MASTER_HOST == *".$DNS_ZONE" ]] || die "$MASTER_HOST is not in the zone $DNS_ZONE"
 CERT_NAME="cert-${MASTER_HOST//./-}"
 domain_stage() {
-  local record=${MASTER_HOST%".$DNS_ZONE"} state
+  local record=${MASTER_HOST%".$DNS_ZONE"} state names
   [ -n "$DNS_ZONE" ] && [ -n "$SERVER_IMAGE" ] || { echo 0; return; }
+  # A failed read must stop the run: guessing a lower stage would unbind a working domain.
   state=$(baz containerapp env certificate list --name "usnm-boinc-cae-$ENV_NAME" --resource-group "$BOINC_RG" \
-    --managed-certificates-only --query "[?name=='$CERT_NAME'].properties.provisioningState | [0]" -o tsv 2> /dev/null || true)
-  if [ "$state" = Succeeded ]; then echo 2
-  elif baz network dns record-set cname show --zone-name "$DNS_ZONE" --resource-group "$REGISTRY_RG" --name "$record" -o none 2> /dev/null; then echo 1
-  else echo 0; fi
+    --managed-certificates-only --query "[?name=='$CERT_NAME'].properties.provisioningState | [0]" -o tsv) ||
+    die "could not read the managed certificates of usnm-boinc-cae-$ENV_NAME"
+  if [ "$state" = Succeeded ]; then echo 2; return; fi
+  names=$(baz network dns record-set cname list --zone-name "$DNS_ZONE" --resource-group "$REGISTRY_RG" --query '[].name' -o tsv) ||
+    die "could not read the CNAME records of $DNS_ZONE"
+  if grep -qx "$record" <<< "$names"; then echo 1; else echo 0; fi
 }
 # write_params STAGE: the deployment parameters, with the custom domain stage.
 write_params() {
@@ -86,7 +89,7 @@ jq -n --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
   }}' > "$work/params.json"
 }
-STAGE=$(domain_stage)
+STAGE=$(domain_stage) || exit 1
 write_params "$STAGE"
 
 # The images must be in the shared registry: the app and the jobs pull with their identities,
@@ -122,7 +125,7 @@ baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC
 echo "deployed stack $BOINC_STACK"
 # Step the custom domain on: each pass enables the next stage, at most twice more.
 for _ in 1 2; do
-  next=$(domain_stage)
+  next=$(domain_stage) || exit 1
   [ "$next" -gt "$STAGE" ] || break
   STAGE=$next
   write_params "$STAGE"
