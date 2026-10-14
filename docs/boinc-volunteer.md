@@ -23,12 +23,12 @@ docker version           # expect: a Client and a Server section, no permission 
 If `boinc --version` is missing or older than 8.2.13, install the client from the BOINC project's repository (https://boinc.berkeley.edu/linux_install.php). On Debian 13 (trixie), as root:
 
 ```sh
-curl -fsSL https://boinc.berkeley.edu/dl/linux/stable/trixie/boinc.gpg -o /usr/share/keyrings/boinc.gpg
-echo "deb [signed-by=/usr/share/keyrings/boinc.gpg] https://boinc.berkeley.edu/dl/linux/stable/trixie trixie main" > /etc/apt/sources.list.d/boinc.list
+curl -fsSL https://boinc.berkeley.edu/dl/linux/stable/trixie/boinc.gpg -o /usr/share/keyrings/boinc.asc
+echo "deb [signed-by=/usr/share/keyrings/boinc.asc] https://boinc.berkeley.edu/dl/linux/stable/trixie trixie main" > /etc/apt/sources.list.d/boinc.list
 apt-get update && apt-get install boinc-client docker.io
 ```
 
-For Ubuntu 24.04 use `noble` in place of `trixie`. This package installs `boinc` and `boinccmd` in `/usr/local/bin`, which is not on root's `PATH` in some shells (a bare `pct exec`, for example); use the full path if `boinccmd` is not found. Its data directory is `/var/lib/boinc-client`.
+For Ubuntu 24.04 use `noble` in place of `trixie`. This package installs `boinc` and `boinccmd` in `/usr/local/bin`, which is not on root's `PATH` in some shells (a bare `pct exec`, for example); use the full path if `boinccmd` is not found. Its data directory is `/var/lib/boinc` (Debian's own package used `/var/lib/boinc-client`).
 
 Then check that the BOINC service user can run a container. The user is `boinc` on Debian and Ubuntu packages; other distributions may differ (UNVERIFIED):
 
@@ -65,7 +65,7 @@ boinccmd --get_project_status   # expect: an entry whose master URL is https://b
 
 `boinccmd --get_messages 0` then shows `Master file download succeeded` and `Scheduler request completed`. The client also logs `Docker: version ...` at start-up; if that line is missing, the scheduler sends this host no work.
 
-Set idle-only processing and conservative limits in your BOINC preferences, as the pilot asks. On a headless host or a container, the client may log `Suspending computation - CPU is busy` because it sees the whole machine's load; set `<suspend_cpu_usage>0</suspend_cpu_usage>` in `/var/lib/boinc-client/global_prefs_override.xml` and run `boinccmd --read_global_prefs_override`.
+Set idle-only processing and conservative limits in your BOINC preferences, as the pilot asks. On a headless host or a container, the client may log `Suspending computation - CPU is busy` because it sees the whole machine's load; set `<suspend_cpu_usage>0</suspend_cpu_usage>` in `/var/lib/boinc/global_prefs_override.xml` and run `boinccmd --read_global_prefs_override`.
 
 ## 3. What you will run
 
