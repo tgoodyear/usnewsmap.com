@@ -1,4 +1,4 @@
-"""Tests for scripts/start-boinc-bridge.sh and scripts/fetch-boinc-handoff.sh against a stub az.
+"""Tests for scripts/start-boinc-bridge.sh against a stub az.
 
 The stub answers the calls the script makes and logs each one to STUB_LOG. STUB_TEMPLATE is
 the job's template (JSON), STUB_EXEC_STATUS an execution's status, and STUB_NO_JOB=1 gives a
@@ -36,8 +36,6 @@ case "$*" in
     else grep '^containerapp job update' "$STUB_LOG" | tail -n 1 |
       sed -e 's/.*--replace-env-vars //' -e 's/ -o none.*//' | tr ' ' '\n' |
       jq -R 'split("=") | {name: .[0], value: (.[1:] | join("="))}' | jq -s .; fi ;;
-  "monitor log-analytics workspace show"*) echo 00000000-0000-0000-0000-000000000001 ;;
-  "monitor log-analytics query"*) printf '%s\n' "${STUB_LOGS:-[]}" ;;
   *) echo "stub az: unexpected call: $*" >&2; exit 9 ;;
 esac
 """
@@ -172,43 +170,6 @@ class BaseVarsMatchBicep(unittest.TestCase):
         with open(os.path.join(ROOT, "contrib-compute/infra/boinc/modules/bridge-job.bicep")) as f:
             bicep = re.findall(r"\{ name: '([A-Z_]+)', value:", f.read())
         self.assertEqual(sorted(script), sorted(bicep))
-
-
-
-
-FETCH = os.path.join(HERE, "fetch-boinc-handoff.sh")
-
-
-class FetchHandoff(unittest.TestCase):
-    setUp = StartBridge.setUp
-    tearDown = StartBridge.tearDown
-    calls = StartBridge.calls
-
-    def fetch(self, *args, **extra):
-        return subprocess.run([FETCH, "--env", "prod", *args], cwd=ROOT, env={**self.env, **extra},
-                              capture_output=True, text=True)
-
-    def test_writes_the_execution_lines_and_queries_by_execution(self):
-        out = os.path.join(self.tmp, "spool-out.log")
-        logs = json.dumps([{"Log_s": "USNM-HANDOFF v1 begin " + "a" * 64 + " 1"},
-                           {"Log_s": "USNM-HANDOFF v1 part " + "a" * 64 + " 0 eA=="}])
-        r = self.fetch("--execution", "usnm-boinc-bridge-caj-prod-abc12", "--out", out, STUB_LOGS=logs)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        with open(out) as f:
-            self.assertEqual(f.read().splitlines()[1], "USNM-HANDOFF v1 part " + "a" * 64 + " 0 eA==")
-        [query] = [c for c in self.calls() if c.startswith("monitor log-analytics query")]
-        self.assertIn("startswith 'usnm-boinc-bridge-caj-prod-abc12'", query)
-        self.assertIn("--subscription " + SUB, query)
-
-    def test_no_lines_and_bad_names_fail_without_writing(self):
-        out = os.path.join(self.tmp, "spool-out.log")
-        r = self.fetch("--execution", "usnm-boinc-bridge-caj-prod-abc12", "--out", out)
-        self.assertEqual(r.returncode, 1)
-        self.assertFalse(os.path.exists(out))
-        before = len(self.calls())
-        r = self.fetch("--execution", "x' or 1==1", "--out", out)
-        self.assertEqual(r.returncode, 1)
-        self.assertEqual(len(self.calls()), before)
 
 
 if __name__ == "__main__":

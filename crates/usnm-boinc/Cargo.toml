@@ -17,8 +17,6 @@ usnm-alto.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
 usnm-ingest = { path = "../usnm-ingest" }
 anyhow.workspace = true
-base64.workspace = true
-flate2.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 clap.workspace = true

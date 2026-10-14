@@ -31,18 +31,17 @@
 #                               against the committed lock and writes <campaign>/bundle.tar
 #                               (gold-bundle.sh; the gold bundle job, bridge image only)
 #
-# The remote hand-off from the OCR node (#469, docs/boinc.md#one-page-from-the-ocr-node):
-#   BRIDGE_STEP=submit-remote   JOB_ID HANDOFF_REQUEST HANDOFF_RECORD (from `usnm-boinc handoff
-#                               vars` on the node) HANDOFF_LOC_FETCH=one-request (the
-#                               operator's choice to make one LoC request outside the scan
-#                               fetcher, docs/boinc.md); fetches the page from the LoC URL in the
-#                               request, checks its size and sha256, writes the job into
-#                               $HANDOFF_DIR and submits it (a job already past reserved is left)
+# The remote hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache), through the
+# hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
+# and written with this job's identity:
+#   BRIDGE_STEP=submit-remote   JOB_ID; copies the exported job from the container's
+#                               dispatch/jobs/<id>/ into $HANDOFF_DIR (checking the page's
+#                               size and sha256 against the request) and submits it. A job
+#                               already past reserved is left. LoC is never asked.
 #   BRIDGE_STEP=spool-out       JOB_ID HANDOFF_SPOOL=<assimilator results directory under
-#                               $PROJ/results>; prints the job's spool files, the canonical
-#                               result's host id and $SHARE_DIR/gold/trust.json (when there) as
-#                               USNM-HANDOFF console lines for `usnm-boinc handoff absorb`
-#   BRIDGE_STEP=trust-out       prints $SHARE_DIR/gold/trust.json the same way
+#                               $PROJ/results>; writes the job's spool files and the canonical
+#                               result's host id to spool/<id>/, and $SHARE_DIR/gold/trust.json
+#                               (when there) to gold/trust.json
 #
 # Registering the apps after init (docs/boinc.md#register-the-apps):
 #   BRIDGE_STEP=register-apps   copies this image's project.xml into the project and runs
@@ -99,9 +98,6 @@ case "$step" in
   gold-collect)
     exec usnm-boinc gold collect --root "$GOLD" --project "$PROJ" \
       --spool "${GOLD_SPOOL:?set GOLD_SPOOL}" --out "$GOLD/out" ;;
-  trust-out)
-    # No database or secrets: prints the share's trust list to the console.
-    exec usnm-boinc handoff emit --trust "$SHARE_DIR/gold/trust.json" ;;
   gold-trust)
     # No database or secrets: reads this campaign's reports and writes the share's trust list.
     exec usnm-boinc gold trust --reports "$GOLD/out/reports.jsonl" \
@@ -111,8 +107,12 @@ if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != re
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
+if [ "$step" = submit-remote ] || [ "$step" = spool-out ]; then
+  [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ]] ||
+    fail "HANDOFF_URL must be https://<account>.blob.core.windows.net/boinc-handoff"
+fi
 if [ "$step" = spool-out ]; then
-  # Reads the project tree and, for the host id, the database; prints to the console only.
+  # Reads the spool and, for the host id, the database; writes only the hand-off container.
   spool="${HANDOFF_SPOOL:?set HANDOFF_SPOOL}"
   case "$spool" in "$PROJ"/results/*) ;; *) fail "HANDOFF_SPOOL must be under $PROJ/results" ;; esac
   [[ "$spool" != *..* ]] || fail "HANDOFF_SPOOL must not contain .."
@@ -132,7 +132,7 @@ if [ "$step" = spool-out ]; then
   fi
   trust_args=()
   [ -f "$SHARE_DIR/gold/trust.json" ] && trust_args=(--trust "$SHARE_DIR/gold/trust.json")
-  usnm-boinc handoff emit --root "$HANDOFF_DIR" --spool "$spool" --job "$JOB_ID" \
+  usnm-boinc handoff put-spool --to-url "$HANDOFF_URL" --spool "$spool" --job "$JOB_ID" \
     ${host_args[@]+"${host_args[@]}"} ${trust_args[@]+"${trust_args[@]}"}
   exit 0
 fi
@@ -170,13 +170,9 @@ case "$step" in
     cd "$PROJ"
     exec bin/xadd ;;
   submit-remote)
-    # The settings carry the request and the record; the page comes from LoC again, never
-    # from the node. Submission then runs as for submit. That request is outside CT 211's
-    # scan fetcher, which is meant to be the only LoC fetcher while it runs, so each run
-    # must say it accepts one (docs/boinc.md#one-page-from-the-ocr-node).
-    [ "${HANDOFF_LOC_FETCH:-}" = one-request ] ||
-      fail "submit-remote fetches the page from LoC once, outside the scan fetcher; set HANDOFF_LOC_FETCH=one-request to accept that"
-    state=$(usnm-boinc handoff receive --root "$HANDOFF_DIR" --job "$JOB_ID")
+    # The page comes from the hand-off container, which the scan fetcher filled; never from
+    # LoC. Submission then runs as for submit, which checks the page again.
+    state=$(usnm-boinc handoff pull --from-url "$HANDOFF_URL" --root "$HANDOFF_DIR" --job "$JOB_ID")
     if [ "$state" != reserved ]; then
       log "job $JOB_ID is already $state on the server; nothing submitted"
       exit 0
@@ -189,5 +185,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, trust-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
 esac

@@ -219,7 +219,10 @@ impl Fixture {
         .remove(0)
     }
     fn result(&self, id: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let job = usnm_boinc::load(&self.options.root, id).unwrap().job;
+        self.result_in(&self.options.root, id)
+    }
+    fn result_in(&self, root: &Path, id: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let job = usnm_boinc::load(root, id).unwrap().job;
         let text = b"HELLO WORLD";
         let result = ResultManifest {
             v: 1,
@@ -1201,45 +1204,76 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
     );
 }
 
-/// The #469 route on synthetic data: node export, settings, server install and submit, spool
-/// and trust back through console lines, then the trusted collect on the node.
+/// The #469 route on synthetic data, with a local directory standing in for the hand-off
+/// container: the fetcher's scans and manifest in, export and the dispatch root put, the
+/// bridge's pull and submit, the spool and trust list back, and the trusted collect.
 #[cfg(unix)]
 #[tokio::test]
-async fn remote_handoff_round_trip_through_settings_and_console_lines() {
+async fn remote_handoff_round_trip_through_the_container() {
     use std::os::unix::fs::PermissionsExt;
-    use usnm_boinc::handoff::{self, Installed, Kind, MAX_VAR, RECORD_VAR, REQUEST_VAR};
+    use usnm_boinc::handoff::{self, Pulled, DISPATCH};
     use usnm_boinc::trust::Trust;
     let fx = Fixture::new("eng").await;
-    let id = fx.export().await;
-    let node = &fx.options.root;
-    let vars: std::collections::BTreeMap<_, _> =
-        handoff::vars(node, &id).unwrap().into_iter().collect();
-    assert_eq!(vars["JOB_ID"], id);
-    for name in [REQUEST_VAR, RECORD_VAR] {
-        // Measured: 980 (request) and 1,104 (record) characters for this fixture; a real
-        // LoC URL pair is about 150 characters longer, in each.
-        assert!(
-            vars[name].len() <= MAX_VAR / 4,
-            "{name}: {}",
-            vars[name].len()
-        );
-    }
-    let incoming = handoff::decode(&id, &vars[REQUEST_VAR], &vars[RECORD_VAR]).unwrap();
-    // A changed record or a request for another job is refused.
-    assert!(handoff::decode(&id, &vars[RECORD_VAR], &vars[REQUEST_VAR]).is_err());
-    assert!(handoff::decode(&"0".repeat(64), &vars[REQUEST_VAR], &vars[RECORD_VAR]).is_err());
-    // What LoC answers for the request's URL (the node's cached bytes, here).
-    let scan = std::fs::read(node.join("jobs").join(&id).join("page")).unwrap();
-    let server = fx.tmp.path().join("server-handoff");
-    let mut other = scan.clone();
-    other[0] ^= 1;
-    assert!(handoff::install(&server, &incoming, &other).is_err());
-    assert_eq!(
-        handoff::install(&server, &incoming, &scan).unwrap(),
-        Installed::Reserved
-    );
+    let container = store(fx.tmp.path(), "handoff");
+    // What scripts/ocr-node/push-boinc-scan.sh uploads.
+    let pushed = handoff::put(container.as_ref(), &fx.options.scans, "scans")
+        .await
+        .unwrap();
+    assert_eq!(pushed, 2, "the scan and its sidecar");
+    container
+        .put(
+            "manifests/manifest.parquet",
+            std::fs::read(&fx.options.manifest).unwrap(),
+            "x",
+        )
+        .await
+        .unwrap();
 
-    // The existing submit, against stand-ins for the stock tools.
+    // The hand-off job: scans and manifest down, export, dispatch root up.
+    let job = fx.tmp.path().join("job");
+    handoff::get(container.as_ref(), "scans", &job.join("scans"))
+        .await
+        .unwrap();
+    handoff::get(container.as_ref(), "manifests", &job.join("manifests"))
+        .await
+        .unwrap();
+    let mut options = fx.options.clone();
+    options.scans = job.join("scans");
+    options.manifest = job.join("manifests/manifest.parquet");
+    options.root = job.join("dispatch");
+    let id = usnm_boinc::export(
+        &options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap()
+    .remove(0);
+    handoff::put(container.as_ref(), &options.root, DISPATCH)
+        .await
+        .unwrap();
+    assert!(container
+        .get(&format!("{DISPATCH}/jobs/{id}/record.json"))
+        .await
+        .unwrap()
+        .is_some());
+    // The journal lock stays behind.
+    assert!(!container
+        .list(DISPATCH)
+        .await
+        .unwrap()
+        .iter()
+        .any(|p| p.ends_with(".lock")));
+
+    // The bridge: pull, then the existing submit against stand-ins for the stock tools.
+    let server = fx.tmp.path().join("server-handoff");
+    assert_eq!(
+        handoff::pull(container.as_ref(), &server, &id)
+            .await
+            .unwrap(),
+        Pulled::Reserved
+    );
     let project = fx.tmp.path().join("project");
     std::fs::create_dir_all(project.join("bin")).unwrap();
     for (name, body) in [
@@ -1256,25 +1290,26 @@ async fn remote_handoff_round_trip_through_settings_and_console_lines() {
     usnm_boinc::submit::submit(&server, &project, &id)
         .await
         .unwrap();
+    let page = std::fs::read(options.root.join("jobs").join(&id).join("page")).unwrap();
     assert_eq!(
         std::fs::read(project.join(format!("download/{id}_page"))).unwrap(),
-        scan
+        page
+    );
+    // A repeated run submits nothing; the dispatch root's journal stays reserved.
+    assert_eq!(
+        handoff::pull(container.as_ref(), &server, &id)
+            .await
+            .unwrap(),
+        Pulled::Already(Stage::Submitted)
     );
     assert_eq!(
-        handoff::install(&server, &incoming, &scan).unwrap(),
-        Installed::Already(Stage::Submitted)
+        usnm_boinc::load(&options.root, &id).unwrap().stage,
+        Stage::Reserved
     );
-    // A replay is answered from the journal, before any fetch.
-    assert_eq!(
-        handoff::existing(&server, &incoming).unwrap(),
-        Some(Stage::Submitted)
-    );
-    // The node's journal is untouched: still reserved.
-    assert_eq!(usnm_boinc::load(node, &id).unwrap().stage, Stage::Reserved);
 
-    // The server's spool and trust list, out as console lines.
+    // The bridge after assimilation: spool, host id and trust list up.
     let record = usnm_boinc::load(&server, &id).unwrap();
-    let files = fx.result(&id);
+    let files = fx.result_in(&server, &id);
     let spool = fx.tmp.path().join("server-spool");
     std::fs::create_dir_all(&spool).unwrap();
     for (source, logical) in [
@@ -1288,6 +1323,7 @@ async fn remote_handoff_round_trip_through_settings_and_console_lines() {
         )
         .unwrap();
     }
+    std::fs::write(spool.join("usnm_unrelated__file_text.txt"), "other job").unwrap();
     let trust = Trust {
         hosts: [(record.job.engine.image.clone(), [42].into())].into(),
         max_cer: 0.1,
@@ -1295,89 +1331,95 @@ async fn remote_handoff_round_trip_through_settings_and_console_lines() {
     };
     let trust_path = fx.tmp.path().join("gold/trust.json");
     usnm_boinc::atomic(&trust_path, &serde_json::to_vec_pretty(&trust).unwrap()).unwrap();
-    let mut console = Vec::new();
-    handoff::emit(
-        &handoff::spool_payload(&server, &spool, &id, Some(42)).unwrap(),
-        &mut console,
-    )
-    .unwrap();
-    handoff::emit(&handoff::trust_payload(&trust_path).unwrap(), &mut console).unwrap();
-    // As Log Analytics returns it: prefixed, shuffled, with a repeated line.
-    let console = String::from_utf8(console).unwrap();
-    let mut lines: Vec<String> = console
-        .lines()
-        .map(|l| format!("2026-10-14T00:00:00Z {l}"))
-        .collect();
-    lines.reverse();
-    lines.push(lines[0].clone());
-    let log = lines.join("\n");
-    let payloads = handoff::absorb(&log).unwrap();
-    assert_eq!(payloads.len(), 2);
-    // A missing chunk is reported, not guessed at.
-    let partial: Vec<_> = lines
-        .iter()
-        .filter(|l| !l.contains(" part ") || !l.contains(" 0 "))
-        .cloned()
-        .collect();
-    assert!(handoff::absorb(&partial.join("\n")).is_err());
+    assert_eq!(
+        handoff::put_spool(container.as_ref(), &spool, &id, Some(42), Some(&trust_path))
+            .await
+            .unwrap(),
+        3
+    );
 
-    let node_spool = fx.tmp.path().join("node-spool");
-    let p = payloads.iter().find(|p| p.kind == Kind::Spool).unwrap();
-    assert_eq!(p.host_id, Some(42));
-    assert_eq!(handoff::write_spool(p, &id, &node_spool).unwrap(), 3);
-    assert!(handoff::write_spool(p, &"0".repeat(64), &node_spool).is_err());
-    let node_trust = fx.tmp.path().join("node-trust.json");
-    handoff::write_trust(
-        payloads.iter().find(|p| p.kind == Kind::Trust).unwrap(),
-        &node_trust,
-    )
-    .unwrap();
+    // The hand-off job's collect: dispatch root, spool and trust down, collect, root up.
+    let collect = fx.tmp.path().join("collect");
+    handoff::get(container.as_ref(), DISPATCH, &collect.join("dispatch"))
+        .await
+        .unwrap();
+    let host = handoff::get_spool(container.as_ref(), &id, &collect.join("spool"))
+        .await
+        .unwrap();
+    assert_eq!(host, Some(42));
+    handoff::get_trust(container.as_ref(), &collect.join("trust.json"))
+        .await
+        .unwrap();
     usnm_boinc::trust::collect(
-        node,
-        &node_spool,
+        &collect.join("dispatch"),
+        &collect.join("spool"),
         &id,
-        &Trust::load(&node_trust).unwrap(),
-        p.host_id,
+        &Trust::load(&collect.join("trust.json")).unwrap(),
+        host,
         fx.stores.curated.as_ref(),
         fx.stores.out.as_ref(),
     )
     .await
     .unwrap();
-    assert_eq!(usnm_boinc::load(node, &id).unwrap().stage, Stage::Published);
+    handoff::put(container.as_ref(), &collect.join("dispatch"), DISPATCH)
+        .await
+        .unwrap();
+    let back: usnm_boinc::Record = serde_json::from_slice(
+        &container
+            .get(&format!("{DISPATCH}/jobs/{id}/record.json"))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(back.stage, Stage::Published);
 }
 
-#[cfg(unix)]
-#[test]
-fn console_payload_rejects_foreign_spool_names() {
-    use usnm_boinc::handoff::{self, Kind, Payload};
-    let id = "a".repeat(64);
-    let p = Payload {
-        v: 1,
-        kind: Kind::Spool,
-        job: Some(id.clone()),
-        host_id: None,
-        files: [("../../etc/passwd".to_string(), "eA==".to_string())].into(),
-    };
-    let dir = tempfile::tempdir().unwrap();
-    assert!(handoff::write_spool(&p, &id, dir.path()).is_err());
-    let mut out = Vec::new();
-    handoff::emit(&p, &mut out).unwrap();
-    let text = String::from_utf8(out).unwrap();
-    assert!(text.lines().all(|l| l.len() < 4000));
-    assert_eq!(handoff::absorb(&text).unwrap(), vec![p]);
-    assert!(handoff::absorb("USNM-HANDOFF v1 bogus").is_err());
+/// The bridge refuses a container copy whose page or record is not the exported job's.
+#[tokio::test]
+async fn pull_refuses_a_changed_page_or_another_jobs_record() {
+    use usnm_boinc::handoff::{self, DISPATCH};
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let container = store(fx.tmp.path(), "handoff");
+    handoff::put(container.as_ref(), &fx.options.root, DISPATCH)
+        .await
+        .unwrap();
+    let server = fx.tmp.path().join("server-handoff");
+    let page = format!("{DISPATCH}/jobs/{id}/page");
+    let mut bytes = container.get(&page).await.unwrap().unwrap();
+    bytes[0] ^= 1;
+    container.put(&page, bytes, "x").await.unwrap();
+    assert!(handoff::pull(container.as_ref(), &server, &id)
+        .await
+        .is_err());
+    assert!(!server.join("jobs").join(&id).exists());
+    assert!(handoff::pull(container.as_ref(), &server, &"0".repeat(64))
+        .await
+        .is_err());
+    assert!(handoff::get_spool(container.as_ref(), &id, &server)
+        .await
+        .is_err());
 }
 
-/// bridge-job.sh's submit-remote: receive, then submit only a job that is still reserved.
+/// bridge-job.sh's submit-remote: pull, then submit only a job that is still reserved.
 #[cfg(unix)]
 #[test]
 fn bridge_submit_remote_submits_only_a_reserved_job() {
     use std::os::unix::fs::PermissionsExt;
     let id = "b".repeat(64);
-    for (state, submits, accept) in [
-        ("reserved", true, true),
-        ("submitted", false, true),
-        ("reserved", false, false),
+    for (state, submits, url) in [
+        (
+            "reserved",
+            true,
+            "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
+        ),
+        (
+            "submitted",
+            false,
+            "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
+        ),
+        ("reserved", false, "https://example.org/boinc-handoff"),
     ] {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("bin");
@@ -1394,7 +1436,7 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
         std::fs::write(
             &stub,
             format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1 $2\" in 'handoff receive') echo {state} ;; esac\n",
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1 $2\" in 'handoff pull') echo {state} ;; esac\n",
                 calls.display()
             ),
         )
@@ -1420,13 +1462,11 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
             .env("BRIDGE_STEP", "submit-remote")
             .env("JOB_ID", &id)
             .env("HANDOFF_DIR", tmp.path().join("handoff"))
-            .env("HANDOFF_REQUEST", "e30=")
-            .env("HANDOFF_RECORD", "e30=")
-            .env("HANDOFF_LOC_FETCH", if accept { "one-request" } else { "" })
+            .env("HANDOFF_URL", url)
             .output()
             .unwrap();
-        if !accept {
-            // Without the operator's say-so nothing runs and LoC is not asked.
+        if !url.contains(".blob.core.windows.net/") {
+            // Only an Azure blob container is accepted, and nothing runs before that check.
             assert!(!out.status.success() && !calls.exists());
             continue;
         }
@@ -1436,48 +1476,7 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
             String::from_utf8_lossy(&out.stderr)
         );
         let calls = std::fs::read_to_string(&calls).unwrap();
-        assert!(calls.starts_with("handoff receive --root"));
+        assert!(calls.starts_with("handoff pull --from-url"), "{calls}");
         assert_eq!(calls.contains("\nsubmit --root"), submits, "{calls}");
     }
-}
-
-/// A spool at the ALTO size limit survives the console channel (base64 inside the JSON
-/// counts toward the inflation bound).
-#[test]
-fn console_payload_at_the_alto_limit_round_trips() {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    use usnm_boinc::handoff::{self, Kind, Payload};
-    let id = "c".repeat(64);
-    let wu = format!("usnm_{id}");
-    let alto: Vec<u8> = b"<String CONTENT=\"WORD\"/>"
-        .iter()
-        .copied()
-        .cycle()
-        .take(boinc::MAX_ALTO)
-        .collect();
-    let p = Payload {
-        v: 1,
-        kind: Kind::Spool,
-        job: Some(id.clone()),
-        host_id: Some(7),
-        files: [
-            (format!("{wu}__file_layout.xml"), STANDARD.encode(&alto)),
-            (
-                format!("{wu}__file_text.txt"),
-                STANDARD.encode(vec![b'a'; boinc::MAX_TEXT]),
-            ),
-            (format!("{wu}__file_result.json"), STANDARD.encode(b"{}")),
-        ]
-        .into(),
-    };
-    let mut out = Vec::new();
-    handoff::emit(&p, &mut out).unwrap();
-    let back = handoff::absorb(std::str::from_utf8(&out).unwrap()).unwrap();
-    assert_eq!(back, vec![p.clone()]);
-    let dir = tempfile::tempdir().unwrap();
-    assert_eq!(handoff::write_spool(&back[0], &id, dir.path()).unwrap(), 3);
-    assert_eq!(
-        std::fs::read(dir.path().join(format!("{wu}__file_layout.xml"))).unwrap(),
-        alto
-    );
 }

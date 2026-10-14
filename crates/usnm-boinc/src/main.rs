@@ -137,55 +137,58 @@ enum Commands {
 }
 #[derive(Subcommand)]
 enum Handoff {
-    /// Node side: print a reserved job's bridge-job settings, one NAME=VALUE per line.
-    Vars {
+    /// Copy every object under a prefix of the hand-off container into a directory.
+    Get {
+        #[arg(long)]
+        from_url: String,
+        #[arg(long)]
+        prefix: String,
+        #[arg(long)]
+        to: PathBuf,
+    },
+    /// Write every file under a directory to a prefix of the hand-off container.
+    Put {
+        #[arg(long)]
+        from: PathBuf,
+        #[arg(long)]
+        to_url: String,
+        #[arg(long)]
+        prefix: String,
+    },
+    /// Server side: copy one exported job into the hand-off root. Prints `reserved` (submit
+    /// it) or the stage the server already had.
+    Pull {
+        #[arg(long)]
+        from_url: String,
         #[arg(long)]
         root: PathBuf,
         #[arg(long)]
         job: String,
     },
-    /// Server side: re-fetch the page from LoC, check it, and write the job into the hand-off
-    /// root. Prints `reserved` (submit it) or the stage the server already had.
-    Receive {
+    /// Server side: write a job's spool files, its host id and trust.json to the container.
+    PutSpool {
         #[arg(long)]
-        root: PathBuf,
+        to_url: String,
+        #[arg(long)]
+        spool: PathBuf,
         #[arg(long)]
         job: String,
-        /// The base64 request (`handoff vars`).
-        #[arg(long, env = "HANDOFF_REQUEST", hide_env_values = true)]
-        request: String,
-        /// The base64 journal record (`handoff vars`).
-        #[arg(long, env = "HANDOFF_RECORD", hide_env_values = true)]
-        record: String,
-    },
-    /// Server side: print a job's spool files and/or trust.json as framed console lines.
-    Emit {
-        /// The server's hand-off root, with --spool and --job.
-        #[arg(long, requires_all = ["spool", "job"])]
-        root: Option<PathBuf>,
-        #[arg(long)]
-        spool: Option<PathBuf>,
-        #[arg(long)]
-        job: Option<String>,
-        /// The canonical result's host id, carried to the node for `collect --host-id`.
         #[arg(long)]
         host_id: Option<u64>,
-        #[arg(long, required_unless_present = "root")]
+        #[arg(long)]
         trust: Option<PathBuf>,
     },
-    /// Node side: rebuild the spool directory and/or trust.json from a console log.
-    Absorb {
-        /// The execution's console lines (scripts/fetch-boinc-handoff.sh).
+    /// Hand-off job side: copy a job's spool and trust.json down; prints the host id, or
+    /// `unknown`.
+    GetSpool {
         #[arg(long)]
-        log: PathBuf,
-        /// With --spool: the job whose spool to write.
-        #[arg(long, requires = "spool")]
-        job: Option<String>,
-        #[arg(long, requires = "job")]
-        spool: Option<PathBuf>,
-        /// Where to write trust.json.
-        #[arg(long, required_unless_present = "job")]
-        trust_out: Option<PathBuf>,
+        from_url: String,
+        #[arg(long)]
+        job: String,
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        trust_out: PathBuf,
     },
 }
 #[derive(Subcommand)]
@@ -488,89 +491,53 @@ async fn main() -> anyhow::Result<()> {
 async fn handoff(h: Handoff) -> anyhow::Result<()> {
     use usnm_boinc::handoff as x;
     match h {
-        Handoff::Vars { root, job } => {
-            for (name, value) in x::vars(&root, &job)? {
-                println!("{name}={value}");
-            }
+        Handoff::Get {
+            from_url,
+            prefix,
+            to,
+        } => {
+            let n = x::get(usnm_store::open(&from_url)?.as_ref(), &prefix, &to).await?;
+            eprintln!("{n} objects copied from {prefix}/ to {}", to.display());
         }
-        Handoff::Receive {
+        Handoff::Put {
+            from,
+            to_url,
+            prefix,
+        } => {
+            let n = x::put(usnm_store::open(&to_url)?.as_ref(), &from, &prefix).await?;
+            eprintln!("{n} files written from {} to {prefix}/", from.display());
+        }
+        Handoff::Pull {
+            from_url,
             root,
             job,
-            request,
-            record,
-        } => {
-            let incoming = x::decode(&job, &request, &record)?;
-            if let Some(stage) = x::existing(&root, &incoming)? {
-                // A replay: the server has it already, so LoC is not asked again.
-                println!("{}", serde_json::to_value(stage)?.as_str().unwrap_or("?"));
-                return Ok(());
+        } => match x::pull(usnm_store::open(&from_url)?.as_ref(), &root, &job).await? {
+            x::Pulled::Reserved => println!("reserved"),
+            x::Pulled::Already(stage) => {
+                println!("{}", serde_json::to_value(stage)?.as_str().unwrap_or("?"))
             }
-            // One request, no retries, paced like the other LoC fetches.
-            let gap = std::time::Duration::from_secs(5);
-            let loc = usnm_ocr_worker::loc::LocClient::new(usnm_ocr_worker::loc::LocConfig {
-                api_gap: gap,
-                tile_gap: gap,
-                storage_gap: gap,
-                storage_own_budget: false,
-                attempts: 1,
-                ..Default::default()
-            })?;
-            let url = &incoming.request.scan.url;
-            let scan = loc
-                .image_file(url, usnm_ocr_contract::boinc::MAX_SCAN)
-                .await
-                .map_err(|e| anyhow::anyhow!("fetching {url}: {e}"))?;
-            match x::install(&root, &incoming, &scan)? {
-                x::Installed::Reserved => println!("reserved"),
-                x::Installed::Already(stage) => {
-                    println!("{}", serde_json::to_value(stage)?.as_str().unwrap_or("?"))
-                }
-            }
-        }
-        Handoff::Emit {
-            root,
+        },
+        Handoff::PutSpool {
+            to_url,
             spool,
             job,
             host_id,
             trust,
         } => {
-            let mut out = std::io::stdout().lock();
-            if let (Some(root), Some(spool), Some(job)) = (root, spool, job) {
-                x::emit(&x::spool_payload(&root, &spool, &job, host_id)?, &mut out)?;
-            }
-            if let Some(trust) = trust {
-                x::emit(&x::trust_payload(&trust)?, &mut out)?;
-            }
+            let store = usnm_store::open(&to_url)?;
+            let n = x::put_spool(store.as_ref(), &spool, &job, host_id, trust.as_deref()).await?;
+            eprintln!("{n} spool files written for {job}");
         }
-        Handoff::Absorb {
-            log,
+        Handoff::GetSpool {
+            from_url,
             job,
             spool,
             trust_out,
         } => {
-            let text = String::from_utf8(usnm_boinc::read(&log, 256 << 20)?)?;
-            let payloads = x::absorb(&text)?;
-            if let (Some(job), Some(spool)) = (job, spool) {
-                let p = payloads
-                    .iter()
-                    .find(|p| p.kind == x::Kind::Spool && p.job.as_deref() == Some(job.as_str()))
-                    .with_context(|| format!("the log has no spool payload for job {job}"))?;
-                let n = x::write_spool(p, &job, &spool)?;
-                let host = p.host_id.map_or("unknown".into(), |h| h.to_string());
-                eprintln!(
-                    "{n} spool files written to {}; host id {host}",
-                    spool.display()
-                );
-                println!("{host}");
-            }
-            if let Some(out) = trust_out {
-                let p = payloads
-                    .iter()
-                    .find(|p| p.kind == x::Kind::Trust)
-                    .context("the log has no trust payload")?;
-                x::write_trust(p, &out)?;
-                eprintln!("trust.json written to {}", out.display());
-            }
+            let store = usnm_store::open(&from_url)?;
+            let host = x::get_spool(store.as_ref(), &job, &spool).await?;
+            x::get_trust(store.as_ref(), &trust_out).await?;
+            println!("{}", host.map_or("unknown".into(), |h| h.to_string()));
         }
     }
     Ok(())
