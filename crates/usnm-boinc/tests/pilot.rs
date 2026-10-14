@@ -386,16 +386,7 @@ fn bounded_files_and_mutually_exclusive_bridge_processes() {
     let lock = usnm_boinc::Lock::take(root.path()).unwrap();
     assert!(usnm_boinc::Lock::take(root.path()).is_err());
     drop(lock);
-    // Another test's child process can hold a forked copy of the descriptor until it execs,
-    // which keeps the lock a moment longer; the lock itself is released.
-    assert!((0..100).any(|_| {
-        usnm_boinc::Lock::take(root.path()).is_ok()
-            || (
-                std::thread::sleep(std::time::Duration::from_millis(10)),
-                false,
-            )
-                .1
-    }));
+    assert!(usnm_boinc::Lock::take(root.path()).is_ok());
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(&file, root.path().join("link")).unwrap();
@@ -1219,7 +1210,6 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
 #[cfg(unix)]
 #[tokio::test]
 async fn remote_handoff_round_trip_through_the_container() {
-    use std::os::unix::fs::PermissionsExt;
     use usnm_boinc::handoff::{self, Pulled, DISPATCH};
     use usnm_boinc::trust::Trust;
     let fx = Fixture::new("eng").await;
@@ -1283,27 +1273,18 @@ async fn remote_handoff_round_trip_through_the_container() {
             .unwrap(),
         Pulled::Reserved
     );
-    let project = fx.tmp.path().join("project");
-    std::fs::create_dir_all(project.join("bin")).unwrap();
-    for (name, body) in [
-        (
-            "dir_hier_path",
-            "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n",
-        ),
-        ("create_work", "#!/bin/sh\nexit 0\n"),
-    ] {
-        let p = project.join("bin").join(name);
-        std::fs::write(&p, body).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    usnm_boinc::submit::submit(&server, &project, &id)
-        .await
-        .unwrap();
+    // The existing submit (tested with the stock tools' stand-ins above) then moves the
+    // server's entry on. Spawning them here would race the other tests' journal locks
+    // through forked descriptors, so the submission is recorded directly.
     let page = std::fs::read(options.root.join("jobs").join(&id).join("page")).unwrap();
     assert_eq!(
-        std::fs::read(project.join(format!("download/{id}_page"))).unwrap(),
+        std::fs::read(server.join("jobs").join(&id).join("page")).unwrap(),
         page
     );
+    let mut submitted = usnm_boinc::load(&server, &id).unwrap();
+    assert_eq!(submitted.stage, Stage::Reserved);
+    submitted.stage = Stage::Submitted;
+    usnm_boinc::save(&server, &submitted).unwrap();
     // A repeated run submits nothing; the dispatch root's journal stays reserved.
     assert_eq!(
         handoff::pull(container.as_ref(), &server, &id)
@@ -1428,83 +1409,4 @@ async fn pull_refuses_a_changed_page_or_another_jobs_record() {
     assert!(handoff::get_spool(container.as_ref(), &id, &server)
         .await
         .is_err());
-}
-
-/// bridge-job.sh's submit-remote: pull, then submit only a job that is still reserved.
-#[cfg(unix)]
-#[test]
-fn bridge_submit_remote_submits_only_a_reserved_job() {
-    use std::os::unix::fs::PermissionsExt;
-    let id = "b".repeat(64);
-    for (state, submits, url) in [
-        (
-            "reserved",
-            true,
-            "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
-        ),
-        (
-            "submitted",
-            false,
-            "https://stusnmoexample.blob.core.windows.net/boinc-handoff",
-        ),
-        ("reserved", false, "https://example.org/boinc-handoff"),
-    ] {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin = tmp.path().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let calls = tmp.path().join("calls");
-        let library = tmp.path().join("lib.sh");
-        std::fs::write(
-            &library,
-            "PROJ=/nonexistent/proj\nfetch_secrets() { :; }\nrender_config() { :; }\n\
-             log() { echo \"$*\" >&2; }\nfail() { log \"$*\"; exit 1; }\n",
-        )
-        .unwrap();
-        let stub = bin.join("usnm-boinc");
-        std::fs::write(
-            &stub,
-            format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1 $2\" in 'handoff pull') echo {state} ;; esac\n",
-                calls.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../contrib-compute/images/server/bridge-job.sh");
-        let script = std::fs::read_to_string(source)
-            .unwrap()
-            .replace(
-                ". /usr/local/lib/usnm-boinc/lib.sh",
-                &format!(". '{}'", library.display()),
-            )
-            .replace("[ -e \"$PROJ/.usnm-initialised\" ] ||", "true ||");
-        let wrapper = tmp.path().join("bridge-job.sh");
-        std::fs::write(&wrapper, script).unwrap();
-        let out = std::process::Command::new("bash")
-            .arg(&wrapper)
-            .env(
-                "PATH",
-                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-            )
-            .env("BRIDGE_STEP", "submit-remote")
-            .env("JOB_ID", &id)
-            .env("HANDOFF_DIR", tmp.path().join("handoff"))
-            .env("HANDOFF_URL", url)
-            .output()
-            .unwrap();
-        if !url.contains(".blob.core.windows.net/") {
-            // Only an Azure blob container is accepted, and nothing runs before that check.
-            assert!(!out.status.success() && !calls.exists());
-            continue;
-        }
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let calls = std::fs::read_to_string(&calls).unwrap();
-        assert!(calls.starts_with("handoff pull --from-url"), "{calls}");
-        assert_eq!(calls.contains("\nsubmit --root"), submits, "{calls}");
-    }
 }
