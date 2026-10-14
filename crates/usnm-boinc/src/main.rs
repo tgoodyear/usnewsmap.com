@@ -178,8 +178,8 @@ enum Handoff {
         #[arg(long)]
         trust: Option<PathBuf>,
     },
-    /// Hand-off job side: copy a job's spool and trust.json down; prints the host id, or
-    /// `unknown`.
+    /// Hand-off job side: copy a job's spool and trust.json (when there) down; prints the
+    /// host id, or `unknown`.
     GetSpool {
         #[arg(long)]
         from_url: String,
@@ -536,7 +536,9 @@ async fn handoff(h: Handoff) -> anyhow::Result<()> {
         } => {
             let store = usnm_store::open(&from_url)?;
             let host = x::get_spool(store.as_ref(), &job, &spool).await?;
-            x::get_trust(store.as_ref(), &trust_out).await?;
+            if !x::get_trust(store.as_ref(), &trust_out).await? {
+                eprintln!("no gold/trust.json in the hand-off container");
+            }
             println!("{}", host.map_or("unknown".into(), |h| h.to_string()));
         }
     }

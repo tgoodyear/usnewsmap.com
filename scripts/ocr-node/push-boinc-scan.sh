@@ -6,14 +6,17 @@
 # container and nothing else there. It reads /tank/ocr and asks LoC for nothing.
 #
 #   push-boinc-scan.sh --account <exchange account> --scan /tank/ocr/scans/keep/<batch>/.../<seq>.jp2 \
-#     [--scan ...] [--manifest /tank/ocr/manifests/<file>.parquet] [--scans-root /tank/ocr/scans] [--what-if]
+#     [--scan ...] [--manifest /tank/ocr/manifests/<version>/manifest.parquet]
+#     [--scans-root /tank/ocr/scans] [--manifests-root /tank/ocr/manifests] [--what-if]
 #
 # Each --scan goes up with its sidecar (<scan>.json) as scans/<path under --scans-root>, and
-# --manifest as manifests/<its file name>. A blob already there is left as it is (the
-# fetcher never rewrites a scan), so a second run is safe. --what-if prints the uploads.
+# --manifest as manifests/<path under --manifests-root> (the hand-off job's HANDOFF_MANIFEST),
+# so each manifest snapshot keeps its own name. A blob already there with the same size is
+# left as it is (the fetcher never rewrites a scan or a snapshot), so a second run is safe;
+# one with another size stops the run. --what-if prints the uploads.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
-ACCOUNT="" MANIFEST="" SCANS_ROOT=/tank/ocr/scans WHAT_IF=false
+ACCOUNT="" MANIFEST="" SCANS_ROOT=/tank/ocr/scans MANIFESTS_ROOT=/tank/ocr/manifests WHAT_IF=false
 SCANS=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -21,6 +24,7 @@ while [ $# -gt 0 ]; do
     --scan) [ $# -ge 2 ] || usage; SCANS+=("$2"); shift 2 ;;
     --manifest) [ $# -ge 2 ] || usage; MANIFEST=$2; shift 2 ;;
     --scans-root) [ $# -ge 2 ] || usage; SCANS_ROOT=${2%/}; shift 2 ;;
+    --manifests-root) [ $# -ge 2 ] || usage; MANIFESTS_ROOT=${2%/}; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
@@ -43,10 +47,11 @@ for s in ${SCANS[@]+"${SCANS[@]}"}; do
   uploads+=("$s" "scans/$rel" "$s.json" "scans/$rel.json")
 done
 if [ -n "$MANIFEST" ]; then
-  [ -f "$MANIFEST" ] || die "--manifest $MANIFEST is not a file"
-  name=$(basename "$MANIFEST")
-  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "--manifest: its file name has characters a blob name can't take"
-  uploads+=("$MANIFEST" "manifests/$name")
+  case $MANIFEST in "$MANIFESTS_ROOT"/*) ;; *) die "--manifest $MANIFEST is not under $MANIFESTS_ROOT" ;; esac
+  [ -f "$MANIFEST" ] && [ ! -L "$MANIFEST" ] || die "--manifest $MANIFEST is not a regular file"
+  rel=${MANIFEST#"$MANIFESTS_ROOT"/}
+  [[ $rel =~ $segments ]] && [[ $rel != *..* ]] || die "--manifest $MANIFEST: its path has characters a blob name can't take"
+  uploads+=("$MANIFEST" "manifests/$rel")
 fi
 command -v az > /dev/null || die "az is not installed"
 for ((i = 0; i < ${#uploads[@]}; i += 2)); do
@@ -55,9 +60,10 @@ for ((i = 0; i < ${#uploads[@]}; i += 2)); do
     echo "would upload $file to $CONTAINER/$blob"
     continue
   fi
-  there=$(az storage blob exists --auth-mode login --account-name "$ACCOUNT" --container-name "$CONTAINER" \
-    --name "$blob" --query exists -o tsv --only-show-errors) || die "can't read $CONTAINER/$blob"
-  if [ "$there" = true ]; then
+  size=$(az storage blob show --auth-mode login --account-name "$ACCOUNT" --container-name "$CONTAINER" \
+    --name "$blob" --query properties.contentLength -o tsv --only-show-errors 2> /dev/null) || size=""
+  if [ -n "$size" ]; then
+    [ "$size" = "$(wc -c < "$file" | tr -d ' ')" ] || die "$CONTAINER/$blob is already there with another size ($size bytes)"
     echo "already there: $CONTAINER/$blob" >&2
     continue
   fi

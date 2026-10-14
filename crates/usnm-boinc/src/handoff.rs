@@ -161,10 +161,14 @@ pub async fn pull(store: &dyn ObjectStore, root: &Path, id: &str) -> anyhow::Res
             return Ok(Pulled::Already(old.stage));
         }
     }
-    // The server starts its own journal entry at reserved, whatever the dispatch root's copy
-    // says by now: it has submitted nothing yet.
+    // Only a reservation that export completed can be submitted: a prepared entry's ledger
+    // reservation may have been refused.
+    ensure!(
+        incoming.stage == Stage::Reserved,
+        "the container's record is {:?}, not reserved",
+        incoming.stage
+    );
     let mut record = incoming;
-    record.stage = Stage::Reserved;
     record.error = None;
     crate::atomic(&target.join("page"), page)?;
     crate::atomic(&target.join("request.json"), &got[1].1)?;
@@ -260,13 +264,14 @@ pub async fn get_spool(
     }
 }
 
-/// Hand-off job side: copies `gold/trust.json` to `out`, after checking it is one.
-pub async fn get_trust(store: &dyn ObjectStore, out: &Path) -> anyhow::Result<()> {
-    let bytes = store
-        .get("gold/trust.json")
-        .await?
-        .context("no gold/trust.json in the hand-off container")?;
+/// Hand-off job side: copies `gold/trust.json` to `out`, after checking it is one. Returns
+/// false when the container has none (a terminal failure needs none).
+pub async fn get_trust(store: &dyn ObjectStore, out: &Path) -> anyhow::Result<bool> {
+    let Some(bytes) = store.get("gold/trust.json").await? else {
+        return Ok(false);
+    };
     ensure!(bytes.len() <= MAX_TRUST, "trust.json is too large");
     let _: crate::trust::Trust = serde_json::from_slice(&bytes)?;
-    crate::atomic(out, &bytes)
+    crate::atomic(out, &bytes)?;
+    Ok(true)
 }

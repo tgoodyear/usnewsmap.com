@@ -1347,9 +1347,11 @@ async fn remote_handoff_round_trip_through_the_container() {
         .await
         .unwrap();
     assert_eq!(host, Some(42));
-    handoff::get_trust(container.as_ref(), &collect.join("trust.json"))
-        .await
-        .unwrap();
+    assert!(
+        handoff::get_trust(container.as_ref(), &collect.join("trust.json"))
+            .await
+            .unwrap()
+    );
     usnm_boinc::trust::collect(
         &collect.join("dispatch"),
         &collect.join("spool"),
@@ -1394,6 +1396,23 @@ async fn pull_refuses_a_changed_page_or_another_jobs_record() {
         .await
         .is_err());
     assert!(!server.join("jobs").join(&id).exists());
+    // A prepared entry (its reservation may have been refused) is never submitted.
+    let fresh = fx.tmp.path().join("fresh-handoff");
+    let record_path = format!("{DISPATCH}/jobs/{id}/record.json");
+    let original = container.get(&record_path).await.unwrap().unwrap();
+    let mut prepared: usnm_boinc::Record = serde_json::from_slice(&original).unwrap();
+    prepared.stage = Stage::Prepared;
+    let mut good = container.get(&page).await.unwrap().unwrap();
+    good[0] ^= 1;
+    container.put(&page, good, "x").await.unwrap();
+    container
+        .put(&record_path, serde_json::to_vec(&prepared).unwrap(), "x")
+        .await
+        .unwrap();
+    assert!(handoff::pull(container.as_ref(), &fresh, &id)
+        .await
+        .is_err());
+    assert!(!fresh.join("jobs").join(&id).join("record.json").exists());
     assert!(handoff::pull(container.as_ref(), &server, &"0".repeat(64))
         .await
         .is_err());

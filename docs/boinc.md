@@ -406,11 +406,11 @@ On CT 211, signed in with `az login --identity --allow-no-subscriptions`:
 ```sh
 scripts/ocr-node/push-boinc-scan.sh --account stusnmoffapzy \
   --scan /tank/ocr/scans/keep/<batch>/<lccn>/<date>/<ed>/<seq>.jp2 \
-  --manifest /tank/ocr/manifests/<file>.parquet
+  --manifest /tank/ocr/manifests/<version>/manifest.parquet
 ```
 
 Then, from the operator's machine, the hand-off job's export (with `HANDOFF_STEP=export`,
-`HANDOFF_PAGES=<page key>`, `HANDOFF_BATCH`, `HANDOFF_PLAN`, `HANDOFF_MANIFEST=<file>` and
+`HANDOFF_PAGES=<page key>`, `HANDOFF_BATCH`, `HANDOFF_PLAN`, `HANDOFF_MANIFEST=<version>/manifest.parquet` and
 `ENGINE_IMAGE=sha256:<images.worker's digest>`). It prints the job id. Then the bridge:
 
 ```sh
@@ -429,7 +429,11 @@ scripts/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
 Then the hand-off job's collect (`HANDOFF_STEP=collect`, `JOB_ID`, and `HOST_ID` only when
 the server recorded none). It publishes to `ocr-out` for a trusted host and writes the
 dispatch root back with the job `published`. An untrusted host's result is held in the
-dispatch root's `quarantine/<job>/`. Stop there: `ocr-sync` is the next step, as usual.
+dispatch root's `quarantine/<job>/`. Stop there: `ocr-sync` is the next step, as usual. A terminal BOINC failure
+(an `_error` or `_no_output_files` spool) needs neither a host nor the trust list: collect
+marks the job failed. Each run writes back only the journal entries it touched; run one
+execution at a time all the same. If a write-back keeps failing, the job's log carries the
+record (`USNM-HANDOFF-RECORD` lines), since a lost reservation's record can't be made again.
 
 ### The hand-off runner (scan-fetch container)
 
