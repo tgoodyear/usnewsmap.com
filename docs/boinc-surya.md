@@ -1,6 +1,6 @@
 # Surya 2 on BOINC
 
-Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU and on NVIDIA GPUs, so it can read a larger sample and so CPU and GPU time can be measured. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](boinc-assessment.md).
+Issue: [#516](https://github.com/tgoodyear/usnewsmap.com/issues/516). Round 1 of the engine survey ([report](reports/2026-10-ocr-engine-survey/report.md), #370) ran Surya 2 on one CPU node, on 8 pages. This app, `usnm_surya`, runs it on volunteer hosts, on CPU and on NVIDIA GPUs, to read a larger sample and to measure CPU and GPU time per page. The other apps are described in [boinc.md](boinc.md) and [boinc-assessment.md](boinc-assessment.md).
 
 Status: a probe of a few pages, to find out whether volunteers' container runtimes can give the job a GPU, how long a page takes, and how far two hosts' texts agree. The larger sample comes after it.
 
@@ -44,7 +44,7 @@ The stock `docker_wrapper` adds `--gpus all` to `docker create` (or `podman crea
 
 Without these, the container either fails to start (the wrapper's stderr, which BOINC returns with the result, holds the runtime's error) or starts without a GPU. In the second case the unit returns `no_gpu` for each mode, quickly, with the diagnostics.
 
-The wrapper passes every GPU, not the one BOINC assigned (`gpu_device_num`); the diagnostics record both. llama.cpp's CUDA build needs a driver that supports CUDA 12.
+The wrapper passes every GPU, not only the one BOINC assigned (`gpu_device_num`); the diagnostics record both. llama.cpp's CUDA build needs a driver that supports CUDA 12.
 
 ## Diagnostics
 
@@ -56,24 +56,24 @@ The wrapper passes every GPU, not the one BOINC assigned (`gpu_device_num`); the
 - `nvidia-smi`'s GPU name, driver, memory, compute capability and full output, or its error;
 - Python's probe: torch's version and CUDA check, surya-ocr's version and its inference settings.
 
-Each mode then runs in its own process group with its deadline. The worker samples the group's memory and CPU time every 0.5 s and, on a GPU, the GPU's memory every 2 s. It records the outcome (`ok`, `timeout`, `failed`, `no_gpu`), exit code or signal, time, CPU seconds, peak memory, peak GPU memory above what was in use before, and the device llama-server actually used: `cuda` when its log says it offloaded layers to the GPU, else `cpu`. `diag.txt` also gets llama-server's device lines and last lines, and the end of Surya's stderr.
+Each mode then runs in its own process group with its deadline. The worker samples the group's memory and CPU time every 0.5 s and, on a GPU, the GPU's memory every 2 s. A mode in which Surya reports a block it could not read counts as `failed`, whatever text the rest gave. It records the outcome (`ok`, `timeout`, `failed`, `no_gpu`), exit code or signal, time, CPU seconds, peak memory, peak GPU memory above what was in use before, and the device llama-server actually used: `cuda` when its log says it offloaded layers to the GPU, else `cpu`. `diag.txt` also gets llama-server's device lines and last lines, and the end of Surya's stderr.
 
-A unit that can't run at all (an input checksum, an engine that differs from the job) returns `unit_error` with the reason and no runs.
+A unit that can't run at all (an input whose checksum doesn't match, an engine that differs from the job's) returns `unit_error` with the reason and no runs.
 
 ## Redundancy and validation
 
 `create_work` makes each unit with `min_quorum` 2 and `target_nresults` 2, and at most 4 results. `script_validator` runs:
 
 - `usnm_surya_check` (`usnm-boinc surya check`) on each result: shape, sizes, UTF-8 and checksums. It also copies the result to `<project>/surya/seen/<result>/`, so every host's timings and diagnostics are kept, not only the canonical result's.
-- `usnm_surya_compare` (`usnm-boinc surya compare`) on each pair: the same job and engine; in each mode both ran, both read the page or neither did; and where both read it, a word-bag Dice (the assessment's) of at least the threshold. A mode only one of them ran is not compared. Every pair is appended to `<project>/surya/pairs.jsonl` with its Dice per mode and both hosts' devices.
+- `usnm_surya_compare` (`usnm-boinc surya compare`) on each pair: the same job and engine; in each mode both ran, both read the page or neither did; and where both read it, a word-bag Dice (the measure in [boinc-assessment.md](boinc-assessment.md)) of at least the threshold. A mode only one of them ran is not compared, and two results with no mode in common don't agree; two results that both could not run the unit (`unit_error`) do. Every pair is appended to `<project>/surya/pairs.jsonl` with its Dice per mode and both hosts' devices.
 
 Vision-language output can differ between GPUs, and between CPU and GPU, so the threshold is measured, not assumed. Until the probe has measured it, `compare` accepts any Dice of 0.5 or more (`PROBE_MIN_DICE`), which only rejects unrelated text, and the logged pairs give the distribution to set it from.
 
-`rsc_fpops_est` is 1e14 (round 1's median 18,753 CPU-seconds per tiled page at a few GFLOPS per core) and `rsc_memory_bound` 8 GiB. Round 1 peaked at 11.8 GB with 8 threads on a whole node, but BOINC compares the bound with the share of memory the volunteer allows, so 12 GiB would keep most 16 GB GPU hosts out. Both are revisited with the probe's numbers.
+`rsc_fpops_est` is 1e14 (round 1's median 18,753 CPU-seconds per tiled page at a few GFLOPS per core) and `rsc_memory_bound` 8 GiB. Round 1 peaked at 11.8 GB with 8 threads on a whole node, but BOINC compares the bound with the share of memory the volunteer allows, so 12 GiB would keep most 16 GB GPU hosts out. Both get revised once the probe has measured peaks and times.
 
 ## Running a campaign
 
-The server must have the `usnm_surya` app (`register-apps`), the two plan classes and daemons (a server and bridge image with this change, `scripts/build-boinc-images.sh` then `scripts/provision-boinc.sh`), and both app versions:
+The server must have the `usnm_surya` app (`register-apps`), the two plan classes and daemons (server and bridge images built from a commit that includes `usnm_surya`, `scripts/build-boinc-images.sh` then `scripts/provision-boinc.sh`), and both app versions:
 
 ```sh
 gh workflow run boinc-surya.yml --ref main -f correlation="surya-$(date -u +%Y%m%dT%H%M%S)"

@@ -482,13 +482,18 @@ fn run_mode(
         .spawn()
         .context("starting python3")?;
     let pgid = i32::try_from(child.id()).context("pid")?;
+    let kill_group = || {
+        if let Some(p) = rustix::process::Pid::from_raw(pgid) {
+            let _ = rustix::process::kill_process_group(p, rustix::process::Signal::KILL);
+        }
+    };
     let started = Instant::now();
     let mut cpu = BTreeMap::new();
     let mut peak_rss = 0u64;
     let mut gpu_peak = None::<u64>;
     let mut last_gpu = Instant::now() - Duration::from_secs(10);
     let mut timed_out = false;
-    let status = loop {
+    let waited: std::io::Result<std::process::ExitStatus> = loop {
         peak_rss = peak_rss.max(group_stats(pgid, &mut cpu));
         if gpu && last_gpu.elapsed() >= Duration::from_secs(2) {
             last_gpu = Instant::now();
@@ -496,20 +501,29 @@ fn run_mode(
                 gpu_peak = Some(gpu_peak.map_or(u, |p| p.max(u)));
             }
         }
-        if let Some(s) = child.try_wait()? {
-            break s;
+        match child.try_wait() {
+            Ok(Some(s)) => break Ok(s),
+            Ok(None) => {}
+            Err(e) => break Err(e),
         }
         if started.elapsed() >= deadline {
             timed_out = true;
-            break child.wait_with_deadline_kill(pgid)?;
+            kill_group();
+            break child.wait();
         }
         std::thread::sleep(Duration::from_millis(500));
     };
-    // Whatever is left of the group (llama-server, when Python died first).
-    let _ = rustix::process::kill_process_group(
-        rustix::process::Pid::from_raw(pgid).context("pgid")?,
-        rustix::process::Signal::KILL,
-    );
+    // Whatever is left of the group (llama-server, when Python died first),
+    // also when waiting failed.
+    kill_group();
+    let status = match waited {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e).context("waiting for python3");
+        }
+    };
     let engine_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let code = status.code();
     let signal = std::os::unix::process::ExitStatusExt::signal(&status);
@@ -587,16 +601,22 @@ fn run_mode(
     Ok(ModeRun { run, text })
 }
 
-trait KillGroup {
-    fn wait_with_deadline_kill(&mut self, pgid: i32) -> anyhow::Result<std::process::ExitStatus>;
-}
-impl KillGroup for std::process::Child {
-    fn wait_with_deadline_kill(&mut self, pgid: i32) -> anyhow::Result<std::process::ExitStatus> {
-        let _ = rustix::process::kill_process_group(
-            rustix::process::Pid::from_raw(pgid).context("pgid")?,
-            rustix::process::Signal::KILL,
-        );
-        Ok(self.wait()?)
+/// A mode that read nothing: no GPU to run on, or a runner that couldn't start.
+fn not_run(mode: InputMode, outcome: Outcome) -> Run {
+    Run {
+        code: None,
+        cpu_secs: None,
+        device: "none".into(),
+        engine_ms: 0,
+        gpu_mem_peak_mib: None,
+        gpu_layers: None,
+        mode,
+        outcome,
+        peak_rss_kib: None,
+        signal: None,
+        text_bytes: 0,
+        text_sha256: sha256(b""),
+        tiles: None,
     }
 }
 
@@ -645,37 +665,40 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
                 ),
                 1024,
             );
-            let home = tempfile::tempdir()?;
+            // HOME for Surya and llama-server's log; /tmp when no fresh directory can be made.
+            let home_dir = tempfile::tempdir().ok();
+            let home = home_dir
+                .as_ref()
+                .map_or_else(|| std::path::PathBuf::from("/tmp"), |d| d.path().to_owned());
             for &mode in modes {
                 if gpu_version && !visible {
-                    runs.push(Run {
-                        code: None,
-                        cpu_secs: None,
-                        device: "none".into(),
-                        engine_ms: 0,
-                        gpu_mem_peak_mib: None,
-                        gpu_layers: None,
-                        mode,
-                        outcome: Outcome::NoGpu,
-                        peak_rss_kib: None,
-                        signal: None,
-                        text_bytes: 0,
-                        text_sha256: sha256(b""),
-                        tiles: None,
-                    });
+                    runs.push(not_run(mode, Outcome::NoGpu));
                     continue;
                 }
-                let r = run_mode(
+                match run_mode(
                     work,
                     mode,
                     Duration::from_secs(deadline.into()),
                     threads,
                     visible,
-                    home.path(),
+                    &home,
                     &mut diag,
-                )?;
-                texts.insert(mode, r.text);
-                runs.push(r.run);
+                ) {
+                    Ok(r) => {
+                        texts.insert(mode, r.text);
+                        runs.push(r.run);
+                    }
+                    // The runner could not be started or watched: a failed
+                    // run, with the reason in the diagnostics.
+                    Err(e) => {
+                        diag.section(
+                            &format!("mode {}: runner error", mode.name()),
+                            &format!("{e:#}"),
+                            1024,
+                        );
+                        runs.push(not_run(mode, Outcome::Failed));
+                    }
+                }
             }
             (job.id, job.engine, None)
         }

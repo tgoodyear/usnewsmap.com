@@ -90,6 +90,10 @@ def block_text(html: str) -> str:
     return BeautifulSoup(html, "html.parser").get_text("\n").strip()
 
 
+class BlockErrors(Exception):
+    """Surya reported blocks it could not read: the run failed, whatever text the rest gave."""
+
+
 def read(image: str, mode: str) -> tuple[list[str], int]:
     from PIL import Image
 
@@ -109,25 +113,36 @@ def read(image: str, mode: str) -> tuple[list[str], int]:
     try:
         rec = RecognitionPredictor(manager)
         lines: list[str] = []
+        errors: list[str] = []
         if mode == "tiled":
             boxes = list(tiles(*im.size))
             for x0, y0, x1, y1, core in boxes:
                 page = rec([im.crop((x0, y0, x1, y1))], full_page=True)[0]
                 for b in page.blocks:
-                    if b.skipped or b.error:
+                    if b.error:
+                        errors.append(f"tile {x0},{y0}: {b.error}")
+                        continue
+                    if b.skipped:
                         continue
                     bx0, by0, bx1, by1 = b.bbox
                     text = block_text(b.html)
                     if text and inside(core, x0 + (bx0 + bx1) / 2, y0 + (by0 + by1) / 2):
                         lines.append(text)
+            if errors:
+                raise BlockErrors(errors)
             return lines, len(boxes)
         page = rec([im], full_page=True)[0]
         for b in page.blocks:
-            if b.skipped or b.error:
+            if b.error:
+                errors.append(str(b.error))
+                continue
+            if b.skipped:
                 continue
             text = block_text(b.html)
             if text:
                 lines.append(text)
+        if errors:
+            raise BlockErrors(errors)
         return lines, 1
     finally:
         manager.stop()
@@ -146,7 +161,13 @@ def main() -> int:
     if not (a.image and a.mode and a.out and a.stats):
         ap.error("--image, --mode, --out and --stats are required")
     started = time.monotonic()
-    lines, n = read(a.image, a.mode)
+    try:
+        lines, n = read(a.image, a.mode)
+    except BlockErrors as e:
+        errs = e.args[0]
+        print(f"surya could not read {len(errs)} block(s); the first: {'; '.join(map(str, errs[:5]))}"[:2000],
+              file=sys.stderr)
+        return 3
     tmp = a.out + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

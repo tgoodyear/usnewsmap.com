@@ -81,6 +81,8 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         storage_gap: opts.gap,
         storage_own_budget: false,
         attempts: 1,
+        // Nothing more is sent after a 5xx: the run holds and stops.
+        item_probes: false,
         ..LocConfig::default()
     })?;
     let mut gap = Gap {

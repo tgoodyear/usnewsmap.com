@@ -294,8 +294,8 @@ impl ResultManifest {
             "error text too long"
         );
         ensure!(
-            self.unit_error.is_none() || self.runs.is_empty(),
-            "a unit error with runs"
+            self.unit_error.is_none() != self.runs.is_empty(),
+            "a result has runs or a unit error, not both or neither"
         );
         ensure!(self.runs.len() <= MODES.len(), "too many runs");
         let mut modes: Vec<InputMode> = self.runs.iter().map(|r| r.mode).collect();
@@ -390,8 +390,16 @@ pub fn agree(
             outcomes: (ra.outcome, rb.outcome),
         });
     }
-    if a.unit_error.is_some() != b.unit_error.is_some() && verdict.is_ok() {
-        verdict = Err("one result could not run the unit".into());
+    if verdict.is_ok() {
+        if a.unit_error.is_some() || b.unit_error.is_some() {
+            // Two hosts that both could not run the unit agree on that; a
+            // unit error never stands in for a read.
+            if a.unit_error.is_none() || b.unit_error.is_none() {
+                verdict = Err("one result could not run the unit".into());
+            }
+        } else if out.is_empty() {
+            verdict = Err("no mode in common".into());
+        }
     }
     (out, verdict)
 }
@@ -501,6 +509,11 @@ mod tests {
         assert_eq!(modes[0].dice, Some(0.75));
         let (_, v) = agree(&a, &at, &b, &bt, 0.8);
         assert!(v.is_err());
+        // Results with no mode in common, or a result with no runs, prove nothing.
+        let (d, dt) = result(&[(InputMode::Whole, Outcome::Ok, "one two three four")]);
+        assert!(agree(&a, &at, &d, &dt, 0.5).1.is_err());
+        let (e, et) = result(&[]);
+        assert!(e.check(&et, b"").is_err());
         let (c, ct) = result(&[(InputMode::Tiled, Outcome::Failed, "")]);
         c.check(&ct, b"").unwrap();
         assert!(agree(&a, &at, &c, &ct, 0.5).1.is_err());

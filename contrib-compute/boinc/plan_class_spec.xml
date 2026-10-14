@@ -24,8 +24,10 @@
     <!-- usnm_surya on an NVIDIA GPU. The scheduler checks the GPU the client detected (CUDA,
          driver, memory); it can't check that Docker or Podman can pass it into a container, which
          is what the probe finds out. The version's job.toml sets use_gpu, so docker_wrapper runs
-         the container with gpus all. 2.5 GB of GPU memory: the model and projector are 1.5 GB,
-         plus a 16k-token context. -->
+         the container with gpus all, and passes avg_ncpus as cpus. 2.5 GB of GPU memory: the
+         model and projector are 1.5 GB, plus a 16k-token context. Two CPUs for Python and
+         llama-server's host threads; BOINC's default GPU estimate otherwise, to tune from the
+         probe. -->
     <plan_class>
         <name>docker_nvidia_cuda</name>
         <docker/>
@@ -36,6 +38,6 @@
         <min_nvidia_compcap>500</min_nvidia_compcap>
         <min_gpu_ram_mb>3000</min_gpu_ram_mb>
         <gpu_ram_used_mb>2500</gpu_ram_used_mb>
-        <cpu_frac>1</cpu_frac>
+        <avg_ncpus>2</avg_ncpus>
     </plan_class>
 </plan_classes>
