@@ -76,13 +76,21 @@ pub(crate) fn atomic_download(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 /// Creates missing directories as 0755 whatever the umask, so the web-server
-/// identity can traverse new download fan-out directories. The direct parent,
-/// which stock `dir_hier_path` may already have made under the same umask,
-/// also gains any missing 0755 bits; its other bits (setgid, group write) stay.
+/// identity can traverse new download fan-out directories. Every directory that
+/// was missing (made here or by a concurrent caller), and the direct parent, which
+/// stock `dir_hier_path` may already have made under the same umask, gains any
+/// missing 0755 bits; other bits (setgid, group write) stay.
 pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let traversable = |d: &Path| -> anyhow::Result<()> {
+            let mode = std::fs::metadata(d)?.permissions().mode() & 0o7777;
+            if mode & 0o755 != 0o755 {
+                std::fs::set_permissions(d, std::fs::Permissions::from_mode(mode | 0o755))?;
+            }
+            Ok(())
+        };
         let mut missing = Vec::new();
         let mut cur = Some(dir);
         while let Some(d) = cur.filter(|d| !d.as_os_str().is_empty() && !d.is_dir()) {
@@ -91,15 +99,14 @@ pub(crate) fn public_dirs(dir: &Path) -> anyhow::Result<()> {
         }
         for d in missing.into_iter().rev() {
             match std::fs::create_dir(d) {
-                Ok(()) => std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755))?,
+                Ok(()) => {}
+                // Another submitter made it, perhaps under its own umask.
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {}
                 Err(e) => return Err(e).with_context(|| format!("creating {}", d.display())),
             }
+            traversable(d)?;
         }
-        let mode = std::fs::metadata(dir)?.permissions().mode() & 0o7777;
-        if mode & 0o755 != 0o755 {
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode | 0o755))?;
-        }
+        traversable(dir)?;
     }
     // Other platforms have no mode bits; plain creation is all there is to do.
     #[cfg(not(unix))]
