@@ -1,0 +1,44 @@
+name: BOINC worker image
+# Publishes the worker image volunteers' Docker pulls, as the public GHCR package
+# ghcr.io/tgoodyear/usnm-boinc-worker (ADR-0019, addendum; contrib-compute/docs/app-release.md).
+# Built the way #441 describes: the Tesseract engine image, then ocr/boinc/Containerfile on it by
+# image id. Run by hand from main (Actions, "Run workflow"); the run's summary gives the digest
+# to put in images.worker of contrib-compute/infra/boinc/env/<env>.json. A new digest means a
+# new app version (scripts/boinc-app-release.sh).
+#
+# The package is private when first pushed; make it public once in its settings.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: build and push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the Tesseract engine image
+        run: |
+          podman build --pull=missing -f ocr/engines/tesseract/Containerfile -t usnm-ocr/tesseract:boinc ocr/engines/tesseract
+          echo "ENGINE=sha256:$(podman image inspect --format '{{.Id}}' usnm-ocr/tesseract:boinc)" >> "$GITHUB_ENV"
+      - name: Build the worker image
+        run: podman build -f ocr/boinc/Containerfile --build-arg "TESSERACT_IMAGE=$ENGINE" -t usnm-boinc-worker .
+      - name: Push to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
+          podman push --digestfile digest usnm-boinc-worker "ghcr.io/tgoodyear/usnm-boinc-worker:$GITHUB_SHA"
+          ref="ghcr.io/tgoodyear/usnm-boinc-worker@$(cat digest)"
+          echo "worker image $ref (engine $ENGINE)"
+          printf 'images.worker: `%s`\n\nengine image id: `%s`\n' "$ref" "$ENGINE" >> "$GITHUB_STEP_SUMMARY"
