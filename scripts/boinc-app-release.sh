@@ -20,7 +20,8 @@
 # 4. Publish. ACR Tasks bakes the version directory (staged again from the same inputs, every
 #    signature checked against the public key) into usnm-boinc-appver:<app>-<version>;
 #    provision-boinc.sh --publish-image deploys the publish job with it, and the job copies the
-#    version onto the share and runs bin/update_versions.
+#    version onto the share and runs bin/update_versions. The digest is then written to
+#    images.appver in the settings, to commit: the stack keeps the job on it from then on.
 #
 # The signing host is reached only over SSH (as root, for zfs and podman), and is named only by
 # --signing-host. The server image gets to it with a short-lived ACR pull token. Nothing is
@@ -63,6 +64,7 @@ boinc_az_check
 [ -n "$SERVER_IMAGE" ] || die "no server image in $BOINC_SETTINGS: scripts/build-boinc-images.sh --env $ENV_NAME first"
 PUBLIC_KEY=$(jq -r .codeSignPublicKey "$BOINC_SETTINGS")
 [ -n "$PUBLIC_KEY" ] || die "no codeSignPublicKey in $BOINC_SETTINGS"
+[ -z "$(git status --porcelain -- "$BOINC_SETTINGS")" ] || die "$BOINC_SETTINGS has uncommitted changes: commit them first (this run deploys the stack and writes images.appver)"
 [ -n "$(git status --porcelain --untracked-files=no)" ] &&
   echo "warning: the working tree has uncommitted changes; the release uses the committed HEAD" >&2
 sha=$(git rev-parse HEAD)
@@ -236,4 +238,9 @@ if curl -fsS "${PROJECT_URL}usnmocr/apps.php" | grep -q "$VERSION"; then
 else
   echo "warning: ${PROJECT_URL}usnmocr/apps.php does not list $VERSION yet" >&2
 fi
+# Recorded like build-boinc-images.sh records the server and bridge: the stack keeps the publish
+# job on the last published version once this is committed.
+tmp=$(mktemp)
+jq --indent 2 --arg a "$appver_image" '.images.appver = $a' "$BOINC_SETTINGS" > "$tmp" && mv "$tmp" "$BOINC_SETTINGS"
+echo "wrote images.appver to $BOINC_SETTINGS: commit it through a pull request, so the next provision-boinc.sh keeps the publish job on this version"
 echo "next: the end-to-end client test (contrib-compute/docs/app-release.md, \"Test client\")"

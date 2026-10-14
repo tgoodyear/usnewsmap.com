@@ -58,8 +58,11 @@ flowchart LR
    `usnm-boinc-publish-caj-<env>` with that image (it has the share, the database and the vault,
    as the init job does), and the script starts it. The job copies the version to the share,
    installs the app's templates and runs `bin/update_versions --noconfirm`. A version already on
-   the share must be identical: versions are immutable, so a change is a new version. The next
-   `provision-boinc.sh` without `--publish-image` removes the job.
+   the share must be identical: versions are immutable, so a change is a new version. The
+   script then writes the image's digest to `images.appver` in the settings; commit it. Every
+   `provision-boinc.sh` deploys the publish job on `images.appver`, so the job stays and always
+   holds the last published version (rerunning it is safe: it changes nothing when the version
+   is already there). `--publish-image` overrides it for one deployment.
 
 ## Test client (not built yet)
 

@@ -32,7 +32,7 @@ param image string = ''
 @description('Bridge job image (images/bridge), by digest, in the same registry. Required with image: the server image has no usnm-boinc binary.')
 param bridgeImage string = ''
 
-@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. Set only by scripts/boinc-app-release.sh through provision-boinc.sh --publish-image; empty: no publish job.')
+@description('A signed app version baked on the server image (images/appver), by digest, in the same registry. images.appver in env/<env>.json, written by scripts/boinc-app-release.sh; empty: no publish job.')
 param publishImage string = ''
 
 @description('Run the server from the bridge image (the server image plus usnm-boinc), so the usnm_assess validator (#456) can run. Off by default.')
@@ -259,8 +259,8 @@ module initJob 'modules/bridge-job.bicep' = if (withApp) {
 
 // App version publish (docs/app-release.md): copies the version directory baked into publishImage
 // onto the share and runs bin/update_versions. Its own job, like init, because a per-run image
-// override would drop the share and the settings. Only deployed while a release is under way:
-// the next deployment without --publish-image removes it.
+// override would drop the share and the settings. Deployed whenever images.appver is set, so it stays
+// across deployments and always holds the last published version.
 module publishJob 'modules/bridge-job.bicep' = if (withApp && !empty(publishImage)) {
   name: 'publish-job'
   dependsOn: [ registry ]

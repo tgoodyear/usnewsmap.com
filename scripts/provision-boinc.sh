@@ -34,14 +34,14 @@
 set -euo pipefail
 usage() { echo "usage: scripts/provision-boinc.sh --env <prod|dev> [--publish-image REF] [--allow-dirty] [--what-if]" >&2; exit 2; }
 ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false PUBLISH_IMAGE=""
+PUBLISH_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --allow-dirty) ALLOW_DIRTY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
-    # A signed app version image (images/appver), from scripts/boinc-app-release.sh: deploys the
-    # publish job with it. Without it, a deployment removes the publish job.
-    --publish-image) [ $# -ge 2 ] || usage; PUBLISH_IMAGE=$2; shift 2 ;;
+    # Override images.appver (the publish job's image) for this deployment only.
+    --publish-image) [ $# -ge 2 ] || usage; PUBLISH_OVERRIDE=$2; shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -54,6 +54,8 @@ cd "$(dirname "$0")/.."
 boinc_clean_check
 boinc_load_settings
 boinc_az_check
+# The publish job (main.bicep) runs the last published app version, images.appver.
+PUBLISH_IMAGE=${PUBLISH_OVERRIDE:-$APPVER_IMAGE}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -101,9 +103,9 @@ write_params "$STAGE"
 # The images must be in the shared registry: the app and the jobs pull with their identities,
 # which this stack gives AcrPull there only.
 registry="$REGISTRY_NAME.azurecr.io"
-[ -z "$PUBLISH_IMAGE" ] || [ -n "$SERVER_IMAGE" ] || die "--publish-image needs the app: set the server and bridge images first"
+[ -z "$PUBLISH_IMAGE" ] || [ -n "$SERVER_IMAGE" ] || die "the publish image needs the app: set the server and bridge images first"
 [ -z "$PUBLISH_IMAGE" ] || [[ $PUBLISH_IMAGE =~ ^[a-z0-9.-]+\.azurecr\.io/usnm-boinc-appver@sha256:[0-9a-f]{64}$ ]] ||
-  die "--publish-image must be <registry>.azurecr.io/usnm-boinc-appver@sha256:<64 hex>"
+  die "the publish image must be <registry>.azurecr.io/usnm-boinc-appver@sha256:<64 hex>"
 if [ -n "$SERVER_IMAGE" ]; then
   for img in "$SERVER_IMAGE" "$BRIDGE_IMAGE" ${PUBLISH_IMAGE:+"$PUBLISH_IMAGE"}; do
     [ "${img%%/*}" = "$registry" ] || die "$img is not in the shared registry $registry"
