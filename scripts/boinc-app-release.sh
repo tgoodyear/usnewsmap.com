@@ -99,10 +99,16 @@ digest() {
 # build_worker_in_acr: the engine (ocr/engines/tesseract) and the worker (ocr/boinc/Containerfile)
 # in ACR Tasks, each keyed on the git hashes of its inputs and built only when the key is new.
 build_worker_in_acr() {
-  local engine_key worker_key engine_ref
+  local engine_key worker_key engine_ref inputs
+  # The builds upload the working tree but are keyed on HEAD: a tree that differs from HEAD
+  # (tracked or untracked) would be cached under a key that doesn't name what was built.
+  [ -z "$(git status --porcelain --untracked-files=normal)" ] ||
+    die "the working tree differs from HEAD (git status); the worker build check is keyed on HEAD, so commit or clean first"
   engine_key=$(git rev-parse HEAD:ocr/engines/tesseract | cut -c1-16)
-  worker_key=$({ git rev-parse HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:.dockerignore HEAD:ocr/boinc/Containerfile; echo "$engine_key"; } |
-    git hash-object --stdin | cut -c1-16)
+  inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:.dockerignore HEAD:ocr/boinc/Containerfile)
+  # The toolchain picks the compiler of the worker's cargo build, as in build-boinc-images.sh.
+  if git rev-parse -q --verify HEAD:rust-toolchain.toml > /dev/null; then inputs+=(HEAD:rust-toolchain.toml); fi
+  worker_key=$({ git rev-parse "${inputs[@]}"; echo "$engine_key"; } | git hash-object --stdin | cut -c1-16)
   if have usnm-boinc-tesseract "$engine_key"; then
     echo "usnm-boinc-tesseract:$engine_key is in $registry"
   else
@@ -126,7 +132,7 @@ if [ -z "$WORKER_IMAGE" ] && $WHAT_IF; then
   echo "1. no images.worker in $BOINC_SETTINGS: a real run builds the worker in ACR as a check and stops there (publish it with .github/workflows/boinc-worker.yml)"
 elif [ -z "$WORKER_IMAGE" ]; then
   build_worker_in_acr
-  die "no images.worker in $BOINC_SETTINGS. Publish the worker to GHCR (Actions, \"BOINC worker image\", run on main), make the package public once, put its ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... in images.worker, commit, and run this again"
+  die "no images.worker in $BOINC_SETTINGS. Publish the worker to GHCR (gh workflow run boinc-worker.yml --ref main; docs/boinc.md, \"Publish the worker image\"), make the package public once, put its ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... in images.worker, commit, and run this again"
 else
   ghcr_public "$WORKER_IMAGE" ||
     die "$WORKER_IMAGE can't be pulled anonymously: make the GHCR package public (package settings) or check the digest"
@@ -213,7 +219,7 @@ mv "$work/sigs" "$ctx/sigs"
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
-  --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --file "$ctx/Containerfile" "$ctx" ||
+  --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --file Containerfile "$ctx" ||
   die "the app version image build failed (a signature that doesn't verify fails it)"
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"

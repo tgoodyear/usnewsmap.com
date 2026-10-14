@@ -12,19 +12,43 @@ set -euo pipefail
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
 src=/usr/local/lib/usnm-boinc/appver
 dst="$PROJ/apps/$APPVER_APP/$APPVER_VERSION"
+# One publish at a time: executions of a manual job can overlap, and they share apps/,
+# templates/ and update_versions. mkdir is atomic on the share; a lock older than the job's
+# timeout is from a run that was killed, and is taken over.
+lock="$PROJ/.usnm-publish.lock"
+if ! mkdir "$lock" 2> /dev/null; then
+  if [ -n "$(find "$lock" -maxdepth 0 -mmin +120 2> /dev/null)" ]; then
+    log "taking over $lock, left by a run more than 2 hours ago"
+    rm -rf "$lock" && mkdir "$lock" || fail "can't take over $lock"
+  else
+    fail "another publish holds $lock; wait for it to end"
+  fi
+fi
+trap 'rm -rf "$lock"' EXIT
+mkdir -p "$PROJ/apps/$APPVER_APP" "$PROJ/templates"
 if [ -e "$dst" ]; then
   diff -r "$src/apps/$APPVER_APP/$APPVER_VERSION" "$dst" > /dev/null ||
     fail "$dst is already on the share and differs from this image: versions are immutable, release a new version"
+  # A published version keeps its templates: a differing one is refused, a missing one restored.
+  for t in "$src"/templates/*; do
+    n=$(basename "$t")
+    if [ -e "$PROJ/templates/$n" ]; then
+      cmp -s "$t" "$PROJ/templates/$n" ||
+        fail "templates/$n on the share differs from this image's; a changed template is a new version"
+    else
+      cp "$t" "$PROJ/templates/$n"
+      log "restored the missing templates/$n"
+    fi
+  done
   log "$dst is already on the share and identical"
 else
-  mkdir -p "$PROJ/apps/$APPVER_APP"
-  rm -rf "$dst.partial"
-  cp -r "$src/apps/$APPVER_APP/$APPVER_VERSION" "$dst.partial"
-  mv "$dst.partial" "$dst"
+  stage=$(mktemp -d "$PROJ/apps/$APPVER_APP/.$APPVER_VERSION.XXXXXX")
+  cp -r "$src/apps/$APPVER_APP/$APPVER_VERSION/." "$stage/"
+  chmod 0755 "$stage"
+  mv "$stage" "$dst" || { rm -rf "$stage"; fail "can't move the version into $dst"; }
   log "copied $APPVER_APP $APPVER_VERSION to $dst"
+  cp "$src"/templates/* "$PROJ/templates/"
 fi
-mkdir -p "$PROJ/templates"
-cp "$src"/templates/* "$PROJ/templates/"
 fetch_secrets
 render_config
 (cd "$PROJ" && bin/update_versions --noconfirm)
