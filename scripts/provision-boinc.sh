@@ -57,15 +57,37 @@ trap 'rm -rf "$work"' EXIT
 names_file="$(dirname "$0")/../infra/names/$ENV_NAME.json"
 REGISTRY_NAME=$(jq -er .registry "$names_file") || die "no registry in $names_file"
 REGISTRY_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
-jq -n --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" \
+# The custom domain (MASTER_HOST in the app's zone, infra/env/<env>.json USNM_DNS_ZONE) goes on
+# in stages, because each needs the last: 0, the DNS records (CNAME and asuid TXT, written by
+# this stack into the zone's group); 1, the name on the app unbound and its managed
+# certificate; 2, the name bound with the certificate. domain_stage reads where it is.
+DNS_ZONE=$(jq -r '.USNM_DNS_ZONE // empty' "$(dirname "$0")/../infra/env/$ENV_NAME.json")
+[ -z "$DNS_ZONE" ] || [[ $MASTER_HOST == *".$DNS_ZONE" ]] || die "$MASTER_HOST is not in the zone $DNS_ZONE"
+CERT_NAME="cert-${MASTER_HOST//./-}"
+domain_stage() {
+  local record=${MASTER_HOST%".$DNS_ZONE"} state
+  [ -n "$DNS_ZONE" ] && [ -n "$SERVER_IMAGE" ] || { echo 0; return; }
+  state=$(baz containerapp env certificate list --name "usnm-boinc-cae-$ENV_NAME" --resource-group "$BOINC_RG" \
+    --managed-certificates-only --query "[?name=='$CERT_NAME'].properties.provisioningState | [0]" -o tsv 2> /dev/null || true)
+  if [ "$state" = Succeeded ]; then echo 2
+  elif baz network dns record-set cname show --zone-name "$DNS_ZONE" --resource-group "$REGISTRY_RG" --name "$record" -o none 2> /dev/null; then echo 1
+  else echo 0; fi
+}
+# write_params STAGE: the deployment parameters, with the custom domain stage.
+write_params() {
+jq -n --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" \
   --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   contentVersion: "1.0.0.0",
   parameters: {
     env: {value: $env}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
-    codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)}
+    codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
+    dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
   }}' > "$work/params.json"
+}
+STAGE=$(domain_stage)
+write_params "$STAGE"
 
 # The images must be in the shared registry: the app and the jobs pull with their identities,
 # which this stack gives AcrPull there only.
@@ -95,9 +117,19 @@ if $WHAT_IF; then
   exit 0
 fi
 
-echo "deploying stack $BOINC_STACK"
+echo "deploying stack $BOINC_STACK (custom domain stage $STAGE)"
 baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed"
 echo "deployed stack $BOINC_STACK"
+# Step the custom domain on: each pass enables the next stage, at most twice more.
+for _ in 1 2; do
+  next=$(domain_stage)
+  [ "$next" -gt "$STAGE" ] || break
+  STAGE=$next
+  write_params "$STAGE"
+  echo "deploying stack $BOINC_STACK again for custom domain stage $STAGE"
+  baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed at custom domain stage $STAGE"
+done
+[ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || echo "custom domain $MASTER_HOST: stage $STAGE of 2"
 
 if [ -z "$SERVER_IMAGE" ]; then
   echo "base resources deployed. Next: scripts/build-boinc-images.sh --env $ENV_NAME, commit $BOINC_SETTINGS, then run this again."
@@ -135,11 +167,9 @@ cat << STEPS
        az containerapp job start --subscription $SUBSCRIPTION --resource-group $BOINC_RG --name usnm-boinc-init-caj-$ENV_NAME
    Until it has run, the app answers its probe with a placeholder.
 
-2. Custom domain $MASTER_HOST (this script touches no DNS). In the usnewsmap.com zone:
-       CNAME  $label        ->  $fqdn
-       TXT    asuid.$label  ->  az containerapp show -g $BOINC_RG -n <app> --query properties.customDomainVerificationId
-   then bind $MASTER_HOST to the app with a Container Apps managed certificate. The master URL
-   cannot change after volunteers attach.
+2. Custom domain $MASTER_HOST: this script writes its DNS records into the app's zone and binds
+   it with a managed certificate (stage $STAGE of 2 above; run it again if short of 2). The master
+   URL cannot change after volunteers attach.
 
 3. App version and code signing; the private key stays offline. On a trusted machine, from a
    checkout of this repository, against a scratch project directory:

@@ -25,6 +25,9 @@ param mysqlHost string
 param databaseName string
 param masterHost string
 @description('vCPU for the single container. Memory must be 2 GiB per vCPU in the consumption profile.')
+@description('Custom domain stage for masterHost: 0 none; 1 the name on the app unbound plus its managed certificate (needs the DNS records); 2 bound with that certificate. provision-boinc.sh steps through them.')
+@allowed([0, 1, 2])
+param customDomainStage int = 0
 param cpu string = '1.0'
 param memory string = '2Gi'
 
@@ -74,6 +77,11 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 80
         transport: 'auto'
         allowInsecure: false
+        customDomains: customDomainStage == 0 ? [] : [
+          customDomainStage == 1
+            ? { name: masterHost, bindingType: 'Disabled' }
+            : { name: masterHost, bindingType: 'SniEnabled', certificateId: certificateId }
+        ]
       }
     }
     template: {
@@ -109,6 +117,20 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   }
 }
 
+// The managed certificate for masterHost, issued once the name is on the app and DNS points at
+// it. Referenced by id (not symbolically) from the binding, so stage 2 has no cycle.
+var certificateName = 'cert-${replace(masterHost, '.', '-')}'
+var certificateId = resourceId('Microsoft.App/managedEnvironments/managedCertificates', env.name, certificateName)
+
+resource certificate 'Microsoft.App/managedEnvironments/managedCertificates@2024-03-01' = if (customDomainStage >= 1) {
+  parent: env
+  name: certificateName
+  location: location
+  dependsOn: [ app ]
+  properties: { subjectName: masterHost, domainControlValidation: 'CNAME' }
+}
+
+output verificationId string = env.properties.customDomainConfiguration.customDomainVerificationId
 output fqdn string = app.properties.configuration.ingress.fqdn
 output environmentId string = env.id
 output projectStorageName string = projectStorage.name

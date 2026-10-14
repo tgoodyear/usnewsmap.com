@@ -40,6 +40,14 @@ param mysqlAdminPassword string = 'Aa1-${newGuid()}'
 @minLength(4)
 param masterHost string
 
+@description('The app\'s public DNS zone (infra/env/<env>.json USNM_DNS_ZONE) and its group; empty skips the custom domain.')
+param dnsZoneName string = ''
+param dnsZoneResourceGroup string = ''
+
+@description('Custom domain stage (modules/app.bicep); provision-boinc.sh steps it from 0 to 2.')
+@allowed([0, 1, 2])
+param customDomainStage int = 0
+
 @description('Entra object ids (people or groups) given Key Vault Secrets Officer.')
 param operatorPrincipalIds array
 
@@ -177,6 +185,18 @@ module app 'modules/app.bicep' = if (withApp) {
     mysqlHost: mysql.outputs.host
     databaseName: mysql.outputs.databaseName
     masterHost: masterHost
+    customDomainStage: empty(dnsZoneName) ? 0 : customDomainStage
+  }
+}
+
+module customDomainDns 'modules/custom-domain-dns.bicep' = if (withApp && !empty(dnsZoneName)) {
+  name: 'boinc-custom-domain-dns'
+  scope: resourceGroup(dnsZoneResourceGroup)
+  params: {
+    zoneName: dnsZoneName
+    recordName: substring(masterHost, 0, length(masterHost) - length(dnsZoneName) - 1)
+    appFqdn: app!.outputs.fqdn
+    verificationId: app!.outputs.verificationId
   }
 }
 
