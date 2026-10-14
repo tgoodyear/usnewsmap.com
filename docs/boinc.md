@@ -325,6 +325,111 @@ journals on persistent local storage at each stage; Azure Files/SMB lock and
 atomic-rename durability have not been verified. Exercise the hand-off on a
 small cohort before using the Azure-hosted submission job from #439.
 
+## One page from the OCR node
+
+This is the route for one page (#469) when the OCR node and the BOINC server share no
+filesystem. The server never reads `/tank/ocr` or the node's scan cache. `az containerapp
+exec` is not used either: its payloads break at about 2 KB. The project share has public
+access disabled, so nothing is copied onto it from outside.
+
+- **Out:** the node's job (`request.json` and `record.json`) travels as two bridge-job
+  settings. The server fetches the page image again from the LoC URL in the request and
+  checks it against the request's size and sha256. Page bytes are never in the settings.
+- **Back:** a bridge step prints the job's spool files to its console as framed, gzipped,
+  chunked base64 lines. The node reads that execution's console log from the stack's Log
+  Analytics workspace and rebuilds the spool directory. `/project/gold/trust.json` comes
+  back the same way.
+
+The node's journal stays the only one that publishes. The server's hand-off root gets its
+own copy of the job, which `submit` moves to `submitted` there. The node's copy stays
+`reserved`, which `collect` accepts.
+
+### Sizes
+
+`usnm-boinc handoff vars` prints compact JSON in base64. Measured on the test fixture
+(`remote_handoff_round_trip_through_settings_and_console_lines` in
+`crates/usnm-boinc/tests/pilot.rs`), `HANDOFF_REQUEST` is 980 characters and
+`HANDOFF_RECORD` 1,104. A real LoC URL pair adds about 150 characters to each. `vars`
+refuses a value over 8 KiB (`handoff::MAX_VAR`), and `receive` refuses one too. So both
+settings together stay under 3 KiB of the job template, and no splitting or compression is
+needed. The per-run settings stay on the job until the next run or the next
+`scripts/provision-boinc.sh`. They hold the request (LoC URLs, checksums, the engine pin)
+and the plan id, nothing secret.
+
+Console lines carry 3,000 base64 characters each, well under the 16 KiB at which container
+runtimes split a line. One payload may print at most 32 MiB of base64
+(`handoff::MAX_ENCODED`). That fits a spool with the largest allowed ALTO, gzipped, and
+stays under the 64 MB a Log Analytics query can return. Each payload names the sha256 of
+its encoded bytes, and each chunk carries its index. `absorb` accepts lines in any order,
+with log prefixes and repeats. It refuses a payload with a missing or conflicting chunk or
+a checksum mismatch, and spool file names other than the job's own.
+
+The console log holds the page's OCR text and ALTO for the workspace's retention, and
+anyone who can query the workspace can read them. The pages are public LoC scans, and no
+secret goes into these lines.
+
+### What the node's identity needs
+
+These are the permissions the node's Entra identity needs once it has one. This change
+grants none of them.
+
+- **Starting bridge steps** (`scripts/start-boinc-bridge.sh`): read the stack's outputs in
+  `usnm-boinc-rg-<env>` (Reader on the group), plus write, start, stop and read executions
+  on the bridge job `usnm-boinc-bridge-caj-<env>`. Contributor on that one job resource
+  covers it. The script updates the job's template, and Azure may also want
+  `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action` on the bridge job's
+  managed identity (Managed Identity Operator) for that update. This is UNVERIFIED.
+- **Reading the console lines** (`scripts/fetch-boinc-handoff.sh`): Log Analytics Reader on
+  the workspace `usnm-boinc-log-<env>`.
+- Nothing on the project share, Key Vault, MySQL, the registry or the server app.
+
+Being able to rewrite the bridge job's settings means being able to run any bridge step,
+and every step runs with the bridge job's own managed identity. Give the node's identity
+only to a node that is already trusted to submit work.
+
+### Runbook
+
+On the node, with a scratch dispatch root (`$R` below) and the usual export flags:
+
+```sh
+usnm-boinc export --root "$R" ... # prints JOB_ID
+usnm-boinc handoff vars --root "$R" --job JOB_ID > /scratch/JOB_ID.vars
+args=()
+while IFS= read -r v; do args+=(--var "$v"); done < /scratch/JOB_ID.vars
+scripts/start-boinc-bridge.sh --env prod --step submit-remote "${args[@]}" --wait-mins 30
+```
+
+`submit-remote` checks that the record is a reserved entry for this very request and that
+the request's identity is `JOB_ID`. Then it fetches the page from LoC (one request, no
+retries) and refuses a page whose size or sha256 differs from the export's. It writes
+`jobs/JOB_ID/` into `$HANDOFF_DIR` and runs `submit`. If the server already has the job
+past `reserved`, the step logs that and submits nothing, so it is safe to repeat. An
+uncertain submission is reconciled on the server as usual (`--step reconcile --var
+JOB_ID=... --var BRIDGE_FOUND=present|absent`).
+
+When the workunit's result is assimilated (the ops pages show the workunit as done):
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step spool-out --var JOB_ID=JOB_ID \
+  --var HANDOFF_SPOOL=/project/usnmocr/results/0 --wait-mins 15   # prints the execution
+scripts/fetch-boinc-handoff.sh --env prod --execution EXECUTION --out /scratch/JOB_ID.log
+host=$(usnm-boinc handoff absorb --log /scratch/JOB_ID.log --job JOB_ID \
+  --spool /scratch/JOB_ID.spool --trust-out /scratch/trust.json)
+usnm-boinc collect --root "$R" --spool /scratch/JOB_ID.spool --job JOB_ID \
+  --curated-url CURATED_STORE --out-url OCR_OUT_STORE \
+  --trust /scratch/trust.json --host-id "$host"
+```
+
+`spool-out` prints the job's spool files, including terminal error markers, and the
+canonical result's host id. It reads the host id from the BOINC database
+(`result.hostid` of the workunit's canonical result; UNVERIFIED against a live database).
+It also prints `trust.json` when the gold check has written one. `--step trust-out` prints
+only `trust.json`. `HANDOFF_SPOOL` must be under `/project/usnmocr/results`. Console lines
+reach the workspace a few minutes after the execution ends. If `absorb` reports missing
+chunks, run `fetch-boinc-handoff.sh` again. When `absorb` prints `unknown` as the host,
+read the host id from the ops pages before running `collect`. Keep the server's hand-off
+copy and spool until `collect` has published.
+
 ## Allocation and recovery
 
 Export filters the manifest while decoding, retaining only selected batch/page

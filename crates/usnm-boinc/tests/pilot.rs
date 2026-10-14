@@ -1200,3 +1200,228 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
         Stage::Published
     );
 }
+
+/// The #469 route on synthetic data: node export, settings, server install and submit, spool
+/// and trust back through console lines, then the trusted collect on the node.
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_handoff_round_trip_through_settings_and_console_lines() {
+    use std::os::unix::fs::PermissionsExt;
+    use usnm_boinc::handoff::{self, Installed, Kind, MAX_VAR, RECORD_VAR, REQUEST_VAR};
+    use usnm_boinc::trust::Trust;
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    let node = &fx.options.root;
+    let vars: std::collections::BTreeMap<_, _> =
+        handoff::vars(node, &id).unwrap().into_iter().collect();
+    assert_eq!(vars["JOB_ID"], id);
+    for name in [REQUEST_VAR, RECORD_VAR] {
+        // Measured: 980 (request) and 1,104 (record) characters for this fixture; a real
+        // LoC URL pair is about 150 characters longer, in each.
+        assert!(
+            vars[name].len() <= MAX_VAR / 4,
+            "{name}: {}",
+            vars[name].len()
+        );
+    }
+    let incoming = handoff::decode(&id, &vars[REQUEST_VAR], &vars[RECORD_VAR]).unwrap();
+    // A changed record or a request for another job is refused.
+    assert!(handoff::decode(&id, &vars[RECORD_VAR], &vars[REQUEST_VAR]).is_err());
+    assert!(handoff::decode(&"0".repeat(64), &vars[REQUEST_VAR], &vars[RECORD_VAR]).is_err());
+    // What LoC answers for the request's URL (the node's cached bytes, here).
+    let scan = std::fs::read(node.join("jobs").join(&id).join("page")).unwrap();
+    let server = fx.tmp.path().join("server-handoff");
+    let mut other = scan.clone();
+    other[0] ^= 1;
+    assert!(handoff::install(&server, &incoming, &other).is_err());
+    assert_eq!(
+        handoff::install(&server, &incoming, &scan).unwrap(),
+        Installed::Reserved
+    );
+
+    // The existing submit, against stand-ins for the stock tools.
+    let project = fx.tmp.path().join("project");
+    std::fs::create_dir_all(project.join("bin")).unwrap();
+    for (name, body) in [
+        (
+            "dir_hier_path",
+            "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n",
+        ),
+        ("create_work", "#!/bin/sh\nexit 0\n"),
+    ] {
+        let p = project.join("bin").join(name);
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    usnm_boinc::submit::submit(&server, &project, &id)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(project.join(format!("download/{id}_page"))).unwrap(),
+        scan
+    );
+    assert_eq!(
+        handoff::install(&server, &incoming, &scan).unwrap(),
+        Installed::Already(Stage::Submitted)
+    );
+    // The node's journal is untouched: still reserved.
+    assert_eq!(usnm_boinc::load(node, &id).unwrap().stage, Stage::Reserved);
+
+    // The server's spool and trust list, out as console lines.
+    let record = usnm_boinc::load(&server, &id).unwrap();
+    let files = fx.result(&id);
+    let spool = fx.tmp.path().join("server-spool");
+    std::fs::create_dir_all(&spool).unwrap();
+    for (source, logical) in [
+        (&files.0, "result.json"),
+        (&files.1, "text.txt"),
+        (&files.2, "layout.xml"),
+    ] {
+        std::fs::copy(
+            source,
+            spool.join(format!("{}__file_{logical}", record.job.workunit())),
+        )
+        .unwrap();
+    }
+    let trust = Trust {
+        hosts: [(record.job.engine.image.clone(), [42].into())].into(),
+        max_cer: 0.1,
+        v: usnm_boinc::trust::TRUST_VERSION,
+    };
+    let trust_path = fx.tmp.path().join("gold/trust.json");
+    usnm_boinc::atomic(&trust_path, &serde_json::to_vec_pretty(&trust).unwrap()).unwrap();
+    let mut console = Vec::new();
+    handoff::emit(
+        &handoff::spool_payload(&server, &spool, &id, Some(42)).unwrap(),
+        &mut console,
+    )
+    .unwrap();
+    handoff::emit(&handoff::trust_payload(&trust_path).unwrap(), &mut console).unwrap();
+    // As Log Analytics returns it: prefixed, shuffled, with a repeated line.
+    let console = String::from_utf8(console).unwrap();
+    let mut lines: Vec<String> = console
+        .lines()
+        .map(|l| format!("2026-10-14T00:00:00Z {l}"))
+        .collect();
+    lines.reverse();
+    lines.push(lines[0].clone());
+    let log = lines.join("\n");
+    let payloads = handoff::absorb(&log).unwrap();
+    assert_eq!(payloads.len(), 2);
+    // A missing chunk is reported, not guessed at.
+    let partial: Vec<_> = lines
+        .iter()
+        .filter(|l| !l.contains(" part ") || !l.contains(" 0 "))
+        .cloned()
+        .collect();
+    assert!(handoff::absorb(&partial.join("\n")).is_err());
+
+    let node_spool = fx.tmp.path().join("node-spool");
+    let p = payloads.iter().find(|p| p.kind == Kind::Spool).unwrap();
+    assert_eq!(p.host_id, Some(42));
+    assert_eq!(handoff::write_spool(p, &id, &node_spool).unwrap(), 3);
+    assert!(handoff::write_spool(p, &"0".repeat(64), &node_spool).is_err());
+    let node_trust = fx.tmp.path().join("node-trust.json");
+    handoff::write_trust(
+        payloads.iter().find(|p| p.kind == Kind::Trust).unwrap(),
+        &node_trust,
+    )
+    .unwrap();
+    usnm_boinc::trust::collect(
+        node,
+        &node_spool,
+        &id,
+        &Trust::load(&node_trust).unwrap(),
+        p.host_id,
+        fx.stores.curated.as_ref(),
+        fx.stores.out.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(usnm_boinc::load(node, &id).unwrap().stage, Stage::Published);
+}
+
+#[cfg(unix)]
+#[test]
+fn console_payload_rejects_foreign_spool_names() {
+    use usnm_boinc::handoff::{self, Kind, Payload};
+    let id = "a".repeat(64);
+    let p = Payload {
+        v: 1,
+        kind: Kind::Spool,
+        job: Some(id.clone()),
+        host_id: None,
+        files: [("../../etc/passwd".to_string(), "eA==".to_string())].into(),
+    };
+    let dir = tempfile::tempdir().unwrap();
+    assert!(handoff::write_spool(&p, &id, dir.path()).is_err());
+    let mut out = Vec::new();
+    handoff::emit(&p, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.lines().all(|l| l.len() < 4000));
+    assert_eq!(handoff::absorb(&text).unwrap(), vec![p]);
+    assert!(handoff::absorb("USNM-HANDOFF v1 bogus").is_err());
+}
+
+/// bridge-job.sh's submit-remote: receive, then submit only a job that is still reserved.
+#[cfg(unix)]
+#[test]
+fn bridge_submit_remote_submits_only_a_reserved_job() {
+    use std::os::unix::fs::PermissionsExt;
+    let id = "b".repeat(64);
+    for (state, submits) in [("reserved", true), ("submitted", false)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let calls = tmp.path().join("calls");
+        let library = tmp.path().join("lib.sh");
+        std::fs::write(
+            &library,
+            "PROJ=/nonexistent/proj\nfetch_secrets() { :; }\nrender_config() { :; }\n\
+             log() { echo \"$*\" >&2; }\nfail() { log \"$*\"; exit 1; }\n",
+        )
+        .unwrap();
+        let stub = bin.join("usnm-boinc");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1 $2\" in 'handoff receive') echo {state} ;; esac\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contrib-compute/images/server/bridge-job.sh");
+        let script = std::fs::read_to_string(source)
+            .unwrap()
+            .replace(
+                ". /usr/local/lib/usnm-boinc/lib.sh",
+                &format!(". '{}'", library.display()),
+            )
+            .replace("[ -e \"$PROJ/.usnm-initialised\" ] ||", "true ||");
+        let wrapper = tmp.path().join("bridge-job.sh");
+        std::fs::write(&wrapper, script).unwrap();
+        let out = std::process::Command::new("bash")
+            .arg(&wrapper)
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("BRIDGE_STEP", "submit-remote")
+            .env("JOB_ID", &id)
+            .env("HANDOFF_DIR", tmp.path().join("handoff"))
+            .env("HANDOFF_REQUEST", "e30=")
+            .env("HANDOFF_RECORD", "e30=")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let calls = std::fs::read_to_string(&calls).unwrap();
+        assert!(calls.starts_with("handoff receive --root"));
+        assert_eq!(calls.contains("\nsubmit --root"), submits, "{calls}");
+    }
+}

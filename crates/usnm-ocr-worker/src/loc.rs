@@ -902,6 +902,17 @@ impl LocClient {
             .map(|g| g.body))
     }
 
+    /// One image file by its full URL (a page's recorded IIIF JPEG or its JP2 on the storage
+    /// service), paced like the other requests to that server, at most `max` bytes.
+    pub async fn image_file(&self, url: &str, max: usize) -> Result<Bytes, FetchError> {
+        let server = if url.starts_with(&self.cfg.storage_root) {
+            Server::Storage
+        } else {
+            Server::Tile
+        };
+        Ok(self.get(url, server, max, None).await?.body)
+    }
+
     /// The JPEG at `size` of the page with IIIF base `base`.
     pub async fn iiif_scan(&self, base: String, size: ImageSize) -> Result<Scan, FetchError> {
         let url = image_url(&base, size);
