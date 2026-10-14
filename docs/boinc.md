@@ -63,6 +63,40 @@ registry below is a placeholder, not a deployed service. Rebuild/sign a new BOIN
 code, models, image, or runtime configuration. The Rust build uses the repository's
 locked dependencies; capture the build revision and compiler in your release.
 
+### Publish the worker image
+
+Volunteers pull the worker image from a public GHCR package,
+`ghcr.io/tgoodyear/usnm-boinc-worker` (ADR-0019, addendum). The workflow
+`.github/workflows/boinc-worker.yml` builds it as above and pushes it. It runs
+only when started by hand; a pull request that changes what the image is built
+from builds it without pushing:
+
+```sh
+gh workflow run boinc-worker.yml --ref main
+gh run watch "$(gh run list --workflow boinc-worker.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+```
+
+The run's summary, and the job's outputs `digest`, `image` and `tesseract_image`, give:
+
+- `image`: `ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest>`, for
+  `scripts/boinc/install.py --image` and `images.worker` in
+  `contrib-compute/infra/boinc/env/<env>.json`;
+- `digest`: `sha256:<digest>`, for `GOLD_ENGINE_IMAGE` and `ASSESS_ENGINE_IMAGE`;
+- `tesseract_image`: the engine's image id (`sha256:...`) the image was built on,
+  its `USNM_TESSERACT_IMAGE`, for `GOLD_ENGINE_BASE` and `ASSESS_ENGINE_BASE`.
+
+The image is tagged with the commit; only the digest is used. A new GHCR package
+is private, and a workflow can't change that. Once, after the first push:
+
+1. Open the package's settings: github.com/users/tgoodyear/packages/container/usnm-boinc-worker/settings.
+2. Under "Danger Zone", choose "Change visibility", then "Public", and type the package name to confirm.
+3. Check that it is linked to this repository (the image's
+   `org.opencontainers.image.source` label links it at the first push).
+4. From a Docker that is logged out of GHCR, on a host that is not the maintainer's:
+   `docker logout ghcr.io; docker pull ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest>`.
+
+Later pushes keep the package public.
+
 Before changing the installed worker image, stop creating new cohorts. Finish
 exporting/submitting already allocated cohorts with their original image, and
 drain all existing workunits through collection. Resolve uncertain and failed tasks before
