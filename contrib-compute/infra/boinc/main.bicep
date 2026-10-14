@@ -115,7 +115,7 @@ module registry 'modules/registry.bicep' = {
 
 module monitor 'modules/monitor.bicep' = {
   name: 'monitor'
-  params: { workspaceName: names.workspace, location: location }
+  params: { workspaceName: names.workspace, location: location, operatorPrincipalIds: operatorPrincipalIds }
 }
 
 module network 'modules/network.bicep' = {
