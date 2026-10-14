@@ -1058,6 +1058,27 @@ def download(url: str, dest: Path, gap: float = 1.0) -> None:
     tmp.rename(dest)
 
 
+def download_zip(url: str, dest: Path, tries: int = 4) -> None:
+    """download(), then checks the file is a zip archive. A bad file (a server error page, a
+    rate-limit reply or a cut-off body, kept by an earlier run since download() skips a file
+    already there) is removed and fetched again, with a growing pause."""
+    import time
+    import zipfile
+
+    for attempt in range(1, tries + 1):
+        download(url, dest)
+        if zipfile.is_zipfile(dest):
+            return
+        with dest.open("rb") as f:
+            head = f.read(64)
+        print(f"{dest.name}: not a zip archive ({dest.stat().st_size} bytes, starts {head!r}); "
+              f"removed, try {attempt} of {tries}", file=sys.stderr)
+        dest.unlink()
+        if attempt < tries:
+            time.sleep(60 * attempt)
+    raise SystemExit(f"error: {url} did not return a zip archive in {tries} tries")
+
+
 def file_sha256(p: Path) -> str:
     h = hashlib.sha256()
     with p.open("rb") as f:
@@ -1144,7 +1165,7 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         write_source_note(a.src, a.dataset)
     elif a.dataset == "reichsanzeiger":
         z = a.src / "reichsanzeiger-gt-1.0.0.zip"
-        download(ZENODO_FILE.format(rec=10144428, name="UB-Mannheim/reichsanzeiger-gt-1.0.0.zip"), z)
+        download_zip(ZENODO_FILE.format(rec=10144428, name="UB-Mannheim/reichsanzeiger-gt-1.0.0.zip"), z)
         zipfile.ZipFile(z).extractall(a.src / "gt")
         lists = sorted((a.src / "gt").rglob("imageurls.list"))
         if not lists:
@@ -1161,12 +1182,12 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
         subset = a.subset or ("all" if a.dataset == "austrian" else "validation")
         for name in {"validation": (val,), "training": (train,), "all": (val, train)}[subset]:
             z = a.src / name
-            download(ZENODO_FILE.format(rec=rec, name=name.replace("+", "%2B")), z)
+            download_zip(ZENODO_FILE.format(rec=rec, name=name.replace("+", "%2B")), z)
             zipfile.ZipFile(z).extractall(a.src / name.removesuffix(".zip"))
         write_source_note(a.src, a.dataset, subset=subset)
     elif a.dataset == "ndl-pdm":
         z = a.src / "tosho_all_linejson.zip"
-        download(NDL_PDM_JSON, z)  # 5.2 GB
+        download_zip(NDL_PDM_JSON, z)  # 5.2 GB
         zipfile.ZipFile(z).extractall(a.src / "tosho_all_linejson")
         write_source_note(a.src, a.dataset)
     elif a.dataset == "bln600":
@@ -1192,12 +1213,12 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
     elif a.dataset == "enp-berlin":
         for name in ("gt_page.zip", "img_full.zip"):
             z = a.src / name
-            download(ZENODO_FILE.format(rec=2583866, name=name), z)
+            download_zip(ZENODO_FILE.format(rec=2583866, name=name), z)
             zipfile.ZipFile(z).extractall(a.src / name.removesuffix(".zip"))
         write_source_note(a.src, a.dataset)
     elif a.dataset == "nzz":
         z = a.src / "NZZ-black-letter-ground-truth-master.zip"
-        download(ZENODO_FILE.format(rec=3333627, name=z.name), z)  # 472 MB
+        download_zip(ZENODO_FILE.format(rec=3333627, name=z.name), z)  # 472 MB
         zipfile.ZipFile(z).extractall(a.src / "nzz")
         write_source_note(a.src, a.dataset)
     else:
