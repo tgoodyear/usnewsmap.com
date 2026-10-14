@@ -168,6 +168,12 @@ pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
                             rect: rect(e)?,
                             lines: Vec::new(),
                         };
+                        // A TextBlock inside another (not valid ALTO) ends
+                        // the outer one, so no line goes to the wrong block.
+                        if let Some(open) = block.take() {
+                            raw.push((BlockKind::Text, open.rect, Some(open)));
+                        }
+                        line = None;
                         if empty {
                             raw.push((BlockKind::Text, ob.rect, Some(ob)));
                         } else {
@@ -244,8 +250,21 @@ pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
         other => return Err(ParseError::Unit(other.to_owned())),
     };
     let (pw, ph) = page.ok_or(AltoError::NoPage)?;
-    let to_px = |r: Rect| r.map(scale, scale, 0.0, 0.0);
     let page_rect = Rect::new(0.0, 0.0, pw * scale, ph * scale);
+    // Boxes in pixels, clamped to the page: an engine's box past the
+    // page's edge would make the stored ALTO describe pixels that aren't
+    // there.
+    let to_px = |r: Rect| {
+        let r = r.map(scale, scale, 0.0, 0.0);
+        let x0 = r.x0.clamp(0.0, page_rect.x1);
+        let y0 = r.y0.clamp(0.0, page_rect.y1);
+        Rect::new(
+            x0,
+            y0,
+            r.x1.clamp(x0, page_rect.x1),
+            r.y1.clamp(y0, page_rect.y1),
+        )
+    };
     // Whether every element at a level had its own box.
     let (mut all_words, mut all_lines, mut all_blocks) = (true, true, true);
     let mut blocks = Vec::new();
@@ -399,5 +418,40 @@ mod tests {
             err("<x/>", &opts),
             ParseError::Alto(AltoError::NotAlto)
         ));
+        let zero = ParseOptions {
+            dpi: Some(0.0),
+            ..opts
+        };
+        assert!(matches!(err(KRAKEN, &zero), ParseError::Value(_)));
+        let nan = ParseOptions {
+            dpi: Some(f64::NAN),
+            ..opts
+        };
+        assert!(matches!(err(KRAKEN, &nan), ParseError::Value(_)));
+        // Foreign XML with ALTO's element names is not the page.
+        let foreign = KRAKEN.replace(
+            "<Layout>",
+            "<Tags><OtherTag ID=\"t\"><XmlData><x:Page xmlns:x=\"urn:x\" WIDTH=\"9\" HEIGHT=\"9\"/><x:MeasurementUnit xmlns:x=\"urn:x\">pixel</x:MeasurementUnit></XmlData></OtherTag></Tags><Layout>",
+        );
+        assert_eq!(parse(foreign.as_bytes(), &opts).unwrap().width, 600.0);
+        // Boxes past the page are clamped to it.
+        let wide = KRAKEN.replace(
+            "HPOS=\"600\" VPOS=\"120\" WIDTH=\"400\"",
+            "HPOS=\"2000\" VPOS=\"120\" WIDTH=\"4000\"",
+        );
+        let p = parse(wide.as_bytes(), &opts).unwrap();
+        assert_eq!(p.blocks[0].lines[0].words[1].rect.x1, 600.0);
+        // A TextBlock inside another ends it.
+        let nested = KRAKEN
+            .replace(
+                "<TextLine ID=\"l2\">",
+                "<TextBlock ID=\"inner\"><TextLine ID=\"l2\">",
+            )
+            .replace(
+                "</TextBlock></ComposedBlock>",
+                "</TextBlock></TextBlock></ComposedBlock>",
+            );
+        let p = parse(nested.as_bytes(), &opts).unwrap();
+        assert_eq!(text(&p), "Ein& Wort¬\n\nende");
     }
 }

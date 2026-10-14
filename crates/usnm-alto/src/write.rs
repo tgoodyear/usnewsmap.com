@@ -193,8 +193,8 @@ pub fn write(page: &Page, desc: &Description, language: &str) -> String {
             }
             _ => {}
         }
-        let lines: Vec<&crate::model::Line> =
-            b.lines.iter().filter(|l| !l.words.is_empty()).collect();
+        let owned = crate::model::stored_lines(b);
+        let lines: Vec<&crate::model::Line> = owned.iter().collect();
         if lines.is_empty() {
             continue;
         }

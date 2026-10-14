@@ -222,6 +222,46 @@ impl Page {
     }
 }
 
+/// A word's text as the stored ALTO and the page text both hold it:
+/// characters XML can't carry dropped, whitespace runs as one space, and
+/// trimmed. ALTO reads tabs and line breaks in `CONTENT` back as spaces,
+/// so the text never holds what the ALTO can't.
+pub(crate) fn clean_word(s: &str) -> String {
+    let kept: String = s
+        .chars()
+        .filter(|&c| !(c.is_control() && !c.is_whitespace()) && c != '\u{FFFE}' && c != '\u{FFFF}')
+        .collect();
+    kept.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A text block's lines as they are stored: words cleaned
+/// ([`clean_word`]), empty words and lines left out. The writer and
+/// [`text`] both read blocks through this, so they hold the same words.
+pub(crate) fn stored_lines(b: &Block) -> Vec<Line> {
+    b.lines
+        .iter()
+        .filter_map(|l| {
+            let words: Vec<Word> = l
+                .words
+                .iter()
+                .filter_map(|w| {
+                    let text = clean_word(&w.text);
+                    (!text.is_empty()).then(|| Word { text, ..w.clone() })
+                })
+                .collect();
+            (!words.is_empty()).then(|| Line {
+                rect: l.rect,
+                words,
+                hyphen: l
+                    .hyphen
+                    .as_deref()
+                    .map(clean_word)
+                    .filter(|h| !h.is_empty()),
+            })
+        })
+        .collect()
+}
+
 /// The page's text in reading order (a port of the survey's
 /// `altotext.py`): a line's words joined by spaces, with its hyphen at the
 /// end, one line per line, and a blank line between text blocks.
@@ -230,26 +270,68 @@ impl Page {
 pub fn text(page: &Page) -> String {
     let mut blocks = Vec::new();
     for b in page.blocks.iter().filter(|b| b.kind.is_text()) {
-        let mut lines = Vec::new();
-        for l in &b.lines {
-            let mut s = l
-                .words
-                .iter()
-                .map(|w| w.text.as_str())
-                .filter(|t| !t.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if s.is_empty() {
-                continue;
-            }
-            if let Some(h) = &l.hyphen {
-                s.push_str(h);
-            }
-            lines.push(s);
-        }
+        let lines: Vec<String> = stored_lines(b)
+            .into_iter()
+            .map(|l| {
+                let mut s = l
+                    .words
+                    .iter()
+                    .map(|w| w.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if let Some(h) = &l.hyphen {
+                    s.push_str(h);
+                }
+                s
+            })
+            .collect();
         if !lines.is_empty() {
             blocks.push(lines.join("\n"));
         }
     }
     blocks.join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_and_alto_hold_the_same_words() {
+        let r = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let w = |t: &str| Word {
+            rect: r,
+            text: t.into(),
+            conf: None,
+        };
+        let page = Page {
+            width: 10.0,
+            height: 10.0,
+            granularity: Granularity::Word,
+            blocks: vec![Block {
+                kind: BlockKind::Text,
+                rect: r,
+                lang: None,
+                lines: vec![
+                    Line {
+                        rect: r,
+                        words: vec![w(" a\tb\n"), w(""), w("c\u{1}")],
+                        hyphen: None,
+                    },
+                    Line {
+                        rect: r,
+                        words: vec![w("  ")],
+                        hyphen: Some("-".into()),
+                    },
+                ],
+            }],
+        };
+        assert_eq!(text(&page), "a b c");
+        let xml = crate::write(&page, &crate::Description::default(), "eng");
+        assert!(xml.contains("CONTENT=\"a b\""), "{xml}");
+        assert_eq!(xml.matches("<String ").count(), 2);
+        assert_eq!(xml.matches("<TextLine ").count(), 1);
+        let again = crate::parse(xml.as_bytes(), &crate::ParseOptions::default()).unwrap();
+        assert_eq!(text(&again), text(&page));
+    }
 }
