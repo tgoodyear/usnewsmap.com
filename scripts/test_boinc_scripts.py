@@ -29,7 +29,13 @@ case "$*" in
   "containerapp job show"*) printf '%s\n' "$STUB_TEMPLATE" ;;
   "containerapp job update"*) ;;
   "containerapp job start"*) echo usnm-boinc-bridge-caj-prod-abc12 ;;
-  "containerapp job execution show"*) echo "${STUB_EXEC_STATUS:-Succeeded}" ;;
+  "containerapp job execution list"*) printf '%s' "${STUB_RUNNING:-}" ;;
+  "containerapp job execution show"*"--query properties.status"*) echo "${STUB_EXEC_STATUS:-Succeeded}" ;;
+  "containerapp job execution show"*"properties.template"*)
+    if [ -n "${STUB_EXEC_ENV:-}" ]; then printf '%s\n' "$STUB_EXEC_ENV"
+    else grep '^containerapp job update' "$STUB_LOG" | tail -n 1 |
+      sed -e 's/.*--replace-env-vars //' -e 's/ -o none.*//' | tr ' ' '\n' |
+      jq -R 'split("=") | {name: .[0], value: (.[1:] | join("="))}' | jq -s .; fi ;;
   *) echo "stub az: unexpected call: $*" >&2; exit 9 ;;
 esac
 """
@@ -96,7 +102,7 @@ class StartBridge(unittest.TestCase):
         for flag in ("--env-vars", "--image", "--args", "--command", "--container-name"):
             self.assertNotIn(flag, start)
         order = [c.split(" ")[2] for c in self.calls() if c.startswith("containerapp job ")]
-        self.assertEqual(order, ["show", "update", "start"])
+        self.assertEqual(order, ["show", "execution", "update", "start", "execution"])
 
     def test_drops_a_previous_runs_settings(self):
         r = self.run_script("--step", "register-apps",
@@ -127,6 +133,19 @@ class StartBridge(unittest.TestCase):
         r = self.run_script("--step", "submit", STUB_NO_JOB="1")
         self.assertEqual(r.returncode, 1)
         self.assertIn("no bridge job", r.stderr)
+
+    def test_refuses_while_an_execution_runs(self):
+        r = self.run_script("--step", "register-apps", STUB_RUNNING="usnm-boinc-bridge-caj-prod-old11\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("still running usnm-boinc-bridge-caj-prod-old11", r.stderr)
+        self.assertFalse([c for c in self.calls() if "job update" in c or "job start" in c])
+
+    def test_fails_when_the_execution_has_another_runs_settings(self):
+        r = self.run_script("--step", "register-apps",
+                            STUB_EXEC_ENV='[{"name": "BRIDGE_STEP", "value": "submit"}]')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("did not start with this run's settings", r.stderr)
+        self.assertIn("job stop", r.stderr)
 
     def test_what_if_changes_nothing(self):
         r = self.run_script("--step", "register-apps", "--what-if")

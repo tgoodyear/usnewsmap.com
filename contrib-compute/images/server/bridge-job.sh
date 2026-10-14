@@ -34,8 +34,9 @@
 # Start a step with scripts/start-boinc-bridge.sh, which sets these on the job: an
 # `az containerapp job start --env-vars` override drops the job's own settings and the share.
 #
-# Settled by this script, open in design.md section 9 (question 4): the job id is read from
-# the environment, so each run needs a start with an environment override. UNVERIFIED.
+# The step and its settings (JOB_ID included) are read from the environment. Each run's are
+# written into the job's own template by scripts/start-boinc-bridge.sh, which then starts it
+# with no execution override (design.md section 9, question 4). UNVERIFIED against a live job.
 set -euo pipefail
 # shellcheck source=lib.sh
 . /usr/local/lib/usnm-boinc/lib.sh

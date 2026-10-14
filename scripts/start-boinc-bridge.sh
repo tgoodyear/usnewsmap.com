@@ -22,8 +22,11 @@
 # BRIDGE_STEP. The step and the values are checked by bridge-job.sh, not here. --wait-mins N
 # waits up to N minutes for the execution to succeed and exits 1 if it ends Failed, Stopped
 # or Degraded or is still running then. --what-if prints the settings and changes nothing.
-# The job runs one execution at a time: don't start a step while another is running, because
-# the update changes the settings a running execution's replica would get on a restart.
+# One step at a time: a manual job can run several executions at once, and they would share
+# the project tree and the database. So it refuses while any execution of the job is still
+# running, and after the start it reads the new execution's settings back and fails if they
+# are not this run's (another caller updated the job in between). That narrows the window
+# but is no lock: one operator runs these steps.
 # Needs az signed in to the settings' subscription, and jq.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
@@ -84,11 +87,25 @@ if $WHAT_IF; then
   echo "then start one execution of it with no override"
   exit 0
 fi
+# running_executions: the job's executions that haven't ended.
+running_executions() {
+  baz containerapp job execution list --name "$job" --resource-group "$BOINC_RG" \
+    --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv
+}
+running=$(running_executions) || die "can't list the executions of $job"
+[ -z "$running" ] || die "$job is still running $(echo "$running" | tr '\n' ' ')- wait for it to end first"
 baz containerapp job update --name "$job" --resource-group "$BOINC_RG" --container-name "$container" \
   --replace-env-vars "${base[@]}" "${run[@]}" -o none || die "can't set the run's settings on $job"
 execution=$(baz containerapp job start --name "$job" --resource-group "$BOINC_RG" --query name -o tsv) ||
   die "can't start $job"
 [ -n "$execution" ] || die "$job started no execution"
+# The execution records the template it started with: it must hold exactly this run's settings.
+want=$(printf '%s\n' "${base[@]}" "${run[@]}" | sort)
+got=$(baz containerapp job execution show --name "$job" --resource-group "$BOINC_RG" --job-execution-name "$execution" \
+  --query properties.template.containers[0].env -o json | jq -r '.[] | "\(.name)=\(.value // "")"' | sort) ||
+  die "can't read $execution's settings; stop it if it isn't this run's: az containerapp job stop --name $job --resource-group $BOINC_RG --job-execution-name $execution"
+[ "$got" = "$want" ] ||
+  die "$execution did not start with this run's settings (another caller changed $job); stop it: az containerapp job stop --name $job --resource-group $BOINC_RG --job-execution-name $execution"
 if [ -z "$WAIT_MINS" ]; then
   echo "$execution"
   exit 0
