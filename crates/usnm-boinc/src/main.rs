@@ -496,6 +496,11 @@ async fn gold(g: Gold) -> anyhow::Result<()> {
             out,
         } => {
             let t = usnm_boinc::trust::Trust::build(&reports, max_cer)?;
+            let out = if out.parent().is_some_and(|p| p.as_os_str().is_empty()) {
+                std::path::Path::new(".").join(out)
+            } else {
+                out
+            };
             usnm_boinc::atomic(&out, &serde_json::to_vec_pretty(&t)?)?;
             for (image, hosts) in &t.hosts {
                 eprintln!("{image}: {} trusted hosts", hosts.len());

@@ -120,9 +120,12 @@ pub async fn collect(
     out: &dyn ObjectStore,
 ) -> anyhow::Result<()> {
     let record = load(root, id)?;
-    if record.stage != Stage::Published {
+    let wu = record.job.workunit();
+    // A terminal failure has no canonical result (so no host id): let collect mark it failed.
+    let terminal = spool.join(format!("{wu}_error")).exists()
+        || spool.join(format!("{wu}_no_output_files")).exists();
+    if record.stage != Stage::Published && !terminal {
         if let Some(reason) = trust.refuse(&record.job.engine.image, host_id) {
-            let wu = record.job.workunit();
             let q = quarantine_dir(root, id);
             std::fs::create_dir_all(&q)?;
             for logical in ["result.json", "text.txt", "layout.xml"] {
