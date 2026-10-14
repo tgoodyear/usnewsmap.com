@@ -37,6 +37,9 @@ pub const PREFIX: &str = "runs";
 /// Engine reads in one receive: a cascade's two and the candidates that
 /// answered `unsupported` or `bad_input` before them.
 pub const MAX_ROWS: usize = 64;
+/// What a record's pages may expand to: 64 rows of some 60 columns,
+/// strings included, are far below this.
+const MAX_UNCOMPRESSED: i64 = 8 << 20;
 
 /// One engine read (13 §13.8.3). Optional fields are null where a read
 /// has nothing to say (a refused candidate has no layout).
@@ -365,7 +368,11 @@ pub fn read(bytes: Bytes) -> anyhow::Result<Vec<RunRecord>> {
         bytes.len(),
         crate::engine::limits::RUNS
     );
+    let file = bytes.clone();
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+    // A node wrote it: bound what decoding allocates before decoding.
+    usnm_overlay::check_uncompressed(&file, builder.metadata(), MAX_UNCOMPRESSED)
+        .context("runs record")?;
     let version = builder
         .metadata()
         .file_metadata()

@@ -341,6 +341,10 @@ pub enum ProtocolError {
     WrongLayout { got: Layout, want: Layout },
     #[error("status ok with no layout file")]
     NoLayout,
+    #[error("a failure with no error")]
+    NoError,
+    #[error("restart on a status other than failed")]
+    Restart,
     #[error("an error message over {MAX_ERROR_MESSAGE} bytes")]
     ErrorTooLong,
     #[error("engine_stats over {MAX_STATS} keys or a key over {MAX_STAT_KEY} characters")]
@@ -423,6 +427,13 @@ impl PageResult {
         }
         if self.status == Status::Ok && self.layout.is_none() {
             return Err(ProtocolError::NoLayout);
+        }
+        // Every failure says why; only `failed` may ask for a restart.
+        if self.status != Status::Ok && self.error.is_none() {
+            return Err(ProtocolError::NoError);
+        }
+        if self.restart && self.status != Status::Failed {
+            return Err(ProtocolError::Restart);
         }
         let paths = self
             .layout
@@ -608,6 +619,18 @@ mod tests {
         let mut b = r.clone();
         b.layout = None;
         assert_eq!(b.check(&p, &h, false), Err(ProtocolError::NoLayout));
+        b.status = Status::Failed;
+        assert_eq!(b.check(&p, &h, false), Err(ProtocolError::NoError));
+        b.error = Some(ResultError {
+            kind: "x".into(),
+            message: "m".into(),
+        });
+        b.check(&p, &h, false).unwrap();
+        b.restart = true;
+        b.check(&p, &h, false).unwrap();
+        b.status = Status::Unsupported;
+        assert_eq!(b.check(&p, &h, false), Err(ProtocolError::Restart));
+        b.restart = false;
         b.status = Status::Failed;
         b.error = Some(ResultError {
             kind: "x".into(),
