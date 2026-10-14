@@ -142,9 +142,9 @@ quickwit_crates() {
     ["usnm-search", "usnm-ingest"] | close | .[] | $p[.].manifest_path | ltrimstr($root) | rtrimstr("Cargo.toml")'
 }
 # quickwit_tree: every package (with its features) Cargo builds for those two
-# crates' tests, in the checkout at $1, without the workspace crates' paths.
+# crates' tests, in the checkout at $1, without the workspace crates' local paths (a git source keeps its revision).
 quickwit_tree() {
-  (cd "$1" && cargo tree --locked -p usnm-search -p usnm-ingest -e normal,build,dev --prefix none -f '{p} {f}' | sed 's/ ([^)]*)//' | sort -u)
+  (cd "$1" && cargo tree --locked -p usnm-search -p usnm-ingest -e normal,build,dev --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
 }
 # The workspace manifest and the lock file: the job runs only when the
 # packages resolved for those crates differ between the base and this
