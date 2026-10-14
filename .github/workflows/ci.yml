@@ -103,11 +103,15 @@ jobs:
           done
       - name: project.xml has no quotes in its text
         # xadd (BoincApp::insert) puts user_friendly_name into SQL unescaped; an apostrophe
-        # failed register-apps on prod (#469).
+        # failed register-apps on prod (#469). Checks parsed text, so &apos; / &#39; count too.
         run: |
-          if grep -nE "['\"]" <(grep -v '^<?xml' boinc/project.xml | grep -v '^<!--'); then
-            echo "error: boinc/project.xml text has a quote; xadd inserts it into SQL unescaped"; exit 1
-          fi
+          python3 - boinc/project.xml <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          bad = [(e.tag, e.text) for e in ET.parse(sys.argv[1]).iter() if e.text and ("'" in e.text or '"' in e.text)]
+          for tag, text in bad:
+              print(f"error: <{tag}> in boinc/project.xml has a quote, which xadd inserts into SQL unescaped: {text!r}")
+          sys.exit(1 if bad else 0)
+          PY
       - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh images/bridge/*.sh
       - name: The gold-bundle step's tests pass
         run: python3 -m unittest -v images/bridge/test_gold_bundle.py
