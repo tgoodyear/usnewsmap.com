@@ -5,32 +5,22 @@ require_once("../inc/util.inc");
 
 page_head(tra("About %1", PROJECT));
 echo <<<HTML
-<p><a href="https://usnewsmap.com">US News Map</a> searches 23 million pages of historical
-American newspapers and maps every match by where and when it was printed. The pages come from
-<a href="https://www.loc.gov/collections/chronicling-america/">Chronicling America</a>, the
-Library of Congress and National Endowment for the Humanities collection of digitized
-newspapers, 1736&ndash;1963.</p>
+<p>usnewsmap OCR uses volunteers' computers to turn scans of historic US newspapers and
+other written work into searchable text. The text feeds
+<a href="https://usnewsmap.com">US News Map</a>, which maps every search match by where and
+when it was printed.</p>
 
 <h3>What your computer does</h3>
-<p>Each task is one scanned newspaper page. Your computer runs Tesseract 5.5.0 on it, with
-the same models and language routing the project's own OCR workers use, and sends back the
-recognized text with its layout (ALTO). The project checks each result before it goes into
-the search index.</p>
+<p>Each task is one scanned page. Your computer runs an OCR engine on it and sends back the
+recognized text with its layout. The project checks each result before publishing it.</p>
 
-<h3>Requirements</h3>
-<ul>
-<li>Linux on x86-64, with BOINC client 9.0 or later.</li>
-<li>Docker, and permission for BOINC to run Docker containers. Tasks run inside a pinned
-container image. Hosts without that permission, including restricted or unprivileged
-containers, can't take part yet.</li>
-</ul>
+<h3>Applications</h3>
+<p>The applications page lists what runs now and on which platforms. The first application
+runs on Linux x86-64 with Docker, and BOINC needs permission to run Docker containers.</p>
 
 <h3>What you receive</h3>
 <p>Page images and the settings needed to process them. Tasks never carry passwords, keys or
 access to the project's storage.</p>
-
-<h3>Status</h3>
-<p>This is a pilot for a small group of friends. Work is sent in batches of 1 to 100 pages.</p>
 
 <p>Source code and design notes:
 <a href="https://github.com/tgoodyear/usnewsmap.com/blob/main/docs/boinc.md">docs/boinc.md</a>.</p>
