@@ -114,6 +114,7 @@ impl Job {
         for r in &self.remotes {
             ensure!(
                 remote_name_ok(&r.name)
+                    && is_sha256(&r.sha256)
                     && r.name.starts_with(&r.sha256)
                     && (1..=MAX_REMOTE).contains(&r.bytes),
                 "invalid original file {:?}",

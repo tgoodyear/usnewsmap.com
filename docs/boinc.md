@@ -387,8 +387,8 @@ The originals are `create_work --remote_file URL BYTES MD5` inputs: the BOINC
 client downloads each from the publisher's URL and checks its size and md5, so
 the project server never stores or serves them. That keeps BLN600 (CC BY-NC-ND)
 and the LoC images where the licence and #457 put them. The tar and the
-originals are `<sticky/>` and `<no_delete/>`, so a host fetches them once for
-every unit it runs; all are `<copy_file/>`, because the container sees only the
+originals are `<sticky/>` and `<no_delete/>`, so each host downloads them once and reuses
+them across its gold units; all are `<copy_file/>`, because the container sees only the
 slot. The open names are the cache names `gold-run` reads, so the slot is the
 cache and the run step needs no network: the container keeps `--network=none`
 from `job.toml`. The worker checks every input's size and sha256 against the
