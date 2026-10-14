@@ -344,6 +344,28 @@ The node's journal stays the only one that publishes. The server's hand-off root
 own copy of the job, which `submit` moves to `submitted` there. The node's copy stays
 `reserved`, which `collect` accepts.
 
+### The LoC request outside the scan fetcher
+
+CT 211 `usnm-scanfetch` is meant to be the only LoC fetcher while it runs
+(`scripts/ocr-node/scanfetch-ct.sh`, design 12 "The fetcher"). `submit-remote` makes one more
+LoC request per page, from Azure, which that fetcher's gaps don't pace. Each request is one
+image GET with no retries. The bridge runs one execution at a time, so this adds at most one
+request per execution, minutes apart. It is still a second fetcher, so every run has to say
+it accepts that: the step refuses without `--var HANDOFF_LOC_FETCH=one-request`.
+
+The ways around it need changes this route doesn't make:
+
+- **The scan server** (`usnm-ocr-worker serve-scans` in CT 211) serves only its `--allow`
+  hosts, and nftables lets in only its own LAN. The bridge job runs in the BOINC VNet in
+  Azure and can't reach it.
+- **The node pushes the page** to storage the bridge can read. The project share has public
+  access disabled. The exchange account's firewall allows the node IPs and `snet-cae`, not the
+  BOINC VNet, and its only container is `ocr-out`. A hand-off container would need a firewall
+  rule for the BOINC subnet (or a private endpoint), a node writer role and Blob Data Reader
+  for the bridge job's identity.
+
+Until one of those is built, decide per run, or pause `usnm-scanfetch` for the hand-off.
+
 ### Sizes
 
 `usnm-boinc handoff vars` prints compact JSON in base64. Measured on the test fixture
@@ -396,7 +418,8 @@ usnm-boinc export --root "$R" ... # prints JOB_ID
 usnm-boinc handoff vars --root "$R" --job JOB_ID > /scratch/JOB_ID.vars
 args=()
 while IFS= read -r v; do args+=(--var "$v"); done < /scratch/JOB_ID.vars
-scripts/start-boinc-bridge.sh --env prod --step submit-remote "${args[@]}" --wait-mins 30
+scripts/start-boinc-bridge.sh --env prod --step submit-remote "${args[@]}" \
+  --var HANDOFF_LOC_FETCH=one-request --wait-mins 30
 ```
 
 `submit-remote` checks that the record is a reserved entry for this very request and that

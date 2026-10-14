@@ -1369,7 +1369,11 @@ fn console_payload_rejects_foreign_spool_names() {
 fn bridge_submit_remote_submits_only_a_reserved_job() {
     use std::os::unix::fs::PermissionsExt;
     let id = "b".repeat(64);
-    for (state, submits) in [("reserved", true), ("submitted", false)] {
+    for (state, submits, accept) in [
+        ("reserved", true, true),
+        ("submitted", false, true),
+        ("reserved", false, false),
+    ] {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -1413,8 +1417,14 @@ fn bridge_submit_remote_submits_only_a_reserved_job() {
             .env("HANDOFF_DIR", tmp.path().join("handoff"))
             .env("HANDOFF_REQUEST", "e30=")
             .env("HANDOFF_RECORD", "e30=")
+            .env("HANDOFF_LOC_FETCH", if accept { "one-request" } else { "" })
             .output()
             .unwrap();
+        if !accept {
+            // Without the operator's say-so nothing runs and LoC is not asked.
+            assert!(!out.status.success() && !calls.exists());
+            continue;
+        }
         assert!(
             out.status.success(),
             "{}",

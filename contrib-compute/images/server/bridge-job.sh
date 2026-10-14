@@ -33,7 +33,9 @@
 #
 # The remote hand-off from the OCR node (#469, docs/boinc.md#one-page-from-the-ocr-node):
 #   BRIDGE_STEP=submit-remote   JOB_ID HANDOFF_REQUEST HANDOFF_RECORD (from `usnm-boinc handoff
-#                               vars` on the node); fetches the page from the LoC URL in the
+#                               vars` on the node) HANDOFF_LOC_FETCH=one-request (the
+#                               operator's choice to make one LoC request outside the scan
+#                               fetcher, docs/boinc.md); fetches the page from the LoC URL in the
 #                               request, checks its size and sha256, writes the job into
 #                               $HANDOFF_DIR and submits it (a job already past reserved is left)
 #   BRIDGE_STEP=spool-out       JOB_ID HANDOFF_SPOOL=<assimilator results directory under
@@ -169,7 +171,11 @@ case "$step" in
     exec bin/xadd ;;
   submit-remote)
     # The settings carry the request and the record; the page comes from LoC again, never
-    # from the node. Submission then runs as for submit.
+    # from the node. Submission then runs as for submit. That request is outside CT 211's
+    # scan fetcher, which is meant to be the only LoC fetcher while it runs, so each run
+    # must say it accepts one (docs/boinc.md#one-page-from-the-ocr-node).
+    [ "${HANDOFF_LOC_FETCH:-}" = one-request ] ||
+      fail "submit-remote fetches the page from LoC once, outside the scan fetcher; set HANDOFF_LOC_FETCH=one-request to accept that"
     state=$(usnm-boinc handoff receive --root "$HANDOFF_DIR" --job "$JOB_ID")
     if [ "$state" != reserved ]; then
       log "job $JOB_ID is already $state on the server; nothing submitted"
