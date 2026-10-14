@@ -124,6 +124,9 @@ web='^(web/|fixtures/|scripts/ci/(web-e2e|start-api-fixtures)\.sh$|\.prettier(rc
 # Crates count for these two below, by closure.
 e2e="$rust_files|$web"
 image="$rust_files|^(web/|ja-ocr/|Dockerfile|\.dockerignore$|infra/quickwit-image\.json$|scripts/build-page-language-words\.py$|scripts/ci/(check-(api|ingest|ja-ocr)-image|quickwit-image|roll-api|head-of-main|indexnow)\.sh$)"
+# The BOINC integration tests execute this wrapper at run time. Its changes
+# need the Rust tests, but it is not an input to the serving/ingest images above.
+rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
 # The synthetic corpus must match its generator.
 fixtures='^fixtures/'
 # The OCR worker's release: the worker and the LAN dashboard, the crates they use, the workspace's
