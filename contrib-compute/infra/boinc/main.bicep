@@ -26,6 +26,9 @@ param registryName string
 @description('The shared registry\'s resource group.')
 param registryResourceGroup string
 
+@description('The on-prem OCR exchange account (infra/names/<env>.json ocrExchange), in the registry\'s group, whose boinc-handoff container the bridge reads and writes (#469). Empty: no grant.')
+param exchangeName string = ''
+
 @description('Server image (images/server), by digest, in the shared registry. Empty: deploy the base resources only.')
 param image string = ''
 
@@ -114,6 +117,17 @@ module registry 'modules/registry.bicep' = {
   params: {
     registryName: registryName
     pullPrincipalIds: [ identity.properties.principalId, secretsIdentity.properties.principalId ]
+  }
+}
+
+// The bridge's hand-off steps (submit-remote, spool-out): the node writer role on the
+// exchange account's boinc-handoff container, in the main group.
+module handoffGrant 'modules/handoff-grant.bicep' = if (!empty(exchangeName)) {
+  name: 'boinc-handoff-grant'
+  scope: resourceGroup(registryResourceGroup)
+  params: {
+    exchangeName: exchangeName
+    principalId: identity.properties.principalId
   }
 }
 
