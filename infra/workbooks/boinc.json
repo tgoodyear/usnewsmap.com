@@ -52,7 +52,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-caj-\" and isnotempty(Execution)\n| summarize Started = min(TimeGenerated), Warnings = countif(Kind == \"Warning\"), arg_max(TimeGenerated, Reason) by Job = App, Execution\n| project Job, Execution, Started, Last = TimeGenerated, Status = Reason, Warnings\n| order by Started desc",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-caj-\" and isnotempty(Execution)\n| summarize Started = min(TimeGenerated), Warnings = countif(Kind == \"Warning\"), arg_max(TimeGenerated, Reason) by Job = App, Execution\n| project Job, Execution, Started, Last = TimeGenerated, Status = Reason, Warnings\n| order by Started desc",
         "size": 0,
         "title": "Job executions",
         "queryType": 0,
@@ -69,7 +69,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-caj-\" and isnotempty(Execution)\n| summarize arg_max(TimeGenerated, Reason) by App, Execution\n| summarize Executions = count() by bin(TimeGenerated, 1d), Status = Reason",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-caj-\" and isnotempty(Execution)\n| summarize arg_max(TimeGenerated, Reason) by App, Execution\n| summarize Executions = count() by bin(TimeGenerated, 1d), Status = Reason",
         "size": 0,
         "title": "Job executions per day, by last event",
         "queryType": 0,
@@ -86,7 +86,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-ca-\" and isnotempty(Revision)\n| summarize First = min(TimeGenerated), Last = max(TimeGenerated), Replicas = dcount(Replica), Warnings = countif(Kind == \"Warning\") by Revision\n| order by First desc",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-ca-\" and isnotempty(Revision)\n| summarize First = min(TimeGenerated), Last = max(TimeGenerated), Replicas = dcount(Replica), Warnings = countif(Kind == \"Warning\") by Revision\n| order by First desc",
         "size": 0,
         "title": "Server app revisions",
         "queryType": 0,
@@ -103,7 +103,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-ca-\" and Kind == \"Warning\"\n| summarize Events = count() by bin(TimeGenerated, 1h), Reason",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where App has \"-ca-\" and Kind == \"Warning\"\n| summarize Events = count() by bin(TimeGenerated, 1h), Reason",
         "size": 0,
         "title": "Server app warnings (restarts, probe failures, crashes) per hour",
         "queryType": 0,
@@ -120,7 +120,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where Kind == \"Warning\"\n| project TimeGenerated, App, Revision, Execution, Reason, Msg\n| order by TimeGenerated desc\n| take 100",
+        "query": "let sys = ContainerAppSystemLogs_CL\n    | extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n        Revision = column_ifexists(\"RevisionName_s\", \"\"),\n        Replica = column_ifexists(\"ReplicaName_s\", \"\"),\n        Execution = column_ifexists(\"ExecutionName_s\", \"\"),\n        Reason = column_ifexists(\"Reason_s\", \"\"),\n        Kind = column_ifexists(\"Type_s\", \"\"),\n        Msg = column_ifexists(\"Log_s\", \"\")\n    | where App startswith \"usnm-boinc\";\nsys\n| where Kind == \"Warning\"\n| project TimeGenerated, App, Revision, Execution, Reason, Msg\n| order by TimeGenerated desc\n| take 100",
         "size": 0,
         "title": "Latest platform warnings",
         "queryType": 0,
@@ -137,7 +137,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "ContainerAppConsoleLogs_CL\n| extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\")),\n    Msg = column_ifexists(\"Log_s\", \"\")\n| where App startswith \"usnm-boinc\"\n| where Msg has_any (\"error\", \"fail\", \"usnm-boinc:\")\n| where Msg !has \"IDENTITY_HEADER\" and Msg !has \"MSI_SECRET\"\n| project TimeGenerated, App, Msg\n| order by TimeGenerated desc\n| take 200",
+        "query": "ContainerAppConsoleLogs_CL\n| extend App = coalesce(column_ifexists(\"ContainerAppName_s\", \"\"), column_ifexists(\"ContainerJobName_s\", \"\"), column_ifexists(\"JobName_s\", \"\")),\n    Msg = column_ifexists(\"Log_s\", \"\")\n| where App startswith \"usnm-boinc\"\n| where Msg has_any (\"error\", \"fail\", \"failed\", \"failure\", \"usnm-boinc:\")\n| where Msg !has \"IDENTITY_HEADER\" and Msg !has \"MSI_SECRET\"\n| project TimeGenerated, App, Msg\n| order by TimeGenerated desc\n| take 200",
         "size": 0,
         "title": "Job and app errors in console output",
         "queryType": 0,
