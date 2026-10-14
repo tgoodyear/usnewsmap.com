@@ -334,6 +334,9 @@ pub fn write(rows: &[RunRecord]) -> anyhow::Result<Vec<u8>> {
         out.len(),
         crate::engine::limits::RUNS
     );
+    // The pickup's reader must take what a node writes, its bound on the
+    // uncompressed size included.
+    read(Bytes::from(out.clone())).context("the written runs record doesn't read back")?;
     Ok(out)
 }
 
@@ -530,6 +533,11 @@ mod tests {
         other.doc_id = "x".into();
         assert!(write(&[row(), other]).is_err(), "rows of two pages");
         assert!(read(Bytes::from_static(b"not parquet")).is_err());
+        // A string that compresses well but expands past the reader's
+        // bound is refused when written, not at the pickup.
+        let mut huge = row();
+        huge.models_json = "a".repeat(9 << 20);
+        assert!(write(&[huge]).is_err());
         let big = Bytes::from(vec![0u8; crate::engine::limits::RUNS + 1]);
         assert!(read(big).is_err());
     }
