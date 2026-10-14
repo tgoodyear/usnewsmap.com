@@ -5,33 +5,24 @@
 
 use std::path::PathBuf;
 
-fn main() -> std::process::ExitCode {
-    let mut args = std::env::args().skip(1);
-    let mut out: Option<PathBuf> = None;
-    while let Some(a) = args.next() {
-        match (a.as_str(), args.next()) {
-            ("--out-dir", Some(d)) => out = Some(d.into()),
-            _ => {
-                eprintln!("usage: usnm-ocr-contract-schema --out-dir <dir>");
-                return std::process::ExitCode::from(2);
-            }
-        }
-    }
-    let Some(out) = out else {
-        eprintln!("usage: usnm-ocr-contract-schema --out-dir <dir>");
-        return std::process::ExitCode::from(2);
-    };
-    if let Err(e) = std::fs::create_dir_all(&out) {
-        eprintln!("{}: {e}", out.display());
-        return std::process::ExitCode::FAILURE;
-    }
+use anyhow::Context;
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(about = "Write the engine contract's JSON Schemas")]
+struct Args {
+    /// Where to write `<name>.schema.json` (`ocr/contract/v1`).
+    #[arg(long)]
+    out_dir: PathBuf,
+}
+
+fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    std::fs::create_dir_all(&args.out_dir).with_context(|| args.out_dir.display().to_string())?;
     for (name, schema) in usnm_ocr_contract::engine::schemas() {
-        let path = out.join(format!("{name}.schema.json"));
-        if let Err(e) = std::fs::write(&path, schema) {
-            eprintln!("{}: {e}", path.display());
-            return std::process::ExitCode::FAILURE;
-        }
+        let path = args.out_dir.join(format!("{name}.schema.json"));
+        std::fs::write(&path, schema).with_context(|| path.display().to_string())?;
         println!("wrote {}", path.display());
     }
-    std::process::ExitCode::SUCCESS
+    Ok(())
 }

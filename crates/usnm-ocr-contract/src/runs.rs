@@ -288,6 +288,29 @@ pub fn validate(rows: &[RunRecord]) -> anyhow::Result<()> {
             "rows of different runs or pages"
         );
         ensure!(r.scale.is_finite() && r.scale > 0.0, "scale {}", r.scale);
+        // Measurements are finite and not negative; ratios are 0 to 1.
+        let measures = [
+            ("seconds_wall", Some(r.seconds_wall)),
+            ("seconds_cpu", r.seconds_cpu),
+            ("peak_mem_mb", r.peak_mem_mb),
+            ("instance_peak_mem_mb", r.instance_peak_mem_mb),
+            ("model_load_seconds", r.model_load_seconds),
+        ];
+        for (name, v) in measures {
+            if let Some(v) = v {
+                ensure!(v.is_finite() && v >= 0.0, "{name} {v}");
+            }
+        }
+        let ratios = [
+            ("mean_conf", r.mean_conf),
+            ("damage_before", r.damage_before),
+            ("damage_after", r.damage_after),
+        ];
+        for (name, v) in ratios {
+            if let Some(v) = v {
+                ensure!((0.0..=1.0).contains(&v), "{name} {v}");
+            }
+        }
     }
     let selected: Vec<&RunRecord> = rows.iter().filter(|r| r.selected).collect();
     ensure!(
@@ -533,6 +556,14 @@ mod tests {
         other.doc_id = "x".into();
         assert!(write(&[row(), other]).is_err(), "rows of two pages");
         assert!(read(Bytes::from_static(b"not parquet")).is_err());
+        for bad in [f64::NAN, -1.0, f64::INFINITY] {
+            let mut r = row();
+            r.seconds_wall = bad;
+            assert!(write(&[r]).is_err(), "seconds_wall {bad}");
+        }
+        let mut r = row();
+        r.mean_conf = Some(1.5);
+        assert!(write(&[r]).is_err());
         // A string that compresses well but expands past the reader's
         // bound is refused when written, not at the pickup.
         let mut huge = row();

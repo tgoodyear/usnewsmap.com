@@ -24,6 +24,9 @@ pub use usnm_alto::{Granularity, Markup};
 
 /// The contract's major version, sent as `--contract 1` and in `hello`.
 pub const CONTRACT: u32 = 1;
+/// The contract versions this code speaks: N and, during a move to a new
+/// major version, N-1 (13 §13.4.8).
+pub const SUPPORTED: &[u32] = &[CONTRACT];
 /// The longest line either side may send, newline included.
 pub const MAX_LINE: usize = 1 << 20;
 /// A failure's message (13 §13.4.4).
@@ -189,6 +192,26 @@ impl Hello {
             && profiles(self) == profiles(pinned)
     }
 
+    /// Checks what the worker refuses an instance for before the lock
+    /// comparison: a contract version it doesn't speak, an empty engine
+    /// family, id or version, or two profiles with one id.
+    pub fn check(&self) -> Result<(), ProtocolError> {
+        if !SUPPORTED.contains(&self.contract) {
+            return Err(ProtocolError::Contract(self.contract));
+        }
+        let e = &self.engine;
+        if e.family.is_empty() || e.id.is_empty() || e.version.is_empty() {
+            return Err(ProtocolError::Hello(
+                "an empty engine family, id or version",
+            ));
+        }
+        let ids: BTreeSet<&str> = self.profiles.iter().map(|p| p.id.as_str()).collect();
+        if ids.len() != self.profiles.len() {
+            return Err(ProtocolError::Hello("two profiles with one id"));
+        }
+        Ok(())
+    }
+
     /// The profile `id`, if this image has it.
     pub fn profile(&self, id: &str) -> Option<&Profile> {
         self.profiles.iter().find(|p| p.id == id)
@@ -333,6 +356,12 @@ pub enum ToAdapter {
 pub enum ProtocolError {
     #[error("a line over {MAX_LINE} bytes")]
     TooLong,
+    #[error("contract version {0}, not one of {SUPPORTED:?}")]
+    Contract(u32),
+    #[error("a bad hello: {0}")]
+    Hello(&'static str),
+    #[error("a bad page request: {0}")]
+    Page(&'static str),
     #[error("a line that isn't contract JSON: {0}")]
     NotContract(String),
     #[error("a result for run {got}, not {want}")]
@@ -380,6 +409,26 @@ pub fn decode_request(line: &[u8]) -> Result<ToAdapter, ProtocolError> {
     }
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     serde_json::from_slice(line).map_err(|e| ProtocolError::NotContract(e.to_string()))
+}
+
+impl PageRequest {
+    /// Checks a request before it is sent: a deadline, an image with a
+    /// size and dpi, and `out` the directory `/out/<run_id>/`.
+    pub fn check(&self) -> Result<(), ProtocolError> {
+        if self.deadline_ms == 0 {
+            return Err(ProtocolError::Page("no time left before the deadline"));
+        }
+        let i = &self.image;
+        if i.width == 0 || i.height == 0 || i.dpi == 0 {
+            return Err(ProtocolError::Page("an image with no size or dpi"));
+        }
+        if self.run_id.is_empty()
+            || self.out.trim_end_matches('/') != format!("/out/{}", self.run_id)
+        {
+            return Err(ProtocolError::Page("out isn't /out/<run_id>/"));
+        }
+        Ok(())
+    }
 }
 
 impl PageResult {
@@ -585,6 +634,23 @@ mod tests {
         v.profiles.push(v.profiles[0].clone());
         assert!(!v.matches(&v), "a duplicate profile id");
         assert!(h.profile("deu").is_some() && h.profile("eng").is_none());
+        h.check().unwrap();
+        let mut v = h.clone();
+        v.contract = 2;
+        assert_eq!(v.check(), Err(ProtocolError::Contract(2)));
+        let mut v = h.clone();
+        v.profiles.push(v.profiles[0].clone());
+        assert!(matches!(v.check(), Err(ProtocolError::Hello(_))));
+        page().check().unwrap();
+        let mut p = page();
+        p.deadline_ms = 0;
+        assert!(matches!(p.check(), Err(ProtocolError::Page(_))));
+        let mut p = page();
+        p.out = "/out/other/".into();
+        assert!(matches!(p.check(), Err(ProtocolError::Page(_))));
+        let mut p = page();
+        p.image.dpi = 0;
+        assert!(matches!(p.check(), Err(ProtocolError::Page(_))));
     }
 
     #[test]

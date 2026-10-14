@@ -3007,6 +3007,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "chrono",
+ "clap",
  "parquet",
  "schemars",
  "serde",
