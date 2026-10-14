@@ -22,7 +22,8 @@
 # as usnm (`usnm-ocr-worker check-engine`), then enables and starts the
 # unit, and disables it again if it doesn't stay up.
 # --rollback points the link back at the release installed before the
-# current one (or at --release), with its Tesseract image, and adds the
+# current one that isn't rejected (or at --release), with its Tesseract
+# image, and adds the
 # release it leaves to /var/lib/usnm-ocr-update/rejected, so the nightly
 # update doesn't install it again.
 # --update is the nightly update's install (update-worker.sh, #471): it
@@ -188,6 +189,8 @@ if [ "$ROLLBACK" = true ]; then
   if [ -z "$target" ]; then
     for r in $(installed); do
       [ "$r" != "$current" ] || continue
+      # Never back to a release that failed here: name it with --release.
+      ! grep -qxF "$r" "$REJECTED" 2> /dev/null || continue
       target=$r
       break
     done
