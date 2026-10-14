@@ -92,7 +92,15 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     })
     .await?;
     let report = finish(&job, report, host_id(work))?;
-    let profiles: BTreeSet<&str> = report.crops.iter().map(|c| c.profile.as_str()).collect();
+    // Every locked model, not only the profiles that scored: a crop the engine failed on still
+    // counts in the report.
+    let profiles: BTreeSet<&str> = engine::MODELS_LOCK
+        .lines()
+        .filter(|s| !s.starts_with('#'))
+        .filter_map(|s| s.split_whitespace().next())
+        .filter_map(|s| s.strip_prefix("tessdata/")?.strip_suffix(".traineddata"))
+        .chain(report.crops.iter().map(|c| c.profile.as_str()))
+        .collect();
     for p in profiles {
         crate::worker::check_models(&boinc::Engine {
             image: job.engine.image.clone(),

@@ -111,6 +111,7 @@ pub fn workunit_job_id(file: &Path) -> anyhow::Result<String> {
 /// Reads a report and refuses any field the schema doesn't have, so nothing but counts and
 /// identifiers can travel in it.
 pub fn parse_strict(bytes: &[u8]) -> anyhow::Result<Report> {
+    no_duplicate_keys(bytes)?;
     let raw: serde_json::Value = serde_json::from_slice(bytes).context("gold-result.json")?;
     let r: Report = serde_json::from_value(raw.clone()).context("gold-result.json")?;
     ensure!(
@@ -118,6 +119,62 @@ pub fn parse_strict(bytes: &[u8]) -> anyhow::Result<Report> {
         "the report has fields outside the schema"
     );
     Ok(r)
+}
+
+/// Refuses JSON with a repeated key in any object: parsing keeps only the last copy, while the
+/// uploaded file keeps both.
+pub fn no_duplicate_keys(bytes: &[u8]) -> anyhow::Result<()> {
+    use serde::de::{Deserializer as _, MapAccess, SeqAccess, Visitor};
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("JSON")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> Result<(), E> {
+            Ok(())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<(), A::Error> {
+            while a.next_element_seed(S)?.is_some() {}
+            Ok(())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<(), A::Error> {
+            let mut seen = BTreeSet::new();
+            while let Some(k) = a.next_key::<String>()? {
+                if !seen.insert(k.clone()) {
+                    return Err(serde::de::Error::custom(format!("duplicate key {k:?}")));
+                }
+                a.next_value_seed(S)?;
+            }
+            Ok(())
+        }
+    }
+    struct S;
+    impl<'de> serde::de::DeserializeSeed<'de> for S {
+        type Value = ();
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+            d.deserialize_any(V)
+        }
+    }
+    let mut d = serde_json::Deserializer::from_slice(bytes);
+    d.deserialize_any(V).context("gold-result.json")?;
+    d.end().context("gold-result.json")?;
+    Ok(())
 }
 
 /// Checks one report against the server's expectations.
@@ -295,6 +352,11 @@ pub(crate) mod tests {
         v["crops"][0]["text"] = "page text".into();
         std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
         assert!(check(&f, tmp.path()).is_err(), "extra field");
+        let dup = String::from_utf8(serde_json::to_vec(&good).unwrap())
+            .unwrap()
+            .replacen('{', "{\"completed_at\":\"page text\",", 1);
+        std::fs::write(&f, dup).unwrap();
+        assert!(check(&f, tmp.path()).is_err(), "duplicate key");
 
         let mut r = good.clone();
         r.crops[0].result.counts.ref_chars += 1;

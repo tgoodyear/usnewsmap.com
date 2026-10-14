@@ -93,6 +93,10 @@ pub fn job(p: &prepare::Prepared, engine: &Engine, unit: u32) -> anyhow::Result<
     };
     j.id = j.identity()?;
     j.validate()?;
+    ensure!(
+        serde_json::to_vec_pretty(&j)?.len() <= MAX_JSON,
+        "the job is over {MAX_JSON} bytes: the bundle names too many original files"
+    );
     Ok(j)
 }
 
