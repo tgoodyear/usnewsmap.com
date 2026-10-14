@@ -68,7 +68,7 @@ locked dependencies; capture the build revision and compiler in your release.
 Volunteers pull the worker image from a public GHCR package,
 `ghcr.io/tgoodyear/usnm-boinc-worker` (ADR-0019, addendum). The workflow
 `.github/workflows/boinc-worker.yml` builds it as above and pushes it. It runs
-only when started by hand; a pull request that changes what the image is built
+only when started by hand, and publishes only from `main`; a pull request that changes what the image is built
 from builds it without pushing:
 
 ```sh
@@ -79,7 +79,7 @@ until run=$(gh run list --workflow boinc-worker.yml --event workflow_dispatch --
   --json databaseId,displayTitle -q "map(select(.displayTitle | endswith(\"($c)\")))[0].databaseId // empty") &&
   [ -n "$run" ]; do sleep 5; done
 gh run watch "$run" --exit-status
-gh run view "$run" --json jobs -q '.jobs[0].url'   # the summary holds the digest
+gh run view "$run" --json url -q .url   # the run's summary holds the digest
 ```
 
 The run's summary, and the job's outputs `digest`, `image` and `tesseract_image`, give:

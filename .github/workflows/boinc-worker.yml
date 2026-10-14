@@ -56,10 +56,11 @@ jobs:
           image: ${{ env.IMAGE }}
           tag: ${{ github.sha }}
 
-  # A manual run: the same build, then the push. Only this job can write packages.
+  # A manual run on main: the same build, then the push. Only this job can write packages.
   publish:
     name: worker image (build, push)
-    if: github.event_name == 'workflow_dispatch'
+    # Only main, so what is published went through review and branch protection.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
