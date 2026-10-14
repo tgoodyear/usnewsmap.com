@@ -17,13 +17,14 @@
 # changes nothing. The registry comes from the stack's output, so the base resources must be
 # deployed first (scripts/provision-boinc.sh with no images in the settings).
 set -euo pipefail
-usage() { echo "usage: scripts/build-boinc-images.sh --env <prod|dev> [--allow-dirty] [--what-if]" >&2; exit 2; }
-ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false
+usage() { echo "usage: scripts/build-boinc-images.sh --env <prod|dev> [--allow-dirty] [--refresh-base] [--what-if]" >&2; exit 2; }
+ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false REFRESH_BASE=false
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --allow-dirty) ALLOW_DIRTY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
+    --refresh-base) REFRESH_BASE=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -72,12 +73,15 @@ have() { baz acr repository show --name "$registry" --image "$1:$2" -o none 2> /
 #   images/base/Containerfile (which pins both);
 # - usnm-boinc-bridge-bin: the usnm-boinc binary, keyed on the Rust sources, .dockerignore (the context is the repository) and its Containerfile.
 # Keys are git object hashes of the committed tree, so they name exactly what was built.
-base_key=$(git rev-parse "HEAD:contrib-compute/images/base/Containerfile" | cut -c1-16)
+# The base also takes the month: its apt packages (Apache, PHP, OpenSSL) aren't pinned, so it is
+# rebuilt at least monthly for security updates. --refresh-base forces a rebuild now.
+base_key=$(printf '%s %s\n' "$(git rev-parse "HEAD:contrib-compute/images/base/Containerfile")" "$(date -u +%Y-%m)" |
+  git hash-object --stdin | cut -c1-16)
 bin_inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:.dockerignore HEAD:contrib-compute/images/bridge-bin/Containerfile)
 if git rev-parse -q --verify HEAD:rust-toolchain.toml > /dev/null; then bin_inputs+=(HEAD:rust-toolchain.toml); fi
 bin_key=$(git rev-parse "${bin_inputs[@]}" | git hash-object --stdin | cut -c1-16)
 
-if have usnm-boinc-base "$base_key"; then
+if ! $REFRESH_BASE && have usnm-boinc-base "$base_key"; then
   echo "usnm-boinc-base:$base_key is in $registry; not rebuilding BOINC"
 else
   echo "building usnm-boinc-base:$base_key in $registry (BOINC from source: about 20 minutes)"

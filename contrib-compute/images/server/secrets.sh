@@ -63,14 +63,20 @@ kv_put() {
   log "created $name"
 }
 
-# kv_same HEADER NAME FILE: true when secret NAME holds exactly FILE's contents. Compared in tmpfs;
-# nothing is printed.
+# kv_same HEADER NAME FILE: 0 when secret NAME holds exactly FILE's contents, 1 when it holds
+# something else, 2 when it can't be read (Key Vault's error code is logged). Compared in tmpfs;
+# no value is printed.
 kv_same() {
-  local hdr=$1 name=$2 file=$3 got
-  got="$(dirname "$file")/readback"
-  (umask 077; curl -fsS -H @"$hdr" "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=$KV_API" |
-    jq -j .value > "$got") || { rm -f "$got"; return 1; }
-  cmp -s "$got" "$file"; local rc=$?
+  local hdr=$1 name=$2 file=$3 got resp code rc
+  got="$(dirname "$file")/readback" resp="$(dirname "$file")/readback.json"
+  code="$(umask 077; curl -sS -o "$resp" -w '%{http_code}' -H @"$hdr" \
+    "https://$KEY_VAULT_NAME.vault.azure.net/secrets/$name?api-version=$KV_API")" || code=000
+  if [ "$code" != 200 ]; then
+    echo "Key Vault answered $code reading $name: $(jq -c '.error | {code, message, inner: .innererror.code}' "$resp" 2>/dev/null || echo unreadable)" >&2
+    rm -f "$resp"; return 2
+  fi
+  (umask 077; jq -j .value "$resp" > "$got"); rm -f "$resp"
+  rc=0; cmp -s "$got" "$file" || rc=1
   rm -f "$got"; return $rc
 }
 
@@ -103,8 +109,13 @@ ensure_secrets() {
     # Key Vault has no create-if-absent, so an overlapping run could interleave the two PUTs
     # (provision-boinc.sh refuses to start this job while an execution runs). Read both back:
     # a pair that isn't the one just written fails here instead of serving mismatched keys.
-    kv_same "$hdr" upload-private-key "$work/upload_private" && kv_same "$hdr" upload-public-key "$work/upload_public" ||
-      fail "the upload key pair in $KEY_VAULT_NAME is not the pair this run wrote (an overlapping run?). Delete both secrets and run again"
+    local rc n
+    for n in private public; do
+      rc=0; kv_same "$hdr" "upload-$n-key" "$work/upload_$n" || rc=$?
+      [ "$rc" -ne 2 ] || fail "cannot read back upload-$n-key from $KEY_VAULT_NAME to check it; nothing was deleted. Run again"
+      [ "$rc" -eq 0 ] ||
+        fail "upload-$n-key in $KEY_VAULT_NAME is not the key this run wrote (an overlapping run?). Delete both upload key secrets and run again"
+    done
   fi
   log "secrets in $KEY_VAULT_NAME are complete"
 }
