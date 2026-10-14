@@ -81,11 +81,48 @@ pub fn add_jobs(dir: &Path, p: &prepare::Prepared, jobs: &[Job]) -> anyhow::Resu
 }
 
 pub fn load(file: &Path) -> anyhow::Result<Report> {
-    serde_json::from_slice(&read(file, MAX_RESULT)?).context("gold-result.json")
+    parse_strict(&read(file, MAX_RESULT)?)
+}
+
+pub fn lang_ok(lang: &str) -> bool {
+    !lang.is_empty() && lang.len() <= 8 && lang.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+fn reason_ok(reason: &str) -> bool {
+    matches!(reason, "engine-error" | "not-prepared")
+        || reason.strip_prefix("no-model:").is_some_and(lang_ok)
+}
+
+/// The unit a result file belongs to, from its upload name (`<workunit>_<replica>_<file>`), so a
+/// report from one unit can't be validated as another's.
+pub fn workunit_job_id(file: &Path) -> anyhow::Result<String> {
+    let name = file
+        .file_name()
+        .and_then(|s| s.to_str())
+        .context("result file name")?;
+    let id = name
+        .strip_prefix("usnm_gold_")
+        .and_then(|s| s.get(..64))
+        .filter(|s| usnm_ocr_contract::boinc::is_sha256(s))
+        .with_context(|| format!("{name} is not a usnm_gold result file"))?;
+    Ok(id.to_string())
+}
+
+/// Reads a report and refuses any field the schema doesn't have, so nothing but counts and
+/// identifiers can travel in it.
+pub fn parse_strict(bytes: &[u8]) -> anyhow::Result<Report> {
+    let raw: serde_json::Value = serde_json::from_slice(bytes).context("gold-result.json")?;
+    let r: Report = serde_json::from_value(raw.clone()).context("gold-result.json")?;
+    ensure!(
+        serde_json::to_value(&r)? == raw,
+        "the report has fields outside the schema"
+    );
+    Ok(r)
 }
 
 /// Checks one report against the server's expectations.
 pub fn check_report(r: &Report, e: &Expectations) -> anyhow::Result<()> {
+    ensure!(r.engine.name == "usnm-tesseract", "unknown engine name");
     ensure!(
         r.report_version == REPORT_VERSION,
         "unsupported report version"
@@ -152,7 +189,7 @@ pub fn check_report(r: &Report, e: &Expectations) -> anyhow::Result<()> {
             "{} reported twice",
             s.crop_id
         );
-        ensure!(s.reason.len() <= 2048, "{}: reason too long", s.crop_id);
+        ensure!(reason_ok(&s.reason), "{}: unknown skip reason", s.crop_id);
     }
     ensure!(
         seen.len() == e.crops.len(),
@@ -173,6 +210,11 @@ pub fn check_report(r: &Report, e: &Expectations) -> anyhow::Result<()> {
 /// script_validator's init script: exit 0 when the result is valid.
 pub fn check(file: &Path, dir: &Path) -> anyhow::Result<()> {
     let r = load(file)?;
+    let id = workunit_job_id(file)?;
+    ensure!(
+        r.boinc.as_ref().is_some_and(|b| b.job_id == id),
+        "the report belongs to another unit"
+    );
     check_report(&r, &load_expected(dir, &r.manifest_sha256)?)
 }
 
@@ -216,7 +258,7 @@ pub(crate) mod tests {
             crops,
             engine: EngineInfo {
                 dpi: 300,
-                name: "tesseract".into(),
+                name: "usnm-tesseract".into(),
                 psm: 3,
                 version: engine.version.clone(),
             },
@@ -240,9 +282,19 @@ pub(crate) mod tests {
         let (e, id) = setup(tmp.path());
         let good = report(&e, &id);
         check_report(&good, &e).unwrap();
-        let f = tmp.path().join("r.json");
+        let f = tmp.path().join(format!("usnm_gold_{id}_0_0"));
         std::fs::write(&f, serde_json::to_vec(&good).unwrap()).unwrap();
         check(&f, tmp.path()).unwrap();
+        let other = tmp.path().join(format!("usnm_gold_{}_0_0", "f".repeat(64)));
+        std::fs::copy(&f, &other).unwrap();
+        assert!(
+            check(&other, tmp.path()).is_err(),
+            "replayed into another unit"
+        );
+        let mut v = serde_json::to_value(&good).unwrap();
+        v["crops"][0]["text"] = "page text".into();
+        std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+        assert!(check(&f, tmp.path()).is_err(), "extra field");
 
         let mut r = good.clone();
         r.crops[0].result.counts.ref_chars += 1;
@@ -254,9 +306,11 @@ pub(crate) mod tests {
         assert!(check_report(&r, &e).is_err(), "a crop missing");
         r.skipped.push(bundle::Skipped {
             crop_id: c.result.crop_id,
-            reason: "no installed model for deu".into(),
+            reason: "no-model:deu".into(),
         });
         check_report(&r, &e).unwrap();
+        r.skipped[0].reason = "engine: some page text".into();
+        assert!(check_report(&r, &e).is_err(), "free text reason");
 
         let mut r = good.clone();
         r.crops[0].result.counts.char_edits = 0;

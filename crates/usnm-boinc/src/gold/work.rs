@@ -136,6 +136,10 @@ pub fn finish(job: &Job, mut report: Report, host_id: Option<u64>) -> anyhow::Re
         report.engine.version,
         job.engine.version
     );
+    // The report leaves the host: free-form reasons (engine errors can quote stderr) become codes.
+    for s in &mut report.skipped {
+        s.reason = reason_code(&s.reason);
+    }
     report.boinc = Some(BoincInfo {
         engine_base: job.engine.base.clone(),
         engine_image: job.engine.image.clone(),
@@ -143,6 +147,19 @@ pub fn finish(job: &Job, mut report: Report, host_id: Option<u64>) -> anyhow::Re
         job_id: job.id.clone(),
     });
     Ok(report)
+}
+
+/// A skipped crop's reason as a code: `no-model:<lang>`, `engine-error` or `not-prepared`.
+pub fn reason_code(reason: &str) -> String {
+    if let Some(lang) = reason.strip_prefix("no installed model for ") {
+        if super::validate::lang_ok(lang) {
+            return format!("no-model:{lang}");
+        }
+    }
+    if reason.starts_with("engine:") {
+        return "engine-error".into();
+    }
+    "not-prepared".into()
 }
 
 #[cfg(test)]
@@ -159,5 +176,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(host_id(tmp.path()), Some(4217));
+    }
+
+    #[test]
+    fn reasons_become_codes() {
+        assert_eq!(reason_code("no installed model for fra"), "no-model:fra");
+        assert_eq!(reason_code("engine: page text here"), "engine-error");
+        assert_eq!(reason_code("bln600-archive is not staged"), "not-prepared");
     }
 }

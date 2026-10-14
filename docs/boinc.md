@@ -405,9 +405,13 @@ host that ran it, so results from two hosts are not expected to match, and
 there is no compare script. `script_validator` runs `usnm_gold_check`
 (`usnm-boinc gold check`) on each result against
 `<project>/gold/<manifest sha256>.json`, which `gold submit` writes. It
-refuses a result unless:
+refuses a result with any field outside the schema, a skip reason other than
+`no-model:<lang>`, `engine-error` or `not-prepared` (the worker turns its
+reasons into these codes), or an engine name other than `usnm-tesseract`, and
+refuses it unless:
 
-- it names a unit this server made, with that unit's bundle version, manifest
+- it is the report of the unit it was uploaded for (the job id in it matches the
+  workunit name in the result file's name), a unit this server made, with that unit's bundle version, manifest
   sha256 and engine (image, base, version, PSM 3, DPI 300), and no `--limit`;
 - every crop of the bundle is scored or skipped exactly once;
 - each scored crop's reference characters and words equal the counts `gold
@@ -452,6 +456,8 @@ A unit left with a `submitting` marker is handled as for the assessment.
 
 - that stock `create_work --remote_file` keeps `<sticky/>` and `<no_delete/>`
   from the input template, and that the client follows figshare's redirect;
+- that `script_validator` passes the upload under its `<workunit>_<replica>_0`
+  name, which the validator reads the unit from;
 - that the Docker wrapper's slot mount includes `init_data.xml` (the host id is
   empty otherwise);
 - that `PROJECT_DIR` and `PROJECT` reach `script_validator`'s environment
