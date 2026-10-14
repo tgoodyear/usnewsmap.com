@@ -20,6 +20,8 @@ param projectStorageName string
 param workloadProfileName string
 @description('The container command. The default runs the bridge; the project-init job passes the entrypoint\'s --init-project.')
 param command array = [ '/usr/local/bin/bridge-job' ]
+@description('The app-version upload account (modules/uploads.bicep), which the install-versions step reads.')
+param uploadsAccountName string
 @description('Seconds before a run is stopped.')
 param timeoutSeconds int = 1800
 
@@ -55,6 +57,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
             { name: 'MASTER_HOST', value: masterHost }
             { name: 'PROJECT_DIR', value: '/project' }
             { name: 'HANDOFF_DIR', value: '/project/handoff' }
+            { name: 'UPLOADS_ACCOUNT', value: uploadsAccountName }
           ]
           volumeMounts: [ { volumeName: 'project', mountPath: '/project' } ]
         }

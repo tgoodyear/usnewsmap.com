@@ -102,6 +102,12 @@ jobs:
             python3 -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' "$f"
           done
       - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh
+      # The app installer and the install-versions step's signature checks (no server needed).
+      - name: The app version installer's tests pass
+        working-directory: .
+        run: |
+          python3 -m unittest -v scripts/boinc/test_install.py
+          python3 -m unittest -v contrib-compute/images/bridge/test_app_versions.py
       - name: Install Bicep
         working-directory: .
         run: scripts/ci/install-bicep.sh

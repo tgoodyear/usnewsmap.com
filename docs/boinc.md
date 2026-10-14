@@ -325,6 +325,77 @@ journals on persistent local storage at each stage; Azure Files/SMB lock and
 atomic-rename durability have not been verified. Exercise the hand-off on a
 small cohort before using the Azure-hosted submission job from #439.
 
+## Install a signed app version
+
+On the deployed server the project tree is on a share behind a private endpoint,
+so an operator outside the VNet can't copy a version into `apps/`. Instead they
+upload it, signed, to the upload account (`contrib-compute/infra/boinc/modules/uploads.bicep`,
+the stack's output `uploadsAccountName`, container `app-versions`). The bridge job's
+`install-versions` step reads it from there. The operators in the settings get
+Storage Blob Data Contributor on that container, and nothing else. The account
+takes Entra ID only (no shared key, no anonymous access), and its blob audit log
+goes to the stack's workspace.
+
+1. Stage the version on a trusted machine, from a checkout of this repository.
+   The stock `docker_wrapper` comes from the deployed server image:
+
+   ```sh
+   docker create --name w "$(jq -r .images.server contrib-compute/infra/boinc/env/prod.json)"
+   docker cp w:/usr/local/lib/usnm-boinc/docker_wrapper ./docker_wrapper && docker rm w
+   python3 scripts/boinc/install.py --stage stage --app usnm_gold --version 1.0 \
+     --wrapper ./docker_wrapper --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest>
+   ```
+
+   It writes `stage/usnm_gold/1.0/x86_64-pc-linux-gnu__docker/` with
+   `docker_wrapper_1`, `Dockerfile_1`, `job_1.toml` and `version.xml`, and
+   prints the files to sign.
+
+2. Sign on the offline machine that holds `code_sign_private`. Sign every file
+   except `version.xml`, which `bin/update_versions` doesn't treat as an app file:
+
+   ```sh
+   cd stage/usnm_gold/1.0/x86_64-pc-linux-gnu__docker
+   for f in docker_wrapper_1 Dockerfile_1 job_1.toml; do sign_executable "$f" code_sign_private > "$f.sig"; done
+   ```
+
+   `sign_executable` is BOINC's `tools/sign_executable` (`sign_executable FILE KEY`
+   prints the signature). The public half must be the project's
+   (`codeSignPublicKey` in `contrib-compute/infra/boinc/env/<env>.json`).
+
+3. Upload the directory, `.sig` files included, signed in with `az login`:
+
+   ```sh
+   az storage blob upload-batch --auth-mode login --subscription <subscription> \
+     --account-name <uploadsAccountName> --destination app-versions \
+     --destination-path usnm_gold/1.0/x86_64-pc-linux-gnu__docker \
+     --source stage/usnm_gold/1.0/x86_64-pc-linux-gnu__docker
+   ```
+
+4. Install it ([Start a bridge step](#start-a-bridge-step)):
+
+   ```sh
+   scripts/start-boinc-bridge.sh --env prod --step install-versions \
+     --var UPLOAD_APP=usnm_gold --var UPLOAD_VERSION=1.0 --wait-mins 20
+   ```
+
+   `UPLOAD_PLATFORM` defaults to `x86_64-pc-linux-gnu__docker`. The step
+   (`contrib-compute/images/bridge/app_versions.py`) downloads
+   `<app>/<version>/<platform>/` with the server's identity and refuses the whole
+   version if a name isn't a plain file name, if `version.xml` is missing or
+   names a file that wasn't uploaded, if any other file has no `.sig` (or a
+   `.sig` has no file), or if any signature fails BOINC's
+   `crypt_prog -verify` against the project's `keys/code_sign_public`. A good
+   version is written next to `<project>/apps/<app>/<version>/<platform>/` and
+   renamed into place, with the app's templates from the image. Then the step runs
+   `bin/update_versions --noconfirm`, which reads each `.sig` and, with no private
+   key on the server, would stop at any file that had none. A rerun is harmless:
+   a version already placed with the same bytes is kept, one with other bytes is
+   refused (use a new version number), and `update_versions` skips versions
+   already in the database.
+
+The step needs a bridge image that has it (`scripts/build-boinc-images.sh`) and
+the app registered first ([Register the apps](#register-the-apps)).
+
 ## Allocation and recovery
 
 Export filters the manifest while decoding, retaining only selected batch/page

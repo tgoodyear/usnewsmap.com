@@ -50,7 +50,7 @@ done
 die() { echo "error: $*" >&2; exit 1; }
 # The settings contrib-compute/infra/boinc/modules/bridge-job.bicep gives the container
 # (scripts/test_boinc_scripts.py checks the two lists agree).
-BASE_VARS=(AZURE_CLIENT_ID KEY_VAULT_NAME DB_HOST DB_NAME MASTER_HOST PROJECT_DIR HANDOFF_DIR)
+BASE_VARS=(AZURE_CLIENT_ID KEY_VAULT_NAME DB_HOST DB_NAME MASTER_HOST PROJECT_DIR HANDOFF_DIR UPLOADS_ACCOUNT)
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or gold-prepare"
 seen=" "
 for v in ${VARS[@]+"${VARS[@]}"}; do

@@ -8,7 +8,7 @@
 targetScope = 'subscription'
 
 import { guardrailPolicyNames } from 'guardrails.bicep'
-import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
+import { boincUploadsAccountName, checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
 import { lakeOpen, nodeIpList, publicAccountIds } from 'public-accounts.bicep'
 
 @minLength(2)
@@ -940,7 +940,8 @@ module policies 'modules/policy-assignments.bicep' = if (deployPolicies) {
 
 // ADR-0019 decision 5: the BOINC server's own group (created above; it holds
 // only BOINC resources) gets the same guardrails as the others, so the
-// waivers below are meaningful. No public accounts live here.
+// waivers below are meaningful. One public account lives here: the
+// app-version upload account (Entra only; contrib-compute/infra/boinc/modules/uploads.bicep).
 module boincPolicies 'modules/policy-assignments.bicep' = if (deployPolicies && deployBoincGroup) {
   scope: resourceGroup(n.boincRg)
   name: 'policy-assignments-boinc'
@@ -948,7 +949,19 @@ module boincPolicies 'modules/policy-assignments.bicep' = if (deployPolicies && 
   params: {
     definitionIds: guardrailPolicyIds
     definitionParameters: {
-      '${guardrailPolicyNames.auditPublicAccess}': { effect: { value: 'deny' } }
+      '${guardrailPolicyNames.auditPublicAccess}': {
+        effect: { value: 'deny' }
+        publicAccountIds: {
+          value: [
+            resourceId(
+              subscription().subscriptionId,
+              n.boincRg,
+              'Microsoft.Storage/storageAccounts',
+              boincUploadsAccountName(subscription().subscriptionId, env)
+            )
+          ]
+        }
+      }
     }
   }
 }

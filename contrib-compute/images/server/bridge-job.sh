@@ -37,6 +37,15 @@
 # The step and its settings (JOB_ID included) are read from the environment. Each run's are
 # written into the job's own template by scripts/start-boinc-bridge.sh, which then starts it
 # with no execution override (design.md section 9, question 4). UNVERIFIED against a live job.
+# A signed app version from the upload account (docs/boinc.md#install-a-signed-app-version):
+#   BRIDGE_STEP=install-versions  UPLOAD_APP=usnm_ocr|usnm_assess|usnm_gold UPLOAD_VERSION=1.0
+#                               [UPLOAD_PLATFORM=x86_64-pc-linux-gnu__docker]
+#                               refuses any file without a .sig that verifies against the
+#                               project's code_sign_public, places the version under apps/,
+#                               then runs bin/update_versions --noconfirm (bridge image only)
+#
+# Settled by this script, open in design.md section 9 (question 4): the job id is read from
+# the environment, so each run needs a start with an environment override. UNVERIFIED.
 set -euo pipefail
 # shellcheck source=lib.sh
 . /usr/local/lib/usnm-boinc/lib.sh
@@ -78,7 +87,7 @@ case "$step" in
     exec usnm-boinc gold collect --root "$GOLD" --project "$PROJ" \
       --spool "${GOLD_SPOOL:?set GOLD_SPOOL}" --out "$GOLD/out" ;;
 esac
-if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != register-apps ]; then
+if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != register-apps ] && [ "$step" != install-versions ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -115,6 +124,21 @@ case "$step" in
     cp "$TEMPLATES/project.xml" "$PROJ/project.xml"
     cd "$PROJ"
     exec bin/xadd ;;
+  install-versions)
+    [ -f /usr/local/lib/usnm-boinc/app_versions.py ] || fail "install-versions needs the bridge image"
+    python3 /usr/local/lib/usnm-boinc/app_versions.py --account "${UPLOADS_ACCOUNT:?set UPLOADS_ACCOUNT}" \
+      --app "${UPLOAD_APP:?set UPLOAD_APP}" --version "${UPLOAD_VERSION:?set UPLOAD_VERSION}" \
+      --platform "${UPLOAD_PLATFORM:-x86_64-pc-linux-gnu__docker}" --project "$PROJ" \
+      --templates /usr/local/lib/usnm-boinc/app-templates
+    stamp="$(mktemp)"
+    rc=0
+    # update_versions skips versions already in the database, so a rerun adds nothing twice.
+    (cd "$PROJ" && bin/update_versions --noconfirm) || rc=$?
+    for d in "$PROJ/download" "$PROJ/apps" "$PROJ/templates"; do
+      find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
+    done
+    rm -f "$stamp"
+    exit "$rc" ;;
   submit)
     # Submission publishes readable download inputs before create_work. The
     # hand-off journal stays private; no permission repair happens afterwards.
@@ -122,5 +146,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, reconcile, register-apps, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit or gold-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, reconcile, register-apps, install-versions, assess-stage, assess-submit, assess-collect, gold-prepare, gold-submit or gold-collect" ;;
 esac

@@ -48,6 +48,7 @@ BASE = {
     "MASTER_HOST": "boinc.usnewsmap.com",
     "PROJECT_DIR": "/project",
     "HANDOFF_DIR": "/project/handoff",
+    "UPLOADS_ACCOUNT": "usnmboincupstprodabc123",
 }
 
 

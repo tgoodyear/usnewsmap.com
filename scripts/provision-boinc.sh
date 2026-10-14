@@ -178,18 +178,22 @@ cat << STEPS
    it with a managed certificate (stage $STAGE of 2 above; run it again if short of 2). The master
    URL cannot change after volunteers attach.
 
-3. App version and code signing; the private key stays offline. On a trusted machine, from a
-   checkout of this repository, against a scratch project directory:
+3. App version and code signing; the private key stays offline (docs/boinc.md, "Install a
+   signed app version"). On a trusted machine, from a checkout of this repository:
        docker create --name w $SERVER_IMAGE && docker cp w:/usr/local/lib/usnm-boinc/docker_wrapper ./docker_wrapper
-       mkdir -p scratch && touch scratch/config.xml
-       python3 scripts/boinc/install.py --project scratch --wrapper ./docker_wrapper \\
+       python3 scripts/boinc/install.py --stage stage --wrapper ./docker_wrapper --app usnm_ocr \\
          --image ${WORKER_IMAGE:-ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<digest, ADR-0019 addendum>} --version 1.0
-   On the OFFLINE machine, for each file F in the version directory:
+   On the OFFLINE machine, for each file F in the version directory but version.xml:
        sign_executable F code_sign_private > F.sig
    Put the PUBLIC key, code_sign_public, in codeSignPublicKey in $BOINC_SETTINGS (commit,
-   then run this script: the deployment writes it to Key Vault $vault). Copy the version
-   directory and templates, with the .sig files, to the project on the share from inside the
-   VNet (a bridge job run), then run bin/update_versions there.
+   then run this script: the deployment writes it to Key Vault $vault). Upload the directory,
+   .sig files included, with Entra ID (no VNet needed), then install it with the bridge job:
+       az storage blob upload-batch --auth-mode login --subscription $SUBSCRIPTION \\
+         --account-name $(boinc_output uploadsAccountName) --destination app-versions \\
+         --destination-path usnm_ocr/1.0/x86_64-pc-linux-gnu__docker --source stage/usnm_ocr/1.0/x86_64-pc-linux-gnu__docker
+       scripts/start-boinc-bridge.sh --env $ENV_NAME --step install-versions \\
+         --var UPLOAD_APP=usnm_ocr --var UPLOAD_VERSION=1.0 --wait-mins 20
+   It refuses any file whose .sig does not verify, then runs bin/update_versions.
 
 4. Check:
        curl -fsS https://$fqdn/usnmocr/get_project_config.php

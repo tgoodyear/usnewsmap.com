@@ -18,4 +18,9 @@ COPY contrib-compute/images/bridge/usnm_assess_check contrib-compute/images/brid
      /usr/local/lib/usnm-boinc/
 COPY docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py \
      /usr/local/lib/usnm-boinc/assess/
+# The install-versions step (docs/boinc.md#install-a-signed-app-version): its checker, and the
+# app templates scripts/boinc/install.py installs.
+COPY contrib-compute/images/bridge/app_versions.py /usr/local/lib/usnm-boinc/
+COPY ocr/boinc/usnm_ocr_in ocr/boinc/usnm_ocr_out ocr/boinc/usnm_assess_in ocr/boinc/usnm_assess_crash_in \
+     ocr/boinc/usnm_assess_out ocr/boinc/usnm_gold_out /usr/local/lib/usnm-boinc/app-templates/
 ENTRYPOINT ["/usr/local/bin/bridge-job"]

@@ -52,6 +52,18 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(target.parts[-3], "usnm_gold")
         self.assertTrue((self.project / "templates" / "usnm_gold_out").is_file())
 
+    def test_stage_needs_no_project_and_writes_no_templates(self):
+        out = self.root / "stage"
+        target = module.stage(out, self.wrapper, IMAGE, "1.0", "usnm_gold")
+        self.assertEqual(target, out / "usnm_gold" / "1.0" / "x86_64-pc-linux-gnu__docker")
+        self.assertEqual(sorted(p.name for p in target.iterdir()),
+                         ["Dockerfile_1", "docker_wrapper_1", "job_1.toml", "version.xml"])
+        self.assertFalse((out / "templates").exists())
+        with self.assertRaises(FileExistsError):
+            module.stage(out, self.wrapper, IMAGE, "1.0", "usnm_gold")
+        with self.assertRaises(ValueError):
+            module.stage(out, self.wrapper, "image:latest", "2.0", "usnm_gold")
+
 
 if __name__ == "__main__":
     unittest.main()

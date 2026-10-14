@@ -62,6 +62,14 @@ func checkedEnvName(e string) string =>
     ? e
     : string(int('The environment name must be prod, dev or x plus 1-4 lowercase letters or digits (ADR-0017), not "${e}"'))
 
+// The BOINC app-version upload account (contrib-compute/infra/boinc/modules/uploads.bicep).
+// Both stacks need its name: the BOINC stack creates it, and this stack lists it as the one
+// public account in the BOINC group's public-network policy assignment. So it is made from
+// the subscription and environment only, never the group's location.
+@export()
+func boincUploadsAccountName(subscriptionId string, env string) string =>
+  usnmCompactName('boincup', 'st', env, take(uniqueString(subscriptionId, env, 'boinc-uploads'), 6))
+
 // Function words (ADR-0017, "Function words"). A new one is added here in
 // the PR that needs it, with a line in the ADR's table.
 @export()
@@ -70,6 +78,7 @@ var functionWords = [
   'archive'
   'backfill'
   'boinc'
+  'boincup'
   'ci'
   'cong'
   'core'

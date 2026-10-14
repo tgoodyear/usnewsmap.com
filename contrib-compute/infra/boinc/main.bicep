@@ -13,7 +13,7 @@
 // the registry (scripts/build-boinc-images.sh); with the images set, the app and the jobs too.
 targetScope = 'resourceGroup'
 
-import { checkedEnvName, usnmName, usnmCompactName, usnmGlobalName } from '../../../infra/naming.bicep'
+import { boincUploadsAccountName, checkedEnvName, usnmName, usnmCompactName, usnmGlobalName } from '../../../infra/naming.bicep'
 
 @description('Environment: prod or dev (ADR-0017).')
 param env string
@@ -77,6 +77,7 @@ var names = {
   secretsIdentity: usnmName('boinc-secrets', 'id', envName)
   secretsJob: usnmName('boinc-secrets', 'caj', envName)
   site: usnmName('boinc', 'swa', envName)
+  uploads: boincUploadsAccountName(subscription().subscriptionId, envName)
   vault: usnmCompactName('boinc', 'kv', envName, sfx)
   vaultEndpoint: usnmName('boinc-vault', 'pep', envName)
   vnet: usnmName('boinc', 'vnet', envName)
@@ -140,6 +141,19 @@ module storage 'modules/storage.bicep' = {
     location: location
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.filesDnsZoneId
+  }
+}
+
+// Signed app versions from an operator outside the VNet (docs/boinc.md, "Install a signed app
+// version"); the bridge job's install-versions step reads them.
+module uploads 'modules/uploads.bicep' = {
+  name: 'uploads'
+  params: {
+    accountName: names.uploads
+    location: location
+    operatorPrincipalIds: operatorPrincipalIds
+    readerPrincipalId: identity.properties.principalId
+    logAnalyticsWorkspaceId: monitor.outputs.id
   }
 }
 
@@ -226,6 +240,7 @@ module bridgeJob 'modules/bridge-job.bicep' = if (withApp) {
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     timeoutSeconds: bridgeTimeoutSeconds
+    uploadsAccountName: uploads.outputs.name
   }
 }
 
@@ -250,6 +265,7 @@ module initJob 'modules/bridge-job.bicep' = if (withApp) {
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
     command: [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--init-project' ]
+    uploadsAccountName: uploads.outputs.name
   }
 }
 
@@ -276,4 +292,6 @@ output mysqlHost string = mysql.outputs.host
 output registryName string = registryName
 output registryServer string = registryServer
 output secretsJobName string = withApp ? secretsJob!.outputs.name : ''
+output uploadsAccountName string = uploads.outputs.name
+output uploadsContainerName string = uploads.outputs.containerName
 output staticSiteHost string = frontend.outputs.defaultHostname
