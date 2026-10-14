@@ -90,6 +90,13 @@ class Quickwit(unittest.TestCase):
         self.change = change
         self.assertFalse(self.quickwit())
 
+    def test_a_profile_setting_runs_it(self):
+        def change():
+            with (self.repo / "Cargo.toml").open("a") as h:
+                h.write("\n[profile.test]\noverflow-checks = false\n")
+        self.change = change
+        self.assertTrue(self.quickwit())
+
     @unittest.skipUnless(CARGO, "no cargo")
     def test_a_dependency_bump_under_usnm_search_runs_it(self):
         def change():

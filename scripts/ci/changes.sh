@@ -146,6 +146,15 @@ quickwit_crates() {
 quickwit_tree() {
   (cd "$1" && cargo tree --locked -p usnm-search -p usnm-ingest -e normal,build,dev --prefix none -f '{p} {f}' | sed 's| (/[^)]*)||' | sort -u)
 }
+# root_settings: the workspace manifest at revision $1 without its member list
+# and [workspace.dependencies], whose effect on these crates the package tree
+# shows. Anything else there (profiles, workspace.package, lints, patches)
+# can change how the tests build without changing the tree.
+root_settings() {
+  git show "$1:Cargo.toml" | awk '
+    /^members = \[/ { skip = 1 } skip { if (/^\]/) skip = 0; next }
+    /^\[/ { deps = ($0 == "[workspace.dependencies]") } !deps'
+}
 # The workspace manifest and the lock file: the job runs only when the
 # packages resolved for those crates differ between the base and this
 # revision (a crate added outside them changes neither). Run it if that can't
@@ -153,6 +162,7 @@ quickwit_tree() {
 quickwit_lock_changed() {
   local base dir before after
   case "$range" in *...*) base=$(git merge-base "${range%%...*}" "${range##*...}") ;; *) base=${range%%..*} ;; esac || return 0
+  [ "$(root_settings "$base")" = "$(root_settings HEAD)" ] || return 0
   dir=$(mktemp -d)
   git worktree add -q --detach "$dir" "$base" || { rm -rf "$dir"; return 0; }
   before=$(quickwit_tree "$dir") || before=
