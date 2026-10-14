@@ -386,7 +386,16 @@ fn bounded_files_and_mutually_exclusive_bridge_processes() {
     let lock = usnm_boinc::Lock::take(root.path()).unwrap();
     assert!(usnm_boinc::Lock::take(root.path()).is_err());
     drop(lock);
-    assert!(usnm_boinc::Lock::take(root.path()).is_ok());
+    // Another test's child process can hold a forked copy of the descriptor until it execs,
+    // which keeps the lock a moment longer; the lock itself is released.
+    assert!((0..100).any(|_| {
+        usnm_boinc::Lock::take(root.path()).is_ok()
+            || (
+                std::thread::sleep(std::time::Duration::from_millis(10)),
+                false,
+            )
+                .1
+    }));
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(&file, root.path().join("link")).unwrap();
