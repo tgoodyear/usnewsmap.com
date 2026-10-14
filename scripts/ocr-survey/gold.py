@@ -1064,6 +1064,7 @@ def download_zip(url: str, dest: Path, tries: int = 4) -> None:
     already there) is removed and fetched again, with a growing pause."""
     import time
     import zipfile
+    import lzma
     import zlib
 
     def bad_reason() -> str | None:
@@ -1075,7 +1076,7 @@ def download_zip(url: str, dest: Path, tries: int = 4) -> None:
         try:
             with zipfile.ZipFile(dest) as zf:
                 broken = zf.testzip()
-        except (zipfile.BadZipFile, zlib.error, OSError, EOFError) as e:
+        except (zipfile.BadZipFile, zlib.error, lzma.LZMAError, OSError, EOFError) as e:
             return f"unreadable zip ({e})"
         return f"corrupt member {broken}" if broken else None
 
