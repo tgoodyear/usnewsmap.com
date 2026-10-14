@@ -73,8 +73,9 @@ have() { baz acr repository show --name "$registry" --image "$1:$2" -o none 2> /
 # - usnm-boinc-bridge-bin: the usnm-boinc binary, keyed on the Rust sources, .dockerignore (the context is the repository) and its Containerfile.
 # Keys are git object hashes of the committed tree, so they name exactly what was built.
 base_key=$(git rev-parse "HEAD:contrib-compute/images/base/Containerfile" | cut -c1-16)
-bin_key=$(git rev-parse HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:.dockerignore HEAD:contrib-compute/images/bridge-bin/Containerfile \
-  $(git rev-parse -q --verify HEAD:rust-toolchain.toml) | git hash-object --stdin | cut -c1-16)
+bin_inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:.dockerignore HEAD:contrib-compute/images/bridge-bin/Containerfile)
+if git rev-parse -q --verify HEAD:rust-toolchain.toml > /dev/null; then bin_inputs+=(HEAD:rust-toolchain.toml); fi
+bin_key=$(git rev-parse "${bin_inputs[@]}" | git hash-object --stdin | cut -c1-16)
 
 if have usnm-boinc-base "$base_key"; then
   echo "usnm-boinc-base:$base_key is in $registry; not rebuilding BOINC"

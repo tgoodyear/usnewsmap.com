@@ -157,9 +157,7 @@ done
 echo "secrets complete ($execution)"
 
 fqdn=$(boinc_output appFqdn)
-bridge_job=$(boinc_output bridgeJobName)
 vault=$(boinc_output keyVaultName)
-label=${MASTER_HOST%%.*}
 cat << STEPS
 
 == Done by this script: the stack, the secrets. Next, by hand, once each:

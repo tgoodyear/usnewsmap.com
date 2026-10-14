@@ -55,6 +55,7 @@ init_project() {
   mkdir -p "$scratch"
   # Removed on any exit, including a make_project failure under set -e.
   # Expanded now: the locals are gone by the time an EXIT trap runs under set -u.
+  # shellcheck disable=SC2064 # expanded on purpose (see above)
   trap "rm -rf '$scratch' '$PROJ/keys'" EXIT
   # No marker means no finished init: a failed run's tree and database are started afresh.
   # make_project reads $USER, which a container is not given.
