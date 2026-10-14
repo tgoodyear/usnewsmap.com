@@ -65,8 +65,12 @@ boinc_az_check
 PUBLIC_KEY=$(jq -r .codeSignPublicKey "$BOINC_SETTINGS")
 [ -n "$PUBLIC_KEY" ] || die "no codeSignPublicKey in $BOINC_SETTINGS"
 [ -z "$(git status --porcelain -- "$BOINC_SETTINGS")" ] || die "$BOINC_SETTINGS has uncommitted changes: commit them first (this run deploys the stack and writes images.appver)"
-[ -n "$(git status --porcelain --untracked-files=no)" ] &&
-  echo "warning: the working tree has uncommitted changes; the release uses the committed HEAD" >&2
+# A real run deploys this checkout's provision-boinc.sh and Bicep, not only HEAD: refuse a tree
+# that differs from HEAD. --what-if only reads, so it warns.
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  $WHAT_IF || die "the working tree differs from HEAD (git status); a release deploys this checkout's Bicep, so commit or clean first"
+  echo "warning: the working tree differs from HEAD; a real run refuses this" >&2
+fi
 sha=$(git rev-parse HEAD)
 registry=$(jq -er .registry infra/names/"$ENV_NAME".json) || die "no registry in infra/names/$ENV_NAME.json"
 APPVER_REPO=usnm-boinc-appver
