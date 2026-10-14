@@ -338,13 +338,13 @@ none of the queue grants.
 Its grants (`infra/modules/boinc-handoff-runner.bicep` and `boinc-handoff-logs.bicep`)
 go to the object id in the private setting `USNM_BOINC_HANDOFF_RUNNER`:
 
-| Scope | Role | For |
-| --- | --- | --- |
-| Cosmos `usnm/ops` | Cosmos DB Built-in Data Contributor | the `ocr-sync` lease and the published version |
-| lake `curated`, `ocr-local/` only | `usnm-boinc-ledger-role-<env>` (list, read, create; no delete) | the native ledger |
-| lake `reference` | Storage Blob Data Reader | `{version}/batches.json`, `titles.json` |
-| exchange `ocr-out` | the OCR nodes' writer role (list, read, create; no delete) | collect's ALTO and Parquet |
-| `usnm-boinc-log-<env>` workspace | Log Analytics Reader | the bridge jobs' logs |
+| Scope                             | Role                                                           | For                                            |
+| --------------------------------- | -------------------------------------------------------------- | ---------------------------------------------- |
+| Cosmos `usnm/ops`                 | Cosmos DB Built-in Data Contributor                            | the `ocr-sync` lease and the published version |
+| lake `curated`, `ocr-local/` only | `usnm-boinc-ledger-role-<env>` (list, read, create; no delete) | the native ledger                              |
+| lake `reference`                  | Storage Blob Data Reader                                       | `{version}/batches.json`, `titles.json`        |
+| exchange `ocr-out`                | the OCR nodes' writer role (list, read, create; no delete)     | collect's ALTO and Parquet                     |
+| `usnm-boinc-log-<env>` workspace  | Log Analytics Reader                                           | the bridge jobs' logs                          |
 
 Set up once, from the operator's machine and the Proxmox host, after the BOINC stack is
 deployed (the workspace grant needs `usnm-boinc-log-<env>` to exist):
