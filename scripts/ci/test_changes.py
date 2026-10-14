@@ -61,6 +61,10 @@ class Quickwit(unittest.TestCase):
         self.change = lambda: self.touch("crates/usnm-boinc/src/lib.rs")
         self.assertFalse(self.quickwit())
 
+    def test_the_ocr_survey_crate_doesnt_run_it(self):
+        self.change = lambda: self.touch("crates/usnm-ocr-survey/src/lib.rs")
+        self.assertFalse(self.quickwit())
+
     def test_a_crate_in_the_closure_runs_it(self):
         self.change = lambda: self.touch("crates/usnm-core/src/lib.rs")
         self.assertTrue(self.quickwit())
