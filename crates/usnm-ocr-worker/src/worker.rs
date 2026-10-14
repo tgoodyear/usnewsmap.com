@@ -944,6 +944,7 @@ mod tests {
                     .into(),
                 alto: FAKE_ALTO.as_bytes().to_vec(),
                 page: None,
+                layout_from: "ALTO",
                 engine: "tesseract-5.5.1/deu_latf+deu".into(),
             })
         }

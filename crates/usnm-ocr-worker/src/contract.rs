@@ -31,8 +31,8 @@ use usnm_ocr_contract::engine::{
 };
 
 use crate::engine::{
-    checked, podman_command, read_output, tail, ContainerGuard, Engine, EngineError, EngineOutput,
-    Limits, PageDir, Remote, Sandbox, ENGINE_USER, ROUTE, ROUTE_VERSION,
+    checked, podman_command, tail, ContainerGuard, Engine, EngineError, EngineOutput, Limits,
+    PageDir, Remote, Sandbox, ENGINE_USER, ROUTE, ROUTE_VERSION,
 };
 
 /// The label on instance containers, so stale ones can be found.
@@ -106,8 +106,12 @@ enum Slot {
 }
 
 /// A running adapter.
+/// Cleanups of instances dropped without [`Instance::retire`] (a page
+/// cancelled at shutdown), which [`ContractEngine::shutdown`] waits for.
+type Cleanups = Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>;
+
 struct Instance {
-    child: Child,
+    child: Option<Child>,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     /// The last 50 lines of stderr, for a failure's message.
@@ -116,6 +120,8 @@ struct Instance {
     hello: Hello,
     /// Removes the container when the instance goes.
     container: Option<ContainerGuard>,
+    sandbox: Option<Sandbox>,
+    cleanups: Cleanups,
     jobs: u32,
 }
 
@@ -133,21 +139,14 @@ impl Instance {
     /// "finish and exit"), gives it 10 s, kills it, removes its container,
     /// then frees its scratch slot. Dropping an instance only starts a
     /// kill; this finishes before a replacement or the worker's exit.
-    async fn retire(mut self, sandbox: Option<&Sandbox>) {
+    async fn retire(mut self) {
         let _ = self.stdin.shutdown().await;
-        if tokio::time::timeout(Duration::from_secs(10), self.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = self.child.kill().await;
-        }
-        if let Some(mut c) = self.container.take() {
-            c.finish().await;
-        }
-        match (self.dirs.slot.take(), sandbox) {
-            (Some(Slot::Podman(dir)), Some(sb)) => sb.release(dir).await,
-            (other, _) => drop(other),
-        }
+        let (child, container, slot) = (
+            self.child.take(),
+            self.container.take(),
+            self.dirs.slot.take(),
+        );
+        cleanup(child, container, slot, self.sandbox.clone()).await;
     }
 
     fn stderr_tail(&self) -> String {
@@ -285,6 +284,7 @@ pub struct ContractEngine {
     source: String,
     image: Digest,
     runs: AtomicU64,
+    cleanups: Cleanups,
 }
 
 impl ContractEngine {
@@ -305,7 +305,8 @@ impl ContractEngine {
                 (Some(Sandbox::detect(podman, remote, image).await?), digest)
             }
         };
-        let first = spawn(&opts, sandbox.as_ref()).await?;
+        let cleanups = Cleanups::default();
+        let first = spawn(&opts, sandbox.as_ref(), &cleanups).await?;
         first
             .hello
             .check()
@@ -328,6 +329,7 @@ impl ContractEngine {
             image,
             opts,
             runs: AtomicU64::new(0),
+            cleanups,
         })
     }
 
@@ -363,7 +365,7 @@ impl ContractEngine {
         if let Some(i) = self.idle.lock().ok().and_then(|mut v| v.pop()) {
             return Ok(i);
         }
-        let inst = spawn(&self.opts, self.sandbox.as_ref()).await?;
+        let inst = spawn(&self.opts, self.sandbox.as_ref(), &self.cleanups).await?;
         if !inst.hello.matches(&self.hello) {
             bail!("a new instance's hello differs from the first one's");
         }
@@ -373,7 +375,7 @@ impl ContractEngine {
     async fn give_back(&self, mut inst: Instance) {
         inst.jobs += 1;
         if inst.jobs >= self.opts.max_jobs.max(1) {
-            inst.retire(self.sandbox.as_ref()).await;
+            inst.retire().await;
             return;
         }
         if let Ok(mut v) = self.idle.lock() {
@@ -488,7 +490,9 @@ impl ContractEngine {
             Ok(Err(e)) => return Err(anyhow::anyhow!("engine protocol: {e}").into()),
             Ok(Ok(None)) => {
                 // Give its last stderr lines a moment to arrive.
-                let _ = tokio::time::timeout(Duration::from_secs(2), inst.child.wait()).await;
+                if let Some(c) = inst.child.as_mut() {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), c.wait()).await;
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 return Err(
                     anyhow::anyhow!("the engine instance exited; {}", inst.stderr_tail()).into(),
@@ -536,28 +540,27 @@ impl ContractEngine {
                 });
             }
         }
-        // The whole job directory, its unreferenced files included, within
-        // its cap (13 §13.4.7 step 1).
-        let used = dir_size(host_out, engine_files::JOB_DIR)?;
-        if used > engine_files::JOB_DIR {
-            return Err(anyhow::anyhow!(
-                "engine protocol: the page's out directory holds {used} bytes, over {}",
-                engine_files::JOB_DIR
-            )
-            .into());
-        }
-        let file = |path: &str| {
-            let name = usnm_ocr_contract::engine::file_name_in(&req.out, path)
-                .context("a file outside the page's out directory")?;
-            Ok::<PathBuf, anyhow::Error>(host_out.join(name))
+        // The page's directory is opened once, without following a
+        // symlink, and every check and read is relative to it: the adapter
+        // may still be running. It holds only regular files, within the
+        // job's cap (13 §13.4.7 step 1).
+        let dir = open_dir(host_out).map_err(|e| anyhow::anyhow!("engine protocol: {e:#}"))?;
+        check_job_dir(&dir, engine_files::JOB_DIR)
+            .map_err(|e| anyhow::anyhow!("engine protocol: {e:#}"))?;
+        let name = |path: &str| {
+            usnm_ocr_contract::engine::file_name_in(&req.out, path)
+                .map(str::to_owned)
+                .context("a file outside the page's out directory")
         };
         let layout = result.layout.as_ref().context("no layout")?;
         let text = match &result.text {
-            Some(t) => String::from_utf8_lossy(&read_output(&file(&t.path)?, engine_files::TEXT)?)
-                .into_owned(),
+            Some(t) => {
+                String::from_utf8_lossy(&read_at(&dir, &name(&t.path)?, engine_files::TEXT)?)
+                    .into_owned()
+            }
             None => String::new(),
         };
-        let raw = read_output(&file(&layout.path)?, engine_files::LAYOUT)?;
+        let raw = read_at(&dir, &name(&layout.path)?, engine_files::LAYOUT)?;
         let engine = self.tag(profile)?;
         // A layout that doesn't convert is the page's `convert` failure and
         // the instance stays; one that breaks a limit or the declared
@@ -622,32 +625,74 @@ impl ContractEngine {
             text,
             alto: Vec::new(),
             page: Some(page),
+            layout_from: match layout.kind {
+                Layout::Alto => "ALTO",
+                Layout::Boxes => "boxes.json",
+            },
             engine,
         };
         Ok(out)
     }
 }
 
-/// The bytes in the regular files under `dir`, without following
-/// symlinks; it stops counting once past `max`.
-fn dir_size(dir: &Path, max: u64) -> anyhow::Result<u64> {
+/// Opens a page's out directory, refusing a symlink.
+fn open_dir(path: &Path) -> anyhow::Result<rustix::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags};
+    rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("opening {}", path.display()))
+}
+
+/// Checks that a page's directory holds only regular files, `max` bytes
+/// in all (the adapter writes nothing else, 13 §13.4.1).
+fn check_job_dir(dir: &rustix::fd::OwnedFd, max: u64) -> anyhow::Result<()> {
+    use rustix::fs::{AtFlags, FileType};
     let mut total = 0u64;
-    let mut stack = vec![dir.to_owned()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).with_context(|| format!("listing {}", d.display()))? {
-            let e = e?;
-            let meta = std::fs::symlink_metadata(e.path())?;
-            if meta.is_dir() {
-                stack.push(e.path());
-            } else {
-                total = total.saturating_add(meta.len());
-            }
-            if total > max {
-                return Ok(total);
-            }
+    for entry in rustix::fs::Dir::read_from(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        let st = rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
+            bail!("{:?} in the page's directory isn't a regular file", name);
+        }
+        total = total.saturating_add(u64::try_from(st.st_size).unwrap_or(u64::MAX));
+        if total > max {
+            bail!("the page's directory holds over {max} bytes");
         }
     }
-    Ok(total)
+    Ok(())
+}
+
+/// Reads the regular file `name` in `dir`, at most `max` bytes, without
+/// following a symlink.
+fn read_at(dir: &rustix::fd::OwnedFd, name: &str, max: u64) -> anyhow::Result<Vec<u8>> {
+    use rustix::fs::{FileType, Mode, OFlags};
+    use std::io::Read;
+    let fd = rustix::fs::openat(
+        dir,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("opening {name}"))?;
+    let st = rustix::fs::fstat(&fd)?;
+    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
+        bail!("{name} isn't a regular file");
+    }
+    let mut buf = Vec::new();
+    std::fs::File::from(fd)
+        .take(max + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > max {
+        bail!("{name} is over {max} bytes");
+    }
+    Ok(buf)
 }
 
 /// Creates a page's out directory: mode 0700, writable by the container
@@ -745,7 +790,11 @@ async fn drain_reader(
 }
 
 /// Starts an instance and reads its `hello`.
-async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Result<Instance> {
+async fn spawn(
+    opts: &ContractOptions,
+    sandbox: Option<&Sandbox>,
+    cleanups: &Cleanups,
+) -> anyhow::Result<Instance> {
     let threads = opts.threads.max(1).to_string();
     let (mut cmd, dirs, container) = match (&opts.launch, sandbox) {
         (
@@ -786,12 +835,16 @@ async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Res
         ) => {
             let (slot, level) = sb.page_dir().await?;
             let (i, o) = (slot.path.join("in"), slot.path.join("out"));
-            for d in [&i, &o] {
+            // The container user can read in/ and search out/, and gets
+            // rwx only on each page's out/<run_id>/ (the default entries
+            // the slot gives new directories): it can't rename or replace
+            // a page's directory.
+            for (d, acl) in [(&i, "r-x"), (&o, "--x")] {
                 std::fs::create_dir(d)?;
                 let e = sb.info.engine_uid;
                 checked(
                     tokio::process::Command::new("setfacl")
-                        .args(["-m", &format!("u:{e}:rwx,m::rwx")])
+                        .args(["-m", &format!("u:{e}:{acl},m::rwx")])
                         .arg(d),
                 )
                 .await?;
@@ -868,51 +921,140 @@ async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Res
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = cmd.spawn().context("starting the engine instance")?;
-    let stdin = child.stdin.take().context("no stdin")?;
-    let mut stdout = BufReader::new(child.stdout.take().context("no stdout")?);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            cleanup(None, container, dirs.slot, sandbox.cloned()).await;
+            return Err(anyhow::Error::new(e).context("starting the engine instance"));
+        }
+    };
+    let (Some(stdin), Some(out)) = (child.stdin.take(), child.stdout.take()) else {
+        cleanup(Some(child), container, dirs.slot, sandbox.cloned()).await;
+        bail!("the engine instance has no stdin or stdout");
+    };
     let stderr = Arc::new(Mutex::new(VecDeque::new()));
     if let Some(err) = child.stderr.take() {
         // Read as it comes, so a full stderr pipe never stalls the
         // adapter; keep the last 50 lines of at most 4 KiB.
-        let keep = stderr.clone();
-        tokio::spawn(drain_reader(err, keep));
+        tokio::spawn(drain_reader(err, stderr.clone()));
     }
-    let first = tokio::time::timeout(opts.start_timeout, read_line(&mut stdout))
-        .await
-        .map_err(|_| anyhow::anyhow!("no hello from the engine in {:?}", opts.start_timeout))??;
-    let tail_of = |s: &Arc<Mutex<VecDeque<String>>>| {
-        s.lock()
-            .map(|l| l.iter().cloned().collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default()
-    };
-    let Some(first) = first else {
-        bail!(
-            "the engine exited before its hello: {}",
-            tail(&tail_of(&stderr), 1500)
-        );
-    };
-    let hello = match decode(&first) {
-        Ok(FromAdapter::Hello(h)) => h,
-        Ok(_) => bail!("the engine's first line isn't a hello"),
-        Err(e) => bail!("the engine's first line: {e}"),
-    };
-    Ok(Instance {
-        child,
+    let mut inst = Instance {
+        child: Some(child),
         stdin,
-        stdout,
+        stdout: BufReader::new(out),
         stderr,
         dirs,
-        hello,
+        hello: placeholder_hello(),
         container,
+        sandbox: sandbox.cloned(),
+        cleanups: cleanups.clone(),
         jobs: 0,
-    })
+    };
+    match read_hello(&mut inst, opts.start_timeout).await {
+        Ok(h) => {
+            inst.hello = h;
+            Ok(inst)
+        }
+        Err(e) => {
+            // Awaited, so a failed start leaves no container behind.
+            inst.retire().await;
+            Err(e)
+        }
+    }
+}
+
+/// Stands in until an instance's `hello` is read.
+fn placeholder_hello() -> Hello {
+    use usnm_ocr_contract::engine::{Adapter, Cancel, EngineInfo, ModelsLoaded};
+    Hello {
+        adapter: Adapter {
+            lang: String::new(),
+            name: String::new(),
+            version: String::new(),
+        },
+        cancel: Cancel::Kill,
+        contract: 0,
+        deterministic: false,
+        engine: EngineInfo {
+            components: None,
+            family: String::new(),
+            id: String::new(),
+            version: String::new(),
+        },
+        granularity: usnm_alto::Granularity::Page,
+        layout: Layout::Boxes,
+        models: Vec::new(),
+        models_loaded: ModelsLoaded::AtStart,
+        profiles: Vec::new(),
+    }
+}
+
+/// The instance's first line, which must be its `hello`.
+async fn read_hello(inst: &mut Instance, timeout: Duration) -> anyhow::Result<Hello> {
+    let first = tokio::time::timeout(timeout, read_line(&mut inst.stdout))
+        .await
+        .map_err(|_| anyhow::anyhow!("no hello from the engine in {timeout:?}"))??;
+    let Some(first) = first else {
+        if let Some(c) = inst.child.as_mut() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), c.wait()).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        bail!("the engine exited before its hello: {}", inst.stderr_tail());
+    };
+    match decode(&first) {
+        Ok(FromAdapter::Hello(h)) => Ok(h),
+        Ok(_) => bail!("the engine's first line isn't a hello"),
+        Err(e) => bail!("the engine's first line: {e}"),
+    }
+}
+
+/// Stops an instance's process (10 s to exit after its input closed,
+/// then a kill), removes its container, then frees its scratch slot.
+async fn cleanup(
+    child: Option<Child>,
+    container: Option<ContainerGuard>,
+    slot: Option<Slot>,
+    sandbox: Option<Sandbox>,
+) {
+    if let Some(mut child) = child {
+        if tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+        }
+    }
+    if let Some(mut c) = container {
+        c.finish().await;
+    }
+    match (slot, sandbox) {
+        (Some(Slot::Podman(dir)), Some(sb)) => sb.release(dir).await,
+        (other, _) => drop(other),
+    }
 }
 
 impl Drop for Instance {
+    /// An instance dropped without [`Instance::retire`]: a page cut short.
+    /// The same cleanup runs as a task the engine's shutdown waits for.
     fn drop(&mut self) {
-        // kill_on_drop stops the client; the guard removes the container.
-        let _ = self.child.start_kill();
+        let (mut child, container, slot) = (
+            self.child.take(),
+            self.container.take(),
+            self.dirs.slot.take(),
+        );
+        if let Some(c) = child.as_mut() {
+            let _ = c.start_kill();
+        }
+        if child.is_none() && container.is_none() && slot.is_none() {
+            return;
+        }
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let task = rt.spawn(cleanup(child, container, slot, self.sandbox.clone()));
+            if let Ok(mut c) = self.cleanups.lock() {
+                c.retain(|h| !h.is_finished());
+                c.push(task);
+            }
+        }
     }
 }
 
@@ -937,7 +1079,21 @@ impl Engine for ContractEngine {
             .map(|mut v| v.drain(..).collect())
             .unwrap_or_default();
         for i in idle {
-            i.retire(self.sandbox.as_ref()).await;
+            i.retire().await;
+        }
+        // And the instances of pages cut short.
+        loop {
+            let tasks: Vec<_> = self
+                .cleanups
+                .lock()
+                .map(|mut c| c.drain(..).collect())
+                .unwrap_or_default();
+            if tasks.is_empty() {
+                break;
+            }
+            for t in tasks {
+                let _ = t.await;
+            }
         }
     }
 
@@ -969,7 +1125,7 @@ impl Engine for ContractEngine {
             // The instance is dropped (killed and removed), and the next
             // page starts a new one.
             Err(PageError::Drop(e)) => {
-                inst.retire(self.sandbox.as_ref()).await;
+                inst.retire().await;
                 Err(e)
             }
         }
@@ -1004,15 +1160,26 @@ mod tests {
     }
 
     #[test]
-    fn counts_a_job_directory_without_following_links() {
+    fn job_directories_hold_only_bounded_regular_files() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("a"), [0u8; 100]).unwrap();
-        std::fs::write(dir.path().join("sub/b"), [0u8; 50]).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("/", dir.path().join("root")).unwrap();
-        assert!(dir_size(dir.path(), 1000).unwrap() < 200);
-        assert!(dir_size(dir.path(), 120).unwrap() > 120);
+        let fd = open_dir(dir.path()).unwrap();
+        check_job_dir(&fd, 1000).unwrap();
+        assert!(check_job_dir(&fd, 99).is_err());
+        assert_eq!(read_at(&fd, "a", 100).unwrap().len(), 100);
+        assert!(read_at(&fd, "a", 99).is_err());
+        std::os::unix::fs::symlink("/etc/hosts", dir.path().join("l")).unwrap();
+        assert!(read_at(&fd, "l", 1000).is_err(), "a symlink");
+        assert!(check_job_dir(&open_dir(dir.path()).unwrap(), 1000).is_err());
+        std::fs::remove_file(dir.path().join("l")).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        assert!(
+            check_job_dir(&open_dir(dir.path()).unwrap(), 1000).is_err(),
+            "a directory"
+        );
+        // The page's directory itself may not be a symlink.
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("sub/link")).unwrap();
+        assert!(open_dir(&dir.path().join("sub/link")).is_err());
     }
 
     #[tokio::test]

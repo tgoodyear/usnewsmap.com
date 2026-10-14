@@ -939,83 +939,95 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             engine,
         } => {
             let engine = engine.engine("local").await?;
-            let stem = image
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .context("--image has no file name")?
-                .to_owned();
-            std::fs::create_dir_all(&out)?;
-            let work = tempfile::tempdir()?;
-            let t0 = Instant::now();
-            let result = engine.ocr(&image, &language, work.path()).await?;
-            let secs = t0.elapsed().as_secs_f64();
-            // The same stored ALTO and text the worker uploads.
-            let sha = usnm_ocr_worker::prefetch::sha256(&std::fs::read(&image)?);
-            let url = image.display().to_string();
-            let stored = usnm_ocr_worker::stored::from_output(
-                &result,
-                &language,
-                engine.dpi(),
-                &usnm_ocr_worker::stored::Source {
-                    url: &url,
-                    sha256: &sha,
-                    md5: None,
-                },
-                &usnm_ocr_worker::stored::worker_version(),
-                chrono::Utc::now(),
-            )?;
-            let text = stored.text;
-            std::fs::write(out.join(format!("{stem}.txt")), &text)?;
-            std::fs::write(out.join(format!("{stem}.xml")), &stored.alto)?;
-            let status = usnm_core::text::text_status(&text);
-            println!(
-                "{}",
-                serde_json::json!({
-                    "image": image.display().to_string(),
-                    "language": language,
-                    "engine": result.engine,
-                    "secs": (secs * 1000.0).round() / 1000.0,
-                    "chars": text.chars().count(),
-                    "status": usnm_overlay::status_str(status),
-                })
-            );
-            Ok(())
+            // Instances stop before the command returns, whatever it returns.
+            let done = async {
+                let stem = image
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .context("--image has no file name")?
+                    .to_owned();
+                std::fs::create_dir_all(&out)?;
+                let work = tempfile::tempdir()?;
+                let t0 = Instant::now();
+                let result = engine.ocr(&image, &language, work.path()).await?;
+                let secs = t0.elapsed().as_secs_f64();
+                // The same stored ALTO and text the worker uploads.
+                let sha = usnm_ocr_worker::prefetch::sha256(&std::fs::read(&image)?);
+                let url = image.display().to_string();
+                let stored = usnm_ocr_worker::stored::from_output(
+                    &result,
+                    &language,
+                    engine.dpi(),
+                    &usnm_ocr_worker::stored::Source {
+                        url: &url,
+                        sha256: &sha,
+                        md5: None,
+                    },
+                    &usnm_ocr_worker::stored::worker_version(),
+                    chrono::Utc::now(),
+                )?;
+                let text = stored.text;
+                std::fs::write(out.join(format!("{stem}.txt")), &text)?;
+                std::fs::write(out.join(format!("{stem}.xml")), &stored.alto)?;
+                let status = usnm_core::text::text_status(&text);
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "image": image.display().to_string(),
+                        "language": language,
+                        "engine": result.engine,
+                        "secs": (secs * 1000.0).round() / 1000.0,
+                        "chars": text.chars().count(),
+                        "status": usnm_overlay::status_str(status),
+                    })
+                );
+                Ok::<(), anyhow::Error>(())
+            }
+            .await;
+            engine.shutdown().await;
+            done
         }
         Command::CheckEngine { engine } => {
             let engine = engine.engine("local").await?;
-            let work = tempfile::tempdir()?;
-            let image = work.path().join("check.pgm");
-            std::fs::write(&image, usnm_ocr_worker::testimg::text_image(CHECK_TEXT))?;
-            let t0 = Instant::now();
-            let result = engine.ocr(&image, "eng", work.path()).await?;
-            // Through the stored ALTO, as the worker stores a page.
-            let stored = usnm_ocr_worker::stored::from_output(
-                &result,
-                "eng",
-                engine.dpi(),
-                &usnm_ocr_worker::stored::Source {
-                    url: "check.pgm",
-                    sha256: "",
-                    md5: None,
-                },
-                &usnm_ocr_worker::stored::worker_version(),
-                chrono::Utc::now(),
-            )
-            .context("the engine's ALTO doesn't convert to the stored ALTO")?;
-            let text = stored.text;
-            anyhow::ensure!(
-                text.contains(CHECK_TEXT),
-                "the engine read {text:?}, not {CHECK_TEXT:?}"
-            );
-            println!(
-                "{}",
-                serde_json::json!({
-                    "engine": result.engine,
-                    "secs": (t0.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
-                    "read": text.trim(),
-                })
-            );
-            Ok(())
+            // Instances stop before the command returns, whatever it returns.
+            let done = async {
+                let work = tempfile::tempdir()?;
+                let image = work.path().join("check.pgm");
+                std::fs::write(&image, usnm_ocr_worker::testimg::text_image(CHECK_TEXT))?;
+                let t0 = Instant::now();
+                let result = engine.ocr(&image, "eng", work.path()).await?;
+                // Through the stored ALTO, as the worker stores a page.
+                let stored = usnm_ocr_worker::stored::from_output(
+                    &result,
+                    "eng",
+                    engine.dpi(),
+                    &usnm_ocr_worker::stored::Source {
+                        url: "check.pgm",
+                        sha256: "",
+                        md5: None,
+                    },
+                    &usnm_ocr_worker::stored::worker_version(),
+                    chrono::Utc::now(),
+                )
+                .context("the engine's ALTO doesn't convert to the stored ALTO")?;
+                let text = stored.text;
+                anyhow::ensure!(
+                    text.contains(CHECK_TEXT),
+                    "the engine read {text:?}, not {CHECK_TEXT:?}"
+                );
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "engine": result.engine,
+                        "secs": (t0.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+                        "read": text.trim(),
+                    })
+                );
+                Ok::<(), anyhow::Error>(())
+            }
+            .await;
+            engine.shutdown().await;
+            done
         }
     }
 }

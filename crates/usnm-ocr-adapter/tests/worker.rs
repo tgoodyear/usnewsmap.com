@@ -31,6 +31,7 @@ esac
 case "$(cat "$1")" in
   *crash) echo "Error in pixReadStream" >&2; exit 1 ;;
   *slow) sleep 5 ;;
+  *long) i=0; while [ $i -lt 400 ]; do printf 'word%03d ' $i; i=$((i+1)); done; echo; exit 0 ;;
 esac
 printf 'THE EVENING GAZETTE\nThe council met on Mon-\nday.\n\n\f'
 "#,
@@ -109,6 +110,12 @@ async fn a_text_only_engine_through_long_lived_instances() {
         // One page-sized block: every line and word has the page's box.
         assert!(s.alto.contains("<TextBlock ID=\"TB1\" HPOS=\"0\" VPOS=\"0\" WIDTH=\"260\" HEIGHT=\"122\" LANG=\"eng\">"));
     }
+    // A page's text is one block, well over 1 KiB.
+    let long = dir.path().join("long.pgm");
+    std::fs::write(&long, b"P5 4 4 255 long").unwrap();
+    let out = e.ocr(&long, "eng", work).await.unwrap();
+    let words = out.page.as_ref().unwrap().blocks[0].lines[0].words.len();
+    assert_eq!(words, 400);
     // A language no profile reads is refused before any engine call.
     assert!(matches!(
         e.ocr(&image, "deu", work).await,

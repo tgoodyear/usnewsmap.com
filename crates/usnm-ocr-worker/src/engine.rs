@@ -20,6 +20,9 @@ pub struct EngineOutput {
     /// The page, when the engine wrote boxes (`boxes.json`) rather than
     /// ALTO: already in pixels of the image read, in reading order.
     pub page: Option<usnm_alto::Page>,
+    /// What the engine wrote, for the stored ALTO's settings: `ALTO` or
+    /// `boxes.json`.
+    pub layout_from: &'static str,
     /// The `ocr_engine` tag (13 §13.8.1): engine, version, models, image
     /// and route, e.g. `tesseract/5.5.0 profile=frak2021 image=sha256:…
     /// models=sha256:… route=minimal@r1 contract=0`.
@@ -1174,6 +1177,7 @@ impl Tesseract {
             text,
             alto,
             page: None,
+            layout_from: "ALTO",
             engine: self
                 .tag(models)
                 .with_context(|| {
