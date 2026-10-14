@@ -118,7 +118,9 @@ fn decode_entities(s: &str) -> String {
 }
 
 /// One line of Markdown as plain text; `None` for a line that is only
-/// markup (a rule, a table's delimiter row, a code fence).
+/// markup (a rule, a table's delimiter row, a code fence). Only markup is
+/// removed: a `*` or `~` that opens or closes nothing (`2 * 3`), a `#`
+/// with no space after it (`#1`) and an underscore inside a word stay.
 fn strip_markdown_line(line: &str) -> Option<String> {
     let t = line.trim();
     let only = |c: char| t.len() >= 3 && t.chars().all(|x| x == c || x == ' ');
@@ -132,8 +134,11 @@ fn strip_markdown_line(line: &str) -> Option<String> {
     // Block prefixes: headings, quotes, list markers.
     loop {
         let before = s;
-        s = s.trim_start_matches('#').trim_start();
-        if let Some(r) = s.strip_prefix('>') {
+        let hashes = s.chars().take_while(|&c| c == '#').count();
+        if (1..=6).contains(&hashes) && s[hashes..].starts_with(' ') {
+            s = s[hashes..].trim_start();
+        }
+        if let Some(r) = s.strip_prefix("> ").or_else(|| (s == ">").then_some("")) {
             s = r.trim_start();
         }
         for m in ["- ", "* ", "+ "] {
@@ -149,8 +154,14 @@ fn strip_markdown_line(line: &str) -> Option<String> {
             break;
         }
     }
+    let mut chars: Vec<char> = s.chars().collect();
+    // Emphasis, strike-through and code spans: a delimiter run that opens
+    // (next to text on its right, not on its left) and a later one that
+    // closes are removed together.
+    for d in ["**", "__", "~~", "*", "_", "`"] {
+        chars = strip_pairs(&chars, &d.chars().collect::<Vec<_>>());
+    }
     let mut out = String::with_capacity(s.len());
-    let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -172,17 +183,6 @@ fn strip_markdown_line(line: &str) -> Option<String> {
                 }
                 out.push(c);
             }
-            '*' | '`' | '~' => {}
-            // `__bold__`, but not an underscore inside a word.
-            '_' => {
-                let prev = i.checked_sub(1).map(|p| chars[p]);
-                let next = chars.get(i + 1).copied();
-                let inside = prev.is_some_and(char::is_alphanumeric)
-                    && next.is_some_and(char::is_alphanumeric);
-                if inside {
-                    out.push(c);
-                }
-            }
             '|' => out.push(' '),
             '\\' if chars.get(i + 1).is_some_and(|n| n.is_ascii_punctuation()) => {
                 out.push(chars[i + 1]);
@@ -195,6 +195,42 @@ fn strip_markdown_line(line: &str) -> Option<String> {
     }
     let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
     Some(out)
+}
+
+/// `chars` with each pair of delimiter runs `d` removed, where the first
+/// can open (text right after it, and a space, punctuation or the start
+/// before it) and the second can close (text right before it, and a
+/// space, punctuation or the end after it).
+fn strip_pairs(chars: &[char], d: &[char]) -> Vec<char> {
+    let n = d.len();
+    let at = |i: usize| i + n <= chars.len() && chars[i..i + n] == *d;
+    let edge = |c: Option<&char>| {
+        c.is_none_or(|c| c.is_whitespace() || (c.is_ascii_punctuation() && !d.contains(c)))
+    };
+    let text = |c: Option<&char>| c.is_some_and(|c| !c.is_whitespace() && !d.contains(c));
+    let opens = |i: usize| {
+        at(i) && edge(i.checked_sub(1).and_then(|p| chars.get(p))) && text(chars.get(i + n))
+    };
+    let closes = |i: usize| at(i) && i > 0 && text(chars.get(i - 1)) && edge(chars.get(i + n));
+    let mut drop = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        if opens(i) {
+            if let Some(j) = (i + n..chars.len()).find(|&j| closes(j)) {
+                drop[i..i + n].fill(true);
+                drop[j..j + n].fill(true);
+                i = j + n;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    chars
+        .iter()
+        .zip(drop)
+        .filter(|(_, d)| !d)
+        .map(|(c, _)| *c)
+        .collect()
 }
 
 /// For `[text](url)` starting at `open`, the index after its `)`.
@@ -232,5 +268,17 @@ mod tests {
             "The Evening Gazette\n\nWheat rose\nCorn fell\na b\nsnake_case and bold"
         );
         assert_eq!(strip("*x*", Markup::None), "*x*");
+        // Literal text stays.
+        assert_eq!(
+            strip(
+                "2 * 3 = 6, ~5 miles, #1 in town, a `tick, x*y",
+                Markup::Markdown
+            ),
+            "2 * 3 = 6, ~5 miles, #1 in town, a `tick, x*y"
+        );
+        assert_eq!(
+            strip("_italic_ and `code` and ~~gone~~", Markup::Markdown),
+            "italic and code and gone"
+        );
     }
 }

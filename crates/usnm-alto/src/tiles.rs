@@ -67,15 +67,16 @@ pub fn merge(page: (f64, f64), overlap: f64, tiles: Vec<(Tile, Page)>, dir: Dir)
             } else {
                 for l in &mut b.lines {
                     let n = l.words.len();
+                    let last_kept = l.words.last().is_some_and(|w| inside(&core, &w.rect));
                     l.words.retain(|w| inside(&core, &w.rect));
                     if l.words.len() < n {
                         if let Some(r) = Rect::union_all(l.words.iter().map(|w| &w.rect)) {
                             l.rect = r;
                         }
-                        // The hyphen belongs to the line's last word.
-                        if l.words.is_empty() {
-                            l.hyphen = None;
-                        }
+                    }
+                    // The hyphen belongs to the line's last word.
+                    if !last_kept {
+                        l.hyphen = None;
                     }
                 }
                 b.lines.retain(|l| !l.words.is_empty());
@@ -174,5 +175,27 @@ mod tests {
         );
         assert_eq!(text(&p), "one two three\n\nfour five");
         assert_eq!(p.blocks[1].rect.x0, 220.0);
+    }
+
+    #[test]
+    fn a_hyphen_stays_with_its_word() {
+        let a = Tile {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 100.0,
+        };
+        let mut hyphenated = tile_page(vec![word(0.0, "one"), word(150.0, "thr")]);
+        hyphenated.blocks[0].lines[0].hyphen = Some("-".into());
+        // "thr" (centre 170) is outside the core [0, 140): its hyphen goes too.
+        let p = merge(
+            (360.0, 100.0),
+            120.0,
+            vec![(a, hyphenated.clone())],
+            Dir::Ltr,
+        );
+        assert_eq!(text(&p), "one");
+        let p = merge((200.0, 100.0), 120.0, vec![(a, hyphenated)], Dir::Ltr);
+        assert_eq!(text(&p), "one thr-");
     }
 }

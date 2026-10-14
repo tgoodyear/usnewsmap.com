@@ -5,6 +5,7 @@
 //! kept but the `CONTENT` strings.
 
 use quick_xml::events::{BytesStart, Event};
+use quick_xml::name::{Namespace, ResolveResult};
 use quick_xml::NsReader;
 
 use crate::model::{Block, BlockKind, Granularity, Line, Page, Rect, Word};
@@ -121,7 +122,17 @@ struct OpenBlock {
 /// its parent's; the page's granularity is the finest level at which every
 /// element had its own.
 pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
-    check(xml, &opts.limits)?;
+    let version = check(xml, &opts.limits)?.version;
+    // Only elements in the document's own ALTO namespace count: ALTO
+    // allows foreign XML (under `Tags/XmlData`), whose `Page` or
+    // `MeasurementUnit` isn't the page's.
+    let ns_uri = crate::NAMESPACES
+        .iter()
+        .find(|(_, v)| *v == version)
+        .map(|(n, _)| *n)
+        .ok_or(AltoError::NotAlto)?;
+    let ours =
+        |ns: &ResolveResult<'_>| matches!(ns, ResolveResult::Bound(Namespace(u)) if *u == ns_uri);
     let text = std::str::from_utf8(xml).map_err(|_| AltoError::NotUtf8)?;
     let mut reader = NsReader::from_str(text);
     reader.config_mut().trim_text(true);
@@ -134,10 +145,13 @@ pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
     let mut line: Option<OpenLine> = None;
     let mut strings = 0usize;
     loop {
-        let event = reader.read_event().map_err(|_| AltoError::Malformed)?;
+        let (ns, event) = reader
+            .read_resolved_event()
+            .map_err(|_| AltoError::Malformed)?;
         let empty = matches!(event, Event::Empty(_));
+        let ours = ours(&ns);
         match &event {
-            Event::Start(e) | Event::Empty(e) => {
+            Event::Start(e) | Event::Empty(e) if ours => {
                 let name = e.local_name();
                 match name.as_ref() {
                     "MeasurementUnit" => in_unit = !empty,
@@ -197,7 +211,7 @@ pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
                     _ => {}
                 }
             }
-            Event::End(e) => match e.local_name().as_ref() {
+            Event::End(e) if ours => match e.local_name().as_ref() {
                 "MeasurementUnit" => in_unit = false,
                 "TextLine" => {
                     if let (Some(l), Some(b)) = (line.take(), block.as_mut()) {
@@ -220,6 +234,9 @@ pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
         }
     }
     let unit = unit.unwrap_or_else(|| "pixel".into());
+    if let Some(d) = opts.dpi.filter(|d| !(d.is_finite() && *d > 0.0)) {
+        return Err(ParseError::Value(format!("dpi {d}")));
+    }
     let scale = match unit.as_str() {
         "pixel" => 1.0,
         "inch1200" => opts.dpi.ok_or_else(|| ParseError::NeedsDpi(unit.clone()))? / 1200.0,

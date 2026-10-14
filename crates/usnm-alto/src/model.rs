@@ -188,7 +188,7 @@ impl Page {
     /// returns text alone (13 §13.4.4).
     pub fn text_only(width: f64, height: f64, text: &str) -> Page {
         let rect = Rect::new(0.0, 0.0, width, height);
-        let block = crate::boxes::text_block(BlockKind::Text, rect, None, text);
+        let block = crate::boxes::text_block(BlockKind::Text, rect, None, text, None);
         Page {
             width,
             height,

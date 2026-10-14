@@ -512,7 +512,7 @@ pub fn to_page(b: &Boxes, c: &Convert) -> Result<Page, BoxesError> {
             })
         } else {
             let t = markup::strip(bb.text.as_deref().unwrap_or(""), c.markup);
-            text_block(bb.kind, brect, bb.lang.clone(), &t)
+            text_block(bb.kind, brect, bb.lang.clone(), &t, bb.conf)
         };
         if let Some(block) = block {
             blocks.push((i, bb.order, block));
@@ -558,10 +558,11 @@ pub(crate) fn text_block(
     rect: Rect,
     lang: Option<String>,
     text: &str,
+    conf: Option<f64>,
 ) -> Option<Block> {
     let lines: Vec<Line> = text
         .lines()
-        .map(|l| split_words(l, rect, None))
+        .map(|l| split_words(l, rect, conf))
         .filter(|w| !w.is_empty())
         .map(|words| Line {
             rect,
