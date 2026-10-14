@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::watch;
 use usnm_ocr_worker::cache::CachedScans;
+use usnm_ocr_worker::contract::{ContractEngine, ContractOptions, Launch};
 use usnm_ocr_worker::engine::{Engine, Limits, Remote, Runner, Tesseract, TesseractOptions};
 use usnm_ocr_worker::loc::{ImageSize, LocClient, LocConfig, STORAGE_SERVICE_ROOT};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
@@ -43,7 +44,12 @@ struct Cli {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum EngineName {
+    /// Tesseract, one process or container per page.
     Tesseract,
+    /// An adapter behind the engine contract (ADR-0016), in long-lived
+    /// instances: --engine-image through --podman-url, or --engine-command
+    /// on this host for development.
+    Contract,
 }
 
 #[derive(clap::Args)]
@@ -94,11 +100,83 @@ struct EngineArgs {
     /// Give up on a page after this long.
     #[arg(long, env = "USNM_OCR_PAGE_TIMEOUT_SECS", default_value_t = 600)]
     page_timeout_secs: u64,
+    /// With --engine contract: the adapter's image, `<name>@sha256:<digest>`
+    /// or `sha256:<id>`, run through --podman-url with --scratch-dir.
+    #[arg(long, env = "USNM_OCR_ENGINE_IMAGE", conflicts_with = "engine_command")]
+    engine_image: Option<String>,
+    /// With --engine contract, for development only: the adapter as a
+    /// program on this host, with its scratch in --scratch-dir (or the
+    /// system's temporary directory). It runs with the worker's rights.
+    #[arg(long)]
+    engine_command: Option<PathBuf>,
+    /// With --engine-command: a flag for the adapter, as `--name=value`
+    /// (repeat for more).
+    #[arg(long = "engine-command-flag", allow_hyphen_values = true)]
+    engine_command_flags: Vec<String>,
+    /// With --engine contract: instances of the engine, and so its pages
+    /// at once.
+    #[arg(long, env = "USNM_OCR_ENGINE_INSTANCES", default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=16))]
+    engine_instances: u32,
+    /// With --engine contract: time from an instance's start to its hello.
+    #[arg(long, env = "USNM_OCR_ENGINE_START_TIMEOUT_SECS", default_value_t = 60)]
+    engine_start_timeout_secs: u64,
+    /// With --engine contract: pages an instance reads before it is
+    /// replaced.
+    #[arg(long, env = "USNM_OCR_ENGINE_MAX_JOBS", default_value_t = 500, value_parser = clap::value_parser!(u32).range(1..))]
+    engine_max_jobs: u32,
 }
 
 impl EngineArgs {
-    async fn engine(&self) -> anyhow::Result<Arc<dyn Engine>> {
+    async fn engine(&self, node: &str) -> anyhow::Result<Arc<dyn Engine>> {
         match self.engine {
+            EngineName::Contract => {
+                let launch = match (
+                    self.engine_image.as_deref().filter(|s| !s.is_empty()),
+                    &self.engine_command,
+                ) {
+                    (Some(image), _) => Launch::Podman {
+                        podman: self.podman_bin.clone(),
+                        remote: Remote {
+                            url: self
+                                .podman_url
+                                .clone()
+                                .filter(|s| !s.is_empty())
+                                .context("--engine-image needs --podman-url")?,
+                            scratch: self
+                                .scratch_dir
+                                .clone()
+                                .filter(|p| !p.as_os_str().is_empty())
+                                .context("--engine-image needs --scratch-dir")?,
+                            limits: Limits {
+                                memory_mib: self.engine_memory_mib,
+                                cpus: self.engine_cpus,
+                                pids: self.engine_pids,
+                            },
+                        },
+                        image: image.to_owned(),
+                    },
+                    (None, Some(program)) => Launch::Local {
+                        program: program.clone(),
+                        args: self.engine_command_flags.clone(),
+                        scratch: self.scratch_dir.clone().unwrap_or_else(std::env::temp_dir),
+                    },
+                    (None, None) => {
+                        bail!("--engine contract needs --engine-image or --engine-command")
+                    }
+                };
+                let e = ContractEngine::start(ContractOptions {
+                    launch,
+                    instances: self.engine_instances as usize,
+                    threads: self.threads_per_page,
+                    start_timeout: Duration::from_secs(self.engine_start_timeout_secs),
+                    page_timeout: Duration::from_secs(self.page_timeout_secs),
+                    max_jobs: self.engine_max_jobs,
+                    dpi: self.dpi,
+                    node: node.to_owned(),
+                })
+                .await?;
+                Ok(Arc::new(e))
+            }
             EngineName::Tesseract => {
                 let runner = match self.tesseract_image.as_deref().filter(|s| !s.is_empty()) {
                     Some(image) => {
@@ -589,7 +667,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                     None => loc,
                 }
             };
-            let engine = engine.engine().await?;
+            let engine = engine.engine(&cfg.node_id).await?;
             let tracker = Arc::new(Tracker::new(
                 About {
                     node_id: cfg.node_id.clone(),
@@ -857,7 +935,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             out,
             engine,
         } => {
-            let engine = engine.engine().await?;
+            let engine = engine.engine("local").await?;
             let stem = image
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -871,9 +949,8 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             // The same stored ALTO and text the worker uploads.
             let sha = usnm_ocr_worker::prefetch::sha256(&std::fs::read(&image)?);
             let url = image.display().to_string();
-            let stored = usnm_ocr_worker::stored::from_engine_alto(
-                &result.alto,
-                &result.engine,
+            let stored = usnm_ocr_worker::stored::from_output(
+                &result,
                 &language,
                 engine.dpi(),
                 &usnm_ocr_worker::stored::Source {
@@ -902,16 +979,15 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::CheckEngine { engine } => {
-            let engine = engine.engine().await?;
+            let engine = engine.engine("local").await?;
             let work = tempfile::tempdir()?;
             let image = work.path().join("check.pgm");
             std::fs::write(&image, usnm_ocr_worker::testimg::text_image(CHECK_TEXT))?;
             let t0 = Instant::now();
             let result = engine.ocr(&image, "eng", work.path()).await?;
             // Through the stored ALTO, as the worker stores a page.
-            let stored = usnm_ocr_worker::stored::from_engine_alto(
-                &result.alto,
-                &result.engine,
+            let stored = usnm_ocr_worker::stored::from_output(
+                &result,
                 "eng",
                 engine.dpi(),
                 &usnm_ocr_worker::stored::Source {

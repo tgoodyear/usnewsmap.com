@@ -1,0 +1,852 @@
+//! Engines behind the engine contract (ADR-0016 decision 2, 13 §13.4 and
+//! §13.6): long-lived instances of an adapter that the worker talks to in
+//! JSON lines, one page at a time, instead of a container per page.
+//!
+//! Off unless `--engine contract` is given; `--engine tesseract` (the
+//! default) keeps one Tesseract container per page. This is the first
+//! slice of 13 §13.11 step 6: one engine, a fixed pool of instances,
+//! deadlines with a kill, restart after a crash, the `hello` checks and
+//! both layouts (`alto` and `boxes`). Routing, the lock, the memory
+//! budget, the breaker and cgroup metering come later.
+//!
+//! An instance runs either through the engine account's Podman API socket
+//! (`podman --remote run --interactive`, 13 §13.6.1), or, for development
+//! and tests only, as a local process.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::{bail, Context};
+use async_trait::async_trait;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout};
+use usnm_alto::boxes::{self, BoxLimits, Convert};
+use usnm_core::ocr_engine::{Digest, Fields, OcrEngineTag};
+use usnm_ocr_contract::engine::{
+    decode, encode, engine_files, DpiSource, FromAdapter, Hello, Image, Layout, PageRequest,
+    PageResult, Status, ToAdapter, CONTRACT, MAX_LINE,
+};
+
+use crate::engine::{
+    checked, podman_command, read_output, tail, ContainerGuard, Engine, EngineError, EngineOutput,
+    Limits, PageDir, Remote, Sandbox, ENGINE_USER, ROUTE, ROUTE_VERSION,
+};
+
+/// The label on instance containers, so stale ones can be found.
+const LABEL: &str = "usnm.engine=contract";
+
+/// How an instance is started.
+#[derive(Debug, Clone)]
+pub enum Launch {
+    /// The adapter as a process on this host, with its scratch in
+    /// `scratch`: for development and tests. It runs with the worker's
+    /// rights, so production uses [`Launch::Podman`].
+    Local {
+        program: PathBuf,
+        args: Vec<String>,
+        scratch: PathBuf,
+    },
+    /// The adapter's image (`<name>@sha256:<digest>` or `sha256:<id>`)
+    /// through the engine account's Podman API socket.
+    Podman {
+        podman: PathBuf,
+        remote: Remote,
+        image: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractOptions {
+    pub launch: Launch,
+    /// Instances, and so pages this engine reads at once.
+    pub instances: usize,
+    /// Threads per instance (`--threads` and `OMP_THREAD_LIMIT`).
+    pub threads: u32,
+    /// Start to `hello`.
+    pub start_timeout: Duration,
+    /// The longest page: the request's `deadline_ms`. The worker kills an
+    /// instance with no result 15 s after it.
+    pub page_timeout: Duration,
+    /// Recycle an instance after this many pages.
+    pub max_jobs: u32,
+    /// The resolution sent with each scan (IIIF JPEGs carry none).
+    pub dpi: u32,
+    /// The node, the first part of each `run_id`.
+    pub node: String,
+}
+
+/// The worker's grace after `deadline_ms` before it kills an instance
+/// (13 §13.4.6).
+const KILL_GRACE: Duration = Duration::from_secs(15);
+
+/// One instance's directories: where the worker writes and reads them,
+/// and the paths the adapter sees.
+#[derive(Debug)]
+struct Dirs {
+    host_in: PathBuf,
+    host_out: PathBuf,
+    seen_in: String,
+    seen_out: String,
+    /// Under the engine runtime, the slot's MCS level.
+    level: Option<String>,
+    _slot: Slot,
+}
+
+/// Held for its drop, which removes the directory.
+#[derive(Debug)]
+#[allow(dead_code)]
+enum Slot {
+    Local(tempfile::TempDir),
+    Podman(PageDir),
+}
+
+/// A running adapter.
+struct Instance {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    /// The last 50 lines of stderr, for a failure's message.
+    stderr: Arc<Mutex<VecDeque<String>>>,
+    dirs: Dirs,
+    hello: Hello,
+    /// Removes the container when the instance goes.
+    _container: Option<ContainerGuard>,
+    jobs: u32,
+}
+
+impl std::fmt::Debug for Instance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Instance")
+            .field("dirs", &self.dirs)
+            .field("jobs", &self.jobs)
+            .finish()
+    }
+}
+
+impl Instance {
+    fn stderr_tail(&self) -> String {
+        let lines = self
+            .stderr
+            .lock()
+            .map(|l| l.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default();
+        tail(&lines, 1500)
+    }
+}
+
+/// One line from the adapter, at most [`MAX_LINE`] bytes; none at EOF.
+async fn read_line(r: &mut BufReader<ChildStdout>) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    loop {
+        let buf = r.fill_buf().await?;
+        if buf.is_empty() {
+            return Ok((!line.is_empty()).then_some(line));
+        }
+        let (take, done) = match buf.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len(), false),
+        };
+        line.extend_from_slice(&buf[..take]);
+        r.consume(take);
+        if line.len() > MAX_LINE {
+            bail!("a line over {MAX_LINE} bytes");
+        }
+        if done {
+            return Ok(Some(line));
+        }
+    }
+}
+
+/// The width and height of a JPEG, JPEG 2000, PNG or PGM, from its header.
+pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
+    let be32 = |i: usize| {
+        b.get(i..i + 4)
+            .map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+    };
+    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some((be32(16)?, be32(20)?)).filter(|(w, h)| *w > 0 && *h > 0);
+    }
+    if b.starts_with(&[0xFF, 0xD8]) {
+        let mut i = 2;
+        while i + 9 < b.len() {
+            if b[i] != 0xFF {
+                return None;
+            }
+            let marker = b[i + 1];
+            if marker == 0xFF {
+                i += 1;
+                continue;
+            }
+            let len = usize::from(u16::from_be_bytes([b[i + 2], b[i + 3]]));
+            // Start of frame (not DHT, JPG, DAC).
+            if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+                let h = u16::from_be_bytes([b[i + 5], b[i + 6]]);
+                let w = u16::from_be_bytes([b[i + 7], b[i + 8]]);
+                return (w > 0 && h > 0).then_some((u32::from(w), u32::from(h)));
+            }
+            i += 2 + len;
+        }
+        return None;
+    }
+    if b.starts_with(b"P5") || b.starts_with(b"P2") {
+        let head = std::str::from_utf8(&b[..b.len().min(64)])
+            .ok()
+            .or_else(|| {
+                let end = b
+                    .iter()
+                    .take(64)
+                    .position(|&c| c > 127)
+                    .unwrap_or(64.min(b.len()));
+                std::str::from_utf8(&b[..end]).ok()
+            })?;
+        let mut nums = head[2..].split_ascii_whitespace().map(|t| t.parse::<u32>());
+        let (w, h) = (nums.next()?.ok()?, nums.next()?.ok()?);
+        return (w > 0 && h > 0).then_some((w, h));
+    }
+    // JP2: the image header box, `ihdr`, holds the height then the width.
+    let at = b.windows(4).take(4096).position(|w| w == b"ihdr")?;
+    let (h, w) = (be32(at + 4)?, be32(at + 8)?);
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+/// The sha256 of a profile's model files, as sorted lines
+/// `<name> <sha256>` (13 §13.8.1).
+fn models_digest(hello: &Hello, profile: &str) -> Digest {
+    let shas: BTreeMap<&str, &str> = hello
+        .models
+        .iter()
+        .map(|m| (m.name.as_str(), m.sha256.as_str()))
+        .collect();
+    let Some(p) = hello.profile(profile) else {
+        return Digest::Local;
+    };
+    let mut lines = Vec::new();
+    for m in &p.models {
+        match shas.get(m.as_str()) {
+            Some(s) => lines.push(format!("{m} {s}\n")),
+            None => return Digest::Local,
+        }
+    }
+    lines.sort();
+    Digest::short(&crate::prefetch::sha256(lines.concat().as_bytes())).unwrap_or(Digest::Local)
+}
+
+/// A page that failed, and whether its instance can serve the next one.
+enum PageError {
+    /// The adapter answered (`unsupported`, `bad_input`, `failed` or
+    /// `timeout` without `restart`): the instance stays.
+    Keep(EngineError),
+    /// A crash, a broken protocol, no answer in time, or a restart asked
+    /// for: the instance is killed and removed.
+    Drop(EngineError),
+}
+
+impl<E: Into<anyhow::Error>> From<E> for PageError {
+    fn from(e: E) -> Self {
+        PageError::Drop(EngineError::Failed(e.into()))
+    }
+}
+
+/// An engine behind the contract.
+#[derive(Debug)]
+pub struct ContractEngine {
+    opts: ContractOptions,
+    sandbox: Option<Sandbox>,
+    /// The first instance's `hello`; every later one must match it.
+    hello: Hello,
+    idle: Mutex<Vec<Instance>>,
+    slots: tokio::sync::Semaphore,
+    source: String,
+    image: Digest,
+    runs: AtomicU64,
+}
+
+impl ContractEngine {
+    /// Starts the first instance and keeps its `hello`.
+    pub async fn start(opts: ContractOptions) -> anyhow::Result<Self> {
+        let (sandbox, image) = match &opts.launch {
+            Launch::Local { .. } => (None, Digest::Local),
+            Launch::Podman {
+                podman,
+                remote,
+                image,
+            } => {
+                crate::engine::check_image_ref(image)?;
+                let digest = image
+                    .rsplit_once("sha256:")
+                    .and_then(|(_, h)| Digest::short(h).ok())
+                    .unwrap_or(Digest::Local);
+                (Some(Sandbox::detect(podman, remote, image).await?), digest)
+            }
+        };
+        let first = spawn(&opts, sandbox.as_ref()).await?;
+        first
+            .hello
+            .check()
+            .map_err(|e| anyhow::anyhow!("the engine's hello: {e}"))?;
+        let hello = first.hello.clone();
+        tracing::info!(
+            engine = %hello.engine.id,
+            version = %hello.engine.version,
+            layout = ?hello.layout,
+            granularity = hello.granularity.as_str(),
+            profiles = hello.profiles.len(),
+            "engine instance ready"
+        );
+        Ok(Self {
+            source: format!("usnm-{}", hello.engine.family),
+            slots: tokio::sync::Semaphore::new(opts.instances.max(1)),
+            idle: Mutex::new(vec![first]),
+            hello,
+            sandbox,
+            image,
+            opts,
+            runs: AtomicU64::new(0),
+        })
+    }
+
+    pub fn hello(&self) -> &Hello {
+        &self.hello
+    }
+
+    /// The first profile that reads `language`.
+    fn profile(&self, language: &str) -> Option<&str> {
+        self.hello
+            .profiles
+            .iter()
+            .find(|p| p.languages.iter().any(|l| l == language))
+            .map(|p| p.id.as_str())
+    }
+
+    fn tag(&self, profile: &str) -> anyhow::Result<String> {
+        let t = OcrEngineTag::new(Fields {
+            family: &self.hello.engine.family,
+            version: &self.hello.engine.version,
+            profile,
+            image: self.image.clone(),
+            models: models_digest(&self.hello, profile),
+            route: ROUTE,
+            route_version: ROUTE_VERSION,
+            contract: CONTRACT,
+        })
+        .map_err(|e| anyhow::anyhow!("no ocr_engine tag: {e:?}"))?;
+        Ok(t.to_string())
+    }
+
+    async fn instance(&self) -> anyhow::Result<Instance> {
+        if let Some(i) = self.idle.lock().ok().and_then(|mut v| v.pop()) {
+            return Ok(i);
+        }
+        let inst = spawn(&self.opts, self.sandbox.as_ref()).await?;
+        if !inst.hello.matches(&self.hello) {
+            bail!("a new instance's hello differs from the first one's");
+        }
+        Ok(inst)
+    }
+
+    fn give_back(&self, mut inst: Instance) {
+        inst.jobs += 1;
+        if inst.jobs >= self.opts.max_jobs.max(1) {
+            return;
+        }
+        if let Ok(mut v) = self.idle.lock() {
+            v.push(inst);
+        }
+    }
+
+    async fn read(
+        &self,
+        inst: &mut Instance,
+        image: &Path,
+        language: &str,
+        profile: &str,
+    ) -> Result<EngineOutput, PageError> {
+        let n = self.runs.fetch_add(1, Ordering::Relaxed);
+        let run_id = format!(
+            "{}.{}{n}",
+            self.opts.node,
+            chrono::Utc::now().format("%Y%m%dT%H%M%S%6fZ")
+        );
+        // Failures before the engine sees the page aren't the instance's.
+        let keep = |e: anyhow::Error| PageError::Keep(EngineError::Failed(e));
+        let bytes = tokio::fs::read(image)
+            .await
+            .context("reading the scan")
+            .map_err(keep)?;
+        let (width, height) = image_size(&bytes)
+            .context("the scan's size isn't readable")
+            .map_err(keep)?;
+        let ext = image.extension().and_then(|e| e.to_str()).unwrap_or("img");
+        let name = format!("{run_id}.{ext}");
+        let host_image = inst.dirs.host_in.join(&name);
+        tokio::fs::write(&host_image, &bytes)
+            .await
+            .map_err(|e| {
+                anyhow::Error::new(crate::worker::ScratchError(format!(
+                    "writing the scan for the engine: {e}"
+                )))
+            })
+            .map_err(keep)?;
+        let host_out = inst.dirs.host_out.join(&run_id);
+        let made = make_out_dir(&host_out, self.sandbox.as_ref(), inst.dirs.level.as_deref()).await;
+        let result = match made {
+            Ok(()) => {
+                self.exchange(
+                    inst,
+                    &run_id,
+                    &name,
+                    &bytes,
+                    (width, height),
+                    language,
+                    profile,
+                    &host_out,
+                )
+                .await
+            }
+            Err(e) => Err(PageError::Keep(EngineError::Failed(e))),
+        };
+        let _ = tokio::fs::remove_file(&host_image).await;
+        let _ = tokio::fs::remove_dir_all(&host_out).await;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn exchange(
+        &self,
+        inst: &mut Instance,
+        run_id: &str,
+        name: &str,
+        bytes: &[u8],
+        (width, height): (u32, u32),
+        language: &str,
+        profile: &str,
+        host_out: &Path,
+    ) -> Result<EngineOutput, PageError> {
+        let req = PageRequest {
+            deadline_ms: u64::try_from(self.opts.page_timeout.as_millis()).unwrap_or(u64::MAX),
+            image: Image {
+                dpi: self.opts.dpi,
+                dpi_source: DpiSource::Assumed,
+                height,
+                path: format!("{}/{name}", inst.dirs.seen_in),
+                sha256: crate::prefetch::sha256(bytes),
+                width,
+            },
+            language: language.to_owned(),
+            options: BTreeMap::new(),
+            out: format!("{}/{run_id}/", inst.dirs.seen_out),
+            profile: profile.to_owned(),
+            run_id: run_id.to_owned(),
+            script: None,
+        };
+        req.check(&inst.dirs.seen_out)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        tracing::debug!(run_id, "page to engine");
+        let line = encode(&ToAdapter::Page(req.clone()));
+        let sent = inst
+            .stdin
+            .write_all(&line)
+            .await
+            .and(inst.stdin.flush().await);
+        if let Err(e) = sent {
+            return Err(anyhow::anyhow!(
+                "the engine instance closed its input: {e}; {}",
+                inst.stderr_tail()
+            )
+            .into());
+        }
+        let wait = self.opts.page_timeout + KILL_GRACE;
+        let reply = match tokio::time::timeout(wait, read_line(&mut inst.stdout)).await {
+            Err(_) => return Err(anyhow::anyhow!("no result from the engine in {wait:?}").into()),
+            Ok(Err(e)) => return Err(anyhow::anyhow!("engine protocol: {e}").into()),
+            Ok(Ok(None)) => {
+                // Give its last stderr lines a moment to arrive.
+                let _ = tokio::time::timeout(Duration::from_secs(2), inst.child.wait()).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                return Err(
+                    anyhow::anyhow!("the engine instance exited; {}", inst.stderr_tail()).into(),
+                );
+            }
+            Ok(Ok(Some(l))) => l,
+        };
+        let result: PageResult = match decode(&reply) {
+            Ok(FromAdapter::Result(r)) => r,
+            Ok(FromAdapter::Hello(_)) => {
+                return Err(anyhow::anyhow!("engine protocol: a second hello").into())
+            }
+            Err(e) => return Err(anyhow::anyhow!("engine protocol: {e}").into()),
+        };
+        result
+            .check(&req, &inst.hello, false)
+            .map_err(|e| anyhow::anyhow!("engine protocol: {e}"))?;
+        let message = || {
+            result
+                .error
+                .as_ref()
+                .map(|e| format!("{}: {}", e.kind, e.message))
+                .unwrap_or_default()
+        };
+        match result.status {
+            Status::Ok => {}
+            Status::Unsupported => {
+                return Err(PageError::Keep(EngineError::Unsupported(
+                    language.to_owned(),
+                )))
+            }
+            Status::BadInput | Status::Failed | Status::Timeout => {
+                // The instance is kept unless the adapter asked for a
+                // restart; a timeout's stray processes are its own to stop
+                // (`cancel = adapter`).
+                let e = EngineError::Failed(anyhow::anyhow!(
+                    "engine {}: {}",
+                    result.status.as_str(),
+                    message()
+                ));
+                return Err(if result.restart {
+                    PageError::Drop(e)
+                } else {
+                    PageError::Keep(e)
+                });
+            }
+        }
+        let file = |path: &str| {
+            let name = usnm_ocr_contract::engine::file_name_in(&req.out, path)
+                .context("a file outside the page's out directory")?;
+            Ok::<PathBuf, anyhow::Error>(host_out.join(name))
+        };
+        let layout = result.layout.as_ref().context("no layout")?;
+        let text = match &result.text {
+            Some(t) => String::from_utf8_lossy(&read_output(&file(&t.path)?, engine_files::TEXT)?)
+                .into_owned(),
+            None => String::new(),
+        };
+        let raw = read_output(&file(&layout.path)?, engine_files::LAYOUT)?;
+        let engine = self.tag(profile)?;
+        let out = match layout.kind {
+            Layout::Alto => EngineOutput {
+                text,
+                alto: raw,
+                page: None,
+                engine,
+            },
+            Layout::Boxes => {
+                let b = boxes::parse(&raw, &BoxLimits::default())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let page = boxes::to_page(
+                    &b,
+                    &Convert {
+                        granularity: inst.hello.granularity,
+                        full: (f64::from(width), f64::from(height)),
+                        dir: usnm_alto::default_dir(language, None),
+                        markup: result.markup,
+                    },
+                )
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                EngineOutput {
+                    text,
+                    alto: Vec::new(),
+                    page: Some(page),
+                    engine,
+                }
+            }
+        };
+        Ok(out)
+    }
+}
+
+/// Creates a page's out directory: mode 0700, writable by the container
+/// user through the slot's ACL, and labelled at the slot's level.
+async fn make_out_dir(
+    dir: &Path,
+    sandbox: Option<&Sandbox>,
+    level: Option<&str>,
+) -> anyhow::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir)
+        .with_context(|| format!("creating {}", dir.display()))?;
+    if let Some(sb) = sandbox {
+        let e = sb.info.engine_uid;
+        // The mode's group bits are the ACL mask: open it again so the
+        // inherited entries apply.
+        checked(
+            tokio::process::Command::new("setfacl")
+                .args(["-m", &format!("u:{e}:rwx,m::rwx")])
+                .arg(dir),
+        )
+        .await?;
+        if let Some(level) = level {
+            checked(
+                tokio::process::Command::new("chcon")
+                    .args(["-t", "container_file_t", "-l", level])
+                    .arg(dir),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Starts an instance and reads its `hello`.
+async fn spawn(opts: &ContractOptions, sandbox: Option<&Sandbox>) -> anyhow::Result<Instance> {
+    let threads = opts.threads.max(1).to_string();
+    let (mut cmd, dirs, container) = match (&opts.launch, sandbox) {
+        (
+            Launch::Local {
+                program,
+                args,
+                scratch,
+            },
+            _,
+        ) => {
+            let tmp = tempfile::Builder::new()
+                .prefix("usnm-eng-")
+                .tempdir_in(scratch)?;
+            let (i, o) = (tmp.path().join("in"), tmp.path().join("out"));
+            std::fs::create_dir(&i)?;
+            std::fs::create_dir(&o)?;
+            let mut cmd = tokio::process::Command::new(program);
+            cmd.args(args)
+                .args(["--contract", &CONTRACT.to_string(), "--threads", &threads]);
+            cmd.env("OMP_THREAD_LIMIT", &threads);
+            let dirs = Dirs {
+                seen_in: i.display().to_string(),
+                seen_out: o.display().to_string(),
+                host_in: i,
+                host_out: o,
+                level: None,
+                _slot: Slot::Local(tmp),
+            };
+            (cmd, dirs, None)
+        }
+        (
+            Launch::Podman {
+                podman,
+                remote,
+                image,
+            },
+            Some(sb),
+        ) => {
+            let (slot, level) = sb.page_dir().await?;
+            let (i, o) = (slot.path.join("in"), slot.path.join("out"));
+            for d in [&i, &o] {
+                std::fs::create_dir(d)?;
+                let e = sb.info.engine_uid;
+                checked(
+                    tokio::process::Command::new("setfacl")
+                        .args(["-m", &format!("u:{e}:rwx,m::rwx")])
+                        .arg(d),
+                )
+                .await?;
+                if let Some(level) = &level {
+                    checked(
+                        tokio::process::Command::new("chcon")
+                            .args(["-t", "container_file_t", "-l", level])
+                            .arg(d),
+                    )
+                    .await?;
+                }
+            }
+            let name = format!("usnm-eng-{}", crate::queue::random_token());
+            let mut cmd = podman_command(podman, Some(&remote.url));
+            let Limits {
+                memory_mib,
+                cpus,
+                pids,
+            } = remote.limits;
+            let mem = format!("{memory_mib}m");
+            // 13 §13.6.1.
+            cmd.args(["run", "--interactive", "--init", "--pull=never"])
+                .args(["--name", &name, "--label", LABEL])
+                .args([
+                    "--network=none",
+                    "--http-proxy=false",
+                    "--no-hosts",
+                    "--read-only",
+                ])
+                .args(["--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777"])
+                .args(["--user", &format!("{ENGINE_USER}:{ENGINE_USER}")])
+                .args(["--cap-drop=all", "--security-opt=no-new-privileges"])
+                .args(["--memory", &mem, "--memory-swap", &mem])
+                .args([
+                    "--cpus",
+                    &cpus.to_string(),
+                    "--pids-limit",
+                    &pids.to_string(),
+                ])
+                .args(["--ulimit", "nofile=1024:1024", "--ulimit", "core=0"])
+                .args(["--log-driver=none", "--stop-timeout=10"])
+                .args([
+                    "--env",
+                    "HOME=/tmp",
+                    "--env",
+                    &format!("OMP_THREAD_LIMIT={threads}"),
+                ]);
+            if let Some(level) = &level {
+                cmd.args(["--security-opt", &format!("label=level:{level}")]);
+            }
+            cmd.args(["--volume", &format!("{}:/in:ro", i.display())])
+                .args(["--volume", &format!("{}:/out:rw", o.display())])
+                .arg(image)
+                .args(["--contract", &CONTRACT.to_string(), "--threads", &threads]);
+            let guard = ContainerGuard {
+                podman: podman.clone(),
+                url: Some(remote.url.clone()),
+                name,
+                armed: true,
+            };
+            let dirs = Dirs {
+                host_in: i,
+                host_out: o,
+                seen_in: "/in".into(),
+                seen_out: "/out".into(),
+                level,
+                _slot: Slot::Podman(slot),
+            };
+            (cmd, dirs, Some(guard))
+        }
+        (Launch::Podman { .. }, None) => bail!("no engine runtime"),
+    };
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().context("starting the engine instance")?;
+    let stdin = child.stdin.take().context("no stdin")?;
+    let mut stdout = BufReader::new(child.stdout.take().context("no stdout")?);
+    let stderr = Arc::new(Mutex::new(VecDeque::new()));
+    if let Some(err) = child.stderr.take() {
+        // Read as it comes, so a full stderr pipe never stalls the
+        // adapter; keep the last 50 lines of at most 4 KiB.
+        let keep = stderr.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(err).split(b'\n');
+            while let Ok(Some(l)) = lines.next_segment().await {
+                let l = String::from_utf8_lossy(&l[..l.len().min(4096)]).into_owned();
+                if let Ok(mut k) = keep.lock() {
+                    if k.len() == 50 {
+                        k.pop_front();
+                    }
+                    k.push_back(l);
+                }
+            }
+        });
+    }
+    let first = tokio::time::timeout(opts.start_timeout, read_line(&mut stdout))
+        .await
+        .map_err(|_| anyhow::anyhow!("no hello from the engine in {:?}", opts.start_timeout))??;
+    let tail_of = |s: &Arc<Mutex<VecDeque<String>>>| {
+        s.lock()
+            .map(|l| l.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default()
+    };
+    let Some(first) = first else {
+        bail!(
+            "the engine exited before its hello: {}",
+            tail(&tail_of(&stderr), 1500)
+        );
+    };
+    let hello = match decode(&first) {
+        Ok(FromAdapter::Hello(h)) => h,
+        Ok(_) => bail!("the engine's first line isn't a hello"),
+        Err(e) => bail!("the engine's first line: {e}"),
+    };
+    Ok(Instance {
+        child,
+        stdin,
+        stdout,
+        stderr,
+        dirs,
+        hello,
+        _container: container,
+        jobs: 0,
+    })
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        // kill_on_drop stops the client; the guard removes the container.
+        let _ = self.child.start_kill();
+    }
+}
+
+#[async_trait]
+impl Engine for ContractEngine {
+    fn source(&self) -> &str {
+        &self.source
+    }
+
+    fn can_read(&self, language: &str) -> bool {
+        self.profile(language).is_some()
+    }
+
+    fn dpi(&self) -> u32 {
+        self.opts.dpi
+    }
+
+    async fn ocr(
+        &self,
+        image: &Path,
+        language: &str,
+        _work: &Path,
+    ) -> Result<EngineOutput, EngineError> {
+        let profile = self
+            .profile(language)
+            .ok_or_else(|| EngineError::Unsupported(language.to_owned()))?
+            .to_owned();
+        let _permit = self
+            .slots
+            .acquire()
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut inst = self.instance().await?;
+        match self.read(&mut inst, image, language, &profile).await {
+            Ok(out) => {
+                self.give_back(inst);
+                Ok(out)
+            }
+            Err(PageError::Keep(e)) => {
+                self.give_back(inst);
+                Err(e)
+            }
+            // The instance is dropped (killed and removed), and the next
+            // page starts a new one.
+            Err(PageError::Drop(e)) => Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_image_sizes_from_headers() {
+        assert_eq!(
+            image_size(&crate::testimg::text_image("HELLO")),
+            Some((260, 122))
+        );
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend(1000u32.to_be_bytes());
+        png.extend(700u32.to_be_bytes());
+        assert_eq!(image_size(&png), Some((1000, 700)));
+        // A JPEG: SOI, an APP0 segment, then SOF0 with height 7208 and width 5412.
+        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xC0, 0, 11, 8];
+        jpg.extend(7208u16.to_be_bytes());
+        jpg.extend(5412u16.to_be_bytes());
+        jpg.extend([1, 1, 0x11, 0]);
+        assert_eq!(image_size(&jpg), Some((5412, 7208)));
+        let mut jp2 = b"\0\0\0\x0cjP  \r\n\x87\n\0\0\0\x2dihdr".to_vec();
+        jp2.extend(7208u32.to_be_bytes());
+        jp2.extend(5412u32.to_be_bytes());
+        assert_eq!(image_size(&jp2), Some((5412, 7208)));
+        assert_eq!(image_size(b"nothing"), None);
+    }
+}

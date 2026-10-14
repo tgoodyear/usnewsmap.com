@@ -73,6 +73,38 @@ pub fn from_engine_alto(
     ))
 }
 
+/// The stored outputs for an engine's reading: its page when it wrote
+/// boxes, else its ALTO parsed.
+pub fn from_output(
+    out: &crate::engine::EngineOutput,
+    language: &str,
+    dpi: u32,
+    source: &Source<'_>,
+    worker_version: &str,
+    now: DateTime<Utc>,
+) -> Result<Stored, ConvertError> {
+    match &out.page {
+        Some(page) => Ok(store(
+            page.clone(),
+            &out.engine,
+            language,
+            dpi,
+            source,
+            worker_version,
+            now,
+        )),
+        None => from_engine_alto(
+            &out.alto,
+            &out.engine,
+            language,
+            dpi,
+            source,
+            worker_version,
+            now,
+        ),
+    }
+}
+
 /// The stored outputs for a parsed page.
 pub fn store(
     page: Page,
