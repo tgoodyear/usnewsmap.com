@@ -298,11 +298,12 @@ the template's settings. Run one step at a time.
 
 ### Register the apps
 
-`make_project` and `bin/xadd` run once, at `--init-project`. An app added to
+Provisioning runs the idempotent `--ensure-project` lifecycle job and then `bin/xadd`.
+An app added to
 `contrib-compute/boinc/project.xml` later (`usnm_assess`, `usnm_gold`, `usnm_surya`,
-`usnm_quality`, `usnm_qwen`) is not in the database until `xadd` runs again. The
+`usnm_quality`, `usnm_qwen`) is registered automatically on the next provision. The
 `register-apps` step copies the deployed image's `project.xml` into the project and
-runs `bin/xadd`:
+runs `bin/xadd`; it remains available for targeted recovery:
 
 ```sh
 scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15
