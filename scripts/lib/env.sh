@@ -849,8 +849,10 @@ experiment_marker() {
   [[ $exp =~ ^[0-9]+$ ]] || { echo "error: USNM_EXPERIMENT is an issue number, not \"$exp\"" >&2; return 1; }
   # The project group in either name form: the first one that exists.
   for g in $PROJECT_GROUPS; do
-    if out=$(az group show -n "$g" --query "[tags.experiment, tags.started]" -o tsv 2>&1); then
-      IFS=$'\t' read -r tagged started <<< "$out"
+    if out=$(az group show -n "$g" --query "[tags.experiment || '', tags.started || '']" -o tsv 2>&1); then
+      # A TSV list has one value per line, not one tab-separated row.
+      # Default null tags to empty strings so a missing experiment keeps its slot.
+      { IFS= read -r tagged; IFS= read -r started || :; } <<< "$out"
       [ "$tagged" = "$exp" ] || started=""
       break
     elif ! grep -qiE 'ResourceGroupNotFound|could not be found' <<< "$out"; then

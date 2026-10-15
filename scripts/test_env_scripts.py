@@ -4,7 +4,9 @@ scripts/test_env_scripts.py). Nothing here reaches Azure.
 
 The stub answers from environment variables: STUB_STACK (the stack's
 resource count; unset: not found), STUB_GROUPS (group names, one per line),
-STUB_TAGS (the project group's "experiment<TAB>started"; unset: no group),
+STUB_TAGS (the project group's experiment and started, one value per line;
+empty lines for missing tags; unset: no group), STUB_TAGS_ERROR (reading
+the tags fails with that message),
 STUB_TAGGED_GROUP (when set, the only group `group show` finds),
 STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
 STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
@@ -44,6 +46,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -151,8 +154,11 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
     if [ -n "${STUB_LIVE_VAULT:-}" ] && [ "$4" = "$STUB_LIVE_VAULT" ]; then echo "$4"
     else echo "ERROR: (ResourceNotFound) The Resource 'Microsoft.KeyVault/vaults/$4' was not found." >&2; exit 3; fi ;;
   "group show")
+    if [ -n "${STUB_TAGS_ERROR:-}" ]; then echo "$STUB_TAGS_ERROR" >&2; exit 1; fi
     if [ -n "${STUB_TAGGED_GROUP:-}" ] && [ "$4" != "$STUB_TAGGED_GROUP" ]; then
       echo "ERROR: (ResourceGroupNotFound) Resource group '$4' could not be found." >&2; exit 3; fi
+    case "$*" in *"--query [tags.experiment || '', tags.started || ''] -o tsv"*) ;;
+      *) echo "stub az: unexpected tags query: $*" >&2; exit 9 ;; esac
     if [ -n "${STUB_TAGS+x}" ]; then printf '%b\n' "$STUB_TAGS"
     else echo "ERROR: (ResourceGroupNotFound) Resource group 'rg-usnm-dev' could not be found." >&2; exit 3; fi ;;
   "resource list") printf 'Microsoft.Storage/storageAccounts\tstusnmdev\n' ;;
@@ -312,7 +318,7 @@ class ExperimentMarker(Stubbed):
     def test_the_same_experiment_keeps_its_start(self):
         self.settings_file('USNM_EXPERIMENT="275"\n')
         r = self.lib("experiment_marker; aget USNM_EXPERIMENT_STARTED",
-                     STUB_TAGS="275\\t2026-10-01T12:00:00Z")
+                     STUB_TAGS="275\n2026-10-01T12:00:00Z")
         self.assertEqual(r.stdout.strip(), "2026-10-01T12:00:00Z")
 
     def test_the_group_in_either_name_form(self):
@@ -321,7 +327,7 @@ class ExperimentMarker(Stubbed):
         self.settings_file('USNM_EXPERIMENT="275"\n')
         for group in ("usnm-core-rg-dev", "rg-usnm-dev"):
             r = self.lib("experiment_marker; aget USNM_EXPERIMENT_STARTED", STUB_TAGGED_GROUP=group,
-                         STUB_TAGS="275\\t2026-10-01T12:00:00Z")
+                         STUB_TAGS="275\n2026-10-01T12:00:00Z")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.strip(), "2026-10-01T12:00:00Z", group)
         shows = [c for c in self.calls() if c.startswith("group show")]
@@ -331,9 +337,44 @@ class ExperimentMarker(Stubbed):
     def test_another_experiment_starts_again(self):
         self.settings_file('USNM_EXPERIMENT="301"\n')
         r = self.lib("experiment_marker; aget USNM_EXPERIMENT_STARTED",
-                     STUB_TAGS="275\\t2026-10-01T12:00:00Z")
+                     STUB_TAGS="275\n2026-10-01T12:00:00Z")
         self.assertNotEqual(r.stdout.strip(), "2026-10-01T12:00:00Z")
         self.assertRegex(r.stdout.strip(), r"^\d{4}-")
+
+    def test_missing_tags_start_now(self):
+        self.settings_file('USNM_EXPERIMENT="275"\n')
+        for tags in ("275\n", "\n2026-10-01T12:00:00Z", "\n", ""):
+            with self.subTest(tags=tags):
+                r = self.lib("experiment_marker; aget USNM_EXPERIMENT_STARTED", STUB_TAGS=tags)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertRegex(r.stdout.strip(), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+                self.assertNotEqual(r.stdout.strip(), "2026-10-01T12:00:00Z")
+
+    def test_repeated_provisions_keep_the_initial_start(self):
+        self.settings_file('USNM_EXPERIMENT="275"\n')
+        r = self.lib("experiment_marker; experiment_marker; aget USNM_EXPERIMENT_STARTED",
+                     STUB_TAGS="275\n2026-10-01T12:00:00Z")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "2026-10-01T12:00:00Z")
+
+    def test_dry_run_keeps_the_start_without_writing_settings(self):
+        initial = 'USNM_EXPERIMENT="275"\n'
+        self.settings_file(initial)
+        r = self.lib('experiment_marker --dry-run; echo "$EXPERIMENT_STARTED_DRY_RUN"',
+                     STUB_TAGS="275\n2026-10-01T12:00:00Z")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "2026-10-01T12:00:00Z")
+        self.assertEqual(self.local_text(), initial)
+
+    def test_tag_errors_do_not_reset_the_start(self):
+        initial = 'USNM_EXPERIMENT="275"\nUSNM_EXPERIMENT_STARTED="2026-10-01T12:00:00Z"\n'
+        self.settings_file(initial)
+        for error in ("ERROR: (AuthorizationFailed) no access", "ERROR: (TooManyRequests) throttled"):
+            with self.subTest(error=error):
+                r = self.lib("experiment_marker", STUB_TAGS_ERROR=error)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("can't read the tags", r.stderr)
+                self.assertEqual(self.local_text(), initial)
 
 
 class GuardrailBudget(Stubbed):
@@ -398,7 +439,7 @@ class DevStatus(Stubbed):
         self.assertIn("dev holds nothing", r.stdout)
 
     def test_resources_without_a_tag(self):
-        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev\nrg-usnm-dev-spot", STUB_TAGS="\\t")
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev\nrg-usnm-dev-spot", STUB_TAGS="\n")
         self.assertEqual(r.returncode, 1)
         self.assertIn("no experiment tag", r.stderr)
 
@@ -415,12 +456,48 @@ class DevStatus(Stubbed):
 
     def test_an_experiment(self):
         r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev",
-                        STUB_TAGS="275\\t2026-10-01T12:00:00Z")
+                        STUB_TAGS="275\n2026-10-01T12:00:00Z")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("experiment #275, started 2026-10-01T12:00:00Z", r.stdout)
         # dev's groups only, whatever their case: not prod's, not dev2's.
         self.assertIn("cost since 2026-10-01T12:00:00Z: 1.75 USD", r.stdout)
+        self.assertIn('"from": "2026-10-01T12:00:00Z"', "\n".join(self.calls()))
         self.assertTrue(re.search(r"group rg-usnm-dev: 1 resources", r.stdout))
+
+    def test_age_and_seven_day_warning(self):
+        for days in (2, 7, 9):
+            with self.subTest(days=days):
+                started = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev",
+                                STUB_TAGS=f"275\n{started}")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(f"{days} days ago", r.stdout)
+                self.assertIn(f"cost since {started}: 1.75 USD", r.stdout)
+                self.assertEqual("more than 7 days" in r.stderr, days > 7)
+
+    def test_missing_start_uses_month_cost_and_unknown_age(self):
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("experiment #275, started at an unknown time", r.stdout)
+        month = datetime.now(timezone.utc).strftime("%Y-%m-01T00:00:00Z")
+        self.assertIn(f"cost since {month}: 1.75 USD", r.stdout)
+        self.assertIn(f'"from": "{month}"', "\n".join(self.calls()))
+        self.assertNotIn("days ago", r.stdout)
+        self.assertNotIn("more than 7 days", r.stderr)
+
+    def test_missing_experiment_does_not_shift_start_into_its_slot(self):
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev",
+                        STUB_TAGS="\n2026-10-01T12:00:00Z")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("no experiment tag", r.stderr)
+
+    def test_tag_errors_fail_before_requesting_cost(self):
+        for error in ("ERROR: (AuthorizationFailed) no access", "ERROR: (TooManyRequests) throttled"):
+            with self.subTest(error=error):
+                r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS_ERROR=error)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("can't read the tags", r.stderr)
+                self.assertFalse(any(c.startswith("rest --method") for c in self.calls()))
 
     def test_an_experiment_in_adr_0017_names(self):
         cost = json.dumps({"properties": {
@@ -429,7 +506,7 @@ class DevStatus(Stubbed):
                      [0.25, "rg-usnm-dev-spot", "USD"], [40.0, "rg-usnm-prod", "USD"],
                      [0.1, "usnm-core-rg-dev2", "USD"]]}})
         r = self.status(STUB_STACK="120", STUB_GROUPS="usnm-core-rg-dev\nusnm-core-infra-rg-dev",
-                        STUB_TAGGED_GROUP="usnm-core-rg-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",
+                        STUB_TAGGED_GROUP="usnm-core-rg-dev", STUB_TAGS="275\n2026-10-01T12:00:00Z",
                         STUB_COST=cost)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("experiment #275, started 2026-10-01T12:00:00Z", r.stdout)
@@ -441,13 +518,13 @@ class DevStatus(Stubbed):
             self.assertIn(f"'{g}'", query)
 
     def test_cost_without_the_reader_role_is_a_warning(self):
-        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\n2026-10-01T12:00:00Z",
                         STUB_COST_ERROR="ERROR: (AuthorizationFailed) no access")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("needs Cost Management Reader", r.stderr)
 
     def test_any_other_cost_error_fails(self):
-        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\\t2026-10-01T12:00:00Z",
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\n2026-10-01T12:00:00Z",
                         STUB_COST_ERROR="ERROR: (TooManyRequests) throttled")
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't read the cost", r.stderr)
