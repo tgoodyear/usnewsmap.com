@@ -179,7 +179,7 @@ boinccmd --get_project_status   # expect: an entry whose master URL is https://b
 
 Set idle-only processing and conservative limits in your BOINC preferences, as the pilot asks. On a headless host or a container, the client may log `Suspending computation - CPU is busy` because it sees the whole machine's load; set `<suspend_cpu_usage>0</suspend_cpu_usage>` in `/var/lib/boinc/global_prefs_override.xml` and run `boinccmd --read_global_prefs_override`.
 
-To view your task history, log in to the project website with the same account and open your account page's **Tasks** link. Task history is available only to the signed-in owner of that account.
+To view your task history, log in to the project website with the same account and open your account page's **Tasks** link. The account-scoped list checks ownership. **Privacy limitation:** BOINC also accepts a `hostid` on the results page without checking that the signed-in user owns that host, so another signed-in volunteer with a host ID can view its task history.
 
 ## 3. What you will run
 
