@@ -207,6 +207,25 @@ impl ReadTrace {
     }
 }
 
+/// Reports a started read whose page future was dropped before it
+/// finished: disarmed when the page ends normally.
+struct CancelledRead<'a> {
+    worker: &'a Worker,
+    key: &'a PageKey,
+    run_id: &'a str,
+    trace: &'a ReadTrace,
+    armed: bool,
+}
+
+impl Drop for CancelledRead<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.worker
+                .report_failed_read(self.key, self.run_id, self.trace, None);
+        }
+    }
+}
+
 /// The page's failure for an engine error.
 fn engine_failure(e: EngineError, node: &str) -> Failure {
     match e {
@@ -661,25 +680,47 @@ impl Worker {
         // (13 §13.4.3).
         let run_id = crate::provenance::mint_run_id(&self.cfg.node_id);
         let trace = ReadTrace::default();
+        // Reports the read if this future is dropped mid-page (the
+        // shutdown grace ran out), inside the page's span: `Instrumented`
+        // enters it while dropping.
+        let mut cancelled = CancelledRead {
+            worker: self,
+            key,
+            run_id: &run_id,
+            trace: &trace,
+            armed: true,
+        };
         let result = self
             .process_page(m, key, token, deadline, &run_id, &trace)
             .await;
+        cancelled.armed = false;
         if let Err(f) = &result {
-            self.report_failed_read(key, &run_id, &trace, f);
+            self.report_failed_read(key, &run_id, &trace, Some(f));
         }
         result
     }
 
     /// The `ocr_engine_run` event for a page that failed after its engine
-    /// was called, so wrote nothing (13 §13.8.3).
-    fn report_failed_read(&self, key: &PageKey, run_id: &str, trace: &ReadTrace, f: &Failure) {
-        let Ok(t) = trace.0.lock() else { return };
-        let Some(started) = t.started else { return };
+    /// was called, so wrote nothing (13 §13.8.3); `None` for a page
+    /// dropped at shutdown. At most one per read: the first report takes
+    /// the read's start.
+    fn report_failed_read(
+        &self,
+        key: &PageKey,
+        run_id: &str,
+        trace: &ReadTrace,
+        f: Option<&Failure>,
+    ) {
+        let Ok(mut t) = trace.0.lock() else { return };
+        let Some(started) = t.started.take() else {
+            return;
+        };
         let (status, error_kind) = match (f, t.error) {
-            (Failure::Abandoned, _) => ("abandoned", "budget"),
+            (None, _) => ("abandoned", "shutdown"),
+            (Some(Failure::Abandoned), _) => ("abandoned", "budget"),
             (_, Some(e)) => e,
-            (Failure::Transient(kind, _), None) => ("failed", *kind),
-            (Failure::Permanent(_), None) => ("failed", "permanent"),
+            (Some(Failure::Transient(kind, _)), None) => ("failed", *kind),
+            (Some(Failure::Permanent(_)), None) => ("failed", "permanent"),
         };
         let fallback;
         let (ocr_engine, info) = match t.read.as_ref().or(t.planned.as_ref()) {
@@ -1576,16 +1617,22 @@ mod tests {
             }
         }
         struct Capture(Seen);
-        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+        impl<S> tracing_subscriber::Layer<S> for Capture
+        where
+            S: tracing::Subscriber + for<'l> tracing_subscriber::registry::LookupSpan<'l>,
+        {
             fn on_event(
                 &self,
                 e: &tracing::Event<'_>,
-                _: tracing_subscriber::layer::Context<'_, S>,
+                ctx: tracing_subscriber::layer::Context<'_, S>,
             ) {
                 if e.metadata().target() == crate::provenance::ENGINE_RUN {
                     let mut m = std::collections::BTreeMap::new();
                     e.record(&mut Fields(&mut m));
                     m.insert("level".into(), e.metadata().level().to_string());
+                    if let Some(span) = ctx.event_span(e) {
+                        m.insert("span".into(), span.name().into());
+                    }
                     self.0.lock().unwrap().push(m);
                 }
             }
@@ -1861,18 +1908,31 @@ mod tests {
         let (tx, rx) = watch::channel(false);
         let tracker = w.tracker.clone();
         let t0 = Instant::now();
-        let run = tokio::spawn(w.run(rx));
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        tx.send_replace(true);
-        tokio::time::timeout(Duration::from_secs(10), run)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let runs = engine_runs(async {
+            let run = tokio::spawn(w.run(rx));
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            tx.send_replace(true);
+            tokio::time::timeout(Duration::from_secs(10), run)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        })
+        .await;
         assert!(
             t0.elapsed() < Duration::from_secs(1),
             "stopped after the grace"
         );
+        // The read cut short is reported once, in the page's span, with
+        // no page text.
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(
+            (runs[0]["status"].as_str(), runs[0]["error_kind"].as_str()),
+            ("abandoned", "shutdown")
+        );
+        assert_eq!(runs[0]["doc_id"], "sn83045462_1890-05-03_ed-1_seq-7");
+        assert_eq!(runs[0]["span"], "ocr_page");
+        assert!(runs[0].keys().all(|k| !k.contains("text")), "{:?}", runs[0]);
         // The tracker ends the dropped page as abandoned at shutdown.
         let st = tracker.status();
         assert!(st.in_flight.is_empty());

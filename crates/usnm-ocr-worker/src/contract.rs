@@ -415,7 +415,12 @@ impl ContractEngine {
         });
         let (models_digest, models_json) =
             models.unwrap_or_else(|| ("local".to_owned(), "{}".to_owned()));
-        let cold_start = self.idle.lock().map_or(true, |v| v.is_empty());
+        // The instance `instance()` takes next: the last idle one, cold
+        // if it hasn't read a page yet, or a new one.
+        let cold_start = self
+            .idle
+            .lock()
+            .map_or(true, |v| v.last().is_none_or(|i| i.jobs == 0));
         ReadInfo {
             engine_id: h.engine.id.clone(),
             adapter: format!(
@@ -531,7 +536,10 @@ impl ContractEngine {
                 )
                 .await
             }
-            Err(e) => Err(PageError::Keep(EngineError::Failed(e))),
+            // The worker's own scratch, before the engine sees the page.
+            Err(e) => Err(PageError::Keep(EngineError::Failed(anyhow::Error::new(
+                crate::worker::ScratchError(format!("the page's out directory: {e:#}")),
+            )))),
         };
         let _ = tokio::fs::remove_file(&host_image).await;
         let _ = tokio::fs::remove_dir_all(&host_out).await;
@@ -718,9 +726,7 @@ impl ContractEngine {
                             )
                     );
                     if limit {
-                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
-                            "engine protocol: {e}"
-                        )))
+                        PageError::from(anyhow::anyhow!("engine protocol: {e}"))
                     } else {
                         convert(e.to_string())
                     }
@@ -739,9 +745,7 @@ impl ContractEngine {
             Layout::Boxes => {
                 let b = boxes::parse(&raw, &BoxLimits::default()).map_err(|e| {
                     if e.is_protocol() {
-                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
-                            "engine protocol: {e}"
-                        )))
+                        PageError::from(anyhow::anyhow!("engine protocol: {e}"))
                     } else {
                         convert(e.to_string())
                     }
@@ -757,9 +761,7 @@ impl ContractEngine {
                 )
                 .map_err(|e| {
                     if e.is_protocol() {
-                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
-                            "engine protocol: {e}"
-                        )))
+                        PageError::from(anyhow::anyhow!("engine protocol: {e}"))
                     } else {
                         convert(e.to_string())
                     }
@@ -1354,6 +1356,80 @@ mod tests {
         // The page's directory itself may not be a symlink.
         std::os::unix::fs::symlink(dir.path(), dir.path().join("sub/link")).unwrap();
         assert!(open_dir(&dir.path().join("sub/link")).is_err());
+    }
+
+    /// An adapter that sends its hello and reads requests without
+    /// answering.
+    async fn silent_engine(dir: &Path) -> ContractEngine {
+        let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"silent","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":[],"tunable":[]}],"type":"hello"}"#;
+        let script = dir.join("adapter");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho '{hello}'\ncat >/dev/null\n"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        ContractEngine::start(ContractOptions {
+            launch: Launch::Local {
+                program: script,
+                args: Vec::new(),
+                scratch: dir.to_owned(),
+            },
+            instances: 1,
+            threads: 1,
+            start_timeout: Duration::from_secs(10),
+            page_timeout: Duration::from_secs(10),
+            max_jobs: 100,
+            dpi: 300,
+            node: "test1".into(),
+        })
+        .await
+        .unwrap()
+    }
+
+    /// A page directory the worker can't make is its own scratch failure,
+    /// before the engine sees the page: no `ocr_engine_run` for it.
+    #[tokio::test]
+    async fn an_out_directory_that_cant_be_made_is_scratch() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = silent_engine(dir.path()).await;
+        let mut inst = e.instance().await.unwrap();
+        std::fs::create_dir(inst.dirs.host_out.join("r1")).unwrap();
+        let img = crate::testimg::text_image("HELLO");
+        let r = e
+            .read_bytes(&mut inst, &img, "pgm", (10, 10), "eng", "eng", "r1")
+            .await;
+        match r {
+            Err(PageError::Keep(EngineError::Failed(err))) => {
+                assert!(err.is::<crate::worker::ScratchError>(), "{err:#}")
+            }
+            Err(PageError::Keep(e) | PageError::Drop(e)) => panic!("{e:#}"),
+            Ok(_) => panic!("read"),
+        }
+        inst.retire().await;
+        e.shutdown().await;
+    }
+
+    /// The first read of a new idle instance is a cold start, before it
+    /// (`describe`, used when the read fails) as after it.
+    #[tokio::test]
+    async fn a_fresh_idle_instance_is_cold() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = silent_engine(dir.path()).await;
+        assert_eq!(e.idle.lock().unwrap().len(), 1);
+        assert!(e.describe("eng").unwrap().1.cold_start);
+        let inst = e.instance().await.unwrap();
+        e.give_back(inst).await;
+        assert!(!e.describe("eng").unwrap().1.cold_start);
+        // None idle: the read starts one.
+        let inst = e.instance().await.unwrap();
+        assert!(e.describe("eng").unwrap().1.cold_start);
+        inst.retire().await;
+        e.shutdown().await;
     }
 
     #[tokio::test]

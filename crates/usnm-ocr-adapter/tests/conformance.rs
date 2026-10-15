@@ -105,6 +105,7 @@ async fn the_text_adapter_conforms() {
         "deadline",
         "stdout_noise",
         "oversized_output",
+        "protocol",
         "stdin_eof",
     ] {
         assert_eq!(r.outcome(case), Some(Outcome::Pass), "{}", outcomes(&r));
@@ -189,6 +190,140 @@ async fn noise_on_stdout_is_caught() {
         outcomes(&r)
     );
     assert!(!r.passed());
+}
+
+/// A stand-in adapter (`cancel = adapter`) that answers with a
+/// page-granularity `boxes.json`: `unsupported` for any profile but `eng`,
+/// `bad_input` for the corrupt fixture, `timeout` for the deadline case's
+/// large page. For the other pages `page` (shell) sets `$text`, the block's
+/// text, and `$sidecar`, the text file's (`-` for none), from `$blank` (1
+/// for a page with no black pixel); it may set `$blocks` to replace the
+/// blocks.
+fn boxes_adapter(dir: &Path, page: &str) -> PathBuf {
+    script(
+        dir,
+        "adapter",
+        &format!(
+            r#"#!/bin/sh
+echo '{hello}'
+while IFS= read -r l; do
+  field() {{ printf '%s\n' "$l" | sed "s/.*\"$1\":\"\([^\"]*\)\".*/\1/"; }}
+  num() {{ printf '%s\n' "$l" | sed "s/.*\"$1\":\([0-9]*\).*/\1/"; }}
+  run=$(field run_id); out=$(field out); img=$(field path); profile=$(field profile)
+  w=$(num width); h=$(num height)
+  fail() {{ printf '{{"engine_stats":{{}},"error":{{"kind":"%s","message":"%s"}},"markup":"none","run_id":"%s","status":"%s","type":"result","warnings":[]}}\n' "$2" "$2" "$run" "$1"; }}
+  if [ "$profile" != eng ]; then fail unsupported profile; continue; fi
+  if grep -q badcrc "$img"; then fail bad_input image; continue; fi
+  case "$l" in *'"width":3500'*) fail timeout timeout; continue ;; esac
+  if od -An -v -tu1 "$img" | grep -qw 0; then blank=0; else blank=1; fi
+  blocks=
+  {page}
+  [ -n "$blocks" ] || blocks=$(printf '{{"bbox":[0,0,%s,%s],"kind":"text","text":"%s"}}' "$w" "$h" "$text")
+  printf '{{"v":1,"units":"px","frame":{{"width":%s,"height":%s}},"granularity":"page","reading_order":"engine","blocks":[%s]}}' "$w" "$h" "$blocks" > "${{out}}boxes.json"
+  if [ "$sidecar" = - ]; then
+    printf '{{"engine_stats":{{}},"layout":{{"kind":"boxes","path":"%sboxes.json"}},"markup":"none","run_id":"%s","status":"ok","type":"result","warnings":[]}}\n' "$out" "$run"
+  else
+    printf '%s\n' "$sidecar" > "${{out}}page.txt"
+    printf '{{"engine_stats":{{}},"layout":{{"kind":"boxes","path":"%sboxes.json"}},"markup":"none","run_id":"%s","status":"ok","text":{{"path":"%spage.txt"}},"type":"result","warnings":[]}}\n' "$out" "$run" "$out"
+  fi
+done
+"#,
+            hello = HELLO.replace("CANCEL", "adapter"),
+        ),
+    )
+}
+
+async fn boxes_report(page: &str) -> Report {
+    let dir = tempfile::tempdir().unwrap();
+    let adapter = boxes_adapter(dir.path(), page);
+    conformance::run(
+        options(adapter, Vec::new(), dir.path()),
+        Path::new(FIXTURES),
+    )
+    .await
+    .unwrap()
+}
+
+/// The cases check the text the worker stores, from the layout: an
+/// adapter that writes no text file conforms.
+#[tokio::test]
+async fn a_layout_only_adapter_conforms() {
+    let r = boxes_report(&format!(
+        r#"if [ $blank = 1 ]; then text=; else text='{}'; fi; sidecar=-"#,
+        conformance::LINE
+    ))
+    .await;
+    assert!(r.passed(), "{}", outcomes(&r));
+    assert_eq!(r.outcome("text_line"), Some(Outcome::Pass));
+    assert_eq!(r.outcome("blank_page"), Some(Outcome::Pass));
+    assert_eq!(r.outcome("deadline"), Some(Outcome::Pass));
+}
+
+/// A right text file doesn't hide a wrong layout, nor an empty one text in
+/// a blank page's layout.
+#[tokio::test]
+async fn a_layout_contradicting_its_text_file_fails() {
+    let r = boxes_report(&format!(
+        r#"if [ $blank = 1 ]; then text=NOISE; sidecar=; else text='HELLO WORLO'; sidecar='{}'; fi"#,
+        conformance::LINE
+    ))
+    .await;
+    for case in ["text_line", "blank_page", "deadline"] {
+        assert_eq!(
+            r.outcome(case),
+            Some(Outcome::Fail),
+            "{case}\n{}",
+            outcomes(&r)
+        );
+    }
+    assert_eq!(
+        r.outcome("protocol"),
+        Some(Outcome::Pass),
+        "{}",
+        outcomes(&r)
+    );
+}
+
+/// A layout over the boxes' limits (20,001 blocks, in about 1 MiB: far
+/// under the 64 MiB file cap) is `engine_protocol`: the case fails, and
+/// the instance is replaced for the next page.
+#[tokio::test]
+async fn a_layout_over_its_limits_is_caught() {
+    let r = boxes_report(&format!(
+        r#"text='{}'; sidecar=-
+  if [ $blank = 1 ]; then blocks=$(awk 'BEGIN{{for(i=0;i<20001;i++)printf "%s{{\"bbox\":[0,0,1,1],\"kind\":\"text\",\"text\":\"\"}}", (i?",":"")}}'); fi"#,
+        conformance::LINE
+    ))
+    .await;
+    assert_eq!(
+        r.outcome("oversized_output"),
+        Some(Outcome::Fail),
+        "{}",
+        outcomes(&r)
+    );
+    assert!(
+        r.cases
+            .iter()
+            .any(|c| c.case == "blank_page" && c.detail.contains("instance replaced")),
+        "{}",
+        outcomes(&r)
+    );
+    // Neither noise nor another protocol failure, and the pages after it
+    // were read by a new instance.
+    for case in [
+        "stdout_noise",
+        "protocol",
+        "text_line",
+        "corrupt_image",
+        "deadline",
+    ] {
+        assert_eq!(
+            r.outcome(case),
+            Some(Outcome::Pass),
+            "{case}\n{}",
+            outcomes(&r)
+        );
+    }
 }
 
 /// `cancel = kill`: an adapter that never answers the large page is killed

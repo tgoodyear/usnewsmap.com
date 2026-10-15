@@ -82,7 +82,10 @@ impl Report {
 
 /// A page's answer, and whether its instance was kept.
 enum Answer {
-    Read(Box<EngineOutput>),
+    /// The reading, and the text the worker would store from its layout
+    /// (13 §13.4.7 step 4), which is what the cases check: the optional
+    /// text file isn't stored.
+    Read(Box<EngineOutput>, String),
     Kept(EngineError),
     /// The worker killed and removed the instance.
     Dropped(EngineError),
@@ -91,7 +94,7 @@ enum Answer {
 impl Answer {
     fn describe(&self) -> String {
         match self {
-            Answer::Read(o) => format!("read {:?}", o.text.trim()),
+            Answer::Read(_, text) => format!("read {:?}", text.trim()),
             Answer::Kept(e) => format!("{e:#} (instance kept)"),
             Answer::Dropped(e) => format!("{e:#} (instance replaced)"),
         }
@@ -134,7 +137,10 @@ impl Runner {
             .read_bytes(inst, bytes, ext, size, language, profile, &run_id)
             .await;
         Ok(match r {
-            Ok(o) => Answer::Read(Box::new(o)),
+            Ok(o) => {
+                let text = stored_text(&o, language, self.engine.opts.dpi);
+                Answer::Read(Box::new(o), text)
+            }
             Err(PageError::Keep(e)) => Answer::Kept(e),
             Err(PageError::Drop(e)) => {
                 if failure(&e).1 == "engine_protocol" {
@@ -231,7 +237,7 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     // A rendered line, its text and its boxes.
     let a = r.page(&line, "pgm", size, &language, &profile).await?;
     let outcome = match &a {
-        Answer::Read(o) => check_line(o, size),
+        Answer::Read(o, text) => check_line(o, text, size),
         other => Err(other.describe()),
     };
     report.push("text_line", outcome);
@@ -262,8 +268,8 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     // A blank page reads as no text.
     let blank = testimg::blank_image(w, h);
     let outcome = match r.page(&blank, "pgm", size, &language, &profile).await? {
-        Answer::Read(o) if o.text.trim().is_empty() => Ok("no text".into()),
-        Answer::Read(o) => Err(format!("text on a blank page: {:?}", o.text)),
+        Answer::Read(_, text) if text.trim().is_empty() => Ok("no text".into()),
+        Answer::Read(_, text) => Err(format!("text on a blank page: {text:?}")),
         other => Err(other.describe()),
     };
     report.push("blank_page", outcome);
@@ -317,7 +323,7 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     };
     let outcome = match cut {
         Ok(d) => match r.page(&line, "pgm", size, &language, &profile).await? {
-            Answer::Read(o) if o.text.contains(LINE) => Ok(format!("{d}; the next page read")),
+            Answer::Read(_, text) if text.contains(LINE) => Ok(format!("{d}; the next page read")),
             other => Err(format!("{d}; the next page: {}", other.describe())),
         },
         Err(e) => Err(e),
@@ -331,12 +337,23 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
 
     // Every line on stdout was a contract message, and every result within
     // the size caps; the worker replaces an instance that breaks either.
-    let (limits, noise): (Vec<_>, Vec<_>) = r
-        .protocol
-        .iter()
-        .cloned()
-        .partition(|m| m.contains(" over ") || m.contains("limit"));
+    let (mut noise, mut limits, mut other) = (Vec::new(), Vec::new(), Vec::new());
+    for m in &r.protocol {
+        match protocol_rule(m) {
+            Rule::Noise => noise.push(m.clone()),
+            Rule::Limit => limits.push(m.clone()),
+            Rule::Other => other.push(m.clone()),
+        }
+    }
     let pages = r.pages;
+    report.push(
+        "protocol",
+        if other.is_empty() {
+            Ok(format!("{pages} pages: no other protocol failure"))
+        } else {
+            Err(other.join("; "))
+        },
+    );
     report.push(
         "stdout_noise",
         if noise.is_empty() {
@@ -385,10 +402,67 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     Ok(())
 }
 
+/// The text `o`'s layout stores as, as the worker derives it.
+fn stored_text(o: &EngineOutput, language: &str, dpi: u32) -> String {
+    let Some(page) = o.page.clone() else {
+        return String::new();
+    };
+    crate::stored::store_from(
+        page,
+        o.layout_from,
+        &o.engine,
+        Some(&o.read),
+        language,
+        dpi,
+        &crate::stored::Source {
+            url: "conformance",
+            sha256: "",
+            md5: None,
+            run_id: None,
+            damage_before: None,
+        },
+        &crate::stored::worker_version(),
+        chrono::Utc::now(),
+    )
+    .text
+}
+
+enum Rule {
+    /// Something on stdout that isn't a contract message.
+    Noise,
+    /// A result line, file, page directory or layout over its cap or limit.
+    Limit,
+    Other,
+}
+
+/// Which of the contract's rules an `engine_protocol` failure broke, from
+/// the messages of `usnm_ocr_contract` and `usnm_alto` and the worker's
+/// file checks.
+fn protocol_rule(m: &str) -> Rule {
+    const NOISE: [&str; 2] = ["a line that isn't contract JSON", "a second hello"];
+    const LIMIT: [&str; 7] = [
+        "a line over",
+        "is over",
+        "holds over",
+        "breaks a limit",
+        "over the size limit",
+        "nested too deeply",
+        // `too many elements`, `an element has too many attributes`.
+        "too many",
+    ];
+    if NOISE.iter().any(|n| m.contains(n)) {
+        Rule::Noise
+    } else if LIMIT.iter().any(|n| m.contains(n)) {
+        Rule::Limit
+    } else {
+        Rule::Other
+    }
+}
+
 /// The line's text, and boxes at the page's granularity on its ink.
-fn check_line(o: &EngineOutput, (w, h): (u32, u32)) -> Result<String, String> {
-    if !o.text.contains(LINE) {
-        return Err(format!("read {:?}, not {LINE:?}", o.text));
+fn check_line(o: &EngineOutput, text: &str, (w, h): (u32, u32)) -> Result<String, String> {
+    if !text.contains(LINE) {
+        return Err(format!("read {text:?}, not {LINE:?}"));
     }
     let page = o.page.as_ref().ok_or("no layout")?;
     let (w, h) = (f64::from(w), f64::from(h));
@@ -463,4 +537,43 @@ fn check_line(o: &EngineOutput, (w, h): (u32, u32)) -> Result<String, String> {
         "read {LINE:?}, {} boxes within {TOLERANCE} px",
         g.as_str()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_failures_are_sorted_by_rule() {
+        let rule = |m: &str| match protocol_rule(m) {
+            Rule::Noise => "noise",
+            Rule::Limit => "limit",
+            Rule::Other => "other",
+        };
+        let noise = usnm_ocr_contract::engine::decode(b"loading model\n").unwrap_err();
+        assert_eq!(rule(&format!("engine protocol: {noise}")), "noise");
+        assert_eq!(rule("engine protocol: a second hello"), "noise");
+        let long = usnm_ocr_contract::engine::ProtocolError::TooLong;
+        assert_eq!(rule(&format!("engine protocol: {long}")), "limit");
+        let boxes = usnm_alto::boxes::BoxesError::Limit("20001 blocks".into());
+        assert_eq!(rule(&format!("engine protocol: {boxes}")), "limit");
+        for e in [
+            usnm_alto::AltoError::TooLarge,
+            usnm_alto::AltoError::TooDeep,
+            usnm_alto::AltoError::TooManyElements,
+            usnm_alto::AltoError::TooManyAttributes,
+        ] {
+            let e = usnm_alto::ParseError::Alto(e);
+            assert_eq!(rule(&format!("engine protocol: {e}")), "limit", "{e}");
+        }
+        let e = usnm_alto::ParseError::Limit("strings per page");
+        assert_eq!(rule(&format!("engine protocol: {e}")), "limit");
+        assert_eq!(rule("page.txt is over 8388608 bytes"), "limit");
+        assert_eq!(
+            rule("engine protocol: the page's directory holds over 1 bytes"),
+            "limit"
+        );
+        let wrong = usnm_ocr_contract::engine::ProtocolError::NoLayout;
+        assert_eq!(rule(&format!("engine protocol: {wrong}")), "other");
+    }
 }
