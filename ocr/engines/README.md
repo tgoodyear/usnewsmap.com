@@ -89,4 +89,6 @@ New releases also freeze the used engine and selected model entries in
 publication. The API verifies the file against the reference manifest and
 returns it in `published.sources.ocr_credits`; the web page prefers that copy
 over its build-time fallback for older releases. Japanese per-engine counts
-come from the serving version's `ja_latin.json`, not the current OCR job.
+cover the union of the serving Japanese search index and main-index Latin
+replacements, deduplicated per page and engine, and are frozen alongside
+the credits. They do not come from the current OCR job.

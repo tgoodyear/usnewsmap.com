@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Duration, DurationRound, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use usnm_core::names;
 use usnm_state::state::{BatchStatus, RunStatus, MAX_DELTAS};
 use usnm_state::summary::{BatchSummary, RunSummary, Summary};
@@ -96,6 +96,9 @@ pub struct Sources {
     /// Attribution frozen with the serving version; absent on old releases.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ocr_credits: Option<serde_json::Value>,
+    /// Union of Japanese-index and main-index Latin OCR pages, per engine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_ja: Option<OcrLocalSummary>,
     /// American Stories' text (04 §4.9).
     pub american_stories: Option<AmericanStories>,
     /// Our OCR's Latin-script text of Japanese titles' pages, in the main
@@ -150,14 +153,14 @@ pub struct TitleOcrPages {
 
 /// Pages whose main-index document holds our own OCR's text in place of
 /// LoC's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OcrLocalSummary {
     pub pages: u64,
     /// By engine, most pages first.
     pub by_engine: Vec<EnginePages>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnginePages {
     /// `ocr_source`, e.g. `usnm-tesseract`.
     pub source: String,
@@ -415,6 +418,12 @@ pub fn sources(rd: &RefData) -> Sources {
     });
     Sources {
         ocr_credits: rd.ocr_credits.clone(),
+        ocr_ja: rd
+            .ocr_credits
+            .as_ref()
+            .and_then(|v| v.get("japanese"))
+            .and_then(|v| serde_json::from_value::<OcrLocalSummary>(v.clone()).ok())
+            .filter(|v| v.pages > 0),
         american_stories,
         ja_latin,
         ocr_local,
@@ -1242,6 +1251,7 @@ mod tests {
             p.sources,
             Sources {
                 ocr_credits: None,
+                ocr_ja: None,
                 american_stories: None,
                 ja_latin: None,
                 ocr_local: None

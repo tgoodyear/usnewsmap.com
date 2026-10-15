@@ -39,6 +39,17 @@ describe("OCR credits page", () => {
     expect(screen.queryByText(/MinerU/)).toBeNull();
     expect(screen.queryByText(/tessdata\/eng.traineddata/)).toBeNull();
   });
+  it("credits Japanese-only search pages even without Latin replacements", async () => {
+    renderPage({
+      ja_latin: null,
+      ocr_local: null,
+      ocr_ja: { pages: 4, by_engine: [{ engine: "ndlocr-lite 636d1cf", pages: 4 }] },
+    });
+    await screen.findByRole("heading", { name: "ndlocr-lite 636d1cf" });
+    expect(screen.getByText(/4 pages/)).toBeTruthy();
+    expect(screen.queryByText(/no pages with our replacement OCR/)).toBeNull();
+  });
+
   it("reports an unknown serving engine instead of dropping it", async () => {
     renderPage({ ocr_local: { by_engine: [{ engine: "uncredited/1 eng", pages: 1 }] } });
     expect((await screen.findByRole("alert")).textContent).toContain("Missing OCR credit: uncredited/1 eng");

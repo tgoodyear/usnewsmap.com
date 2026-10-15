@@ -862,7 +862,10 @@ test("OCR credits cover every engine in the serving inventory", async ({ page, r
   await expect(page).toHaveTitle("OCR credits · US News Map");
   await expect(page.getByText(`Serving version: ${status.published.index_version}.`)).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  for (const engine of [...(sources?.ja_latin?.by_engine ?? []), ...(sources?.ocr_local?.by_engine ?? [])]) {
+  for (const engine of [
+    ...(sources?.ocr_ja?.by_engine ?? sources?.ja_latin?.by_engine ?? []),
+    ...(sources?.ocr_local?.by_engine ?? []),
+  ]) {
     if (engine.pages > 0) await expect(page.getByRole("heading", { name: engine.engine, exact: true })).toBeVisible();
   }
   await expect(page.getByRole("link", { name: "Privacy", exact: true })).toHaveAttribute("href", "/privacy");
@@ -878,7 +881,8 @@ test("OCR credits render the engine fragment directly", async ({ page }) => {
         published: {
           index_version: "credits-fixture",
           sources: {
-            ja_latin: {
+            ja_latin: null,
+            ocr_ja: {
               pages: 3,
               by_engine: [{ source: "usnm-ndlocr-lite", engine: "ndlocr-lite 636d1cf", pages: 3 }],
             },

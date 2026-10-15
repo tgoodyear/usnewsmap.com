@@ -2523,6 +2523,10 @@ struct JaRow<'a> {
 }
 
 async fn put_overlay_part(e: &Env, path: &str, rows: &[JaRow<'_>]) {
+    put_overlay_part_with_engine(e, path, rows, "ndlocr-lite 636d1cf").await;
+}
+
+async fn put_overlay_part_with_engine(e: &Env, path: &str, rows: &[JaRow<'_>], engine: &str) {
     use arrow_array::{
         ArrayRef, Date32Array, FixedSizeBinaryArray, Int16Array, Int32Array, LargeStringArray,
         RecordBatch, StringArray, TimestampMicrosecondArray,
@@ -2560,10 +2564,7 @@ async fn put_overlay_part(e: &Env, path: &str, rows: &[JaRow<'_>]) {
             s(rows.iter().map(|r| r.batch.to_owned()).collect()),
         ),
         ("ocr_source", s(vec!["usnm-ndlocr-lite".into(); rows.len()])),
-        (
-            "ocr_engine",
-            s(vec!["ndlocr-lite 636d1cf".into(); rows.len()]),
-        ),
+        ("ocr_engine", s(vec![engine.into(); rows.len()])),
         (
             "loc_text",
             s(rows.iter().map(|r| r.loc_text.to_owned()).collect()),
@@ -2615,6 +2616,36 @@ async fn put_overlay_part(e: &Env, path: &str, rows: &[JaRow<'_>]) {
 /// Our Japanese OCR (#139): a release indexes the overlay's pages in their own
 /// index, newest copy of each page, only for batches in the version, and adds
 /// the pages curation never had to the baselines (not the ones it had).
+#[tokio::test]
+async fn a_japanese_only_unknown_engine_blocks_publication() {
+    let e = env().await;
+    let (early, _, _, _) = curate_early_and_late(&e).await;
+    curate(&e, early).await;
+    let pages = fixture_pages();
+    let p = &pages[0];
+    put_overlay_part_with_engine(
+        &e,
+        "ocr-ja/pages/unknown.parquet",
+        &[JaRow {
+            lccn: &p.lccn,
+            date: p.date,
+            seq: 90,
+            batch: "batch_fx_early",
+            loc_text: "missing",
+            text: "米國と日本の戰爭",
+            ocred_at: 1,
+        }],
+        "uncredited/1 japanese",
+    )
+    .await;
+    let error = e.release_with(5, true, false).await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("missing OCR credit"),
+        "{error:#}"
+    );
+    assert!(e.reference.get("current.json").await.unwrap().is_none());
+}
+
 #[tokio::test]
 async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
     let e = env().await;
@@ -2680,6 +2711,22 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
     assert_eq!(current["ja"]["indexes"], serde_json::json!([ja_id]));
     assert_eq!(current["ja"]["pages"], 4);
     assert_eq!(current["ja"]["fold"], usnm_core::ja::FOLD_VERSION);
+    let credits = e
+        .reference_json(&format!("{}/credits.json", published.index_version))
+        .await;
+    assert_eq!(credits["engines"][0]["key"], "ndlocr-lite 636d1cf");
+    assert_eq!(credits["japanese"]["pages"], 4);
+    assert_eq!(credits["japanese"]["by_engine"][0]["pages"], 4);
+    let rd = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(
+        usnm_api::status::assemble::sources(&rd)
+            .ocr_ja
+            .unwrap()
+            .pages,
+        4
+    );
 
     let ja = e.index(&ja_id);
     assert_eq!(ja.len(), 4, "{:?}", ja.keys());
@@ -2991,6 +3038,18 @@ async fn our_ocr_latin_text_reaches_the_main_index_once() {
         }
         .iter()
         .collect::<Vec<_>>()
+    );
+    let frozen = e.reference_json(&format!("{v}/credits.json")).await;
+    let current = e.reference_json("current.json").await;
+    let ja_index = e.index(current["ja"]["indexes"][0].as_str().unwrap());
+    let unique: std::collections::BTreeSet<_> = ja_index
+        .keys()
+        .chain(latin["pages"].as_object().unwrap().keys())
+        .collect();
+    assert_eq!(frozen["japanese"]["pages"], unique.len() as u64);
+    assert_eq!(
+        frozen["japanese"]["by_engine"][0]["pages"],
+        unique.len() as u64
     );
     assert_eq!(latin["pages"][at(90)]["ocr_engine"], "ndlocr-lite 636d1cf");
     assert_eq!(latin["pages"][at(90)]["loc_text"], "missing");

@@ -57,6 +57,20 @@ describe("serving engine credits from engines.toml", () => {
     const key = "tesseract/5.5.1 deu_latf+deu";
     expect(decodeURIComponent(creditHref(key).split("#")[1]!)).toBe(key);
   });
+  it("includes Japanese-only index pages without double-counting Latin pages", () => {
+    const ocr_ja = { pages: 7, by_engine: [{ source: "usnm-ndlocr-lite", engine: "ndlocr-lite 636d1cf", pages: 7 }] };
+    const credits = servingCredits({ ...sources, ocr_ja });
+    expect(credits.filter((c) => c.japanese)).toHaveLength(1);
+    expect(credits.find((c) => c.japanese)!.pages).toBe(7);
+    expect(servingCredits({ ...sources, ocr_ja, ja_latin: null, ocr_local: null })[0]!.pages).toBe(7);
+    expect(() =>
+      servingCredits({
+        ...sources,
+        ocr_ja: { pages: 1, by_engine: [{ source: "unknown", engine: "unknown/1 jpn", pages: 1 }] },
+      }),
+    ).toThrow("Missing OCR credit");
+  });
+
   it("prefers frozen release credits and refuses an incomplete snapshot", () => {
     const credit = creditFor("tesseract/5.5.1 eng");
     const frozen = { ...credit, engine: { ...credit.engine, author: "Historical publisher" } };

@@ -21,6 +21,20 @@ pub struct Snapshot {
     pub schema: u32,
     pub credit_required: Vec<String>,
     pub engines: Vec<Credit>,
+    pub japanese: JapaneseUsage,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct JapaneseUsage {
+    pub pages: u64,
+    pub by_engine: Vec<EngineUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EngineUsage {
+    pub source: String,
+    pub engine: String,
+    pub pages: u64,
 }
 
 impl Catalog {
@@ -100,6 +114,7 @@ impl Catalog {
         let keys: std::collections::BTreeSet<_> = keys.into_iter().collect();
         Ok(Snapshot {
             schema: 1,
+            japanese: JapaneseUsage::default(),
             credit_required: self.credit_required.clone(),
             engines: keys
                 .into_iter()

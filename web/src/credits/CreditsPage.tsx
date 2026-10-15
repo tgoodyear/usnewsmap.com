@@ -87,11 +87,12 @@ export default function CreditsPage() {
         {status.data && !sources && (
           <p role="alert">This server does not provide the serving version’s OCR inventory.</p>
         )}
-        {sources?.ja_latin && !sources.ja_latin.by_engine && (
+        {((sources?.ja_latin && !sources.ja_latin.by_engine) ||
+          (status.data?.published.ja && !sources?.ocr_ja && !sources?.ja_latin?.by_engine)) && (
           <p role="alert">This server does not provide engine versions for its Japanese-language pages.</p>
         )}
         {missing && <p role="alert">{missing}. The serving version names an engine without a complete credit entry.</p>}
-        {sources && !missing && !credits.length && !sources.ja_latin && (
+        {sources && !missing && !credits.length && !sources.ja_latin && !status.data?.published.ja && (
           <p>The serving version has no pages with our replacement OCR text.</p>
         )}
         {credits.map((c) => (

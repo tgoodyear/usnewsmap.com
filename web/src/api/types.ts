@@ -494,6 +494,8 @@ export interface YearPages {
 export interface Sources {
   /** Frozen with the serving release; older releases use the build-time catalog. */
   ocr_credits?: import("../credits/data").CreditSnapshot;
+  /** Union of Japanese-index and main-index Latin OCR pages (no duplicates per engine). */
+  ocr_ja?: { pages: number; by_engine: { source: string; engine: string; pages: number }[] };
   /** American Stories' text (Dell et al. 2023). */
   american_stories: {
     /** Searches cover it; false when the server's setting leaves it out. */

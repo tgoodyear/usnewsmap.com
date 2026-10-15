@@ -110,7 +110,9 @@ export function servingCredits(sources: Sources): UsedCredit[] {
     return { ...credit, pages, japanese };
   };
   return [
-    ...(sources.ja_latin?.by_engine ?? []).filter((e) => e.pages > 0).map((e) => select(e.engine, e.pages, true)),
+    ...(sources.ocr_ja?.by_engine ?? sources.ja_latin?.by_engine ?? [])
+      .filter((e) => e.pages > 0)
+      .map((e) => select(e.engine, e.pages, true)),
     ...(sources.ocr_local?.by_engine ?? []).filter((e) => e.pages > 0).map((e) => select(e.engine, e.pages, false)),
   ];
 }
