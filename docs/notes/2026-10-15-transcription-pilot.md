@@ -95,10 +95,10 @@ and identical replay succeeded. Source-disjoint split counts are 24 train
 train examples are public trial inputs. This is a multilingual-source
 hardware/method pilot, not English-specialized training or an accuracy result.
 
-| Trial | BOINC workunit | Initial result | Seed | Rank | Steps |
-| ----- | -------------- | -------------- | ---- | ---- | ----- |
-| `75013def…` | 68 | 148 | 542 | 4 | 16 |
-| `c2687d25…` | 69 | 149 | 543 | 8 | 16 |
+| Trial       | BOINC workunit | Initial result | Seed | Rank | Steps |
+| ----------- | -------------- | -------------- | ---- | ---- | ----- |
+| `75013def…` | 68             | 148            | 542  | 4    | 16    |
+| `c2687d25…` | 69             | 149            | 543  | 8    | 16    |
 
 Both initial results are unsent (`server_state=2`, `outcome=0`), with no canonical
 result. Exactly two workunits exist. Submission replay and pending-result
