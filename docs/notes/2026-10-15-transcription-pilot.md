@@ -1,6 +1,6 @@
 # Historical-newspaper transcription pilot
 
-**Status:** baseline published; real-client inference and upload verified.
+**Status:** baseline published; real-client inference verified; two GPU LoRA trials queued.
 **Date:** 15 October 2026.
 **Measured on:** synthetic tests, a fresh public Overproof-CA conversion and a live BOINC CPU client.
 **Code:** `qwen::benchmark`, `scripts/ocr-survey/transcription.py`.
@@ -8,10 +8,11 @@
 
 ## Experiment
 
-The [pilot](../boinc-transcription.md) separates central supervised adaptation
-from volunteer inference. It reuses `usnm_qwen`, with one fixed model per campaign.
-Gold text remains on the server; volunteers receive image pixels, the
-existing verbatim-transcription instruction and reference-free source notices.
+The [pilot](../boinc-transcription.md) uses separate BOINC apps for bounded
+volunteer GPU adaptation (`usnm_qwen_train`) and inference (`usnm_qwen`), with one
+fixed base model per campaign. Held-out gold text remains on the server;
+training workunits contain only permissively licensed train-split pixels,
+targets and source notices.
 
 The exporter creates immutable title/source-disjoint splits, preserves image
 bytes and licence files, and emits training conversations only for train and
@@ -70,6 +71,48 @@ advertised 2 GiB workunit bound; [#559](https://github.com/tgoodyear/usnewsmap.c
 tracks measurement, image separation and correct dispatch requirements.
 
 Two-independent-host validation and canonical assimilation remain pending.
-Central adapter training,
+Completed adapter training,
 quantized-model export, held-out improvement and calibration of the quality
 estimator remain UNVERIFIED. No adapted checkpoint is shipped by this change.
+
+## Live volunteer GPU training publication
+
+PR #570 implements independent, bounded offline LoRA trials; PR #579 deploys
+combined server/bridge images without reverting the concurrent OCR worker,
+signed publisher or quality scan-directory forwarding. The training worker was
+published from reviewed main `19ce4da0` and is anonymously accessible:
+
+`ghcr.io/tgoodyear/usnm-boinc-worker@sha256:960ba48cb33e6c164764246bba2c9aded7d791b48a6aed49f39c3a95acff3ee1`
+
+The authorized signing release published `usnm_qwen_train` 1.0,
+`x86_64-pc-linux-gnu`, `docker_nvidia_train`; live app-version id is 9.
+The production server is revision `0000032`. PR #582 persists the signed
+training publisher image so a later provision replays the same release.
+
+Campaign `transcription-lora-v1` was prepared from the private converted cache
+and identical replay succeeded. Source-disjoint split counts are 24 train
+(NewsEye BnF), 18 validation (Finnish) and 10 test (Swedish). Only 16 eligible
+train examples are public trial inputs. This is a multilingual-source
+hardware/method pilot, not English-specialized training or an accuracy result.
+
+| Trial       | BOINC workunit | Initial result | Seed | Rank | Steps |
+| ----------- | -------------- | -------------- | ---- | ---- | ----- |
+| `75013def…` | 68             | 148            | 542  | 4    | 16    |
+| `c2687d25…` | 69             | 149            | 543  | 8    | 16    |
+
+Both initial results are unsent (`server_state=2`, `outcome=0`), with no canonical
+result. Exactly two workunits exist. Submission replay and pending-result
+collection succeeded; private immutable output hashes and submitted markers
+were checked against the actual campaign. Structural safetensors validation
+quarantines candidates and does not promote them or establish scientific validity.
+
+The exact published container passed real tiny Qwen3-VL visual forward/backward
+on CPU: adapters changed and all frozen base/vision parameters were unchanged.
+The full pinned 2B configuration's 112 FP32 LoRA keys and shapes also match
+the server validator (meta-only check). Neither is evidence of GPU execution
+or pretrained OCR improvement.
+
+The current attached GPU is an AMD Radeon RX 9070 XT on Windows; it is not
+eligible for this Linux/NVIDIA BF16 app. The jobs remain available for compatible
+volunteer GPUs. No central GPU resources were provisioned, no adapter has
+returned, and no post-training accuracy gain is claimed.
