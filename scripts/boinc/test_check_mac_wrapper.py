@@ -10,6 +10,26 @@ spec = importlib.util.spec_from_file_location("mac_wrapper", Path(__file__).with
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
+patch_spec = importlib.util.spec_from_file_location("patch_mac_wrapper", Path(__file__).with_name("patch-mac-wrapper.py"))
+patch_module = importlib.util.module_from_spec(patch_spec)
+patch_spec.loader.exec_module(patch_module)
+
+SNIPPET = """
+int get_container_state(int &state) {
+    char cmd[1024];
+    int retval;
+    vector<string> out;
+
+    snprintf(cmd, sizeof(cmd),
+        "ps --all --filter \\"name=^%s$\\" --format \\"{{.Names}}|{{.Status}}\\"",
+
+        container_name
+    );
+    retval = docker_conn.command(cmd, out, verbose_all());
+    return retval;
+}
+"""
+
 
 class CheckMacWrapper(unittest.TestCase):
     def test_architecture_checksum_and_source_are_all_required(self):
@@ -39,6 +59,20 @@ class CheckMacWrapper(unittest.TestCase):
         self.assertEqual(module.architectures(data), set(cpu))
         with self.assertRaisesRegex(ValueError, "header"):
             module.architectures(data[:-1])
+
+    def test_patch_mac_wrapper_quotes_format_pipe_and_fails_fast_if_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            cpp = Path(d) / "docker_wrapper.cpp"
+            cpp.write_text(SNIPPET)
+            patch_module.patch_file(cpp)
+            patched = cpp.read_text()
+            self.assertIn("--format \\\"'{{.Names}}|{{.Status}}'\\\"", patched)
+            # Re-patching or patching a file without the target string must fail fast.
+            with self.assertRaisesRegex(ValueError, "expected exactly 1"):
+                patch_module.patch_file(cpp)
+            cpp.write_text("int get_container_state(int &state) { return 0; }\n")
+            with self.assertRaisesRegex(ValueError, "expected exactly 1"):
+                patch_module.patch_file(cpp)
 
 
 if __name__ == "__main__":

@@ -102,6 +102,42 @@ class CheckAppver(unittest.TestCase):
         with self.assertRaisesRegex(ca.Refused, "no code-signing public key"):
             self.check()
 
+    def test_native_version_with_extra_files_passes_and_validates_kind(self):
+        proj = self.root / "native_proj"
+        proj.mkdir()
+        (proj / "config.xml").write_text("<boinc/>")
+        binary = self.root / "usnm-qwen"
+        binary.write_bytes(b"native-qwen")
+        llama = self.root / "llama-server"
+        llama.write_bytes(b"llama-server")
+        native_dir = install.install(
+            proj,
+            version="1.0",
+            app="usnm_qwen",
+            plan_class="apple_gpu_8b",
+            platform="arm64-apple-darwin",
+            kind="native",
+            binary=binary,
+            extra_files=[f"llama-server={llama}"],
+        )
+        native_sigs = self.root / "native_sigs"
+        native_sigs.mkdir()
+        for p in native_dir.iterdir():
+            if p.name != "version.xml":
+                digest = hashlib.md5(p.read_bytes()).hexdigest()
+                (native_sigs / (p.name + ".sig")).write_text(f"good {digest}\n")
+        with self.assertRaisesRegex(ca.Refused, "missing <is_wrapper/>"):
+            ca.check(native_dir, native_sigs, self.key, str(self.crypt), kind="container")
+        with self.assertRaisesRegex(ca.Refused, "must not contain <is_wrapper/>"):
+            ca.check(self.dir, self.sigs, self.key, str(self.crypt), kind="native")
+        self.assertEqual(
+            ca.check(native_dir, native_sigs, self.key, str(self.crypt), kind="native"),
+            [
+                "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b",
+                "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_llama-server",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

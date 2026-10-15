@@ -281,33 +281,7 @@ impl ResultManifest {
     }
 }
 
-/// Words as score.py counts them, close enough for agreement between two
-/// hosts: lower case, letters and digits only.
-fn words(text: &str) -> BTreeMap<String, usize> {
-    let mut out = BTreeMap::new();
-    for w in text
-        .to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-    {
-        *out.entry(w.to_owned()).or_insert(0) += 1;
-    }
-    out
-}
-
-/// 2 * shared words / (words of both), 1.0 for two empty texts.
-pub fn dice(a: &str, b: &str) -> f64 {
-    let (wa, wb) = (words(a), words(b));
-    let total: usize = wa.values().sum::<usize>() + wb.values().sum::<usize>();
-    if total == 0 {
-        return 1.0;
-    }
-    let shared: usize = wa
-        .iter()
-        .map(|(w, n)| (*n).min(*wb.get(w).unwrap_or(&0)))
-        .sum();
-    2.0 * shared as f64 / total as f64
-}
+pub use crate::boinc::dice;
 
 /// Whether two hosts' results for one unit agree: same job and engine, the
 /// same outcome per format (for a crash unit, crashed or not), and where

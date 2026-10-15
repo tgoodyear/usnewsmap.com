@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "purpose": "Pre-built llama.cpp release archives pinned by SHA-256 for native cross-platform usnm_qwen BOINC app versions (#533).",
+  "repository": "ggml-org/llama.cpp",
+  "tag": "b8799",
+  "assets": {
+    "macos-arm64": {
+      "boinc_platform": "arm64-apple-darwin",
+      "file": "llama-b8799-bin-macos-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-macos-arm64.tar.gz",
+      "sha256": "e8ed79ec9c8652e9140647e3d035a4f8c2e7c2edf2c73b71e652fecc3afeb76e"
+    },
+    "macos-x64": {
+      "boinc_platform": "x86_64-apple-darwin",
+      "file": "llama-b8799-bin-macos-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-macos-x64.tar.gz",
+      "sha256": "10c90669abdb8922f671d2e9d1918c53dac32618e70ffbbdf2bb2653606e7965"
+    },
+    "win-cuda-12.4-x64": {
+      "boinc_platform": "windows_x86_64",
+      "file": "llama-b8799-bin-win-cuda-12.4-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-win-cuda-12.4-x64.zip",
+      "sha256": "3ca2c685f85f60a9a3d1ac6e6b20621ffc4b02fb030b42f7cfe86f4eb148e314"
+    },
+    "win-vulkan-x64": {
+      "boinc_platform": "windows_x86_64",
+      "file": "llama-b8799-bin-win-vulkan-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-win-vulkan-x64.zip",
+      "sha256": "25d4999780b18f65f16c748c2e6d357c1f165eb5d9f0d719b5621c69b30dba0f"
+    },
+    "ubuntu-x64": {
+      "boinc_platform": "x86_64-pc-linux-gnu",
+      "file": "llama-b8799-bin-ubuntu-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-ubuntu-x64.tar.gz",
+      "sha256": "88e94bdf081ce08b520d55a316532b38c3e48b31ac6546f9521d00cc36b7480d"
+    },
+    "ubuntu-vulkan-x64": {
+      "boinc_platform": "x86_64-pc-linux-gnu",
+      "file": "llama-b8799-bin-ubuntu-vulkan-x64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-ubuntu-vulkan-x64.tar.gz",
+      "sha256": "d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309"
+    },
+    "ubuntu-arm64": {
+      "boinc_platform": "aarch64-unknown-linux-gnu",
+      "file": "llama-b8799-bin-ubuntu-arm64.tar.gz",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8799/llama-b8799-bin-ubuntu-arm64.tar.gz",
+      "sha256": "7b762a624d1f543f30d6f5494e613bde2f5f54d3e018efb57498fc521ce5f8cb"
+    }
+  }
+}

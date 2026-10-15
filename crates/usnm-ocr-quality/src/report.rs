@@ -108,9 +108,7 @@ pub fn analyse(inputs: &PageInputs) -> Analysis {
         }
         let cov = &cons.coverage[i];
         readers.push(ReaderReport {
-            chars: usnm_ocr_survey::text::normalize(&r.text, false)
-                .chars()
-                .count(),
+            chars: crate::text::normalize(&r.text, false).chars().count(),
             completeness: round6_opt(cov.completeness),
             content_found: f.content_found,
             content_total: f.content_total,

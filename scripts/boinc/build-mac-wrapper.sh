@@ -27,6 +27,7 @@ deployment=$(plutil -extract SupportedTargets.macosx.MinimumDeploymentTarget raw
 printf 'MACOSX_DEPLOYMENT_TARGET = %s\n' "$deployment" > "$work/mac_build/BOINC.xcconfig"
 xcodebuild -project "$work/mac_build/boinc.xcodeproj" -target libboinc -target api_libboinc \
   -configuration Deployment 'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO
+python3 "$root/scripts/boinc/patch-mac-wrapper.py" --source "$work/samples/docker_wrapper/docker_wrapper.cpp"
 MACOSX_DEPLOYMENT_TARGET="$deployment" make -C "$work/samples/docker_wrapper" -f Makefile_mac -j 2
 for arch in arm64 x86_64; do
   wrapper="$work/samples/docker_wrapper/docker_wrapper_$arch"

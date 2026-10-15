@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Require a native Linux child in the worker index before publishing a Mac app."""
+"""Require a native Linux child in the worker index before publishing a cross-platform container app."""
 import argparse
 import json
 import sys
 
-ARCH = {"arm64-apple-darwin": "arm64", "x86_64-apple-darwin": "amd64"}
+ARCH = {
+    "aarch64-unknown-linux-gnu": "arm64",
+    "arm64-apple-darwin": "arm64",
+    "windows_x86_64": "amd64",
+    "x86_64-apple-darwin": "amd64",
+}
 
 
 def check(manifest: dict, platform: str) -> None:

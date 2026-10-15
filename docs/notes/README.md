@@ -39,3 +39,5 @@ The notes are plain Markdown, rendered by GitHub. The site is served by the API 
 - [Rootless BOINC volunteer readiness on an SELinux host](2026-10-14-boinc-volunteer-preflight.md): slot labels, kernel limits, pause/restart and a startup gate.
 
 - [Native BOINC worker builds and Mac release tooling](2026-10-14-boinc-native-arm-build.md): native Podman round trip and remaining release/client checks.
+
+- [Cross-platform BOINC distribution and Mac `Run_Podman` state-query fix](2026-10-15-boinc-cross-platform-distribution.md): native `usnm_quality`/`usnm_qwen` distribution and `Run_Podman` pipe-quoting patch.

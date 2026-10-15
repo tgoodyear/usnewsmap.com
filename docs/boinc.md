@@ -22,11 +22,11 @@ Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
 
 ## Boundaries
 
-- Linux x86-64 first, with compatible recent stock BOINC and a working container runtime. The stock
-  Docker wrapper supports both Docker and Podman. The [volunteer guide](boinc-volunteer.md)
-  supplies an opt-in rootless Podman profile and a mandatory startup preflight for
-  slot access, actual cgroup limits and pause/resume. Restricted hosts that cannot
-  satisfy these checks cannot participate. A native app is future work.
+- Five registered BOINC platforms (`contrib-compute/boinc/project.xml`): `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, and `windows_x86_64` (#533).
+- Dual native + container distribution:
+  - **Container apps** (`usnm_ocr`, `usnm_assess`, `usnm_gold`, `usnm_surya`, plus container versions of `usnm_quality` and `usnm_qwen`) use BOINC's `docker_wrapper` under plan classes `docker`, `docker_mt`, and `docker_nvidia_cuda`. The stock wrapper supports both Docker and Podman on Linux, Podman via `Run_Podman` on macOS (with our `--format` pipe quoting fix in `scripts/boinc/patch-mac-wrapper.py`; see [boinc-buda-arm-evaluation.md](notes/boinc-buda-arm-evaluation.md)), and WSL2 `boinc-buda-runner` Podman on Windows. The [volunteer guide](boinc-volunteer.md) supplies an opt-in Linux rootless Podman profile and a mandatory startup preflight (`scripts/boinc/volunteer_preflight.py`, parameterized by `--job-toml`) for slot access, actual cgroup limits and pause/resume.
+  - **Native apps** (`usnm_quality` and `usnm_qwen`) run directly on the volunteer's host without a container runtime ([boinc-quality.md](boinc-quality.md)). `usnm_quality` ships as a standalone CPU binary (`crates/usnm-quality-app`, built by `.github/workflows/boinc-quality-native.yml`) across all five platforms. `usnm_qwen` ships as a native driver binary paired with the pinned `llama.cpp` release archives in `ocr/boinc/qwen/llama.lock` and `<sticky/><no_delete/>` GGUF model files under plan classes `apple_gpu_8b` (Apple Silicon Metal, >= 7,000 MB available unified RAM), `nvidia_cuda_8b` (>= 7,000 MB VRAM), `nvidia_cuda_2b` (>= 3,000 MB VRAM), and `mt` (4–8 CPU threads).
+  - **The `boinc_finish_called` contract**: because BOINC's client treats a plain executable exiting `0` without writing `boinc_finish_called` in the slot directory as a premature exit and restarts it up to 100 times before aborting with `ERR_TOO_MANY_EXITS` (`client/app_control.cpp:533-546`), native binaries use `<copy_file/>` on all slot inputs/outputs, update `fraction_done`, and write `boinc_finish_called` containing `0\n` as their final act before exiting `0`.
 - Explicit cohorts of 1-100 pages from one batch, selected from the prefetch
   manifest. No automatic consumption of Azure queues or LoC fetching.
 - Central bridge: native work reservations, BOINC staging/submission, validation
@@ -211,14 +211,22 @@ Outputs and `fraction_done` are mode 0644 so the client can read them. This has
 been checked with an OCI runtime and a deliberately foreign-owned slot; it still
 needs confirmation through the actual BOINC wrapper on each supported host.
 
-Register the application `usnm_ocr` in the BOINC admin interface. Install an app
-candidate using a trusted stock wrapper and the pullable worker image digest:
+Register the application in the BOINC admin interface (`contrib-compute/boinc/project.xml`). Install a container app candidate using a trusted stock wrapper and the pullable worker image digest, or a native app candidate using `--kind native --binary`:
 
 ```sh
+# Container app version (apps/<app>/<version>/<platform>__<plan_class>):
 python3 scripts/boinc/install.py --project /srv/boinc/newspapers \
   --wrapper /path/to/docker_wrapper \
-  --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:FULL_DIGEST --version 1.0
+  --image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:FULL_DIGEST --version 1.0 \
+  --platform x86_64-pc-linux-gnu --plan-class docker
+
+# Native app version (apps/usnm_quality/<version>/<platform>, or <platform>__<plan_class> for usnm_qwen):
+python3 scripts/boinc/install.py --project /srv/boinc/newspapers \
+  --app usnm_quality --kind native --binary /path/to/usnm_quality_1.1_x86_64-pc-linux-gnu \
+  --platform x86_64-pc-linux-gnu --version 1.1
 ```
+
+`contrib-compute/boinc/plan_class_spec.xml` defines both the container plan classes (`docker`, `docker_mt`, `docker_nvidia_cuda`) and the native `usnm_qwen` plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_cuda_2b`, `mt`). For native `usnm_qwen`, `ocr/boinc/qwen/llama.lock` pins the upstream `llama.cpp` release tag and per-platform archive SHA-256 digests, and the GGUF model templates use `<sticky/>` and `<no_delete/>` so volunteer clients cache models across workunits (`client/client_types.cpp:387`) and `file_deleter` (`sched/file_deleter.cpp:160-171`) never deletes shared model files from `download/`.
 
 The installer refuses an existing version directory. It does not alter running
 server configuration. Sign/publish its files using BOINC's normal code-signing

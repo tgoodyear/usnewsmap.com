@@ -162,6 +162,93 @@ class PreflightTest(unittest.TestCase):
                     pre.preflight(self.data, IMAGE, runtime, service=service)
             self.assertEqual(runtime.calls, [])
 
+    def test_limits_from_job_toml_parses_ocr_surya_and_qwen_jobs(self):
+        repo = Path(__file__).resolve().parents[2]
+        ocr_limits = pre.limits_from_job_toml(repo / "ocr/boinc/job.toml")
+        self.assertEqual(ocr_limits.workdir, "/work")
+        self.assertEqual(ocr_limits.memory, 1536 * 1024 * 1024)
+        self.assertEqual(ocr_limits.pids, 64)
+        self.assertEqual(ocr_limits.cpus, 1)
+        self.assertFalse(ocr_limits.use_gpu)
+
+        qwen_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/qwen_cpu_job.toml")
+        self.assertEqual(qwen_cpu.memory, 6144 * 1024 * 1024)
+        self.assertEqual(qwen_cpu.pids, 1024)
+        self.assertFalse(qwen_cpu.use_gpu)
+
+        surya_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/surya_cpu_job.toml")
+        self.assertEqual(surya_cpu.memory, 12 * 1024 ** 3)
+        self.assertEqual(surya_cpu.pids, 1024)
+        self.assertFalse(surya_cpu.use_gpu)
+
+        for gpu_path in [repo / "ocr/boinc/surya_gpu_job.toml", repo / "ocr/boinc/qwen_gpu_job.toml"]:
+            gpu_limits = pre.limits_from_job_toml(gpu_path)
+            self.assertTrue(gpu_limits.use_gpu)
+            self.assertEqual(gpu_limits.pids, 1024)
+
+    def test_preflight_runs_with_job_toml_and_discovers_project_jobs(self):
+        repo = Path(__file__).resolve().parents[2]
+        qwen_cpu_path = repo / "ocr/boinc/qwen/job-cpu.toml"
+        qwen_values = {
+            "cpu": "100000 100000",
+            "memory": str(6144 * 1024 * 1024),
+            "swap": "0",
+            "pids": "1024",
+            "ready": "yes",
+        }
+        runtime = Runtime(qwen_values)
+        result = pre.preflight(self.data, IMAGE, runtime, job_toml=qwen_cpu_path)
+        self.assertEqual(result["kernel_limits"]["memory"], str(6144 * 1024 * 1024))
+        create = next(call for call in runtime.calls if call[1] == "create")
+        self.assertIn("--memory=6g", create)
+        self.assertIn("--pids-limit=1024", create)
+        self.assertIn("--cpus=1", create)
+
+        # Also test auto-discovery from --data-dir/projects/**/job*.toml
+        proj_dir = self.data / "projects" / "boinc.usnewsmap.com_usnmocr"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "job_qwen.toml").write_text(qwen_cpu_path.read_text())
+        runtime_auto = Runtime(qwen_values)
+        pre.preflight(self.data, IMAGE, runtime_auto)
+        create_auto = next(call for call in runtime_auto.calls if call[1] == "create")
+        self.assertIn("--memory=6g", create_auto)
+        self.assertIn("--pids-limit=1024", create_auto)
+
+    def test_preflight_gpu_job_passes_gpus_all_and_reports_gpu_failure(self):
+        repo = Path(__file__).resolve().parents[2]
+        qwen_gpu_path = repo / "ocr/boinc/qwen/job-gpu.toml"
+        gpu_values = {
+            "cpu": "100000 100000",
+            "memory": str(6144 * 1024 * 1024),
+            "swap": "0",
+            "pids": "1024",
+            "ready": "yes",
+        }
+        runtime = Runtime(gpu_values)
+        pre.preflight(self.data, IMAGE, runtime, job_toml=qwen_gpu_path)
+        create = next(call for call in runtime.calls if call[1] == "create")
+        self.assertIn("--gpus", create)
+        self.assertIn("all", create)
+
+        def failing_gpu_runner(args, timeout=30):
+            if args[1] == "create":
+                raise pre.PreflightError("podman create failed: CDI device nvidia.com/gpu=all not found")
+            return runtime(args, timeout=timeout)
+
+        with self.assertRaisesRegex(pre.PreflightError, "nvidia-ctk cdi generate"):
+            pre.preflight(self.data, IMAGE, failing_gpu_runner, job_toml=qwen_gpu_path)
+
+    def test_invalid_job_toml_is_rejected(self):
+        bad_toml = self.data / "bad_job.toml"
+        for content in [
+            'workdir = "relative"\ncreate_args = "--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=1536m --memory-swap=1536m --pids-limit=64"\n',
+            'workdir = "/work"\ncreate_args = "--read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=1536m --memory-swap=1536m --pids-limit=64"\n',
+            'workdir = "/work"\ncreate_args = "--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=1536m --memory-swap=2048m --pids-limit=64"\n',
+        ]:
+            bad_toml.write_text(content)
+            with self.assertRaises(pre.PreflightError):
+                pre.limits_from_job_toml(bad_toml)
+
 
 class SetupTest(unittest.TestCase):
     def test_overlapping_subordinate_ids_are_rejected_without_reallocation(self):
@@ -240,6 +327,14 @@ class SetupTest(unittest.TestCase):
         self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/999/bus", dropin)
         self.assertIn('conmon_cgroup="pod"', config)
         self.assertNotIn("docker", dropin)
+        _, dropin_jobs, _, _ = setup.profile(
+            "boinc-client.service",
+            Path("/var/lib/boinc"),
+            IMAGE,
+            999,
+            job_tomls=[Path("/etc/usnm-boinc-volunteer/job-cpu.toml")],
+        )
+        self.assertIn("--job-toml=/etc/usnm-boinc-volunteer/job-cpu.toml", dropin_jobs)
 
     def test_conflicting_later_dropin_cannot_silently_bypass_profile(self):
         service = "boinc-client.service"

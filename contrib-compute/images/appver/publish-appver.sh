@@ -9,15 +9,42 @@ set -euo pipefail
 # shellcheck source=SCRIPTDIR/../server/lib.sh
 . /usr/local/lib/usnm-boinc/lib.sh
 : "${APPVER_APP:?}" "${APPVER_VERSION:?}"
+APPVER_KIND=${APPVER_KIND:-container}
 APPVER_PLATFORM=${APPVER_PLATFORM:-x86_64-pc-linux-gnu}
-APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS:-docker}
-case "$APPVER_PLATFORM" in x86_64-pc-linux-gnu|arm64-apple-darwin|x86_64-apple-darwin) ;; *) fail "unsupported app platform" ;; esac
-case "$APPVER_PLAN_CLASS" in docker|docker_mt|docker_nvidia_cuda) ;; *) fail "unsupported plan class" ;; esac
-[ "$APPVER_PLATFORM" = x86_64-pc-linux-gnu ] || [ "$APPVER_PLAN_CLASS" = docker ] || fail "$APPVER_PLATFORM supports only plan class docker"
+case "$APPVER_PLATFORM" in
+  x86_64-pc-linux-gnu|aarch64-unknown-linux-gnu|arm64-apple-darwin|x86_64-apple-darwin|windows_x86_64) ;;
+  *) fail "unsupported app platform" ;;
+esac
+case "$APPVER_KIND" in
+  container)
+    APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS:-docker}
+    case "$APPVER_PLAN_CLASS" in docker|docker_mt|docker_nvidia_cuda) ;; *) fail "unsupported plan class" ;; esac
+    [ "$APPVER_PLATFORM" = x86_64-pc-linux-gnu ] || [ "$APPVER_PLAN_CLASS" = docker ] || fail "$APPVER_PLATFORM supports only plan class docker"
+    subdir="${APPVER_PLATFORM}__${APPVER_PLAN_CLASS}"
+    ;;
+  native)
+    APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS-}
+    case "$APPVER_APP:$APPVER_PLAN_CLASS" in
+      usnm_quality:|usnm_qwen:mt|usnm_qwen:apple_gpu_8b|usnm_qwen:nvidia_cuda_8b|usnm_qwen:nvidia_cuda_2b) ;;
+      *) fail "unsupported native app/plan class: $APPVER_APP:$APPVER_PLAN_CLASS" ;;
+    esac
+    case "$APPVER_PLAN_CLASS:$APPVER_PLATFORM" in
+      :*|mt:*|apple_gpu_8b:arm64-apple-darwin|nvidia_cuda_8b:x86_64-pc-linux-gnu|nvidia_cuda_8b:aarch64-unknown-linux-gnu|nvidia_cuda_8b:windows_x86_64|nvidia_cuda_2b:x86_64-pc-linux-gnu|nvidia_cuda_2b:aarch64-unknown-linux-gnu|nvidia_cuda_2b:windows_x86_64) ;;
+      *) fail "native plan class $APPVER_PLAN_CLASS is not supported on $APPVER_PLATFORM" ;;
+    esac
+    if [ -n "$APPVER_PLAN_CLASS" ]; then
+      subdir="${APPVER_PLATFORM}__${APPVER_PLAN_CLASS}"
+    else
+      subdir="${APPVER_PLATFORM}"
+    fi
+    ;;
+  *)
+    fail "unsupported appver kind: $APPVER_KIND"
+    ;;
+esac
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
 src=/usr/local/lib/usnm-boinc/appver
 version_dir="$PROJ/apps/$APPVER_APP/$APPVER_VERSION"
-subdir="${APPVER_PLATFORM}__${APPVER_PLAN_CLASS}"
 dst="$version_dir/$subdir"
 source_dir="$src/apps/$APPVER_APP/$APPVER_VERSION/$subdir"
 # One publish at a time: executions of a manual job can overlap, and they share apps/,

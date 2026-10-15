@@ -1,6 +1,6 @@
 # OCR quality on BOINC
 
-Issue: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522). Two apps estimate, for every page and without anyone transcribing it, how accurate and how complete each text we hold of it is, how much a careful reader could recover, and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (NVIDIA GPU, with a CPU fallback) adds a vision-language reading of a sample of crops, as one more reader. The other apps are described in [boinc.md](boinc.md), [boinc-assessment.md](boinc-assessment.md) and [boinc-surya.md](boinc-surya.md).
+Issues: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533). Two apps estimate, for every page and without anyone transcribing it, how accurate and how complete each text we hold of it is, how much a careful reader could recover, and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (Apple Silicon Metal and NVIDIA CUDA GPUs, with a multi-thread CPU fallback) adds a vision-language reading of a sample of crops, as one more reader. Both apps support **dual native and container distribution**: native platform executables across Linux (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`), macOS (`arm64-apple-darwin`, `x86_64-apple-darwin`) and Windows (`windows_x86_64`) that require no container runtime on volunteer hosts, alongside the container app versions (`docker`, `docker_mt`, `docker_nvidia_cuda`). The other apps are described in [boinc.md](boinc.md), [boinc-assessment.md](boinc-assessment.md) and [boinc-surya.md](boinc-surya.md).
 
 Status: implemented in code and tested locally; UNVERIFIED on the live BOINC server and volunteer hosts. Every number below is a limit the code enforces, not a live measurement.
 
@@ -43,32 +43,76 @@ Legibility in the unit is `1 - min est_cer` over the page's readers (`basis: pag
 
 Text from `texts.json` is used as the readers' text for every reader, LoC included; `loc.xml` is used for the features and the crops.
 
-## The image
+## Dual native and container distribution
 
-`usnm_quality` runs in the worker image (`ocr/boinc/Containerfile`), the one `usnm_ocr`, `usnm_assess` and `usnm_gold` use, under plan class `docker` and `ocr/boinc/job.toml` (1 CPU, 1.5 GiB). It needs nothing but `usnm-boinc`; the host does not check an engine build for it.
+### The `boinc_finish_called` contract for native binaries
 
-`usnm_qwen`'s image (`ocr/boinc/qwen/Containerfile`, `ocr/boinc/qwen/weights.lock`, `ocr/boinc/qwen/NOTICE`) is built on `ghcr.io/ggml-org/llama.cpp:server-cuda` at digest `sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea` (llama.cpp build 11610, `0.6.0-dev`), which runs Qwen3-VL natively with no Python stack. It bakes Qwen3-VL-8B-Instruct at `Q4_K_M` (`Qwen3VL-8B-Instruct-Q4_K_M.gguf` and `mmproj-Qwen3VL-8B-Instruct-F16.gguf`) and Qwen3-VL-2B-Instruct at `Q8_0` (`Qwen3VL-2B-Instruct-Q8_0.gguf` and `mmproj-Qwen3VL-2B-Instruct-F16.gguf`) from Hugging Face at pinned revisions, checked against `ocr/boinc/qwen/weights.lock`, into `/opt/qwen/models` (`usnm_boinc::qwen::MODEL_DIR`), alongside Apache-2.0 `LICENSE` and `NOTICE`. The image records `USNM_QWEN_LLAMA_IMAGE` and `USNM_QWEN_WEIGHTS`, and the host refuses a unit staged for another build (`qwen::work::prepare`). The host picks the first model whose `min_gpu_mb` the GPU has free (7,000 MB for the 8B model), else the last (the 2B model), and the 2B model on CPU. Inside the unit (`qwen::work`), `usnm-boinc` starts `/app/llama-server` on loopback (`--no-webui --ctx-size 4096 --seed 522 --temp 0`, with `--n-gpu-layers 99` when a GPU is visible and `0` on CPU) and sends each crop as a PNG data URL to `/v1/chat/completions` with prompt version 1.
+Stock BOINC does not accept a plain executable that simply writes its output files and exits `0`. In `client/app_control.cpp:533-546` (and the Windows branch at `475-480`), a task process that exits `0` without the file `boinc_finish_called` in the slot directory is treated as a premature exit (`handle_premature_exit`), restarted from scratch, and after 100 such exits aborted with `ERR_TOO_MANY_EXITS` ("too many exit(0)s"). Linking `boinc_finish(0)` in `api/boinc_api.cpp:864-872` (`lib/app_ipc.h:240`) writes `boinc_finish_called` containing `0\n`.
 
-`.github/workflows/boinc-qwen.yml` (`.github/actions/boinc-qwen-build/action.yml`) builds the image on the runner's scratch volume, runs `usnm-boinc qwen probe` and a synthetic CPU unit (`usnm-boinc qwen local-unit --synthetic --dir /work --timeout-secs 600`, `usnm-boinc work --dir /work`, `usnm-boinc qwen check`), and on `main` pushes `ghcr.io/tgoodyear/usnm-boinc-worker:qwen-<commit>` and writes its `sha256:...` digest to the step summary.
+Rather than linking the C++ BOINC API across five targets or adding `samples/wrapper`, our native Rust binaries (`crates/usnm-quality-app` and the native `usnm_qwen` driver) satisfy the slot contract directly:
+
+- Every input and output in `ocr/boinc/usnm_quality_in`, `ocr/boinc/usnm_quality_out`, `ocr/boinc/usnm_qwen_in`, `ocr/boinc/usnm_qwen_8b_in`, `ocr/boinc/usnm_qwen_2b_in`, and `ocr/boinc/usnm_qwen_out` carries `<copy_file/>`, so the BOINC client places real files in the slot directory rather than XML `<soft_link>` files (`client/file_names.cpp:47-56`).
+- During execution, the binary writes `fraction_done` (`0o644`) in the current directory.
+- After flushing all output files (`result.json`, `confusions.json` or `readings.json`, and `diag.txt`) and setting `fraction_done` to `1.000000\n`, the binary atomically writes `boinc_finish_called` containing `0\n` as its final step before exiting `0`.
+
+### Native `usnm_quality` (`crates/usnm-quality-app`)
+
+`crates/usnm-quality-app` is a dependency-light native binary crate that depends only on `usnm-ocr-quality` and the pure contract types in `usnm-ocr-contract` (without `tokio`, `reqwest`, `arrow`/`parquet`, `rustix`, or `usnm-store`). `.github/workflows/boinc-quality-native.yml` builds it with `--locked` across all five BOINC platforms:
+
+- `x86_64-pc-linux-gnu` (`x86_64-unknown-linux-musl`, static binary with no glibc floor)
+- `aarch64-unknown-linux-gnu` (`aarch64-unknown-linux-musl`, static binary)
+- `arm64-apple-darwin` (`aarch64-apple-darwin`)
+- `x86_64-apple-darwin` (`x86_64-apple-darwin`)
+- `windows_x86_64` (`x86_64-pc-windows-msvc`, `.exe`)
+
+The workflow runs the cross-platform golden determinism test on every target and uploads `usnm_quality_<ver>_<platform>[.exe]` plus `SHA256SUMS`. On container hosts (`x86_64-pc-linux-gnu__docker`), `usnm_quality` also runs inside the standard worker image (`ocr/boinc/Containerfile`) under `ocr/boinc/job.toml` (1 CPU, 1.5 GiB).
+
+### Native and container `usnm_qwen` (`ocr/boinc/qwen/llama.lock` and `<sticky/><no_delete/>` models)
+
+`usnm_qwen` ships in two forms:
+
+1. **Native driver + `ocr/boinc/qwen/llama.lock` + `<sticky/><no_delete/>` GGUF models**:
+   - The native driver starts `llama-server` as a child process bound to `127.0.0.1` on an ephemeral port (`--no-webui --ctx-size 4096 --seed 522 --temp 0`, with `--n-gpu-layers 99` on Apple Metal / NVIDIA CUDA and `0` on `mt` CPU), polls `/health`, posts each crop as a PNG data URL to `/v1/chat/completions`, and writes `readings.json`, `result.json`, `diag.txt`, `fraction_done`, and `boinc_finish_called`.
+   - `ocr/boinc/qwen/llama.lock` pins the upstream `llama.cpp` release tag (e.g. `b11630`) and the per-platform release archive URLs and SHA-256 digests (`macos-arm64`, `macos-x64`, `win-cuda-12.4-x64`, `ubuntu-x64`, `ubuntu-arm64`), verified before staging and signed as part of the BOINC app version.
+   - Instead of baking multi-gigabyte weights into every native app version update, GGUF model and multimodal projector files (`Qwen3VL-8B-Instruct-Q4_K_M.gguf` 4.68 GiB + `mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf` 0.70 GiB for 8B; `Qwen3-VL-2B-Instruct-Q8_0.gguf` 1.71 GiB + `mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf` 0.41 GiB for 2B) are staged in the project's `download/` hierarchy as `usnm_qwen_model_<sha256>` alongside Apache-2.0 `LICENSE` and `NOTICE`. Their input templates (`ocr/boinc/usnm_qwen_8b_in`, `ocr/boinc/usnm_qwen_2b_in`) mark every weight file with **both `<sticky/>` and `<no_delete/>`**:
+     - `<sticky/>` (`client/client_types.cpp:387, 652-668`, `sched/sched_send.cpp:76-118`) instructs the volunteer's BOINC client to retain the downloaded model file across workunits and merge existing file metadata (`cs_scheduler.cpp:878`) so each host downloads its model set only once.
+     - `<no_delete/>` (`sched/file_deleter.cpp:22, 160-171`) instructs the server's `file_deleter` daemon never to unlink the shared model files from `download/` when the first workunit referencing them is assimilated and purged.
+   - Serving sticky models from the server Container App's Azure Files share incurs Azure internet egress after the first 100 GB/month free tier (~$0.087/GB in North America: ~$0.50 per new 8B volunteer and ~$0.20 per new 2B volunteer).
+2. **Container image (`ocr/boinc/qwen/Containerfile`, `ocr/boinc/qwen/weights.lock`, `ocr/boinc/qwen/NOTICE`)**:
+   - Built on `ghcr.io/ggml-org/llama.cpp:server-cuda` at digest `sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea` (llama.cpp build 11610, `0.6.0-dev`), which runs Qwen3-VL natively with no Python stack. It bakes Qwen3-VL-8B-Instruct at `Q4_K_M` (`Qwen3VL-8B-Instruct-Q4_K_M.gguf` and `mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf`) and Qwen3-VL-2B-Instruct at `Q8_0` (`Qwen3-VL-2B-Instruct-Q8_0.gguf` and `mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf`) from Hugging Face at pinned revisions, checked against `ocr/boinc/qwen/weights.lock`, into `/opt/qwen/models` (`usnm_boinc::qwen::MODEL_DIR`), alongside Apache-2.0 `LICENSE` and `NOTICE`. Keeping the GHCR container path on Linux x86-64 avoids Azure Files egress for container volunteers.
+   - `.github/workflows/boinc-qwen.yml` (`.github/actions/boinc-qwen-build/action.yml`) builds the image on the runner's scratch volume, runs `usnm-boinc qwen probe` and a synthetic CPU unit (`usnm-boinc qwen local-unit --synthetic --dir /work --timeout-secs 600`, `usnm-boinc work --dir /work`, `usnm-boinc qwen check`), and on `main` pushes `ghcr.io/tgoodyear/usnm-boinc-worker:qwen-<commit>` and writes its `sha256:...` digest to the step summary.
 
 ## App versions and plan classes
 
-| App            | Version | Plan class           | Container                                                                     |
-| -------------- | ------- | -------------------- | ----------------------------------------------------------------------------- |
-| `usnm_quality` | 1.0     | `docker`             | `ocr/boinc/job.toml`: 1 CPU, 1.5 GiB, no swap                                 |
-| `usnm_qwen`    | 1.0     | `docker_mt`          | `ocr/boinc/qwen/job-cpu.toml`: `--cpus` from the thread count, 6 GiB, no swap |
-| `usnm_qwen`    | 1.1     | `docker_nvidia_cuda` | `ocr/boinc/qwen/job-gpu.toml`: `--gpus all`, 2 CPUs, 6 GiB, no swap           |
+Plan classes are defined in `contrib-compute/boinc/plan_class_spec.xml`:
 
-The two `usnm_qwen` classes are the Surya app's (`contrib-compute/boinc/plan_class_spec.xml`); `docker_nvidia_cuda` asks for 3,000 MB of GPU memory, enough for the 2B model. `scripts/boinc/install.py` knows all three (`TEMPLATES`, `JOB_TOML`). `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
+| App            | Kind        | Plan class           | Platforms                                                                                                         | Runtime / resource requirements                                                                                                  |
+| -------------- | ----------- | -------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `usnm_quality` | `native`    | _(default CPU)_      | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Native binary (`crates/usnm-quality-app`), 1 CPU, writes `boinc_finish_called`                                                   |
+| `usnm_quality` | `container` | `docker`             | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | `ocr/boinc/job.toml`: 1 CPU, 1.5 GiB, no swap                                                                                    |
+| `usnm_qwen`    | `native`    | `apple_gpu_8b`       | `arm64-apple-darwin`                                                                                              | `<gpu_type>apple</gpu_type>`, Metal support (`min_metal_support` 1), >= 7,000 MB available unified RAM (~8 GiB Mac), 8B `Q4_K_M` |
+| `usnm_qwen`    | `native`    | `nvidia_cuda_8b`     | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 7,000 MB GPU RAM, 2 host CPUs, 8B `Q4_K_M`         |
+| `usnm_qwen`    | `native`    | `nvidia_cuda_2b`     | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 3,000 MB GPU RAM, 2 host CPUs, 2B `Q8_0`           |
+| `usnm_qwen`    | `native`    | `mt`                 | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Multi-thread CPU (`min_ncpus` 4, `max_threads` 8), 2B `Q8_0` fallback                                                            |
+| `usnm_qwen`    | `container` | `docker_mt`          | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-cpu.toml`: `--cpus` from the thread count (4–8), 6 GiB, no swap                                              |
+| `usnm_qwen`    | `container` | `docker_nvidia_cuda` | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-gpu.toml`: `--gpus all`, 2 CPUs, >= 3,000 MB GPU RAM, 6 GiB, no swap                                         |
 
-Register the apps on the server (`scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15`), then release `usnm_quality` (which uses `images.worker` from `contrib-compute/infra/boinc/env/<env>.json`) and the two `usnm_qwen` plan classes (which take `--worker-image` with the digest from `.github/workflows/boinc-qwen.yml`):
+`scripts/boinc/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
+
+Register the apps and platforms on the server (`scripts/start-boinc-bridge.sh --env prod --step register-apps --wait-mins 15`), then release the container or native versions with `scripts/boinc-app-release.sh` (see [contrib-compute/docs/app-release.md](../contrib-compute/docs/app-release.md)):
 
 ```sh
+# Container versions:
 scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host <host>
 scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-digest> --signing-host <host>
 scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda \
   --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-digest> --signing-host <host>
+
+# Native usnm_quality binary (from .github/workflows/boinc-quality-native.yml artifacts):
+scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+  --platform arm64-apple-darwin --binary /path/to/usnm_quality_1.1_arm64-apple-darwin \
+  --binary-sha256 <sha256> --signing-host <host>
 ```
 
 ## Diagnostics

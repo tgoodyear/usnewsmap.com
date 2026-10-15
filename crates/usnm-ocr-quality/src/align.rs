@@ -13,9 +13,9 @@
 //! distance (no backtrace needed for a count), word edits over
 //! whitespace-split words, and a word-bag Dice over lower-case alphanumeric
 //! tokens.
+use crate::{distance, text};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use usnm_ocr_survey::{distance, text};
 
 /// Cells of the full table below which the backtrace is taken from it
 /// directly (the recursion's base case).

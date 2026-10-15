@@ -370,7 +370,7 @@ pub fn agree(
         let dice = both_ok.then(|| {
             let ta = String::from_utf8_lossy(a_texts.get(&ra.mode).map_or(&[][..], |v| v));
             let tb = String::from_utf8_lossy(b_texts.get(&rb.mode).map_or(&[][..], |v| v));
-            crate::assess::dice(&ta, &tb)
+            crate::boinc::dice(&ta, &tb)
         });
         if verdict.is_ok() {
             if (ra.outcome == Outcome::Ok) != (rb.outcome == Outcome::Ok) {

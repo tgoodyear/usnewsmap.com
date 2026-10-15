@@ -15,6 +15,8 @@ members = [
     "crates/usnm-ocr-survey",
     "crates/usnm-ocr-worker",
     "crates/usnm-overlay",
+    "crates/usnm-quality-app",
+    "crates/usnm-qwen-app",
     "crates/usnm-state",
     "crates/usnm-telemetry",
 ]
@@ -28,7 +30,7 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 [workspace.dependencies]
 usnm-alto = { path = "crates/usnm-alto" }
 usnm-core = { path = "crates/usnm-core" }
-usnm-ocr-contract = { path = "crates/usnm-ocr-contract" }
+usnm-ocr-contract = { path = "crates/usnm-ocr-contract", default-features = false }
 usnm-ocr-quality = { path = "crates/usnm-ocr-quality" }
 usnm-ocr-survey = { path = "crates/usnm-ocr-survey" }
 usnm-overlay = { path = "crates/usnm-overlay" }

@@ -17,9 +17,11 @@
 //!   per-page inputs; [`calibrate`] runs it on gold crops with a
 //!   transcription and reports the estimator's error.
 //! - [`summary`] reads the validator's copies back into one table.
-use anyhow::{ensure, Context};
 use std::path::{Path, PathBuf};
-use usnm_alto::{Page, ParseError, ParseOptions};
+pub use usnm_ocr_quality::slot::{
+    inputs, outputs, parse_alto, ALTO_FILE, CONFUSIONS_FILE, DIAG_FILE, JOB_FILE, PAGE_FILE,
+    PLACES_FILE, RESULT_FILE, TEXTS_FILE,
+};
 
 pub mod calibrate;
 pub mod collect;
@@ -31,16 +33,6 @@ pub mod summary;
 pub mod validate;
 pub mod work;
 
-/// The unit's request in the BOINC slot. Its presence makes `usnm-boinc work`
-/// run a quality unit.
-pub const JOB_FILE: &str = "quality.json";
-pub const PAGE_FILE: &str = "page.jpg";
-pub const ALTO_FILE: &str = "loc.xml";
-pub const TEXTS_FILE: &str = "texts.json";
-pub const PLACES_FILE: &str = "places.txt";
-pub const RESULT_FILE: &str = "result.json";
-pub const CONFUSIONS_FILE: &str = "confusions.json";
-pub const DIAG_FILE: &str = "diag.txt";
 pub const APP: &str = "usnm_quality";
 
 /// One page to stage, as the Surya app names it: `group:lang:doc_id`.
@@ -53,43 +45,6 @@ pub fn units(root: &Path) -> PathBuf {
 
 pub fn check_no_hold(root: &Path) -> anyhow::Result<()> {
     crate::assess::check_no_hold(root)
-}
-
-/// The output files in output template order.
-pub fn outputs() -> [&'static str; 3] {
-    [RESULT_FILE, CONFUSIONS_FILE, DIAG_FILE]
-}
-
-/// The input files in input template order, with the job last.
-pub fn inputs() -> [&'static str; 5] {
-    [PAGE_FILE, ALTO_FILE, TEXTS_FILE, PLACES_FILE, JOB_FILE]
-}
-
-/// Reads an ALTO into a page in the image's pixels. LoC's ALTO is in
-/// 1/1200 inch; it is read at 1200 dpi (its own units) and then scaled to
-/// the image by the page's width and height, as the gold set's `crops.py`
-/// scales it, so the units never matter.
-pub fn parse_alto(xml: &[u8], width: f64, height: f64) -> anyhow::Result<Page> {
-    ensure!(width > 0.0 && height > 0.0, "page has no size");
-    let opts = ParseOptions::default();
-    let mut page = match usnm_alto::parse(xml, &opts) {
-        Ok(p) => p,
-        Err(ParseError::NeedsDpi(_)) => usnm_alto::parse(
-            xml,
-            &ParseOptions {
-                dpi: Some(1200.0),
-                ..opts
-            },
-        )
-        .context("ALTO")?,
-        Err(e) => return Err(anyhow::anyhow!("ALTO: {e}")),
-    };
-    ensure!(
-        page.width > 0.0 && page.height > 0.0,
-        "ALTO page has no size"
-    );
-    page.rescale(width, height);
-    Ok(page)
 }
 
 /// A small ALTO v3 page in pixels, for tests and local checks: one block

@@ -10,17 +10,24 @@
 //! engine contract between the worker and an engine adapter (ADR-0016,
 //! 13 §13.4), and `runs` the runs record each written page gets (13 §13.8.3).
 
+#[cfg(feature = "pipeline")]
 pub mod engine;
+#[cfg(feature = "pipeline")]
 pub mod fetched;
+#[cfg(feature = "pipeline")]
 pub mod message;
+#[cfg(feature = "pipeline")]
 pub mod prefetch;
+#[cfg(feature = "pipeline")]
 pub mod runs;
+#[cfg(feature = "pipeline")]
 pub mod status;
 
 /// File-based jobs for the opt-in stock BOINC pilot.
 pub mod boinc;
 
 /// File-based jobs for the JP2 against IIIF JPEG assessment (#456).
+#[cfg(feature = "pipeline")]
 pub mod assess;
 
 /// File-based jobs for the Surya 2 test on BOINC volunteers (#516).

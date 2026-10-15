@@ -26,8 +26,16 @@ class Refused(Exception):
     pass
 
 
-def check(version_dir: Path, sigs: Path, public_key: Path, crypt_prog: str) -> list[str]:
+def check(
+    version_dir: Path,
+    sigs: Path,
+    public_key: Path,
+    crypt_prog: str,
+    kind: str | None = None,
+) -> list[str]:
     """Copies each NAME.sig from sigs into version_dir and checks the result. Returns the signed files."""
+    if kind is not None and kind not in ("container", "native"):
+        raise Refused(f"unsupported appver kind: {kind}")
     if not public_key.is_file() or public_key.stat().st_size == 0:
         raise Refused(f"no code-signing public key at {public_key}")
     for p in version_dir.iterdir():
@@ -55,9 +63,21 @@ def check(version_dir: Path, sigs: Path, public_key: Path, crypt_prog: str) -> l
         spec = ET.parse(version_dir / "version.xml").getroot()
     except ET.ParseError as e:
         raise Refused(f"version.xml is not XML: {e}") from e
-    missing = [e.text or "" for e in spec.iter("physical_name") if (e.text or "") not in files]
+    referenced = [e.text or "" for e in spec.iter("physical_name")]
+    missing = [name for name in referenced if name not in files]
     if missing:
         raise Refused("version.xml names files that are not staged: " + ", ".join(missing))
+    unlisted = [name for name in files if name not in set(referenced)]
+    if unlisted:
+        raise Refused("staged files not in version.xml: " + ", ".join(unlisted))
+    if kind == "container" and spec.find("is_wrapper") is None:
+        raise Refused("container version.xml is missing <is_wrapper/>")
+    if kind == "native":
+        if spec.find("is_wrapper") is not None:
+            raise Refused("native version.xml must not contain <is_wrapper/>")
+        mains = [f for f in spec.findall("file") if f.find("main_program") is not None]
+        if len(mains) != 1 or mains[0].find("copy_file") is None:
+            raise Refused("native version.xml must have one <main_program/> with <copy_file/>")
     for n in files:
         shutil.copyfile(sigs / (n + ".sig"), version_dir / (n + ".sig"))
         r = subprocess.run([crypt_prog, "-verify", str(version_dir / n), str(version_dir / (n + ".sig")),
@@ -69,13 +89,14 @@ def check(version_dir: Path, sigs: Path, public_key: Path, crypt_prog: str) -> l
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--kind", default=None, choices=("container", "native"))
     ap.add_argument("--version-dir", required=True, type=Path)
     ap.add_argument("--sigs", required=True, type=Path)
     ap.add_argument("--public-key", required=True, type=Path)
     ap.add_argument("--crypt-prog", default="/usr/local/boinc/lib/crypt_prog")
     a = ap.parse_args(argv)
     try:
-        files = check(a.version_dir, a.sigs, a.public_key, a.crypt_prog)
+        files = check(a.version_dir, a.sigs, a.public_key, a.crypt_prog, kind=a.kind)
     except Refused as e:
         print(f"check_appver: refused {a.version_dir}: {e}", file=sys.stderr)
         return 1

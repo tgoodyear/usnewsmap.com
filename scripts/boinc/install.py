@@ -4,9 +4,11 @@
 Does not edit project config, publish/sign files, or install server packages.
 """
 import argparse
+import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import xml.etree.ElementTree as ET
 
 
@@ -22,7 +24,7 @@ TEMPLATES = {
     # The OCR quality estimate (#522): the CPU app runs in the worker image under the docker
     # class; the Qwen app has its own image, a CPU and a GPU version.
     "usnm_quality": ["usnm_quality_in", "usnm_quality_out"],
-    "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_out"],
+    "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"],
 }
 
 # The plan classes an app version can be installed for (contrib-compute/boinc/plan_class_spec.xml),
@@ -38,69 +40,235 @@ JOB_TOML = {
     ("usnm_qwen", "docker_nvidia_cuda"): "ocr/boinc/qwen/job-gpu.toml",
 }
 
-PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin")
+PLATFORMS = (
+    "x86_64-pc-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "arm64-apple-darwin",
+    "x86_64-apple-darwin",
+    "windows_x86_64",
+)
+
+NATIVE_PLAN_CLASSES = {
+    ("usnm_quality", ""): PLATFORMS,
+    ("usnm_qwen", "mt"): PLATFORMS,
+    ("usnm_qwen", "apple_gpu_8b"): ("arm64-apple-darwin",),
+    ("usnm_qwen", "nvidia_cuda_8b"): ("x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "windows_x86_64"),
+    ("usnm_qwen", "nvidia_cuda_2b"): ("x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "windows_x86_64"),
+}
+GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"})
+LOGICAL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
 
 
-def install(project: Path, wrapper: Path, image: str, version: str, app: str = "usnm_ocr",
-            plan_class: str = "docker", platform: str = "x86_64-pc-linux-gnu") -> Path:
+def parse_extra_files(extra_files, bundle_dir: Path | None = None) -> list[tuple[str, Path]]:
+    items: list[tuple[str, Path]] = []
+    if extra_files is not None:
+        if isinstance(extra_files, Path):
+            bundle_dir = extra_files
+        elif isinstance(extra_files, dict):
+            items.extend((str(k), Path(v)) for k, v in extra_files.items())
+        else:
+            for entry in extra_files:
+                if isinstance(entry, tuple):
+                    logical, src = entry
+                    items.append((str(logical), Path(src)))
+                elif isinstance(entry, str) and "=" in entry:
+                    logical, src = entry.split("=", 1)
+                    items.append((logical, Path(src)))
+                else:
+                    raise ValueError("--extra-file must have the form LOGICAL=PATH")
+    if bundle_dir is not None:
+        bundle_path = Path(bundle_dir)
+        if not bundle_path.is_dir():
+            raise ValueError("--bundle-dir must be an existing directory")
+        for child in sorted(bundle_path.iterdir()):
+            if not child.is_file() or child.is_symlink():
+                raise ValueError(f"bundle entry {child.name!r} is not a plain file")
+            items.append((child.name, child))
+    seen: set[str] = set()
+    for logical, src in items:
+        if not LOGICAL_NAME.fullmatch(logical) or logical == "version.xml" or logical.endswith(".sig"):
+            raise ValueError(f"invalid extra file logical name {logical!r}")
+        if logical in seen:
+            raise ValueError(f"duplicate extra file logical name {logical!r}")
+        if not src.is_file() or src.is_symlink():
+            raise ValueError(f"missing extra file {src}")
+        seen.add(logical)
+    return items
+
+
+def sign_file(path: Path, sign_key: Path, crypt_prog: str | Path) -> Path:
+    if not Path(sign_key).is_file():
+        raise ValueError(f"missing code-signing key {sign_key}")
+    res = subprocess.run(
+        [str(crypt_prog), "-sign", str(path), str(sign_key)],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        raise ValueError(f"crypt_prog -sign failed for {path.name}: {(res.stdout + res.stderr).strip()}")
+    sig_path = path.with_name(path.name + ".sig")
+    if res.stdout:
+        sig_path.write_text(res.stdout)
+    if not sig_path.is_file() or sig_path.stat().st_size == 0:
+        raise ValueError(f"crypt_prog -sign produced an empty signature for {path.name}")
+    return sig_path
+
+
+def install(
+    project: Path,
+    wrapper: Path | None = None,
+    image: str | None = None,
+    version: str = "1.0",
+    app: str = "usnm_ocr",
+    plan_class: str | None = None,
+    platform: str = "x86_64-pc-linux-gnu",
+    kind: str = "container",
+    binary: Path | None = None,
+    extra_files=None,
+    bundle_dir: Path | None = None,
+    sign_key: Path | None = None,
+    crypt_prog: str | Path = "/usr/local/boinc/lib/crypt_prog",
+) -> Path:
+    if kind not in ("container", "native"):
+        raise ValueError("--kind must be container or native")
     if app not in TEMPLATES:
         raise ValueError("--app must be one of " + ", ".join(sorted(TEMPLATES)))
     if platform not in PLATFORMS:
         raise ValueError("unsupported --platform")
-    if (app, plan_class) not in JOB_TOML:
-        raise ValueError(f"{app} has no version for plan class {plan_class}: one of "
-                         + ", ".join(sorted(p for a, p in JOB_TOML if a == app)))
-    if platform != "x86_64-pc-linux-gnu" and plan_class != "docker":
-        raise ValueError(f"{platform} supports only plan class docker")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", image):
-        raise ValueError("--image must be a pullable registry reference pinned by full digest")
     if not re.fullmatch(r"[1-9][0-9]*\.[0-9]+", version):
         raise ValueError("invalid app version")
     if not (project / "config.xml").is_file():
         raise ValueError("create a stock BOINC project first")
-    if not wrapper.is_file():
-        raise ValueError("missing trusted docker_wrapper for the selected platform")
     root = Path(__file__).resolve().parents[2]
-    target = project / "apps" / app / version / f"{platform}__{plan_class}"
-    target.mkdir(parents=True, exist_ok=False)
-    suffix = f"{app}_{version}_{platform}_{plan_class}"
-    wrapper_name = f"docker_wrapper_{suffix}"
-    dockerfile_name = f"Dockerfile_{suffix}"
-    job_name = f"job_{suffix}.toml"
-    shutil.copyfile(wrapper, target / wrapper_name)
-    (target / wrapper_name).chmod(0o755)
-    (target / dockerfile_name).write_text(f"FROM {image}\n")
-    shutil.copyfile(root / JOB_TOML[(app, plan_class)], target / job_name)
-    spec = ET.Element("version")
-    wrapper_file = ET.SubElement(spec, "file")
-    ET.SubElement(wrapper_file, "physical_name").text = wrapper_name
-    ET.SubElement(wrapper_file, "main_program")
-    for physical, logical in [(dockerfile_name, "Dockerfile"), (job_name, "job.toml")]:
-        item = ET.SubElement(spec, "file")
-        ET.SubElement(item, "physical_name").text = physical
-        ET.SubElement(item, "logical_name").text = logical
-        ET.SubElement(item, "copy_file")
-    ET.SubElement(spec, "is_wrapper")
+    if kind == "container":
+        if plan_class is None:
+            plan_class = "docker"
+        if binary is not None:
+            raise ValueError("--binary is only valid with --kind native")
+        if extra_files or bundle_dir is not None:
+            raise ValueError("--extra-file and --bundle-dir are only valid with --kind native")
+        if (app, plan_class) not in JOB_TOML:
+            raise ValueError(
+                f"{app} has no version for plan class {plan_class}: one of "
+                + ", ".join(sorted(p for a, p in JOB_TOML if a == app))
+            )
+        if platform != "x86_64-pc-linux-gnu" and plan_class != "docker":
+            raise ValueError(f"{platform} supports only plan class docker")
+        if not image or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", image):
+            raise ValueError("--image must be a pullable registry reference pinned by full digest")
+        if wrapper is None or not Path(wrapper).is_file():
+            raise ValueError("missing trusted docker_wrapper for the selected platform")
+        target = project / "apps" / app / version / f"{platform}__{plan_class}"
+        target.mkdir(parents=True, exist_ok=False)
+        suffix = f"{app}_{version}_{platform}_{plan_class}"
+        wrapper_name = f"docker_wrapper_{suffix}"
+        dockerfile_name = f"Dockerfile_{suffix}"
+        job_name = f"job_{suffix}.toml"
+        shutil.copyfile(wrapper, target / wrapper_name)
+        (target / wrapper_name).chmod(0o755)
+        (target / dockerfile_name).write_text(f"FROM {image}\n")
+        shutil.copyfile(root / JOB_TOML[(app, plan_class)], target / job_name)
+        spec = ET.Element("version")
+        wrapper_file = ET.SubElement(spec, "file")
+        ET.SubElement(wrapper_file, "physical_name").text = wrapper_name
+        ET.SubElement(wrapper_file, "main_program")
+        for physical, logical in [(dockerfile_name, "Dockerfile"), (job_name, "job.toml")]:
+            item = ET.SubElement(spec, "file")
+            ET.SubElement(item, "physical_name").text = physical
+            ET.SubElement(item, "logical_name").text = logical
+            ET.SubElement(item, "copy_file")
+        ET.SubElement(spec, "is_wrapper")
+        staged_files = [target / wrapper_name, target / dockerfile_name, target / job_name]
+    else:
+        if plan_class is None:
+            plan_class = ""
+        if wrapper is not None:
+            raise ValueError("--wrapper is only valid with --kind container")
+        if image:
+            raise ValueError("--image is only valid with --kind container")
+        if binary is None or not Path(binary).is_file():
+            raise ValueError("--binary must be an existing file when --kind native")
+        if (app, plan_class) not in NATIVE_PLAN_CLASSES:
+            allowed = sorted(p or '""' for a, p in NATIVE_PLAN_CLASSES if a == app)
+            raise ValueError(f"{app} has no native version for plan class {plan_class!r}: one of " + ", ".join(allowed))
+        if platform not in NATIVE_PLAN_CLASSES[(app, plan_class)]:
+            raise ValueError(f"native plan class {plan_class} is not supported on {platform}")
+        binary = Path(binary)
+        if platform != "windows_x86_64" and binary.suffix.lower() == ".exe":
+            raise ValueError(".exe binaries are only supported on windows_x86_64")
+        parsed_extras = parse_extra_files(extra_files, bundle_dir)
+        subdir = f"{platform}__{plan_class}" if plan_class else platform
+        suffix = f"{app}_{version}_{platform}_{plan_class}" if plan_class else f"{app}_{version}_{platform}"
+        ext = ".exe" if platform == "windows_x86_64" else ""
+        main_name = f"{suffix}{ext}"
+        target = project / "apps" / app / version / subdir
+        target.mkdir(parents=True, exist_ok=False)
+        shutil.copyfile(binary, target / main_name)
+        (target / main_name).chmod(0o755)
+        spec = ET.Element("version")
+        main_file = ET.SubElement(spec, "file")
+        ET.SubElement(main_file, "physical_name").text = main_name
+        ET.SubElement(main_file, "main_program")
+        ET.SubElement(main_file, "copy_file")
+        staged_files = [target / main_name]
+        for logical, src in parsed_extras:
+            phys = f"{suffix}_{logical}"
+            shutil.copyfile(src, target / phys)
+            (target / phys).chmod(0o755 if os.access(src, os.X_OK) else 0o644)
+            item = ET.SubElement(spec, "file")
+            ET.SubElement(item, "physical_name").text = phys
+            ET.SubElement(item, "logical_name").text = logical
+            ET.SubElement(item, "copy_file")
+            staged_files.append(target / phys)
+        if plan_class in GPU_NATIVE_PLAN_CLASSES:
+            ET.SubElement(spec, "dont_throttle")
     ET.indent(spec)
     ET.ElementTree(spec).write(target / "version.xml", encoding="unicode")
+    if sign_key is not None:
+        for staged in staged_files:
+            sign_file(staged, Path(sign_key), crypt_prog)
     (project / "templates").mkdir(exist_ok=True)
     for name in TEMPLATES[app]:
         shutil.copyfile(root / "ocr/boinc" / name, project / "templates" / name)
     return target
 
 
+ALL_PLAN_CLASSES = sorted({p for _, p in JOB_TOML} | {p for _, p in NATIVE_PLAN_CLASSES})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True, type=Path)
-    parser.add_argument("--wrapper", required=True, type=Path)
-    parser.add_argument("--image", required=True)
+    parser.add_argument("--kind", default="container", choices=("container", "native"))
+    parser.add_argument("--wrapper", type=Path, default=None)
+    parser.add_argument("--binary", type=Path, default=None)
+    parser.add_argument("--image", default=None)
     parser.add_argument("--version", default="1.0")
     parser.add_argument("--app", default="usnm_ocr", choices=sorted(TEMPLATES))
-    parser.add_argument("--plan-class", default="docker", choices=sorted({p for _, p in JOB_TOML}))
+    parser.add_argument("--plan-class", default=None, choices=ALL_PLAN_CLASSES)
     parser.add_argument("--platform", default="x86_64-pc-linux-gnu", choices=PLATFORMS)
+    parser.add_argument("--extra-file", action="append", default=None)
+    parser.add_argument("--bundle-dir", type=Path, default=None)
+    parser.add_argument("--sign-key", type=Path, default=None)
+    parser.add_argument("--crypt-prog", default="/usr/local/boinc/lib/crypt_prog")
     args = parser.parse_args()
-    print(install(args.project.resolve(), args.wrapper.resolve(), args.image, args.version, args.app,
-                  args.plan_class, args.platform))
+    print(
+        install(
+            args.project.resolve(),
+            args.wrapper.resolve() if args.wrapper is not None else None,
+            args.image,
+            args.version,
+            args.app,
+            args.plan_class,
+            args.platform,
+            kind=args.kind,
+            binary=args.binary.resolve() if args.binary is not None else None,
+            extra_files=args.extra_file,
+            bundle_dir=args.bundle_dir.resolve() if args.bundle_dir is not None else None,
+            sign_key=args.sign_key.resolve() if args.sign_key is not None else None,
+            crypt_prog=args.crypt_prog,
+        )
+    )
     print(f"Register {args.app}, sign/publish the app, and configure stock daemons; see docs/boinc.md.")
 
 
