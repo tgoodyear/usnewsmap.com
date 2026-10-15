@@ -258,7 +258,11 @@ async fn fixture_with_batch(with_tables: bool, batch: &str) -> Fx {
                 .unwrap()
                 .is_none());
         }
-        let part = format!("pages/{batch}_ver01/part-0.parquet");
+        let part = if batch.len() + "_ver01".len() <= 128 {
+            format!("pages/{batch}_ver01/part-0.parquet")
+        } else {
+            format!("pages/{batch}/ver01/part-0.parquet")
+        };
         curated
             .put_new(&part, w.finish_part().unwrap().unwrap(), "x")
             .await
@@ -925,6 +929,8 @@ async fn real_loc_batches_seed_enqueue_and_sync_with_original_case() {
         "me_Bissonnette",
         "vi_White",
         "wvu_Quote",
+        &format!("nbu_{}", "A".repeat(101)),
+        &format!("nbu_{}", "A".repeat(124)),
     ] {
         let fx = fixture_with_batch(true, batch).await;
         let status = sync::run(
