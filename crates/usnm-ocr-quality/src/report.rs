@@ -68,7 +68,9 @@ pub fn analyse(inputs: &PageInputs) -> Analysis {
     for i in 0..n {
         for j in i + 1..n {
             let p = align::pair(texts[i], texts[j]);
-            hat_pairs.push((i, j, p.cer_sym));
+            if p.chars_a + p.chars_b > 0 {
+                hat_pairs.push((i, j, p.cer_sym));
+            }
             pair_table.insert((i, j), p);
         }
     }
@@ -255,6 +257,12 @@ mod tests {
         assert_eq!(r.page.image, None);
         assert_eq!(a.confusions["ours"][0].from, "m");
         assert_eq!(a.confusions["ours"][0].to, "rn");
+        assert!(a.confusions["ours"].contains(&ConfusionPair {
+            count: 1,
+            from: "and".into(),
+            kind: confusion::Kind::Del,
+            to: String::new(),
+        }));
         assert!(a.confusions["loc"].is_empty());
         // Rounded: serialising twice through JSON gives the same bytes.
         let once = serde_json::to_string(r).unwrap();
@@ -269,6 +277,11 @@ mod tests {
         assert!(!a.report.hat.determined);
         assert_eq!(a.report.readers[0].est_cer, None);
         assert_eq!(a.report.legibility.ceiling_est, None);
+        let empty = analyse(&inputs(&places, &[("loc", ""), ("as", ""), ("ours", "")]));
+        assert!(!empty.report.hat.determined);
+        assert_eq!(empty.report.readers[0].est_cer, None);
+        assert_eq!(empty.report.legibility.ceiling_est, None);
+        assert_eq!(empty.report.readers[0].pairs["as"].cer_sym, 0.0);
         assert!(analyse(&inputs(&places, &[])).report.readers.is_empty());
     }
 

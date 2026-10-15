@@ -132,8 +132,9 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
     };
     let mut dsu = Dsu::new(total, reader_of);
     let mut matches: Vec<(usize, usize)> = Vec::new();
-    // Substitutions per pair, resolved against the components afterwards.
+    // Substitutions and omissions per pair, resolved against the components afterwards.
     let mut subs: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut omissions: Vec<(usize, usize, usize)> = Vec::new();
     for i in 0..readers.len() {
         for j in i + 1..readers.len() {
             let ops = align::align(&folded[i], &folded[j]);
@@ -150,8 +151,14 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
                         a += 1;
                         b += 1;
                     }
-                    Op::Ins => b += 1,
-                    Op::Del => a += 1,
+                    Op::Ins => {
+                        omissions.push((i, j, b));
+                        b += 1;
+                    }
+                    Op::Del => {
+                        omissions.push((j, i, a));
+                        a += 1;
+                    }
                 }
             }
         }
@@ -312,6 +319,16 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
             ));
         }
     }
+    for (reader, other, opos) in omissions {
+        let Some(&w) = root_of_word.get(&dsu.find(offsets[other] + opos)) else {
+            continue;
+        };
+        if has[reader][w] || taken.contains(&(reader, w)) {
+            continue;
+        }
+        taken.push((reader, w));
+        disagreements.push((reader, readers[other][opos].clone(), String::new()));
+    }
     disagreements.sort();
     Consensus {
         words,
@@ -401,5 +418,15 @@ mod tests {
             tokens("Boston"),
         ]);
         assert_eq!(split.sequence, vec!["albany", "", "boston"]);
+
+        let omitted = build(&[
+            tokens("Albany mayor"),
+            tokens("Albany mayor"),
+            tokens("Albany"),
+        ]);
+        assert_eq!(
+            omitted.disagreements,
+            vec![(2, "mayor".into(), String::new())]
+        );
     }
 }

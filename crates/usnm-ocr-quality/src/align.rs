@@ -61,18 +61,21 @@ fn rec<T: PartialEq>(a: &[T], b: &[T], out: &mut Vec<Op>) {
         return;
     }
     let mid = a.len() / 2;
-    let left = last_row(&a[..mid], b, false);
-    let right = last_row(&a[mid..], b, true);
-    let n = b.len();
-    let mut best = (u32::MAX, 0);
-    for (j, l) in left.iter().enumerate() {
-        let c = l + right[n - j];
-        if c < best.0 {
-            best = (c, j);
+    let split = {
+        let left = last_row(&a[..mid], b, false);
+        let right = last_row(&a[mid..], b, true);
+        let n = b.len();
+        let mut best = (u32::MAX, 0);
+        for (j, l) in left.iter().enumerate() {
+            let c = l + right[n - j];
+            if c < best.0 {
+                best = (c, j);
+            }
         }
-    }
-    rec(&a[..mid], &b[..best.1], out);
-    rec(&a[mid..], &b[best.1..], out);
+        best.1
+    };
+    rec(&a[..mid], &b[..split], out);
+    rec(&a[mid..], &b[split..], out);
 }
 
 /// The edit distance between `a` and every prefix of `b` (both reversed
