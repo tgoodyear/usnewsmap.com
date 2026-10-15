@@ -12,6 +12,13 @@ Status: written, not built or run. The CI job `contrib-compute (server and bridg
 
 One container holds Apache and the daemons because the feeder and the scheduler share a System V shared-memory segment (design.md, section 2.1).
 
+The `db_purge` daemon runs continuously with `--min_age_days 30`, archiving and
+removing eligible workunit and result database records after 30 days. Do not add
+a bare `--max`: it requires a numeric argument, and a limit makes the daemon exit
+once it has purged that many workunits. With no eligible work, it sleeps rather
+than exits. Changes to `config.xml.template` require an image rollout; the
+entrypoint renders the project's configuration at container startup.
+
 ### Why the BOINC commit is master, not the 1.6.2 tag
 
 `batch_collect_assimilator`, which PR #441's `daemons.xml` runs, is not in the `server_release/1.6/1.6.2` tree (searched on 2026-10-13) and is in master. The Containerfile pins master at `22bbebe08e2eaac5d5e88a6d93b88e800cb6341c` (2026-10-13). Move to the first release tag that contains it when one exists. The image is still unmodified upstream source.

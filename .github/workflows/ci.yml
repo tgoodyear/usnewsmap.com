@@ -116,6 +116,8 @@ jobs:
       - run: shellcheck -x -S warning scripts/boinc/*.sh images/server/*.sh images/appver/*.sh images/bridge/*.sh
       - name: The gold-bundle step's tests pass
         run: python3 -m unittest -v images/bridge/test_gold_bundle.py
+      - name: The server daemon configuration tests pass
+        run: python3 -m unittest -v boinc/test_config.py
       # The app version's signature checks and the installer (no server needed).
       - name: The app version checks' tests pass
         working-directory: .
