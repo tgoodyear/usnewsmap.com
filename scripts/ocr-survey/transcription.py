@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare title-disjoint public gold data for central SFT and BOINC evaluation (#542)."""
+"""Prepare title-disjoint public gold data for SFT and BOINC evaluation (#542)."""
 
 from __future__ import annotations
 

@@ -2,9 +2,10 @@
 
 Issue [#542](https://github.com/tgoodyear/usnewsmap.com/issues/542).
 The task is verbatim historical-newspaper transcription, not article question
-answering. Training is central; independent volunteer inference uses the existing
-`usnm_qwen` app and its [release process](../contrib-compute/docs/app-release.md).
-No gradient training, credentials or reference transcriptions go to volunteers.
+answering. Independent, bounded LoRA trials run on volunteer NVIDIA GPUs through
+the separate `usnm_qwen_train` BOINC app; inference uses `usnm_qwen`.
+Only permissively licensed **training** examples and labels are public inputs.
+Credentials and held-out validation/test references never go to volunteers.
 
 Status: benchmark staging, collection and dataset export implemented. An adapted
 checkpoint, its GGUF export, training resource measurements and accuracy gains are
@@ -59,15 +60,67 @@ Only train and validation have `sft.json`, in
 [Qwen's image/conversation format](https://github.com/QwenLM/Qwen3-VL/tree/main/qwen-vl-finetune).
 The test split never supplies training conversations.
 
-## Central adaptation
+## Volunteer GPU adaptation
 
-Start from `Qwen/Qwen3-VL-2B-Instruct`, with supervised LoRA on the language model
-and a frozen vision encoder. Use the upstream Qwen training framework with
-`train/sft.json` as training data and `validation/sft.json` for checkpoint
-selection. The `image` paths are relative to each split directory; configure the
-framework's `data_path` accordingly.
+The [training worker](../ocr/boinc/train/worker.py) starts from
+`Qwen/Qwen3-VL-2B-Instruct@89644892e4d85e24eaac8bacfd4f463576704203`.
+It freezes the base and vision encoder, trains language-attention Q/V LoRA only,
+masks image/prompt tokens, and refuses target truncation, non-finite losses or
+unchanged adapters. These are independent trials, not synchronized gradient
+aggregation across unreliable hosts. The initial pilot is two seeds/ranks,
+16 steps each, on at most 16 train-only examples. This is a hardware/method
+pilot using multilingual NewsEye sources, not demonstrated English OCR improvement.
 
-Record the framework commit, base-model revision, dependency lock, split
+The dedicated `docker_nvidia_train` plan requires Linux x86_64, BOINC 8.2.13,
+Docker/Podman with NVIDIA GPU access, CUDA 12.8 and an Ampere-or-newer GPU with
+at least 15 GiB VRAM. Scheduling reserves two CPUs, 16 GiB host memory and
+40 GiB disk (including the cold CUDA/model image). The sandbox is offline,
+read-only except for outputs/tmpfs, with no credentials, no CPU fallback and a
+one-hour trial timeout. Step/rank/token/image/archive/output limits are enforced.
+Before importing PyTorch, the worker reads BOINC's assigned GPU ordinal from
+`init_data.xml` and restricts CUDA visibility to that device; multi-GPU hosts must
+not run every trial on device zero. A missing/ambiguous assignment fails explicitly.
+
+`boinc-train.yml` builds the pinned CUDA image, verifies every model file against
+its pinned Git/LFS identity and exercises real tiny Qwen3-VL visual
+forward/backward on CPU. That smoke proves optimizer/masking/frozen-base behavior,
+**not** GPU execution, pretrained quality or sufficient VRAM. Main-only publication
+uses the public worker package; the normal signing/release process publishes
+`usnm_qwen_train` with `--plan-class docker_nvidia_train --worker-image <digest>`.
+
+After deploying the current server/bridge and signed training app:
+
+```sh
+scripts/start-boinc-bridge.sh --env prod --step train-prepare \
+  --var TRAIN_CAMPAIGN=transcription-lora-v1 \
+  --var TRAIN_WORKER_IMAGE=ghcr.io/tgoodyear/usnm-boinc-worker@sha256:WORKER_DIGEST \
+  --wait-mins 15
+scripts/start-boinc-bridge.sh --env prod --step train-submit \
+  --var TRAIN_CAMPAIGN=transcription-lora-v1 --wait-mins 15
+scripts/start-boinc-bridge.sh --env prod --step train-collect \
+  --var TRAIN_CAMPAIGN=transcription-lora-v1 --wait-mins 15
+```
+
+Preparation uses the existing converted NewsEye BnF, Finnish and Swedish cache,
+the rights-gated exporter and source/title-disjoint splits. It retains source
+licences/notices, installs atomically and checks immutable replay. Overproof,
+BLN600, NZZ and American Stories are not training inputs. Only `training.zip`
+and the immutable trial configuration enter the public download tree.
+Missing/changed data fail explicitly; an uncertain `submitting` marker requires
+database reconciliation before retry, never blind duplicate submission.
+Trial hashes bind the campaign name, worker image and dataset identities, so
+separately named campaigns cannot collide on workunit names or quarantine lookup.
+
+Each trial requests one result: floating-point GPU training is not byte-consensus.
+The validator binds returned identity/configuration/checksums to a submitted job,
+checks the exact safetensors keys/shapes/FP32 data, rejects non-finite tensors and
+quarantines the candidate under `PROJECT/qwen-train/seen`. It never loads pickle,
+executes uploaded code or treats structural success as scientific acceptance.
+Collection writes private `out/candidates.json` with explicit pending coverage.
+GPU timings and loss curves are volunteer-reported, not trusted accuracy evidence.
+No returned adapter is merged, exported or promoted automatically.
+
+Record the worker commit, base-model revision, dependency constraints, split
 checksums, adapter configuration, image-token budget and training hardware.
 Do not select checkpoints on test CER. Do not start reinforcement learning or
 teacher-generated labels in the first experiment.

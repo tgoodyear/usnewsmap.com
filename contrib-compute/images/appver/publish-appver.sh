@@ -18,7 +18,7 @@ esac
 case "$APPVER_KIND" in
   container)
     APPVER_PLAN_CLASS=${APPVER_PLAN_CLASS:-docker}
-    case "$APPVER_PLAN_CLASS" in docker|docker_mt|docker_nvidia_cuda) ;; *) fail "unsupported plan class" ;; esac
+    case "$APPVER_PLAN_CLASS" in docker|docker_mt|docker_nvidia_cuda|docker_nvidia_train) ;; *) fail "unsupported plan class" ;; esac
     [ "$APPVER_PLATFORM" = x86_64-pc-linux-gnu ] || [ "$APPVER_PLAN_CLASS" = docker ] || fail "$APPVER_PLATFORM supports only plan class docker"
     subdir="${APPVER_PLATFORM}__${APPVER_PLAN_CLASS}"
     ;;
@@ -132,7 +132,7 @@ $plan = $kind === "native" ? (getenv("APPVER_PLAN_CLASS") ?: "") : (getenv("APPV
 if (!preg_match('/^usnm_[a-z_]+$/D', $name)
     || !preg_match('/^[1-9][0-9]*\.[0-9]+$/D', $version)
     || !in_array($platformName, ["x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64"], true)
-    || !in_array($plan, ["", "docker", "docker_mt", "docker_nvidia_cuda", "mt", "apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"], true)) {
+    || !in_array($plan, ["", "docker", "docker_mt", "docker_nvidia_cuda", "docker_nvidia_train", "mt", "apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"], true)) {
     fwrite(STDERR, "Invalid app-version verification inputs\n"); exit(1);
 }
 $app = BoincApp::lookup("name='$name'");

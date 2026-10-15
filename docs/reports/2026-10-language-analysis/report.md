@@ -53,7 +53,7 @@ Pages and titles count the titles that list the language, from `/v1/meta`. A tit
 
 The word lists come from wordfreq, except Yiddish (from Yiddish Wikipedia and Wikisource) and Hawaiian (from the Hawaiian Corpus Project), which wordfreq doesn't cover. Serbian and Croatian share wordfreq's Serbo-Croatian list, and Serbian pages in Cyrillic are scored letter for letter in Latin script. Cherokee, Choctaw, Dakota and Navajo have no list. A 2% sample run the day before, whose pages are all in the 10% sample and which was scored before the Yiddish, Hawaiian and Cyrillic Serbian lists were added, agreed to within a tenth of a percentage point for English and German overall, and within half a point for each decade of English from the 1860s to the 1950s.
 
-**Limits of the metric.** In heavily inflected languages many real word forms are one edit from a common word and outside the 5,000 most frequent forms, so they count as damage. That would raise the scores for Polish, Czech, Slovak, Serbian, Russian, Finnish and Lithuanian. This is our explanation, and it is unchecked. Slovenian (0.077) and Croatian (0.087) are inflected too and score low, so inflection can't be the whole story. Compare these languages with themselves over time, not with English.
+**Limits of the metric.** In heavily inflected languages many real word forms are one edit from a common word and outside the 5,000 most frequent forms, so they count as damage. That would raise the scores for Polish, Czech, Slovak, Serbian, Russian, Finnish and Lithuanian. This explanation is not yet scan-validated. The [15 October #329 lexical screening](data/issue-329/README.md) preserves 20 original-audit pages each for Czech, Serbian, Russian and Croatian controls, and every flagged occurrence. It finds candidate OCR substitutions as well as valid words/abbreviations, but leaves most flags unresolved; it does not establish true-error precision or quantify inflection bias. Slovenian (0.077) and Croatian (0.087) are inflected too and score low, so inflection can't be the whole story. Compare these languages with themselves over time, not with English.
 
 **Catalog language and page language.** Chronicling America catalogs languages per title, so every page of a title gets the same languages. On the sample:
 
@@ -267,6 +267,52 @@ Three titles, 26,353 pages, in Astoria, Ore., New York Mills, Minn., and Ironwoo
 
 **Russian.** Five titles, 11,930 pages, four in Chicago and one in New York. All 1,067 sampled pages of titles that list Russian first are Russian. The 1,161 Russian pages have median damage 0.240, with 99.9% damaged and 41.2% badly damaged (0.254 in the 1920s, with 52% badly damaged, and 0.232 in the 1930s). `Америка` finds 1,702 pages; the Latin `Amerika` finds none.
 
+### Reproducible flag screening for #329 (15 October)
+
+A read-only follow-up selected 20 badly scored original-audit pages each for Czech,
+Serbian and Russian (`damage_rate > 0.25`) and 20 Croatian controls from all detected
+scored Croatian pages, using fixed-seed SHA-256 ranking. All 80 stored texts
+reproduce their original rounded scores. The [manifest, annotated occurrences,
+methods and human handoff](data/issue-329/README.md) preserve the 7,631 flags.
+
+**These are provisional agent lexical labels, not a completed scan-based hand
+audit.** Likely-error types were screened in concordances; valid-word decisions
+are occurrence-specific. Most flags remain unresolved, often apparent line-break
+fragments. No language's true-error precision has been established.
+
+| Language | Pages | Flagged occurrences | Likely OCR errors | Valid / false flags | Unresolved | Precision on classified subset only |
+|---|---:|---:|---:|---:|---:|---:|
+| Czech | 20 | 2,350 | 479 | 133 | 1,738 | 78.3% |
+| Serbian | 20 | 2,863 | 1,332 | 69 | 1,462 | 95.1% |
+| Russian | 20 | 1,475 | 86 | 81 | 1,308 | 51.5% |
+| Croatian control | 20 | 943 | 64 | 28 | 851 | 69.6% |
+
+The last column is `likely / (likely + valid)`, **not** an estimate for all flags
+or a language ranking. Even assuming those provisional labels are right, treating
+all unresolved flags first as valid and then as errors gives very broad ranges:
+Czech 20.4–94.3%, Serbian 46.5–97.6%, Russian 5.8–94.5%, Croatian 6.8–97.0%.
+Those are conditional bounds, not confidence intervals or scan-verified results.
+
+False flags include Czech `ul.`/`taj.`/`pí.` and address `Ave.`, Serbian address
+abbreviations `онт.`/`кан.`, Croatian `Karlo`, `se kosi`, dialectal `kak` and
+archaic `nu`, and Russian `дол.`, `Дж.`, `Жак` and `сего`. Serbian repeatedly
+has forms such as `јс` near `је`, `сс` near `се` and `којн` near `који`, consistent
+with character recognition errors rather than inflection alone. Apparent fragments
+like `manžel ka`, `mo že` and `вре мя` require scan checks to separate lost hyphens,
+segmentation and valid text; they must not simply be called bad inflections.
+
+The comparison is confounded by title/date/script/layout: 19 Russian pages are
+from one title, Serbian has only one title, and the Croatian controls are mostly
+later pages. **All four languages need fluent-reader scan verification, especially
+Serbian and Russian**, for which the agent's contextual reading confidence is low.
+Only three representative whole-page derivatives were viewed; Croatian image/ALTO
+requests timed out. This does not amount to checking all flags against scans.
+
+For **#296 targeting**, preserve a measured Serbian/Czech/Russian pilot and compare
+scan-based transcription errors before scaling. Do not change language priorities,
+calibrate replacement gates, or “correct” the published damage rates using these
+subset ratios. **#329 remains open** for the human check and full adjudication.
+
 ## Lithuanian, Hungarian and Romanian
 
 **Lithuanian.** Four titles, 20,554 pages, in Chicago and Cleveland. In titles that list Lithuanian first, 99.3% of sampled pages are Lithuanian. The 2,074 Lithuanian pages (839 of them in titles that list English first) have median damage 0.173, with 95% damaged and 7.8% badly damaged: 0.174 in the 1910s, 0.194 in the 1920s and 0.145 in the 1940s. `geležinkelis` finds 302 pages.
@@ -366,7 +412,7 @@ For all five the status is unknown. The next step is a look at a few pages of ea
 # Priorities
 
 1. **German Fraktur pilot**, with Danish, Finnish and Lithuanian pages in the sample (see Fraktur). It covers the most pages: about 580,000 German pages from the 1850s to the 1910s.
-2. **Hand check of Czech, Serbian, Russian and Polish**, about 20 pages each, counting real OCR errors against the words the audit flags, to separate real damage from the metric's inflection effect. Finnish, Lithuanian, Slovak and Yiddish could be added at little cost. For Serbian, compare with Croatian, which uses the same word list and scores low.
+2. **Hand check of Czech, Serbian, Russian and Polish**, about 20 pages each, counting real OCR errors against the words the audit flags, to separate real damage from the metric's inflection effect. Finnish, Lithuanian, Slovak and Yiddish could be added at little cost. For Serbian, compare with Croatian, which uses the same word list and scores low. The #329 sample and flagged occurrences for Czech/Serbian/Russian/Croatian are now [prepared](data/issue-329/README.md); fluent-reader scan adjudication remains outstanding, and Polish is outside that sample.
 3. **The Hebrew pages:** read the five sampled pages and, if they are Yiddish, score them with the Yiddish list.
 4. **Page-level language** where it differs from the title's first language: about 3% of pages, in another language or mixed. In single-language titles the audit found almost no pages (0.03%) in another language. Languages without a word list keep their title language.
 5. **Undetermined pages** in the Swedish, Hungarian, Croatian and Romanian titles: find out why so many of their pages can't be placed (19% to 44% by language, 83% in *America*).
