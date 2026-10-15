@@ -252,6 +252,10 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_OCR_USER_DAILY_MAX": {
+      "x-usnm-visibility": "public",
+      "type": "integer"
+    },
     "USNM_OCR_USERS": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. Entra principals given access to Document Intelligence.",

@@ -3,13 +3,16 @@
 //! stores, a directory queue, and in-memory pipeline state.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use usnm_core::ids::PageKey;
 use usnm_ocr_contract::message::{Cause, DeadLetter, OcrMessage, Reason};
 use usnm_overlay::OverlayRow;
 use usnm_state::docs::MemoryDocs;
 use usnm_state::state::{Curated, RunBatch, State};
+use usnm_store::queue::Received;
 use usnm_store::queue::{LocalQueue, Queue, BULK, DEADLETTER, PRIORITY};
 use usnm_store::ObjectStore;
 
@@ -66,6 +69,34 @@ struct Fx {
     out: Arc<dyn ObjectStore>,
     requests: Arc<dyn ObjectStore>,
     queue: Arc<dyn Queue>,
+}
+
+#[derive(Debug)]
+struct FailFirstQueue {
+    inner: Arc<dyn Queue>,
+    failed: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Queue for FailFirstQueue {
+    async fn receive(&self, queue: &str, visibility: Duration) -> anyhow::Result<Option<Received>> {
+        self.inner.receive(queue, visibility).await
+    }
+
+    async fn delete(&self, msg: &Received) -> anyhow::Result<()> {
+        self.inner.delete(msg).await
+    }
+
+    async fn send(&self, queue: &str, text: &str) -> anyhow::Result<()> {
+        if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("injected first-send failure");
+        }
+        self.inner.send(queue, text).await
+    }
+
+    async fn approximate_count(&self, queue: &str) -> anyhow::Result<u64> {
+        self.inner.approximate_count(queue).await
+    }
 }
 
 fn open(dir: &std::path::Path, sub: &str) -> Arc<dyn ObjectStore> {
@@ -175,6 +206,7 @@ fn queued(doc_id: &str, batch: &str, reason: &str) -> Queued {
         language: "deu".into(),
         plan: "test".into(),
         attempt: 1,
+        request_day: None,
         queued_at: Utc::now() - chrono::Duration::hours(1),
     }
 }
@@ -1011,6 +1043,11 @@ async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_delete_the_day() 
         .unwrap();
     assert_eq!(status.last_run.user_requests_queued, 2);
     assert!(!fx.requests.exists("days/2026-10-14.jsonl").await.unwrap());
+    assert!(fx
+        .requests
+        .exists("completed/2026-10-14.json")
+        .await
+        .unwrap());
     let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
     assert_eq!(ledger.user_requests_for_day(request_day), 2);
     for expected in [key(1), key(2)] {
@@ -1025,6 +1062,9 @@ async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_delete_the_day() 
         assert_eq!(message.reason, Reason::User);
         assert!(message.score.is_some_and(|score| score >= 0.1));
         assert_eq!(message.queued_at, "2026-10-14T00:00:00Z");
+        let queued = ledger.queued.get(&expected.doc_id()).unwrap();
+        assert_eq!(queued.request_day, Some(request_day));
+        assert!(queued.queued_at > request_day.and_hms_opt(0, 0, 0).unwrap().and_utc());
     }
     assert!(fx
         .queue
@@ -1032,4 +1072,96 @@ async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_delete_the_day() 
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn failed_request_sends_keep_the_day_for_unsent_retry_and_charge_only_sent_pages() {
+    let fx = fixture(true).await;
+    let request_day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    let mut body = Vec::new();
+    for doc_id in [key(1).doc_id(), key(2).doc_id(), key(3).doc_id()] {
+        serde_json::to_writer(&mut body, &serde_json::json!({"v": 1, "doc_id": doc_id})).unwrap();
+        body.push(b'\n');
+    }
+    fx.requests
+        .put_new("days/2026-10-14.jsonl", body, "application/x-ndjson")
+        .await
+        .unwrap();
+    let flaky: Arc<dyn Queue> = Arc::new(FailFirstQueue {
+        inner: Arc::clone(&fx.queue),
+        failed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let stores = Stores {
+        queue: Arc::clone(&flaky),
+        ..fx.stores.clone()
+    };
+    let opts = Options {
+        user_daily_max: 3,
+        ..Options::default()
+    };
+
+    let first = sync::run(&fx.state, "test", &stores, &opts).await;
+    assert!(first.is_err());
+    assert!(fx.requests.exists("days/2026-10-14.jsonl").await.unwrap());
+    assert!(!fx
+        .requests
+        .exists("completed/2026-10-14.json")
+        .await
+        .unwrap());
+    let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(ledger.user_requests_for_day(request_day), 1);
+
+    let second = sync::run(&fx.state, "test", &stores, &opts).await.unwrap();
+    assert_eq!(second.last_run.user_requests_queued, 2);
+    assert!(!fx.requests.exists("days/2026-10-14.jsonl").await.unwrap());
+    assert!(fx
+        .requests
+        .exists("completed/2026-10-14.json")
+        .await
+        .unwrap());
+    let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(ledger.user_requests_for_day(request_day), 3);
+    assert_eq!(
+        fx.queue.approximate_count(PRIORITY).await.unwrap(),
+        2,
+        "the ambiguous first send remains charged but is not duplicated"
+    );
+}
+
+#[tokio::test]
+async fn completed_request_days_are_deleted_without_requeueing() {
+    let fx = fixture(true).await;
+    let day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    let body = serde_json::to_vec(&serde_json::json!({
+        "v": 1,
+        "doc_id": key(1).doc_id()
+    }))
+    .unwrap();
+    fx.requests
+        .put_new("days/2026-10-14.jsonl", body, "application/x-ndjson")
+        .await
+        .unwrap();
+    fx.requests
+        .put_new(
+            "completed/2026-10-14.json",
+            br#"{"v":1}"#.to_vec(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+
+    fx.sync().await;
+    assert!(!fx.requests.exists("days/2026-10-14.jsonl").await.unwrap());
+    assert_eq!(
+        fx.queue.approximate_count(PRIORITY).await.unwrap(),
+        0,
+        "the durable marker prevents a consumed day from replaying"
+    );
+    assert_eq!(
+        ledger::load(fx.stores.curated.as_ref())
+            .await
+            .unwrap()
+            .user_requests_for_day(day),
+        0
+    );
 }

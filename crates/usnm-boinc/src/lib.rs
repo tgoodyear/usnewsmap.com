@@ -198,6 +198,7 @@ impl Record {
             language: self.job.message.language.clone(),
             plan: self.plan.clone(),
             attempt: 1,
+            request_day: None,
             queued_at: DateTime::parse_from_rfc3339(&self.job.message.queued_at)?
                 .with_timezone(&Utc),
         })

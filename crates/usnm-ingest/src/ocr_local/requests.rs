@@ -101,6 +101,12 @@ pub(super) async fn process(
         day: Some(day),
         ..RequestReport::default()
     };
+    let completed = format!("completed/{day}.json");
+    if requests.exists(&completed).await? {
+        lease.check()?;
+        report.deleted = requests.delete_if_match(&info.path, &info.etag).await?;
+        return Ok(report);
+    }
     let ledger = ledger::load(curated).await?;
     let already_queued = ledger.user_requests_for_day(day);
     let remaining = daily_max.saturating_sub(already_queued);
@@ -131,6 +137,9 @@ pub(super) async fn process(
     }
 
     lease.check()?;
+    requests
+        .put_new(&completed, br#"{"v":1}"#.to_vec(), "application/json")
+        .await?;
     report.deleted = requests.delete_if_match(&info.path, &info.etag).await?;
     tracing::info!(
         day = %day,

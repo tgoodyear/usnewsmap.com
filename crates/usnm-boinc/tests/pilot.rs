@@ -146,6 +146,7 @@ impl Fixture {
             reference,
             out: store(root, "out"),
             quarantine: store(root, "quarantine"),
+            requests: None,
             queue: Arc::new(LocalQueue::new(root.join("queue"))),
         };
         let options = ExportOptions {

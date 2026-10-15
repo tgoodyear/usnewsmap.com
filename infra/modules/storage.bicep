@@ -195,7 +195,8 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
         }
         {
           // Closed day files are deleted after ocr-sync consumes them. Keep
-          // only a short recovery window for their old versions.
+          // only a short recovery window for their old versions. Completion
+          // markers are durable and have no lifecycle deletion rule.
           name: 'prune-ocr-request-day-versions'
           enabled: true
           type: 'Lifecycle'

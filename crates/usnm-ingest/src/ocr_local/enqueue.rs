@@ -277,7 +277,8 @@ async fn enqueue_locked(
 
 #[derive(Debug, Clone, Copy, Default)]
 struct QueuePolicy {
-    queued_at: Option<DateTime<Utc>>,
+    message_queued_at: Option<DateTime<Utc>>,
+    request_day: Option<NaiveDate>,
     min_damage: Option<f64>,
     max_queued: Option<usize>,
     private_pages: bool,
@@ -309,7 +310,8 @@ pub(super) async fn enqueue_hit_requests(
         &opts,
         Some(lease),
         QueuePolicy {
-            queued_at: requests.day.and_hms_opt(0, 0, 0).map(|t| t.and_utc()),
+            message_queued_at: requests.day.and_hms_opt(0, 0, 0).map(|t| t.and_utc()),
+            request_day: Some(requests.day),
             min_damage: Some(0.1),
             max_queued: Some(requests.max_queued),
             private_pages: true,
@@ -356,7 +358,7 @@ async fn enqueue_with_policy(
     };
     let ledger = ledger::load(curated).await?;
     let now = Utc::now();
-    let queued_at = policy.queued_at.unwrap_or(now);
+    let message_queued_at = policy.message_queued_at.unwrap_or(now);
     let run = run_id(now);
     let mut report = QueueReport::default();
     let mut out = Vec::new();
@@ -415,7 +417,7 @@ async fn enqueue_with_policy(
             language: language.clone(),
             reason: opts.reason,
             score: found.damage_rate.filter(|s| (0.0..=1.0).contains(s)),
-            queued_at: queued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            queued_at: message_queued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         };
         if let Err(e) = msg.validate() {
             skip_page(&mut report, e.kind(), doc_id, policy.private_pages);
@@ -436,7 +438,8 @@ async fn enqueue_with_policy(
                 language,
                 plan: opts.plan.clone(),
                 attempt,
-                queued_at,
+                request_day: policy.request_day,
+                queued_at: now,
             },
             msg,
         ));
@@ -624,6 +627,7 @@ async fn requeue_locked(
                 language: msg.language.clone(),
                 plan: opts.plan.clone(),
                 attempt,
+                request_day: None,
                 queued_at: now,
             },
             msg,

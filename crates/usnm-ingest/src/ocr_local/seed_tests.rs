@@ -434,6 +434,7 @@ fn mine(doc_id: &str, attempt: u32, at: DateTime<Utc>) -> Queued {
         language: "deu".into(),
         plan: "bulk-1".into(),
         attempt,
+        request_day: None,
         queued_at: at,
     }
 }

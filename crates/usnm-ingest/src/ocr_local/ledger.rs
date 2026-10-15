@@ -50,6 +50,8 @@ pub struct Queued {
     pub plan: String,
     /// 1 for the first time the page is queued under this plan.
     pub attempt: u32,
+    /// The UTC request day, for the daily cap. Queue ordering uses `queued_at`.
+    pub request_day: Option<chrono::NaiveDate>,
     pub queued_at: DateTime<Utc>,
 }
 
@@ -86,6 +88,7 @@ fn queued_schema() -> SchemaRef {
         s("language"),
         s("plan"),
         Field::new("attempt", DataType::Int32, false),
+        Field::new("request_day", DataType::Utf8, true),
         Field::new(
             "queued_at",
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
@@ -130,6 +133,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
     let mut language = StringBuilder::new();
     let mut plan = StringBuilder::new();
     let mut attempt = Int32Builder::new();
+    let mut request_day = StringBuilder::new();
     let mut at = TimestampMicrosecondBuilder::new().with_timezone("UTC");
     for r in rows {
         doc_id.append_value(&r.doc_id);
@@ -139,6 +143,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
         language.append_value(&r.language);
         plan.append_value(&r.plan);
         attempt.append_value(i32::try_from(r.attempt).unwrap_or(i32::MAX));
+        request_day.append_option(r.request_day.map(|d| d.format("%Y-%m-%d").to_string()));
         at.append_value(r.queued_at.timestamp_micros());
     }
     write(
@@ -151,6 +156,7 @@ pub fn encode_queued(rows: &[Queued]) -> anyhow::Result<Vec<u8>> {
             Arc::new(language.finish()),
             Arc::new(plan.finish()),
             Arc::new(attempt.finish()),
+            Arc::new(request_day.finish()),
             Arc::new(at.finish()),
         ],
     )
@@ -209,8 +215,24 @@ pub fn decode_queued(bytes: Bytes) -> anyhow::Result<Vec<Queued>> {
         let language = col!(b, "language", StringArray);
         let plan = col!(b, "plan", StringArray);
         let attempt = col!(b, "attempt", Int32Array);
+        let request_day = b
+            .column_by_name("request_day")
+            .map(|column| {
+                column
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .context("column `request_day` has an unexpected type")
+            })
+            .transpose()?;
         let at = col!(b, "queued_at", TimestampMicrosecondArray);
         for i in 0..b.num_rows() {
+            let request_day = request_day
+                .filter(|days| !days.is_null(i))
+                .map(|days| {
+                    chrono::NaiveDate::parse_from_str(days.value(i), "%Y-%m-%d")
+                        .with_context(|| format!("invalid request day `{}`", days.value(i)))
+                })
+                .transpose()?;
             out.push(Queued {
                 doc_id: doc_id.value(i).to_owned(),
                 batch: batch_name.value(i).to_owned(),
@@ -219,6 +241,7 @@ pub fn decode_queued(bytes: Bytes) -> anyhow::Result<Vec<Queued>> {
                 language: language.value(i).to_owned(),
                 plan: plan.value(i).to_owned(),
                 attempt: u32::try_from(attempt.value(i)).unwrap_or(0),
+                request_day,
                 queued_at: from_micros(at.value(i)),
             });
         }
@@ -271,16 +294,23 @@ pub struct Ledger {
     /// newer outcome.
     pub imported_pages: HashSet<String>,
     /// Distinct page ids queued by hit requests on each UTC request day.
-    pub user_requests_by_day: HashMap<chrono::NaiveDate, HashSet<String>>,
+    pub user_requests_by_day: HashMap<chrono::NaiveDate, HashSet<(String, String)>>,
+    /// Request queue attempts explicitly known not to have been sent.
+    pub not_sent_attempts: HashSet<(String, String)>,
 }
 
 impl Ledger {
     pub fn add_queued(&mut self, q: Queued) {
+        self.add_queued_from_run(q, "");
+    }
+
+    fn add_queued_from_run(&mut self, q: Queued, run: &str) {
         if q.plan == "hit-results" {
+            let day = q.request_day.unwrap_or_else(|| q.queued_at.date_naive());
             self.user_requests_by_day
-                .entry(q.queued_at.date_naive())
+                .entry(day)
                 .or_default()
-                .insert(q.doc_id.clone());
+                .insert((q.doc_id.clone(), run.to_owned()));
         }
         let n = self
             .attempts
@@ -296,6 +326,10 @@ impl Ledger {
     }
 
     pub fn add_outcome(&mut self, o: Outcome) {
+        if o.outcome == NOT_SENT {
+            self.not_sent_attempts
+                .insert((o.doc_id.clone(), o.run.clone()));
+        }
         if o.outcome == IMPORTED {
             self.imported_pages.insert(o.doc_id.clone());
         }
@@ -340,7 +374,14 @@ impl Ledger {
 
     /// Distinct user-requested pages already charged to this UTC day's cap.
     pub fn user_requests_for_day(&self, day: chrono::NaiveDate) -> usize {
-        self.user_requests_by_day.get(&day).map_or(0, HashSet::len)
+        self.user_requests_by_day.get(&day).map_or(0, |attempts| {
+            attempts
+                .iter()
+                .filter(|attempt| !self.not_sent_attempts.contains(*attempt))
+                .map(|(doc_id, _)| doc_id)
+                .collect::<HashSet<_>>()
+                .len()
+        })
     }
 
     /// Pages outstanding now.
@@ -363,8 +404,13 @@ pub async fn load(curated: &dyn ObjectStore) -> anyhow::Result<Ledger> {
             .get(&path)
             .await?
             .with_context(|| format!("{path} vanished"))?;
+        let run = path
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.strip_suffix(".parquet"))
+            .unwrap_or_default();
         for q in decode_queued(Bytes::from(bytes)).with_context(|| format!("reading {path}"))? {
-            ledger.add_queued(q);
+            ledger.add_queued_from_run(q, run);
         }
     }
     for path in curated.list(&format!("{ROOT}/outcomes")).await? {

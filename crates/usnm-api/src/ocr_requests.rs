@@ -27,6 +27,7 @@ const CLOSE_CHECK: Duration = Duration::from_secs(3600);
 const CONTENT_TYPE: &str = "application/x-ndjson";
 const MAX_BATCH: usize = 2_000;
 const MAX_PENDING: usize = 20_000;
+const MAX_DAY_REQUESTS: usize = 10_000;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -173,8 +174,11 @@ impl Writer {
                 _ = self.stopped.changed() => break,
                 batch = self.rx.recv() => match batch {
                     Some((day, ids)) => {
+                        let retained = self.pending.len()
+                            + self.batches.iter().map(|batch| batch.requests).sum::<usize>();
+                        let capacity = MAX_PENDING.saturating_sub(retained);
                         for id in ids {
-                            if self.pending.len() < MAX_PENDING {
+                            if self.pending.len() < capacity {
                                 self.pending.push((day, id));
                             } else {
                                 self.metrics.requests("dropped", 1);
@@ -191,8 +195,15 @@ impl Writer {
             }
         }
         while let Ok((day, ids)) = self.rx.try_recv() {
+            let retained = self.pending.len()
+                + self
+                    .batches
+                    .iter()
+                    .map(|batch| batch.requests)
+                    .sum::<usize>();
+            let capacity = MAX_PENDING.saturating_sub(retained);
             for id in ids {
-                if self.pending.len() < MAX_PENDING {
+                if self.pending.len() < capacity {
                     self.pending.push((day, id));
                 } else {
                     self.metrics.requests("dropped", 1);
@@ -203,7 +214,7 @@ impl Writer {
     }
 
     async fn flush(&mut self) {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && self.batches.is_empty() {
             return;
         }
         let mut by_day: std::collections::BTreeMap<NaiveDate, Vec<String>> =
@@ -261,12 +272,6 @@ impl Writer {
                 }
             }
         }
-        let mut total: usize = kept.iter().map(|b| b.requests).sum();
-        while total > MAX_PENDING {
-            let oldest = kept.remove(0);
-            total -= oldest.requests;
-            self.metrics.requests("lost", oldest.requests);
-        }
         self.batches = kept;
     }
 
@@ -314,6 +319,10 @@ pub fn day_path(day: NaiveDate) -> String {
     format!("days/{day}.jsonl")
 }
 
+pub fn completed_path(day: NaiveDate) -> String {
+    format!("completed/{day}.json")
+}
+
 fn shuffle<T>(items: &mut [T]) {
     let keys = RandomState::new();
     for i in (1..items.len()).rev() {
@@ -345,27 +354,39 @@ pub async fn close_day(
     store: &dyn ObjectStore,
     day: NaiveDate,
 ) -> Result<(), usnm_store::StoreError> {
-    if store.exists(&day_path(day)).await? {
+    if store.exists(&completed_path(day)).await? || store.exists(&day_path(day)).await? {
         return Ok(());
     }
-    let mut staged = Vec::new();
-    for path in store.list(&staging_dir(day)).await? {
-        if let Some(batch) = store.get(&path).await? {
-            staged.push(batch);
+    let paths = store.list(&staging_dir(day)).await?;
+    let keys = RandomState::new();
+    let mut lines = Vec::with_capacity(MAX_DAY_REQUESTS);
+    let mut seen = 0u64;
+    for path in paths {
+        let Some(batch) = store.get(&path).await? else {
+            continue;
+        };
+        for line in batch
+            .split(|c| *c == b'\n')
+            .filter(|line| !line.trim_ascii().is_empty())
+        {
+            seen = seen.saturating_add(1);
+            if lines.len() < MAX_DAY_REQUESTS {
+                lines.push(line.to_vec());
+            } else {
+                let replace = keys.hash_one(seen) % seen;
+                if replace < MAX_DAY_REQUESTS as u64 {
+                    lines[replace as usize] = line.to_vec();
+                }
+            }
         }
     }
-    let mut lines: Vec<&[u8]> = staged
-        .iter()
-        .flat_map(|batch| batch.split(|c| *c == b'\n'))
-        .filter(|line| !line.trim_ascii().is_empty())
-        .collect();
     if lines.is_empty() {
         return Ok(());
     }
     shuffle(&mut lines);
-    let mut body = Vec::with_capacity(staged.iter().map(Vec::len).sum::<usize>() + 1);
+    let mut body = Vec::new();
     for line in lines {
-        body.extend_from_slice(line);
+        body.extend_from_slice(&line);
         body.push(b'\n');
     }
     store.put_new(&day_path(day), body, CONTENT_TYPE).await?;
@@ -375,7 +396,47 @@ pub async fn close_day(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use usnm_store::LocalStore;
+    use usnm_store::StoreError;
+
+    #[derive(Debug)]
+    struct FailOnceStore {
+        inner: LocalStore,
+        fail: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl ObjectStore for FailOnceStore {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            self.inner.get(path).await
+        }
+
+        async fn put_new(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> Result<bool, StoreError> {
+            if self.fail.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return Err(StoreError::Io("injected write failure".into()));
+            }
+            self.inner.put_new(path, body, content_type).await
+        }
+
+        async fn put(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            content_type: &str,
+        ) -> Result<(), StoreError> {
+            self.inner.put(path, body, content_type).await
+        }
+
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+            self.inner.list(prefix).await
+        }
+    }
 
     #[test]
     fn request_record_has_only_its_version_and_page_id() {
@@ -430,6 +491,113 @@ mod tests {
                 && (r.doc_id == "sn83045462_1890-05-03_ed-1_seq-7"
                     || r.doc_id == "sn83045462_1890-05-04_ed-1_seq-8")
         }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn close_day_publishes_no_more_than_the_consumer_limit() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("test-ocr-requests-limit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = LocalStore::new(&root);
+        let day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        let request =
+            serde_json::to_vec(&Request::new("sn83045462_1890-05-03_ed-1_seq-7".into())).unwrap();
+        let mut body = Vec::new();
+        for _ in 0..=MAX_DAY_REQUESTS {
+            body.extend_from_slice(&request);
+            body.push(b'\n');
+        }
+        store
+            .put_new(&format!("{}/a.jsonl", staging_dir(day)), body, CONTENT_TYPE)
+            .await
+            .unwrap();
+
+        close_day(&store, day).await.unwrap();
+        let closed = store.get(&day_path(day)).await.unwrap().unwrap();
+        assert_eq!(
+            closed.iter().filter(|byte| **byte == b'\n').count(),
+            MAX_DAY_REQUESTS
+        );
+        assert!(closed.len() < MAX_DAY_REQUESTS * 100);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_completed_day_is_not_republished_from_staging() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!(
+                "test-ocr-requests-completed-{}",
+                std::process::id()
+            ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = LocalStore::new(&root);
+        let day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        store
+            .put_new(
+                &completed_path(day),
+                b"{\"v\":1}".to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        store
+            .put_new(
+                &format!("{}/a.jsonl", staging_dir(day)),
+                br#"{"v":1,"doc_id":"sn83045462_1890-05-03_ed-1_seq-7"}"#.to_vec(),
+                CONTENT_TYPE,
+            )
+            .await
+            .unwrap();
+
+        close_day(&store, day).await.unwrap();
+        assert!(!store.exists(&day_path(day)).await.unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn failed_staging_batches_are_retried_without_new_ids() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("test-ocr-requests-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Arc::new(FailOnceStore {
+            inner: LocalStore::new(&root),
+            fail: std::sync::atomic::AtomicBool::new(true),
+        });
+        let day = Utc::now().date_naive();
+        let (tx, rx) = mpsc::channel(1);
+        drop(tx);
+        let (_, stopped) = watch::channel(false);
+        let mut writer = Writer {
+            store: store.clone(),
+            rx,
+            stopped,
+            pending: vec![(day, "sn83045462_1890-05-03_ed-1_seq-7".into())],
+            batches: Vec::new(),
+            closed: BTreeSet::new(),
+            metrics: Metrics::new(&opentelemetry::global::meter("test")),
+        };
+
+        writer.flush().await;
+        assert!(writer.pending.is_empty());
+        assert_eq!(writer.batches.len(), 1);
+        writer.flush().await;
+        assert!(writer.batches.is_empty());
+        let staged = store.list(&staging_dir(day)).await.unwrap();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(
+            store
+                .get(&staged[0])
+                .await
+                .unwrap()
+                .unwrap()
+                .split(|b| *b == b'\n')
+                .count(),
+            2
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }
