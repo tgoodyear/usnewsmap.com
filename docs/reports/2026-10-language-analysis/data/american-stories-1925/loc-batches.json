@@ -1,0 +1,3327 @@
+[
+  {
+    "archive_created": "2021-12-30T13:20:48+00:00",
+    "archive_name": "ak_arcticfox_ver02.tar.bz2",
+    "batch": "ak_arcticfox_ver02",
+    "batch_file": "ak_arcticfox_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:ak:batch_ak_arcticfox_ver02",
+    "ingested": "2021-10-18T20:32:08-04:00",
+    "issue_count": 2729,
+    "lccns": [
+      "sn94050093",
+      "sn93059165",
+      "sn94050095",
+      "sn93049269"
+    ],
+    "page_count": 11793,
+    "sha1": "5cf5a7c370d628b198c45b7d6851cc8bd5ecb7dc",
+    "sha256": "f8e17fcaae66fb20bc7062b12297ffd7ece0d53fea0eb738c54500da7ae7d7ec",
+    "size": 671763446,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ak_arcticfox_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-05-25T12:20:53+00:00",
+    "archive_name": "ak_dolphin_ver01.tar.bz2",
+    "batch": "ak_dolphin_ver01",
+    "batch_file": "ak_dolphin_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ak:batch_ak_dolphin_ver01",
+    "ingested": "2022-04-05T18:18:20-04:00",
+    "issue_count": 2227,
+    "lccns": [
+      "sn96094905",
+      "sn94050047",
+      "sn82015295",
+      "sn84006943",
+      "sn84020665",
+      "sn94050045",
+      "sn97060034",
+      "sn96060047",
+      "sn94050046",
+      "sn95060040"
+    ],
+    "page_count": 10153,
+    "sha1": "07e9adaac30a25fd627a312b7c336906fd8091f3",
+    "sha256": "d07e532f7c08a343c6b683288779278915d2cf1ef2be9e7131dffff68e5cc36d",
+    "size": 370433451,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ak_dolphin_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-07-21T13:20:20+00:00",
+    "archive_name": "ak_flatheadsole_ver01.tar.bz2",
+    "batch": "ak_flatheadsole_ver01",
+    "batch_file": "ak_flatheadsole_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ak:batch_ak_flatheadsole_ver01",
+    "ingested": "2021-05-11T20:09:27-04:00",
+    "issue_count": 926,
+    "lccns": [
+      "sn95063172",
+      "sn84020657",
+      "sn94050115",
+      "sn97060036"
+    ],
+    "page_count": 4606,
+    "sha1": "e13af94d66228bf7de2f1b636eff50df02cb5267",
+    "sha256": "cc03dff6ad99d3fffd22042d7e0be90b2510daaf41c2186eb6b9a891133bcb22",
+    "size": 240080684,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ak_flatheadsole_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-09-01T15:22:27+00:00",
+    "archive_name": "ak_goat_ver01.tar.bz2",
+    "batch": "ak_goat_ver01",
+    "batch_file": "ak_goat_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ak:batch_ak_goat_ver01",
+    "ingested": "2022-07-15T20:59:46-04:00",
+    "issue_count": 1717,
+    "lccns": [
+      "sn96060051",
+      "sn96060052",
+      "sn84020665",
+      "sn94050074",
+      "sn84006943",
+      "sn96060049",
+      "sn97060085",
+      "sn94050073",
+      "sn94050072",
+      "sn98060261"
+    ],
+    "page_count": 8756,
+    "sha1": "1e0cd7e3103fbed20dc17e4c896bc394425af0b2",
+    "sha256": "b75ba00bae42e8a78560fa0f9c562b30f725497bf47dc715f43370d325e9d343",
+    "size": 365648808,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ak_goat_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-01-15T14:25:03+00:00",
+    "archive_name": "ak_goshawk_ver01.tar.bz2",
+    "batch": "ak_goshawk_ver01",
+    "batch_file": "ak_goshawk_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ak:batch_ak_goshawk_ver01",
+    "ingested": "2020-12-08T23:00:56-05:00",
+    "issue_count": 1230,
+    "lccns": [
+      "sn84020657",
+      "sn83045499"
+    ],
+    "page_count": 9846,
+    "sha1": "fdfd91334f13ee9153760d070701f2ca6e4fc8ec",
+    "sha256": "ea5302a71a19708edffa994eed2450477170ffa8182ffd93208fd0e26733edd8",
+    "size": 678912539,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ak_goshawk_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-02-03T15:33:09+00:00",
+    "archive_name": "ak_halibut_ver01.tar.bz2",
+    "batch": "ak_halibut_ver01",
+    "batch_file": "ak_halibut_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ak:batch_ak_halibut_ver01",
+    "ingested": "2021-10-21T15:39:41-04:00",
+    "issue_count": 2049,
+    "lccns": [
+      "sn83045499",
+      "sn94050061",
+      "sn87062013",
+      "sn83045298",
+      "sn94050056",
+      "sn84020662",
+      "2020271951",
+      "2020271952"
+    ],
+    "page_count": 11982,
+    "sha1": "2ae1b85043bf3708bbdd9ec214191b72f2566ce9",
+    "sha256": "73c035ec7be6d0bc9afd33ee9aa75d89d8bc00446182ba87b214d7037b957752",
+    "size": 691437662,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ak_halibut_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-07T22:26:59+00:00",
+    "archive_name": "ak_jaeger_ver01.tar.bz2",
+    "batch": "ak_jaeger_ver01",
+    "batch_file": "ak_jaeger_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ak:batch_ak_jaeger_ver01",
+    "ingested": "2021-11-21T14:01:54-05:00",
+    "issue_count": 1612,
+    "lccns": [
+      "sn87062169",
+      "sn84020662"
+    ],
+    "page_count": 10680,
+    "sha1": "18bac423d67ba4ef14bd2af6fa7d3a0d94eaed5d",
+    "sha256": "e2015e10458ccba46353c29018a35d34fb1b3f6d312f584d1517981749d76921",
+    "size": 450334080,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ak_jaeger_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-31T14:11:35+00:00",
+    "archive_name": "ak_killerwhale_ver01.tar.bz2",
+    "batch": "ak_killerwhale_ver01",
+    "batch_file": "ak_killerwhale_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ak:batch_ak_killerwhale_ver01",
+    "ingested": "2022-01-18T16:18:16-05:00",
+    "issue_count": 1467,
+    "lccns": [
+      "sn83045298",
+      "sn87062013",
+      "2019271005",
+      "sn93049282",
+      "sn95060047",
+      "sn87062012",
+      "sn94050110",
+      "sn95060010",
+      "sn87062169",
+      "sn96060035"
+    ],
+    "page_count": 12191,
+    "sha1": "db52a87b4fb2e901500b72f2de818844dfa5a6ba",
+    "sha256": "bc3eb6e6d46b07b7a25f6ceb8270a7097904037451b99cc90b7a28f484c89a98",
+    "size": 394520444,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ak_killerwhale_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T16:47:03.564939+00:00",
+    "archive_name": "arhi_aragonite_ver01.tar.bz2",
+    "batch": "arhi_aragonite_ver01",
+    "batch_file": "arhi_aragonite_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_aragonite_ver01",
+    "ingested": "2024-10-09T23:01:54-04:00",
+    "issue_count": 1499,
+    "lccns": [
+      "sn82014366",
+      "sn82014367",
+      "sn82014368",
+      "sn89051124"
+    ],
+    "page_count": 7642,
+    "sha256": "67edbaccdf938484f35eb4b681100f0298b53af1cc9881e8e9ba67421dab916d",
+    "size": 931798131,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_aragonite_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-09T22:35:14.073303+00:00",
+    "archive_name": "arhi_biotite_ver01.tar.bz2",
+    "batch": "arhi_biotite_ver01",
+    "batch_file": "arhi_biotite_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_biotite_ver01",
+    "ingested": "2024-08-15T18:34:32-04:00",
+    "issue_count": 894,
+    "lccns": [
+      "sn89051124",
+      "sn89051220"
+    ],
+    "page_count": 7948,
+    "sha256": "d8fb6a931750f09fb519e09606511f77dc97b12e780ccde6af1566e4f36c6313",
+    "size": 515460898,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_biotite_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T18:19:56.836180+00:00",
+    "archive_name": "arhi_chalcopyrite_ver01.tar.bz2",
+    "batch": "arhi_chalcopyrite_ver01",
+    "batch_file": "arhi_chalcopyrite_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_chalcopyrite_ver01",
+    "ingested": "2024-12-12T18:32:58-05:00",
+    "issue_count": 1426,
+    "lccns": [
+      "sn83003534",
+      "sn89051338",
+      "sn90050367",
+      "sn92050006"
+    ],
+    "page_count": 9982,
+    "sha256": "bd53ae609e64f43f52a958cdc348e6c22c66fc0e1639c4959e67065a4b8c7ef9",
+    "size": 648753456,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_chalcopyrite_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T18:23:51.957994+00:00",
+    "archive_name": "arhi_dioptase_ver02.tar.bz2",
+    "batch": "arhi_dioptase_ver02",
+    "batch_file": "arhi_dioptase_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_dioptase_ver02",
+    "ingested": "2025-01-16T18:43:26-05:00",
+    "issue_count": 1721,
+    "lccns": [
+      "sn89051338",
+      "sn90050367",
+      "sn92050145",
+      "sn93050618"
+    ],
+    "page_count": 10355,
+    "sha256": "e0a19d6fd785bae7fab6faf53e6c54c995d36dd4b55fd359e243561f7b03358c",
+    "size": 722206655,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_dioptase_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2023-06-05T19:03:38+00:00",
+    "archive_name": "arhi_galactic_ver01.tar.bz2",
+    "batch": "arhi_galactic_ver01",
+    "batch_file": "arhi_galactic_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_galactic_ver01",
+    "ingested": "2023-04-06T16:43:10-04:00",
+    "issue_count": 1866,
+    "lccns": [
+      "sn89051210",
+      "sn84022982",
+      "sn89051252"
+    ],
+    "page_count": 9929,
+    "sha1": "fe37ad0721db2d024f24d7b4a93c646012c18b20",
+    "sha256": "934188259f162ad3da60248c5e70dcd1cf1dd3d2c60f62be92ac35d535340f5d",
+    "size": 855682825,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_galactic_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T13:38:33.701749+00:00",
+    "archive_name": "arhi_galena_ver01.tar.bz2",
+    "batch": "arhi_galena_ver01",
+    "batch_file": "arhi_galena_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_galena_ver01",
+    "ingested": "2025-04-02T18:17:57-04:00",
+    "issue_count": 1566,
+    "lccns": [
+      "sn84025770",
+      "sn88051124",
+      "sn89051177",
+      "sn89051178",
+      "sn89051179",
+      "sn89051191",
+      "sn89051192",
+      "sn91050127",
+      "sn91050154",
+      "sn91050159",
+      "sn91050160",
+      "sn91050161",
+      "sn91050162",
+      "sn91050163",
+      "sn91050164",
+      "sn93050656"
+    ],
+    "page_count": 10053,
+    "sha256": "455d7a3410d858e34e6f415eb75a7b25829abd685fba4f2802e8aee8217b3838",
+    "size": 825956803,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_galena_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T15:42:22.017373+00:00",
+    "archive_name": "arhi_hauerite_ver01.tar.bz2",
+    "batch": "arhi_hauerite_ver01",
+    "batch_file": "arhi_hauerite_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_hauerite_ver01",
+    "ingested": "2025-06-12T07:52:03-04:00",
+    "issue_count": 1080,
+    "lccns": [
+      "sn88084083",
+      "sn89051393",
+      "sn91050062"
+    ],
+    "page_count": 9880,
+    "sha256": "92e9b492a1b0c793e63f936e3e46bede93a13dd5358efd32023ba6fc7ad549fd",
+    "size": 697756812,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_hauerite_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-07-21T00:06:58+00:00",
+    "archive_name": "arhi_hubble_ver01.tar.bz2",
+    "batch": "arhi_hubble_ver01",
+    "batch_file": "arhi_hubble_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_hubble_ver01",
+    "ingested": "2023-05-10T20:39:54-04:00",
+    "issue_count": 1736,
+    "lccns": [
+      "sn84022982",
+      "sn89051238"
+    ],
+    "page_count": 9570,
+    "sha1": "7c63bb2ada1862784247839c25f3bdb55963f7ef",
+    "sha256": "a61c97e4a0d95a383a89d464672ccd229c00257795c0c41da467ef5b73308e09",
+    "size": 832497583,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_hubble_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T14:53:33.816939+00:00",
+    "archive_name": "arhi_ilmenite_ver01.tar.bz2",
+    "batch": "arhi_ilmenite_ver01",
+    "batch_file": "arhi_ilmenite_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_ilmenite_ver01",
+    "ingested": "2025-05-28T10:48:11-04:00",
+    "issue_count": 1720,
+    "lccns": [
+      "sn82007021",
+      "sn82014748",
+      "sn82014887",
+      "sn82014888",
+      "sn82015027",
+      "sn82015489",
+      "sn84022985",
+      "sn84025771",
+      "sn87090576",
+      "sn88051033",
+      "sn89051015",
+      "sn89051281",
+      "sn91050062",
+      "sn91050109",
+      "sn92050135",
+      "sn93050523"
+    ],
+    "page_count": 7567,
+    "sha256": "57d37f8e0f91894e7248ddf5c0fcc5dce35a8d0d341e55ef795ab2e911505964",
+    "size": 540844922,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_ilmenite_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-07-21T19:01:51+00:00",
+    "archive_name": "arhi_interstellar_ver01.tar.bz2",
+    "batch": "arhi_interstellar_ver01",
+    "batch_file": "arhi_interstellar_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_interstellar_ver01",
+    "ingested": "2023-05-25T08:53:25-04:00",
+    "issue_count": 1517,
+    "lccns": [
+      "sn90050272",
+      "sn89051239",
+      "sn90050267",
+      "sn89051241",
+      "sn89051240",
+      "sn89051238"
+    ],
+    "page_count": 10080,
+    "sha1": "711f84649b6682ead3b5a475326146adfefad308",
+    "sha256": "e597e0aaa946944df5734dd4e6a5929d539293ada3099023e2785b147b5d005b",
+    "size": 668642865,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_interstellar_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T15:46:57.514408+00:00",
+    "archive_name": "arhi_jadeite_ver01.tar.bz2",
+    "batch": "arhi_jadeite_ver01",
+    "batch_file": "arhi_jadeite_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_jadeite_ver01",
+    "ingested": "2025-06-12T07:58:53-04:00",
+    "issue_count": 1572,
+    "lccns": [
+      "sn82014192",
+      "sn82014195",
+      "sn82014363",
+      "sn82014368",
+      "sn82014372",
+      "sn82014892",
+      "sn82015027",
+      "sn82015029",
+      "sn82015491",
+      "sn84002111",
+      "sn84009981",
+      "sn84021933",
+      "sn85032956",
+      "sn85032994",
+      "sn86090585",
+      "sn86090880",
+      "sn86090881",
+      "sn86090886",
+      "sn87062067",
+      "sn87062068",
+      "sn87070029",
+      "sn89051121",
+      "sn89051124",
+      "sn89051220",
+      "sn89051365",
+      "sn90050210",
+      "sn90050218",
+      "sn90050231",
+      "sn90050232",
+      "sn90050237",
+      "sn90050244",
+      "sn90050260",
+      "sn91050062",
+      "sn91050163",
+      "sn91050174",
+      "sn93050482",
+      "sn93050483",
+      "sn93050484",
+      "sn93050485"
+    ],
+    "page_count": 9120,
+    "sha256": "eca98adac02e240b9db3cad421757ec9a034208bf728e41d39da86e60e809995",
+    "size": 892175800,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_jadeite_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-10-12T02:11:00+00:00",
+    "archive_name": "arhi_jupiter_ver01.tar.bz2",
+    "batch": "arhi_jupiter_ver01",
+    "batch_file": "arhi_jupiter_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_jupiter_ver01",
+    "ingested": "2023-06-09T19:11:22-04:00",
+    "issue_count": 2392,
+    "lccns": [
+      "sn90050268",
+      "sn90050272",
+      "sn90050267"
+    ],
+    "page_count": 9772,
+    "sha1": "77bf27c704d9d26f5203e30544338764130f0249",
+    "sha256": "d8da6fcc9b0483ff41b096beafbc8552c7dd3fa80c13c57f3a283029ba59e14e",
+    "size": 716801249,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_jupiter_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-11-17T01:29:07+00:00",
+    "archive_name": "arhi_lunar_ver01.tar.bz2",
+    "batch": "arhi_lunar_ver01",
+    "batch_file": "arhi_lunar_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:arhi:batch_arhi_lunar_ver01",
+    "ingested": "2023-08-28T11:37:43-04:00",
+    "issue_count": 743,
+    "lccns": [
+      "sn90050268",
+      "sn90050272",
+      "sn90050273",
+      "sn89051273",
+      "sn93050450",
+      "2023218545"
+    ],
+    "page_count": 3093,
+    "sha1": "f946fbd7515761629d6ed0c2240f2e9c846cfb25",
+    "sha256": "ae8ff30eaefd0c2375e03fc93d59a7b3aa14ac039743875e94e7b84b48af8284",
+    "size": 167438369,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/arhi_lunar_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2024-02-29T21:40:34+00:00",
+    "archive_name": "au_hurston_ver01.tar.bz2",
+    "batch": "au_hurston_ver01",
+    "batch_file": "au_hurston_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:au:batch_au_hurston_ver01",
+    "ingested": "2024-02-16T13:39:08-05:00",
+    "issue_count": 608,
+    "lccns": [
+      "sn84020645"
+    ],
+    "page_count": 9754,
+    "sha1": "04ec820da7a1251f67875ec2eece08faebfb59d6",
+    "sha256": "fdf256a7249c90e22159eecab4672d91f4c8cad3adcac26ac118cc6477b8c3d1",
+    "size": 1057826402,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/au_hurston_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-08T19:06:35.135506+00:00",
+    "archive_name": "au_ikenberry_ver01.tar.bz2",
+    "batch": "au_ikenberry_ver01",
+    "batch_file": "au_ikenberry_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:au:batch_au_ikenberry_ver01",
+    "ingested": "2024-04-29T19:26:09-04:00",
+    "issue_count": 607,
+    "lccns": [
+      "sn84020645"
+    ],
+    "page_count": 10282,
+    "sha256": "40ec7019260f86d26b1cffa389d42669ac8c7fd2e9a851cad539d98f2624c526",
+    "size": 1071010782,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/au_ikenberry_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-08T19:36:08.663015+00:00",
+    "archive_name": "au_julian_ver01.tar.bz2",
+    "batch": "au_julian_ver01",
+    "batch_file": "au_julian_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:au:batch_au_julian_ver01",
+    "ingested": "2024-05-20T17:19:21-04:00",
+    "issue_count": 489,
+    "lccns": [
+      "sn84020645",
+      "sn85038485"
+    ],
+    "page_count": 10302,
+    "sha256": "f9e58e31d84bb739df71b5fe3c4c6bedaa78b890d075e46b1c8a03b49cf36b6d",
+    "size": 1149709940,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/au_julian_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-07-11T14:31:17+00:00",
+    "archive_name": "az_arguingmatch_ver02.tar.bz2",
+    "batch": "az_arguingmatch_ver02",
+    "batch_file": "az_arguingmatch_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:az:batch_az_arguingmatch_ver02",
+    "ingested": "2018-12-07T16:11:50-05:00",
+    "issue_count": 1737,
+    "lccns": [
+      "sn96060765",
+      "sn97060147",
+      "sn95060744"
+    ],
+    "page_count": 10175,
+    "sha1": "9fa59fdca037213dae228708a8d882def86bf55a",
+    "sha256": "f2b4fd31e319a7e92c9cfe14c7a8c3a61c0f94d9b53af1182c8e1090d3aeeac0",
+    "size": 606963177,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/az_arguingmatch_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2019-07-11T14:31:17+00:00",
+    "archive_name": "az_campfiregoneout_ver03.tar.bz2",
+    "batch": "az_campfiregoneout_ver03",
+    "batch_file": "az_campfiregoneout_ver03/data/BATCH_1.xml",
+    "identifier": "service:ndnp:az:batch_az_campfiregoneout_ver03",
+    "ingested": "2019-02-01T19:28:46-05:00",
+    "issue_count": 1352,
+    "lccns": [
+      "sn84021917",
+      "sn84021918",
+      "sn96060881"
+    ],
+    "page_count": 9537,
+    "sha1": "4244e11dfc3f35b0f37c9fd0adae3ed868b8796e",
+    "sha256": "7016c26fcfc4d42b039a1abb3c4925b91082ff5413b653a6fff825f67be15ed4",
+    "size": 417563939,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/az_campfiregoneout_ver03.tar.bz2"
+  },
+  {
+    "archive_created": "2024-03-07T17:30:38+00:00",
+    "archive_name": "az_chrysocolla_ver01.tar.bz2",
+    "batch": "az_chrysocolla_ver01",
+    "batch_file": "az_chrysocolla_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:az:batch_az_chrysocolla_ver01",
+    "ingested": "2024-02-20T11:58:16-05:00",
+    "issue_count": 1213,
+    "lccns": [
+      "sn89070012",
+      "sn94050657",
+      "sn95060771",
+      "sn94050651",
+      "sn94050653"
+    ],
+    "page_count": 10138,
+    "sha1": "d737e26d5067067b4a24e92e0843c9980aec2563",
+    "sha256": "081e8aa5422065fd341d42f6551ccb39498e249e428440f623d002345cb2b3fa",
+    "size": 425936155,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/az_chrysocolla_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-02-26T15:55:38+00:00",
+    "archive_name": "az_groomcreek_ver04.tar.bz2",
+    "batch": "az_groomcreek_ver04",
+    "batch_file": "az_groomcreek_ver04/data/batch_1.xml",
+    "identifier": "service:ndnp:az:batch_az_groomcreek_ver04",
+    "ingested": "2019-10-23T17:45:45-04:00",
+    "issue_count": 1423,
+    "lccns": [
+      "sn96060774",
+      "sn96060773"
+    ],
+    "page_count": 10078,
+    "sha1": "407d5d96285e4175f64dbd46ae51683f48ad1bc3",
+    "sha256": "54063dca4637db9b98da273e385ff781cf39e6fad43833e4fd949eba2760ce5b",
+    "size": 585125310,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/az_groomcreek_ver04.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-09T21:55:04.848880+00:00",
+    "archive_name": "az_hematite_ver01.tar.bz2",
+    "batch": "az_hematite_ver01",
+    "batch_file": "az_hematite_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:az:batch_az_hematite_ver01",
+    "ingested": "2024-07-02T20:31:23-04:00",
+    "issue_count": 1327,
+    "lccns": [
+      "sn00060075",
+      "sn93061640",
+      "sn94052359",
+      "sn95060583",
+      "sn95060626",
+      "sn95060770",
+      "sn95060997",
+      "sn96060591",
+      "sn96060593",
+      "sn96060594",
+      "sn96060595",
+      "sn96060596",
+      "sn96060774",
+      "sn96060908",
+      "sn97060135"
+    ],
+    "page_count": 10473,
+    "sha256": "0243e29f02391cf39454f88e40249a4f6b81b20bce6c44d49e250aec52f7c09f",
+    "size": 790613048,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/az_hematite_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-11-13T21:59:22+00:00",
+    "archive_name": "az_horseshoebend_ver02.tar.bz2",
+    "batch": "az_horseshoebend_ver02",
+    "batch_file": "az_horseshoebend_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:az:batch_az_horseshoebend_ver02",
+    "ingested": "2019-09-27T15:11:58-04:00",
+    "issue_count": 1786,
+    "lccns": [
+      "sn95060694",
+      "sn96060796",
+      "sn94050514",
+      "sn94050960",
+      "sn95060813",
+      "sn86091255",
+      "sn95060815"
+    ],
+    "page_count": 9955,
+    "sha1": "f79467b6df6187046ccbccf4668ca90d6b4985ad",
+    "sha256": "70f327ccc804a0e5000912a5675189d3ae11edfe3ca65930be79ed42271ef368",
+    "size": 582822911,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/az_horseshoebend_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2019-12-02T20:58:47+00:00",
+    "archive_name": "az_jeddito_ver01.tar.bz2",
+    "batch": "az_jeddito_ver01",
+    "batch_file": "az_jeddito_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:az:batch_az_jeddito_ver01",
+    "ingested": "2019-09-28T15:07:48-04:00",
+    "issue_count": 1010,
+    "lccns": [
+      "sn87062055",
+      "sn84020558",
+      "sn84020674",
+      "sn87062098"
+    ],
+    "page_count": 9871,
+    "sha1": "a3d517f88b8e96a764ab328078960e2a04a68186",
+    "sha256": "dc8723dfc14b7cc5df010e22d57fba2b0774eff9b4d316dbf907351a3b333784",
+    "size": 971248557,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/az_jeddito_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T10:21:37+00:00",
+    "archive_name": "az_kaibab_ver02.tar.bz2",
+    "batch": "az_kaibab_ver02",
+    "batch_file": "az_kaibab_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:az:batch_az_kaibab_ver02",
+    "ingested": "2020-02-07T01:48:56-05:00",
+    "issue_count": 829,
+    "lccns": [
+      "sn95060856",
+      "sn95060578",
+      "sn92024097",
+      "sn86091255",
+      "sn95060851",
+      "sn90051695",
+      "sn90051719"
+    ],
+    "page_count": 5074,
+    "sha1": "b0b76080bc06a03f1909be984c4b8f793a73d996",
+    "sha256": "2a46a485b65e338d078e8db39c7742671ba53535e0515921f1e64e5e7dcd70b7",
+    "size": 287003752,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/az_kaibab_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-07T17:10:29+00:00",
+    "archive_name": "cohi_bowerman_ver01.tar.bz2",
+    "batch": "cohi_bowerman_ver01",
+    "batch_file": "cohi_bowerman_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:cohi:batch_cohi_bowerman_ver01",
+    "ingested": "2021-11-17T12:52:53-05:00",
+    "issue_count": 1612,
+    "lccns": [
+      "sn90051342",
+      "sn90051356",
+      "sn86063206"
+    ],
+    "page_count": 7078,
+    "sha1": "c55144df31ec15514f6f9a44ebb5dc355338b63d",
+    "sha256": "3a2c12dfdbe9512e314ac19e79bdbd263c4b9b143d56ba2181e37702d12a9e7b",
+    "size": 438388008,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/cohi_bowerman_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-31T14:13:28+00:00",
+    "archive_name": "cohi_dyersville_ver01.tar.bz2",
+    "batch": "cohi_dyersville_ver01",
+    "batch_file": "cohi_dyersville_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:cohi:batch_cohi_dyersville_ver01",
+    "ingested": "2022-01-26T19:25:48-05:00",
+    "issue_count": 1089,
+    "lccns": [
+      "sn91052064"
+    ],
+    "page_count": 8757,
+    "sha1": "ae33d1166c35f6d400340a47312438c2bc49b80f",
+    "sha256": "a1637a60068620792543684e6ef12a30b394fe69acd95096872ea250f40206ec",
+    "size": 694155793,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/cohi_dyersville_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-06-24T22:43:43+00:00",
+    "archive_name": "cohi_hancock_ver02.tar.bz2",
+    "batch": "cohi_hancock_ver02",
+    "batch_file": "cohi_hancock_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:cohi:batch_cohi_hancock_ver02",
+    "ingested": "2022-05-19T23:02:59-04:00",
+    "issue_count": 789,
+    "lccns": [
+      "sn90051144",
+      "sn91052360",
+      "sn78004151"
+    ],
+    "page_count": 6266,
+    "sha1": "96cccd6cabff6b768cb8887c3abc1be8a079d59f",
+    "sha256": "207fe0e48dce72037ff60818f7e091e470e1ccecf1f4ec87aea7d8a56550ca75",
+    "size": 474616739,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/cohi_hancock_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-09-01T15:24:36+00:00",
+    "archive_name": "cohi_montezuma_ver01.tar.bz2",
+    "batch": "cohi_montezuma_ver01",
+    "batch_file": "cohi_montezuma_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:cohi:batch_cohi_montezuma_ver01",
+    "ingested": "2022-08-17T13:48:35-04:00",
+    "issue_count": 67,
+    "lccns": [
+      "sn91052360"
+    ],
+    "page_count": 606,
+    "sha1": "c8ebf4f46741b5777a4971f759968ce4b4d53688",
+    "sha256": "edc4fad00832696068d33bac9799414753a418f9b3553de866b4cfcf063c0603",
+    "size": 42775009,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/cohi_montezuma_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-04-21T14:28:48+00:00",
+    "archive_name": "ct_bigelow_ver02.tar.bz2",
+    "batch": "ct_bigelow_ver02",
+    "batch_file": "ct_bigelow_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:ct:batch_ct_bigelow_ver02",
+    "ingested": "2023-02-11T05:46:05-05:00",
+    "issue_count": 1186,
+    "lccns": [
+      "sn84022396"
+    ],
+    "page_count": 11315,
+    "sha1": "4be1d6b930dddd0304e6dd5f99075cfd533f55a6",
+    "sha256": "9cddcd912d3887a41445fc7a34c245322c0b316cdf0f0ceb9cf4601bfee0febd",
+    "size": 1026686776,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ct_bigelow_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T17:46:36.801928+00:00",
+    "archive_name": "ct_bugmeat_ver01.tar.bz2",
+    "batch": "ct_bugmeat_ver01",
+    "batch_file": "ct_bugmeat_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:ct:batch_ct_bugmeat_ver01",
+    "ingested": "2024-10-28T20:46:24-04:00",
+    "issue_count": 884,
+    "lccns": [
+      "sn91066932"
+    ],
+    "page_count": 10112,
+    "sha256": "46f9492332fd0a099d9fce76d67e8ed7c2ece8192978415dcc21d9b93a04144b",
+    "size": 700128012,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ct_bugmeat_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-07-11T14:31:17+00:00",
+    "archive_name": "ct_clash_ver01.tar.bz2",
+    "batch": "ct_clash_ver01",
+    "batch_file": "ct_clash_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ct:batch_ct_clash_ver01",
+    "ingested": "2019-01-23T21:05:59-05:00",
+    "issue_count": 1504,
+    "lccns": [
+      "sn84020351",
+      "sn92051283",
+      "sn90065027",
+      "sn82014519",
+      "sn92051282",
+      "sn92051386",
+      "sn92051342",
+      "sn93053873",
+      "sn92051407",
+      "sn92051343"
+    ],
+    "page_count": 10007,
+    "sha1": "4a6941dc285c27f7d4dd2735dce6ed7bef02e3cb",
+    "sha256": "ffc6ab82777ba0233909fdd08a5d7aacc8ca93990615bb3fabe28e855a0f5aa5",
+    "size": 621770868,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ct_clash_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-11-28T19:43:49+00:00",
+    "archive_name": "ct_duracell_ver01.tar.bz2",
+    "batch": "ct_duracell_ver01",
+    "batch_file": "ct_duracell_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ct:batch_ct_duracell_ver01",
+    "ingested": "2023-09-07T20:09:10-04:00",
+    "issue_count": 1205,
+    "lccns": [
+      "sn92051419"
+    ],
+    "page_count": 10933,
+    "sha1": "3a7bcc7f225ff72a6dff18372f89356edc697803",
+    "sha256": "3189405dec3e48418c8b106146c4219bee5165cbc4344589a97f375fbef6426d",
+    "size": 931791979,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ct_duracell_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-07-11T14:31:17+00:00",
+    "archive_name": "ct_floyd_ver01.tar.bz2",
+    "batch": "ct_floyd_ver01",
+    "batch_file": "ct_floyd_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ct:batch_ct_floyd_ver01",
+    "ingested": "2019-02-19T18:50:13-05:00",
+    "issue_count": 510,
+    "lccns": [
+      "sn82014519"
+    ],
+    "page_count": 10026,
+    "sha1": "e2c785089e7f5b89be23a4088b737c137ed3ad1c",
+    "sha256": "caa663f113cbc3911fd14feb6e5967fb4f317a3243d3e2bf1a39c368281f3890",
+    "size": 793754659,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ct_floyd_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T15:42:12.022908+00:00",
+    "archive_name": "ct_iridium_ver01.tar.bz2",
+    "batch": "ct_iridium_ver01",
+    "batch_file": "ct_iridium_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:ct:batch_ct_iridium_ver01",
+    "ingested": "2025-07-24T16:31:01-04:00",
+    "issue_count": 301,
+    "lccns": [
+      "sn88043117"
+    ],
+    "page_count": 9186,
+    "sha256": "14fef8f5574b7f7715daf96776c9eca5203af9db4a2d02020ff407fe85e5403b",
+    "size": 305123057,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ct_iridium_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-11-04T15:01:56+00:00",
+    "archive_name": "curiv_ocotillo_ver01.tar.bz2",
+    "batch": "curiv_ocotillo_ver01",
+    "batch_file": "curiv_ocotillo_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:curiv:batch_curiv_ocotillo_ver01",
+    "ingested": "2021-06-02T00:32:09-04:00",
+    "issue_count": 1375,
+    "lccns": [
+      "sn92070146"
+    ],
+    "page_count": 9494,
+    "sha1": "8630dff6b3cde064dcf5c1f21611036477050ae4",
+    "sha256": "d54d1e3af480c9907a990b94f394d5b13bef13113dfe4f979a2a01531f28caaa",
+    "size": 927769673,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/curiv_ocotillo_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-12-30T18:48:34+00:00",
+    "archive_name": "deu_catwoman_ver01.tar.bz2",
+    "batch": "deu_catwoman_ver01",
+    "batch_file": "deu_catwoman_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:deu:batch_deu_catwoman_ver01",
+    "ingested": "2021-08-03T11:16:55-04:00",
+    "issue_count": 1452,
+    "lccns": [
+      "sn87062224",
+      "sn84020422",
+      "sn88053146"
+    ],
+    "page_count": 9717,
+    "sha1": "e83213050c0a00bbc73bc0754ba24941f4868cc0",
+    "sha256": "e8becb4dae8885792e26f42ff66bbdd52364957fd956b00f0fa448202dc306d2",
+    "size": 1049638075,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/deu_catwoman_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-01-05T19:21:32+00:00",
+    "archive_name": "deu_deadpool_ver01.tar.bz2",
+    "batch": "deu_deadpool_ver01",
+    "batch_file": "deu_deadpool_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:deu:batch_deu_deadpool_ver01",
+    "ingested": "2021-08-26T20:28:28-04:00",
+    "issue_count": 935,
+    "lccns": [
+      "sn87062224"
+    ],
+    "page_count": 10018,
+    "sha1": "ecaedba9be05698a945d77fc8e7677799135ec19",
+    "sha256": "f607a1cdf28c5a5e468b2cd6f6624df7d5dc3ffb1d9116a9a51b142e71c6d376",
+    "size": 1106494888,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/deu_deadpool_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2024-02-13T18:25:39+00:00",
+    "archive_name": "dlc_arneaux_ver02.tar.bz2",
+    "batch": "dlc_arneaux_ver02",
+    "batch_file": "dlc_arneaux_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_arneaux_ver02",
+    "ingested": "2024-01-19T11:24:01-05:00",
+    "issue_count": 1044,
+    "lccns": [
+      "sn87062236",
+      "sn82016211",
+      "sn85032031"
+    ],
+    "page_count": 9481,
+    "sha1": "2e03fc1f14c76dd92c712e74743bafaf8eb9ccd9",
+    "sha256": "b1c3674161b19df177dd9edc9db1834934acf5b2e52ded7cc3416cc41c4002c9",
+    "size": 918759855,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_arneaux_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-07T14:38:55.573601+00:00",
+    "archive_name": "dlc_badger_ver02.tar.bz2",
+    "batch": "dlc_badger_ver02",
+    "batch_file": "dlc_badger_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_badger_ver02",
+    "ingested": "2025-09-02T10:18:58-04:00",
+    "issue_count": 919,
+    "lccns": [
+      "ca06001655"
+    ],
+    "page_count": 7681,
+    "sha256": "402a35f1ac434f182315a822c65d42249c59ee96bc95cadafd3f8f9936626064",
+    "size": 141209073,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_badger_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-14T14:00:06.954992+00:00",
+    "archive_name": "dlc_bloomfield_ver02.tar.bz2",
+    "batch": "dlc_bloomfield_ver02",
+    "batch_file": "dlc_bloomfield_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_bloomfield_ver02",
+    "ingested": "2025-04-03T10:38:51-04:00",
+    "issue_count": 2344,
+    "lccns": [
+      "sn85055101"
+    ],
+    "page_count": 9404,
+    "sha256": "1d35b55322e45dff0f619df2f80b281d7aeb18f8cc864785c11b5f590045a90e",
+    "size": 764750817,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_bloomfield_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2019-07-11T14:35:49+00:00",
+    "archive_name": "dlc_dorsey_ver02.tar.bz2",
+    "batch": "dlc_dorsey_ver02",
+    "batch_file": "dlc_dorsey_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_dorsey_ver02",
+    "ingested": "2017-08-15T18:13:29-04:00",
+    "issue_count": 207,
+    "lccns": [
+      "sn83045462"
+    ],
+    "page_count": 10055,
+    "sha1": "3c90a006c9466e203f52dd1f0535eca52cc4012f",
+    "sha256": "0038eef257158ec0d96c3112b037069772fa68bff2b120ad4a91e6e631615f00",
+    "size": 1148121807,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_dorsey_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2019-07-11T14:35:49+00:00",
+    "archive_name": "dlc_ellington_ver02.tar.bz2",
+    "batch": "dlc_ellington_ver02",
+    "batch_file": "dlc_ellington_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_ellington_ver02",
+    "ingested": "2017-11-07T12:31:34-05:00",
+    "issue_count": 200,
+    "lccns": [
+      "sn83045462"
+    ],
+    "page_count": 9561,
+    "sha1": "450e731ceab6283d1cfe027805e92961408a94ae",
+    "sha256": "71b6e4d434419dc26a6a321f77e47f7b1f97181ca60db2fe12a955a9739eda20",
+    "size": 1087942679,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_ellington_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-07T18:25:53.099467+00:00",
+    "archive_name": "dlc_erwitt_ver01.tar.bz2",
+    "batch": "dlc_erwitt_ver01",
+    "batch_file": "dlc_erwitt_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_erwitt_ver01",
+    "ingested": "2025-12-18T10:01:41-05:00",
+    "issue_count": 587,
+    "lccns": [
+      "sn82016181"
+    ],
+    "page_count": 8997,
+    "sha256": "311f68df1ed1edad66142cb4d3414461d632255768c4f1e1974103fa999cca73",
+    "size": 464138275,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_erwitt_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-07-11T14:35:49+00:00",
+    "archive_name": "dlc_fields_ver02.tar.bz2",
+    "batch": "dlc_fields_ver02",
+    "batch_file": "dlc_fields_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_fields_ver02",
+    "ingested": "2018-01-05T16:47:41-05:00",
+    "issue_count": 193,
+    "lccns": [
+      "sn83045462"
+    ],
+    "page_count": 10267,
+    "sha1": "14be4db2d9869098f82d9d3283d3ddd42e7415cd",
+    "sha256": "7c2bf7e044df98496fbf400e7b6270810a1f9cb8479c9a39a11dc29a63ef1d43",
+    "size": 1167524463,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_fields_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-07T18:28:02.588128+00:00",
+    "archive_name": "dlc_hine_ver02.tar.bz2",
+    "batch": "dlc_hine_ver02",
+    "batch_file": "dlc_hine_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_hine_ver02",
+    "ingested": "2026-01-21T19:09:54-05:00",
+    "issue_count": 515,
+    "lccns": [
+      "sn82016181"
+    ],
+    "page_count": 10376,
+    "sha256": "cb8699c95fa47904be15e7ce9758e0ee6ee8914d05658b1b4ec26345bd8f11e0",
+    "size": 521164363,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_hine_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-09T21:57:57.008330+00:00",
+    "archive_name": "dlc_hodges_ver01.tar.bz2",
+    "batch": "dlc_hodges_ver01",
+    "batch_file": "dlc_hodges_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_hodges_ver01",
+    "ingested": "2024-07-19T16:35:14-04:00",
+    "issue_count": 1627,
+    "lccns": [
+      "sn82016211",
+      "sn83025110",
+      "sn83035387",
+      "sn84024172",
+      "sn84025893",
+      "sn85067105"
+    ],
+    "page_count": 8049,
+    "sha256": "7ccddad4506db3542945330c295c81381b8f2adb03e02fca06847b8e7facbb61",
+    "size": 658030575,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_hodges_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2024-02-13T13:36:27+00:00",
+    "archive_name": "dlc_hyperdrive_ver02.tar.bz2",
+    "batch": "dlc_hyperdrive_ver02",
+    "batch_file": "dlc_hyperdrive_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_hyperdrive_ver02",
+    "ingested": "2024-01-12T08:23:38-05:00",
+    "issue_count": 1354,
+    "lccns": [
+      "sn86063496"
+    ],
+    "page_count": 10002,
+    "sha1": "10d560c3fa6958673c3c409323dc6934677cff94",
+    "sha256": "ae10ba344e8fe481204c90ec82105bd9575f836088f6911dda5f8434d326d183",
+    "size": 1091537069,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_hyperdrive_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-07T17:25:13+00:00",
+    "archive_name": "dlc_nichols_ver02.tar.bz2",
+    "batch": "dlc_nichols_ver02",
+    "batch_file": "dlc_nichols_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_nichols_ver02",
+    "ingested": "2021-11-25T19:07:42-05:00",
+    "issue_count": 410,
+    "lccns": [
+      "sn84026749"
+    ],
+    "page_count": 10549,
+    "sha1": "69e4470cd65c6482d9e62497a1e40bc033d6e609",
+    "sha256": "fb8dcf69e3609489b2a55263342c0183f0107a98190a16be15877f21c004c15f",
+    "size": 970386276,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_nichols_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-07T17:23:11+00:00",
+    "archive_name": "dlc_oshima_ver02.tar.bz2",
+    "batch": "dlc_oshima_ver02",
+    "batch_file": "dlc_oshima_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:dlc:batch_dlc_oshima_ver02",
+    "ingested": "2021-11-25T21:03:57-05:00",
+    "issue_count": 407,
+    "lccns": [
+      "sn84026749"
+    ],
+    "page_count": 10550,
+    "sha1": "cc12b420c585e337e1180a024d70efb7b2f3b6cc",
+    "sha256": "bb00c912370c57fc0321d836321698b39ddb767c7217727b75624c7723f4119a",
+    "size": 885581983,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/dlc_oshima_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2023-10-23T23:12:10+00:00",
+    "archive_name": "fu_estero_ver02.tar.bz2",
+    "batch": "fu_estero_ver02",
+    "batch_file": "fu_estero_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:fu:batch_fu_estero_ver02",
+    "ingested": "2023-10-02T14:05:14-04:00",
+    "issue_count": 1427,
+    "lccns": [
+      "sn86002403",
+      "sn95047435",
+      "sn95047438",
+      "sn95047433",
+      "sn95047137",
+      "sn95047434"
+    ],
+    "page_count": 7930,
+    "sha1": "5414cf06fe24205ee628bde23ebb80908f4e557d",
+    "sha256": "f1fcc6bcdec6888666df2dbfebec3ee08eb0b492179f9264f8df8844d27a3e7e",
+    "size": 330450093,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/fu_estero_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2023-02-02T16:46:02+00:00",
+    "archive_name": "gu_beaker_ver01.tar.bz2",
+    "batch": "gu_beaker_ver01",
+    "batch_file": "gu_beaker_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:gu:batch_gu_beaker_ver01",
+    "ingested": "2022-11-16T00:36:35-05:00",
+    "issue_count": 1489,
+    "lccns": [
+      "sn89053283",
+      "sn89053307"
+    ],
+    "page_count": 11144,
+    "sha1": "5d7ae3485b398d881d332cd84b5a75256a22d5c9",
+    "sha256": "e800fa234c51cdbef87fe4abc8da01d87f3b4cc865b2e29e0411e8c9d03d9040",
+    "size": 822378685,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/gu_beaker_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-03-02T19:30:43+00:00",
+    "archive_name": "gu_drteeth_ver01.tar.bz2",
+    "batch": "gu_drteeth_ver01",
+    "batch_file": "gu_drteeth_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:gu:batch_gu_drteeth_ver01",
+    "ingested": "2022-11-28T18:29:53-05:00",
+    "issue_count": 1824,
+    "lccns": [
+      "sn85034082",
+      "sn89053308"
+    ],
+    "page_count": 11103,
+    "sha1": "48e4129228f08c38c9de738eaa4355060f52e291",
+    "sha256": "77e8850e235911961d9c2852c7a88644e2ed09ed61f4e68c24e53ed9bbb65560",
+    "size": 1040882033,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/gu_drteeth_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-04-07T17:20:41+00:00",
+    "archive_name": "gu_eridanus_ver02.tar.bz2",
+    "batch": "gu_eridanus_ver02",
+    "batch_file": "gu_eridanus_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:gu:batch_gu_eridanus_ver02",
+    "ingested": "2021-02-18T04:04:34-05:00",
+    "issue_count": 1104,
+    "lccns": [
+      "2020233210",
+      "sn89053204",
+      "sn89053537",
+      "sn83016235",
+      "sn84020323",
+      "2012233098"
+    ],
+    "page_count": 10224,
+    "sha1": "5b024dfb57fbb16243fd126705c001f067c68061",
+    "sha256": "1cdcafeec49ee1b067d7e8ab7fbe4560ff0f1de1a94cd71280d0d7114d7d1670",
+    "size": 657884280,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/gu_eridanus_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2023-06-02T16:26:08+00:00",
+    "archive_name": "gu_grouch_ver01.tar.bz2",
+    "batch": "gu_grouch_ver01",
+    "batch_file": "gu_grouch_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:gu:batch_gu_grouch_ver01",
+    "ingested": "2023-02-28T04:05:25-05:00",
+    "issue_count": 1545,
+    "lccns": [
+      "2022239691",
+      "2022239700"
+    ],
+    "page_count": 10460,
+    "sha1": "f69b8d823686e9180dd80f19698963be43a6d3cb",
+    "sha256": "b656ea821d31ce0af093e78daae02ee76d9330c6803857b60d7ce7b034461c15",
+    "size": 636905508,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/gu_grouch_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T15:47:02.809814+00:00",
+    "archive_name": "gu_jinn_ver01.tar.bz2",
+    "batch": "gu_jinn_ver01",
+    "batch_file": "gu_jinn_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:gu:batch_gu_jinn_ver01",
+    "ingested": "2025-06-26T15:02:22-04:00",
+    "issue_count": 1131,
+    "lccns": [
+      "sn84020323"
+    ],
+    "page_count": 9425,
+    "sha256": "a58aa0274ff2a70a58b5cc8c421fadf18ddad7ae592e528719aea4b1885d79c0",
+    "size": 898573537,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/gu_jinn_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-11-08T17:06:52+00:00",
+    "archive_name": "idhi_floris_ver01.tar.bz2",
+    "batch": "idhi_floris_ver01",
+    "batch_file": "idhi_floris_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:idhi:batch_idhi_floris_ver01",
+    "ingested": "2019-07-03T22:48:07-04:00",
+    "issue_count": 1060,
+    "lccns": [
+      "sn86091145",
+      "sn86091059",
+      "sn86091196"
+    ],
+    "page_count": 8728,
+    "sha1": "4808567330fee6df69fc5ba115a422a5f9e5a9a6",
+    "sha256": "bb193029513bca5f02a9623902d4cd1fd4f8cc6764763165ea7b46923ee01ff0",
+    "size": 710180607,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/idhi_floris_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-11-08T17:38:08+00:00",
+    "archive_name": "idhi_hatra_ver01.tar.bz2",
+    "batch": "idhi_hatra_ver01",
+    "batch_file": "idhi_hatra_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:idhi:batch_idhi_hatra_ver01",
+    "ingested": "2019-08-19T21:17:27-04:00",
+    "issue_count": 1267,
+    "lccns": [
+      "sn86091100",
+      "sn89055223",
+      "sn85007266",
+      "sn88056159",
+      "sn86063041",
+      "sn86091197"
+    ],
+    "page_count": 9388,
+    "sha1": "0fd34ff4a5240dbcdf280820dd362a92fbd460de",
+    "sha256": "5c78beaa503bbb7ba4dd6a0b60bd0cd3fea7ea016f946818a8654718d1f17f13",
+    "size": 794633076,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/idhi_hatra_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-08T17:55:10.094252+00:00",
+    "archive_name": "in_bashir_ver02.tar.bz2",
+    "batch": "in_bashir_ver02",
+    "batch_file": "in_bashir_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:in:batch_in_bashir_ver02",
+    "ingested": "2024-04-10T18:26:43-04:00",
+    "issue_count": 2313,
+    "lccns": [
+      "sn84045439",
+      "sn86059048"
+    ],
+    "page_count": 17058,
+    "sha256": "837f4382831ae3a31c3f48bf8d546ed935e5aa6e7dc24c431a6016bfa03394d7",
+    "size": 952731109,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/in_bashir_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T21:00:42+00:00",
+    "archive_name": "in_darrow_ver03.tar.bz2",
+    "batch": "in_darrow_ver03",
+    "batch_file": "in_darrow_ver03/data/BATCH_1.xml",
+    "identifier": "service:ndnp:in:batch_in_darrow_ver03",
+    "ingested": "2020-01-07T10:38:30-05:00",
+    "issue_count": 825,
+    "lccns": [
+      "sn82015313",
+      "sn85047611"
+    ],
+    "page_count": 10897,
+    "sha1": "5a97a8cfff8e97551ba97b4968f21d9f045df553",
+    "sha256": "759ff3d1e0c7fbc50a55245c7cc5aa3553a1f9bb7ade949fc8a466154c2d1efc",
+    "size": 1125083244,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/in_darrow_ver03.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-08T17:49:26.253410+00:00",
+    "archive_name": "in_data_ver01.tar.bz2",
+    "batch": "in_data_ver01",
+    "batch_file": "in_data_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:in:batch_in_data_ver01",
+    "ingested": "2024-04-05T17:29:15-04:00",
+    "issue_count": 419,
+    "lccns": [
+      "sn87055779"
+    ],
+    "page_count": 9644,
+    "sha256": "9410c3466d2a41e09f8ba3db47a98d449691dbe122e5e9833a08e89c0a7e4be4",
+    "size": 957779871,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/in_data_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-11-08T20:58:51+00:00",
+    "archive_name": "in_ellis_ver01.tar.bz2",
+    "batch": "in_ellis_ver01",
+    "batch_file": "in_ellis_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:in:batch_in_ellis_ver01",
+    "ingested": "2019-06-07T09:04:50-04:00",
+    "issue_count": 622,
+    "lccns": [
+      "sn82015313"
+    ],
+    "page_count": 9806,
+    "sha1": "c05647c2f7d50b0861d74ac54e2efd47b63e43cc",
+    "sha256": "52590bebb277a28e072b5153576a4a21f6d4f94d3276cdd3eb74b63feb65ff7f",
+    "size": 926578938,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/in_ellis_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-08T17:48:09.465643+00:00",
+    "archive_name": "in_enterprise_ver01.tar.bz2",
+    "batch": "in_enterprise_ver01",
+    "batch_file": "in_enterprise_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:in:batch_in_enterprise_ver01",
+    "ingested": "2024-04-04T19:17:22-04:00",
+    "issue_count": 423,
+    "lccns": [
+      "sn87055779"
+    ],
+    "page_count": 10160,
+    "sha256": "1e3bb47133f782087708026419e566df858e1278b4aa9e7518889ead4f2fa3a4",
+    "size": 966706809,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/in_enterprise_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T12:16:41+00:00",
+    "archive_name": "iune_bismuth_ver01.tar.bz2",
+    "batch": "iune_bismuth_ver01",
+    "batch_file": "iune_bismuth_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:iune:batch_iune_bismuth_ver01",
+    "ingested": "2020-01-28T01:11:21-05:00",
+    "issue_count": 1664,
+    "lccns": [
+      "sn2008060406",
+      "sn96071000",
+      "sn82015374",
+      "sn86086415",
+      "sn84024055",
+      "sn2008060212",
+      "sn94054745",
+      "sn90054490",
+      "sn82015409",
+      "sn90054495"
+    ],
+    "page_count": 9807,
+    "sha1": "db33e8a5475732a2c0884c6e14bbeee1b9f6f451",
+    "sha256": "9bd018fa2d0f053bc77703f890d8fb0d45d46f5d9068afae727e50cbf87164af",
+    "size": 611553752,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/iune_bismuth_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T18:53:28.814554+00:00",
+    "archive_name": "iune_egret_ver01.tar.bz2",
+    "batch": "iune_egret_ver01",
+    "batch_file": "iune_egret_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:iune:batch_iune_egret_ver01",
+    "ingested": "2025-01-31T11:21:32-05:00",
+    "issue_count": 1192,
+    "lccns": [
+      "sn90053031",
+      "sn92053737",
+      "sn93056013",
+      "sn93056014"
+    ],
+    "page_count": 10521,
+    "sha256": "aaf3f9b87852639bcce5f166266cd3351dd6a0de33d231d60d0468e6df101195",
+    "size": 779773286,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/iune_egret_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-03-03T21:30:29+00:00",
+    "archive_name": "iune_emerald_ver03.tar.bz2",
+    "batch": "iune_emerald_ver03",
+    "batch_file": "iune_emerald_ver03/data/BATCH_1.xml",
+    "identifier": "service:ndnp:iune:batch_iune_emerald_ver03",
+    "ingested": "2020-12-10T17:21:55-05:00",
+    "issue_count": 1847,
+    "lccns": [
+      "sn84020097",
+      "sn82015743"
+    ],
+    "page_count": 10881,
+    "sha1": "7a02e885435d95e16945062abf27a3482c83b439",
+    "sha256": "22cb3f1c70f476c251486d4067d6c9aab01433dd83bcdc27b023c28a0c14b8c9",
+    "size": 993575550,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/iune_emerald_ver03.tar.bz2"
+  },
+  {
+    "archive_created": "2021-06-17T19:07:03+00:00",
+    "archive_name": "iune_garnet_ver01.tar.bz2",
+    "batch": "iune_garnet_ver01",
+    "batch_file": "iune_garnet_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:iune:batch_iune_garnet_ver01",
+    "ingested": "2021-03-16T00:06:12-04:00",
+    "issue_count": 1926,
+    "lccns": [
+      "sn84020097",
+      "sn83045003",
+      "sn82015743",
+      "sn86071738",
+      "sn83045377",
+      "sn83045004",
+      "sn82015744",
+      "sn2008060406",
+      "sn82014268",
+      "sn82014400"
+    ],
+    "page_count": 10543,
+    "sha1": "e81ce4e9c7147c54a04c187c6d2a4d2da4af9f69",
+    "sha256": "d13af58520646617732a092bb350fc6c701be2670276633456829db93a16f8c0",
+    "size": 1162219193,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/iune_garnet_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T15:46:00.905629+00:00",
+    "archive_name": "iune_junco_ver01.tar.bz2",
+    "batch": "iune_junco_ver01",
+    "batch_file": "iune_junco_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:iune:batch_iune_junco_ver01",
+    "ingested": "2025-08-06T11:07:09-04:00",
+    "issue_count": 593,
+    "lccns": [
+      "sn92053739"
+    ],
+    "page_count": 10998,
+    "sha256": "45231998ef32d99c8c71d2a655c2bb6427124ef5dd29ae7c23484e24968663ab",
+    "size": 1071615355,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/iune_junco_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-27T21:05:10.572930+00:00",
+    "archive_name": "kyu_elkhound_ver01.tar.bz2",
+    "batch": "kyu_elkhound_ver01",
+    "batch_file": "kyu_elkhound_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:kyu:batch_kyu_elkhound_ver01",
+    "ingested": "2025-02-05T10:18:33-05:00",
+    "issue_count": 1064,
+    "lccns": [
+      "sn86069242",
+      "sn86069484",
+      "sn92056606",
+      "sn92056607"
+    ],
+    "page_count": 5973,
+    "sha256": "7e5b3b8b5a1671a5a7aa5e7a586bad2544c0757f0a1d78d7c025bfbac1a420d2",
+    "size": 369458345,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/kyu_elkhound_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-07T17:25:46.942557+00:00",
+    "archive_name": "kyu_heeler_ver01.tar.bz2",
+    "batch": "kyu_heeler_ver01",
+    "batch_file": "kyu_heeler_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:kyu:batch_kyu_heeler_ver01",
+    "ingested": "2025-12-08T11:30:27-05:00",
+    "issue_count": 1051,
+    "lccns": [
+      "sn83045285",
+      "sn84038560",
+      "sn85052003",
+      "sn86063243",
+      "sn86069242",
+      "sn87060006"
+    ],
+    "page_count": 9050,
+    "sha256": "c9a3bc02c1561718059355400f1fc1e7d5dbfdb4b19ca4d7354085d4d056d410",
+    "size": 650115622,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/kyu_heeler_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-07T17:33:58.542936+00:00",
+    "archive_name": "kyu_keeshond_ver01.tar.bz2",
+    "batch": "kyu_keeshond_ver01",
+    "batch_file": "kyu_keeshond_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:kyu:batch_kyu_keeshond_ver01",
+    "ingested": "2025-12-08T11:45:52-05:00",
+    "issue_count": 2088,
+    "lccns": [
+      "sn83025555",
+      "sn84027471",
+      "sn85052003",
+      "sn87060184"
+    ],
+    "page_count": 9321,
+    "sha256": "8927bc0f9e96c56812b55867a87128bbf8731ebca38201740e46e5a71b013dde",
+    "size": 1152894897,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/kyu_keeshond_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-07T17:27:16.055071+00:00",
+    "archive_name": "kyu_labrador_ver01.tar.bz2",
+    "batch": "kyu_labrador_ver01",
+    "batch_file": "kyu_labrador_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:kyu:batch_kyu_labrador_ver01",
+    "ingested": "2025-12-08T11:35:54-05:00",
+    "issue_count": 1546,
+    "lccns": [
+      "sn85052003",
+      "sn86069597",
+      "sn86069598",
+      "sn86069599",
+      "sn86069600",
+      "sn86069601"
+    ],
+    "page_count": 11234,
+    "sha256": "0d24dcd2ca78445d296f4d7f270a3a478d64c1d5092722fc61f20286d6bc413e",
+    "size": 687770867,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/kyu_labrador_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-10-05T14:12:28.409037+00:00",
+    "archive_name": "kyu_mastiff_ver02.tar.bz2",
+    "batch": "kyu_mastiff_ver02",
+    "batch_file": "kyu_mastiff_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:kyu:batch_kyu_mastiff_ver02",
+    "ingested": "2026-03-26T08:51:50-04:00",
+    "issue_count": 1210,
+    "lccns": [
+      "sn86069021",
+      "sn86069023",
+      "sn86069024",
+      "sn86069032",
+      "sn86069033",
+      "sn86069041"
+    ],
+    "metadata_key": "metadata/kyu_mastiff_ver02.tar.bz2.json",
+    "page_count": 9720,
+    "sha256": "91d465a731c71c8489022a60832deda999cf7ba5a9ec73c0cb6d5e73dc5667ae",
+    "size": 840105251,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/kyu_mastiff_ver02.tar.bz2",
+    "verified": true
+  },
+  {
+    "archive_created": "2026-04-09T22:57:15.918815+00:00",
+    "archive_name": "mb_allspice_ver01.tar.bz2",
+    "batch": "mb_allspice_ver01",
+    "batch_file": "mb_allspice_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mb:batch_mb_allspice_ver01",
+    "ingested": "2024-08-15T18:36:56-04:00",
+    "issue_count": 728,
+    "lccns": [
+      "sn83020847"
+    ],
+    "page_count": 10260,
+    "sha256": "93faa124ccc967c72c5f1521811fd424f70e38eb8c2301851af409131a1b1b3f",
+    "size": 1969854957,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mb_allspice_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-03-10T15:19:23.206493+00:00",
+    "archive_name": "mdu_cumberland_ver02.tar.bz2",
+    "batch": "mdu_cumberland_ver02",
+    "batch_file": "mdu_cumberland_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mdu:batch_mdu_cumberland_ver02",
+    "ingested": "2019-11-21T11:56:43-05:00",
+    "issue_count": 1512,
+    "lccns": [
+      "sn89060136"
+    ],
+    "page_count": 12330,
+    "sha256": "7a821683e4e5d245a645e513494283d754f0b144217a313e56ace07848f8de41",
+    "size": 1032248848,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mdu_cumberland_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-03-10T15:18:06.277895+00:00",
+    "archive_name": "mdu_easton_ver02.tar.bz2",
+    "batch": "mdu_easton_ver02",
+    "batch_file": "mdu_easton_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mdu:batch_mdu_easton_ver02",
+    "ingested": "2019-11-23T07:30:26-05:00",
+    "issue_count": 1991,
+    "lccns": [
+      "sn85025407",
+      "sn89060127",
+      "sn89060372",
+      "sn89060375",
+      "sn89060376",
+      "sn89060379"
+    ],
+    "page_count": 10283,
+    "sha256": "5ee057cdaac3da40285ec1db33dca36b95c009a43851e39855e89924c59cac5b",
+    "size": 1095950201,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mdu_easton_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-01-06T19:53:35+00:00",
+    "archive_name": "mdu_hyssop_ver01.tar.bz2",
+    "batch": "mdu_hyssop_ver01",
+    "batch_file": "mdu_hyssop_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mdu:batch_mdu_hyssop_ver01",
+    "ingested": "2021-10-19T15:26:14-04:00",
+    "issue_count": 1285,
+    "lccns": [
+      "sn88065202"
+    ],
+    "page_count": 10314,
+    "sha1": "1dad48141379bb67bf74a8c7adf5ea3b01ae9e94",
+    "sha256": "71fa9b0926dc24a1331c5a1305855a332316617c1a4e24a17e7b21f789505ae5",
+    "size": 962336592,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mdu_hyssop_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-07-21T21:48:01+00:00",
+    "archive_name": "mdu_indigo_ver02.tar.bz2",
+    "batch": "mdu_indigo_ver02",
+    "batch_file": "mdu_indigo_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mdu:batch_mdu_indigo_ver02",
+    "ingested": "2021-07-06T15:47:22-04:00",
+    "issue_count": 1599,
+    "lccns": [
+      "sn83016209"
+    ],
+    "page_count": 9827,
+    "sha1": "888de644cbcd29fcfa4b3bb1816e897dee764e2a",
+    "sha256": "2f3aca8bbc9a3caf53a021c2524a27047309a614b880ea27f4d029d36a34af91",
+    "size": 1014975053,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mdu_indigo_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-09-01T16:43:07+00:00",
+    "archive_name": "me_hale_ver01.tar.bz2",
+    "batch": "me_hale_ver01",
+    "batch_file": "me_hale_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:me:batch_me_hale_ver01",
+    "ingested": "2022-08-18T21:14:29-04:00",
+    "issue_count": 831,
+    "lccns": [
+      "sn82014248"
+    ],
+    "page_count": 10336,
+    "sha1": "19ab0fcfa0c6b7361b0527901935a7e7b2ca790e",
+    "sha256": "a783ef5e0b770d055be5fe6184902aa536648a8fc9b8d2dcc8cb4a3990aff979",
+    "size": 1454016442,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/me_hale_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-01-17T21:51:14+00:00",
+    "archive_name": "me_iceboro_ver01.tar.bz2",
+    "batch": "me_iceboro_ver01",
+    "batch_file": "me_iceboro_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:me:batch_me_iceboro_ver01",
+    "ingested": "2022-10-04T06:52:31-04:00",
+    "issue_count": 885,
+    "lccns": [
+      "sn82014248",
+      "sn83016025",
+      "sn84022374"
+    ],
+    "page_count": 10304,
+    "sha1": "1a86491bee6fb7d5791f4ef0268f7e17fb1a5bef",
+    "sha256": "8537cbebea1499a95adb4fa68644d6f569dcf69a62d82ff0f066281d86564b73",
+    "size": 1332193510,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/me_iceboro_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-03-04T16:38:40+00:00",
+    "archive_name": "mnhi_archery_ver01.tar.bz2",
+    "batch": "mnhi_archery_ver01",
+    "batch_file": "mnhi_archery_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_archery_ver01",
+    "ingested": "2020-12-15T09:24:11-05:00",
+    "issue_count": 1076,
+    "lccns": [
+      "sn89064489"
+    ],
+    "page_count": 9789,
+    "sha1": "6f553c70756a22610349915098d0179066ab7c19",
+    "sha256": "365288f25d7d11272d224d840e1466224315b4ab5ad20405bf75184167ac7e7f",
+    "size": 778177600,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_archery_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2024-01-09T22:14:01+00:00",
+    "archive_name": "mnhi_bottom_ver01.tar.bz2",
+    "batch": "mnhi_bottom_ver01",
+    "batch_file": "mnhi_bottom_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_bottom_ver01",
+    "ingested": "2023-11-14T17:23:09-05:00",
+    "issue_count": 1062,
+    "lccns": [
+      "sn91059411"
+    ],
+    "page_count": 8833,
+    "sha1": "571ea0e540f0921d3d485f70acda056616300833",
+    "sha256": "4ce8536f3ffbe505b138ae00045d904b0e54db497df0f58bc55a01c761fc778f",
+    "size": 759365296,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_bottom_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2024-02-16T23:09:48+00:00",
+    "archive_name": "mnhi_desdemona_ver01.tar.bz2",
+    "batch": "mnhi_desdemona_ver01",
+    "batch_file": "mnhi_desdemona_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_desdemona_ver01",
+    "ingested": "2024-01-25T16:27:55-05:00",
+    "issue_count": 833,
+    "lccns": [
+      "sn82002441"
+    ],
+    "page_count": 8959,
+    "sha1": "7ff216ffae665a3ae68b168f333a2cc8f1c78d18",
+    "sha256": "d8399c2e72dafddc2eb04907587735085e359f3d0569b46544df7e603fec40d9",
+    "size": 910775030,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_desdemona_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-08T17:47:13.067784+00:00",
+    "archive_name": "mnhi_escalus_ver03.tar.bz2",
+    "batch": "mnhi_escalus_ver03",
+    "batch_file": "mnhi_escalus_ver03/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_escalus_ver03",
+    "ingested": "2024-03-22T12:57:35-04:00",
+    "issue_count": 1042,
+    "lccns": [
+      "sn83016847",
+      "sn83045350",
+      "sn86010115"
+    ],
+    "page_count": 8768,
+    "sha256": "7fccb0d7ddbfe3f525a3227aa59b2adf8139f19e568c6ee8ca4e1d1c089ce835",
+    "size": 809538210,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_escalus_ver03.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-08T19:03:22.047512+00:00",
+    "archive_name": "mnhi_guildenstern_ver01.tar.bz2",
+    "batch": "mnhi_guildenstern_ver01",
+    "batch_file": "mnhi_guildenstern_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_guildenstern_ver01",
+    "ingested": "2024-05-08T12:20:37-04:00",
+    "issue_count": 781,
+    "lccns": [
+      "sn83016586",
+      "sn83045350",
+      "sn89081022"
+    ],
+    "page_count": 9038,
+    "sha256": "21c6a8191fc451546887a0a289ac29b49ef74e49043179c50d5ba00583dea7b9",
+    "size": 876872503,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_guildenstern_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-05-05T17:44:47+00:00",
+    "archive_name": "mnhi_ironman_ver02.tar.bz2",
+    "batch": "mnhi_ironman_ver02",
+    "batch_file": "mnhi_ironman_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_ironman_ver02",
+    "ingested": "2022-03-03T12:42:04-05:00",
+    "issue_count": 937,
+    "lccns": [
+      "sn90059182",
+      "sn89064914",
+      "sn90059061"
+    ],
+    "page_count": 8313,
+    "sha1": "7da33e3426378778c09179a1c925afd249014a3d",
+    "sha256": "620c1b3f022b40c1662124cb565516d7de1ebf22d8fd9c3c261dbd70e9ed9379",
+    "size": 821038462,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_ironman_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2019-12-02T21:28:38+00:00",
+    "archive_name": "mnhi_jig_ver01.tar.bz2",
+    "batch": "mnhi_jig_ver01",
+    "batch_file": "mnhi_jig_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_jig_ver01",
+    "ingested": "2019-08-27T21:44:55-04:00",
+    "issue_count": 727,
+    "lccns": [
+      "sn85025570"
+    ],
+    "page_count": 8657,
+    "sha1": "e105de4ca4bc8f058f8285d0bc2b3e08931d7bbc",
+    "sha256": "bd7a1b74d92e99ceebdb6ca52cac4a6785c36101b7ea030201e7cafcd3ca9ece",
+    "size": 629196924,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_jig_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-05-25T12:42:14+00:00",
+    "archive_name": "mnhi_judo_ver02.tar.bz2",
+    "batch": "mnhi_judo_ver02",
+    "batch_file": "mnhi_judo_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_judo_ver02",
+    "ingested": "2022-03-25T21:20:46-04:00",
+    "issue_count": 949,
+    "lccns": [
+      "sn89064914"
+    ],
+    "page_count": 8687,
+    "sha1": "74acb5b59bf6fce9b54bca5ce0cd58542f78966d",
+    "sha256": "287d81b646cc104b9b87425aaa6040d04918c3e4460cc5687e4018df584622d2",
+    "size": 855163364,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_judo_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-09T21:51:26.835544+00:00",
+    "archive_name": "mnhi_juliet_ver02.tar.bz2",
+    "batch": "mnhi_juliet_ver02",
+    "batch_file": "mnhi_juliet_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_juliet_ver02",
+    "ingested": "2024-07-19T17:04:32-04:00",
+    "issue_count": 1863,
+    "lccns": [
+      "sn90060762",
+      "sn90060766"
+    ],
+    "page_count": 7648,
+    "sha256": "2cdc348836835eee028daa3c1c8e6eea8a2b950664b0bd311292dfaa5684bb5b",
+    "size": 457319202,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_juliet_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-09T22:35:36.211470+00:00",
+    "archive_name": "mnhi_katherine_ver01.tar.bz2",
+    "batch": "mnhi_katherine_ver01",
+    "batch_file": "mnhi_katherine_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_katherine_ver01",
+    "ingested": "2024-08-01T18:42:11-04:00",
+    "issue_count": 821,
+    "lccns": [
+      "sn83045350",
+      "sn89064422"
+    ],
+    "page_count": 8430,
+    "sha256": "7181647f280e45d15c4959c3738bda0e8f3dca247612b5ba5091633960bf86be",
+    "size": 627873442,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_katherine_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-02-26T19:48:19+00:00",
+    "archive_name": "mnhi_limbo_ver01.tar.bz2",
+    "batch": "mnhi_limbo_ver01",
+    "batch_file": "mnhi_limbo_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mnhi:batch_mnhi_limbo_ver01",
+    "ingested": "2019-11-21T11:22:59-05:00",
+    "issue_count": 1227,
+    "lccns": [
+      "sn85025570",
+      "sn90060427",
+      "sn89064695",
+      "sn90060931",
+      "sn90059142",
+      "sn90059272",
+      "sn90060932",
+      "sn90060332",
+      "sn83016810",
+      "sn90059426"
+    ],
+    "page_count": 7181,
+    "sha1": "44314119d31400a54ac4c25d2a16514e5939be82",
+    "sha256": "995717eda46cdec1f59d1e2365ab5e699540d4ed8d5edb322f0601dc688f51fa",
+    "size": 625331127,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mnhi_limbo_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-02-26T20:53:49+00:00",
+    "archive_name": "mthi_adderstongue_ver01.tar.bz2",
+    "batch": "mthi_adderstongue_ver01",
+    "batch_file": "mthi_adderstongue_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:mthi:batch_mthi_adderstongue_ver01",
+    "ingested": "2019-10-23T07:08:27-04:00",
+    "issue_count": 885,
+    "lccns": [
+      "sn86075113",
+      "sn86075258",
+      "sn85042379"
+    ],
+    "page_count": 9554,
+    "sha1": "8fec489ee6a67339ac2e67b9459a58f88a1d098c",
+    "sha256": "eaf441c7eb1524608e25d3c079dc9f123eaecb5c06b29586d542ba5e692933bf",
+    "size": 751622986,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mthi_adderstongue_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T12:36:36+00:00",
+    "archive_name": "mthi_beargrass_ver01.tar.bz2",
+    "batch": "mthi_beargrass_ver01",
+    "batch_file": "mthi_beargrass_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:mthi:batch_mthi_beargrass_ver01",
+    "ingested": "2019-11-18T23:16:43-05:00",
+    "issue_count": 982,
+    "lccns": [
+      "sn86075272",
+      "sn86075096",
+      "sn85053343",
+      "sn85053004",
+      "sn85053340",
+      "sn85053342"
+    ],
+    "page_count": 9630,
+    "sha1": "2a39e0e328591734d2834beb9524f7dcd39f0aac",
+    "sha256": "b37bb9ea42952b21110c3e6f2d899031f338b1a1f42fc45eb712a03b94e6c4ba",
+    "size": 683974351,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mthi_beargrass_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-07-06T01:49:53+00:00",
+    "archive_name": "mthi_circle_ver01.tar.bz2",
+    "batch": "mthi_circle_ver01",
+    "batch_file": "mthi_circle_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mthi:batch_mthi_circle_ver01",
+    "ingested": "2023-04-21T10:11:45-04:00",
+    "issue_count": 797,
+    "lccns": [
+      "sn86075229",
+      "sn85053043",
+      "sn84036252"
+    ],
+    "page_count": 9502,
+    "sha1": "3cdb4ecad37c6de14d21fc11d4085f932eb3155a",
+    "sha256": "d6abb903420cf99efb546ee6450105fa70934ae32ae8431a64c990b559f77e04",
+    "size": 578623516,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mthi_circle_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-02-26T21:00:27+00:00",
+    "archive_name": "mthi_clarkia_ver01.tar.bz2",
+    "batch": "mthi_clarkia_ver01",
+    "batch_file": "mthi_clarkia_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:mthi:batch_mthi_clarkia_ver01",
+    "ingested": "2019-12-05T06:12:37-05:00",
+    "issue_count": 1173,
+    "lccns": [
+      "sn84036287",
+      "sn84027524",
+      "sn85053343",
+      "sn85053106"
+    ],
+    "page_count": 9260,
+    "sha1": "64fd9a5633b434620f463e2326ad073cccbe2053",
+    "sha256": "0c334382456ae0762cfe693cdcd5297795b07a3e432a9a248b9266a8d11af3b7",
+    "size": 776765861,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mthi_clarkia_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-09-12T20:05:28+00:00",
+    "archive_name": "mthi_ekalaka_ver01.tar.bz2",
+    "batch": "mthi_ekalaka_ver01",
+    "batch_file": "mthi_ekalaka_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mthi:batch_mthi_ekalaka_ver01",
+    "ingested": "2023-05-30T18:11:42-04:00",
+    "issue_count": 1235,
+    "lccns": [
+      "sn86075298",
+      "sn86075272"
+    ],
+    "page_count": 9839,
+    "sha1": "11c03ffdacb19fbd8d79d9d07037fe1d58cdd38f",
+    "sha256": "1934b2c7116804cd22b27402cef91b9ffc5445ffc90c4eba7ef0f5da899fadf0",
+    "size": 788262787,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mthi_ekalaka_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-11-08T17:25:57+00:00",
+    "archive_name": "mthi_froid_ver01.tar.bz2",
+    "batch": "mthi_froid_ver01",
+    "batch_file": "mthi_froid_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mthi:batch_mthi_froid_ver01",
+    "ingested": "2023-06-22T21:28:32-04:00",
+    "issue_count": 1391,
+    "lccns": [
+      "sn86075284"
+    ],
+    "page_count": 9464,
+    "sha1": "7c379c69d866a40d67eb02db94da0d9a9395ca76",
+    "sha256": "98ee79534e82a03ed0e3e5ec1057a304b44e81bbdf4aef5733f3ee4f45ad37ea",
+    "size": 767044081,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mthi_froid_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-11-28T14:37:41+00:00",
+    "archive_name": "mthi_hobson_ver01.tar.bz2",
+    "batch": "mthi_hobson_ver01",
+    "batch_file": "mthi_hobson_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:mthi:batch_mthi_hobson_ver01",
+    "ingested": "2023-08-30T14:24:11-04:00",
+    "issue_count": 1143,
+    "lccns": [
+      "sn86075250"
+    ],
+    "page_count": 9615,
+    "sha1": "31e49802bdbb1dbea8c6d7c6bc9fa486286e129d",
+    "sha256": "c9c7852ad39cdd3321f82a5a3b1918b03e1669968bc020aff7f1d13ebae084aa",
+    "size": 790406994,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mthi_hobson_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-12-18T18:16:24+00:00",
+    "archive_name": "mthi_juniper_ver01.tar.bz2",
+    "batch": "mthi_juniper_ver01",
+    "batch_file": "mthi_juniper_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:mthi:batch_mthi_juniper_ver01",
+    "ingested": "2020-09-30T02:20:54-04:00",
+    "issue_count": 978,
+    "lccns": [
+      "sn85053305",
+      "sn83025296",
+      "sn84036285",
+      "sn84036284"
+    ],
+    "page_count": 6929,
+    "sha1": "66eff92931edba466f3eb85ccc5d16009235c373",
+    "sha256": "7c93e60978354c4b6be20525c78d539cef26fd77d345ed24fce9cb68dbb2ef89",
+    "size": 704131843,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/mthi_juniper_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2024-03-18T20:27:12+00:00",
+    "archive_name": "nbu_bluejay_ver02.tar.bz2",
+    "batch": "nbu_bluejay_ver02",
+    "batch_file": "nbu_bluejay_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:nbu:batch_nbu_bluejay_ver02",
+    "ingested": "2024-02-21T17:49:07-05:00",
+    "issue_count": 1587,
+    "lccns": [
+      "sn83045201",
+      "2023271000"
+    ],
+    "page_count": 9873,
+    "sha1": "293977581f688d7e2835df19227660fa0f4c2398",
+    "sha256": "eb0b2acd52fae935945a880c770181f247ebb34b4e14665bb7b66ca7a0d02906",
+    "size": 573673891,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/nbu_bluejay_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2020-12-18T18:24:35+00:00",
+    "archive_name": "nbu_indescribablebeast_ver01.tar.bz2",
+    "batch": "nbu_indescribablebeast_ver01",
+    "batch_file": "nbu_indescribablebeast_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:nbu:batch_nbu_indescribablebeast_ver01",
+    "ingested": "2020-10-10T01:05:42-04:00",
+    "issue_count": 1324,
+    "lccns": [
+      "sn84024326",
+      "00225879",
+      "2019270505"
+    ],
+    "page_count": 10869,
+    "sha1": "fc9a889a74fa131451c43065863dff22aa058038",
+    "sha256": "1932da7d511b9dd653a52859c52b044a236e165866d881ea37a98596781d9e36",
+    "size": 895684461,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/nbu_indescribablebeast_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-01-15T19:26:56+00:00",
+    "archive_name": "nbu_jeffersonii_ver02.tar.bz2",
+    "batch": "nbu_jeffersonii_ver02",
+    "batch_file": "nbu_jeffersonii_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:nbu:batch_nbu_jeffersonii_ver02",
+    "ingested": "2020-11-14T04:59:30-05:00",
+    "issue_count": 1102,
+    "lccns": [
+      "2010270509",
+      "2017270201",
+      "2019270501",
+      "2019270502",
+      "2019270500"
+    ],
+    "page_count": 10590,
+    "sha1": "b048c12b63732600f26013f9030603322cba25da",
+    "sha256": "9181c239d3e3ceca65873228808e3ba82846ffe69181d715b154191beb23a651",
+    "size": 900237826,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/nbu_jeffersonii_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T18:20:48.342587+00:00",
+    "archive_name": "nbu_junco_ver02.tar.bz2",
+    "batch": "nbu_junco_ver02",
+    "batch_file": "nbu_junco_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:nbu:batch_nbu_junco_ver02",
+    "ingested": "2025-01-13T17:29:13-05:00",
+    "issue_count": 1040,
+    "lccns": [
+      "2023271001",
+      "2023271002",
+      "2023271003",
+      "2023271004",
+      "2023271005"
+    ],
+    "page_count": 9206,
+    "sha256": "648f1e987e88fed4496983b33d4a94c656db7f5d6b3ad0c7732fb3c41174f1e2",
+    "size": 610484214,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/nbu_junco_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2019-06-20T09:40:00+00:00",
+    "archive_name": "ncu_apple_ver01.tar.bz2",
+    "batch": "ncu_apple_ver01",
+    "batch_file": "ncu_apple_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ncu:batch_ncu_apple_ver01",
+    "ingested": "2017-11-20T21:31:17-05:00",
+    "issue_count": 1389,
+    "lccns": [
+      "sn83025812",
+      "sn91068099",
+      "sn84026472"
+    ],
+    "page_count": 11661,
+    "sha1": "b0d8286156273fd7ff7a7c9a845fedc37e7191c4",
+    "sha256": "83c8079a94f44e571ef8e0de570ba2e570fa472635a0425f5cad292a957d8b55",
+    "size": 1186773209,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ncu_apple_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T12:49:02+00:00",
+    "archive_name": "ncu_appling_ver02.tar.bz2",
+    "batch": "ncu_appling_ver02",
+    "batch_file": "ncu_appling_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:ncu:batch_ncu_appling_ver02",
+    "ingested": "2019-12-12T22:33:51-05:00",
+    "issue_count": 1086,
+    "lccns": [
+      "sn82007642",
+      "sn88063132",
+      "sn97064597",
+      "sn97064613",
+      "sn98058951",
+      "sn98058953",
+      "sn84025895",
+      "sn96027351",
+      "sn91068242"
+    ],
+    "page_count": 9204,
+    "sha1": "f3e771c4800ca326c19ce325a9b69a8c60a1e499",
+    "sha256": "7cc78785c33fefb936486e0c356f8bade5d164dc98bf021db5bf7b3af4d0b0c6",
+    "size": 586510788,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ncu_appling_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T12:51:32+00:00",
+    "archive_name": "ncu_curry_ver02.tar.bz2",
+    "batch": "ncu_curry_ver02",
+    "batch_file": "ncu_curry_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:ncu:batch_ncu_curry_ver02",
+    "ingested": "2020-01-01T02:27:52-05:00",
+    "issue_count": 1365,
+    "lccns": [
+      "sn92073229"
+    ],
+    "page_count": 9488,
+    "sha1": "aabd269b492a58c0aa29af057bfea0e2f534c314",
+    "sha256": "0fe3b1133083cfcecd5a4c4acaac62f1c75e13a63b119fd4ad72b718db5d8440",
+    "size": 512299934,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ncu_curry_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2019-06-20T20:01:41+00:00",
+    "archive_name": "ndhi_bajoran_ver01.tar.bz2",
+    "batch": "ndhi_bajoran_ver01",
+    "batch_file": "ndhi_bajoran_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:ndhi:batch_ndhi_bajoran_ver01",
+    "ingested": "2018-12-04T15:51:25-05:00",
+    "issue_count": 928,
+    "lccns": [
+      "sn85042243"
+    ],
+    "page_count": 7270,
+    "sha1": "1116ff9b2ff7dead5f47781a38a424373c3c8627",
+    "sha256": "e3cd90f40cedf2353b6b7c587f0d2d583c47675a00760abe2f3f9bbb0fb52eca",
+    "size": 707502759,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ndhi_bajoran_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-07T19:37:42.347350+00:00",
+    "archive_name": "nhd_falcon_ver01.tar.bz2",
+    "batch": "nhd_falcon_ver01",
+    "batch_file": "nhd_falcon_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:nhd:batch_nhd_falcon_ver01",
+    "ingested": "2026-03-23T13:42:07-04:00",
+    "issue_count": 628,
+    "lccns": [
+      "sn84023045",
+      "sn84023310",
+      "sn84023311",
+      "sn84023720",
+      "sn86077046",
+      "sn90062625",
+      "sn91063243",
+      "sn91063244"
+    ],
+    "page_count": 6131,
+    "sha256": "3e32df69741b8a39bd81b7650f4bcad40f9fd19b800c79391e386d527677f9d3",
+    "size": 350934006,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/nhd_falcon_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-05-05T18:18:38+00:00",
+    "archive_name": "njr_beachhaven_ver01.tar.bz2",
+    "batch": "njr_beachhaven_ver01",
+    "batch_file": "njr_beachhaven_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:njr:batch_njr_beachhaven_ver01",
+    "ingested": "2022-03-02T14:05:39-05:00",
+    "issue_count": 1789,
+    "lccns": [
+      "sn84026089",
+      "sn84020438",
+      "sn83032217",
+      "sn85035610",
+      "sn85025061"
+    ],
+    "page_count": 10515,
+    "sha1": "5b204d6c43349f718295320bf7a5382146c6d2ca",
+    "sha256": "3fbd3cb77a4f789b9453f109a3f7ca80c6b8936ca6d145d6d8065cb9e07cbe1e",
+    "size": 918090222,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/njr_beachhaven_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-05-05T15:57:39+00:00",
+    "archive_name": "njr_capemay_ver01.tar.bz2",
+    "batch": "njr_capemay_ver01",
+    "batch_file": "njr_capemay_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:njr:batch_njr_capemay_ver01",
+    "ingested": "2022-03-19T16:26:58-04:00",
+    "issue_count": 1409,
+    "lccns": [
+      "sn85035661",
+      "sn84020438",
+      "sn85025540"
+    ],
+    "page_count": 7950,
+    "sha1": "4c7195df9e2f9fa944ac21f477faf8a5ae58871e",
+    "sha256": "bcabfc1896b22a7d72e7e3a2654468358ac3e6bf49d4f6daf88e2d30e0ad4e2c",
+    "size": 754851627,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/njr_capemay_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-06-05T15:11:28+00:00",
+    "archive_name": "njr_galloway_ver01.tar.bz2",
+    "batch": "njr_galloway_ver01",
+    "batch_file": "njr_galloway_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:njr:batch_njr_galloway_ver01",
+    "ingested": "2023-03-22T13:12:31-04:00",
+    "issue_count": 1306,
+    "lccns": [
+      "sn91064030",
+      "sn91064052",
+      "sn83032307",
+      "sn85035678",
+      "sn83032308",
+      "sn84026314",
+      "sn85035776",
+      "sn85025249"
+    ],
+    "page_count": 8175,
+    "sha1": "3ef04450dcc45367da895a6940ed055ba8e3fcb3",
+    "sha256": "932f112a83eed45ebd2f591f93185842b0a5ac639db8ba50d779956601c81a5b",
+    "size": 886481121,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/njr_galloway_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-07-12T17:57:18+00:00",
+    "archive_name": "njr_harveycedars_ver02.tar.bz2",
+    "batch": "njr_harveycedars_ver02",
+    "batch_file": "njr_harveycedars_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:njr:batch_njr_harveycedars_ver02",
+    "ingested": "2023-04-25T16:12:46-04:00",
+    "issue_count": 1132,
+    "lccns": [
+      "sn85035776",
+      "sn87068108"
+    ],
+    "page_count": 9067,
+    "sha1": "02a8e5e8013e5f7b0801e01c4cb64c5e94e61bb2",
+    "sha256": "120759064c246b9cd21feef5dcfe95b4fb98c9ffd08f27d14d1c0068453084fb",
+    "size": 927784027,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/njr_harveycedars_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2023-10-12T18:49:46+00:00",
+    "archive_name": "njr_islandbeach_ver03.tar.bz2",
+    "batch": "njr_islandbeach_ver03",
+    "batch_file": "njr_islandbeach_ver03/data/batch_1.xml",
+    "identifier": "service:ndnp:njr:batch_njr_islandbeach_ver03",
+    "ingested": "2023-06-16T11:35:24-04:00",
+    "issue_count": 1171,
+    "lccns": [
+      "sn92059905",
+      "sn88071052",
+      "sn87068108"
+    ],
+    "page_count": 9031,
+    "sha1": "6e6b72fb5015dace650f28961c1f0f3a9e08fd80",
+    "sha256": "c85366d754eaf5d9aa1a683b74f1f00737784a1fc2270d72687deb519707aef5",
+    "size": 659277350,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/njr_islandbeach_ver03.tar.bz2"
+  },
+  {
+    "archive_created": "2023-10-20T19:41:42+00:00",
+    "archive_name": "njr_jackson_ver01.tar.bz2",
+    "batch": "njr_jackson_ver01",
+    "batch_file": "njr_jackson_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:njr:batch_njr_jackson_ver01",
+    "ingested": "2023-07-11T15:45:55-04:00",
+    "issue_count": 498,
+    "lccns": [
+      "sn92059905",
+      "sn84020438",
+      "sn92059906"
+    ],
+    "page_count": 9112,
+    "sha1": "99f326644857b3e427f2556ddd3230b182ce412c",
+    "sha256": "e428fa50031f815588afebd889eff7048028979f52a77ab3f622c81c34fa5930",
+    "size": 454421548,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/njr_jackson_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-11-08T19:28:56+00:00",
+    "archive_name": "nvln_unionville_ver02.tar.bz2",
+    "batch": "nvln_unionville_ver02",
+    "batch_file": "nvln_unionville_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:nvln:batch_nvln_unionville_ver02",
+    "ingested": "2019-09-10T03:37:01-04:00",
+    "issue_count": 1034,
+    "lccns": [
+      "sn86076141",
+      "sn86076027"
+    ],
+    "page_count": 7176,
+    "sha1": "55d7aae88a76d0e5860a96b29f58dd8689818c8d",
+    "sha256": "96be3d1b2706694f50ebd705106ab1ecdf5e22ca194965bc0c3beafe288e6957",
+    "size": 479785988,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/nvln_unionville_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T18:19:14.724856+00:00",
+    "archive_name": "ohi_bellatrix_ver03.tar.bz2",
+    "batch": "ohi_bellatrix_ver03",
+    "batch_file": "ohi_bellatrix_ver03/data/batch_1.xml",
+    "identifier": "service:ndnp:ohi:batch_ohi_bellatrix_ver03",
+    "ingested": "2025-01-17T09:43:10-05:00",
+    "issue_count": 1177,
+    "lccns": [
+      "sn87076839",
+      "sn89075140"
+    ],
+    "page_count": 8064,
+    "sha256": "e3871b0244fda1aae4a9d08b4fe4f1a722d460db8b427be60d83c47a3892eb26",
+    "size": 588822773,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ohi_bellatrix_ver03.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T13:56:03+00:00",
+    "archive_name": "ohi_buttercup_ver01.tar.bz2",
+    "batch": "ohi_buttercup_ver01",
+    "batch_file": "ohi_buttercup_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ohi:batch_ohi_buttercup_ver01",
+    "ingested": "2019-10-16T23:22:35-04:00",
+    "issue_count": 1742,
+    "lccns": [
+      "sn83045012"
+    ],
+    "page_count": 8408,
+    "sha1": "7455e9e29eafc19119df40cc768bc6569a2b21d6",
+    "sha256": "95c8e1ec69ca17bf2895c0987f873456b66e67643af61cf9278ce9e044e9af66",
+    "size": 426129813,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ohi_buttercup_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T14:13:00+00:00",
+    "archive_name": "ohi_echinacea_ver01.tar.bz2",
+    "batch": "ohi_echinacea_ver01",
+    "batch_file": "ohi_echinacea_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ohi:batch_ohi_echinacea_ver01",
+    "ingested": "2020-01-16T06:24:00-05:00",
+    "issue_count": 1017,
+    "lccns": [
+      "sn87075008"
+    ],
+    "page_count": 8138,
+    "sha1": "858f4260227fc3bd45eabe464c831226dbfa3eee",
+    "sha256": "c5fefb7f0a88209c01ab754a4a250a72c329dbed8e35877999a417a480d5e1de",
+    "size": 631599031,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ohi_echinacea_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T14:57:24.865225+00:00",
+    "archive_name": "ohi_fleur_ver01.tar.bz2",
+    "batch": "ohi_fleur_ver01",
+    "batch_file": "ohi_fleur_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ohi:batch_ohi_fleur_ver01",
+    "ingested": "2025-05-01T15:20:50-04:00",
+    "issue_count": 1095,
+    "lccns": [
+      "2024270739",
+      "sn83035189"
+    ],
+    "page_count": 9107,
+    "sha256": "a8c743c33c030a731c1d3b14a964e9e126038210722183d051f9ce61707aa001",
+    "size": 814963362,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ohi_fleur_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T14:14:24.082442+00:00",
+    "archive_name": "ohi_hagrid_ver01.tar.bz2",
+    "batch": "ohi_hagrid_ver01",
+    "batch_file": "ohi_hagrid_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ohi:batch_ohi_hagrid_ver01",
+    "ingested": "2025-04-10T13:57:45-04:00",
+    "issue_count": 859,
+    "lccns": [
+      "sn83035602",
+      "sn85034418"
+    ],
+    "page_count": 9533,
+    "sha256": "29566ab2b4ce09cfbbff223179e6ac8dc6c300e94176d32da6faa4a7f1e6a838",
+    "size": 478384764,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ohi_hagrid_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2019-06-23T03:52:32+00:00",
+    "archive_name": "ohi_holden_ver01.tar.bz2",
+    "batch": "ohi_holden_ver01",
+    "batch_file": "ohi_holden_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ohi:batch_ohi_holden_ver01",
+    "ingested": "2018-04-30T08:46:32-04:00",
+    "issue_count": 879,
+    "lccns": [
+      "sn88078386"
+    ],
+    "page_count": 5190,
+    "sha1": "fbed4d28f2126287608798f167c53bfeeed21059",
+    "sha256": "42aae459ae314fa3ce7a4248112d7bd15dc58bfe1b0b6499c4b4c764df115aee",
+    "size": 284003396,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ohi_holden_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-12-18T19:06:22+00:00",
+    "archive_name": "ohi_lavender_ver01.tar.bz2",
+    "batch": "ohi_lavender_ver01",
+    "batch_file": "ohi_lavender_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:ohi:batch_ohi_lavender_ver01",
+    "ingested": "2020-10-30T13:05:46-04:00",
+    "issue_count": 797,
+    "lccns": [
+      "sn88078775",
+      "sn83035682"
+    ],
+    "page_count": 7368,
+    "sha1": "ff735417678b7e88795fe2cc19f71b87b1791117",
+    "sha256": "e49ebd38676c2e71cea36fd1bdaa56eee219e8ba504ec7a8b5a6b8448b6d16b0",
+    "size": 338512626,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/ohi_lavender_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-08T18:57:46.903613+00:00",
+    "archive_name": "scu_dragonfruit_ver01.tar.bz2",
+    "batch": "scu_dragonfruit_ver01",
+    "batch_file": "scu_dragonfruit_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:scu:batch_scu_dragonfruit_ver01",
+    "ingested": "2024-05-07T15:58:00-04:00",
+    "issue_count": 562,
+    "lccns": [
+      "sn87065702"
+    ],
+    "page_count": 8991,
+    "sha256": "29b4f722cfb87a83f01bb35b3cebc5c6e2c713f8b9b3aca604c9cbb7ac8926c9",
+    "size": 342179249,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/scu_dragonfruit_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T19:33:32.211886+00:00",
+    "archive_name": "scu_eggplant_ver02.tar.bz2",
+    "batch": "scu_eggplant_ver02",
+    "batch_file": "scu_eggplant_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:scu:batch_scu_eggplant_ver02",
+    "ingested": "2025-02-20T14:39:35-05:00",
+    "issue_count": 1312,
+    "lccns": [
+      "2013228785",
+      "sn82004649",
+      "sn84026912",
+      "sn84026925",
+      "sn86071063",
+      "sn93067671",
+      "sn93067760",
+      "sn93067937",
+      "sn93067951",
+      "sn95079550"
+    ],
+    "page_count": 8240,
+    "sha256": "d8846aa522f8691509b8c954bbc05adc62cbf5a1d9025c8d7396b5c4c3866c7e",
+    "size": 803021915,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/scu_eggplant_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T18:54:27.590247+00:00",
+    "archive_name": "scu_figs_ver02.tar.bz2",
+    "batch": "scu_figs_ver02",
+    "batch_file": "scu_figs_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:scu:batch_scu_figs_ver02",
+    "ingested": "2025-02-03T12:28:59-05:00",
+    "issue_count": 1501,
+    "lccns": [
+      "sn84026897",
+      "sn86063754",
+      "sn86063761",
+      "sn86063778",
+      "sn86071063",
+      "sn93067841"
+    ],
+    "page_count": 8422,
+    "sha256": "9d8ff03693898eb9813b60f4c075b6fc4e9cf05d2dc99de6ad1fdaa405206145",
+    "size": 621999578,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/scu_figs_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T16:44:57.903404+00:00",
+    "archive_name": "scu_jicama_ver01.tar.bz2",
+    "batch": "scu_jicama_ver01",
+    "batch_file": "scu_jicama_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:scu:batch_scu_jicama_ver01",
+    "ingested": "2024-09-17T19:01:15-04:00",
+    "issue_count": 1114,
+    "lccns": [
+      "sn84026925",
+      "sn86063760",
+      "sn86063761",
+      "sn86063774",
+      "sn87065702",
+      "sn93067841",
+      "sn93067846"
+    ],
+    "page_count": 8774,
+    "sha256": "6cffe9f1f58575c8cb9405a0240a399e5fb185ea884222c1708b492cf77617f8",
+    "size": 768436562,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/scu_jicama_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T19:34:28.177394+00:00",
+    "archive_name": "scu_kiwi_ver03.tar.bz2",
+    "batch": "scu_kiwi_ver03",
+    "batch_file": "scu_kiwi_ver03/data/batch_1.xml",
+    "identifier": "service:ndnp:scu:batch_scu_kiwi_ver03",
+    "ingested": "2025-03-05T14:17:29-05:00",
+    "issue_count": 1444,
+    "lccns": [
+      "sn84026853",
+      "sn84026912",
+      "sn86063754",
+      "sn86063758",
+      "sn86063760",
+      "sn86063778",
+      "sn86063790",
+      "sn86071063",
+      "sn93067671",
+      "sn93067841",
+      "sn93067951"
+    ],
+    "page_count": 9476,
+    "sha256": "fac3e4c7799e7875f9188a3ddb0833d108efcf57eed902f5fcccb2a420faa480",
+    "size": 688612486,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/scu_kiwi_ver03.tar.bz2"
+  },
+  {
+    "archive_created": "2023-03-03T16:05:58+00:00",
+    "archive_name": "txdn_aubrey_ver01.tar.bz2",
+    "batch": "txdn_aubrey_ver01",
+    "batch_file": "txdn_aubrey_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:txdn:batch_txdn_aubrey_ver01",
+    "ingested": "2022-12-08T18:52:11-05:00",
+    "issue_count": 637,
+    "lccns": [
+      "sn85060004",
+      "sn86089542"
+    ],
+    "page_count": 10627,
+    "sha1": "a4be84e5db751a709a6f98211b883212bb06dc5e",
+    "sha256": "ce85c1ac9b68fb487370c8747841d8901d8fc2aa7c28026170652e2a35a0e3a3",
+    "size": 867096217,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/txdn_aubrey_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2023-02-24T15:19:23+00:00",
+    "archive_name": "txdn_bartonville_ver01.tar.bz2",
+    "batch": "txdn_bartonville_ver01",
+    "batch_file": "txdn_bartonville_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:txdn:batch_txdn_bartonville_ver01",
+    "ingested": "2022-12-08T18:46:04-05:00",
+    "issue_count": 694,
+    "lccns": [
+      "sn85060004",
+      "sn86090439",
+      "sn86089542"
+    ],
+    "page_count": 6776,
+    "sha1": "88ae7e3fdfc568db6f798a52f41ed33f9ef6339f",
+    "sha256": "5566f7d8acea260abc0331dcc89fd1de3681d71d3efe00818078ba77254c45ab",
+    "size": 668195081,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/txdn_bartonville_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2024-02-15T22:38:15+00:00",
+    "archive_name": "vi_cartier_ver01.tar.bz2",
+    "batch": "vi_cartier_ver01",
+    "batch_file": "vi_cartier_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:vi:batch_vi_cartier_ver01",
+    "ingested": "2024-01-25T15:39:52-05:00",
+    "issue_count": 717,
+    "lccns": [
+      "sn94060041"
+    ],
+    "page_count": 9930,
+    "sha1": "ba6a820f772f5ba3cc2bb807e1a5859ce41f3a3f",
+    "sha256": "e845a848c02aa8e3b1c3a3c1415870fd92a73e7fa164fa52daa0a3f0cdfb881a",
+    "size": 758149423,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/vi_cartier_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-09T21:57:30.475068+00:00",
+    "archive_name": "vi_fortis_ver01.tar.bz2",
+    "batch": "vi_fortis_ver01",
+    "batch_file": "vi_fortis_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:vi:batch_vi_fortis_ver01",
+    "ingested": "2024-07-02T12:29:48-04:00",
+    "issue_count": 2217,
+    "lccns": [
+      "sn85034357"
+    ],
+    "page_count": 11249,
+    "sha256": "a3e46a6d3ec0cf9ad76b0aa37c2a3831a2dd50639ec5ad08dc1f5a4f761d0f9b",
+    "size": 928296763,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/vi_fortis_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2021-11-08T14:51:47+00:00",
+    "archive_name": "vi_jennet_ver02.tar.bz2",
+    "batch": "vi_jennet_ver02",
+    "batch_file": "vi_jennet_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:vi:batch_vi_jennet_ver02",
+    "ingested": "2021-05-27T20:13:45-04:00",
+    "issue_count": 2139,
+    "lccns": [
+      "sn85026941",
+      "sn85026936",
+      "sn95079130",
+      "sn95079025",
+      "sn85025691"
+    ],
+    "page_count": 8937,
+    "sha1": "e690fb4c0ec5402c65d0cea7e5172cf8bf49c83c",
+    "sha256": "97b68d2462737ddc21ad3d25c655bb58609567fb6a0e75ae4ee790630d3c7aed",
+    "size": 1133851788,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/vi_jennet_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2019-11-08T19:50:05+00:00",
+    "archive_name": "vi_jumboshrimp_ver01.tar.bz2",
+    "batch": "vi_jumboshrimp_ver01",
+    "batch_file": "vi_jumboshrimp_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:vi:batch_vi_jumboshrimp_ver01",
+    "ingested": "2019-06-07T10:44:43-04:00",
+    "issue_count": 718,
+    "lccns": [
+      "sn84025841",
+      "sn85025007",
+      "sn84025997"
+    ],
+    "page_count": 4748,
+    "sha1": "8575211360555a5420598fd488921202bb35777a",
+    "sha256": "6e8ad5e77925cd472bf90ecb7d65cc920eb8abbaddc293bcca60578860daa574",
+    "size": 371944492,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/vi_jumboshrimp_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T17:47:42.957156+00:00",
+    "archive_name": "vi_longines_ver01.tar.bz2",
+    "batch": "vi_longines_ver01",
+    "batch_file": "vi_longines_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:vi:batch_vi_longines_ver01",
+    "ingested": "2024-10-22T09:54:45-04:00",
+    "issue_count": 2314,
+    "lccns": [
+      "sn85025371"
+    ],
+    "page_count": 9665,
+    "sha256": "8d58b91820af1411f5a77655939030852c6d1649d58495ccdbe2978690138ba9",
+    "size": 1272608280,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/vi_longines_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2020-10-06T16:32:21+00:00",
+    "archive_name": "wa_canvasback_ver02.tar.bz2",
+    "batch": "wa_canvasback_ver02",
+    "batch_file": "wa_canvasback_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wa:batch_wa_canvasback_ver02",
+    "ingested": "2020-05-28T10:09:51-04:00",
+    "issue_count": 1653,
+    "lccns": [
+      "sn87093377",
+      "sn88087163",
+      "sn88085780",
+      "sn87093436"
+    ],
+    "page_count": 9502,
+    "sha1": "3ac2903b24efe9c327061f9b52257aa7173a6201",
+    "sha256": "df21fc6125618a4dfb8f40340cc993a8b97e0b70021b7f230850cec0d8a0f422",
+    "size": 586187498,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wa_canvasback_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2020-08-09T14:32:35+00:00",
+    "archive_name": "wa_eagle_ver02.tar.bz2",
+    "batch": "wa_eagle_ver02",
+    "batch_file": "wa_eagle_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wa:batch_wa_eagle_ver02",
+    "ingested": "2020-02-28T12:38:50-05:00",
+    "issue_count": 863,
+    "lccns": [
+      "sn87093042"
+    ],
+    "page_count": 7296,
+    "sha1": "9273e967a97c1f2a46d3ae15cef3232e92f1c91b",
+    "sha256": "aab5bcbb61d1ef5356bdc4f9f6c0ce728470d1f9b242d27524e746f133293d36",
+    "size": 535810329,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wa_eagle_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2020-12-16T13:31:38+00:00",
+    "archive_name": "wa_guillemot_ver02.tar.bz2",
+    "batch": "wa_guillemot_ver02",
+    "batch_file": "wa_guillemot_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wa:batch_wa_guillemot_ver02",
+    "ingested": "2020-10-31T03:22:04-04:00",
+    "issue_count": 1427,
+    "lccns": [
+      "sn87093008",
+      "sn87093323",
+      "sn92038390",
+      "sn92038389",
+      "sn87093042"
+    ],
+    "page_count": 8012,
+    "sha1": "df1cdf21e1cf05eabf69e3385985629bc7743cba",
+    "sha256": "d213f4759eca2342aaabd39071eacad055bbe35edcfc2e7c3fd1066926958965",
+    "size": 559557202,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wa_guillemot_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2020-12-18T21:38:17+00:00",
+    "archive_name": "wa_heron_ver02.tar.bz2",
+    "batch": "wa_heron_ver02",
+    "batch_file": "wa_heron_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wa:batch_wa_heron_ver02",
+    "ingested": "2020-10-09T15:28:32-04:00",
+    "issue_count": 1545,
+    "lccns": [
+      "sn89079026",
+      "sn88085722",
+      "sn87093323",
+      "sn88087129",
+      "sn87093375",
+      "sn87093376",
+      "sn87093377"
+    ],
+    "page_count": 9408,
+    "sha1": "be7bb6422fbcd73f0035e0994c686720750a4e99",
+    "sha256": "9391a86bac77132a6456cc0ff2bb7e0d23eb29471d994c346b9ea7fd08860868",
+    "size": 671580836,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wa_heron_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2021-06-21T18:20:40+00:00",
+    "archive_name": "wa_longspur_ver02.tar.bz2",
+    "batch": "wa_longspur_ver02",
+    "batch_file": "wa_longspur_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wa:batch_wa_longspur_ver02",
+    "ingested": "2021-03-18T05:26:43-04:00",
+    "issue_count": 532,
+    "lccns": [
+      "sn87093407"
+    ],
+    "page_count": 9556,
+    "sha1": "48c43b8d63b408f516eeff0d11e033051cb8fb2b",
+    "sha256": "64a639ec2811e5cf5058cf0c06478d6cb927852ebebfa7b43b0124f220e7f201",
+    "size": 897980840,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wa_longspur_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T14:38:56.513119+00:00",
+    "archive_name": "whi_altbrew_ver01.tar.bz2",
+    "batch": "whi_altbrew_ver01",
+    "batch_file": "whi_altbrew_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:whi:batch_whi_altbrew_ver01",
+    "ingested": "2025-05-14T09:34:24-04:00",
+    "issue_count": 106,
+    "lccns": [
+      "sn84025843"
+    ],
+    "page_count": 444,
+    "sha256": "e1081ab4b36848e3058fd559b5b26a80fce0f250708ddc7ee88a0fd6aabfcc8a",
+    "size": 29422097,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/whi_altbrew_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T16:53:26.129934+00:00",
+    "archive_name": "whi_gouda_ver01.tar.bz2",
+    "batch": "whi_gouda_ver01",
+    "batch_file": "whi_gouda_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:whi:batch_whi_gouda_ver01",
+    "ingested": "2024-09-20T00:34:57-04:00",
+    "issue_count": 702,
+    "lccns": [
+      "sn83045293"
+    ],
+    "page_count": 9643,
+    "sha256": "cd6878ae631a1d9214f87cd6b6d7480291e37d49464f95eb8711f2d8690bbb39",
+    "size": 1049502118,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/whi_gouda_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-31T15:00:24+00:00",
+    "archive_name": "whi_lenawee_ver01.tar.bz2",
+    "batch": "whi_lenawee_ver01",
+    "batch_file": "whi_lenawee_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:whi:batch_whi_lenawee_ver01",
+    "ingested": "2021-12-18T22:32:32-05:00",
+    "issue_count": 894,
+    "lccns": [
+      "sn85033133",
+      "sn85040652",
+      "sn85040614",
+      "sn86086068",
+      "sn85040310",
+      "sn85040613"
+    ],
+    "page_count": 7920,
+    "sha1": "d3b1644bf2013462bcba423b3a1255bd94804170",
+    "sha256": "ad9fad074790e6cfb6a5e64379eb0139f04a4dac48c3494b4cebfab856214296",
+    "size": 735554415,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/whi_lenawee_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-31T15:08:31+00:00",
+    "archive_name": "whi_mabel_ver01.tar.bz2",
+    "batch": "whi_mabel_ver01",
+    "batch_file": "whi_mabel_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:whi:batch_whi_mabel_ver01",
+    "ingested": "2021-12-22T11:26:58-05:00",
+    "issue_count": 317,
+    "lccns": [
+      "sn85041553",
+      "sn85033255",
+      "sn85040310"
+    ],
+    "page_count": 2593,
+    "sha1": "6b6294c687ef58309dea021ebc377b7ded38b7fe",
+    "sha256": "dda516d586a2f93926f10341357d5ecb9d6e5621976128e4240fc961e2e6a658",
+    "size": 216842952,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/whi_mabel_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-09T22:01:43.087330+00:00",
+    "archive_name": "wvu_eden_ver01.tar.bz2",
+    "batch": "wvu_eden_ver01",
+    "batch_file": "wvu_eden_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_eden_ver01",
+    "ingested": "2024-07-25T16:07:42-04:00",
+    "issue_count": 1489,
+    "lccns": [
+      "sn86092282"
+    ],
+    "page_count": 10726,
+    "sha256": "cda6cf80c08f4067e030e6fef07605d8a69c5f30dc2ecebc5abb9664a502a24e",
+    "size": 907098846,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_eden_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-09T22:35:43.387113+00:00",
+    "archive_name": "wvu_garbo_ver02.tar.bz2",
+    "batch": "wvu_garbo_ver02",
+    "batch_file": "wvu_garbo_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_garbo_ver02",
+    "ingested": "2024-08-02T21:37:49-04:00",
+    "issue_count": 1927,
+    "lccns": [
+      "sn86092280"
+    ],
+    "page_count": 9579,
+    "sha256": "6f7f14dcb17c8996e1eb43c379c96e0b8bcb7a2930d3774f360cf2b84fffe73b",
+    "size": 776397383,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_garbo_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T17:50:00.413825+00:00",
+    "archive_name": "wvu_harlow_ver01.tar.bz2",
+    "batch": "wvu_harlow_ver01",
+    "batch_file": "wvu_harlow_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_harlow_ver01",
+    "ingested": "2024-11-06T22:38:05-05:00",
+    "issue_count": 2179,
+    "lccns": [
+      "sn84008412",
+      "sn86092348",
+      "sn86092398"
+    ],
+    "page_count": 9543,
+    "sha256": "f7a71a69c5c272510aeae7d863a38d3722d1f591a8ffcefb01ac6e5aa4d6c3b6",
+    "size": 945117435,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_harlow_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T18:19:00.585364+00:00",
+    "archive_name": "wvu_irving_ver02.tar.bz2",
+    "batch": "wvu_irving_ver02",
+    "batch_file": "wvu_irving_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_irving_ver02",
+    "ingested": "2025-01-02T17:19:07-05:00",
+    "issue_count": 1863,
+    "lccns": [
+      "sn83004262"
+    ],
+    "page_count": 8133,
+    "sha256": "608f87c157d8369e8ee38911fcbcb5b4fe39cfc85da3333f82ea69ef099137b6",
+    "size": 800710590,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_irving_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-31T15:20:54+00:00",
+    "archive_name": "wvu_jacklin_ver01.tar.bz2",
+    "batch": "wvu_jacklin_ver01",
+    "batch_file": "wvu_jacklin_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_jacklin_ver01",
+    "ingested": "2022-01-28T18:27:59-05:00",
+    "issue_count": 2117,
+    "lccns": [
+      "sn84026788",
+      "sn86092151",
+      "sn86092182"
+    ],
+    "page_count": 9820,
+    "sha1": "7871930f57c2ba0b94458fb6ddd8f6a3ae94be77",
+    "sha256": "402325b8825dc7b5976b7c2041144c6e3321213f5b15ed32f1caa0644faf4250",
+    "size": 1090360719,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_jacklin_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T18:18:58.559098+00:00",
+    "archive_name": "wvu_jolie_ver02.tar.bz2",
+    "batch": "wvu_jolie_ver02",
+    "batch_file": "wvu_jolie_ver02/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_jolie_ver02",
+    "ingested": "2024-12-30T10:14:38-05:00",
+    "issue_count": 1074,
+    "lccns": [
+      "sn85059663"
+    ],
+    "page_count": 8280,
+    "sha256": "365278d556452edec0289550b65a1f592f9691429930cb43a81a8ce1aa08c4f1",
+    "size": 677112219,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_jolie_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T13:42:31.739694+00:00",
+    "archive_name": "wvu_kerr_ver01.tar.bz2",
+    "batch": "wvu_kerr_ver01",
+    "batch_file": "wvu_kerr_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_kerr_ver01",
+    "ingested": "2025-03-27T10:43:07-04:00",
+    "issue_count": 2168,
+    "lccns": [
+      "sn84038216",
+      "sn84038410",
+      "sn85059660",
+      "sn85059669",
+      "sn85059670",
+      "sn85059693",
+      "sn85059694",
+      "sn85059696",
+      "sn86092223",
+      "sn86092316",
+      "sn86092317",
+      "sn86092318",
+      "sn86092319",
+      "sn86092371"
+    ],
+    "page_count": 9710,
+    "sha256": "8a36a9ca8dd767ea91655b08baa30b3ae46e3815e83f6b2ab4b9d5271824f5ee",
+    "size": 1026714450,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_kerr_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-05-05T16:15:05+00:00",
+    "archive_name": "wvu_kite_ver01.tar.bz2",
+    "batch": "wvu_kite_ver01",
+    "batch_file": "wvu_kite_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_kite_ver01",
+    "ingested": "2022-03-02T13:24:06-05:00",
+    "issue_count": 1776,
+    "lccns": [
+      "sn86092333",
+      "sn86092182"
+    ],
+    "page_count": 8808,
+    "sha1": "652da07bef90022144e7a42c10463bf49e45ca4b",
+    "sha256": "0212669ef83adfa5d692cb852b4b9793d8b3b3350b7b308a546bc713c54ed386",
+    "size": 1218127580,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_kite_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T19:36:02.464309+00:00",
+    "archive_name": "wvu_monroe_ver01.tar.bz2",
+    "batch": "wvu_monroe_ver01",
+    "batch_file": "wvu_monroe_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_monroe_ver01",
+    "ingested": "2025-02-20T15:53:48-05:00",
+    "issue_count": 1781,
+    "lccns": [
+      "sn84037877",
+      "sn85054267",
+      "sn85059514",
+      "sn85059520",
+      "sn85059523",
+      "sn85059628",
+      "sn85059784",
+      "sn85059785",
+      "sn86092082",
+      "sn86092219",
+      "sn86092221",
+      "sn86092285",
+      "sn86092312",
+      "sn86092387",
+      "sn86092388"
+    ],
+    "page_count": 10240,
+    "sha256": "c1dc9d2b274344975b582e4e9f159449048f6f9c79c4667f7cfb21756f7cb61e",
+    "size": 818419216,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_monroe_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T19:28:19.671191+00:00",
+    "archive_name": "wvu_oberon_ver01.tar.bz2",
+    "batch": "wvu_oberon_ver01",
+    "batch_file": "wvu_oberon_ver01/data/batch_1.xml",
+    "identifier": "service:ndnp:wvu:batch_wvu_oberon_ver01",
+    "ingested": "2025-03-06T12:38:29-05:00",
+    "issue_count": 916,
+    "lccns": [
+      "sn84038215",
+      "sn85059513",
+      "sn85059515",
+      "sn85059523",
+      "sn85059761",
+      "sn85059873",
+      "sn86092119",
+      "sn86092215",
+      "sn86092234",
+      "sn86092235",
+      "sn86092387"
+    ],
+    "page_count": 3974,
+    "sha256": "66cd8833cb82df1c89e17322228df32ab2bd684125ed222e99f2d1fd2e526c3f",
+    "size": 524928735,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wvu_oberon_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T16:46:40.865706+00:00",
+    "archive_name": "wyu_dryad_ver01.tar.bz2",
+    "batch": "wyu_dryad_ver01",
+    "batch_file": "wyu_dryad_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_dryad_ver01",
+    "ingested": "2024-09-23T19:23:53-04:00",
+    "issue_count": 1336,
+    "lccns": [
+      "sn92066973",
+      "sn92067170",
+      "sn92067173"
+    ],
+    "page_count": 10386,
+    "sha256": "86f4f6036f1123002cccaa0328e9a95d8a32858e62059cb8d4d134985d472530",
+    "size": 750192669,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_dryad_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-04-23T17:46:25.459821+00:00",
+    "archive_name": "wyu_elemental_ver01.tar.bz2",
+    "batch": "wyu_elemental_ver01",
+    "batch_file": "wyu_elemental_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_elemental_ver01",
+    "ingested": "2024-12-07T04:20:01-05:00",
+    "issue_count": 1389,
+    "lccns": [
+      "sn92067170",
+      "sn92067225"
+    ],
+    "page_count": 9085,
+    "sha256": "fdd9d23bcf0c2fe93a710a3a69792743132eb09e88233c4497f6d6a6828c7789",
+    "size": 696750786,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_elemental_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-01-07T13:24:13+00:00",
+    "archive_name": "wyu_etna_ver03.tar.bz2",
+    "batch": "wyu_etna_ver03",
+    "batch_file": "wyu_etna_ver03/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_etna_ver03",
+    "ingested": "2021-08-05T05:21:01-04:00",
+    "issue_count": 1575,
+    "lccns": [
+      "sn83002748",
+      "sn92066929",
+      "sn92066928",
+      "sn92066925",
+      "sn92066930"
+    ],
+    "page_count": 9414,
+    "sha1": "f5fc675815a004bc0bafe99eb6d4e253dca092dc",
+    "sha256": "c53b6d44c9f7ed50bdc55c1fc059eaa6ec743fd53a679fd9433ad86ec9d557d8",
+    "size": 765131831,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_etna_ver03.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T15:41:15.900969+00:00",
+    "archive_name": "wyu_goblin_ver02.tar.bz2",
+    "batch": "wyu_goblin_ver02",
+    "batch_file": "wyu_goblin_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_goblin_ver02",
+    "ingested": "2025-06-25T15:59:44-04:00",
+    "issue_count": 1285,
+    "lccns": [
+      "sn90051693",
+      "sn92067018",
+      "sn92067034",
+      "sn92067035",
+      "sn92067094",
+      "sn92067107",
+      "sn92067108",
+      "sn92067110"
+    ],
+    "page_count": 7331,
+    "sha256": "0e13b9286720ee07ac8da713c0ce30b17268265d79b97a55df820b18506ad5ae",
+    "size": 586409054,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_goblin_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-05T14:52:06.543116+00:00",
+    "archive_name": "wyu_hydra_ver01.tar.bz2",
+    "batch": "wyu_hydra_ver01",
+    "batch_file": "wyu_hydra_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_hydra_ver01",
+    "ingested": "2025-05-15T14:45:39-04:00",
+    "issue_count": 1124,
+    "lccns": [
+      "sn90051693"
+    ],
+    "page_count": 9133,
+    "sha256": "204317b26582e0a32be658b06f800a57b6d41e3c0a2be12defb9d4dcf66ac45e",
+    "size": 617129368,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_hydra_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2026-05-07T17:23:12.925928+00:00",
+    "archive_name": "wyu_imp_ver02.tar.bz2",
+    "batch": "wyu_imp_ver02",
+    "batch_file": "wyu_imp_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_imp_ver02",
+    "ingested": "2025-12-12T09:20:11-05:00",
+    "issue_count": 1118,
+    "lccns": [
+      "2025200831",
+      "sn86091304",
+      "sn90051693",
+      "sn92066973",
+      "sn92067029",
+      "sn92067031",
+      "sn92067034",
+      "sn92067110",
+      "sn92067170",
+      "sn92067173",
+      "sn92067225",
+      "sn93070024"
+    ],
+    "page_count": 8597,
+    "sha256": "76882e5455bee4d08ce38d591dbbaf01281a781dec063c1bfeaa346b3c3d3868",
+    "size": 659091181,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_imp_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2023-11-17T13:51:43+00:00",
+    "archive_name": "wyu_irving_ver01.tar.bz2",
+    "batch": "wyu_irving_ver01",
+    "batch_file": "wyu_irving_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_irving_ver01",
+    "ingested": "2023-07-19T15:21:28-04:00",
+    "issue_count": 1778,
+    "lccns": [
+      "sn92067096",
+      "sn92067221",
+      "sn92067098",
+      "sn86091412",
+      "sn92067097",
+      "sn93070038"
+    ],
+    "page_count": 8149,
+    "sha1": "ac91ffc54aca3bff504a58921a80815268d39829",
+    "sha256": "61478329a40f35660e6d406ab8b544dc985bc2d4dc6e376330041f44d08d3e8c",
+    "size": 813478339,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_irving_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2024-01-05T14:40:25+00:00",
+    "archive_name": "wyu_jones_ver02.tar.bz2",
+    "batch": "wyu_jones_ver02",
+    "batch_file": "wyu_jones_ver02/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_jones_ver02",
+    "ingested": "2023-10-26T13:07:52-04:00",
+    "issue_count": 1946,
+    "lccns": [
+      "sn92067106"
+    ],
+    "page_count": 9843,
+    "sha1": "d2ce299e356e6872f431556c542e588a5cb1a40e",
+    "sha256": "b40baa4190458bc9e6b9ee212021c2437bed69a685bdac958c2ea4f0b36ce382",
+    "size": 949148840,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_jones_ver02.tar.bz2"
+  },
+  {
+    "archive_created": "2022-03-31T16:59:17+00:00",
+    "archive_name": "wyu_kirby_ver01.tar.bz2",
+    "batch": "wyu_kirby_ver01",
+    "batch_file": "wyu_kirby_ver01/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_kirby_ver01",
+    "ingested": "2022-01-26T14:39:22-05:00",
+    "issue_count": 1133,
+    "lccns": [
+      "sn88067211",
+      "sn92067236",
+      "sn86072160"
+    ],
+    "page_count": 7146,
+    "sha1": "1f1bb27c8007e111b4f157af04829504b90746e1",
+    "sha256": "01171edd2d7e9f37d16dcec8edf1b1d5010b89c5ff8538e2b98238af76eaedd6",
+    "size": 748901250,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_kirby_ver01.tar.bz2"
+  },
+  {
+    "archive_created": "2022-07-29T14:04:21+00:00",
+    "archive_name": "wyu_laramie_ver03.tar.bz2",
+    "batch": "wyu_laramie_ver03",
+    "batch_file": "wyu_laramie_ver03/data/BATCH_1.xml",
+    "identifier": "service:ndnp:wyu:batch_wyu_laramie_ver03",
+    "ingested": "2022-07-01T12:57:12-04:00",
+    "issue_count": 942,
+    "lccns": [
+      "sn86072160",
+      "sn83025231",
+      "sn83002748",
+      "sn92067047",
+      "sn92067139",
+      "sn92066920",
+      "sn92067236",
+      "sn90051455",
+      "sn83025232",
+      "sn92067235"
+    ],
+    "page_count": 8223,
+    "sha1": "3f5fbca3459f035d392b8cc3769447de4766c0cc",
+    "sha256": "d2f0f72455f8acbeb8666cbacff5a93ef53e3a7e660e4a84c89ce985b3b92505",
+    "size": 700570750,
+    "url": "https://chroniclingamerica.loc.gov/data/ocr/wyu_laramie_ver03.tar.bz2"
+  }
+]

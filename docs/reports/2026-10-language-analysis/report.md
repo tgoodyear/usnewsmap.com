@@ -121,18 +121,67 @@ The five batches with the highest median damage are `nn_kant_ver01`, `txdn_japan
 
 ### American Stories text
 
-American Stories (Dell and others, 2023) re-read about 20 million Chronicling America scans from a 2022 snapshot with a layout model and its own OCR engine, EfficientOCR. It covers English only ("We do not process foreign language newspapers") and skips ads, tables and regions its classifier marks illegible. We compared it with LoC's text on the audit's sample of English titles for 1865 and 1925 (#205):
+American Stories (Dell and others, 2023) re-read Chronicling America scans with a layout model and its own OCR engine, EfficientOCR. Its dataset describes nearly 20 million scans; the current release also includes instances added in March 2025. A precise 2022 snapshot cutoff is not established by the upstream sources. It covers English only ("We do not process foreign language newspapers") and skips ads, tables and regions its classifier marks illegible. We compared it with LoC's text on the audit's sample of English titles for 1865 and 1925 (#205):
 
 | | 1865 | 1925 |
 |---|---|---|
-| Sampled English pages with an American Stories scan | 81% | 47% |
+| Sampled English pages with an American Stories page-ID match | 81% | 47% |
 | Median damage, LoC | 0.160 | 0.054 |
 | Median damage, American Stories | 0.069 | 0.026 |
 | Badly damaged, LoC | 26.2% | 2.8% |
 | Badly damaged, American Stories | 4.9% | 1.4% |
 | Pages added per search term when either text may match (median) | about +15% | about +5% |
 
-Its text alone would lose hits, probably mostly in ads, so it goes into the index beside LoC's text, not in place of it: one document per page, and a page counts once whichever text matches. We read by hand 230 matches that only American Stories' text produced: 91% were right, and 98.5% leaving out "radio", where most samples were "Colorado" or "El Dorado" split around "RADIO" (#218). The search side (#220), the ingest side (#222) and a badge saying which OCR a match came from (#226) are merged behind a setting. All 180 years of its text were written to our store by 7 October (about 15 million pages), and a full rebuild with it started that evening; it publishes about 9 October. Why only 47% of 1925's sampled pages have a scan is unchecked; one guess is batches LoC added after 2022.
+Its text alone would lose hits, probably mostly in ads, so it goes into the index beside LoC's text, not in place of it: one document per page, and a page counts once whichever text matches. We read by hand 230 matches that only American Stories' text produced: 91% were right, and 98.5% leaving out "radio", where most samples were "Colorado" or "El Dorado" split around "RADIO" (#218). The search side (#220), the ingest side (#222) and a badge saying which OCR a match came from (#226) are merged behind a setting. All 180 years of its text were written to our store by 7 October (about 15 million pages), and a full rebuild with it started that evening; it publishes about 9 October. The 15 October investigation below reproduces the 1925 result exactly: **8,597 of 18,187 pages (47.27%)** have an imported page ID. Most missing pages belong to issues absent from the upstream year archive, especially in later-ingested LoC batches, but some scans are present under colliding page labels. Thus 47% measures the original identifier join, not a verified physical-scan coverage rate.
+
+### Why the 1925 join covers only 47% (#327)
+
+**Exact historical cohort, not a new index query.** The original comparison ran on 7 October 2026, execution `caj-usnm-jaone-prod-puy2mrs`, against `pages-v20261006-2`. On 15 October we reread that version's batch parts and title catalog, selected dates in 1925 and titles whose first catalog language is English, and applied the same fixed hash (`BLAKE2b`, eight-byte digest, integer modulo 10,000 below 1,000). This reproduces all **18,187** sampled pages and **8,597** joined IDs; **9,590** are unmatched. All **91,788** imported 1925 IDs equal the IDs produced by the original placement algorithm over the upstream archive: there is no additional missing-ID loss between that join and our stored import.
+
+The unmatched IDs separate as follows. “Issue” here means the exact LCCN, date and edition, not just the title or day.
+
+| Historical sample category | Pages | What the scan-name comparison establishes |
+|---|---:|---|
+| Joined page ID | 8,597 | Same identifier in the original join and imported corpus; 82 are in collision-affected issues and need assignment review |
+| Unmatched; no scan of the issue upstream | 8,811 | The issue is absent from the 1925 archive, independently of page numbering |
+| Unmatched; issue present, with colliding numbered labels | 323 | Identifier/join-affected cohort, not 323 proven recoverable pages |
+| Unmatched; issue present, without numbered-label collisions | 456 | No matching page label; physical absence versus a different labeling error is not exhaustively verified |
+| **Total** | **18,187** | **8,597 matched; 9,590 unmatched** |
+
+**Later batches dominate, but “everything after 2022” is not the answer.** In LoC's current dataset listing, **7,868** unmatched sample pages (82.0% of the gap), and no matched pages, are in batches with an `ingested` timestamp after 7 June 2023. Another **1,722** unmatched pages are in batches dated on or before then. The date is a useful comparison with the upstream paper's processing period, not a proven freeze date for the current dataset. LoC timestamps can reflect later ingestion/reingestion of a batch version; they do not by themselves establish its first availability. The archive includes matched sample pages from three batches currently dated in February–April 2023 (201 pages), so a strict 2022 boundary is not supported. Across the cohort, **87 batches have zero matches**, accounting for **8,656** missing pages.
+
+The largest missing batch groups are below. Full counts cover **170 batches, 201 titles, all 365 publication dates**, and **9,767 joint batch/title/date groups** in the linked data files; each table reconciles to the same denominator.
+
+| Batch | LoC `ingested` date | Sampled | Matched | Missing |
+|---|---|---:|---:|---:|
+| `in_enterprise` | 2024-04-04 | 640 | 0 | 640 |
+| `au_julian` | 2024-05-20 | 601 | 0 | 601 |
+| `iune_junco` | 2025-08-06 | 541 | 0 | 541 |
+| `whi_gouda` | 2024-09-20 | 426 | 0 | 426 |
+| `au_hurston` | 2024-02-16 | 411 | 0 | 411 |
+| `wyu_laramie` | 2022-07-01 | 380 | 0 | 380 |
+| `arhi_hauerite` | 2025-06-12 | 349 | 0 | 349 |
+| `dlc_hine` | 2026-01-21 | 289 | 0 | 289 |
+| `dlc_erwitt` | 2025-12-18 | 261 | 0 | 261 |
+| `au_ikenberry` | 2024-04-29 | 225 | 0 | 225 |
+| `scu_eggplant` | 2025-02-20 | 225 | 0 | 225 |
+| `ak_goshawk` | 2020-12-08 | 245 | 25 | 220 |
+
+By title, the largest missing groups are *South Bend News-Times* (837 missing, 0 matched), *The Montgomery Advertiser* (636, 0), *The Birmingham Age-Herald* (601, 0), *The Washington Daily News* (550, 0), and *East St. Louis Daily Journal* (541, 0). The gap spans the entire publication year: January has 632 matched / 846 missing pages, and December 834 / 750; it is not a simple newspaper-date cutoff.
+
+**The original “duplicates” include different physical scans.** The archive has **95,839 distinct (LCCN, date, edition, reel, image) identifiers**, all with parseable names. The current join discards 4,051 entries: **4,050 excess scans at 798 repeated numbered-page labels in 791 issues**, plus one collision involving an inferred `pNone` page. They cannot all be described as duplicate copies of the same image. For example, LoC's [10 January 1925 Indianapolis Times issue](https://www.loc.gov/item/sn82015313/1925-01-10/ed-1/?fo=json) has twelve images, `0117`–`0128`. The archive contains all twelve, but eleven are named `p1`. The sampled seq-4 image, `0120`, is present under `1925-01-10_p1_sn82015313_0038334881A_1925011001_0120.json`, yet the name-based join loses it. Its retained seq-1 scan is image `0123`, actually LoC sequence 7. This is a demonstrated join error, not an upstream omission. The **323 unmatched** and **82 matched** sampled pages in collision-affected issues are an affected set, not a corrected coverage estimate. The historical quality/recall figures above have not been rescored after correcting these assignments. Physical reconciliation and any repair/rebuild are tracked separately in [#573](https://github.com/tgoodyear/usnewsmap.com/issues/573); no production data was changed here.
+
+There are also real partial-issue omissions: the [2 January 1925 Alaska Daily Empire issue](https://www.loc.gov/item/sn84020657/1925-01-02/ed-1/?fo=json) has eight LoC images (`0007`–`0014`), but the upstream archive contains only its first (`0007`, `p1`). Its sampled seq-3 and seq-7 pages are genuinely absent from the archive. We checked these two physical examples, not every unmatched page in an otherwise present issue. Blindly replacing all page labels with image offsets would misjoin issues whose first images are absent.
+
+**Upstream exclusions are not all scan exclusions.** The [paper](https://arxiv.org/html/2308.12477v1) excludes foreign-language newspapers and does not transcribe advertisements, tables, and illegible text regions. Those region-level rules explain missing text within a scan, not the 8,811 pages whose entire issue is absent. The English-first cohort includes multilingual titles, so upstream's language policy may also exclude some of these titles; we have not assigned individual omissions to that policy without evidence. The [dataset card](https://huggingface.co/datasets/dell-research-harvard/AmericanStories/blob/77e27fa69c4788dfaad1c9efd8a226d5a32d3e9a/README.md) records a 25 March 2025 update adding previously missing instances; neither its current card nor the paper supplies a batch-by-batch exclusion ledger establishing a 2022 cutoff.
+
+**Reproduction and evidence.** [The retained evidence](data/american-stories-1925/) includes the exact sampled IDs, all imported IDs, the archive's scan names in original order, LoC batch metadata and two physical-image examples, the original audit output, and source hashes in `provenance.json`. Dell and others' scan identifiers are from American Stories (CC BY 4.0). Run this from the repository root, without credentials or network calls, to verify input hashes, recompute the join/classification, and regenerate all grouped tables:
+
+```sh
+python3 docs/reports/2026-10-language-analysis/data/american-stories-1925/analyze.py
+```
+
+The [batch](data/american-stories-1925/by-batch.csv), [title](data/american-stories-1925/by-title.csv), [date](data/american-stories-1925/by-date.csv), [batch/title/date](data/american-stories-1925/by-batch-title-date.csv.gz), and [ingestion-year](data/american-stories-1925/by-ingestion-year.csv) tables distinguish the categories above. `classified-sample.csv.gz` retains each page's classification; `identifier-collisions.csv.gz` lists the offending upstream names. The read-only collectors (`collect-sample.py`, `collect-upstream.py`) preserve the collection logic for a fresh check in the existing Azure audit image: the sample collector reads 449 historical curated parts and 434 imported parts, and the upstream collector streams the 1.4 GB archive once. They emit gzip/base64 console chunks and a final decoded-payload SHA-256, not blobs. Decode and verify all numbered chunks before retaining a result; capture the console while the execution replica still exists. All collection ran in Azure under the existing audit job's identity, with no store writes, locks, publication, deployment, or access-policy changes. The retained LoC sources are one dataset listing and two issue JSON responses, requested minutes apart; no per-page request loop was used.
 
 ## German
 
@@ -399,7 +448,8 @@ The selections use the **first-listed catalog language**, matching the report's 
 4. **The Japanese index count:** the release read 10,414 pages, and the index has 10,305.
 5. **Typefaces of the damaged German pages:** how many are Fraktur, and how much a Fraktur model recovers.
 6. **Hand-check the mixed-language detections.** The title attribution is resolved above; the detector's page-language assignments have not been manually verified, particularly the 55-word *St. Paul Tidende* page.
-7. **Why American Stories covers only 47% of 1925's sampled pages.**
+
+Former question 7 (American Stories' 1925 coverage) is answered in the English section: historical join reproduced, upstream omissions and identifier collisions separated, grouped counts retained. The confirmed collision defect and physical reconciliation are separate follow-up #573.
 
 # Sources
 
