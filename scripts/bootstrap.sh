@@ -230,15 +230,6 @@ if [ "$USE_ACR" != true ]; then
   provision
 fi
 
-# The Static Web App that used to serve the site deployed with a shared token
-# (ADR-0009). Provisioning never deletes, so remove it here, in every
-# environment, whether or not it has a domain.
-SWA="swa-usnm-$ENV_NAME"
-if az staticwebapp show -n "$SWA" -g "$(aget AZURE_RESOURCE_GROUP)" -o none 2> /dev/null; then
-  echo "removing the Static Web App $SWA: the API app serves the site now"
-  az staticwebapp delete -n "$SWA" -g "$(aget AZURE_RESOURCE_GROUP)" --yes -o none
-fi
-
 # Names on the app (the site and the API), once the registrar delegates the
 # domain to the zone.
 DOMAIN=$(aget USNM_DNS_ZONE)

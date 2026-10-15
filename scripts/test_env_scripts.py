@@ -51,7 +51,7 @@ ROOT = os.path.dirname(HERE)
 STUB_AZ = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
 case "$1 $2" in
-  "account show") case "$*" in *"--query id"*) echo sub-1 ;; esac ;;
+  "account show") case "$*" in *"--query id"*) echo sub-1 ;; *"--query tenantId"*) echo tenant-1 ;; esac ;;
   "account set") s=$(sed 's/.*--subscription \([^ ]*\).*/\1/' <<< "$*")
     if [ -n "${STUB_ACCOUNTS:-}" ] && ! printf '%b\n' "$STUB_ACCOUNTS" | grep -qx "$s"; then
       echo "ERROR: The subscription of '$s' doesn't exist in cloud 'AzureCloud'." >&2; exit 1
@@ -59,9 +59,17 @@ case "$1 $2" in
     echo "$s" > "$STUB_LOG.account" ;;
   "stack sub")
     case "$*" in
+      "stack sub list"*)
+        if [ -n "${STUB_STACK_LIST_ERROR:-}" ]; then echo "$STUB_STACK_LIST_ERROR" >&2; exit 1; fi
+        printf '%s\n' "${STUB_STACK_NAMES:-}" ;;
       "stack sub create"*) ;;
+      "stack sub delete"*) ;;
       "stack sub validate"*)
         if [ -n "${STUB_VALIDATE_ERROR:-}" ]; then echo "$STUB_VALIDATE_ERROR" >&2; exit 1; fi ;;
+      *"--query resources -o json"*)
+        if [ -n "${STUB_RESOURCES_ERROR:-}" ]; then echo "$STUB_RESOURCES_ERROR" >&2; exit 1; fi
+        echo "${STUB_RESOURCES:-[]}" ;;
+      *"--query resources[].id"*) printf '%s\n' "${STUB_RESOURCE_IDS:-}" ;;
       *"--query location"*) echo eastus2 ;;
       *"keys(parameters"*) printf '%s\n' "${STUB_PARAMS:-}" ;;
       *"--query outputs -o json"*)
@@ -89,7 +97,16 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
       set|delete) ;;
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
-  "deployment sub") echo "what-if: no changes" ;;
+  "deployment sub")
+    if [ -n "${STUB_CAPTURE_PARAMS:-}" ]; then
+      printf '%s\t%s\t%s\t%s\n' "${USNM_ARCHIVE_ACCOUNT:-}" "${USNM_SEARCH_CLUSTER:-}" \
+        "${USNM_SEARCH_LOCAL_MODE:-}" "${USNM_INGEST_SCRATCH_GIB:-}" >> "$STUB_LOG.params"
+    fi
+    if [ -n "${STUB_STACK_WHATIF_ERROR:-}" ]; then echo "$STUB_STACK_WHATIF_ERROR" >&2; exit 1; fi
+    case "$*" in
+      *--no-pretty-print*) if [ -n "${STUB_STACK_WHATIF:-}" ]; then printf '%s\n' "$STUB_STACK_WHATIF"; else echo '{"changes": []}'; fi ;;
+      *) echo "what-if: no changes" ;;
+    esac ;;
   "policy assignment")
     if [ -n "${STUB_ASSIGNMENT_ERROR:-}" ]; then echo "$STUB_ASSIGNMENT_ERROR" >&2; exit 1; fi
     if [ -n "${STUB_ASSIGNMENT_GROUP:-}" ] && [[ "$*" == *"/resourceGroups/$STUB_ASSIGNMENT_GROUP "* ]]; then
@@ -106,11 +123,28 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
+  "ad group")
+    case "$*" in
+      "ad group list"*) printf '%s\n' "${STUB_NODE_GROUP_IDS:-}" ;;
+      "ad group create"*) echo new-group-id ;;
+      *"--query displayName"*) echo "${STUB_NODE_GROUP_NAME:-usnm-ocr-nodes-dev}" ;;
+      *"--query mailNickname"*) echo "${STUB_NODE_GROUP_NICKNAME:-usnm-ocr-nodes-dev}" ;;
+      *"member list"*) echo 2 ;;
+      *"owner list"*) ;;
+      *) echo "stub az: unexpected group mutation: $*" >&2; exit 9 ;;
+    esac ;;
+  "ad signed-in-user") ;;
   "group exists")
     if [ -n "${STUB_EXISTING_GROUPS+x}" ]; then
       if printf '%b\n' "$STUB_EXISTING_GROUPS" | grep -qx "$4"; then echo true; else echo false; fi
     else echo "${STUB_GROUP_EXISTS:-false}"; fi ;;
   "group create") ;;
+  "group delete") ;;
+  "identity list"|"role assignment"|"storage account")
+    case "$*" in
+      "identity list"*|"role assignment list"*|"storage account show"*) ;;
+      *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
+    esac ;;
   "keyvault list-deleted") [ -z "${STUB_DELETED_VAULTS:-}" ] || printf '%b\n' "$STUB_DELETED_VAULTS" ;;
   "keyvault recover") ;;
   "keyvault show")
@@ -158,7 +192,7 @@ class Stubbed(unittest.TestCase):
         self.env_dir = os.path.join(self.tmp, "env")
         os.mkdir(self.env_dir)
         shutil.copy(os.path.join(ROOT, "infra", "env", "schema.json"), self.env_dir)
-        self.env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp,
+        self.env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp, "TMPDIR": self.tmp,
                     "USNM_SETTINGS_HOME": self.settings, "STUB_LOG": self.log,
                     "USNM_ENV_DIR": self.env_dir,
                     "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -584,6 +618,210 @@ class TitlesSeed(Stubbed):
         self.assertEqual(r.returncode, 2)
 
 
+class StackRenameGuard(Stubbed):
+    RID = "/subscriptions/sub-1/resourceGroups/rg-usnm-dev/providers/Microsoft.Storage/storageAccounts/old"
+
+    def setUp(self):
+        super().setUp()
+        vnet = ".".join(str(n) for n in (10, 99, 0, 0)) + "/24"
+        self.settings_file(f'AZURE_SUBSCRIPTION_ID="sub-1"\nUSNM_VNET_ADDRESS_PREFIX="{vnet}"\n')
+
+    def response(self, kind):
+        return json.dumps({"changes": [{"resourceId": self.RID, "changeType": kind}]})
+
+    def run_guard(self, script="deploy_stack", **extra):
+        return self.lib(script, STUB_RESOURCES=json.dumps([{"id": self.RID}]), **extra)
+
+    def test_guard_runs_before_create_with_same_parameters(self):
+        r = self.run_guard(STUB_STACK_WHATIF=self.response("NoChange"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        plan = next(c for c in calls if c.startswith("deployment sub what-if"))
+        create = next(c for c in calls if c.startswith("stack sub create"))
+        self.assertIn("--parameters infra/main.bicepparam", plan)
+        self.assertIn("--location eastus2", plan)
+        self.assertIn("--parameters infra/main.bicepparam", create)
+        self.assertLess(calls.index(plan), calls.index(create))
+
+    def test_refusal_and_failed_or_incomplete_plan_never_create(self):
+        for extra in ({"STUB_STACK_WHATIF": self.response("Ignore")},
+                      {"STUB_STACK_WHATIF": '{"changes": []}'},
+                      {"STUB_STACK_WHATIF": "bad json"},
+                      {"STUB_STACK_WHATIF_ERROR": "AuthorizationFailed"},
+                      {"STUB_RESOURCES_ERROR": "AuthorizationFailed"}):
+            r = self.run_guard(**extra)
+            self.assertEqual(r.returncode, 42, r.stderr)
+        self.assertFalse(any(c.startswith("stack sub create") for c in self.calls()))
+
+    def test_override_and_dry_run(self):
+        r = self.run_guard("ALLOW_RENAMES=(--allow-rename=old); deploy_stack",
+                           STUB_STACK_WHATIF=self.response("Ignore"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_guard("deploy_stack --what-if", STUB_STACK_WHATIF=self.response("Ignore"))
+        self.assertEqual(r.returncode, 42, r.stderr)
+
+    def test_new_stack_and_read_errors(self):
+        r = self.lib("deploy_stack", STUB_RESOURCES_ERROR="DeploymentStackNotFound: usnm-dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.lib("deploy_stack", STUB_RESOURCES_ERROR="ResourceNotFound: unexpected dependency")
+        self.assertEqual(r.returncode, 42, r.stderr)
+
+    def test_guard_failure_is_not_retried(self):
+        r = self.lib("vaults_recover() { :; }; settings_store_ensure() { :; }; "
+                     "load_store_after_create() { :; }; settings_check() { :; }; "
+                     "experiment_marker() { :; }; ocr_nodes_off_check() { :; }; "
+                     "deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; "
+                     "deploy_stack() { return 42; }; provision")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("not retried", r.stderr)
+
+    def test_cli_rejects_empty_or_wildcard_override_before_azure(self):
+        for name in ("", "*", "old,other", "/subscriptions/sub-1/old"):
+            r = subprocess.run([os.path.join(HERE, "provision.sh"), "--env", "dev",
+                                "--allow-rename=" + name], cwd=ROOT, env=self.env,
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_guardrail_users_are_closed_list_plus_archive(self):
+        r = self.lib('guardrail_stack_users usnm-dev',
+                     STUB_STACK_NAMES="usnm-dev\nusnm-prod\nusnm-xabcd\nusnm-archive\nusnm-guardrails\n"
+                     "usnm-config\nusnm-boinc\nusnm-xabcde\nusnm-staging\nother-prod")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["usnm-prod", "usnm-xabcd", "usnm-archive"])
+        r = self.lib("guardrail_stack_users", STUB_STACK_LIST_ERROR="AuthorizationFailed")
+        self.assertNotEqual(r.returncode, 0)
+
+
+class TeardownRenameGuard(Stubbed):
+    """Real teardown/partial provision/guard; external cleanup is stubbed."""
+
+    GROUP = "/subscriptions/sub-1/resourceGroups/rg-usnm-dev"
+    SCRATCH = GROUP + "/providers/Microsoft.Storage/storageAccounts/usnmscratchstdevabc123"
+    DNS = GROUP + "/providers/Microsoft.Network/privateDnsZones/privatelink.file.core.windows.net"
+
+    def setUp(self):
+        super().setUp()
+        self.fixture = os.path.join(self.tmp, "checkout")
+        scripts = os.path.join(self.fixture, "scripts")
+        shutil.copytree(os.path.join(HERE, "lib"), os.path.join(scripts, "lib"))
+        shutil.copy(os.path.join(HERE, "teardown.sh"), scripts)
+        os.mkdir(os.path.join(self.fixture, "infra"))
+        shutil.copy(os.path.join(ROOT, "infra", "main.bicepparam"),
+                    os.path.join(self.fixture, "infra"))
+        # Bypass unrelated preparation only. Retain the real settings,
+        # provision retry policy, deploy_stack and removal guard functions.
+        with open(os.path.join(scripts, "lib", "env.sh"), "a") as f:
+            for name in ("need_stack_az", "vaults_recover", "settings_store_ensure",
+                         "load_store_after_create", "settings_check", "experiment_marker",
+                         "ocr_nodes_off_check", "deploy_env_guardrails",
+                         "deploy_policy_exemptions", "save_outputs"):
+                f.write(f"\n{name}() {{ :; }}\n")
+        for path, body in (
+                (os.path.join(scripts, "archive-store.sh"),
+                 'printf "archive-store %s\\n" "$*" >> "$STUB_LOG"\n'),
+                (os.path.join(self.tmp, "bin", "gh"),
+                 'printf "gh %s\\n" "$*" >> "$STUB_LOG"\n'
+                 'case "$1 $2" in "auth status"|"api -X") ;; '
+                 '"variable get") echo "[]" ;; *) exit 9 ;; esac\n')):
+            with open(path, "w") as f:
+                f.write("#!/usr/bin/env bash\n" + body)
+            os.chmod(path, 0o755)
+        vnet = ".".join(str(n) for n in (10, 99, 0, 0)) + "/24"
+        self.settings_file(
+            'AZURE_SUBSCRIPTION_ID="sub-1"\nUSNM_GITHUB_REPO="owner/repo"\n'
+            'USNM_ARCHIVE_ACCOUNT="/subscriptions/sub-1/resourceGroups/rg-usnm-archive/'
+            'providers/Microsoft.Storage/storageAccounts/archive"\n'
+            'USNM_SEARCH_CLUSTER="true"\nUSNM_SEARCH_LOCAL_MODE="nfs"\n'
+            f'USNM_INGEST_SCRATCH_GIB="0"\nUSNM_VNET_ADDRESS_PREFIX="{vnet}"\n')
+        self.marker = os.path.join(self.settings, "dev", "teardown-sub-1.archive")
+
+    def teardown(self, *approvals, **extra):
+        plan = {"changes": [{"resourceId": rid, "changeType": kind}
+                            for rid, kind in ((self.SCRATCH, "Ignore"), (self.DNS, "Delete"))]}
+        env = {**self.env, "STUB_STACK": "3", "STUB_STACK_NAMES": "usnm-dev\nusnm-archive",
+               "STUB_RESOURCE_IDS": self.GROUP + "\n" + self.SCRATCH + "\n" + self.DNS,
+               "STUB_RESOURCES": json.dumps([{"id": rid} for rid in
+                                             (self.GROUP, self.SCRATCH, self.DNS)]),
+               "STUB_STACK_WHATIF": json.dumps(plan), "STUB_GROUP_EXISTS": "true",
+               "STUB_CAPTURE_PARAMS": "1", **extra}
+        return subprocess.run(
+            ["bash", os.path.join(self.fixture, "scripts", "teardown.sh"),
+             "--env", "dev", *approvals], cwd=self.fixture, env=env,
+            input="dev\n", capture_output=True, text=True)
+
+    def test_nfs_partial_provision_requires_every_exact_approval(self):
+        r = self.teardown()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not retried", r.stderr)
+        self.assertIn(self.SCRATCH, r.stderr)
+        self.assertIn(self.DNS, r.stderr)
+        self.assertTrue(os.path.exists(self.marker))
+        calls = self.calls()
+        self.assertEqual(sum(c.startswith("deployment sub what-if") for c in calls), 1)
+        self.assertFalse(any(c.startswith(("stack sub create", "stack sub delete", "group delete"))
+                             for c in calls))
+        self.assertEqual(calls[-1], "archive-store deploy --subscription sub-1")
+        with open(self.log + ".params") as f:
+            self.assertEqual(f.read(), "\tfalse\tnfs\t0\n")
+        # Resume after the first refusal: one approval still cannot permit
+        # another protected removal or final environment deletion.
+        r = self.teardown("--allow-rename=" + self.SCRATCH.rsplit("/", 1)[1])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(self.DNS, r.stderr)
+        self.assertFalse(any(c.startswith("stack sub create") for c in self.calls()))
+        self.assertEqual(self.calls()[-1], "archive-store deploy --subscription sub-1")
+
+    def test_approved_nfs_partial_provision_then_finishes_teardown(self):
+        # A refused partial provision has already cleared the archive
+        # setting. The saved marker must still allow an approved rerun.
+        first = self.teardown()
+        self.assertNotEqual(first.returncode, 0)
+        self.assertTrue(os.path.exists(self.marker))
+        self.assertIn('USNM_ARCHIVE_ACCOUNT=""', self.local_text())
+        with open(self.log, "w"):
+            pass
+        r = self.teardown("--allow-rename=" + self.SCRATCH.rsplit("/", 1)[1],
+                          "--allow-rename=privatelink.file.core.windows.net")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.calls()
+        plan = next(i for i, c in enumerate(calls) if c.startswith("deployment sub what-if"))
+        create = next(i for i, c in enumerate(calls) if c.startswith("stack sub create"))
+        lock = calls.index("archive-store deploy --subscription sub-1")
+        detach = next(i for i, c in enumerate(calls) if c.startswith("stack sub delete"))
+        delete = next(i for i, c in enumerate(calls) if c.startswith("group delete"))
+        self.assertLess(plan, create)
+        self.assertLess(create, lock)
+        self.assertLess(lock, detach)
+        self.assertLess(detach, delete)
+        self.assertIn("gh api -X DELETE repos/owner/repo/environments/dev", calls)
+        self.assertFalse(os.path.exists(self.marker))
+        self.assertFalse(os.path.exists(os.path.join(self.settings, "dev", ".env")))
+
+    def test_approvals_cannot_bypass_incomplete_or_failed_partial_plan(self):
+        for failure in ({"STUB_STACK_WHATIF": '{"changes": []}'},
+                        {"STUB_STACK_WHATIF": "bad json"},
+                        {"STUB_STACK_WHATIF": json.dumps({"changes": [
+                            {"resourceId": self.SCRATCH, "changeType": "Unsupported"},
+                            {"resourceId": self.DNS, "changeType": "Delete"}]})},
+                        {"STUB_STACK_WHATIF_ERROR": "AuthorizationFailed"},
+                        {"STUB_RESOURCES_ERROR": "AuthorizationFailed"}):
+            with self.subTest(failure=failure):
+                r = self.teardown("--allow-rename=" + self.SCRATCH.rsplit("/", 1)[1],
+                                  "--allow-rename=privatelink.file.core.windows.net", **failure)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertTrue(os.path.exists(self.marker))
+                self.assertFalse(any(c.startswith(("stack sub create", "stack sub delete", "group delete"))
+                                     for c in self.calls()))
+                self.assertEqual(self.calls()[-1], "archive-store deploy --subscription sub-1")
+
+    def test_invalid_approval_rejected_before_external_calls(self):
+        for name in ("", "*", "scratch,zone", self.SCRATCH):
+            r = self.teardown("--allow-rename=" + name)
+            self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+
 class PolicyExemptions(Stubbed):
     """The public-network policy's assignment, written before the stack (#336)."""
 
@@ -997,7 +1235,10 @@ class CommittedSettings(Stubbed):
         self.assertNotIn("SETTINGS_STORE_ENDPOINT", src)
         self.assertNotIn("appconfig", src)
         # The store's stack doesn't keep the guard-rail stack alive.
-        self.assertEqual(src.count("name != '$SETTINGS_STACK'"), 2)
+        self.assertEqual(src.count("$(guardrail_stack_users"), 2)
+        r = self.lib("guardrail_stack_users", STUB_STACK_NAMES="usnm-config\nusnm-guardrails")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
 
     def store_sets(self):
         return [c for c in self.calls() if c.startswith("appconfig kv set")]

@@ -1,19 +1,4 @@
 {
-  "actionGroup": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "actionGroupShortName": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "apiAggregateSlowAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
   "apiApp": {
     "until": "phase-4",
     "adr": "ADR-0017, Exceptions",
@@ -23,31 +8,6 @@
     "until": "phase-4",
     "adr": "ADR-0017, Exceptions",
     "reason": "The prod environment skeleton: kept until a prod rebuild (region or subscription move, or a new Container Apps environment)."
-  },
-  "apiReplicaCpuAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "apiSearchQueueWaitAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "apiSearchesSlowAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "apiServerErrorsAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "apiWorkbookTitle": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Display names",
-    "reason": "Scheduled for Phase 2: a workbook's displayName changes in place; its name is a GUID."
   },
   "appInsights": {
     "until": "phase-4",
@@ -59,40 +19,10 @@
     "adr": "ADR-0017, Exceptions",
     "reason": "Deployed in prod only with USNM_ARCHIVE_ACCOUNT, which the Bicep can't see: the current prod keeps pe-usnm-archive-blob until its live stack shows no such endpoint (the ternary then goes, #309). Dev and experiments use ADR-0017's name."
   },
-  "archiveWriterRole": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Display names",
-    "reason": "Scheduled for Phase 1: a custom role's roleName changes in place; the role id and its guid() seed don't."
-  },
-  "archiveWriterRoleScopeEnv": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Display names",
-    "reason": "Scheduled for Phase 1: a custom role's roleName changes in place; the role id and its guid() seed don't."
-  },
   "backfillJob": {
     "until": "phase-3",
     "adr": "ADR-0017, Exceptions",
     "reason": "Scheduled for Phase 3, during #283 preparation, with no execution running and the writer's lease free."
-  },
-  "backfillReplicaSilentAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "backfillStalledAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "budget": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "ciIdentity": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2: the CI identity is recreated under its new name, then bootstrap.sh rewrites CI's variables."
   },
   "containerEnv": {
     "until": "phase-4",
@@ -114,11 +44,6 @@
     "adr": "ADR-0017, Exceptions",
     "reason": "A prod data store whose rename means a multi-terabyte copy or losing the free tier: kept until the data has to move anyway."
   },
-  "deployRole": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Display names",
-    "reason": "Scheduled for Phase 1: a custom role's roleName changes in place; the role id and its guid() seed don't."
-  },
   "docIntel": {
     "until": "phase-3",
     "adr": "ADR-0017, Exceptions",
@@ -134,16 +59,6 @@
     "adr": "ADR-0017, Exceptions",
     "reason": "Scheduled for Phase 3, during #283 preparation, with no execution running and the writer's lease free."
   },
-  "ingestJobFailedAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "ingestNotProgressingAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
   "jaocrJob": {
     "until": "phase-3",
     "adr": "ADR-0017, Exceptions",
@@ -154,50 +69,15 @@
     "adr": "ADR-0017, Exceptions",
     "reason": "Scheduled for Phase 3, during #283 preparation, with no execution running and the writer's lease free."
   },
-  "logCapAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
   "ocrExchange": {
     "until": "phase-1",
     "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 1, the OCR window: the empty exchange account is recreated under its new name before the node worker is installed."
-  },
-  "ocrLocHoldAlert": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "The OCR nodes' alerts from #304, which merged with the legacy names; renamed in Phase 1 with the rest of the OCR window (stateless, recreated)."
-  },
-  "ocrLogCapAlert": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "The OCR nodes' alerts from #304, which merged with the legacy names; renamed in Phase 1 with the rest of the OCR window (stateless, recreated)."
-  },
-  "ocrNodeVolumeAlert": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "The OCR nodes' alerts from #304, which merged with the legacy names; renamed in Phase 1 with the rest of the OCR window (stateless, recreated)."
-  },
-  "ocrNodeWriterRole": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Display names",
-    "reason": "Scheduled for Phase 1: a custom role's roleName changes in place; the role id and its guid() seed don't."
-  },
-  "pipelineWorkbookTitle": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Display names",
-    "reason": "Scheduled for Phase 2: a workbook's displayName changes in place; its name is a GUID."
+    "reason": "The original empty-account window has passed: OCR and BOINC use this account. Keep pinned until a reviewed live queue/blob inventory, quiesce/drain or migration plan and node/BOINC reconfiguration window are agreed (#309)."
   },
   "registry": {
     "until": "phase-4",
     "adr": "ADR-0017, Exceptions",
     "reason": "The prod environment skeleton: kept until a prod rebuild (region or subscription move, or a new Container Apps environment)."
-  },
-  "releaseStalledAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
   },
   "rg": {
     "until": "phase-4",
@@ -213,21 +93,6 @@
     "until": "phase-3",
     "adr": "ADR-0017, Exceptions",
     "reason": "Scheduled for Phase 3, during #283 preparation, with no execution running and the writer's lease free."
-  },
-  "searchLogRole": {
-    "until": "phase-1",
-    "adr": "ADR-0017, Display names",
-    "reason": "Scheduled for Phase 1: a custom role's roleName changes in place; the role id and its guid() seed don't."
-  },
-  "siteUnavailableAlert": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
-  },
-  "siteWebtest": {
-    "until": "phase-2",
-    "adr": "ADR-0017, Exceptions",
-    "reason": "Scheduled for Phase 2, stateless monitoring: recreated under its new name."
   },
   "stateEndpoint": {
     "until": "phase-4",

@@ -2,11 +2,12 @@
 # Create a VM for an on-prem OCR node (#296) on a Proxmox host: AlmaLinux 9
 # by default, or RHEL 10 from Red Hat's KVM Guest Image, a qcow2 file on the
 # host. node-setup.sh onboards only those two.
-# Run on the Proxmox host as root (copy it there first); then run
+# Run on the Proxmox host as root (copy it and scripts/lib/names.sh
+# into the same directory there first); then run
 # scripts/ocr-node/onboard.sh from your machine (docs/operations.md,
 # "On-prem OCR nodes"):
 #
-#   bash proxmox-create-vm.sh --vmid 120 --name usnm-ocr-node1 \
+#   bash proxmox-create-vm.sh --vmid 120 --name usnm-ocr-node1-arcs-prod \
 #     --ssh-key 'ssh-ed25519 AAAA... you@example'
 #
 # Optional: --cores 4 --memory-mib 8192 --disk-gib 64 --storage local-lvm
@@ -54,10 +55,14 @@ done
 [ -n "$VMID" ] && [ -n "$NAME" ] && [ -n "$SSH_KEY" ] || usage
 case "$MEMORY_MIB$BALLOON_MIB" in *[!0-9]*|"") echo "error: --memory-mib and --balloon-mib must be whole numbers" >&2; exit 2 ;; esac
 [ "$BALLOON_MIB" -eq 0 ] || [ "$BALLOON_MIB" -lt "$MEMORY_MIB" ] || { echo "error: --balloon-mib must be 0 or below --memory-mib" >&2; exit 2; }
-# The name becomes a file name, the hostname and part of the cloud-init
-# document, so it must be a plain DNS label (as Proxmox and onboard.sh want).
-[[ $NAME =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,52}[A-Za-z0-9])?$ ]] ||
-  { echo "--name: 1 to 54 letters, digits or hyphens, not starting or ending with a hyphen" >&2; exit 1; }
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+NAMES_LIB="$SCRIPT_DIR/names.sh"
+[ -f "$NAMES_LIB" ] || NAMES_LIB="$SCRIPT_DIR/../lib/names.sh"
+[ -f "$NAMES_LIB" ] || { echo "copy scripts/lib/names.sh beside this script first" >&2; exit 1; }
+# shellcheck source=scripts/lib/names.sh
+. "$NAMES_LIB"
+valid_ocr_node_name "$NAME" ||
+  { echo "--name: usnm-ocr-node<digits>-arcs-<prod|dev|x plus 1-4 lowercase letters/digits>, at most 32 characters (ADR-0017)" >&2; exit 1; }
 [[ $VMID =~ ^[1-9][0-9]{2,8}$ ]] || { echo "--vmid: a number from 100" >&2; exit 1; }
 [[ $SSH_KEY != *$'\n'* ]] || { echo "--ssh-key: one line" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || { echo "run as root on the Proxmox host" >&2; exit 1; }

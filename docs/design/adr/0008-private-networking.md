@@ -10,8 +10,8 @@ Every app/job → storage/Cosmos path already used managed identities, with keys
 
 ## Decision
 
-- **VNet-integrated Container Apps environment** (`vnet-usnm`, `/27` delegated subnet; workload-profiles env with the Consumption profile). The public API keeps external ingress at `api.usnewsmap.com`.
-- **Private endpoints** for `stusnmdata` (Blob) and `cosmos-usnm` (Sql), with linked private DNS zones. **`publicNetworkAccess: Disabled`** on both in steady state.
+- **VNet-integrated Container Apps environment** (current prod VNet `vnet-usnm-prod`, environment `cae-usnm-prod`, `/27` delegated subnet; workload-profiles env with the Consumption profile). The public API keeps external ingress at `api.usnewsmap.com`.
+- **Private endpoints** `pe-usnm-blob` for `stusnmdffapzy` (Blob) and `pe-usnm-cosmos` for `cosmos-usnm-prod-ffapzy` (Sql), with linked private DNS zones. These are the pinned prod names; dev/experiments use the conventional names in [ADR-0017](0017-resource-naming.md) and scripts read stack outputs. **`publicNetworkAccess: Disabled`** on both in steady state.
 - **Managed identity on every path** (see the table in [08 §8.3](../08-azure-infrastructure.md#83-networking)). Keys stay disabled, and Azure Policy **denies** re-enabling them.
 - **Guarded public-access window** only while a Spot backfill or full re-index runs:
   - the launcher records a window item in Cosmos with an expiry, then enables public access (still Entra-only, no IP rules);

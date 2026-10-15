@@ -4,6 +4,17 @@
 
 ## 12.1 Purpose and scope
 
+**Naming rollout (#309):** the dated as-built rows below retain their
+historical names. Current script-owned group names are
+`usnm-ocr-nodes-grp-<env>` (an operator relabels the saved object ID in place);
+new/re-onboarded node names are `usnm-ocr-node<digits>-arcs-<env>`, matching
+the environment and at most 32 characters. See the
+[operator runbook](../../infra/README.md#naming-guard-and-phase-12-rollout).
+The exchange stays pinned in prod: the pilot is already running, so its
+original empty-account migration assumption is no longer safe. Inventory
+live queues/blobs and OCR/BOINC users and agree a drain/copy and
+reconfiguration window before changing that account's name.
+
 LoC's OCR misreads whole groups of pages, and search can't find a word that was misread. The [language report](../reports/2026-10-language-analysis/report.md) scored a 10% sample of index version `pages-v20261003-1` (2,371,337 pages from 2,989 batches) by damage: the share of occurrences of a language's 20 most common words that LoC's OCR read one edit wrong. A page above 0.25 is badly damaged. The worst groups are German before the 1920s (57,580 sampled pages from the 1850s to the 1910s, so about 580,000 in the index), five English batches with median damage from 0.46 to 0.52, and the Serbian, Russian and Czech titles ([ADR-0015](adr/0015-onprem-ocr-workers.md)). Reading these pages again on Azure compute or a cloud OCR service would cost more than the project's monthly budget, so two local machines do it (#296).
 
 This document covers the pipeline end to end: how a page is queued, read on a node, checked in the cloud and put into search. It records what is built (§12.2), draws the flows (§12.3), names the language of each component (§12.4) and orders the remaining work as pull requests (§12.5).
@@ -340,7 +351,7 @@ sequenceDiagram
   participant ARM as Azure Resource Manager
   Op->>PVE: proxmox-create-vm.sh as root
   PVE-->>Op: AlmaLinux 9 VM with UEFI Secure Boot and a vTPM, an admin user with key-only SSH
-  Op->>Entra: group.sh, once per environment, creates usnm-ocr-nodes-prod
+  Op->>Entra: group.sh creates or relabels saved group usnm-ocr-nodes-grp-prod
   Op->>ARM: provision.sh grants the group its roles on the exchange account
   Op->>ARM: once per subscription: az feature register HybridComputePreview (Pending until Microsoft approves)
   Op->>ARM: onboard.sh registers the resource providers
@@ -355,7 +366,7 @@ sequenceDiagram
   ARM-->>N: Arc machine with a system-assigned identity
   N->>N: usnm joins himds, unit installed disabled, Resource Manager token check
   Op->>ARM: wait for the machine's identity
-  Op->>Entra: add the identity to usnm-ocr-nodes-prod
+  Op->>Entra: add the identity to usnm-ocr-nodes-grp-prod
   Note over Op,ARM: On exit, also on failure or Ctrl-C, onboard.sh deletes the role assignment,<br/>the service principal and the app, and purges them from deleted items
   Note over N,ARM: The roles come through the group. A storage token fetched before joining<br/>lacks the membership for up to about 24 hours
 ```
@@ -549,7 +560,7 @@ Rust in `usnm-ingest`, Bicep for the job.
 Built in #342 (shared pieces) and #344 (the job), which differ from the plan above in these ways:
 
 - **Shared crates.** The work message and dead letter moved from the worker to a new crate, `usnm-ocr-contract` (13 §13.2), which `usnm-ingest` uses; #338's rules are in it (a `permanent` or `unroutable` dead letter keeps its message, engine ids follow 13 §13.8.1). `usnm-alto` exists with the bounded check only. `usnm-store` gained `list_info`, `get_if_match` and `delete_if_match`. `read_node_part` also caps rows and the decompressed size that the footer and every page header declare, before decoding.
-- **Names.** The job is `usnm-ocrs-caj-<env>` ([ADR-0017](adr/0017-resource-naming.md)), and its alert is `usnm-ocrs-backlog-alert-<env>`; its failures go to the pipeline's job-failed rule (`alert-usnm-ingest-job-failed-<env>`), which had them as `usnm-ocrs-failed-alert-<env>` until #308. Its container is `ocrsync`, which the alerts and saved queries match. Until the October 2026 rename (#309) it was `usnm-ocrsync-caj-<env>`, which a 16-character environment name would take past the 32-character limit for job names. The backlog alert reads the run's `ocr sync finished` line (`oldest_age_s`), which also goes to the `ocr.out.oldest_age_s` metric. `USNM_OCR_SYNC_CRON=manual` turns the schedule off.
+- **Names.** The job is `usnm-ocrs-caj-<env>` ([ADR-0017](adr/0017-resource-naming.md)), and its alert is `usnm-ocrs-backlog-alert-<env>`; its failures go to the pipeline's job-failed rule (`usnm-ingest-job-failed-alert-<env>`, named `alert-usnm-ingest-job-failed-<env>` before the Phase 2 provision), which had them as `usnm-ocrs-failed-alert-<env>` until #308. Its container is `ocrsync`, which the alerts and saved queries match. Until the October 2026 rename (#309) it was `usnm-ocrsync-caj-<env>`, which a 16-character environment name would take past the 32-character limit for job names. The backlog alert reads the run's `ocr sync finished` line (`oldest_age_s`), which also goes to the `ocr.out.oldest_age_s` metric. `USNM_OCR_SYNC_CRON=manual` turns the schedule off.
 - **Check 7** is built since #307 (item 6): the worker writes a runs record for each page (13 §13.8.3), and `ocr-sync` lists `runs/` after `pages/` and `alto/`. A runs record over 1 MiB, one the strict reader refuses, one whose rows name another `run_id`, `doc_id` or node than the part, and one whose selected row's `ocr_engine` isn't the part's are rejected as `runs_too_large`, `runs_unreadable`, `runs_mismatch` and `runs_engine`, and go to quarantine (kind `runs`) with the part and its ALTO. The part's reason record names its ALTO and runs record (`companions`), and `--from-quarantine` replays them as a group: it reads all their contents first, puts the ALTO and runs record back before the part, as a node writes them, and removes the part's entries from quarantine before theirs, so a replay stopped midway never leaves a part in `ocr-out` without its runs record. When a named companion can't be put back (its record or content is gone, or it had none, as for `runs_too_large`, whose content isn't kept), the whole group stays in quarantine (counted as `incomplete`) rather than the part passing as one from an older worker. Records written before `companions` replay one by one, ALTO and runs records before parts. A part with no runs record, from a worker released before them, is still imported, so nodes can be upgraded one at a time. An imported record goes to `curated/ocr-local/runs/<lccn>_<date>_ed-<n>.<node>.<stamp>.parquet` with `ocred_at`, the same server time as the row's, and is deleted from `ocr-out` with the part and ALTO. Check 5 refuses an `ocr_engine` with `image=local` already, and check 7 requires the selected row's to equal it.
 - **Engines.** Check 5's engine list is `usnm-tesseract`, `usnm-kraken` and `usnm-doctr`, a constant until `engines.toml` lands (13 §13.7.2).
 - **Imports.** A run checks at most `--max-parts` parts (2,000) in imports of `--chunk` (200). Each import writes its own merged parts, outcomes and record, then deletes its sources, so a stopped run loses at most one import. Merged parts carry `batch_version`, `source_part`, `node`, `reason`, `metric_version` and, for both texts, `lang`, `decision`, `damage_rate`, `function_share` and `head`. LoC's scores come from Step 6's tables, or from the curated text of a batch the tables lack.

@@ -9,7 +9,7 @@
 # provision is needed afterwards.
 #
 #   scripts/ocr-node/onboard.sh --env prod --host claude@node1.example.org \
-#     --name usnm-ocr-node1 [--reboot-day Sun] [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
+#     --name usnm-ocr-node1-arcs-prod [--reboot-day Sun] [--ssh-key ~/.ssh/id_ed25519] [--dry-run]
 #
 # The node runs AlmaLinux 9 or RHEL 10 and takes key-based SSH with passwordless sudo
 # for --host. Run with USNM_OCR_NODES=true already provisioned (the exchange
@@ -84,15 +84,15 @@ done
 [ -n "$ENV_NAME" ] || { echo "error: missing --env" >&2; usage; }
 [ -n "$HOST" ] || { echo "error: missing --host" >&2; usage; }
 [ -n "$NAME" ] || { echo "error: missing --name" >&2; usage; }
-# Arc resource names: letters, digits, hyphens, periods and underscores; we
-# keep to letters, digits and hyphens, and to 32, since the name is also
-# the worker's --node-id.
-[[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,31}$ ]] || die "--name: 1 to 32 letters, digits or hyphens, starting with a letter or digit"
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+cd "$ROOT"
+# shellcheck source=scripts/lib/names.sh
+. scripts/lib/names.sh
+valid_ocr_node_name "$NAME" "$ENV_NAME" ||
+  die "--name: usnm-ocr-node<digits>-arcs-$ENV_NAME, at most 32 characters (ADR-0017); migrate a legacy node by offboarding before renaming"
 [ -z "$SSH_KEY" ] || [ -r "$SSH_KEY" ] || die "--ssh-key: can't read $SSH_KEY"
 case "$REBOOT_DAY" in ""|Mon|Tue|Wed|Thu|Fri|Sat|Sun) ;; *) die "--reboot-day: Mon, Tue, Wed, Thu, Fri, Sat or Sun" ;; esac
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-cd "$ROOT"
 # shellcheck source=scripts/lib/env.sh
 . scripts/lib/env.sh
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"

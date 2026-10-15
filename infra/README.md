@@ -55,7 +55,7 @@ Every resource name comes from `names()` in [`naming.bicep`](naming.bicep); modu
 | `diagnostics`                                                                       | Diagnostic settings, sending resource logs to Log Analytics for every resource that has them: the workspace, registry, VNet, Container Apps environment (app and job console output, platform events), Cosmos control plane, and both storage accounts (blob writes and deletes; queue, table and file services in full), and, with the OCR nodes, the exchange account, the nodes' data collection rule (its errors) and the nodes' Key Vault (its audit log). What the nodes control goes to the nodes' workspace: the exchange account's queue logs and the rule's errors, and that workspace's own logs. Per-request categories are left out to stay under the cap (08 §8.1.1)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `ingest-alerts` (with `ingestJobs: true` and alert emails)                          | Log search alerts on the workspace: an ingest or backfill job failed (not counting the expected titles-sync stop), ingest not progressing (that stop repeating without progress, or not followed by another execution), a release stalled, a backfill stalled, a backfill replica went silent. Each email lists the columns its rule splits by: the execution and the reason for a failed job, the replica and its last line for a silent one; a stalled backfill has none (08 §8.1.2)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `api-alerts` (with the API and alert emails)                                        | Log search alerts on API 5xx and slow `/v1/aggregate`, reading only rows from the API's own component (`_ResourceId`); with `dnsZoneName`, standard availability tests of the site and `api.{domain}/readyz` (each once its certificate is bound) and an alert when 2 of 3 locations fail (08 §8.1.2)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `workbooks` (with the jobs, the API or the OCR nodes)                               | Azure Monitor workbooks "usnewsmap pipeline" (with the jobs) and "usnewsmap API" (with the API), defined in `infra/workbooks/` and listed under Application Insights `appi-usnm-{env}` → Workbooks. They query the same workspace (08 §8.1.2). With `ocrNodes`, "usnm OCR nodes ({env})", over the nodes' workspace `usnm-ocr-log-{env}`, listed under `usnm-ocr-appi-{env}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `workbooks` (with the jobs, the API or the OCR nodes)                               | Azure Monitor workbooks "usnm pipeline ({env})" (with the jobs) and "usnm API ({env})" (with the API), defined in `infra/workbooks/` and listed under the environment's Application Insights → Workbooks. They query the same workspace (08 §8.1.2). The old prod titles were "usnewsmap pipeline" and "usnewsmap API"; Phase 2 changes titles in place, not workbook GUIDs. With `ocrNodes`, "usnm OCR nodes ({env})", over `usnm-ocr-log-{env}`, listed under `usnm-ocr-appi-{env}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `budget`                                                                            | $80 monthly budget (alerts at $40, $60, $75, plus an $80 forecast alert; needs alert emails and `USNM_BUDGET_START`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `policy-*`                                                                          | Custom policies assigned to both resource groups. They deny IaaS compute, deny storage shared keys, deny Cosmos, Log Analytics and Application Insights local auth, deny a registry admin user or anonymous pull, deny public network access on the data accounts and Key Vaults (the OCR exchange account and Key Vault are exempt by resource id), and audit resources that have resource logs but no diagnostic setting. `infra/archive/main.bicep` assigns the same ones to `rg-usnm-archive`, with no public accounts and an exemption from the diagnostic settings audit for the archival account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
@@ -73,6 +73,165 @@ With `USNM_SEARCH_BACKEND=fixtures` (the default for a new environment) the API 
 Switch only after the ingest jobs have published indexes and a `current.json`. Until then the API has nothing to serve and keeps retrying its first load. On the first deployment with `quickwit`, the identity's role assignment is created after the app, so the sidecar and API may restart a few times until the assignment propagates (a few minutes). This deployment is also where Quickwit's managed-identity auth is first confirmed against a real account (spike S-2). If it fails, the fallback is a user-delegation SAS minted by the API (08 §8.2).
 
 Prod runs `USNM_SEARCH_BACKEND=quickwit`. The ingest job's `run` command calls `titles-sync` before each release to build the catalog it needs ([operations](../docs/operations.md)), and `bootstrap.sh --domain` binds the custom domains (`usnewsmap.com`, `www.usnewsmap.com`, `api.usnewsmap.com`) with managed certificates once the DNS records are in place (§8.8).
+
+## Naming guard and Phase 1/2 rollout
+
+ADR-0017's stateless Phase 1 changes and Phase 2 are declared in the
+templates, **not evidence that Azure has been migrated**. Existing prod
+keeps its data lake, Cosmos, skeleton, OCR exchange and Phase 3 ingest
+resources pinned. The reviewed target names are in `names/prod.json`; the
+remaining 22 pins are in `names/exceptions.json`.
+
+### Protected-resource gate
+
+Every environment stack create, including bootstrap and teardown's partial
+provisions, reads the current stack inventory and runs a full-payload
+`az deployment sub what-if` with the same parameter file and exported
+settings. `scripts/lib/rename_guard.py` compares IDs case-insensitively and
+refuses a managed storage account, Cosmos account, registry, workspace,
+vault, Container Apps environment, VNet or public/private DNS zone that
+would be ignored or deleted. A removal without a replacement is protected
+too. Unmanaged resources do not need an override.
+
+`scripts/provision.sh --env prod --what-if` also runs the gate without
+writing anything. A missing protected ID, unsupported result, malformed
+response or failed read/what-if fails closed and cannot be overridden.
+Guard failures are not retried. A first deployment is recognized only by
+`DeploymentStackNotFound`, not by an arbitrary failed read.
+
+For a deliberately approved removal, repeat the exact **old** leaf name:
+
+```sh
+scripts/provision.sh --env prod --what-if --allow-rename=stusnmsffapzy
+scripts/provision.sh --env prod --allow-rename=stusnmsffapzy
+```
+
+This is not a data migration: the latter example is only for the future
+Phase 3 scratch window, after its preconditions and rename PR. Wildcards,
+resource IDs and empty overrides are refused. Permissions, complete
+what-if expansion and an approved data migration remain mandatory.
+
+Archive-connected teardown first provisions without the archive/search
+cluster before deleting the environment's groups. With NFS search storage
+and ingest scratch disabled, that partial provision removes the scratch
+account and file private-DNS zone. `teardown.sh` accepts and forwards the
+same repeated exact-name approvals; confirming the environment name does
+**not** approve protected removals. Inspect the live inventory and partial
+provision's guard output, then explicitly approve **both** old names, for
+example:
+
+```sh
+# Set SCRATCH_ACCOUNT_NAME to the inspected account's exact old leaf name.
+scripts/teardown.sh --env dev \
+  --allow-rename="$SCRATCH_ACCOUNT_NAME" \
+  --allow-rename=privatelink.file.core.windows.net
+```
+
+Use the actual managed names, not an empty variable or assumed prod
+names. The approvals apply only to known Ignore/Delete results; failed,
+missing or unsupported plans still abort before stack creation/deletion.
+The archive lock is restored on failure, and a rerun resumes the detach
+using its saved marker. No wildcard or automatic teardown exemption is
+provided; a partial provision outside teardown follows the same rules.
+
+### Owner steps for the stateless Phase 1 and Phase 2 names
+
+1. Before provisioning, reconcile the live stack inventory with the
+   **pre-rollout** map (`git show 84f887c8:infra/names/prod.json`), then review
+   its diff to the current target map. Compare actual resource IDs; account
+   for optional resources, GUID children and display properties separately.
+   `prod.json` is compiler-derived, not an authenticated live inventory.
+   Confirm the `archiveEndpoint` deployment state before removing its pin.
+2. Use CI's Bicep 0.47.16 or newer compatible tooling. Pause CI deploys for
+   the provision/bootstrap interval (serving is unaffected).
+   Reset `USNM_BUDGET_START` to the first of the current month, commit that
+   public setting through a PR, and provision from the approved main:
+
+   ```sh
+   scripts/settings.sh --env prod --key USNM_BUDGET_START --value "$(date -u +%Y-%m-01)"
+   # commit/review/merge any settings change, then pull main
+   scripts/provision.sh --env prod --what-if
+   scripts/provision.sh --env prod
+   scripts/bootstrap.sh --env prod
+   ```
+
+   Run bootstrap immediately: replacing `id-usnm-ci-prod` with
+   `usnm-ci-id-prod` changes `CI_CLIENT_ID`; bootstrap rewrites the GitHub
+   Environment's `USNM_CI_CLIENT_ID`. Resume CI and verify a successful push
+   and rollout with the new identity. Do not leave the old client ID in CI.
+
+3. Verify the actual deployed alert inventory and queries, the site web
+   test, the `usnm-core-ag-prod` receivers and short name `usnm-prod`, the
+   `usnm-core-budget-prod` start/notifications, and workbook titles
+   `usnm pipeline (prod)` and `usnm API (prod)`. Do not use the issue's old
+   alert count: later changes added/consolidated rules. The three OCR alert
+   names also become conventional. Old fired-alert/availability history
+   remains in the same workspace; the recreated rules have new resource
+   IDs. Workbook GUIDs and custom role IDs/seeds do not change; only
+   workbook titles and role labels change in place.
+4. Verify `usnm-api-failures-alert-prod` exists, is enabled and targets the
+   current component and action group. Only then inspect and remove the
+   unmanaged `Failure Anomalies - appi-usnm-prod` smart-detector rule:
+
+   ```sh
+   az resource show -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
+     -n usnm-api-failures-alert-prod --api-version 2021-04-01
+   az resource show -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
+     -n 'Failure Anomalies - appi-usnm-prod' --api-version 2021-04-01
+   # after verifying the old rule's identity and the replacement's action group:
+   az resource delete -g rg-usnm-prod --resource-type Microsoft.AlertsManagement/smartDetectorAlertRules \
+     -n 'Failure Anomalies - appi-usnm-prod'
+   ```
+
+   It was not stack-managed; removing a Bicep declaration cannot delete it.
+
+5. Run `scripts/ocr-node/group.sh --env prod --dry-run`, then without
+   `--dry-run` to set the saved group's `displayName` and `mailNickname`
+   to `usnm-ocr-nodes-grp-prod`. Its object ID, members and role grants stay
+   unchanged. A legacy group without a saved ID must be checked and saved
+   by its ID, never adopted or duplicated by name.
+6. Node renaming is still an operator migration: stop/drain the worker,
+   offboard its old Arc name, rename Proxmox VM 120 and the hostname, update
+   DNS, then onboard as `usnm-ocr-node1-arcs-prod` and verify membership,
+   telemetry and worker configuration. New/re-onboarded node names must
+   match the environment and fit the 32-character worker ID cap. Copy
+   `scripts/lib/names.sh` beside `proxmox-create-vm.sh` on a Proxmox host.
+   Offboarding still accepts legacy names so this migration is possible.
+
+### Explicitly blocked later changes
+
+- **OCR exchange:** the original empty-account/pre-worker window has
+  passed; `ocr-exchange.bicep` now also holds BOINC hand-off containers and
+  grants. Do not remove the `ocrExchange` pin until an owner has inventoried
+  live queues/blobs and all OCR/BOINC clients, chosen a drain/copy and
+  quiescence window, and approved node/BOINC reconfiguration. Then a
+  reviewed PR removes that ternary/exception and changes the target map;
+  the operator uses `--allow-rename=stusnmoffapzy`, provisions, configures
+  nodes with `--exchange-account usnmocrstprodffapzy`, updates other clients
+  and verifies pickup. No blanket permission or assumption of emptiness
+  substitutes for this plan.
+- **Phase 3:** no evidence here establishes the #240/#275 dev measurements,
+  #283 preparation, a published release, no executions, or a free
+  `quickwit-writer` lease. Keep `ingestJob`, `backfillJob`, `jaocrJob`,
+  `jaoneJob`, `ingestIdentity`, `scratch`, `scratchEndpoint` and `docIntel`
+  pinned until that window. The approved window's PR removes those pins
+  and updates the manifests. Scratch needs its explicit old-name override;
+  Document Intelligence needs the two provisions (OCR off, purge the
+  soft-deleted account, OCR on), then a small ingest checked against the
+  alerts/workbook before the full rebuild.
+- Verify the previously removed tiles account is actually gone and finish
+  the [Spot group cleanup](#retired-spot-resource-group). Bootstrap no
+  longer attempts legacy SWA deletion; if one remains, inspect/remove it
+  explicitly. The stale `SWA_NAME` and `USNM_OCR_NODE_NAMES` settings are
+  not in the current schema; back up the selected environment's local
+  settings and remove any obsolete entries still left there (do not add
+  them to committed settings or the store).
+- Phase 4 is intentionally deferred to an environment rebuild, not part of
+  #283. Do not unpin the skeleton, lake or Cosmos just to complete naming.
+
+Keep #309 open until the applicable code changes and Phase 3 operator
+verification are complete. These instructions do not report any migration
+as performed.
 
 ## Retired Spot resource group
 
@@ -133,10 +292,10 @@ What it does:
 4. Creates the GitHub Environment `prod`, restricted to `main`, with its variables, and adds it to `USNM_DEPLOY_ENVIRONMENTS`.
 5. Runs `ci` on `main` (every time, so the registry holds the current `main`) and waits for that run.
 6. Deploys the stack again on the registry, which deploys the API.
-7. Once the registrar delegates `--domain` to the zone, binds the apex, `www` and `api` to the API app, which serves the site and the API, with managed certificates (re-run it after delegating). It also deletes the Static Web App that used to serve the site.
+7. Once the registrar delegates `--domain` to the zone, binds the apex, `www` and `api` to the API app, which serves the site and the API, with managed certificates (re-run it after delegating). The retired Static Web App is not managed or deleted by bootstrap.
 8. Checks the API's `/readyz` and the site.
 
-Options: `--subscription`, `--location` (default `eastus2`), `--vnet-address-prefix` (the VNet's private block, `USNM_VNET_ADDRESS_PREFIX`; needed for a new environment), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and the old Static Web Apps token secret from before per-environment deployment), `--move` (lets an existing environment move to another subscription, starting there with no data). Environment names are 1–16 lowercase letters and digits.
+Options: `--subscription`, `--location` (default `eastus2`), `--vnet-address-prefix` (the VNet's private block, `USNM_VNET_ADDRESS_PREFIX`; needed for a new environment), `--repo` (default: this clone's), `--domain`, `--alert-email` (alerts, and the $80 budget from this month), `--ingest` (the ingest and backfill jobs), `--cleanup-legacy` (removes the repository-level variables and the old Static Web Apps token secret from before per-environment deployment), `--move` (lets an existing environment move to another subscription, starting there with no data). Environment names are `prod`, `dev` or `x` plus 1–4 lowercase letters/digits (ADR-0017).
 
 Check the result:
 
@@ -167,7 +326,7 @@ After that, every green `ci` run on `main` publishes the images to each listed e
 | `ocrUsers`                    | `USNM_OCR_USERS`                           | empty. Comma-separated Entra object ids given Cognitive Services User on it; the ingest identity always has it                                                                                                                                                                                                                                                                                       |
 | `ocrNodes`                    | `USNM_OCR_NODES`                           | `false`. Deploys the on-prem OCR exchange account and the service endpoint on `snet-cae` (#296); its name is saved as `OCR_EXCHANGE_ACCOUNT`, with `OCR_QUEUE_ENDPOINT` and `OCR_BLOB_ENDPOINT`, and the nodes' monitoring as `OCR_NODE_DCR_ID`, `OCR_NODE_APPINSIGHTS`, `OCR_NODE_APPINSIGHTS_ID` and `OCR_NODE_LOG_ANALYTICS_WORKSPACE_ID` ([operations](../docs/operations.md#on-prem-ocr-nodes)) |
 | `ocrNodeIps`                  | `USNM_OCR_NODE_IPS`                        | empty. Comma-separated public IPv4 addresses or CIDR ranges the nodes connect from (the home IP). Settings only, never committed                                                                                                                                                                                                                                                                     |
-| `ocrNodeGroupId`              | `USNM_OCR_NODE_GROUP`                      | empty. Object id of the nodes' Entra security group, `usnm-ocr-nodes-<env>`, which `scripts/ocr-node/group.sh` creates and records; the provision grants it the node roles and Monitoring Metrics Publisher on the nodes' Application Insights, `usnm-ocr-appi-<env>` (empty: no node grants). `onboard.sh` and `offboard.sh` add and remove nodes without a provision                               |
+| `ocrNodeGroupId`              | `USNM_OCR_NODE_GROUP`                      | empty. Object ID of `usnm-ocr-nodes-grp-<env>`, which `scripts/ocr-node/group.sh` creates or relabels at the same saved ID; the provision grants it the node roles and Monitoring Metrics Publisher on `usnm-ocr-appi-<env>` (empty: no node grants). `onboard.sh` and `offboard.sh` add/remove nodes without a provision                                                                            |
 | `ocrKeyVaultAdmins`           | `USNM_OCR_KEYVAULT_ADMINS`                 | empty. Comma-separated Entra object ids given Key Vault Secrets Officer on the OCR nodes' Key Vault (they set and read the Red Hat secrets; [operations](../docs/operations.md#on-prem-ocr-nodes)). Settings only, never committed                                                                                                                                                                   |
 | `jaOcrJob`                    | `USNM_JA_OCR_JOB`                          | `false`. Deploys `caj-usnm-jaocr-<env>`, the manual Japanese OCR job (04 §4.8), and `caj-usnm-jaone-<env>`, the same image on one replica for one-off measurements (`mixed`, `american-stories`). Turn on once CI has published `usnewsmap-ja-ocr`                                                                                                                                                   |
 | `jaOcrReplicas`               | `USNM_JA_OCR_REPLICAS`                     | `2`. Its parallel replicas (4 vCPU, 8 GiB each); they share loc.gov's request budget                                                                                                                                                                                                                                                                                                                 |
@@ -247,7 +406,7 @@ It also carries over the domain's no-mail records (SPF `v=spf1 -all`, DMARC `p=r
 
 Images are private, in ACR Basic (`crusnm{env}…`), with no admin user and no anonymous pull. The apps and jobs pull with their managed identities.
 
-CI pushes from `main` as `id-usnm-ci-{env}`, signing in with OIDC. That identity trusts only jobs in the GitHub Environment `{env}`, and no secret is stored anywhere. `scripts/bootstrap.sh` sets it all up.
+CI pushes from `main` as `usnm-ci-id-{env}`, signing in with OIDC (`id-usnm-ci-prod` before the Phase 2 provision). That identity trusts only jobs in the GitHub Environment `{env}`, and no secret is stored anywhere. `scripts/bootstrap.sh` sets it all up and must run immediately after the identity rename to refresh `USNM_CI_CLIENT_ID`.
 
 The CI identity's rights are AcrPush on its registry, and a custom role, "usnm deployer", on its resource group (`infra/modules/deployer.bicep`). The role can roll Container Apps onto new images (which carry the site too), and nothing else: no data, keys, networking or role assignments. It's scoped to the group because Azure rejects role assignments scoped to a Container App itself, and because `az containerapp update` also needs join rights on the app's environment; the group holds only this environment. The update also needs assign rights on the app's identity: CI has Managed Identity Operator on `id-usnm-app-{env}` alone, never on the group, so it can't attach the ingest identity (and its data access) to the app.
 
