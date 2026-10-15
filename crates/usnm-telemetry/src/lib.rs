@@ -241,7 +241,11 @@ where
     .with_retry_notify(|e, wait| {
         tracing::warn!(target: "telemetry", error = %e, wait_ms = wait.as_millis() as u64, "Application Insights upload failed; retrying");
     });
-    let resource = resource(service, instance);
+    let resource = resource(
+        service,
+        instance,
+        std::env::var("USNM_QUICKWIT_URL").ok().as_deref(),
+    );
     let tracer = SdkTracerProvider::builder()
         .with_batch_exporter(exporter.clone())
         .with_resource(resource.clone())
@@ -259,7 +263,7 @@ where
 /// `service.name` becomes the cloud role; `instance` (or the replica, set
 /// by Container Apps), the revision and the job execution tell instances
 /// and runs apart.
-fn resource(service: Service, instance: Option<&str>) -> Resource {
+fn resource(service: Service, instance: Option<&str>, searcher: Option<&str>) -> Resource {
     let mut attrs = vec![KeyValue::new("service.version", service.version)];
     if let Some(i) = instance {
         attrs.push(KeyValue::new("service.instance.id", i.to_owned()));
@@ -277,10 +281,34 @@ fn resource(service: Service, instance: Option<&str>) -> Resource {
             attrs.push(KeyValue::new(key, v));
         }
     }
+    if service.name == "usnm-api" {
+        if let Some(searcher) = searcher.and_then(shared_searcher) {
+            attrs.push(KeyValue::new("usnm.searcher", searcher));
+        }
+    }
     Resource::builder()
         .with_service_name(service.name)
         .with_attributes(attrs)
         .build()
+}
+
+/// A remote searcher is shared by API replicas; a loopback sidecar is not.
+/// Keep only the origin, never URL credentials, a path or a query string.
+fn shared_searcher(endpoint: &str) -> Option<String> {
+    let url = reqwest::Url::parse(endpoint).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    if host == "localhost"
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
 }
 
 /// An [`HttpClient`] for the Application Insights exporter that signs every
@@ -383,10 +411,61 @@ mod tests {
                 version: "0",
             },
             Some("nuc1"),
+            None,
         );
         let get = |k: &'static str| r.get(&opentelemetry::Key::from_static_str(k));
         assert_eq!(get("service.name").unwrap().as_str(), "usnm-ocr-worker");
         assert_eq!(get("service.instance.id").unwrap().as_str(), "nuc1");
+    }
+
+    #[test]
+    fn the_api_resource_names_only_shared_searchers() {
+        for (name, endpoint, expected) in [
+            (
+                "usnm-api",
+                Some("http://usnm-search-ca-prod"),
+                Some("http://usnm-search-ca-prod"),
+            ),
+            ("usnm-api", Some("http://127.0.0.1:7280"), None),
+            ("usnm-api", None, None),
+            ("usnm-ingest", Some("http://usnm-search-ca-prod"), None),
+        ] {
+            let r = resource(Service { name, version: "0" }, Some("replica"), endpoint);
+            assert_eq!(
+                r.get(&opentelemetry::Key::from_static_str("usnm.searcher"))
+                    .map(|v| v.to_string())
+                    .as_deref(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn only_remote_searchers_have_a_shared_identity() {
+        for endpoint in [
+            "http://127.0.0.1:7280",
+            "http://127.0.0.2:7280",
+            "http://localhost:7280/",
+            "http://[::1]:7280/",
+            "not a URL",
+            "file:///searcher",
+        ] {
+            assert_eq!(shared_searcher(endpoint), None, "{endpoint}");
+        }
+        for endpoint in [
+            "http://usnm-search-ca-prod",
+            "http://usnm-search-ca-prod:80/",
+            "http://user:password@usnm-search-ca-prod/path?secret=value",
+        ] {
+            assert_eq!(
+                shared_searcher(endpoint).as_deref(),
+                Some("http://usnm-search-ca-prod"),
+            );
+        }
+        assert_eq!(
+            shared_searcher("https://searcher:7280/").as_deref(),
+            Some("https://searcher:7280"),
+        );
     }
 
     #[test]

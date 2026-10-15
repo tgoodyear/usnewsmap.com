@@ -1,15 +1,29 @@
-// The Quickwit searcher sidecar's caches, per API replica (#125): what each
+// The Quickwit searcher's caches, per searcher (#125): what each
 // holds at its last report (MB of 1,000,000 bytes, as Quickwit reads
 // "256MB") and its hits, misses and evictions in the time span. The API reads
-// them from the sidecar every minute (api.searcher_cache_* in AppMetrics,
+// them from the searcher every minute (api.searcher_cache_* in AppMetrics,
 // 08 §8.1.2). The split footer cache holds every footer when the release's
 // footer total (index-layout, FooterMb) is below its capacity and, after the
 // warm-up, its Misses and Evictions stop growing. Evictions alone prove
 // nothing: Quickwit counts replacing an entry as one, and a publish drops the
 // old version's footers.
-let m = AppMetrics
+// Pick one reporting API replica per searcher and minute, before filtering
+// instruments: keep all of its rows (including zero/sparse counter reports).
+// Remote searchers carry usnm.searcher; sidecars and legacy rows fall back
+// to their API replica, so distinct sidecars are never collapsed.
+let reports = materialize(AppMetrics
+    | where AppRoleName == "usnm-api" and Name startswith "api.searcher_"
+    | extend Searcher = coalesce(tostring(Properties["usnm.searcher"]), AppRoleInstance),
+        Minute = bin(TimeGenerated, 1m));
+let reporters = reports
+    | summarize by Minute, Searcher, AppRoleInstance
+    | summarize arg_min(AppRoleInstance, *) by Minute, Searcher;
+let selected = reports
+    | join kind=inner reporters on Minute, Searcher, AppRoleInstance
+    | project-away Minute, Minute1, Searcher1, AppRoleInstance1;
+let m = selected
     | where AppRoleName == "usnm-api" and Name startswith "api.searcher_cache_"
-    | extend Cache = tostring(Properties.cache), Replica = AppRoleInstance;
+    | extend Cache = tostring(Properties.cache), Replica = Searcher;
 let held = m
     | where Name in ("api.searcher_cache_bytes", "api.searcher_cache_items")
     | summarize arg_max(TimeGenerated, Sum) by Cache, Replica, Name
