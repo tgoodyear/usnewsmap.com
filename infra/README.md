@@ -2,6 +2,30 @@
 
 The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastructure.md). It uses only PaaS: there are no VMs, scale sets, AKS clusters or Batch accounts, and an assigned policy denies them.
 
+## Separate index account (#283)
+
+| Setting                           | Default | Effect                                                                                                                                                                                                                                                                    |
+| --------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `USNM_INDEX_STORAGE`              | `false` | Create `usnmqwst{env}{suffix}` (ADR-0017), private Blob endpoint/DNS, parallel `usnm-qw-search-ca-{env}` searcher and container-scoped roles. Writer stages fresh full rebuilds there while SERVE is false. **Keep on**: disabling deletes the account through the stack. |
+| `USNM_INDEX_STORAGE_SERVE`        | `false` | Requires INDEX_STORAGE. After verifying/promoting `reference/index-storage-pending.json`, switch the API to the new searcher. Later releases publish `current.json` normally. The lake searcher/sidecar and roles are retained for the old revision and rollback.         |
+| `USNM_LAKE_BLOB_SOFT_DELETE_DAYS` | `3`     | Lake retention, 1–365 days. Restore `14` only after retiring/pruning its old indexes; does not affect the new account.                                                                                                                                                    |
+
+The new account is Standard LRS, Hot, flat namespace, Entra-only, shared keys
+and public access disabled, **no versioning or blob/container soft delete**.
+It is not a public-policy exception. Blob writes/deletes use the same
+Log Analytics diagnostics as the lake. The writer job's system identity and
+the ingest user identity have Blob Data Contributor on its `qw-index`;
+the new searcher's system identity (and API system identity for transition)
+have Reader. No account-wide data grants. The experiment's `qw-cluster` and
+`qw-bench` stay in the lake. The shared `searcher.yaml` and CI's roll-api
+continue preserving each running searcher's account, so merging with both
+settings absent does not retarget/restart the serving searcher.
+
+Follow [Index storage cutover](../docs/operations.md#index-storage-cutover),
+not an ordinary full release: Quickwit has one configured Azure account,
+so switching pointers and readers requires the documented sequence. See
+[ADR-0021](../docs/design/adr/0021-separate-index-storage.md).
+
 ## What this deploys
 
 Resource names follow [ADR-0017](../docs/design/adr/0017-resource-naming.md) (proposed). The names below are the current ones; prod keeps some of them until a rebuild, and the ADR maps each to its target.

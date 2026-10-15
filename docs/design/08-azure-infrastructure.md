@@ -98,6 +98,34 @@ The API (`usnm-api`) uses the same setup, shared in `crates/usnm-telemetry`, und
 - Container Apps has _planned maintenance_ for an environment, but only for apps on Dedicated workload profiles. This environment is Consumption-only. The feature is also billed on the Dedicated Plan Management meter (about $0.10/hour, ≈ $73/month), which alone is most of the $80 budget.
 - If the environment ever moves to a Dedicated profile, add `Microsoft.App/managedEnvironments/maintenanceConfigurations` (`default`), with `startHourUtc: 7` and `durationHours: 8` on the chosen weekday. The start hour is UTC only: 7 is 3 am Eastern in summer (EDT) and 2 am in winter (EST).
 
+### Separate Quickwit account (#283, opt-in)
+
+`USNM_INDEX_STORAGE` (default false) separates derived index data from the
+lake's system-of-record data: `usnmqwst{env}{suffix}` holds `qw-index`,
+metastore and splits, without blob/container soft delete or versioning.
+It remains Hot, Standard LRS, flat namespace, Entra-only and private-only,
+with a Blob private endpoint in `snet-pe`, registered in the existing Blob
+private DNS zone. No addition to `publicAccountIds`: the deny policy must
+continue applying. Write/delete diagnostics use the environment's workspace.
+The lake retains its old index, versioning, lifecycle rules and 3-day blob
+retention until retirement; `USNM_LAKE_BLOB_SOFT_DELETE_DAYS` then restores
+14 days. The experimental `qw-cluster` and `qw-bench` stay in the lake.
+
+The writer system identity and ingest user identity get Contributor on the
+new container; the parallel `usnm-qw-search-ca-{env}` system identity gets
+Reader (as does the API's system identity during transition). Existing lake
+grants stay. Quickwit URIs remain `azure://qw-index`, but the writer's
+`QW_AZURE_STORAGE_ACCOUNT` and the new searcher's YAML `storage.azure.account`
+resolve them against the new account. A single Quickwit cannot resolve
+indexes across two accounts. Staged rebuilds recreate all index sets and
+write `reference/index-storage-pending.json`, leaving the serving pointer
+and `ops/current` intact. Only after verification/promotion does the separate
+`USNM_INDEX_STORAGE_SERVE` gate switch the API's URL to the parallel
+searcher; old revisions retain their old reader until the new revision is
+ready. Both flags remain true after migration. Turning INDEX_STORAGE off
+would delete the new account, not roll back. See [ADR-0021](adr/0021-separate-index-storage.md)
+and the [cutover/rollback/prune sequence](../operations.md#index-storage-cutover).
+
 ## 8.2 Identity and access (managed identities everywhere)
 
 | Principal                                                                                                                                                                                                    | Type                                       | Role assignments (scope)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

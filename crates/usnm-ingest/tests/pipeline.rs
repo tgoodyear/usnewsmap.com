@@ -240,6 +240,7 @@ impl Env {
 
     fn releaser(&self, day: u32, full: bool) -> Release {
         Release {
+            stage_index_storage: false,
             state: self.state.clone(),
             curated: self.curated.clone(),
             reference: self.reference.clone(),
@@ -282,6 +283,7 @@ impl Env {
         ja_latin: bool,
     ) -> anyhow::Result<Option<Published>> {
         let r = Release {
+            stage_index_storage: false,
             state: self.state.clone(),
             curated: self.curated.clone(),
             reference: self.reference.clone(),
@@ -566,6 +568,76 @@ async fn a_delta_folds_its_words_as_the_published_version_does() {
 }
 
 #[tokio::test]
+async fn index_storage_stages_a_fresh_base_without_changing_the_serving_version() {
+    let e = env().await;
+    let pages = fixture_pages();
+    let archive = e.root.join("batch_fx_storage_ver01.tar.gz");
+    write_archive(&archive, &pages.iter().collect::<Vec<_>>(), true, true);
+    source::enqueue(
+        &e.state,
+        &[listed("batch_fx_storage_ver01", &archive, None)],
+    )
+    .await
+    .unwrap();
+    e.worker("w").run(None).await.unwrap();
+    put_globe(&e, &[1, 2, 3, 300, 301]).await;
+    let old = e.release_congress(1, false, true).await.unwrap();
+    let current = e.reference.get("current.json").await.unwrap().unwrap();
+    let release = Release {
+        stage_index_storage: true,
+        congress: true,
+        ..e.releaser(2, false)
+    };
+    let mut sink = JsonlSink::new(e.root.join("new-account"));
+    let staged = release.run(&mut sink).await.unwrap().unwrap();
+    assert!(staged.full);
+    assert_eq!(staged.indexes.len(), 1);
+    assert!(!staged.indexes.iter().any(|i| old.indexes.contains(i)));
+    assert_eq!(
+        e.reference.get("current.json").await.unwrap().unwrap(),
+        current
+    );
+    assert_eq!(
+        e.state.current_version().await.unwrap().as_deref(),
+        Some(old.index_version.as_str())
+    );
+    let pending = e
+        .reference
+        .get("index-storage-pending.json")
+        .await
+        .unwrap()
+        .unwrap();
+    let pointer: Value = serde_json::from_slice(&pending).unwrap();
+    assert_eq!(pointer["index_version"], staged.index_version);
+    assert_eq!(pointer["previous_version"], old.index_version);
+    let new_congress = pointer["congress"]["indexes"][0].as_str().unwrap();
+    assert_eq!(new_congress, "congress-20261002-1");
+    assert!(
+        e.root
+            .join("new-account")
+            .join(format!("{new_congress}.jsonl"))
+            .exists(),
+        "unchanged Congress pages must be rebuilt in the new account"
+    );
+    let kept = usnm_ingest::prune::kept(e.reference.as_ref(), &e.state)
+        .await
+        .unwrap();
+    assert!(
+        kept.indexes.contains(&staged.indexes[0]),
+        "pending version survives prune"
+    );
+    e.reference
+        .put("current.json", pending, "application/json")
+        .await
+        .unwrap();
+    let kept = usnm_ingest::prune::kept(e.reference.as_ref(), &e.state)
+        .await
+        .unwrap();
+    assert_eq!(kept.rollback.as_deref(), Some(old.index_version.as_str()));
+    assert!(kept.indexes.contains(&old.indexes[0]));
+}
+
+#[tokio::test]
 async fn reproduces_the_fixture_corpus_as_a_base_and_a_delta() {
     let e = env().await;
     let pages = fixture_pages();
@@ -770,6 +842,7 @@ async fn failed_and_leased_batches_are_retried_not_lost() {
         .await
         .unwrap();
     let r = Release {
+        stage_index_storage: false,
         state: e.state.clone(),
         curated: e.curated.clone(),
         reference: e.reference.clone(),
@@ -828,6 +901,7 @@ async fn releases_into_a_quickwit_writer_node() {
             .unwrap();
         e.worker("w").run(None).await.unwrap();
         let r = Release {
+            stage_index_storage: false,
             state: e.state.clone(),
             curated: e.curated.clone(),
             reference: e.reference.clone(),
@@ -1431,6 +1505,7 @@ async fn a_backend_switch_forces_a_full_release() {
         .unwrap();
     e.worker("w").run(None).await.unwrap();
     let r = Release {
+        stage_index_storage: false,
         state: e.state.clone(),
         curated: e.curated.clone(),
         reference: e.reference.clone(),
@@ -1475,6 +1550,7 @@ async fn a_release_that_loses_the_writer_lock_does_not_publish() {
         .unwrap();
     e.worker("w").run(None).await.unwrap();
     let r = Release {
+        stage_index_storage: false,
         state: e.state.clone(),
         curated: e.curated.clone(),
         reference: e.reference.clone(),
@@ -1563,6 +1639,7 @@ async fn an_unfinished_titles_sync_holds_back_a_full_release_only() {
         .unwrap();
     e.worker("w").run(None).await.unwrap();
     let release = |full: bool, titles_left: Option<String>| Release {
+        stage_index_storage: false,
         state: e.state.clone(),
         curated: e.curated.clone(),
         reference: e.reference.clone(),
@@ -1991,6 +2068,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         .unwrap();
     e.worker("w").run(None).await.unwrap();
     let r = Release {
+        stage_index_storage: false,
         state: e.state.clone(),
         curated: e.curated.clone(),
         reference: e.reference.clone(),
@@ -2053,6 +2131,7 @@ async fn a_failed_release_records_when_it_failed() {
     e.worker("w").run(None).await.unwrap();
     let now = Utc.with_ymd_and_hms(2026, 10, 9, 3, 0, 0).unwrap();
     let r = Release {
+        stage_index_storage: false,
         state: e.state.clone(),
         curated: e.curated.clone(),
         reference: e.reference.clone(),
@@ -2328,6 +2407,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
     ] {
         curate(&e, vec![batch]).await;
         let r = Release {
+            stage_index_storage: false,
             state: e.state.clone(),
             curated: e.curated.clone(),
             reference: e.reference.clone(),
@@ -4098,6 +4178,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
     for (day, list) in [(1, early), (8, late)] {
         curate(&e, list).await;
         let r = Release {
+            stage_index_storage: false,
             state: e.state.clone(),
             curated: e.curated.clone(),
             reference: e.reference.clone(),

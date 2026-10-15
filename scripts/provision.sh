@@ -58,6 +58,10 @@ if ! $ALLOW_DIRTY; then
     die "$COMMITTED_FILE has uncommitted changes (above): commit them (through a pull request for a shared environment), or pass --allow-dirty for an experiment"
   [ "$rc" -eq 0 ] || exit 1
 fi
+# A searcher switch without its account must fail before any Azure change.
+if [ "$(aget USNM_INDEX_STORAGE_SERVE)" = true ] && [ "$(aget USNM_INDEX_STORAGE)" != true ]; then
+  die "USNM_INDEX_STORAGE_SERVE requires USNM_INDEX_STORAGE; see docs/operations.md, Index storage cutover"
+fi
 need_stack_az
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/bootstrap.sh --env $ENV_NAME first"
 az account set --subscription "$(aget AZURE_SUBSCRIPTION_ID)" 2> /dev/null ||

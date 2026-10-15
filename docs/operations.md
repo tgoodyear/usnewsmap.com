@@ -261,6 +261,11 @@ Each computed search also logs `slow warm-up query` with its `ms` when it takes 
 
 ## Full rebuild
 
+For the #283 account move, follow [Index storage cutover](#index-storage-cutover)
+**before starting**: the new account stages its pointer rather than publishing
+it to the old searcher. The ordinary full-rebuild commands below otherwise
+publish immediately.
+
 Rebuild the indexes as one merged base (one-off, or a compaction). A release also builds a full base by itself, without `USNM_INGEST_FULL`, when the published version was built with another search backend, without common-word pairs or with a version of them newer than the release knows (05 §5.5.3), or when `USNM_AMERICAN_STORIES` is on and the published version doesn't have American Stories' text (below); the steps below force one. It is also how merged places and other place changes of published titles reach the site (04 §4.6). Indexes built before the merge settings (September 2026) keep their many small splits: their splits are past any maturation period, so nothing merges them in place, and they are sealed. A full release builds a new base from every curated batch, merged, and publishes a version with no deltas; the previous version stays in Blob for rollback (`current.json`). A full base is also what moves a version to the latest analyzer versions (05 §5.5.3): a delta folds its words as the published version's indexes do, so a change to the folding, such as vulgar fractions as one word (`½`, #168), reaches the site only with a full rebuild. Afterwards `current.json` has the latest `common_grams` and `ja.fold` (2 since #168), as does `build.features` in `reference/<version>/manifest.json`, and the API parses queries for them. It takes the writer lock like any release, so it never runs alongside another writer (08 §8.4.1). Run it when no backfill or ingest execution is running and the backfill has finished:
 
 ```sh
@@ -323,6 +328,9 @@ Only a full base takes it: a delta's few splits keep the template's target. The 
 
 | Setting                                                        | For the rebuild                                                                | What it does                                                                                                                                                  | Check afterwards                                                                                                                                                                                                                                                                 |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `USNM_INDEX_STORAGE`                                           | `true` for the account move; **keep on permanently**                           | Creates the private index account and a parallel read-only searcher; the writer stages full rebuilds until cutover                                            | `INDEX_STORAGE_ACCOUNT`; `reference/index-storage-pending.json`; old `current.json` unchanged                                                                                                                                                                                    |
+| `USNM_INDEX_STORAGE_SERVE`                                     | `false` during rebuild, `true` only after pointer promotion                    | Switches the API's new revision to the new-account searcher; later releases publish normally                                                                  | New API revision ready, `/v1/meta` names staged version; see cutover below                                                                                                                                                                                                       |
+| `USNM_LAKE_BLOB_SOFT_DELETE_DAYS`                              | Leave at `3`; restore `14` after the old index is retired and pruned           | Restores the lake's recovery window without retaining future deleted splits                                                                                   | Lake's blob service retention; new account still has neither soft delete nor versioning                                                                                                                                                                                          |
 | `USNM_INGEST_FULL`                                             | `true`, cleared afterwards                                                     | Every run builds a full base (`--full`)                                                                                                                       | `released` with `full: true`; `current.json` lists one main index                                                                                                                                                                                                                |
 | `USNM_DEDICATED_PROFILE`, `USNM_INGEST_ON_DEDICATED`           | `true`, cleared afterwards in two provisions (below)                           | The E4 profile and the ingest job on it: 25 GiB for the container and the writer tuning (`USNM_WRITER_*`, set by the Bicep)                                   | The `writer tuning` line (`heap: 6GiB`, `commit_timeout_secs: 120`, `queue: 4GiB`); `quickwit_rss_mb` in `release progress` under about 20,000                                                                                                                                   |
 | `USNM_AMERICAN_STORIES`                                        | `true` (as now)                                                                | American Stories' text with LoC's (04 §4.9); item 1 needs it                                                                                                  | `current.json` has `american_stories: 1`; the `American Stories` lines of the release ([below](#american-stories-text))                                                                                                                                                          |
@@ -364,6 +372,137 @@ Don't leave `USNM_INGEST_FULL` set: every run, scheduled ones included, would re
 
 **Why the E4 profile.** The first full rebuild with the common-word pairs (#154) was killed when the Quickwit writer ran out of memory at the Consumption profile's limit (7.5 GiB with the scratch share's init container), 6.5 h in, at 26.5% (#172). On the E4 profile the ingest container gets 3.0 vCPU and 25 GiB, and the writer a 6 GiB indexing heap, a 120 s commit timeout and a 4 GiB ingest queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, set by `infra/modules/ingestjobs.bicep`), so it writes splits at the 30,000-page target instead of cutting small ones every 30 s and merging them (#172). The `writer tuning` line at the start of the release shows them. A full run also takes longer than the October 2026 rebuild (about 230 to 460 pages a second instead of 750), which is why the ingest job's replica timeout is 48 h (#173). Benchmark afterwards with `scripts/bench-cold-searches.py`. The commit timeout was 600 s at first: the ingest queue's write-ahead log is only truncated when a commit is published, so it filled in about 4 minutes and Quickwit refused pages ("no shards available") for the rest of each 10 minutes, and the October 6 rebuild was stopped at 15% after averaging 132 pages/s. At 120 s the queue holds about 2 minutes of pages.
 
+## Index storage cutover
+
+The #283/#245/#416 move is opt-in ([ADR-0021](design/adr/0021-separate-index-storage.md)).
+Merging it changes no environment setting. `USNM_INDEX_STORAGE=false` and
+`USNM_INDEX_STORAGE_SERVE=false` are the defaults. Do this first on dev, then
+only with the maintainer's rebuild go-ahead. All provisions, starts and Blob
+commands here are **operator steps**, not part of CI.
+
+Quickwit 0.9 resolves `azure://qw-index` against its one configured Azure
+account; an account cannot be encoded in each index's URI. The writer's
+metastore and index-root URIs both stay `azure://qw-index`, but
+`QW_AZURE_STORAGE_ACCOUNT` selects the new account. A second, internal
+searcher (`usnm-qw-search-ca-{env}`) reads that account with the same YAML
+(`account:` replaced, `#polling_interval=30s` unchanged). The old searcher
+or sidecar and its lake roles stay intact. The dev `qw-cluster`/`qw-bench`
+experiment stays in the lake; it is not the serving index.
+
+1. **Prepare and pause schedules.** Wait for ingest/backfill/prune to stop,
+   clear `USNM_INGEST_CRON`, and record it for restoration. Save the serving
+   `current.json` and the rollback version. Set `USNM_INDEX_STORAGE=true`,
+   leave `USNM_INDEX_STORAGE_SERVE` absent/false, and set the full-rebuild
+   settings above. Commit/review the settings, then provision. This creates
+   `usnmqwst{env}{suffix}`, its Blob endpoint in `snet-pe` and DNS registration
+   in the existing Blob private zone, the writer/ingest grants and the new
+   searcher. It grants nothing publicly: the account is deliberately **not**
+   in `publicAccountIds`, so the existing deny policy covers it. The new
+   searcher may restart until the first writer has created the metastore.
+2. **Build, without switching readers.** Start the ingest job normally. Its
+   template uses the new account, `--full` and `--stage-index-storage`.
+   Staging ignores the old pointer for index reuse: main, Japanese and
+   Congress indexes are rebuilt, including an unchanged Congress set.
+   Reference snapshots stay in the lake. The run publishes
+   `reference/index-storage-pending.json`, **not** `current.json`, and leaves
+   `ops/current` unchanged. The run record is `published` (to the pending
+   pointer); its `previous_version` retains the lake version for rollback.
+   A retry stages another fresh full base. Keep schedules off and do not
+   start an ordinary release with hand-written arguments during migration.
+3. **Verify before promotion.** Check the release's counts, manifest and
+   merges; read pending JSON and verify every main/JA/Congress index via the
+   new searcher's `/api/v1/indexes/{id}` and representative searches from an
+   in-VNet runner. Wait for its readiness probe and RBAC propagation. Confirm
+   the live site still reports the old version. Prune protects a staged
+   version as a newer published run, but defer cleanup until after cutover.
+4. **Promote, then switch the API.** Keep all writers/prune stopped. From a
+   private-network-connected operator host with Entra Blob Data Contributor
+   on the lake's `reference` container (never enable keys or public access),
+   back up and promote the pointers. Work in the repository, not a system
+   temporary directory:
+
+   ```sh
+   LAKE=$(scripts/settings.sh --env prod --key STORAGE_ACCOUNT)
+   mkdir -p .azure/prod/index-storage
+   az storage blob download --auth-mode login --account-name "$LAKE" --container-name reference \
+     --name current.json --file .azure/prod/index-storage/serving-before.json --overwrite
+   az storage blob download --auth-mode login --account-name "$LAKE" --container-name reference \
+     --name index-storage-pending.json --file .azure/prod/index-storage/pending.json --overwrite
+   jq '{index_version, previous_version, indexes, ja, congress}' .azure/prod/index-storage/pending.json
+   az storage blob upload --auth-mode login --account-name "$LAKE" --container-name reference \
+     --name current.json --file .azure/prod/index-storage/pending.json --overwrite true --content-type application/json
+   scripts/settings.sh --env prod --key USNM_INDEX_STORAGE_SERVE --value true
+   # Commit/review/merge the setting, then provision from that commit.
+   scripts/provision.sh --env prod
+   ```
+
+   The old API may log `reload failed; keeping current version`: its lake
+   searcher cannot find the new indexes, so it keeps serving its loaded old
+   version. **Do not restart/roll the old API between promotion and the
+   switch**: a fresh old-account replica cannot load the new pointer. Avoid
+   CI/API image rolls in this window; promote only when the reviewed switch
+   commit is ready to provision. If the old revision must restart or scale
+   out, restore the saved pointer until the switch can complete. Provision
+   changes `USNM_QUICKWIT_URL` to the already-ready new searcher; the new API
+   revision loads and warms the promoted version before readiness moves
+   traffic. The old searcher is never retargeted or deleted by this switch.
+   This is a controlled cutover, not a guarantee against cold starts during
+   the pointer/reader window.
+
+5. **Check and retain rollback.** Verify `/readyz`, `/v1/meta`, counts,
+   representative main/JA/Congress queries, and the index version on every
+   ready API replica. Restore the weekly schedule and clear the one-off
+   rebuild/scratch/E4 settings as above, but **keep both index settings true**.
+   The next ordinary release repairs `ops/current` from the live pointer
+   before it runs. Do not prune the lake's rollback yet.
+6. **Rollback across accounts, if needed.** Pause writers/prune, restore
+   `serving-before.json` to `reference/current.json` with the same Entra
+   upload command, then set only `USNM_INDEX_STORAGE_SERVE=false` and
+   provision. The retained lake searcher serves the old indexes again.
+   Until then the new API keeps its loaded new version if its reload fails.
+   Keep schedules off: false stages full rebuilds again, it does not send
+   incremental writes back to the lake. Never turn `USNM_INDEX_STORAGE` off:
+   the deployment stack would delete the new account and its data. Roll
+   forward by promoting the saved pending pointer and setting SERVE true
+   again. A retained new-account rollback needs only its pointer restored,
+   not an account switch.
+7. **Prune each account explicitly.** After the new version serves, run the
+   normal prune dry run/delete against the new account. `kept_absent` for
+   the lake rollback there is expected. For the lake, override the account
+   on **one execution**, not the job's saved template (the identity retains
+   its lake grant). This preserves serving and rollback indexes in whichever
+   account holds them:
+
+   ```sh
+   RG=$(scripts/settings.sh --env prod --key AZURE_RESOURCE_GROUP)
+   JOB=$(scripts/settings.sh --env prod --key INGEST_JOB)
+   LAKE=$(scripts/settings.sh --env prod --key STORAGE_ACCOUNT)
+   template=$(az containerapp job show -n "$JOB" -g "$RG" --query properties.template -o json)
+   DELETE=false  # dry run first; inspect logs, then repeat with true
+   body=$(jq -c --arg lake "$LAKE" --argjson delete "$DELETE" '
+     def exec: {name, image, command, args, env, resources} | with_entries(select(.value != null));
+     {containers: [.containers[0] |
+       .args = (["prune", "--quickwit-bin", "/usr/local/bin/quickwit",
+         "--quickwit-metastore", "azure://qw-index", "--quickwit-index-root", "azure://qw-index"]
+         + (if $delete then ["--delete"] else [] end)) |
+       .env |= map(if .name == "QW_AZURE_STORAGE_ACCOUNT" then .value = $lake else . end) | exec],
+      initContainers: []}' <<< "$template")
+   az rest --method post --url "https://management.azure.com/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RG/providers/Microsoft.App/jobs/$JOB/start?api-version=2025-01-01" --body "$body"
+   scripts/logs.sh --env prod --query-name prune --span 2h
+   ```
+
+   Wait for success and inspect the dry run before deleting. Once another
+   verified new-account release is serving, its rollback is also in the new
+   account: repeat lake prune to remove the former lake rollback. Never
+   delete split blobs or copy just the metastore between accounts. Only now
+   set `USNM_LAKE_BLOB_SOFT_DELETE_DAYS=14` and provision. Blobs already
+   deleted keep their original retention; old versions drain under the lake
+   lifecycle rules. The lake's empty `qw-index` container and grants may
+   remain; retiring them is separate cleanup. With a standalone legacy
+   searcher, `USNM_SEARCHER_APP=false` can now retire that app while SERVE
+   remains true (the selected searcher stays the new-account app). Keep it
+   until cross-account rollback is no longer needed.
+
 ## Prune old index versions
 
 Releases never delete an index, so `qw-index` keeps every version ever built and every rebuild that stopped part way (in October 2026, about 1.2 TB of the 2.8 TB of current index blobs; #245). `usnm-ingest prune` deletes the Quickwit indexes that no kept version names. It keeps:
@@ -394,7 +533,7 @@ scripts/start-job.sh --env prod --job INGEST_JOB -- prune "${QW[@]}" --delete
 scripts/logs.sh --env prod --query-name prune --span 2h    # a "deleted index" line for each, then "pruned"
 ```
 
-A large index can take minutes to delete: Quickwit deletes each split file before it answers. A failed delete stops the run with the error; the indexes already deleted stay deleted, and running it again carries on. Afterwards the rollback is still there, but the versions before it are gone and can't be rolled back to. The bill drops later than the delete: the deleted split files become previous blob versions, which the `qw-index/` lifecycle rule deletes after a day, and then sit in the 3-day soft delete (08 §8.1).
+A large index can take minutes to delete: Quickwit deletes each split file before it answers. A failed delete stops the run with the error; the indexes already deleted stay deleted, and running it again carries on. Afterwards the rollback is still there, but the versions before it are gone and can't be rolled back to. In the separate index account deletion is immediate, with no retained blob versions or soft-deleted splits. In the legacy lake account the bill drops later than the delete: the deleted split files become previous blob versions, which the `qw-index/` lifecycle rule deletes after a day, and then sit in the 3-day soft delete (08 §8.1).
 
 ## American Stories' text
 

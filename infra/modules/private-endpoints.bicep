@@ -10,15 +10,20 @@ param blobEndpointNic string = ''
 @description('Cosmos DB\'s endpoint and its NIC\'s name (create-only; empty leaves Azure\'s generated name).')
 param cosmosEndpointName string
 param cosmosEndpointNic string = ''
+param indexStorageId string = ''
+param indexEndpointName string = ''
+param indexEndpointNic string = ''
 param storageId string
 param cosmosId string
 param blobDnsZoneId string
 param cosmosDnsZoneId string
 
-var endpoints = [
+var endpoints = concat([
   { name: blobEndpointName, nic: blobEndpointNic, target: storageId, group: 'blob', zone: blobDnsZoneId }
   { name: cosmosEndpointName, nic: cosmosEndpointNic, target: cosmosId, group: 'Sql', zone: cosmosDnsZoneId }
-]
+], empty(indexStorageId) ? [] : [
+  { name: indexEndpointName, nic: indexEndpointNic, target: indexStorageId, group: 'blob', zone: blobDnsZoneId }
+])
 
 resource pe 'Microsoft.Network/privateEndpoints@2024-05-01' = [
   for e in endpoints: {

@@ -17,6 +17,8 @@ pub mod engine;
 pub mod loc;
 /// Fetching scans ahead of the workers (#368).
 pub mod prefetch;
+/// The page's `run_id` and runs record (13 §13.8, #307).
+pub mod provenance;
 /// The fetched list relayed to the seeder (12 Step 11).
 pub mod publish;
 /// The work message and dead letter, from `usnm-ocr-contract` (shared

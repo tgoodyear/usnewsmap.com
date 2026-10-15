@@ -38,6 +38,15 @@ param searchBackend string = 'fixtures'
 @description('Run the Quickwit searcher as its own Container App, usnm-search-ca-{env}, with internal ingress, instead of a sidecar in each API replica (#267): a new API image, and so a site change, then doesn\'t restart it. Needs searchBackend quickwit. Off (the default) keeps the sidecar; turning it off again deletes the searcher app (docs/operations.md, "Searcher app").')
 param searcherApp bool = false
 
+@description('Create an Entra-only Quickwit account, without versioning or blob soft delete (#283), and stage full rebuilds there. Off preserves the lake index. Keep on after cutover: turning off would delete the account and its data (docs/operations.md, "Index storage cutover").')
+param indexStorage bool = false
+@description('Serve the separate index account instead of the lake. Requires indexStorage. Enable only after the staged rebuild is verified and its pending pointer is promoted.')
+param indexStorageServe bool = false
+@description('Data lake blob soft-delete days. Keep 3 until old qw-index is pruned; then restore 14 (#416).')
+@minValue(1)
+@maxValue(365)
+param lakeBlobSoftDeleteDays int = 3
+
 @description('Pull images from the private registry (08 §8.6). Turn on once CI has pushed them there.')
 param useAcr bool = false
 
@@ -397,7 +406,19 @@ module storage 'modules/storage.bicep' = {
     location: location
     tags: tags
     name: n.dataLake
+    blobSoftDeleteDays: lakeBlobSoftDeleteDays
     allowedIps: dataLakeOpen ? nodeIpList(ocrNodeIps) : []
+  }
+}
+
+module indexStore 'modules/index-storage.bicep' = if (indexStorage) {
+  scope: rg
+  name: 'index-storage'
+  dependsOn: [policies]
+  params: {
+    location: location
+    tags: tags
+    name: n.indexAccount
   }
 }
 
@@ -602,6 +623,9 @@ module privateEndpoints 'modules/private-endpoints.bicep' = {
     blobEndpointNic: n.dataEndpointNic
     cosmosEndpointName: n.stateEndpoint
     cosmosEndpointNic: n.stateEndpointNic
+    indexStorageId: indexStorage ? indexStore!.outputs.id : ''
+    indexEndpointName: n.indexEndpoint
+    indexEndpointNic: n.indexEndpointNic
     storageId: storage.outputs.id
     cosmosId: cosmos.outputs.id
     blobDnsZoneId: network.outputs.blobDnsZoneId
@@ -614,6 +638,7 @@ module rbac 'modules/rbac.bicep' = {
   name: 'rbac'
   params: {
     storageName: storage.outputs.name
+    indexStorageName: indexStorage ? indexStore!.outputs.name : ''
     cosmosName: cosmos.outputs.name
     appInsightsName: monitoring.outputs.appInsightsName
     searchLogRoleLabel: n.searchLogRole
@@ -664,6 +689,7 @@ module diagnostics 'modules/diagnostics.bicep' = {
     containerEnvName: containerEnv.outputs.name
     cosmosName: cosmos.outputs.name
     dataStorageName: storage.outputs.name
+    indexStorageName: indexStorage ? indexStore!.outputs.name : ''
     scratchStorageName: nfsAccount ? scratch!.outputs.accountName : ''
     exchangeStorageName: ocrNodes ? ocrExchange!.outputs.name : ''
     scansStorageName: ocrNodes ? scanArchive!.outputs.name : ''
@@ -694,6 +720,11 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     identityId: identities.outputs.appId
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
+    indexStorageAccountName: indexStorage ? indexStore!.outputs.name : ''
+    indexSearcherName: n.indexSearcherApp
+    indexStorageServe: indexStorageServe && !indexStorage
+      ? bool(int('USNM_INDEX_STORAGE_SERVE requires USNM_INDEX_STORAGE'))
+      : indexStorageServe
     storageAccountName: storage.outputs.name
     cosmosEndpoint: cosmos.outputs.endpoint
     allowedOrigins: siteOrigins
@@ -806,6 +837,8 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     registryServer: registry.outputs.loginServer
     ingestIdentityId: identities.outputs.ingestId
     ingestClientId: identities.outputs.ingestClientId
+    indexStorageAccountName: indexStorage ? indexStore!.outputs.name : ''
+    stageIndexStorage: indexStorage && !indexStorageServe
     storageAccountName: storage.outputs.name
     storageBlobEndpoint: storage.outputs.blobEndpoint
     cosmosEndpoint: cosmos.outputs.endpoint
@@ -1081,6 +1114,7 @@ output CONTAINER_ENV_NAME string = containerEnv.outputs.name
 // Set these as the domain's name servers at the registrar.
 output NAME_SERVERS string = empty(dnsZoneName) ? '' : join(dns!.outputs.nameServers, ' ')
 output STORAGE_ACCOUNT string = storage.outputs.name
+output INDEX_STORAGE_ACCOUNT string = indexStorage ? indexStore!.outputs.name : ''
 output COSMOS_ENDPOINT string = cosmos.outputs.endpoint
 output INGEST_JOB string = ingestJobs && useAcr ? ingest!.outputs.ingestJobName : ''
 output BACKFILL_JOB string = ingestJobs && useAcr ? ingest!.outputs.backfillJobName : ''

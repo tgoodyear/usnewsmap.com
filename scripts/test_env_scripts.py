@@ -1699,6 +1699,19 @@ class ProvisionScript(Stubbed):
         return subprocess.run([os.path.join(HERE, "provision.sh"), "--env", "dev", *args], cwd=ROOT,
                               env=self.env, capture_output=True, text=True)
 
+    def test_index_storage_serve_requires_its_account_before_azure(self):
+        self.committed({"USNM_INDEX_STORAGE_SERVE": True})
+        r = self.provision()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("USNM_INDEX_STORAGE_SERVE requires USNM_INDEX_STORAGE", r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_index_storage_serve_with_its_account_passes_the_guard(self):
+        self.committed({"USNM_INDEX_STORAGE": True, "USNM_INDEX_STORAGE_SERVE": True})
+        r = self.provision()
+        self.assertNotIn("requires USNM_INDEX_STORAGE", r.stderr)
+        self.assertTrue(os.path.exists(self.log))
+
     def test_uncommitted_settings_are_refused(self):
         self.committed({"USNM_OCR": True}, commit=False)
         r = self.provision()
