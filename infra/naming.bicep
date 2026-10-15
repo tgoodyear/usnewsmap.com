@@ -131,6 +131,7 @@ var nameTypes = {
   actionGroup: 'ag'
   actionGroupShortName: 'shortName'
   apiAggregateSlowAlert: 'alert'
+  apiFailuresAlert: 'alert'
   apiApp: 'ca'
   apiIdentity: 'id'
   apiReplicaCpuAlert: 'alert'
@@ -225,6 +226,7 @@ type Names = {
   actionGroup: string
   actionGroupShortName: string
   apiAggregateSlowAlert: string
+  apiFailuresAlert: string
   apiApp: string
   apiIdentity: string
   apiReplicaCpuAlert: string
@@ -314,28 +316,25 @@ type Names = {
 // `sfx` the deployment suffix; main.bicep passes both.
 @export()
 func names(env string, sfx string, pinned bool) Names => {
-  actionGroup: pinned ? 'ag-usnm-${env}' : usnmName('core', 'ag', env)
-  actionGroupShortName: pinned ? 'usnm' : 'usnm-${env}'
-  apiAggregateSlowAlert: pinned ? 'alert-usnm-api-aggregate-slow-${env}' : usnmName('api-aggregate-slow', 'alert', env)
+  actionGroup: usnmName('core', 'ag', env)
+  actionGroupShortName: 'usnm-${env}'
+  apiAggregateSlowAlert: usnmName('api-aggregate-slow', 'alert', env)
+  apiFailuresAlert: usnmName('api-failures', 'alert', env)
   apiApp: pinned ? 'ca-usnm-${env}' : usnmName('api', 'ca', env)
   apiIdentity: pinned ? 'id-usnm-app-${env}' : usnmName('api', 'id', env)
-  apiReplicaCpuAlert: pinned ? 'alert-usnm-api-replica-cpu-${env}' : usnmName('api-replica-cpu', 'alert', env)
-  apiSearchQueueWaitAlert: pinned
-    ? 'alert-usnm-api-search-queue-wait-${env}'
-    : usnmName('api-search-queue-wait', 'alert', env)
-  apiSearchesSlowAlert: pinned ? 'alert-usnm-api-searches-slow-${env}' : usnmName('api-searches-slow', 'alert', env)
-  apiServerErrorsAlert: pinned ? 'alert-usnm-api-server-errors-${env}' : usnmName('api-server-errors', 'alert', env)
-  apiWorkbookTitle: pinned ? 'usnewsmap API' : 'usnm API (${env})'
+  apiReplicaCpuAlert: usnmName('api-replica-cpu', 'alert', env)
+  apiSearchQueueWaitAlert: usnmName('api-search-queue-wait', 'alert', env)
+  apiSearchesSlowAlert: usnmName('api-searches-slow', 'alert', env)
+  apiServerErrorsAlert: usnmName('api-server-errors', 'alert', env)
+  apiWorkbookTitle: 'usnm API (${env})'
   appInsights: pinned ? 'appi-usnm-${env}' : usnmName('core', 'appi', env)
   archiveEndpoint: pinned ? 'pe-usnm-archive-blob' : usnmName('archive-blob', 'pep', env)
   archiveEndpointNic: pinned ? '' : usnmName('archive-blob', 'nic', env)
-  archiveWriterRole: pinned ? 'usnm archive writer' : usnmName('archive-writer', 'role', env)
-  archiveWriterRoleScopeEnv: pinned ? '/${env}' : ''
+  archiveWriterRole: usnmName('archive-writer', 'role', env)
+  archiveWriterRoleScopeEnv: ''
   backfillJob: pinned ? 'caj-usnm-backfill-${env}' : usnmName('backfill', 'caj', env)
-  backfillReplicaSilentAlert: pinned
-    ? 'alert-usnm-backfill-replica-silent-${env}'
-    : usnmName('backfill-replica-silent', 'alert', env)
-  backfillStalledAlert: pinned ? 'alert-usnm-backfill-stalled-${env}' : usnmName('backfill-stalled', 'alert', env)
+  backfillReplicaSilentAlert: usnmName('backfill-replica-silent', 'alert', env)
+  backfillStalledAlert: usnmName('backfill-stalled', 'alert', env)
   boincBridgeIdentity: usnmName('boinc', 'id', env)
   boincHandoffIdentity: usnmName('boinc-handoff', 'id', env)
   boincHandoffJob: usnmName('boinc-handoff', 'caj', env)
@@ -343,8 +342,8 @@ func names(env string, sfx string, pinned bool) Names => {
   boincRg: usnmName('boinc', 'rg', env)
   boincVnet: usnmName('boinc', 'vnet', env)
   boincWorkspace: usnmName('boinc', 'log', env)
-  budget: pinned ? 'budget-usnm-${env}' : usnmName('core', 'budget', env)
-  ciIdentity: pinned ? 'id-usnm-ci-${env}' : usnmName('ci', 'id', env)
+  budget: usnmName('core', 'budget', env)
+  ciIdentity: usnmName('ci', 'id', env)
   congressJob: usnmName('cong', 'caj', env)
   containerEnv: pinned ? 'cae-usnm-${env}' : usnmName('core', 'cae', env)
   containerEnvInfraRg: pinned ? '' : usnmName('core-infra', 'rg', env)
@@ -352,31 +351,29 @@ func names(env string, sfx string, pinned bool) Names => {
   dataEndpoint: pinned ? 'pe-usnm-blob' : usnmName('data-blob', 'pep', env)
   dataEndpointNic: pinned ? '' : usnmName('data-blob', 'nic', env)
   dataLake: pinned ? 'stusnmd${sfx}' : usnmCompactName('data', 'st', env, sfx)
-  deployRole: pinned ? 'usnm deployer' : usnmName('deploy', 'role', env)
+  deployRole: usnmName('deploy', 'role', env)
   docIntel: pinned ? 'di-usnm-${env}-${sfx}' : usnmGlobalName('jaocr', 'di', env, sfx)
   ingestIdentity: pinned ? 'id-usnm-ingest-${env}' : usnmName('ingest', 'id', env)
   ingestJob: pinned ? 'caj-usnm-ingest-${env}' : usnmName('ingest', 'caj', env)
-  ingestJobFailedAlert: pinned ? 'alert-usnm-ingest-job-failed-${env}' : usnmName('ingest-job-failed', 'alert', env)
-  ingestNotProgressingAlert: pinned
-    ? 'alert-usnm-ingest-not-progressing-${env}'
-    : usnmName('ingest-not-progressing', 'alert', env)
+  ingestJobFailedAlert: usnmName('ingest-job-failed', 'alert', env)
+  ingestNotProgressingAlert: usnmName('ingest-not-progressing', 'alert', env)
   jaocrJob: pinned ? 'caj-usnm-jaocr-${env}' : usnmName('jaocr', 'caj', env)
   jaoneJob: pinned ? 'caj-usnm-jaone-${env}' : usnmName('jaone', 'caj', env)
-  logCapAlert: pinned ? 'alert-usnm-log-cap-${env}' : usnmName('core-log-cap', 'alert', env)
+  logCapAlert: usnmName('core-log-cap', 'alert', env)
   ocrAppInsights: usnmName('ocr', 'appi', env)
   ocrDcr: usnmName('ocr', 'dcr', env)
   ocrExchange: pinned ? 'stusnmo${sfx}' : usnmCompactName('ocr', 'st', env, sfx)
-  ocrLocHoldAlert: pinned ? 'alert-usnm-ocr-loc-hold-${env}' : usnmName('ocr-loc-hold', 'alert', env)
-  ocrLogCapAlert: pinned ? 'alert-usnm-ocr-log-cap-${env}' : usnmName('ocr-log-cap', 'alert', env)
-  ocrNodeVolumeAlert: pinned ? 'alert-usnm-ocr-node-volume-${env}' : usnmName('ocr-node-volume', 'alert', env)
-  ocrNodeWriterRole: pinned ? 'usnm OCR node writer' : usnmName('ocr-nodewriter', 'role', env)
+  ocrLocHoldAlert: usnmName('ocr-loc-hold', 'alert', env)
+  ocrLogCapAlert: usnmName('ocr-log-cap', 'alert', env)
+  ocrNodeVolumeAlert: usnmName('ocr-node-volume', 'alert', env)
+  ocrNodeWriterRole: usnmName('ocr-nodewriter', 'role', env)
   ocrNodesWorkbookTitle: 'usnm OCR nodes (${env})'
   // 'ocrs', not 'ocrsync', the pickup job's first name (#386, ADR-0017).
   ocrSyncBacklogAlert: usnmName('ocrs-backlog', 'alert', env)
   ocrSyncJob: usnmName('ocrs', 'caj', env)
   ocrVault: usnmCompactName('ocr', 'kv', env, sfx)
   ocrWorkspace: usnmName('ocr', 'log', env)
-  pipelineWorkbookTitle: pinned ? 'usnewsmap pipeline' : 'usnm pipeline (${env})'
+  pipelineWorkbookTitle: 'usnm pipeline (${env})'
   // The search cluster never runs in prod (main.bicep), so these were legacy
   // only while every environment was pinned: ADR-0017's form everywhere.
   qwBenchIdentity: usnmName('qw-bench', 'id', env)
@@ -386,19 +383,19 @@ func names(env string, sfx string, pinned bool) Names => {
   qwNodeApps: map(range(0, 4), i => usnmName('qw-${i}', 'ca', env))
   qwNodeIdentity: usnmName('qw-node', 'id', env)
   registry: pinned ? 'crusnm${env}${sfx}' : usnmCompactName('core', 'cr', env, sfx)
-  releaseStalledAlert: pinned ? 'alert-usnm-release-stalled-${env}' : usnmName('ingest-release-stalled', 'alert', env)
+  releaseStalledAlert: usnmName('ingest-release-stalled', 'alert', env)
   rg: pinned ? 'rg-usnm-${env}' : usnmName('core', 'rg', env)
   scansAccount: usnmCompactName('scans', 'st', env, sfx)
   scansWriterRole: usnmName('scans-writer', 'role', env)
   scratch: pinned ? 'stusnms${sfx}' : usnmCompactName('scratch', 'st', env, sfx)
   scratchEndpoint: pinned ? 'pe-usnm-file' : usnmName('scratch-file', 'pep', env)
   scratchEndpointNic: pinned ? '' : usnmName('scratch-file', 'nic', env)
-  searchLogRole: pinned ? 'usnm search log writer' : usnmName('searchlog', 'role', env)
+  searchLogRole: usnmName('searchlog', 'role', env)
   searcherApp: usnmName('search', 'ca', env)
   serialSetJob: usnmName('sset', 'caj', env)
   serialSetWriterRole: usnmName('sset-writer', 'role', env)
-  siteUnavailableAlert: pinned ? 'alert-usnm-site-unavailable-${env}' : usnmName('site-unavailable', 'alert', env)
-  siteWebtest: pinned ? 'webtest-usnm-site-${env}' : usnmName('site', 'webtest', env)
+  siteUnavailableAlert: usnmName('site-unavailable', 'alert', env)
+  siteWebtest: usnmName('site', 'webtest', env)
   stateEndpoint: pinned ? 'pe-usnm-cosmos' : usnmName('state-sql', 'pep', env)
   stateEndpointNic: pinned ? '' : usnmName('state-sql', 'nic', env)
   // Removed in Phase 1 (ADR-0017): legacy everywhere until then.

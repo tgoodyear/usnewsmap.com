@@ -162,7 +162,7 @@ Deployment stacks keep `usnm-{env}` and `usnm-{purpose}`; policy definitions and
 - **Domains**: `usnewsmap.com` and the `privatelink.*` zones.
 - **Module deployment names** (`Microsoft.Resources/deployments` in the deployment history), such as `ocr-exchange`, `policy-assignments-spot` and `diagnostics-${dataStorageName}`. They are history entries, not resources, and the CI string check skips a module's `name:`.
 - **Names outside Azure** that share the prefix: crates and binaries, telemetry roles `usnm-api`, `usnm-web` and `usnm-ocr-worker`, the Quickwit cluster `usnm-searcher`, the `usnm-ocr-worker.service` unit, the Linux user `usnm`, the `usnewsmap-*` image repositories, and GitHub variable names.
-- **Other projects** in subscription 25bf257c (hyperfix, atlasrelay and their groups). Other projects in the subscription don't use the `usnm` prefix, and nothing here renames, moves or matches them. The only prefix matches left after Phase 0 are `teardown.sh`'s lookup of policy definitions (`/policyDefinitions/usnm-`), which stay in the governance form, and its lookup of environment stacks, which Phase 0 narrows to the closed environment list.
+- **Other projects** in subscription 25bf257c (hyperfix, atlasrelay and their groups). Other projects in the subscription don't use the `usnm` prefix, and nothing here renames, moves or matches them. Teardown's policy-definition lookup retains the governance prefix (`/policyDefinitions/usnm-`); environment stack discovery uses the closed environment list. The archive is separately recognized as a non-environment user of the guardrail definitions, so an archive assignment cannot lose them.
 
 ### Exceptions
 
@@ -229,6 +229,19 @@ New Container Apps environments set `infrastructureResourceGroup` and new privat
 
 Slow and in phases, each at a point where the rename is cheap or a change happens anyway. One tracking issue carries the phase checklists.
 
+**Implementation versus deployment (#309):** the centralized naming,
+consumer/env/CI checks, rename guard, script-name validation, stateless OCR
+alert/role changes and Phase 2 monitoring/CI/title changes are implemented.
+The unused tiles and Spot declarations and bootstrap's legacy SWA deletion
+are removed. None of this proves a live migration occurred. Follow the
+[operator rollout and blockers](../../../infra/README.md#naming-guard-and-phase-12-rollout)
+for inventory reconciliation, budget/CI handoff, old smart-detector cleanup,
+in-place group renaming and node migration. OCR exchange and Phase 3 pins
+remain deliberately gated on their live migration/rebuild preconditions;
+the original empty-exchange window must not be assumed now that OCR and
+BOINC use it. The mapping below records legacy-to-target names, not a
+verified current Azure inventory.
+
 ### Phase 0: write it down, make names come from one place
 
 No renames and no resource changes.
@@ -240,7 +253,7 @@ No renames and no resource changes.
    - `infra/workbooks/pipeline.json`, `ops/queries/job-executions.kql` and `ops/queries/searcher-health.kql` match both forms by regex.
    - `scripts/ja-ocr/start-quality.sh` reads `JA_OCR_JOB` and `JA_AUDIT_JOB` from the settings; the regex in `quality-rows.sh` accepts both forms.
    - The free-tier check at `bootstrap.sh:117` excludes this environment's Cosmos account by its `environment` tag, not by the `cosmos-usnm-$ENV_NAME-` prefix.
-   - `teardown.sh` matches environment stacks against the closed env list (`usnm-(prod|dev|x[a-z0-9]{1,4})`) instead of `starts_with(name, 'usnm-')` (`teardown.sh:84, :207`), so `usnm-archive` and `usnm-guardrails` never match.
+   - `teardown.sh` matches environment stacks against the closed env list (`usnm-(prod|dev|x[a-z0-9]{1,4})`) instead of a broad prefix. `usnm-guardrails` and `usnm-config` do not match; `usnm-archive` is explicitly counted separately because its group assigns the same definitions. A final assignment check also retains definitions used by an interrupted teardown after its stack was detached.
 4. Status sanitizer (`crates/usnm-api/src/status/sanitize.rs`): redact the hyphenated and compact forms next to the legacy prefixes, and add `di-usnm`, `ag-usnm` and `dcr-usnm`. The status page mostly shows names with extra tokens after `env`: lease owners and replica hostnames (`{HOSTNAME}-{pid}-{nanos}`, `crates/usnm-ingest/src/lib.rs:35-43`), execution names and blob paths. So the matcher redacts any segment that contains `-{abbr}-{env}-` or ends in `-{abbr}-{env}`, with `abbr` and `env` from the closed lists. Tests assert that `usnm-ocr-appi-prod` and `usnmocrstprodffapzy` are redacted and that `usnm-ingest` and `usnm-ocr-worker` are not, and mirror `sanitize.rs:342` and `:346` and `assemble.rs:863` with `usnm-ingest-caj-prod-…` and `usnm-backfill-caj-prod-…` owners and paths. This merges before the first new name reaches prod.
 5. Environment names: `env.sh`, `bootstrap.sh` and `main.bicep` accept `^(prod|dev|x[a-z0-9]{1,4})$` only. `bootstrap.sh:36` has its own copy of the old regex and the `guardrails` check; it sources `valid_env_name` from `env.sh` instead, so there is one validator. The CI lint environment becomes `dev`.
 6. The checks under Enforcement.
@@ -268,7 +281,7 @@ Prod impact: no API revision. Running cost unchanged or slightly lower.
 
 Now, decided by the maintainer, 10 October 2026, rather than at a rebuild. It runs as soon as Phase 0 has landed, alongside Phase 1, because it needs `names()` and the status sanitizer's new forms. These resources hold no state, so each rename costs one provision.
 
-- Recreate the 10 scheduled query rules, the metric alert, the web test, the action group (`groupShortName` `usnm-prod`) and the budget under the new names. Change the workbook titles in place to `usnm pipeline (prod)` and `usnm API (prod)`. Reset `USNM_BUDGET_START` to the first of the current month, since a renamed budget is a new budget.
+- Recreate the alert inventory actually declared by the current modules (the original count predates added capacity rules and consolidated job failures), the web test, the action group (`groupShortName` `usnm-prod`) and the budget under the new names. Change the workbook titles in place to `usnm pipeline (prod)` and `usnm API (prod)`. Reset `USNM_BUDGET_START` to the first of the current month, since a renamed budget is a new budget.
 - `id-usnm-ci-prod` becomes `usnm-ci-id-prod`; run `bootstrap.sh` straight after the provision so `USNM_CI_CLIENT_ID` is rewritten.
 - Old fired-alert and availability history stays queryable in the workspace. CI deploys fail between the provision and `bootstrap.sh`; serving is unaffected.
 - The registry is not part of this phase; it stays in Phase 4.
@@ -365,7 +378,7 @@ Three layers. The first needs no Azure access.
    - The protection is this: the evaluated prod map must equal `infra/names/prod.json`. A prod rename shows up as a reviewed diff to that file and never as a side effect of a refactor.
    - It also fails when `infra/main.bicep` or a module under `infra/modules` builds a resource name from a string containing `usnm` instead of taking a parameter. It looks only at the `name:` of resource declarations (not `guid(...)` arguments and not a module's deployment `name:`) and at `roleName`, `displayName` and `groupShortName`. Descriptions and child scope paths (`${cosmos.id}/dbs/usnm`, `/scratch/usnm`) are out of scope. An allowlist covers the KQL role filters `'usnm-api'` and `'usnm-web'`, the Cosmos database `'usnm'`, and the `guid()` seeds, with a comment that they are frozen: `usnm-swa-deployer`, `usnm-search-log-writer`, `usnm-ocr-node-writer`, `usnm-scans-writer`, `usnm-archive-writer`, `usnm-workbook-pipeline` and `usnm-workbook-api`. Changing a seed would rotate role IDs and workbook GUIDs. A name that refers to a `var`, a parameter default or a `func` of the same file is followed to its definition, through interpolation and further definitions, and checked the same way.
    - And it fails when the abbreviation list in `sanitize.rs` differs from `naming.bicep`: `TYPE_ABBREVIATIONS` must equal the type abbreviations other than the `display: true` ones (`role`, `scopeEnv`, `shortName`, `title`), and `COMPACT_ABBREVIATIONS` the `form: 'compact'` ones.
-2. **Rename guard in `provision.sh`.** Before `az stack sub create`, it runs `az deployment sub what-if` with the same template and parameters and reads the stack's managed resources (`az stack sub show`). Outside complete mode, what-if reports a resource the template no longer declares as Ignore, not Delete ([what-if][wi]), and the stack's `deleteResources` then deletes it. So the guard stops when a resource the stack manages, of a protected type (storage account, Cosmos account, registry, Log Analytics workspace, Key Vault, Container Apps environment, VNet, DNS zone), comes back as Ignore, unless `--allow-rename=<name>` names it. A removal with no replacement counts the same as a rename. Because it reads what-if rather than `names()`, it also catches drops from a condition switched off (`USNM_OCR_NODES`, `USNM_INGEST_SCRATCH`, `USNM_DNS_ZONE`; a recreated zone gets new name servers), and it covers provisions from a branch CI never saw.
+2. **Rename guard in `provision.sh`.** Every environment `az stack sub create` (bootstrap and partial teardown provisions included) runs a full-payload `az deployment sub what-if` with the same template/settings and reads the stack's managed resources. Outside complete mode, what-if reports an undeclared resource as Ignore rather than Delete ([what-if][wi]), while the stack's `deleteResources` deletes it. `scripts/lib/rename_guard.py` therefore blocks a managed storage account, Cosmos account, registry, workspace, vault, Container Apps environment, VNet or public/private DNS zone reported as Ignore or Delete unless `--allow-rename=<exact-old-name>` is repeated for each intentional removal. Missing protected IDs (including short-circuited nested deployments), unsupported results, malformed JSON and failed reads/what-if also block, and cannot be overridden. A removal without a replacement counts too. `--what-if` runs the same gate without writes, guard failures are not retried, and only `DeploymentStackNotFound` means a new stack. Because the gate reads what-if rather than `names()`, it covers switched-off conditions and branches CI never saw. It is authorization for a reviewed deletion, not a migration of data.
 3. **Names made outside Bicep.** `scripts/lib/names.sh` builds the names scripts create (the Entra group, and the node, VM and Arc name). `group.sh`, `onboard.sh` and `proxmox-create-vm.sh` reject a `--name` that doesn't match `^usnm-ocr-node[0-9]+-arcs-(prod|dev|x[a-z0-9]{1,4})$`. An optional monthly `scripts/names-report.sh --env=prod` lists tagged resources, including those outside the stack (certificates, Arc machines, smart detectors), and flags any name that is neither conventional nor an exception.
 
 ## Alternatives

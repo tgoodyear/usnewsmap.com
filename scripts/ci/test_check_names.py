@@ -3,6 +3,7 @@ The checks themselves, on hand-made tables; CI also runs the script on the
 real ones."""
 
 import importlib.util
+import json
 import os
 import tempfile
 import unittest
@@ -108,6 +109,23 @@ class Prod(unittest.TestCase):
         self.assertEqual(cn.check_prod({"rg": "rg-usnm-prod"}, {"$comment": "x", "rg": "rg-usnm-prod"}), [])
         out = cn.check_prod({"rg": "usnm-core-rg-prod"}, {"rg": "rg-usnm-prod"})
         self.assertIn("prod.json", out[0])
+
+    def test_stateless_rollout_keeps_data_and_ingest_gated(self):
+        prod = json.loads(cn.PROD.read_text())
+        self.assertEqual(prod["dataLake"], "stusnmdffapzy")
+        self.assertEqual(prod["cosmos"], "cosmos-usnm-prod-ffapzy")
+        self.assertEqual(prod["ocrExchange"], "stusnmoffapzy")
+        self.assertEqual(prod["scratch"], "stusnmsffapzy")
+        self.assertEqual(prod["docIntel"], "di-usnm-prod-ffapzy")
+        self.assertEqual(prod["ingestJob"], "caj-usnm-ingest-prod")
+        self.assertEqual(prod["ingestIdentity"], "id-usnm-ingest-prod")
+        self.assertEqual(prod["apiFailuresAlert"], "usnm-api-failures-alert-prod")
+        self.assertEqual(prod["ciIdentity"], "usnm-ci-id-prod")
+        self.assertEqual(prod["pipelineWorkbookTitle"], "usnm pipeline (prod)")
+        self.assertEqual(prod["apiWorkbookTitle"], "usnm API (prod)")
+        exceptions = json.loads(cn.EXCEPTIONS.read_text())
+        self.assertFalse(any(v["until"] == "phase-2" for v in exceptions.values()))
+        self.assertEqual({k for k, v in exceptions.items() if v["until"] == "phase-1"}, {"ocrExchange"})
 
 
 class Exceptions(unittest.TestCase):

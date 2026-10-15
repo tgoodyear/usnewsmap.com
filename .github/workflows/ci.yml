@@ -550,7 +550,7 @@ jobs:
       # Against a stub az: the dev experiment marker, the guard-rail budget's
       # parameters, the settings location and scripts/dev-status.sh (#275).
       - name: The environment scripts' tests pass
-        run: python3 -m unittest -v scripts/test_env_scripts.py
+        run: python3 -m unittest -v scripts/test_env_scripts.py scripts/test_rename_guard.py scripts/test_resource_names.py
       # Against a stub az: the BOINC bridge starter keeps the job's own settings
       # and share, and starts it without an override.
       - name: The BOINC scripts' tests pass

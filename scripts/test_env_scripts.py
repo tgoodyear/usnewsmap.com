@@ -51,7 +51,7 @@ ROOT = os.path.dirname(HERE)
 STUB_AZ = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
 case "$1 $2" in
-  "account show") case "$*" in *"--query id"*) echo sub-1 ;; esac ;;
+  "account show") case "$*" in *"--query id"*) echo sub-1 ;; *"--query tenantId"*) echo tenant-1 ;; esac ;;
   "account set") s=$(sed 's/.*--subscription \([^ ]*\).*/\1/' <<< "$*")
     if [ -n "${STUB_ACCOUNTS:-}" ] && ! printf '%b\n' "$STUB_ACCOUNTS" | grep -qx "$s"; then
       echo "ERROR: The subscription of '$s' doesn't exist in cloud 'AzureCloud'." >&2; exit 1
@@ -59,9 +59,15 @@ case "$1 $2" in
     echo "$s" > "$STUB_LOG.account" ;;
   "stack sub")
     case "$*" in
+      "stack sub list"*)
+        if [ -n "${STUB_STACK_LIST_ERROR:-}" ]; then echo "$STUB_STACK_LIST_ERROR" >&2; exit 1; fi
+        printf '%s\n' "${STUB_STACK_NAMES:-}" ;;
       "stack sub create"*) ;;
       "stack sub validate"*)
         if [ -n "${STUB_VALIDATE_ERROR:-}" ]; then echo "$STUB_VALIDATE_ERROR" >&2; exit 1; fi ;;
+      *"--query resources -o json"*)
+        if [ -n "${STUB_RESOURCES_ERROR:-}" ]; then echo "$STUB_RESOURCES_ERROR" >&2; exit 1; fi
+        echo "${STUB_RESOURCES:-[]}" ;;
       *"--query location"*) echo eastus2 ;;
       *"keys(parameters"*) printf '%s\n' "${STUB_PARAMS:-}" ;;
       *"--query outputs -o json"*)
@@ -89,7 +95,12 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
       set|delete) ;;
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
-  "deployment sub") echo "what-if: no changes" ;;
+  "deployment sub")
+    if [ -n "${STUB_STACK_WHATIF_ERROR:-}" ]; then echo "$STUB_STACK_WHATIF_ERROR" >&2; exit 1; fi
+    case "$*" in
+      *--no-pretty-print*) if [ -n "${STUB_STACK_WHATIF:-}" ]; then printf '%s\n' "$STUB_STACK_WHATIF"; else echo '{"changes": []}'; fi ;;
+      *) echo "what-if: no changes" ;;
+    esac ;;
   "policy assignment")
     if [ -n "${STUB_ASSIGNMENT_ERROR:-}" ]; then echo "$STUB_ASSIGNMENT_ERROR" >&2; exit 1; fi
     if [ -n "${STUB_ASSIGNMENT_GROUP:-}" ] && [[ "$*" == *"/resourceGroups/$STUB_ASSIGNMENT_GROUP "* ]]; then
@@ -106,6 +117,17 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
       *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
     esac ;;
   "group list") [ -z "${STUB_GROUPS:-}" ] || printf '%s\n' "$STUB_GROUPS" ;;
+  "ad group")
+    case "$*" in
+      "ad group list"*) printf '%s\n' "${STUB_NODE_GROUP_IDS:-}" ;;
+      "ad group create"*) echo new-group-id ;;
+      *"--query displayName"*) echo "${STUB_NODE_GROUP_NAME:-usnm-ocr-nodes-dev}" ;;
+      *"--query mailNickname"*) echo "${STUB_NODE_GROUP_NICKNAME:-usnm-ocr-nodes-dev}" ;;
+      *"member list"*) echo 2 ;;
+      *"owner list"*) ;;
+      *) echo "stub az: unexpected group mutation: $*" >&2; exit 9 ;;
+    esac ;;
+  "ad signed-in-user") ;;
   "group exists")
     if [ -n "${STUB_EXISTING_GROUPS+x}" ]; then
       if printf '%b\n' "$STUB_EXISTING_GROUPS" | grep -qx "$4"; then echo true; else echo false; fi
@@ -158,7 +180,7 @@ class Stubbed(unittest.TestCase):
         self.env_dir = os.path.join(self.tmp, "env")
         os.mkdir(self.env_dir)
         shutil.copy(os.path.join(ROOT, "infra", "env", "schema.json"), self.env_dir)
-        self.env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp,
+        self.env = {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp, "TMPDIR": self.tmp,
                     "USNM_SETTINGS_HOME": self.settings, "STUB_LOG": self.log,
                     "USNM_ENV_DIR": self.env_dir,
                     "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -584,6 +606,81 @@ class TitlesSeed(Stubbed):
         self.assertEqual(r.returncode, 2)
 
 
+class StackRenameGuard(Stubbed):
+    RID = "/subscriptions/sub-1/resourceGroups/rg-usnm-dev/providers/Microsoft.Storage/storageAccounts/old"
+
+    def setUp(self):
+        super().setUp()
+        vnet = ".".join(str(n) for n in (10, 99, 0, 0)) + "/24"
+        self.settings_file(f'AZURE_SUBSCRIPTION_ID="sub-1"\nUSNM_VNET_ADDRESS_PREFIX="{vnet}"\n')
+
+    def response(self, kind):
+        return json.dumps({"changes": [{"resourceId": self.RID, "changeType": kind}]})
+
+    def run_guard(self, script="deploy_stack", **extra):
+        return self.lib(script, STUB_RESOURCES=json.dumps([{"id": self.RID}]), **extra)
+
+    def test_guard_runs_before_create_with_same_parameters(self):
+        r = self.run_guard(STUB_STACK_WHATIF=self.response("NoChange"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        plan = next(c for c in calls if c.startswith("deployment sub what-if"))
+        create = next(c for c in calls if c.startswith("stack sub create"))
+        self.assertIn("--parameters infra/main.bicepparam", plan)
+        self.assertIn("--location eastus2", plan)
+        self.assertIn("--parameters infra/main.bicepparam", create)
+        self.assertLess(calls.index(plan), calls.index(create))
+
+    def test_refusal_and_failed_or_incomplete_plan_never_create(self):
+        for extra in ({"STUB_STACK_WHATIF": self.response("Ignore")},
+                      {"STUB_STACK_WHATIF": '{"changes": []}'},
+                      {"STUB_STACK_WHATIF": "bad json"},
+                      {"STUB_STACK_WHATIF_ERROR": "AuthorizationFailed"},
+                      {"STUB_RESOURCES_ERROR": "AuthorizationFailed"}):
+            r = self.run_guard(**extra)
+            self.assertEqual(r.returncode, 42, r.stderr)
+        self.assertFalse(any(c.startswith("stack sub create") for c in self.calls()))
+
+    def test_override_and_dry_run(self):
+        r = self.run_guard("ALLOW_RENAMES=(--allow-rename=old); deploy_stack",
+                           STUB_STACK_WHATIF=self.response("Ignore"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_guard("deploy_stack --what-if", STUB_STACK_WHATIF=self.response("Ignore"))
+        self.assertEqual(r.returncode, 42, r.stderr)
+
+    def test_new_stack_and_read_errors(self):
+        r = self.lib("deploy_stack", STUB_RESOURCES_ERROR="DeploymentStackNotFound: usnm-dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.lib("deploy_stack", STUB_RESOURCES_ERROR="ResourceNotFound: unexpected dependency")
+        self.assertEqual(r.returncode, 42, r.stderr)
+
+    def test_guard_failure_is_not_retried(self):
+        r = self.lib("vaults_recover() { :; }; settings_store_ensure() { :; }; "
+                     "load_store_after_create() { :; }; settings_check() { :; }; "
+                     "experiment_marker() { :; }; ocr_nodes_off_check() { :; }; "
+                     "deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; "
+                     "deploy_stack() { return 42; }; provision")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("not retried", r.stderr)
+
+    def test_cli_rejects_empty_or_wildcard_override_before_azure(self):
+        for name in ("", "*", "old,other", "/subscriptions/sub-1/old"):
+            r = subprocess.run([os.path.join(HERE, "provision.sh"), "--env", "dev",
+                                "--allow-rename=" + name], cwd=ROOT, env=self.env,
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_guardrail_users_are_closed_list_plus_archive(self):
+        r = self.lib('guardrail_stack_users usnm-dev',
+                     STUB_STACK_NAMES="usnm-dev\nusnm-prod\nusnm-xabcd\nusnm-archive\nusnm-guardrails\n"
+                     "usnm-config\nusnm-boinc\nusnm-xabcde\nusnm-staging\nother-prod")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["usnm-prod", "usnm-xabcd", "usnm-archive"])
+        r = self.lib("guardrail_stack_users", STUB_STACK_LIST_ERROR="AuthorizationFailed")
+        self.assertNotEqual(r.returncode, 0)
+
+
 class PolicyExemptions(Stubbed):
     """The public-network policy's assignment, written before the stack (#336)."""
 
@@ -997,7 +1094,10 @@ class CommittedSettings(Stubbed):
         self.assertNotIn("SETTINGS_STORE_ENDPOINT", src)
         self.assertNotIn("appconfig", src)
         # The store's stack doesn't keep the guard-rail stack alive.
-        self.assertEqual(src.count("name != '$SETTINGS_STACK'"), 2)
+        self.assertEqual(src.count("$(guardrail_stack_users"), 2)
+        r = self.lib("guardrail_stack_users", STUB_STACK_NAMES="usnm-config\nusnm-guardrails")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
 
     def store_sets(self):
         return [c for c in self.calls() if c.startswith("appconfig kv set")]

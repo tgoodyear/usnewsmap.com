@@ -628,11 +628,44 @@ deploy_stack() (
       what_if_args=(--validation-level Template)
     fi
     echo "stack $STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
-    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam ${what_if_args[@]+"${what_if_args[@]}"} --only-show-errors
+    az deployment sub what-if --location "$location" --parameters infra/main.bicepparam ${what_if_args[@]+"${what_if_args[@]}"} --only-show-errors || exit 1
+    guard_stack_renames "$location" ${what_if_args[@]+"${what_if_args[@]}"} || exit 42
     exit
   fi
+  guard_stack_renames "$location" || exit 42
   az stack sub create "${stack_args[@]}" --yes --only-show-errors -o none
 )
+# Every caller (bootstrap, provision and teardown's partial provision) uses
+# this gate immediately before stack create, with the same exported settings.
+guard_stack_renames() {
+  local location=$1 resources plan
+  shift
+  if ! resources=$(az stack sub show -n "$STACK" --query resources -o json --only-show-errors 2>&1); then
+    if grep -q 'DeploymentStackNotFound' <<< "$resources"; then
+      resources='[]'
+    else
+      echo "error: rename guard can't read $STACK: $resources" >&2
+      return 1
+    fi
+  fi
+  plan=$(az deployment sub what-if --location "$location" --parameters infra/main.bicepparam \
+    "$@" --no-pretty-print --result-format FullResourcePayloads --only-show-errors -o json) || return 1
+  printf '%s\n%s\n' "$resources" "$plan" |
+    python3 scripts/lib/rename_guard.py ${ALLOW_RENAMES[@]+"${ALLOW_RENAMES[@]}"}
+}
+# Environment stacks use the closed env list. The shared archive is an
+# explicit additional user of the definitions, never an environment.
+guardrail_stack_users() {
+  local stacks name
+  stacks=$(az stack sub list --query '[].name' -o tsv) || return 1
+  while IFS= read -r name; do
+    [ "$name" != "${1:-}" ] || continue
+    if [ "$name" = usnm-archive ] ||
+      { [[ $name == usnm-* ]] && [[ ${name#usnm-} =~ $ENV_NAME_RE ]]; }; then
+      printf '%s\n' "$name"
+    fi
+  done <<< "$stacks"
+}
 # only_pending_refusals ERR IDS: whether ERR, a failed preflight, is
 # policy refusals alone (RequestDisallowedByPolicy), each of a resource
 # named in IDS, the ids the policy step is about to exempt.
@@ -851,6 +884,7 @@ provision() {
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
     deploy_env_guardrails && deploy_policy_exemptions && deploy_stack && save_outputs && return 0
+    [ "$?" -ne 42 ] || die "rename guard stopped provisioning $ENV_NAME (not retried)"
     [ "$attempt" = 3 ] && die "provisioning failed three times"
     echo "retrying in 60s"
     sleep 60

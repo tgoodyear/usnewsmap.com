@@ -135,10 +135,9 @@ sort_ids() {
 }
 sort_ids
 # The guard-rail definitions go with the last environment in the subscription.
-# Any other usnm- stack keeps them, the archival account's (usnm-archive)
-# too: its group assigns them. The settings store's (usnm-config) assigns
-# none, so it doesn't count.
-others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK' && name != '$GUARDRAILS_STACK' && name != '$SETTINGS_STACK'].name" -o tsv)
+# Other closed-list environment stacks keep them; usnm-archive is an
+# explicit non-environment user too. Settings/guardrail stacks don't count.
+others=$(guardrail_stack_users "$STACK") || die "can't list users of $GUARDRAILS_STACK"
 guardrails=false
 if [ -z "$others" ]; then
   if out=$(az stack sub show -n "$GUARDRAILS_STACK" -o none 2>&1); then
@@ -382,7 +381,7 @@ done
 # check again just before deleting.
 if [ "$guardrails" = true ]; then
   # Fail closed: if the list can't be read, keep the stack.
-  others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$GUARDRAILS_STACK' && name != '$SETTINGS_STACK'].name" -o tsv) ||
+  others=$(guardrail_stack_users) ||
     die "can't list deployment stacks; kept $GUARDRAILS_STACK (delete it when no environment uses it)"
   if [ -n "$others" ]; then
     echo "keeping $GUARDRAILS_STACK: another stack was created meanwhile ($others)"

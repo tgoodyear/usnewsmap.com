@@ -21,7 +21,7 @@ param subnetId string
 param boincSubnetId string = ''
 @description('Principals given the node writer role on `boinc-handoff` (#469): the hand-off job\'s identity, the BOINC bridge\'s (usnm-boinc-id-<env>) and the scan fetcher\'s Arc machine identity.')
 param handoffWriterIds array = []
-@description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
+@description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>, scripts/ocr-node/group.sh). The group gets the node roles; empty grants none.')
 param nodeGroupId string = ''
 @description('The ingest identity: the cloud jobs that fill the queues and copy the output into curated.')
 param ingestPrincipalId string
@@ -218,7 +218,7 @@ resource nodeWriter 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   }
 }
 
-// The nodes' grants go to one Entra security group, usnm-ocr-nodes-<env>
+// The nodes' grants go to one Entra security group, usnm-ocr-nodes-grp-<env>
 // (ADR-0015). scripts/ocr-node/group.sh creates it, since deployment stacks
 // can't hold Microsoft Graph resources; onboard.sh adds each node's
 // system-assigned identity to it and offboard.sh takes it out, so adding or

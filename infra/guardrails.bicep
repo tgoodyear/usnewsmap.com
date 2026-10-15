@@ -93,7 +93,7 @@ resource noCosmosKeys 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
 resource auditPublicAccess 'Microsoft.Authorization/policyDefinitions@2023-04-01' = {
   name: guardrailPolicyNames.auditPublicAccess
   properties: {
-    displayName: 'US News Map: data services should have public network access disabled'
+    displayName: 'US News Map: deny public network access on data services unless explicitly exempted'
     description: 'Public network access on storage and Cosmos accounts and Key Vaults, except the resources the assignment lists by resource id (the on-prem OCR exchange account and the OCR nodes\' Key Vault, which allow only their firewalls\' IPs and subnet; and the data lake while the on-prem Serial Set runner writes to it, behind the same IPs). Audit by default; each environment assignment sets deny together with its own ids. A Spot backfill window would need a policy exemption.'
     policyType: 'Custom'
     mode: 'Indexed'
