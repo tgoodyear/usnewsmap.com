@@ -67,6 +67,11 @@
 #                               QWEN_ENGINE_WEIGHTS=sha256:... [QWEN_MAX=20]
 #   BRIDGE_STEP=qwen-submit     [QWEN_MAX=20]
 #   BRIDGE_STEP=qwen-summary    writes <campaign>/summary.md from <project>/qwen
+#   BRIDGE_STEP=qwen-benchmark-stage QWEN_CROPS=<campaign>/test/crops.jsonl
+#                               QWEN_ENGINE=<campaign>/engine.json [QWEN_MAX=20]
+#                               stages public gold crops; references stay on the share
+#   BRIDGE_STEP=qwen-benchmark-collect QWEN_SPOOL=<canonical assimilator directory>
+#                               writes coverage and CER/WER to <campaign>/out
 #
 # The remote hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache), through the
 # hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
@@ -221,6 +226,13 @@ case "$step" in
       --engine-llama "${QWEN_ENGINE_LLAMA:?set QWEN_ENGINE_LLAMA}" \
       --engine-weights "${QWEN_ENGINE_WEIGHTS:?set QWEN_ENGINE_WEIGHTS}" \
       --max-pages "${QWEN_MAX:-20}" ;;
+  qwen-benchmark-stage)
+    exec usnm-boinc qwen benchmark-stage --root "$QWEN" \
+      --crops "${QWEN_CROPS:-$QWEN/test/crops.jsonl}" \
+      --engine "${QWEN_ENGINE:-$QWEN/engine.json}" --max-crops "${QWEN_MAX:-20}" ;;
+  qwen-benchmark-collect)
+    exec usnm-boinc qwen benchmark-collect --root "$QWEN" \
+      --spool "${QWEN_SPOOL:?set QWEN_SPOOL}" --out "$QWEN/out" ;;
   qwen-summary)
     usnm-boinc qwen summary --root "$QWEN" --seen "$PROJ/qwen/seen" --pairs "$PROJ/qwen/pairs.jsonl" \
       | tee "$QWEN/summary.md"
@@ -350,5 +362,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-stage, qwen-benchmark-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
 esac

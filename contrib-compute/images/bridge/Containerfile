@@ -39,7 +39,7 @@ COPY --from=bin /usnm-ocr-survey /usr/local/bin/usnm-ocr-survey
 # gold.py and the modules it imports, in the repository's layout: locfetch.py finds jaocr.py
 # and alto.py at ../../ja-ocr (their Azure imports are lazy and unused here).
 COPY scripts/ocr-survey/gold.py scripts/ocr-survey/locfetch.py scripts/ocr-survey/crops.py \
-     scripts/ocr-survey/altotext.py /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/
+     scripts/ocr-survey/altotext.py scripts/ocr-survey/transcription.py /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/
 COPY ja-ocr/jaocr.py ja-ocr/alto.py /usr/local/lib/usnm-boinc/gold/ja-ocr/
 COPY fixtures/ocr-gold/bundle-v1.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json
 COPY contrib-compute/images/bridge/gold-bundle.sh /usr/local/lib/usnm-boinc/gold-bundle.sh

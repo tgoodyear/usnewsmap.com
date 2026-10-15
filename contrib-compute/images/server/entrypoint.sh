@@ -3,8 +3,9 @@
 #
 #   --serve              (default) wait for the project, render config.xml into tmpfs, start
 #                        Apache and the daemons under supervisord
-#   --init-project       once, by hand (az containerapp exec): create the schema and the project
+#   --init-project       create the schema and the project
 #                        tree on the share with the stock make_project, register the app
+#   --ensure-project     lifecycle job: skip a completed init; otherwise initialise safely
 #   --make-upload-keys --dir DIR
 #                        write upload_private and upload_public into DIR
 #   --ensure-secrets     the secrets job (infra/boinc/modules/secrets-job.bicep): create
@@ -18,6 +19,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --serve) mode=serve; shift ;;
     --init-project) mode=init-project; shift ;;
+    --ensure-project) mode=ensure-project; shift ;;
     --make-upload-keys) mode=make-upload-keys; shift ;;
     --ensure-secrets) mode=ensure-secrets; shift ;;
     --dir) [ $# -ge 2 ] || { echo "--dir needs a value" >&2; exit 2; }; keydir="$2"; shift 2 ;;
@@ -44,6 +46,12 @@ fi
 init_project() {
   local marker="$PROJ/.usnm-initialised" mycnf="$SECRETS/mysql-admin.cnf" scratch="$SECRETS/scratch"
   [ ! -e "$marker" ] || fail "$PROJ is already initialised ($marker exists); refusing to run make_project again"
+  if [ -e "$PROJ" ]; then
+    [ -d "$PROJ" ] && [ -z "$(find "$PROJ" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+      fail "$PROJ contains an incomplete project; refusing destructive automatic recovery"
+  fi
+  mkdir "$SHARE_DIR/.usnm-init.lock" || fail "another project initialisation holds the init lock"
+  trap 'rmdir "$SHARE_DIR/.usnm-init.lock"' EXIT
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
   kv_get mysql-admin-password "$SECRETS/db-admin"
   kv_get mysql-runtime-password "$SECRETS/db-runtime"
@@ -56,10 +64,10 @@ init_project() {
   # Removed on any exit, including a make_project failure under set -e.
   # Expanded now: the locals are gone by the time an EXIT trap runs under set -u.
   # shellcheck disable=SC2064 # expanded on purpose (see above)
-  trap "rm -rf '$scratch' '$PROJ/keys'" EXIT
-  # No marker means no finished init: a failed run's tree and database are started afresh.
+  trap "rm -rf '$scratch' '$PROJ/keys'; rmdir '$SHARE_DIR/.usnm-init.lock'" EXIT
+  # Never drop an existing database or overwrite a partial project during deployment.
   # make_project reads $USER, which a container is not given.
-  (cd "$BOINC_SRC" && USER="${USER:-$(id -un)}" tools/make_project --no_query --delete_prev_inst --drop_db_first --srcdir "$BOINC_SRC" \
+  (cd "$BOINC_SRC" && USER="${USER:-$(id -un)}" tools/make_project --no_query --srcdir "$BOINC_SRC" \
       --project_root "$PROJ" --key_dir "$scratch" \
       --url_base "https://$MASTER_HOST/" --html_user_url "https://$MASTER_HOST/$PROJECT/" \
       --html_ops_url "https://$MASTER_HOST/${PROJECT}_ops/" --project_host "$MASTER_HOST" \
@@ -67,7 +75,7 @@ init_project() {
       --db_passwd "$(cat "$SECRETS/db-admin")" --user_name boincadm \
       "$PROJECT" 'usnewsmap OCR')
   rm -rf "$scratch" "$PROJ/config.xml" "$PROJ/keys"
-  trap - EXIT
+  trap 'rmdir "$SHARE_DIR/.usnm-init.lock"' EXIT
   # The run-time user needs no schema rights. UNVERIFIED that these grants are enough.
   local rt; rt="$(cat "$SECRETS/db-runtime")"
   mysql --defaults-extra-file="$mycnf" <<SQL
@@ -84,7 +92,7 @@ SQL
   chown -R boincadm:boincadm "$PROJ" "$SHARE_DIR/handoff" 2>/dev/null || log "chown on the share failed (UNVERIFIED semantics, design.md 2.3)"
   rm -f "$SECRETS/db-admin" "$mycnf"
   touch "$marker"
-  log "project $PROJECT initialised; next: app version and signing (bootstrap.sh step 4)"
+  log "project $PROJECT initialised"
 }
 
 # project_tree: fixes to the project tree on the share, safe to repeat at every start.
@@ -128,5 +136,13 @@ PY
 
 case "$mode" in
   init-project) init_project ;;
+  ensure-project)
+    if [ -e "$PROJ/.usnm-initialised" ]; then
+      [ -f "$PROJ/html/inc/boinc_db.inc" ] && [ -x "$PROJ/bin/xadd" ] ||
+        fail "initialisation marker exists but the project tree is incomplete"
+      log "project $PROJECT already initialised"
+    else
+      init_project
+    fi ;;
   serve) serve ;;
 esac

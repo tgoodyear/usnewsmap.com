@@ -127,54 +127,58 @@ struct EngineArgs {
 }
 
 impl EngineArgs {
+    /// The contract engine's options, for `--engine contract`.
+    fn contract_options(&self, node: &str) -> anyhow::Result<ContractOptions> {
+        let launch = match (
+            self.engine_image.as_deref().filter(|s| !s.is_empty()),
+            &self.engine_command,
+        ) {
+            (Some(image), _) => Launch::Podman {
+                podman: self.podman_bin.clone(),
+                remote: Remote {
+                    url: self
+                        .podman_url
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .context("--engine-image needs --podman-url")?,
+                    scratch: self
+                        .scratch_dir
+                        .clone()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .context("--engine-image needs --scratch-dir")?,
+                    limits: Limits {
+                        memory_mib: self.engine_memory_mib,
+                        cpus: self.engine_cpus,
+                        pids: self.engine_pids,
+                    },
+                },
+                image: image.to_owned(),
+            },
+            (None, Some(program)) => Launch::Local {
+                program: program.clone(),
+                args: self.engine_command_flags.clone(),
+                scratch: self.scratch_dir.clone().unwrap_or_else(std::env::temp_dir),
+            },
+            (None, None) => {
+                bail!("--engine contract needs --engine-image or --engine-command")
+            }
+        };
+        Ok(ContractOptions {
+            launch,
+            instances: self.engine_instances as usize,
+            threads: self.threads_per_page,
+            start_timeout: Duration::from_secs(self.engine_start_timeout_secs),
+            page_timeout: Duration::from_secs(self.page_timeout_secs),
+            max_jobs: self.engine_max_jobs,
+            dpi: self.dpi,
+            node: node.to_owned(),
+        })
+    }
+
     async fn engine(&self, node: &str) -> anyhow::Result<Arc<dyn Engine>> {
         match self.engine {
             EngineName::Contract => {
-                let launch = match (
-                    self.engine_image.as_deref().filter(|s| !s.is_empty()),
-                    &self.engine_command,
-                ) {
-                    (Some(image), _) => Launch::Podman {
-                        podman: self.podman_bin.clone(),
-                        remote: Remote {
-                            url: self
-                                .podman_url
-                                .clone()
-                                .filter(|s| !s.is_empty())
-                                .context("--engine-image needs --podman-url")?,
-                            scratch: self
-                                .scratch_dir
-                                .clone()
-                                .filter(|p| !p.as_os_str().is_empty())
-                                .context("--engine-image needs --scratch-dir")?,
-                            limits: Limits {
-                                memory_mib: self.engine_memory_mib,
-                                cpus: self.engine_cpus,
-                                pids: self.engine_pids,
-                            },
-                        },
-                        image: image.to_owned(),
-                    },
-                    (None, Some(program)) => Launch::Local {
-                        program: program.clone(),
-                        args: self.engine_command_flags.clone(),
-                        scratch: self.scratch_dir.clone().unwrap_or_else(std::env::temp_dir),
-                    },
-                    (None, None) => {
-                        bail!("--engine contract needs --engine-image or --engine-command")
-                    }
-                };
-                let e = ContractEngine::start(ContractOptions {
-                    launch,
-                    instances: self.engine_instances as usize,
-                    threads: self.threads_per_page,
-                    start_timeout: Duration::from_secs(self.engine_start_timeout_secs),
-                    page_timeout: Duration::from_secs(self.page_timeout_secs),
-                    max_jobs: self.engine_max_jobs,
-                    dpi: self.dpi,
-                    node: node.to_owned(),
-                })
-                .await?;
+                let e = ContractEngine::start(self.contract_options(node)?).await?;
                 Ok(Arc::new(e))
             }
             EngineName::Tesseract => {
@@ -524,6 +528,29 @@ enum Command {
     /// Read a rendered line of English with the engine and fail unless it
     /// comes back: a node's check before the unit is enabled.
     CheckEngine {
+        #[command(flatten)]
+        engine: EngineArgs,
+    },
+    /// Engines behind the engine contract.
+    Engines {
+        #[command(subcommand)]
+        command: EnginesCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnginesCommand {
+    /// Drive one instance of an engine through the contract's conformance
+    /// cases (13 §13.4.8): a rendered line with its boxes, a blank page, a
+    /// corrupt image, an unknown profile, a 1 s deadline, Tesseract's
+    /// --dpi, stdout noise, the size caps and stdin EOF. One JSON line per
+    /// case; exits non-zero if any fails. The engine is given as for `run`
+    /// (`--engine contract` with `--engine-image` or `--engine-command`)
+    /// until the engine lock names engines by id (#371).
+    Conformance {
+        /// The directory with the suite's fixtures.
+        #[arg(long, default_value = "ocr/contract/fixtures")]
+        fixtures: PathBuf,
         #[command(flatten)]
         engine: EngineArgs,
     },
@@ -993,6 +1020,39 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             .await;
             engine.shutdown().await;
             done
+        }
+        Command::Engines {
+            command: EnginesCommand::Conformance { fixtures, engine },
+        } => {
+            if !matches!(engine.engine, EngineName::Contract) {
+                bail!("conformance runs an engine behind the contract: give --engine contract");
+            }
+            let report = usnm_ocr_worker::contract::conformance::run(
+                engine.contract_options("local")?,
+                &fixtures,
+            )
+            .await?;
+            for case in &report.cases {
+                println!("{}", serde_json::to_string(case)?);
+            }
+            let failed: Vec<_> = report
+                .cases
+                .iter()
+                .filter(|c| c.outcome == usnm_ocr_worker::contract::conformance::Outcome::Fail)
+                .map(|c| c.case)
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({"engine": report.engine, "passed": report.passed(), "failed": failed})
+            );
+            if !report.passed() {
+                bail!(
+                    "{} failed conformance: {}",
+                    report.engine,
+                    failed.join(", ")
+                );
+            }
+            Ok(())
         }
         Command::CheckEngine { engine } => {
             let engine = engine.engine("local").await?;

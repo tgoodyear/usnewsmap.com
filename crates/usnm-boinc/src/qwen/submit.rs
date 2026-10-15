@@ -79,6 +79,17 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
     ]
 }
 
+pub fn benchmark_work_args(job: &Job) -> Vec<String> {
+    let mut args = create_work_args(job);
+    let template = args
+        .iter_mut()
+        .find(|s| *s == "templates/usnm_qwen_in")
+        .expect("Qwen input template");
+    *template = "templates/usnm_qwen_benchmark_in".into();
+    args.push(format!("{}_notice_txt", job.id));
+    args
+}
+
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     let project = opts.project.canonicalize()?;
     let dir = units(&opts.root);
@@ -109,10 +120,33 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             "staged page changed for {}",
             job.doc_id
         );
+        let benchmark = opts.root.join("benchmark.json").exists();
+        let mut names = physical_names(&job);
+        if benchmark {
+            let notice = read(
+                &unit.join(super::benchmark::NOTICE_FILE),
+                super::benchmark::MAX_NOTICE,
+            )?;
+            ensure!(
+                job.input.source
+                    == format!("benchmark:{}", usnm_ocr_contract::boinc::sha256(&notice)),
+                "source notices changed"
+            );
+            names.push((
+                format!("{}_notice_txt", job.id),
+                super::benchmark::NOTICE_FILE,
+            ));
+            atomic(
+                &project.join("templates/usnm_qwen_benchmark_in"),
+                include_bytes!("../../../../ocr/boinc/usnm_qwen_benchmark_in"),
+            )?;
+        }
         atomic(&unit.join("submitting"), job.workunit().as_bytes())?;
-        for (physical, file) in physical_names(&job) {
+        for (physical, file) in names {
             let limit = if file == JOB_FILE {
                 MAX_JOB_JSON
+            } else if file == super::benchmark::NOTICE_FILE {
+                super::benchmark::MAX_NOTICE
             } else {
                 MAX_SCAN
             };
@@ -121,7 +155,11 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         }
         let status = Command::new(project.join("bin/create_work"))
             .current_dir(&project)
-            .args(create_work_args(&job))
+            .args(if benchmark {
+                benchmark_work_args(&job)
+            } else {
+                create_work_args(&job)
+            })
             .status()
             .await?;
         ensure!(
@@ -162,5 +200,12 @@ mod tests {
         let args = create_work_args(&j);
         assert!(args.contains(&"templates/usnm_qwen_in".to_string()));
         assert!(args.ends_with(&[names[0].0.clone(), names[1].0.clone()]));
+        let args = benchmark_work_args(&j);
+        assert!(args.contains(&"templates/usnm_qwen_benchmark_in".into()));
+        assert!(args.ends_with(&[
+            names[0].0.clone(),
+            names[1].0.clone(),
+            format!("{}_notice_txt", j.id)
+        ]));
     }
 }

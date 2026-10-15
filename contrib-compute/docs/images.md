@@ -59,15 +59,18 @@ az acr repository show --name REGISTRY --image usnm-boinc-server:TAG --query dig
 
 ## Deploy, in order
 
-Each step is the operator's. `bootstrap.sh` without `--apply` prints this plan with the values filled in and changes nothing.
+The supported deployment entry point is `scripts/provision-boinc.sh --env <prod|dev>`,
+using committed settings. It creates a retained, stack-aware What-If preview, deploys the
+stack, waits for DNS/certificate readiness, ensures secrets and project initialization,
+registers applications, replays the configured signed app version and checks public health.
+Completed initialization is skipped; partial project data and existing databases are never
+dropped automatically. `--what-if` creates only the retained preview, not managed resources.
 
-1. Build and push the server image, and the bridge image once #441 is merged (above). Build and publish the worker image (ADR-0019 addendum).
-2. Create the resource group. The script does not.
-3. `scripts/boinc/bootstrap.sh --apply --subscription GUID --yes-deploy ...` (same options as `--what-if`). It checks the subscription, runs the what-if, deploys `infra/boinc/main.bicep`, generates the secrets, and writes them to Key Vault: `mysql-admin-password`, `mysql-runtime-password`, `upload-private-key`, `upload-public-key`, and the public half of the code-signing key, `code-sign-public-key`. It never reads `code_sign_private`, never prints a secret, and passes secrets to `az` only through mode-0600 files in a temporary directory that is removed on exit. A rerun redeploys, rotates the MySQL admin password and rewrites it; it keeps an existing run-time password and upload keys.
-4. DNS and the managed certificate for the project host (bootstrap step 1b).
-5. `az containerapp exec ... entrypoint.sh --init-project` (bootstrap step 3). Until it has run, the app answers the health probe with a placeholder.
-6. App version, offline signing, `update_versions` (bootstrap step 4).
-7. `curl` the project config and submit one reserved job (bootstrap step 5).
+`scripts/build-boinc-images.sh` builds and pins the server/bridge artifacts.
+`scripts/boinc-app-release.sh` stages, signs and publishes a selected app version on the
+designated signing host without exporting its private key. These are release inputs, not
+manual steps printed after every deployment. The older `bootstrap.sh` is not the production
+deployment path. See [app-release.md](app-release.md) for signing and acceptance boundaries.
 
 ## Submission file permissions
 

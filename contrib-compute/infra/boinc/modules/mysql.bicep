@@ -48,8 +48,8 @@ resource secureTransport 'Microsoft.DBforMySQL/flexibleServers/configurations@20
 }
 
 // The Entra administrator is NOT created here: it needs a server identity that already holds
-// Directory Readers (or Graph permissions), which a template cannot grant. provision-boinc.sh prints
-// that step (docs/design.md, 5.1).
+// Directory Readers (or Graph permissions). It is not a deployment prerequisite: BOINC uses
+// the runtime database account, not Entra authentication (docs/design.md, 5.1).
 
 output host string = server.properties.fullyQualifiedDomainName
 output databaseName string = databaseName
