@@ -948,14 +948,18 @@ mod tests {
     fn a_silent_server_is_a_timeout() {
         let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = l.local_addr().unwrap().port();
+        let (done, wait) = std::sync::mpsc::channel();
         let h = std::thread::spawn(move || {
             let (s, _) = l.accept().unwrap();
-            std::thread::sleep(Duration::from_millis(1500));
+            // Keep the peer alive until the client times out, even on an overloaded runner.
+            wait.recv().unwrap();
             drop(s);
         });
-        let e = http(port, "GET", "/health", None, Duration::from_millis(100)).unwrap_err();
-        assert!(e.root_cause().is::<TimedOut>(), "{e:#}");
+        let result = http(port, "GET", "/health", None, Duration::from_millis(100));
+        done.send(()).unwrap();
         h.join().unwrap();
+        let e = result.unwrap_err();
+        assert!(e.root_cause().is::<TimedOut>(), "{e:#}");
         let e = http(1, "GET", "/health", None, Duration::from_secs(1)).unwrap_err();
         assert!(!e.root_cause().is::<TimedOut>());
     }

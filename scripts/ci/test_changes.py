@@ -170,3 +170,18 @@ class BoincPages(unittest.TestCase):
         self.change = change
         o = self.outputs()
         self.assertEqual((o["boinc_pages"], o["contrib"], o["code"]), ("true", "true", "true"))
+
+    def test_a_reviewed_selection_builds_the_bridge(self):
+        def change():
+            path = self.repo / "fixtures/ocr-gold/selections/test.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n")
+        self.change = change
+        o = self.outputs()
+        self.assertEqual((o["contrib"], o["ocr_gold"]), ("true", "true"))
+        self.assertEqual((o["rust"], o["image"], o["fixtures"]), ("false", "false", "false"))
+
+    def test_the_transcription_preparer_builds_the_bridge(self):
+        self.change = lambda: self.touch("scripts/ocr-survey/transcription.py")
+        o = self.outputs()
+        self.assertEqual((o["contrib"], o["ocr_gold"]), ("true", "true"))

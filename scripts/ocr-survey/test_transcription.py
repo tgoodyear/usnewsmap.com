@@ -20,6 +20,7 @@ class TranscriptionTest(unittest.TestCase):
                          "for_scoring": True, "transcription": f"SYNTHETIC NEWSPAPER {i}",
                          "transcriber": "fixture", "reviewer": "fixture-review"})
             meta.append({"crop_id": f"crop-{i}", "source_dataset": "public", "source_license": "CC-BY-4.0",
+                         "source_url": "https://example.org/synthetic", "source_attribution": "Synthetic fixture",
                          "title": f"title-{i // 2}", "page_id": f"page-{i}",
                          "crop_sha256": t.digest(f"synthetic pixels {i}".encode())})
         write_jsonl(src / "crops.jsonl", rows)
@@ -105,6 +106,130 @@ class TranscriptionTest(unittest.TestCase):
                 write_jsonl(src / "manifest.jsonl", rows)
                 with self.assertRaisesRegex(ValueError, "inconsistent page identity"):
                     t.prepare([f"public={src}"], root / "out", 542, False, ["public"])
+
+    def selection(self, root):
+        src = self.source(root)
+        cache = root / "cache"
+        cache.mkdir()
+        src = src.rename(cache / "public")
+        rows = t.read_jsonl(src / "crops.jsonl")
+        meta = t.read_jsonl(src / "manifest.jsonl")
+        spec = {"v": 1, "evaluation_only": True,
+                "engine": {**{k: "sha256:" + "a" * 64 for k in ("image", "llama", "weights")},
+                           "models": [{"name": "synthetic-model"}]},
+                "included": [
+                    {"crop_id": f"audited-{i}", "source_dataset": "public",
+                     "image_sha256": meta[i]["crop_sha256"],
+                     "reference_sha256": t.digest(rows[i]["transcription"].encode()),
+                     "provenance": {k: meta[i][k] for k in
+                                    ("page_id", "source_url", "source_license", "source_attribution")}}
+                    for i in range(2)]}
+        path = root / "selection.json"
+        path.write_text(json.dumps(spec))
+        return src, cache, path, spec
+
+    def test_audited_cache_preparation_is_idempotent_and_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, cache, selection, _ = self.selection(root)
+            out = root / "campaign"
+            a = t.prepare_benchmark(selection, cache, out)
+            (out / "units").mkdir()
+            (out / "units" / "existing-work").write_text("must remain")
+            b = t.prepare_benchmark(selection, cache, out)
+            self.assertEqual(a, b)
+            self.assertEqual(a["counts"], {"test": 2})
+            self.assertEqual((out / "audit.json").read_bytes(), selection.read_bytes())
+            self.assertTrue((out / "prepared.json").is_file())
+            self.assertFalse(list(out.rglob("sft.json")))
+            self.assertEqual((out / "units" / "existing-work").read_text(), "must remain")
+            self.assertTrue((out / "test/LICENSES/public/SOURCE.json").exists())
+
+    def test_audited_cache_rejects_missing_duplicate_or_changed_inputs(self):
+        for mode, message in (
+            ("missing", "missing from cache"), ("duplicate", "duplicate cached image"),
+            ("reference", "reference checksum"), ("pixels", "image checksum"),
+            ("provenance", "provenance differs"), ("escape", "escapes dataset"),
+            ("nd", "NoDerivatives"),
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                src, cache, selection, spec = self.selection(root)
+                rows = t.read_jsonl(src / "crops.jsonl")
+                metadata = t.read_jsonl(src / "manifest.jsonl")
+                if mode == "missing":
+                    metadata = metadata[1:]
+                elif mode == "duplicate":
+                    metadata.append(metadata[0])
+                elif mode == "reference":
+                    rows[0]["transcription"] = "different human reference"
+                elif mode == "pixels":
+                    (src / "0.jpg").write_bytes(b"changed")
+                elif mode == "provenance":
+                    metadata[0]["source_url"] = "https://example.org/other"
+                elif mode == "escape":
+                    (src / "0.jpg").unlink()
+                    (root / "outside.jpg").write_bytes(b"outside")
+                    (src / "0.jpg").symlink_to(root / "outside.jpg")
+                else:
+                    metadata[0]["source_license"] = "CC-BY-ND-4.0"
+                    spec["included"][0]["provenance"]["source_license"] = "CC-BY-ND-4.0"
+                    selection.write_text(json.dumps(spec))
+                write_jsonl(src / "crops.jsonl", rows)
+                write_jsonl(src / "manifest.jsonl", metadata)
+                with self.assertRaisesRegex(ValueError, message):
+                    t.prepare_benchmark(selection, cache, root / "out")
+                self.assertFalse((root / "out").exists())
+                self.assertFalse((root / ".out.prepare.lock").exists())
+
+    def test_audited_preparation_rejects_selection_and_destination_drift(self):
+        for mode, message in (
+            ("selection", "differs from reviewed"), ("image", "checksum differs"),
+            ("partial", "differs from reviewed"), ("lock", "another preparation"),
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _, cache, selection, spec = self.selection(root)
+                out = root / "out"
+                t.prepare_benchmark(selection, cache, out)
+                if mode == "selection":
+                    spec["review_note"] = "changed"
+                    selection.write_text(json.dumps(spec))
+                elif mode == "image":
+                    next((out / "test/images").iterdir()).write_bytes(b"changed")
+                elif mode == "partial":
+                    (out / "prepared.json").unlink()
+                else:
+                    (root / ".out.prepare.lock").mkdir()
+                with self.assertRaisesRegex(ValueError, message):
+                    t.prepare_benchmark(selection, cache, out)
+
+    def test_audited_preparation_rejects_invalid_selection(self):
+        for mode in ("training", "duplicate-id", "duplicate-image", "mutable-engine", "source-path",
+                     "empty", "missing-provenance", "two-models"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _, cache, selection, spec = self.selection(root)
+                if mode == "training":
+                    spec["evaluation_only"] = False
+                elif mode == "duplicate-id":
+                    spec["included"][1]["crop_id"] = spec["included"][0]["crop_id"]
+                elif mode == "duplicate-image":
+                    spec["included"][1]["image_sha256"] = spec["included"][0]["image_sha256"]
+                elif mode == "mutable-engine":
+                    spec["engine"]["image"] = "latest"
+                elif mode == "source-path":
+                    spec["included"][0]["source_dataset"] = "../source"
+                elif mode == "empty":
+                    spec["included"] = []
+                elif mode == "missing-provenance":
+                    spec["included"][0]["provenance"].pop("page_id")
+                else:
+                    spec["engine"]["models"] *= 2
+                selection.write_text(json.dumps(spec))
+                with self.assertRaises(ValueError):
+                    t.prepare_benchmark(selection, cache, root / "out")
+                self.assertFalse((root / "out").exists())
 
 
 if __name__ == "__main__":

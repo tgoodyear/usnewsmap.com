@@ -478,6 +478,34 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertTrue(any("--crops " + share + "/qwen/pilot-1/test/crops.jsonl" in c for c in self.calls()))
         self.assertTrue(any("--out " + share + "/qwen/pilot-1/out" in c for c in self.calls()))
 
+        python_stub = os.path.join(self.tmp, "bin", "python3")
+        with open(python_stub, "w") as dst:
+            dst.write('#!/usr/bin/env bash\nprintf "prepare %s\\n" "$*" >> "$STUB_LOG"\nexit "${PREP_FAIL:-0}"\n')
+        os.chmod(python_stub, 0o755)
+        for fail in ("0", "1"):
+            before = len(self.calls())
+            r = subprocess.run(
+                [bridge_copy], cwd=ROOT,
+                env={**base, "BRIDGE_STEP": "qwen-benchmark-prepare", "PREP_FAIL": fail},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, int(fail), r.stderr)
+            calls = self.calls()[before:]
+            self.assertIn("--selection /usr/local/lib/usnm-boinc/gold/selections/transcription-audited-20261015.json", calls[0])
+            self.assertIn("--cache " + share + "/gold/build-v1/out", calls[0])
+            if fail == "0":
+                self.assertIn("qwen benchmark-stage", calls[1])
+                self.assertNotIn("submit", " ".join(calls))
+            else:
+                self.assertEqual(len(calls), 1)
+        r = subprocess.run(
+            [bridge_copy], cwd=ROOT,
+            env={**base, "BRIDGE_STEP": "qwen-benchmark-prepare", "QWEN_SELECTION": "../other"},
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("invalid reviewed selection", r.stderr)
+
         r = subprocess.run(
             [bridge_copy],
             cwd=ROOT,

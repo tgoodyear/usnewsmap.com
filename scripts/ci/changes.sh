@@ -14,7 +14,8 @@
 # ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/, and the
 # Rust scorer's golden files that gold.py writes), whose unit tests and golden
 # check run in the infra job. fixtures/ocr-gold/ is read by no build, test
-# or generator, so it counts for none of rust/quickwit/web/image/fixtures.
+# or generator outside the bridge's reviewed selections, so it counts for none
+# of rust/quickwit/web/image/fixtures. Reviewed selections also build the bridge.
 # boinc_pages: the BOINC project's own web pages (contrib-compute/boinc/html/), which
 # only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
@@ -144,7 +145,7 @@ ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-alto|
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/boinc-app-release\.sh$|scripts/ci/check-boinc-server-image\.sh$)'
+contrib='^(contrib-compute/|fixtures/ocr-gold/selections/|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/boinc-app-release\.sh$|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # closure_crates ROOT...: the directories of the workspace crates the roots
 # depend on, directly or not (normal, build and dev dependencies: path

@@ -196,7 +196,9 @@ jobs:
           docker run --rm --entrypoint sh usnm-boinc-bridge:check -c 'usnm-ocr-survey --help > /dev/null &&
             bsdtar --version && python3 -c "import PIL; assert PIL.__version__ == \"11.3.0\", PIL.__version__" &&
             python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/gold.py --help > /dev/null &&
-            cd /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey && python3 -c "import gold, crops, altotext, locfetch" &&
+            python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/transcription.py --help > /dev/null &&
+            test -s /usr/local/lib/usnm-boinc/gold/selections/transcription-audited-20261015.json &&
+            cd /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey && python3 -c "import gold, crops, altotext, locfetch, transcription" &&
             test -f /usr/local/lib/usnm-boinc/gold-bundle.sh && test -s /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json'
 
   # The page-language detector on text of known language (05 §5.5.8): behind
