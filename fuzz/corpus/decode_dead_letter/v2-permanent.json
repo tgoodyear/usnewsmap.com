@@ -1,0 +1,1 @@
+{"v":2,"from":"ocr-bulk","message_id":"m1","message":{"v":1,"page":"sn83045462/1890-05-03/ed-1/seq-7","batch":"nbu_gage","language":"deu","reason":"bulk","score":0.62,"queued_at":"2026-10-10T12:00:00Z"},"cause":"permanent","error":"x y","dequeue_count":6,"node":"node1","at":"2026-10-10T12:00:00Z"}

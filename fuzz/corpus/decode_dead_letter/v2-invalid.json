@@ -1,0 +1,1 @@
+{"v":2,"from":"ocr-bulk","message_id":"m1","message":null,"cause":"invalid","kind":"bad_json","error":"x y","dequeue_count":6,"node":"node1","at":"2026-10-10T12:00:00Z"}

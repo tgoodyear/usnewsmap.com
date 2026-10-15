@@ -45,6 +45,10 @@ AZURE_ENV_NAME=dev USNM_VNET_ADDRESS_PREFIX=192.0.2.0/24 bicep build-params infr
 
 `scripts/ci/install-bicep.sh` shows the Bicep version CI uses. The checks on the JSON data files are listed in the [development guide](docs/development.md#json-data-files). The end-to-end tests are described in [`web/README.md`](web/README.md), and the Quickwit parity tests in the [development guide](docs/development.md#against-quickwit).
 
+Local nightly fuzz targets for untrusted OCR Parquet, ALTO and dead letters live
+in [`fuzz/`](fuzz/README.md), outside the production workspace. Its README covers
+seed regeneration, memory budgets and bounded smoke runs.
+
 ## Rules
 
 - **Entra ID only.** Every service signs in with a managed identity. Don't add account keys, SAS tokens, connection strings with keys or instrumentation keys ([ADR-0009](docs/design/adr/0009-entra-identity-only.md)). `scripts/ci/no-shared-keys.sh` fails the build if one appears.
