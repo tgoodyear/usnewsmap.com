@@ -7,7 +7,11 @@ the separate `usnm_qwen_train` BOINC app; inference uses `usnm_qwen`.
 Only permissively licensed **training** examples and labels are public inputs.
 Credentials and held-out validation/test references never go to volunteers.
 
-Status: benchmark staging, collection and dataset export implemented. An adapted
+Status: signed GPU training app published and two bounded trials queued
+(`transcription-lora-v1`, workunits 68 and 69). Current attached AMD/Windows
+hardware is ineligible for the Linux/NVIDIA app; GPU execution is pending.
+See the [live evidence](notes/2026-10-15-transcription-pilot.md).
+An adapted
 checkpoint, its GGUF export, training resource measurements and accuracy gains are
 UNVERIFIED. A baseline campaign does not establish a post-training improvement.
 
