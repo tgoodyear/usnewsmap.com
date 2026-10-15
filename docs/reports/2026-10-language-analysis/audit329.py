@@ -21,6 +21,8 @@ DATA = HERE / "data" / "issue-329"
 ROOT = HERE.parents[2]
 SEED = "issue-329-v1:"
 LANGUAGES = ("cze", "hrv", "srp", "rus")
+LABELS = frozenset(("likely_ocr_error", "valid", "unresolved"))
+CONFIDENCES = frozenset(("high", "medium", "low"))
 INPUTS = {
     "pages.csv.gz": "ca9890d21db07108f90454e1b16887a18ee4b962d54329ce7cdb409f8e373514",
     "titles.json": "92368e94c4dc921b3fc014eed965a86501b6b71e2a31c2962b666d63f058cb81",
@@ -129,6 +131,10 @@ def fetch(source):
 def label_maps():
     rules, occurrences = {}, {}
     for row in json.loads((DATA / "labels.json").read_text()):
+        if row["label"] not in LABELS:
+            raise ValueError(f"unknown annotation label: {row['label']!r}")
+        if row["confidence"] not in CONFIDENCES:
+            raise ValueError(f"unknown annotation confidence: {row['confidence']!r}")
         key = ((row["language"], row["doc_id"], row["word_index"]) if "doc_id" in row
                else (row["language"], row["word"]))
         table = occurrences if "doc_id" in row else rules
@@ -147,6 +153,11 @@ def label_flag(flag, rules, occurrences):
 
 
 def summarize(pages, flags):
+    for flag in flags:
+        if flag["label"] not in LABELS:
+            raise ValueError(f"unknown annotation label: {flag['label']!r}")
+        if flag["language"] not in LANGUAGES:
+            raise ValueError(f"unknown flag language: {flag['language']!r}")
     result = {}
     for language in LANGUAGES:
         counts = collections.Counter(f["label"] for f in flags if f["language"] == language)

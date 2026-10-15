@@ -160,7 +160,8 @@ and relevant text row groups, caching whole text for the 80 selected pages in
 and summary from those texts and the committed decisions, failing on historical
 score/count disagreement. `check` uses only Python's standard library and
 validates committed page/flag counts, unique occurrence IDs, label application,
-label coverage, historical damage-rate arithmetic, and summary reconciliation.
+label coverage, allowed label/confidence values, historical damage-rate arithmetic,
+and summary reconciliation.
 It does not validate linguistic correctness. Reproducing the explicit decisions
 is not an independent annotation. For fresh annotations, edit `labels.json`,
 regenerate, and record the reader and scan evidence before claiming ground truth.

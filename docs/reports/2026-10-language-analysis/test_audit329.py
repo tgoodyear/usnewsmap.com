@@ -1,5 +1,6 @@
 """Offline checks for the issue #329 screening artifact and its denominators."""
 import unittest
+from unittest.mock import patch
 
 import audit329
 
@@ -30,6 +31,21 @@ class ScreeningTest(unittest.TestCase):
         self.assertEqual(audit329.label_flag(flag, rules, occurrences), {"label": "likely_ocr_error"})
         flag["word"] = "unreviewed"
         self.assertEqual(audit329.label_flag(flag, rules, occurrences)["label"], "unresolved")
+
+    def test_unknown_label_cannot_disappear_from_denominator(self):
+        with self.assertRaisesRegex(ValueError, "unknown annotation label"):
+            audit329.summarize([], [{"language": "cze", "label": "ocr_error"}])
+
+    def test_unknown_label_rejected_when_loading_decisions(self):
+        with patch.object(audit329.json, "loads", return_value=[{"label": "ocr_error"}]):
+            with self.assertRaisesRegex(ValueError, "unknown annotation label"):
+                audit329.label_maps()
+
+    def test_unknown_confidence_rejected_when_loading_decisions(self):
+        decision = {"label": "valid", "confidence": "certain"}
+        with patch.object(audit329.json, "loads", return_value=[decision]):
+            with self.assertRaisesRegex(ValueError, "unknown annotation confidence"):
+                audit329.label_maps()
 
     def test_committed_artifacts_reconcile(self):
         audit329.check()
