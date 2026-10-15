@@ -7,6 +7,7 @@
 
 targetScope = 'subscription'
 
+import { replicaComputeSlots } from 'api-capacity.bicep'
 import { guardrailPolicyNames } from 'guardrails.bicep'
 import { checkedEnvName, legacyProdSuffix, names } from 'naming.bicep'
 import { lakeOpen, nodeIpList, publicAccountIds } from 'public-accounts.bicep'
@@ -718,6 +719,9 @@ module diagnostics 'modules/diagnostics.bicep' = {
 
 // A new environment has no image to pull until CI pushes to its registry.
 var deployApi = useAcr || !empty(apiImage)
+// Evaluate the helper before runtime outputs enter the API module: a nested
+// user function there makes ARM short-circuit dependent modules during what-if.
+var apiComputeSlots = replicaComputeSlots(computeConcurrency, apiMaxReplicas, searchBackend == 'quickwit' && (searcherApp || indexStorageServe))
 
 module api 'modules/containerapp.bicep' = if (deployApi) {
   scope: rg
@@ -747,7 +751,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     allowedOrigins: siteOrigins
     minReplicas: apiMinReplicas
     maxReplicas: apiMaxReplicas
-    computeConcurrency: computeConcurrency
+    computeSlots: apiComputeSlots
     searchBackend: searchBackend
     searcherApp: searcherApp
     searcherAppRetain: searcherAppRetain
