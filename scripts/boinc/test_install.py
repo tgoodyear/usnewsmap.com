@@ -85,6 +85,15 @@ class InstallTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_qwen", "docker")
 
+    def test_training_is_a_separate_gpu_only_app(self):
+        target = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_qwen_train", "docker_nvidia_train")
+        self.assertIn("use_gpu = true", next(target.glob("job_*.toml")).read_text())
+        for name in ("usnm_qwen_train_in", "usnm_qwen_train_out"):
+            self.assertTrue((self.project / "templates" / name).is_file())
+        for plan in ("docker", "docker_mt", "docker_nvidia_cuda"):
+            with self.assertRaises(ValueError):
+                module.install(self.project, self.wrapper, IMAGE, "2.0", "usnm_qwen_train", plan)
+
     def test_platforms_coexist_at_one_version_without_shared_download_collisions(self):
         staged_downloads = {}
         for platform in module.PLATFORMS:

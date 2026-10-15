@@ -75,6 +75,12 @@
 #                               verifies private references and stages without submitting work
 #   BRIDGE_STEP=qwen-benchmark-collect QWEN_SPOOL=<canonical assimilator directory>
 #                               writes coverage and CER/WER to <campaign>/out
+#   BRIDGE_STEP=train-prepare TRAIN_CAMPAIGN=<name> TRAIN_WORKER_IMAGE=<public digest>
+#                               prepares two bounded permissive, source-disjoint GPU trials
+#   BRIDGE_STEP=train-submit TRAIN_CAMPAIGN=<name>
+#                               submits prepared trials with write-ahead markers
+#   BRIDGE_STEP=train-collect TRAIN_CAMPAIGN=<name>
+#                               reports quarantined candidates; never promotes an adapter
 #
 # The remote hand-off (#469, docs/boinc.md#one-page-from-the-scan-cache), through the
 # hand-off container HANDOFF_URL=https://<account>.blob.core.windows.net/boinc-handoff, read
@@ -104,6 +110,11 @@ set -euo pipefail
 . /usr/local/lib/usnm-boinc/lib.sh
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
 step="${BRIDGE_STEP:-submit}"
+TRAIN=""
+if [[ "$step" == train-* ]]; then
+  [[ "${TRAIN_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "TRAIN_CAMPAIGN must be 1-41 of [a-z0-9-]"
+  TRAIN="$SHARE_DIR/training/$TRAIN_CAMPAIGN"
+fi
 ASSESS=""
 if [[ "$step" == assess-* ]]; then
   [[ "${ASSESS_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "ASSESS_CAMPAIGN must be 1-41 of [a-z0-9-]"
@@ -133,6 +144,12 @@ assess_mode() {
   case "${ASSESS_MODE:-}" in ocr|crash) ;; *) fail "ASSESS_MODE must be ocr or crash" ;; esac
 }
 case "$step" in
+  train-prepare)
+    exec python3 "$TEMPLATES/train/campaign.py" prepare \
+      --cache "$SHARE_DIR/gold/build-v1/out" --root "$TRAIN" \
+      --worker-image "${TRAIN_WORKER_IMAGE:?set TRAIN_WORKER_IMAGE}" ;;
+  train-collect)
+    exec python3 "$TEMPLATES/train/campaign.py" collect --root "$TRAIN" --seen "$PROJ/qwen-train/seen" ;;
   assess-stage)
     # No database or secrets: this step only reads the scan archive and LoC and writes the share.
     assess_mode
@@ -264,7 +281,7 @@ case "$step" in
       --max-cer "${GOLD_MAX_CER:-0.10}" --out "$SHARE_DIR/gold/trust.json" ;;
 esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
-  [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != register-apps ]; then
+  [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] && [ "$step" != register-apps ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -301,6 +318,12 @@ fetch_secrets
 render_config
 umask 0002
 case "$step" in
+  train-submit)
+    for template in usnm_qwen_train_in usnm_qwen_train_out; do
+      cp "$TEMPLATES/$template" "$PROJ/templates/$template"
+      chmod 0664 "$PROJ/templates/$template"
+    done
+    exec python3 "$TEMPLATES/train/campaign.py" submit --root "$TRAIN" --project "$PROJ" ;;
   assess-submit)
     assess_mode
     stamp="$(mktemp)"
@@ -373,5 +396,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, assess-stage, assess-submit, assess-collect, surya-stage, surya-submit, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-collect, gold-trust or gold-bundle" ;;
 esac
