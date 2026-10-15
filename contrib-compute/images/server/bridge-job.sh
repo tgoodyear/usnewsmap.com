@@ -216,7 +216,8 @@ case "$step" in
     [[ "${QUALITY_READERS:-loc,as,ours-tesseract}" =~ ^[a-z0-9_,-]+$ ]] ||
       fail "QUALITY_READERS must be comma-separated reader names"
     exec usnm-boinc quality stage "${page_args[@]}" --root "$QUALITY" \
-      --texts-dir "$QUALITY/texts" --places "${QUALITY_PLACES:-$QUALITY/places.txt}" \
+      --texts-dir "$QUALITY/texts" --scans-dir "${QUALITY_SCANS_DIR:-$QUALITY/texts}" \
+      --places "${QUALITY_PLACES:-$QUALITY/places.txt}" \
       --function-words-dir "$QUALITY/function-words" \
       --readers "${QUALITY_READERS:-loc,as,ours-tesseract}" \
       --engine-image "${QUALITY_ENGINE_IMAGE:?set QUALITY_ENGINE_IMAGE}" \
