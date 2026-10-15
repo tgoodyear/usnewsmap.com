@@ -2,5 +2,5 @@
 # One independent adapter trial. Structural success only; candidates remain quarantined.
 [ "$#" -eq 2 ] || { echo "usnm_qwen_train_check: expected adapter and report" >&2; exit 2; }
 project=$(cd .. && pwd)
-exec python3 /usr/local/lib/usnm-boinc/train/check.py "$1" "$2" \
+exec python3 /usr/local/lib/usnm-boinc/train/check.py --adapter "$1" --report "$2" \
   --campaigns "$(dirname "$project")/training" --keep "$project/qwen-train/seen"

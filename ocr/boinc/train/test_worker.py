@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import worker as w
@@ -78,6 +79,32 @@ class TrainingContract(unittest.TestCase):
                 (root / "train.json").write_text(json.dumps(job))
                 with self.assertRaises(ValueError):
                     w.load_job(root)
+
+    def test_duplicate_archive_and_decompressed_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job, _ = self.job(root)
+            with zipfile.ZipFile(root / "training.zip", "a") as archive:
+                with self.assertWarns(UserWarning):
+                    archive.writestr("NOTICE.txt", "duplicate")
+            job["bundle_sha256"] = w.sha((root / "training.zip").read_bytes())
+            (root / "train.json").write_text(json.dumps(job))
+            with self.assertRaisesRegex(ValueError, "duplicated"):
+                w.load_job(root)
+            with zipfile.ZipFile(root / "training.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("bomb", b"x" * 8192)
+            job["bundle_sha256"] = w.sha((root / "training.zip").read_bytes())
+            (root / "train.json").write_text(json.dumps(job))
+            with patch.object(w, "MAX_BUNDLE", 4096), self.assertRaisesRegex(ValueError, "exceeds limits"):
+                w.load_job(root)
+
+    def test_production_has_no_cpu_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.job(root)
+            with patch("torch.cuda.is_available", return_value=False), \
+                    self.assertRaisesRegex(ValueError, "CPU fallback is disabled"):
+                w.run(root, root / "no-model-needed")
 
 
 def visual_smoke(processor_dir: Path) -> dict:

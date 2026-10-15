@@ -31,9 +31,9 @@ def prepare(cache: Path, out: Path, worker_image: str) -> dict:
     import re
     if not re.fullmatch(r"ghcr.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64}", worker_image):
         raise ValueError("training worker must be a pinned public image")
-    source_dir = Path(__file__).resolve().parents[3] / "scripts/ocr-survey"
+    source_dir = Path("/usr/local/lib/usnm-boinc/gold/scripts/ocr-survey")
     if not source_dir.is_dir():
-        source_dir = Path("/usr/local/lib/usnm-boinc/gold/scripts/ocr-survey")
+        source_dir = Path(__file__).resolve().parents[3] / "scripts/ocr-survey"
     sys.path.insert(0, str(source_dir))
     import transcription
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +68,13 @@ def prepare(cache: Path, out: Path, worker_image: str) -> dict:
             for path in sorted((train / "LICENSES").rglob("*")):
                 if path.is_file():
                     notices.append(f"{path.relative_to(train)}:\n{path.read_text()}")
+            for row in examples:
+                attribution = meta[row["crop_id"]].get("source_attribution")
+                if not isinstance(attribution, str) or not attribution.strip():
+                    raise ValueError("training crop lacks source attribution")
+                notices.append(f'{row["crop_id"]}: {attribution}\n'
+                               f'{row["source_url"]}\n{row["source_license"]}\n'
+                               "Unchanged converted crop; source conversion details retained in campaign manifest.")
             manifest = {"v": 1, "split": "train",
                         "split_sha256": sha((candidate / "split.json").read_bytes()),
                         "examples": examples, "notices": notices}

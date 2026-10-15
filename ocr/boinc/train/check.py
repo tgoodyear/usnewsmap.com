@@ -140,8 +140,8 @@ def quarantine(adapter_path: Path, report_path: Path, campaigns: Path, keep: Pat
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("adapter", type=Path)
-    parser.add_argument("report", type=Path)
+    parser.add_argument("--adapter", required=True, type=Path)
+    parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--campaigns", required=True, type=Path)
     parser.add_argument("--keep", required=True, type=Path)
     args = parser.parse_args()
