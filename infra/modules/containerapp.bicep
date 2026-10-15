@@ -37,6 +37,10 @@ param storageBlobEndpoint string
 @description('Cosmos DB endpoint of the pipeline state, read (Data Reader, private endpoint) for the public status page.')
 param cosmosEndpoint string
 param allowedOrigins array
+param indexStorageAccountName string = ''
+@maxLength(31)
+param indexSearcherName string = ''
+param indexStorageServe bool = false
 param storageAccountName string
 param minReplicas int
 param maxReplicas int = 2
@@ -75,8 +79,9 @@ param customDomains array = []
 
 var quickwit = searchBackend == 'quickwit'
 // Where the searcher runs: a sidecar in each API replica, or its own app.
-var sidecar = quickwit && !searcherApp
+var sidecar = quickwit && !searcherApp && !indexStorageServe
 var searcherOn = quickwit && searcherApp
+var indexSearcherOn = quickwit && !empty(indexStorageAccountName)
 // The API app's system-assigned identity and its role on the index stay with
 // any Quickwit backend, not only with the sidecar. Turning the searcher app
 // on doesn't remove them: identity is the app's, not a revision's, so
@@ -88,7 +93,8 @@ var apiSystemIdentity = quickwit
 
 // The searcher sidecar's node config, from infra/quickwit/searcher.yaml.
 // CI applies the same file on every deploy (scripts/ci/roll-api.sh), so it
-// has one source.
+// has one source. Azure URIs resolve against this account; the migration
+// searcher below loads the same file with the separate account instead.
 var quickwitConfig = replace(
   loadTextContent('../quickwit/searcher.yaml'),
   '__STORAGE_ACCOUNT__',
@@ -151,7 +157,7 @@ var backendEnv = quickwit
       { name: 'USNM_BACKEND', value: 'quickwit' }
       // The searcher app's internal ingress answers on port 80 at its name,
       // inside the environment only.
-      { name: 'USNM_QUICKWIT_URL', value: searcherOn ? 'http://${searcherName}' : 'http://127.0.0.1:7280' }
+      { name: 'USNM_QUICKWIT_URL', value: indexStorageServe ? 'http://${indexSearcherName}' : (searcherOn ? 'http://${searcherName}' : 'http://127.0.0.1:7280') }
       { name: 'USNM_REFERENCE_URL', value: '${storageBlobEndpoint}reference' }
     ]
   : [{ name: 'USNM_BACKEND', value: 'memory' }]
@@ -317,6 +323,44 @@ resource searcher 'Microsoft.App/containerApps@2024-03-01' = if (searcherOn) {
   }
 }
 
+// A second read-only searcher keeps the lake searcher/revision serving until
+// the API's new revision loads the promoted pointer from this account.
+resource indexSearcher 'Microsoft.App/containerApps@2024-03-01' = if (indexSearcherOn) {
+  name: indexSearcherName
+  location: location
+  tags: tags
+  identity: {
+    // Quickwit uses the system-assigned identity (see above); the API's
+    // user-assigned one pulls the image, as it does for the sidecar.
+    type: 'SystemAssigned,UserAssigned'
+    userAssignedIdentities: { '${identityId}': {} }
+  }
+  properties: {
+    environmentId: environmentId
+    workloadProfileName: 'Consumption'
+    configuration: {
+      activeRevisionsMode: 'Single'
+      registries: empty(registryServer) ? [] : [{ server: registryServer, identity: identityId }]
+      // Plain HTTP on the environment's internal network, at
+      // http://<searcherName> (port 80); nothing outside it can connect.
+      ingress: {
+        external: false
+        targetPort: 7280
+        transport: 'http'
+        allowInsecure: true
+      }
+    }
+    template: {
+      containers: [union(searcherContainer, {
+        env: map(searcherContainer.env, e => e.name == 'USNM_QW_CONFIG'
+          ? { name: e.name, value: replace(quickwitConfig, storageAccountName, indexStorageAccountName) }
+          : e)
+      })]
+      scale: { minReplicas: searcherMinReplicas, maxReplicas: 1 }
+    }
+  }
+}
+
 var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 
 // The same read-only role on the index as the sidecar's (below).
@@ -336,7 +380,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   // With the searcher app, the new API revision starts once the searcher
   // and its role exist.
-  dependsOn: [searcherIndexReader]
+  dependsOn: [searcherIndexReader, newSearcherIndexReader]
   identity: {
     // Quickwit can use only the system-assigned identity (see above).
     type: apiSystemIdentity ? 'SystemAssigned,UserAssigned' : 'UserAssigned'
@@ -406,4 +450,34 @@ resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01
 output name string = app.name
 output fqdn string = app.properties.configuration.ingress.fqdn
 // The searcher app's name; empty without one.
-output searcherName string = searcherOn ? searcher.name : ''
+output searcherName string = indexStorageServe ? indexSearcher!.name : (searcherOn ? searcher.name : '')
+
+// Keep the lake grants for old revisions and rollback/prune. Never retarget
+// an existing assignment during the rebuild.
+resource indexAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: indexStorageAccountName
+  resource blobs 'blobServices' existing = {
+    name: 'default'
+    resource index 'containers' existing = {
+      name: 'qw-index'
+    }
+  }
+}
+resource newApiIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(indexStorageAccountName) && apiSystemIdentity) {
+  scope: indexAccount::blobs::index
+  name: guid(indexAccount::blobs::index.id, app.id, blobReader)
+  properties: {
+    principalId: app.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
+  }
+}
+resource newSearcherIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(indexStorageAccountName) && indexSearcherOn) {
+  scope: indexAccount::blobs::index
+  name: guid(indexAccount::blobs::index.id, indexSearcher!.id, blobReader)
+  properties: {
+    principalId: indexSearcher!.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobReader)
+  }
+}

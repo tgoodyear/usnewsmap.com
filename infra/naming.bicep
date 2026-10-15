@@ -164,6 +164,10 @@ var nameTypes = {
   dataLake: 'st'
   deployRole: 'role'
   docIntel: 'di'
+  indexAccount: 'st'
+  indexEndpoint: 'pep'
+  indexEndpointNic: 'nic'
+  indexSearcherApp: 'ca'
   ingestIdentity: 'id'
   ingestJob: 'caj'
   ingestJobFailedAlert: 'alert'
@@ -263,6 +267,10 @@ type Names = {
   dataLake: string
   deployRole: string
   docIntel: string
+  indexAccount: string
+  indexEndpoint: string
+  indexEndpointNic: string
+  indexSearcherApp: string
   ingestIdentity: string
   ingestJob: string
   ingestJobFailedAlert: string
@@ -354,6 +362,10 @@ func names(env string, sfx string, pinned bool) Names => {
   dataLake: pinned ? 'stusnmd${sfx}' : usnmCompactName('data', 'st', env, sfx)
   deployRole: pinned ? 'usnm deployer' : usnmName('deploy', 'role', env)
   docIntel: pinned ? 'di-usnm-${env}-${sfx}' : usnmGlobalName('jaocr', 'di', env, sfx)
+  indexAccount: usnmCompactName('qw', 'st', env, sfx)
+  indexEndpoint: usnmName('qw-blob', 'pep', env)
+  indexEndpointNic: usnmName('qw-blob', 'nic', env)
+  indexSearcherApp: usnmName('qw-search', 'ca', env)
   ingestIdentity: pinned ? 'id-usnm-ingest-${env}' : usnmName('ingest', 'id', env)
   ingestJob: pinned ? 'caj-usnm-ingest-${env}' : usnmName('ingest', 'caj', env)
   ingestJobFailedAlert: pinned ? 'alert-usnm-ingest-job-failed-${env}' : usnmName('ingest-job-failed', 'alert', env)

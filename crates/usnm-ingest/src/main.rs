@@ -165,6 +165,11 @@ struct Stores {
 
 #[derive(Args, Default)]
 struct IndexTarget {
+    /// Build a fresh full version in the separate index account, publishing
+    /// reference/index-storage-pending.json instead of the serving pointer.
+    /// Promote it only during the documented searcher cutover (#283).
+    #[arg(long)]
+    stage_index_storage: bool,
     /// Write JSONL indexes to this directory (the API's memory backend).
     #[arg(long, env = "USNM_INDEX_DIR")]
     index_dir: Option<PathBuf>,
@@ -887,6 +892,7 @@ async fn release(
         reference: usnm_store::open(&cli.reference)?,
         owner: owner_id(),
         full,
+        stage_index_storage: t.stage_index_storage,
         synthetic,
         now: chrono::Utc::now(),
         titles_left,

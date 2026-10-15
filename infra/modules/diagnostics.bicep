@@ -39,6 +39,7 @@ param vnetName string
 param containerEnvName string
 param cosmosName string
 param dataStorageName string
+param indexStorageName string = ''
 @description('The ingest scratch share\'s account (ingest-scratch.bicep); empty if there is none.')
 param scratchStorageName string = ''
 @description('The on-prem OCR exchange account (ocr-exchange.bicep); empty if there is none.')
@@ -162,6 +163,15 @@ module dataStorageLogs 'storage-diagnostics.bicep' = {
   name: 'diagnostics-${dataStorageName}'
   params: {
     storageName: dataStorageName
+    workspaceId: workspaceId
+    settingName: name
+  }
+}
+
+module indexStorageLogs 'storage-diagnostics.bicep' = if (!empty(indexStorageName)) {
+  name: 'diagnostics-${indexStorageName}'
+  params: {
+    storageName: indexStorageName
     workspaceId: workspaceId
     settingName: name
   }
