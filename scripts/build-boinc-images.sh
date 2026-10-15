@@ -83,6 +83,7 @@ if have usnm-boinc-base "$base_key"; then
 else
   echo "building usnm-boinc-base:$base_key in $registry (BOINC from source: about 20 minutes)"
   baz acr build --registry "$registry" --image "usnm-boinc-base:$base_key" --platform linux/amd64 \
+    --no-logs --query '{runId:runId,status:status}' -o json \
     --timeout 7200 --file contrib-compute/images/base/Containerfile contrib-compute/images/base ||
     die "the base image build failed"
 fi
@@ -93,6 +94,7 @@ if have usnm-boinc-bridge-bin "$bin_key"; then
 else
   echo "building usnm-boinc-bridge-bin:$bin_key in $registry (release build: about 10 minutes)"
   baz acr build --registry "$registry" --image "usnm-boinc-bridge-bin:$bin_key" --platform linux/amd64 \
+    --no-logs --query '{runId:runId,status:status}' -o json \
     --timeout 7200 --file contrib-compute/images/bridge-bin/Containerfile . ||
     die "the bridge binary build failed"
 fi
@@ -100,6 +102,7 @@ bin_image="$registry.azurecr.io/usnm-boinc-bridge-bin@$(digest usnm-boinc-bridge
 
 echo "building usnm-boinc-server:$sha in $registry"
 baz acr build --registry "$registry" --image "usnm-boinc-server:$sha" --platform linux/amd64 \
+  --no-logs --query '{runId:runId,status:status}' -o json \
   --timeout 1800 --build-arg "BASE_IMAGE=$base_image" --file contrib-compute/images/server/Containerfile contrib-compute ||
   die "the server image build failed"
 server_image="$server@$(digest usnm-boinc-server "$sha")"
@@ -107,6 +110,7 @@ echo "server image $server_image"
 
 echo "building usnm-boinc-bridge:$sha in $registry"
 baz acr build --registry "$registry" --image "usnm-boinc-bridge:$sha" --platform linux/amd64 \
+  --no-logs --query '{runId:runId,status:status}' -o json \
   --timeout 1800 --build-arg "SERVER_IMAGE=$server_image" --build-arg "BIN_IMAGE=$bin_image" \
   --file contrib-compute/images/bridge/Containerfile . ||
   die "the bridge image build failed"
