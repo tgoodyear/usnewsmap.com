@@ -241,6 +241,11 @@ param ocrNodeGroupId string = ''
 @description('Schedule for the OCR pickup job usnm-ocrs-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
 param ocrSyncCron string = '17 * * * *'
 
+@description('Maximum distinct page ids from hit results queued for OCR per UTC request day.')
+@minValue(0)
+@maxValue(10000)
+param ocrUserDailyMax int = 1000
+
 @description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name (USNM_OCR_SEED_* and USNM_OCR_BULK_*; docs/operations.md). Seeding stays off while USNM_OCR_SEED_PLAN is empty (ADR-0015 decision 7).')
 param ocrSeed object = {}
 
@@ -579,8 +584,8 @@ module ocrVault 'modules/ocr-vault.bicep' = if (ocrNodes) {
 // The nodes' workspace's daily cap in GB, which the OCR nodes workbook also
 // charts against. 0.1 GB to start: about 20 to 45 MB a day per node, VM
 // insights included, is estimated before the worker's telemetry, which
-// isn't measured yet (ocr-node-monitoring.bicep). Raise it with cap_gb in
-// ops/queries/ocr-node-health.kql.
+// isn't measured yet (ocr-node-monitoring.bicep). Raise ocrNodeDailyCapGb
+// here and keep cap_gb in ops/queries/ocr-node-health.kql in sync.
 var ocrNodeDailyCapGb = '0.1'
 
 module ocrNodeMonitoring 'modules/ocr-node-monitoring.bicep' = if (ocrNodes) {
@@ -720,6 +725,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     identityId: identities.outputs.appId
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
+    ocrRequests: ocrNodes && ingestJobs && useAcr
     indexStorageAccountName: indexStorage ? indexStore!.outputs.name : ''
     indexSearcherName: n.indexSearcherApp
     indexStorageServe: indexStorageServe && !indexStorage
@@ -874,6 +880,8 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     ocrSync: ocrNodes
     ocrQueueEndpoint: ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
     ocrBlobEndpoint: ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+    ocrRequestsUrl: ocrNodes ? '${storage.outputs.blobEndpoint}ocr-requests' : ''
+    ocrUserDailyMax: ocrUserDailyMax
     ocrSyncCron: ocrSyncCron == 'manual' ? '' : ocrSyncCron
     ocrSeed: ocrSeed
     rawUrl: !empty(archiveAccountId)

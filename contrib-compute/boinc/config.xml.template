@@ -82,7 +82,7 @@
             <cmd>file_deleter -d 2</cmd>
         </daemon>
         <daemon>
-            <cmd>db_purge -d 2 --min_age_days 30 --max</cmd>
+            <cmd>db_purge -d 2 --min_age_days 30</cmd>
         </daemon>
         @APP_DAEMONS@
     </daemons>

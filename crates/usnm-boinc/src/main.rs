@@ -655,6 +655,29 @@ enum Quality {
 }
 #[derive(Subcommand)]
 enum Qwen {
+    /// Stage public gold crops without sending reference text to volunteers.
+    BenchmarkStage {
+        #[arg(long)]
+        crops: PathBuf,
+        #[arg(long)]
+        root: PathBuf,
+        /// JSON Engine with immutable image/llama/weights digests and exactly one model.
+        #[arg(long)]
+        engine: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        max_crops: usize,
+        #[arg(long, default_value_t = 1800)]
+        timeout_secs: u32,
+    },
+    /// Score canonical benchmark outputs; missing hypotheses count as deletions.
+    BenchmarkCollect {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        spool: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Cut each staged quality page's crops (the same seed) and write its unit.
     Stage {
         /// The usnm_quality staging root whose units to cut crops from.
@@ -1362,6 +1385,27 @@ async fn quality(c: Quality) -> anyhow::Result<()> {
 async fn qwen(c: Qwen) -> anyhow::Result<()> {
     use usnm_boinc::qwen as x;
     match c {
+        Qwen::BenchmarkStage {
+            crops,
+            root,
+            engine,
+            max_crops,
+            timeout_secs,
+        } => {
+            let engine = serde_json::from_slice(&std::fs::read(engine)?)?;
+            let staged = x::benchmark::stage(&x::benchmark::Options {
+                crops,
+                root,
+                engine,
+                max_crops,
+                timeout_secs,
+            })?;
+            eprintln!("{staged} benchmark units staged");
+        }
+        Qwen::BenchmarkCollect { root, spool, out } => {
+            let summary = x::benchmark::collect(&root, &spool, &out)?;
+            eprintln!("{}", serde_json::to_string(&summary)?);
+        }
         Qwen::Stage {
             quality_root,
             root,

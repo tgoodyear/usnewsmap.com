@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{OriginalUri, State};
-use axum::http::Uri;
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -18,9 +18,10 @@ use usnm_core::query::highlight_terms;
 use usnm_core::time::date_from_day;
 use usnm_search::{BrowseKey, Hit, HitSort, HitsPage, HitsQuery};
 
-use super::{cached, uses_fuzzy, with_timeout, Job};
+use super::{cached_body, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
 use crate::refdata::{RefData, CONGRESS_PLACE, CONGRESS_PLACE_NAME};
+use crate::searchlog::{self, Admission};
 use crate::{version, AppState};
 
 pub const MAX_LIMIT: usize = 50;
@@ -262,11 +263,12 @@ impl Item {
 pub async fn hits(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let raw = RawParams::parse(uri.query().unwrap_or(""))?;
     raw.reject_unknown(&["place", "cursor", "limit", "sort"])?;
     if raw.get("q").is_none() && state.config.browse_pages {
-        return browse(state, &uri, &raw).await;
+        return browse(state, &uri, &raw, &headers).await;
     }
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
@@ -378,7 +380,7 @@ pub async fn hits(
             &highlight,
         ))
     };
-    cached(
+    let (response, body) = cached_body(
         &state,
         Job::search("hits", false, state.config.compute_cap),
         key,
@@ -388,7 +390,55 @@ pub async fn hits(
         &canonical,
         compute,
     )
-    .await
+    .await?;
+    record_ocr_requests(&state, &headers, &response, body.as_deref());
+    Ok(response)
+}
+
+/// Queue only page ids from a successful, admitted hit response. The
+/// serialized response is already cached and contains no request metadata;
+/// only items without OCR provenance are eligible. In particular, the query
+/// text is never passed to the request writer.
+fn record_ocr_requests(
+    state: &AppState,
+    headers: &HeaderMap,
+    response: &Response,
+    body: Option<&Vec<u8>>,
+) {
+    let Some(requests) = &state.ocr_requests else {
+        return;
+    };
+    if response.status() != StatusCode::OK
+        || searchlog::admit(headers, &state.config.site_host) != Admission::Record
+    {
+        return;
+    }
+    let Some(body) = body else {
+        return;
+    };
+    requests.record(chrono::Utc::now().date_naive(), request_ids(body));
+}
+
+fn request_ids(body: &[u8]) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct HitItem {
+        doc_id: String,
+        #[serde(default)]
+        ocr: Option<serde_json::Value>,
+        #[serde(default)]
+        congress: Option<serde_json::Value>,
+    }
+    #[derive(Deserialize)]
+    struct HitPage {
+        items: Vec<HitItem>,
+    }
+    serde_json::from_slice::<HitPage>(body)
+        .ok()
+        .into_iter()
+        .flat_map(|page| page.items)
+        .filter(|item| item.ocr.is_none() && item.congress.is_none())
+        .map(|item| item.doc_id)
+        .collect()
 }
 
 /// A title the version has, or 404.
@@ -491,7 +541,12 @@ fn respond(
 /// The response is a search's, with no `place`. Newspaper pages only, from
 /// the main indexes, which hold every page of a title (a Japanese page's
 /// copy in the Japanese index is searched by Japanese words only).
-async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Response, ApiError> {
+async fn browse(
+    state: Arc<AppState>,
+    uri: &Uri,
+    raw: &RawParams,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
     let snap = state.snapshot.load_full();
     let rd = &snap.refdata;
     let req = BrowseRequest::from_raw(raw, rd.bounds_for(None))?;
@@ -500,6 +555,7 @@ async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Resp
             "without `q`, give a single `lccn` and no `place` to list one title's pages".into(),
         ));
     }
+
     let title = match req.filters.lccns.as_slice() {
         [lccn] => lccn.clone(),
         _ => {
@@ -578,7 +634,7 @@ async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Resp
         // No words to highlight: the viewer links have no `q`.
         Ok::<_, ApiError>(respond(rd, None, Some(&title), result, next_cursor, ""))
     };
-    cached(
+    let (response, body) = cached_body(
         &state,
         Job::search("hits", false, state.config.compute_cap),
         key,
@@ -588,5 +644,27 @@ async fn browse(state: Arc<AppState>, uri: &Uri, raw: &RawParams) -> Result<Resp
         &canonical,
         compute,
     )
-    .await
+    .await?;
+    record_ocr_requests(&state, headers, &response, body.as_deref());
+    Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_ids;
+
+    #[test]
+    fn only_pages_without_our_ocr_or_congress_provenance_are_requested() {
+        let body = serde_json::json!({
+            "items": [
+                {"doc_id": "sn83045462_1890-05-03_ed-1_seq-7"},
+                {"doc_id": "sn83045462_1890-05-04_ed-1_seq-8", "ocr": {"source": "usnm-tesseract"}},
+                {"doc_id": "sn83045462_1890-05-05_ed-1_seq-9", "congress": {"series": "globe"}}
+            ]
+        });
+        assert_eq!(
+            request_ids(&serde_json::to_vec(&body).unwrap()),
+            ["sn83045462_1890-05-03_ed-1_seq-7"]
+        );
+    }
 }

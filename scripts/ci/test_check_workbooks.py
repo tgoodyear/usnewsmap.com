@@ -20,6 +20,31 @@ resource a 'x' = {{ properties: {{ serializedData: replace(loadTextContent('a.js
 
 
 class Check(unittest.TestCase):
+    def test_ocr_nodes_status_checks_counter_freshness_after_heartbeat(self):
+        doc = json.loads((check.ROOT / "infra/workbooks/ocr-nodes.json").read_text())
+        query = next(i["content"]["query"] for i in doc["items"] if i["name"] == "nodes")
+        counter_check = 'isnull(LastCounters) or now() - LastCounters > 15m, "no counters"'
+        health_query = (check.ROOT / "ops/queries/ocr-node-health.kql").read_text()
+        self.assertIn(counter_check, health_query)
+        self.assertIn(
+            '| extend Status = case(\n    MinutesSince > 5, "silent",\n'
+            f'    {counter_check},\n    "ok")',
+            query,
+        )
+        self.assertIn("| join kind=leftouter recent on Node", query)
+        self.assertIn("by Node, LastCounters;", query)
+
+    def test_ocr_worker_chart_keeps_sources_in_separate_series(self):
+        doc = json.loads((check.ROOT / "infra/workbooks/ocr-nodes.json").read_text())
+        query = next(i["content"]["query"] for i in doc["items"] if i["name"] == "worker-chart")
+        for source in ("syslog", "traces", "exceptions"):
+            self.assertIn(f'Source = "{source}"', query)
+        self.assertIn(
+            '| summarize Lines = count() by bin(TimeGenerated, {TimeRange:grain}), '
+            'Series = strcat(Node, " ", Source, " ", Level)',
+            query,
+        )
+
     def problems(self, doc):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "a.json"

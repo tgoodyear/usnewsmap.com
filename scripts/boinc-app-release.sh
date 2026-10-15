@@ -26,7 +26,7 @@
 # 4. Publish. ACR Tasks bakes the version directory (staged again from the same inputs, every
 #    signature checked against the public key) into usnm-boinc-appver:<app>-<version>;
 #    provision-boinc.sh --publish-image deploys the publish job with it, and the job copies the
-#    version onto the share and runs bin/update_versions. The digest is then written to
+#    version onto the share and verifies registration. The digest is then written to
 #    images.appver in the settings, to commit: the stack keeps the job on it from then on.
 #
 # The signing host is reached only over SSH (as root, for zfs and podman), and is named only by
@@ -411,6 +411,7 @@ elif [ -f "$work/wrapper" ]; then
 fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
+  --no-logs --query '{runId:runId,status:status}' -o json \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
   --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \
   --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin" \
@@ -419,30 +420,12 @@ baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platfo
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"
 
-echo "   deploying the publish job"
+echo "   deploying and verifying the signed app version"
 scripts/provision-boinc.sh --env "$ENV_NAME" --publish-image "$appver_image"
-job=$(boinc_output publishJobName)
-[ -n "$job" ] || die "the stack has no publishJobName output"
-execution=$(baz containerapp job start --name "$job" --resource-group "$BOINC_RG" --query name -o tsv) || die "could not start $job"
-echo "   started $job ($execution)"
-status=""
-for _ in $(seq 1 90); do
-  status=$(baz containerapp job execution show --name "$job" --resource-group "$BOINC_RG" \
-    --job-execution-name "$execution" --query properties.status -o tsv) || die "could not read $execution"
-  case "$status" in Succeeded | Failed | Stopped | Degraded) break ;; esac
-  sleep 10
-done
-[ "$status" = Succeeded ] ||
-  die "$job execution $execution ended $status: see its logs (ContainerAppConsoleLogs_CL, ContainerJobName_s == \"$job\")"
-echo "published $APP $VERSION ($execution)"
-if curl -fsS "${PROJECT_URL}usnmocr/apps.php" | grep -q "$VERSION"; then
-  echo "${PROJECT_URL}usnmocr/apps.php lists version $VERSION"
-else
-  echo "warning: ${PROJECT_URL}usnmocr/apps.php does not list $VERSION yet" >&2
-fi
+echo "published and verified $APP $VERSION ($PLATFORM, $PLAN_CLASS)"
 # Recorded like build-boinc-images.sh records the server and bridge: the stack keeps the publish
 # job on the last published version once this is committed.
 tmp=$(mktemp)
 jq --indent 2 --arg a "$appver_image" '.images.appver = $a' "$BOINC_SETTINGS" > "$tmp" && mv "$tmp" "$BOINC_SETTINGS"
 echo "wrote images.appver to $BOINC_SETTINGS: commit it through a pull request, so the next provision-boinc.sh keeps the publish job on this version"
-echo "next: the end-to-end client test (contrib-compute/docs/app-release.md, \"Test client\")"
+echo "release registration and public health verified; volunteer execution is a separate acceptance measurement"

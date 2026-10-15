@@ -26,6 +26,12 @@ param registryName string
 @description('The shared registry\'s resource group.')
 param registryResourceGroup string
 
+@description('Existing runtime identity principal, resolved by provision-boinc.sh to make role-assignment IDs deterministic in What-If. Empty on first deployment.')
+param runtimePrincipalId string = ''
+
+@description('Existing secrets identity principal, resolved by provision-boinc.sh. Empty on first deployment.')
+param keyWriterPrincipalId string = ''
+
 @description('Server image (images/server), by digest, in the shared registry. Empty: deploy the base resources only.')
 param image string = ''
 
@@ -108,12 +114,15 @@ resource secretsIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-
   location: location
 }
 
+var runtimePrincipal = empty(runtimePrincipalId) ? identity.properties.principalId : runtimePrincipalId
+var secretsPrincipal = empty(keyWriterPrincipalId) ? secretsIdentity.properties.principalId : keyWriterPrincipalId
+
 module registry 'modules/registry.bicep' = {
   name: 'boinc-registry-pull'
   scope: resourceGroup(registryResourceGroup)
   params: {
     registryName: registryName
-    pullPrincipalIds: [ identity.properties.principalId, secretsIdentity.properties.principalId ]
+    pullPrincipalIds: [ runtimePrincipal, secretsPrincipal ]
   }
 }
 
@@ -138,8 +147,8 @@ module vault 'modules/keyvault.bicep' = {
     vaultName: names.vault
     endpointName: names.vaultEndpoint
     location: location
-    readerPrincipalId: identity.properties.principalId
-    writerPrincipalId: secretsIdentity.properties.principalId
+    readerPrincipalId: runtimePrincipal
+    writerPrincipalId: secretsPrincipal
     peSubnetId: network.outputs.peSubnetId
     dnsZoneId: network.outputs.vaultDnsZoneId
     operatorPrincipalIds: operatorPrincipalIds
@@ -246,9 +255,9 @@ module bridgeJob 'modules/bridge-job.bicep' = if (withApp) {
   }
 }
 
-// Project init (the schema and the project tree on the share) as its own manual job: the same
+// Project init (the schema and the project tree on the share) as its own lifecycle job: the same
 // mounts and settings as the bridge, which a per-run command override would drop. The
-// entrypoint refuses to initialise twice.
+// entrypoint skips a completed init and refuses to overwrite a partial tree or database.
 module initJob 'modules/bridge-job.bicep' = if (withApp) {
   name: 'init-job'
   dependsOn: [ registry ]
@@ -266,7 +275,7 @@ module initJob 'modules/bridge-job.bicep' = if (withApp) {
     masterHost: masterHost
     projectStorageName: app!.outputs.projectStorageName
     workloadProfileName: app!.outputs.workloadProfileName
-    command: [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--init-project' ]
+    command: [ '/usr/local/lib/usnm-boinc/entrypoint.sh', '--ensure-project' ]
   }
 }
 
@@ -345,6 +354,7 @@ module secretsJob 'modules/secrets-job.bicep' = if (withApp) {
 output appFqdn string = withApp ? app!.outputs.fqdn : ''
 output bridgeJobName string = withApp ? bridgeJob!.outputs.name : ''
 output goldBundleJobName string = withApp && goldBundle ? goldBundleJob!.outputs.name : ''
+output initJobName string = withApp ? initJob!.outputs.name : ''
 output keyVaultName string = vault.outputs.name
 output mysqlHost string = mysql.outputs.host
 output publishJobName string = withApp && !empty(publishImage) ? publishJob!.outputs.name : ''

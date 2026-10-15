@@ -24,11 +24,12 @@
 #   Each is created only if absent, and a failed lookup stops the job;
 # - code-sign-public-key: the PUBLIC half of the offline code-signing key, from the settings.
 #   The private half never comes here or to Azure.
-# The steps that stay by hand (project init, DNS and certificate, the app version and its
-# offline signing, the check) are printed at the end.
+# After deployment, ensure the secrets and project, register the applications, replay the
+# configured signed app version and check the public project configuration.
 #
-# --what-if changes nothing: Azure's preflight validation of the stack, then the template's
-# changes. Needs az 2.61+ and jq, signed in to the settings' subscription with Owner on the
+# --what-if changes no managed resources: Azure's stack-aware preview is retained for three
+# hours, including deletion, detachment and deny-setting changes. Needs az with stack-whatif
+# support and jq, signed in to the settings' subscription with Owner on the
 # BOINC group and on the shared registry and DNS zone's group (infra/names/<env>.json rg): the
 # stack writes role assignments in both, and the custom domain's records in the zone.
 set -euo pipefail
@@ -70,6 +71,17 @@ REGISTRY_RG=$(jq -er .rg "$names_file") || die "no rg in $names_file"
 DNS_ZONE=$(jq -r '.USNM_DNS_ZONE // empty' "$(dirname "$0")/../infra/env/$ENV_NAME.json")
 [ -z "$DNS_ZONE" ] || [[ $MASTER_HOST == *".$DNS_ZONE" ]] || die "$MASTER_HOST is not in the zone $DNS_ZONE"
 CERT_NAME="cert-${MASTER_HOST//./-}"
+identities=$(baz identity list --resource-group "$BOINC_RG" --query '[].{name:name,principalId:principalId}' -o json) ||
+  die "cannot resolve the existing managed identities for stack What-If"
+principal_id() {
+  jq -er --arg name "$1" '
+    map(select(.name == $name)) |
+    if length == 0 then ""
+    elif length == 1 and (.[0].principalId | test("^[0-9a-f-]{36}$")) then .[0].principalId
+    else error("invalid or duplicate managed identity principal") end' <<< "$identities"
+}
+runtime_principal=$(principal_id "usnm-boinc-id-$ENV_NAME") || die "invalid runtime identity"
+secrets_principal=$(principal_id "usnm-boinc-secrets-id-$ENV_NAME") || die "invalid secrets identity"
 domain_stage() {
   local record=${MASTER_HOST%".$DNS_ZONE"} state names
   [ -n "$DNS_ZONE" ] && [ -n "$SERVER_IMAGE" ] || { echo 0; return; }
@@ -86,12 +98,13 @@ domain_stage() {
 }
 # write_params STAGE: the deployment parameters, with the custom domain stage.
 write_params() {
-jq -n --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
+jq -n --arg runtime "$runtime_principal" --arg secrets "$secrets_principal" --argjson assess "$ASSESSMENT" --argjson gold "$GOLD_BUNDLE" --arg zone "$DNS_ZONE" --arg zrg "$REGISTRY_RG" --argjson stage "$1" --arg rn "$REGISTRY_NAME" --arg rg "$REGISTRY_RG" --arg env "$ENV_NAME" --arg l "$LOCATION" --arg i "$SERVER_IMAGE" --arg b "$BRIDGE_IMAGE" --arg p "$PUBLISH_IMAGE" \
   --arg h "$MASTER_HOST" --arg o "$OPERATOR_ID" --rawfile s "$BOINC_SETTINGS" '{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   contentVersion: "1.0.0.0",
   parameters: {
     env: {value: $env}, assessment: {value: $assess}, goldBundle: {value: $gold}, registryName: {value: $rn}, registryResourceGroup: {value: $rg}, location: {value: $l}, image: {value: $i}, bridgeImage: {value: $b}, publishImage: {value: $p},
+    runtimePrincipalId: {value: $runtime}, keyWriterPrincipalId: {value: $secrets},
     masterHost: {value: $h}, operatorPrincipalIds: {value: [$o]},
     codeSignPublicKey: {value: ($s | fromjson | .codeSignPublicKey)},
     dnsZoneName: {value: $zone}, dnsZoneResourceGroup: {value: $zrg}, customDomainStage: {value: $stage}
@@ -112,7 +125,7 @@ if [ -n "$SERVER_IMAGE" ]; then
   done
 fi
 
-stack_args=(--name "$BOINC_STACK" --resource-group "$BOINC_RG"
+stack_settings=(--resource-group "$BOINC_RG"
   --template-file "$BOINC_DIR/main.bicep" --parameters "@$work/params.json"
   --action-on-unmanage deleteResources --deny-settings-mode denyDelete
   # Private endpoints manage their own A records in the stack's DNS zones; denyDelete
@@ -120,12 +133,17 @@ stack_args=(--name "$BOINC_STACK" --resource-group "$BOINC_RG"
   --deny-settings-excluded-actions
   "Microsoft.Network/privateDnsZones/A/delete Microsoft.Network/privateEndpoints/privateDnsZoneGroups/delete"
   --description "usnewsmap BOINC server $ENV_NAME (scripts/provision-boinc.sh)")
+stack_args=(--name "$BOINC_STACK" "${stack_settings[@]}")
 
-echo "validating stack $BOINC_STACK (preflight; a guardrail denial fails here)"
-baz stack group validate "${stack_args[@]}" -o none || die "the stack $BOINC_STACK fails preflight"
-echo "stack $BOINC_STACK passes preflight; its changes (a deployment's what-if: it doesn't list what the stack deletes because the template dropped it):"
-baz deployment group what-if --resource-group "$BOINC_RG" --template-file "$BOINC_DIR/main.bicep" \
-  --parameters "@$work/params.json" || die "the what-if of $BOINC_STACK failed"
+az stack-whatif group create --help > /dev/null ||
+  die "this Azure CLI lacks stack-whatif; update Azure CLI before deploying"
+preview="$BOINC_STACK-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+stack_id="/subscriptions/$SUBSCRIPTION/resourceGroups/$BOINC_RG/providers/Microsoft.Resources/deploymentStacks/$BOINC_STACK"
+echo "previewing stack $BOINC_STACK (includes unmanaged resources and deny settings)"
+baz stack-whatif group create --name "$preview" --stack-id "$stack_id" \
+  "${stack_settings[@]}" --retention-interval PT3H --no-color ||
+  die "the stack-aware what-if of $BOINC_STACK failed; no deployment applied"
+echo "preview retained for three hours: /subscriptions/$SUBSCRIPTION/resourceGroups/$BOINC_RG/providers/Microsoft.Resources/deploymentStacksWhatIfResults/$preview"
 if $WHAT_IF; then
   [ -n "$SERVER_IMAGE" ] || echo "no images in $BOINC_SETTINGS yet: this deploys the base resources only; then scripts/build-boinc-images.sh --env $ENV_NAME"
   exit 0
@@ -134,67 +152,68 @@ fi
 echo "deploying stack $BOINC_STACK (custom domain stage $STAGE)"
 baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed"
 echo "deployed stack $BOINC_STACK"
-# Step the custom domain on: each pass enables the next stage, at most twice more.
-for _ in 1 2; do
+# Wait for DNS/certificate readiness instead of requiring another manual deployment.
+for _ in $(seq 1 60); do
   next=$(domain_stage) || exit 1
-  [ "$next" -gt "$STAGE" ] || break
+  if [ "$next" -le "$STAGE" ]; then
+    [ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || [ "$STAGE" -lt 2 ] || break
+    [ -n "$DNS_ZONE" ] && [ -n "$SERVER_IMAGE" ] || break
+    sleep 10
+    continue
+  fi
   STAGE=$next
   write_params "$STAGE"
   echo "deploying stack $BOINC_STACK again for custom domain stage $STAGE"
   baz stack group create "${stack_args[@]}" --yes -o none || die "the stack $BOINC_STACK failed at custom domain stage $STAGE"
+  [ "$STAGE" -lt 2 ] || break
 done
-[ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || echo "custom domain $MASTER_HOST: stage $STAGE of 2"
+[ -z "$DNS_ZONE" ] || [ -z "$SERVER_IMAGE" ] || [ "$STAGE" -eq 2 ] ||
+  die "custom domain $MASTER_HOST did not reach its bound-certificate state"
 
 if [ -z "$SERVER_IMAGE" ]; then
   echo "base resources deployed. Next: scripts/build-boinc-images.sh --env $ENV_NAME, commit $BOINC_SETTINGS, then run this again."
   exit 0
 fi
 
-# The secrets job, inside the VNet. It changes nothing when every secret exists.
-secrets_job=$(boinc_output secretsJobName)
-[ -n "$secrets_job" ] || die "the stack has no secretsJobName output"
-running=$(baz containerapp job execution list --name "$secrets_job" --resource-group "$BOINC_RG" \
-  --query "[?properties.status=='Running'].name" -o tsv) || die "could not list the executions of $secrets_job"
-[ -z "$running" ] || die "$secrets_job is already running ($running); wait for it, so two runs can't interleave the upload key pair"
-echo "starting $secrets_job (creates the absent secrets inside the VNet; values never leave it)"
-execution=$(baz containerapp job start --name "$secrets_job" --resource-group "$BOINC_RG" --query name -o tsv) ||
-  die "could not start $secrets_job"
-status=""
-for _ in $(seq 1 60); do
-  status=$(baz containerapp job execution show --name "$secrets_job" --resource-group "$BOINC_RG" \
-    --job-execution-name "$execution" --query properties.status -o tsv) || die "could not read $execution"
-  case "$status" in Succeeded | Failed | Stopped | Degraded) break ;; esac
-  sleep 10
-done
-[ "$status" = Succeeded ] ||
-  die "$secrets_job execution $execution ended $status: see its logs in Log Analytics (ContainerAppConsoleLogs_CL, ContainerJobName_s == \"$secrets_job\")"
-echo "secrets complete ($execution)"
+run_job() {
+  local job=$1 running execution status=""
+  [ -n "$job" ] || die "the stack is missing a required lifecycle job output"
+  running=$(baz containerapp job execution list --name "$job" --resource-group "$BOINC_RG" \
+    --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv) ||
+    die "could not list the executions of $job"
+  [ -z "$running" ] || die "$job already has an active execution ($running); refusing concurrent lifecycle changes"
+  execution=$(baz containerapp job start --name "$job" --resource-group "$BOINC_RG" --query name -o tsv) ||
+    die "could not start $job"
+  [ -n "$execution" ] || die "$job returned no execution"
+  echo "waiting for $job ($execution)"
+  for _ in $(seq 1 90); do
+    status=$(baz containerapp job execution show --name "$job" --resource-group "$BOINC_RG" \
+      --job-execution-name "$execution" --query properties.status -o tsv) || die "could not read $execution"
+    case "$status" in Succeeded | Failed | Stopped | Degraded) break ;; esac
+    sleep 10
+  done
+  [ "$status" = Succeeded ] ||
+    die "$job execution $execution ended $status; inspect its ContainerAppConsoleLogs_CL logs"
+  echo "$job complete ($execution)"
+}
 
-fqdn=$(boinc_output appFqdn)
-cat << STEPS
+run_job "$(boinc_output secretsJobName)"
+run_job "$(boinc_output initJobName)"
+scripts/start-boinc-bridge.sh --env "$ENV_NAME" --step register-apps --wait-mins 15
+if [ -n "$PUBLISH_IMAGE" ]; then
+  run_job "$(boinc_output publishJobName)"
+fi
 
-== Done by this script: the stack, the secrets. Next, by hand, once each:
+curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+  --connect-timeout 10 --max-time 15 "${PROJECT_URL}usnmocr/get_project_config.php" > "$work/project.xml" ||
+  die "the public BOINC project endpoint is not healthy"
+python3 - "$work/project.xml" "$PROJECT_URL" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
 
-1. Project init (creates the schema and the project tree on the share; refuses to run twice).
-   It runs the server image's entrypoint in its own job, with the bridge's share, database
-   and vault settings:
-       az containerapp job start --subscription $SUBSCRIPTION --resource-group $BOINC_RG --name usnm-boinc-init-caj-$ENV_NAME
-   Until it has run, the app answers its probe with a placeholder.
-
-2. Custom domain $MASTER_HOST: this script writes its DNS records into the app's zone and binds
-   it with a managed certificate (stage $STAGE of 2 above; run it again if short of 2). The master
-   URL cannot change after volunteers attach.
-
-3. App version and code signing (the private key stays on the signing host), one command:
-       scripts/boinc-app-release.sh --env $ENV_NAME --app usnm_ocr --version 1.0 --signing-host <host>
-   It needs the worker image in images.worker of $BOINC_SETTINGS and the PUBLIC key in
-   codeSignPublicKey (contrib-compute/docs/app-release.md).
-
-4. Check:
-       curl -fsS https://$fqdn/usnmocr/get_project_config.php
-       curl -fsS ${PROJECT_URL}usnmocr/get_project_config.php    (after step 2)
-   then submit one reserved job with the bridge job (contrib-compute/docs/design.md, section 4).
-
-5. Optional: the MySQL Entra administrator ($OPERATOR_LOGIN, $OPERATOR_ID) needs a server
-   identity with Directory Readers first, which a template cannot grant (design.md, 5.1).
-STEPS
+config = ET.parse(sys.argv[1]).getroot()
+if (config.tag != "project_config" or config.findtext("master_url") != sys.argv[2]
+        or config.findtext("web_stopped") != "0" or config.findtext("sched_stopped") != "0"):
+    raise SystemExit("BOINC project configuration is stopped, invalid or names a different master URL")
+PY
+echo "BOINC deployment ready: ${PROJECT_URL} (secrets, project, app registration and public health verified)"

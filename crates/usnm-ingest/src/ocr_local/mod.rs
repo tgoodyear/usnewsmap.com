@@ -48,6 +48,7 @@ pub mod pages;
 pub mod quarantine;
 pub mod replace;
 pub mod report;
+pub mod requests;
 pub mod rule;
 pub mod seed;
 pub mod sync;

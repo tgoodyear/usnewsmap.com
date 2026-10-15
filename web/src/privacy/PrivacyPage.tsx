@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
-        <p className="privacy-updated">Last updated 29 September 2026.</p>
+        <p className="privacy-updated">Last updated 15 October 2026.</p>
         <p>
           US News Map has no accounts, sets no cookies and saves nothing in your browser's storage. It shows no ads and
           runs no analytics or tracking scripts from other companies. Your browser's ordinary cache keeps copies of the
@@ -64,6 +64,12 @@ export default function PrivacyPage() {
           your browser sends Do Not Track or Global Privacy Control, your searches are not recorded. Only the site's
           maintainer can read this record. If a list of searches is ever published, it will include only searches made
           at least five times.
+        </p>
+        <p>
+          To prioritize pages for improved OCR, the server may also keep the IDs of eligible newspaper pages shown in
+          search results. It stores only page IDs grouped by day, not your search, filters, IP address or identity, and
+          does not collect them when Do Not Track or Global Privacy Control is enabled. These IDs are used by the OCR
+          system and the daily list is deleted after processing.
         </p>
         <p>
           To stop any one client from overloading the service, the server counts requests per IP address. It keeps a

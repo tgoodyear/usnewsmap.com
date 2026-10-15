@@ -74,9 +74,10 @@ for g in $PROJECT_GROUPS; do
   if grep -Fqx "$g" <<< "$groups"; then RG=$g; break; fi
 done
 if [ -n "$RG" ]; then
-  tags=$(az group show -n "$RG" --subscription "$SUBSCRIPTION" --query "[tags.experiment, tags.started]" -o tsv) ||
+  tags=$(az group show -n "$RG" --subscription "$SUBSCRIPTION" --query "[tags.experiment || '', tags.started || '']" -o tsv) ||
     die "can't read the tags of $RG"
-  IFS=$'\t' read -r experiment started <<< "$tags"
+  # TSV lists have one value per line; the last empty value may be stripped.
+  { IFS= read -r experiment; IFS= read -r started || :; } <<< "$tags"
 fi
 
 # The cost of the environment's groups, whatever their case in Cost

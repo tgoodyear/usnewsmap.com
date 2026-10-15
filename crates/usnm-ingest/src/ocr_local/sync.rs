@@ -13,8 +13,9 @@
 //!    that passes, to `ocr-local/alto/`, as it is checked; (2) one merged
 //!    part per title; (3) the outcomes and the import record; (4) delete the
 //!    sources with If-Match on the ETags read.
-//! 5. With a seed plan, top `ocr-bulk` up ([`super::seed`], Step 10).
-//! 6. Write `status/ocr-local.json` and the metrics.
+//! 5. Consume one closed day of hit requests, if configured (Step 12).
+//! 6. With a seed plan, top `ocr-bulk` up ([`super::seed`], Step 10).
+//! 7. Write `status/ocr-local.json` and the metrics.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,6 +63,8 @@ pub struct Options {
     pub chunk: usize,
     /// The most dead letters drained in one run.
     pub max_dead_letters: usize,
+    /// Maximum user-hit requests queued for one UTC day.
+    pub user_daily_max: usize,
     /// Put the rejects with this reason back first.
     pub from_quarantine: Option<String>,
     /// Stop starting imports after this.
@@ -76,6 +79,7 @@ impl Default for Options {
             max_parts: 2000,
             chunk: 200,
             max_dead_letters: 5000,
+            user_daily_max: 1000,
             from_quarantine: None,
             deadline: None,
             seed: super::seed::Options::default(),
@@ -92,6 +96,8 @@ pub struct Stores {
     pub out: Arc<dyn ObjectStore>,
     /// The exchange account's `ocr-quarantine`.
     pub quarantine: Arc<dyn ObjectStore>,
+    /// The API's daily, page-id-only requests (`None` disables Step 12).
+    pub requests: Option<Arc<dyn ObjectStore>>,
     /// The exchange account's queues.
     pub queue: Arc<dyn Queue>,
 }
@@ -110,6 +116,9 @@ pub struct Counts {
     pub cleaned: u64,
     /// Parts written again since they were listed; left for the next run.
     pub changed: u64,
+    /// Pages queued from user hit results.
+    #[serde(default)]
+    pub user_requests_queued: u64,
 }
 
 impl Counts {
@@ -129,6 +138,7 @@ impl Counts {
         }
         self.cleaned += other.cleaned;
         self.changed += other.changed;
+        self.user_requests_queued += other.user_requests_queued;
     }
 }
 
@@ -669,7 +679,41 @@ async fn run_locked(
         .await?;
     }
 
-    // Seeding, after the imports so the ledger has their outcomes.
+    // Hit requests, after imports so the ledger skips pages just imported.
+    let mut request_error = None;
+    if let Some(requests) = &stores.requests {
+        if !opts.deadline.is_some_and(|d| Instant::now() >= d) {
+            let mut report = super::requests::RequestReport::default();
+            let request_result = super::requests::process(
+                state,
+                super::requests::Stores {
+                    requests: requests.as_ref(),
+                    curated: stores.curated.as_ref(),
+                    reference: stores.reference.as_ref(),
+                    queue: &stores.queue,
+                },
+                lease,
+                super::requests::Options {
+                    daily_max: opts.user_daily_max,
+                    deadline: opts.deadline,
+                },
+                &mut report,
+            )
+            .await;
+            counts.user_requests_queued += report.queued as u64;
+            match request_result {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!(error = %format!("{e:#}"), "OCR hit requests failed; publishing imports' status before returning the error");
+                    request_error = Some(e);
+                }
+            }
+        } else {
+            tracing::info!("max runtime reached; OCR hit requests wait for the next run");
+        }
+    }
+
+    // Seeding follows hit requests so the priority queue sees user demand first.
     let seeded = if !opts.seed.on() {
         None
     } else if opts.deadline.is_some_and(|d| Instant::now() >= d) {
@@ -719,17 +763,18 @@ async fn run_locked(
         totals,
         queues,
         outstanding: {
-            // Seeding may have written queued rows, even when it failed:
-            // read the ledger again.
-            let reread = match seeded {
-                Some(_) => match ledger::load(stores.curated.as_ref()).await {
+            // Requests and seeding may have written queued rows: reread even
+            // when seeding is disabled or only some messages were sent.
+            let reread = if seeded.is_some() || stores.requests.is_some() {
+                match ledger::load(stores.curated.as_ref()).await {
                     Ok(l) => Some(l),
                     Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), "ledger not read again after seeding");
+                        tracing::warn!(error = %format!("{e:#}"), "ledger not read again after queueing");
                         None
                     }
-                },
-                None => None,
+                }
+            } else {
+                None
             };
             let after = reread.unwrap_or_else(|| {
                 let mut after = ctx.ledger.clone();
@@ -761,12 +806,19 @@ async fn run_locked(
         dead_letters_rejected = c.dead_letters_rejected.values().sum::<u64>(),
         cleaned = c.cleaned,
         changed = c.changed,
+        user_requests_queued = c.user_requests_queued,
         parts_seen = total_parts,
         parts_left = status.parts_left,
         oldest_age_s,
         "ocr sync finished"
     );
     // A failed seeding fails the run, once the imports' status is written.
+    if let Some(e) = request_error {
+        if let Some(Err(seed_error)) = &seeded {
+            tracing::error!(error = %format!("{seed_error:#}"), "bulk seeding also failed");
+        }
+        return Err(e.context("processing OCR hit requests"));
+    }
     if let Some(Err(e)) = seeded {
         return Err(e.context("seeding ocr-bulk"));
     }

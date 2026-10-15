@@ -170,6 +170,73 @@ pub fn record(r: &Read<'_>) -> RunRecord {
     }
 }
 
+/// A read that wrote nothing (13 §13.8.3): a timeout, crash, OOM kill,
+/// `convert` failure, failed upload or abandoned page.
+#[derive(Debug, Clone)]
+pub struct FailedRead<'a> {
+    pub run_id: &'a str,
+    pub doc_id: &'a str,
+    pub node: &'a str,
+    pub worker_version: &'a str,
+    pub ocr_source: &'a str,
+    /// The read's `ocr_engine`, or the one it would have had; empty when
+    /// the engine can't say.
+    pub ocr_engine: &'a str,
+    pub info: &'a ReadInfo,
+    /// `failed`, `timeout`, `bad_input` or `abandoned`.
+    pub status: &'a str,
+    /// 13 §13.4.6's kind (`engine_timeout`, `engine_crash`, `convert`,
+    /// ...), `output` for a failed upload or `budget` for an abandoned page.
+    pub error_kind: &'a str,
+    /// The engine call's start to the failure.
+    pub seconds_wall: f64,
+}
+
+/// The `tracing` target of [`emit_failed`]'s event.
+pub const ENGINE_RUN: &str = "ocr_engine_run";
+
+/// Send `r` to telemetry as an `ocr_engine_run` event with the runs
+/// record's Identity, Engine, Routing, Outcome and Resources fields and
+/// no page text. A warning, so it goes to Application Insights inside the
+/// page's span. Fields nothing measures yet (CPU, memory) are left out.
+pub fn emit_failed(r: &FailedRead<'_>) {
+    let (family, engine_version, profile, route_id, routing_version, contract) =
+        tag_fields(r.ocr_engine, r.ocr_source);
+    let seconds_wall = if r.seconds_wall.is_finite() {
+        r.seconds_wall.max(0.0)
+    } else {
+        0.0
+    };
+    tracing::warn!(
+        target: ENGINE_RUN,
+        run_id = r.run_id,
+        doc_id = r.doc_id,
+        node = r.node,
+        worker_version = r.worker_version,
+        contract,
+        ocr_engine = r.ocr_engine,
+        engine_id = %r.info.engine_id,
+        family = %family,
+        engine_version = %engine_version,
+        adapter = %r.info.adapter,
+        profile = %profile,
+        route_id = %route_id,
+        routing_version,
+        candidate_rank = 0u32,
+        selection = "route",
+        selected = false,
+        status = r.status,
+        error_kind = r.error_kind,
+        seconds_wall,
+        oom = r.error_kind == "engine_oom",
+        instance_restarts = 0u32,
+        model_load_seconds = r.info.model_load_seconds,
+        models_loaded = r.info.models_loaded,
+        cold_start = r.info.cold_start,
+        "ocr_engine_run"
+    );
+}
+
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }

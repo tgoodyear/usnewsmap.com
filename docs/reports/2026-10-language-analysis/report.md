@@ -17,9 +17,9 @@ The live index, version `pages-v20261006-2` (published 7 October 2026), holds 23
 | Spanish | 648,027 | 88 | LoC | 0.084; 4.1% | Standard | 26% of pages in Spanish titles are English |
 | French | 201,287 | 49 | LoC | 0.075; 10.3% | Standard | High damage in the 1900s and 1910s |
 | Polish | 169,132 | 21 | LoC | 0.178; 16.8% | Standard | High in every decade; hand check |
-| Italian | 136,111 | 23 | LoC | 0.114; 4.1% | Standard | 35% of pages in Italian titles are Spanish |
+| Italian | 136,111 | 23 | LoC | 0.114; 4.1% | Standard | 3,893 sampled pages detected as Spanish: *La Gaceta* 3,877, *El Federal* 15, *Boletin Obrero* 1; not manually verified |
 | Yiddish | 132,828 | 6 | LoC | 0.160; 13.8% | Hebrew script; old and modern spellings are different words | Word list may not fit older spelling |
-| Danish | 87,917 | 4 | LoC | 0.146; 20.4% | Standard | 67% of pages in Danish titles are English; high damage 1880s to 1910s |
+| Danish | 87,917 | 4 | LoC | 0.146; 20.4% | Standard | 5,827 sampled pages detected as English: *St. Croix Avis* 5,823, *Danskeren* 3, *St. Paul Tidende* 1; not manually verified |
 | Czech | 61,929 | 10 | LoC | 0.212; 39.2% | Standard | High, falling over time; hand check |
 | Norwegian | 49,414 | 9 | LoC | 0.084; 3.0% | Standard | Low damage in every decade |
 | Serbian | 48,710 | 1 | LoC | 0.257; 52.7% | Cyrillic and Latin spellings are different words | Highest damage; hand check |
@@ -172,7 +172,7 @@ In titles that list French first, 79.1% of pages are French and 18.2% English. `
 
 The 23 titles that list Italian hold 136,111 pages. In the sample, 8,376 pages are Italian: median damage 0.114, 60% damaged and 4.1% badly damaged. Damage is 0.12 to 0.15 from the 1890s to the 1910s and 0.06 to 0.07 from the 1920s on.
 
-In titles that list Italian first, only 59.9% of pages are Italian; 35.5% are Spanish (3,893 sampled pages) and 2.3% English. Tampa has four titles that list Italian, but which titles hold the Spanish pages is unchecked. `ferrovia` finds 10,235 pages in 21 Italian titles.
+In titles that list Italian first, only 59.9% of pages are Italian; 35.5% are Spanish (3,893 sampled pages) and 2.3% English. The 15 October follow-up joined the audit's per-page detections to its snapshot catalog: the 3,893 Spanish detections are in three Tampa papers, *La Gaceta* (`sn86002403`, 3,877), *El Federal* (`sn95047433`, 15), and *Boletin Obrero* (`sn95047434`, 1). The other 13 Italian-first titles in the sample have no Spanish detections. These are detector assignments in the 10% sample, not full-index counts or manually verified page languages (see Mixed-language title attribution). `ferrovia` finds 10,235 pages in 21 Italian titles.
 
 ## Polish
 
@@ -192,7 +192,7 @@ One title lists Hebrew: the *Rhode Island Israelite* (Providence), 128 pages, ca
 
 ## Danish, Norwegian, Swedish and Icelandic
 
-**Danish.** Four titles, 87,917 pages, in St. Paul, Minn., St. Paul, Neb. (*Stjernen*), Christiansted in the Virgin Islands, and Neenah, Wis. In titles that list Danish first, only 30.9% of sampled pages are Danish and 66.8% English (5,827 pages); which titles hold the English pages is unchecked. The 2,693 Danish pages have median damage 0.146, with 64% damaged and 20.4% badly damaged. Damage rises from 0.108 in the 1870s to 0.221 in the 1890s, stays near 0.155 in the 1900s and 1910s, and is 0.066 in the 1920s, the same shape as German. *Stjernen* has median damage 0.28, with 68% of 274 pages badly damaged. `hvad` finds 18,089 pages in all four titles.
+**Danish.** Four titles, 87,917 pages, in St. Paul, Minn., St. Paul, Neb. (*Stjernen*), Christiansted in the Virgin Islands, and Neenah, Wis. In titles that list Danish first, only 30.9% of sampled pages are Danish and 66.8% English (5,827 pages). The 15 October follow-up attributes those English detections to *St. Croix Avis* (`sn84037526`, 5,823), *Danskeren* (`sn86086559`, 3), and *St. Paul Tidende* (`sn90059649`, 1); *Stjernen* (`2019270503`) contributes none. These are detector assignments in the 10% sample, not full-index counts or manually verified page languages (see Mixed-language title attribution). The 2,693 Danish pages have median damage 0.146, with 64% damaged and 20.4% badly damaged. Damage rises from 0.108 in the 1870s to 0.221 in the 1890s, stays near 0.155 in the 1900s and 1910s, and is 0.066 in the 1920s, the same shape as German. *Stjernen* has median damage 0.28, with 68% of 274 pages badly damaged. `hvad` finds 18,089 pages in all four titles.
 
 **Norwegian.** Nine titles, 49,414 pages, in Minnesota, Iowa and South Dakota. 98.6% of sampled pages in titles that list Norwegian first are Norwegian. The 4,929 Norwegian pages have median damage 0.084 (31% damaged, 3.0% badly), between 0.076 and 0.094 in every decade from the 1870s to the 1920s. The one bad title is the *Sisseton Posten* (Effington, S.D.), at 0.27. `jernbane` finds 11,365 pages in the nine titles.
 
@@ -333,6 +333,64 @@ For all five the status is unknown. The next step is a look at a few pages of ea
 - **Other collections were checked only by searching their public websites,** and the coverage table reflects what those sites showed on 4, 5 and 7 October 2026. A search that finds nothing doesn't show that a site lacks the text.
 - **Example search counts** are page counts on `pages-v20261006-2` on 7 October 2026. They will change with new batches and with American Stories' text.
 
+# Mixed-language title attribution
+
+**15 October follow-up ([#326](https://github.com/tgoodyear/usnewsmap.com/issues/326#issuecomment-6197141003)).** The Italian and Danish title counts above come from the existing 7 October audit export, joined by LCCN to the title catalog for the same index version, not from the audit's ranked subsets of titles. In Azure account `stusnmdffapzy`, the sources are:
+
+| Container | Blob | Bytes | Last modified (UTC) |
+|-----------|-----------------------------------------|----------|---------------------|
+| curated | `audit/ocr-quality-v2-pages-v20261003-1-10pct-pages.csv.gz` | 51,717,530 | 2026-10-07 05:42:21 |
+| reference | `pages-v20261003-1/titles.json` | 1,318,915 | 2026-10-04 00:46:11 |
+
+The SHA-256 hashes, in the same order, are:
+
+```text
+ca9890d21db07108f90454e1b16887a18ee4b962d54329ce7cdb409f8e373514
+92368e94c4dc921b3fc014eed965a86501b6b71e2a31c2962b666d63f058cb81
+```
+
+The blobs were downloaded read-only using `az storage blob download --account-name stusnmdffapzy --auth-mode login`, with the container and blob names above. With the downloads saved as `pages.csv.gz` and `titles.json`, the following reproduces the title attribution without reading newspaper text:
+
+```python
+import collections
+import csv
+import gzip
+import json
+
+with open("titles.json") as source:
+    titles = {t["lccn"]: t for t in json.load(source)}
+counts = collections.Counter()
+totals = collections.Counter()
+rows = 0
+with gzip.open("pages.csv.gz", "rt") as source:
+    for page in csv.DictReader(source):
+        rows += 1
+        first = page["title_language"]
+        if first not in ("dan", "ita"):
+            continue
+        title = titles[page["lccn"]]
+        assert title["languages"] == page["title_languages"].split()
+        target = "eng" if first == "dan" else "spa"
+        if page["decision"] == "detected" and page["language"] == target:
+            counts[first, page["lccn"]] += 1
+            totals[first] += 1
+assert rows == 2371337 - 2426
+assert totals == {"dan": 5827, "ita": 3893}
+for (first, lccn), count in sorted(counts.items()):
+    print(first, lccn, titles[lccn]["name"], count)
+```
+
+All 2,368,911 exported rows were parsed, matching the audit's 2,371,337 sampled pages minus the 2,426 Japanese-title pages omitted from this file. All four Danish-first and all 16 Italian-first sampled titles matched the historical catalog, with no catalog-language mismatches or duplicate page IDs within those cohorts. Every decision bucket reconciled to the committed `data/ocr-quality-v2-10pct.jsonl` language-agreement table:
+
+| First catalog language | Detected language counts | Mixed (separate) | Undetermined | No text | Total sampled pages |
+|------------------------|-----------------------------------------|----------------------------------|--------------|---------|---------------------|
+| Danish | Danish 2,693; English 5,827 | Danish/English 27 | 181 | 1 | 8,729 |
+| Italian | Italian 6,571; Spanish 3,893; English 252 | Spanish/English 109; Italian/English 37 | 108 | 143 | 11,113 |
+
+The selections use the **first-listed catalog language**, matching the report's original claims, not every title that lists Danish or Italian anywhere. Mixed, undetermined and no-text decisions do not enter the 5,827 and 3,893 counts. The snapshot catalog lists *St. Croix Avis* as Danish/English, *La Gaceta* as Italian/Spanish/English, and *El Federal* and *Boletin Obrero* as Italian/Spanish.
+
+**Review limit.** This follow-up checked the catalog join and exported detector records, not the language printed on the pages. Bounded attempts to retrieve representative LoC OCR text timed out, and an additional item request returned HTTP 403; no text or images were successfully reviewed. In particular, the sole English detection in *St. Paul Tidende* (`sn90059649_1916-10-13_ed-1_seq-7`) has only 55 words. A human content/image check remains open. None of these sampled detector counts should be described as manually verified languages or extrapolated to whole-corpus page totals.
+
 # Open questions
 
 1. **Japanese text at the sites we could not search,** checked by hand in a browser: search 日本 within *Topaz Times* on Utah Digital Newspapers, *Granada Pioneer* on CHNC, *Heart Mountain Sentinel* on Wyoming Newspapers (and see whether it has the Japanese edition), ASU's Japanese *Poston Chronicle*, and one Densho camp paper.
@@ -340,7 +398,7 @@ For all five the status is unknown. The next step is a look at a few pages of ea
 3. **A Japanese reader's review** of the reference crops and a sample of our OCR.
 4. **The Japanese index count:** the release read 10,414 pages, and the index has 10,305.
 5. **Typefaces of the damaged German pages:** how many are Fraktur, and how much a Fraktur model recovers.
-6. **Which titles hold the English pages** of the Danish titles and the Spanish pages of the Italian titles.
+6. **Hand-check the mixed-language detections.** The title attribution is resolved above; the detector's page-language assignments have not been manually verified, particularly the 55-word *St. Paul Tidende* page.
 7. **Why American Stories covers only 47% of 1925's sampled pages.**
 
 # Sources

@@ -71,8 +71,8 @@ The release script and `scripts/boinc/install.py` support two distribution kinds
 
 ## What it needs
 
-- The server and bridge images in `infra/boinc/env/<env>.json` (`scripts/build-boinc-images.sh`)
-  and the project initialised (`usnm-boinc-init-caj-<env>`).
+- The server and bridge images in `infra/boinc/env/<env>.json` (`scripts/build-boinc-images.sh`).
+  Provisioning ensures the project is initialised automatically.
 - `codeSignPublicKey` in the settings: the public half of the key on the signing host.
 - `images.worker`: the public GHCR worker image, by digest (below).
 - SSH as root to the signing host, with the key's dataset unlocked by hand:
@@ -116,17 +116,30 @@ flowchart LR
    `check_appver.py`. The build fails on a `.sig` with no staged file, a staged file without a
    `.sig`, anything in the signatures that isn't a `.sig`, a `version.xml` that names a file
    that wasn't staged, or a signature that `crypt_prog -verify` rejects against
-   `codeSignPublicKey`. `provision-boinc.sh --publish-image <digest>` deploys the manual job
+   `codeSignPublicKey`. `provision-boinc.sh --publish-image <digest>` deploys and runs the job
    `usnm-boinc-publish-caj-<env>` with that image (it has the share, the database and the vault,
-   as the init job does), and the script starts it. The job copies the version to the share,
+   as the init job does). The job copies the version to the share,
    installs the app's templates, copies the committed project metadata, runs `bin/xadd`
-   to register platforms, and runs `bin/update_versions --noconfirm`. A platform already on
+   to register platforms, and runs the unmodified `bin/update_versions --noconfirm` in a
+   temporary layout containing only the requested app/version/platform. The configuration
+   still names the real download and key directories. It explicitly verifies the exact
+   database app-version row before notifying the feeder: PHP `die(string)` can otherwise
+   exit zero even though registration failed. A platform already on
    the share must be identical, byte for byte (`diff -r`): a rerun with changed bytes is refused,
    because versions are immutable and a change is a new version. The
    script then writes the image's digest to `images.appver` in the settings; commit it. Every
-   `provision-boinc.sh` deploys the publish job on `images.appver`, so the job stays and always
+   `provision-boinc.sh` deploys and runs the publish job on `images.appver`, so the job stays and always
    holds the last published version (rerunning it is safe: it changes nothing when the version
-   is already there). `--publish-image` overrides it for one deployment.
+   is already there). `--publish-image` overrides it for one deployment. Provisioning also
+   ensures secrets, skips a completed project initialization, registers apps and checks the
+   public project configuration. It refuses to overwrite partial project data or an existing
+   database, and never prints a manual bootstrap checklist.
+
+Deployment previews use GA `az stack-whatif group create`, with the same unmanage and deny
+settings as deployment, three-hour retention and Azure's baseline-based noise reduction.
+Existing managed-identity principal IDs are resolved before template evaluation so role
+assignment IDs remain unchanged and deterministic. Preview results still require review;
+noise reduction is not evidence that all differences are real or safe.
 
 ## Test client
 
@@ -174,6 +187,9 @@ creates a disposable account when `projectAuthenticator` is empty, and runs
 
 UNVERIFIED against a live deployment: cloud-init package installation, GPU detection by
 `boinc-client`, workunit execution on the VM, and end-to-end result assimilation.
+Automated release-to-client acceptance orchestration is tracked in
+[#548](https://github.com/tgoodyear/usnewsmap.com/issues/548); app registration and public
+health are not a substitute for execution and canonical assimilation.
 
 ## Mac app versions
 
