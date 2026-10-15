@@ -8,7 +8,10 @@
 //! from, never its content. A source over its size limit isn't read, so
 //! only its record is written. `ocr-sync --from-quarantine --reason <r>`
 //! puts the rejects with that reason back where they came from after a fix,
-//! for the next pass to check again.
+//! for the next pass to check again. A part's record names the ALTO and runs
+//! record kept with it; a replay puts those back before the part, and keeps
+//! all of them in quarantine when one can't be put back, so a part never
+//! returns without its runs record and passes as one from an older worker.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,6 +51,10 @@ pub struct Record {
     /// Where the content is in `ocr-quarantine`; none when it wasn't read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// For a part: the sources of the ALTO and runs record kept with it,
+    /// which a replay needs. Empty in records written before them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub companions: Vec<String>,
 }
 
 /// One reject to keep.
@@ -60,6 +67,8 @@ pub struct Item {
     pub size: u64,
     pub created: Option<DateTime<Utc>>,
     pub content: Option<Vec<u8>>,
+    /// For a part, see [`Record::companions`].
+    pub companions: Vec<String>,
 }
 
 /// Where a reject's content goes: under its source's own path when that
@@ -107,6 +116,7 @@ pub async fn put(quarantine: &dyn ObjectStore, run: &str, item: Item) -> anyhow:
         run: run.to_owned(),
         at: Utc::now(),
         content,
+        companions: item.companions,
     };
     quarantine
         .put_new(
@@ -128,14 +138,29 @@ pub struct Replayed {
     pub dead_letters: usize,
     /// Records with no content to put back (over a size limit).
     pub without_content: usize,
+    /// Parts kept in quarantine with their companions because one of those
+    /// can't be put back: its record or content is gone, or it had none.
+    pub incomplete: usize,
     /// Sources already back in `ocr-out` with the same bytes.
     pub already_there: usize,
     /// Sources whose path in `ocr-out` holds other bytes: kept in quarantine.
     pub conflicts: usize,
 }
 
+/// A record to replay, with where it is.
+struct Entry {
+    path: String,
+    record: Record,
+}
+
 /// Put every reject with `reason` back where it came from, and remove it
 /// from quarantine.
+///
+/// Dead letters, and ALTO and runs records no part names, go one by one.
+/// Then each part with its companions: all their contents are read first,
+/// the companions are put back before the part (as a node writes them, so
+/// a run stopped midway never leaves a part without its runs record), and
+/// the part's entries leave quarantine before theirs.
 pub async fn replay(
     quarantine: &dyn ObjectStore,
     out: &dyn ObjectStore,
@@ -143,70 +168,175 @@ pub async fn replay(
     reason: &str,
 ) -> anyhow::Result<Replayed> {
     let mut report = Replayed::default();
-    let mut runs = Vec::new();
+    let mut record_paths = Vec::new();
     let mut etags: HashMap<String, String> = HashMap::new();
     for info in quarantine.list_info(TOP).await? {
         if info.path.ends_with(".reason.json") {
-            runs.push(info.path.clone());
+            record_paths.push(info.path.clone());
         }
         etags.insert(info.path, info.etag);
     }
-    for record_path in runs {
-        let Some(body) = quarantine.get(&record_path).await? else {
+    let mut entries = Vec::new();
+    for path in record_paths {
+        let Some(body) = quarantine.get(&path).await? else {
             continue;
         };
         let Ok(record) = serde_json::from_slice::<Record>(&body) else {
-            tracing::warn!(record = %record_path, "unreadable quarantine record; left as it is");
+            tracing::warn!(record = %path, "unreadable quarantine record; left as it is");
             continue;
         };
-        if record.reason != reason {
+        if record.reason == reason {
+            entries.push(Entry { path, record });
+        }
+    }
+
+    // A part's companions: the ALTO and runs records of its run.
+    let by_source: HashMap<(&str, &str), usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e.record.kind.as_str(), ALTO | RUNS))
+        .map(|(i, e)| ((e.record.run.as_str(), e.record.source.as_str()), i))
+        .collect();
+    let mut claimed = vec![false; entries.len()];
+    let mut groups: Vec<(usize, Vec<Option<usize>>)> = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        if e.record.kind != PART {
             continue;
         }
-        let Some(content) = &record.content else {
-            report.without_content += 1;
+        let companions: Vec<Option<usize>> = e
+            .record
+            .companions
+            .iter()
+            .map(|s| by_source.get(&(e.record.run.as_str(), s.as_str())).copied())
+            .collect();
+        for c in companions.iter().flatten() {
+            claimed[*c] = true;
+        }
+        groups.push((i, companions));
+    }
+
+    for (i, e) in entries.iter().enumerate() {
+        if e.record.kind == PART || claimed[i] {
+            continue;
+        }
+        if e.record.kind == DEAD_LETTER {
+            replay_dead_letter(quarantine, queue, &etags, e, reason, &mut report).await?;
+        } else if matches!(e.record.kind.as_str(), ALTO | RUNS) {
+            replay_group(quarantine, out, &etags, &[e], reason, &mut report).await?;
+        }
+    }
+    for (part, companions) in groups {
+        let Some(mut members) = companions
+            .iter()
+            .map(|c| c.map(|c| &entries[c]))
+            .collect::<Option<Vec<&Entry>>>()
+        else {
+            let source = &entries[part].record.source;
+            tracing::warn!(%source, "a companion's quarantine record is gone; part kept in quarantine");
+            report.incomplete += 1;
             continue;
         };
-        let Some(bytes) = quarantine.get(content).await? else {
-            continue;
-        };
-        match record.kind.as_str() {
-            DEAD_LETTER => {
-                let text = String::from_utf8(bytes).context("dead letter isn't UTF-8")?;
-                queue.send(DEADLETTER, &text).await?;
-                report.dead_letters += 1;
-            }
-            PART | ALTO | RUNS => {
-                let ct = if record.kind == ALTO {
-                    "application/xml"
-                } else {
-                    "application/vnd.apache.parquet"
-                };
-                if out.put_new(&record.source, bytes.clone(), ct).await? {
-                    match record.kind.as_str() {
-                        PART => report.parts += 1,
-                        ALTO => report.alto += 1,
-                        _ => report.runs += 1,
-                    }
-                } else if out.get(&record.source).await?.as_deref() == Some(bytes.as_slice()) {
-                    report.already_there += 1;
-                } else {
-                    // Something else is at the source path now: keep the
-                    // reject for inspection.
-                    tracing::warn!(source = %record.source, record = %record_path, "source path holds other bytes; reject kept in quarantine");
-                    report.conflicts += 1;
-                    continue;
-                }
-            }
-            _ => continue,
-        }
-        for p in [content.as_str(), record_path.as_str()] {
-            if let Some(etag) = etags.get(p) {
-                quarantine.delete_if_match(p, etag).await?;
-            }
-        }
-        tracing::info!(source = %record.source, kind = %record.kind, reason, "replayed from quarantine");
+        members.push(&entries[part]);
+        replay_group(quarantine, out, &etags, &members, reason, &mut report).await?;
     }
     Ok(report)
+}
+
+async fn replay_dead_letter(
+    quarantine: &dyn ObjectStore,
+    queue: &Arc<dyn Queue>,
+    etags: &HashMap<String, String>,
+    e: &Entry,
+    reason: &str,
+    report: &mut Replayed,
+) -> anyhow::Result<()> {
+    let Some(content) = &e.record.content else {
+        report.without_content += 1;
+        return Ok(());
+    };
+    let Some(bytes) = quarantine.get(content).await? else {
+        return Ok(());
+    };
+    let text = String::from_utf8(bytes).context("dead letter isn't UTF-8")?;
+    queue.send(DEADLETTER, &text).await?;
+    report.dead_letters += 1;
+    remove(quarantine, etags, e).await?;
+    tracing::info!(source = %e.record.source, kind = %e.record.kind, reason, "replayed from quarantine");
+    Ok(())
+}
+
+/// Put `members` back in `ocr-out` in order, all or none of them: the last
+/// is the part when there is one. Their quarantine entries go only once
+/// every one is back, last member first.
+async fn replay_group(
+    quarantine: &dyn ObjectStore,
+    out: &dyn ObjectStore,
+    etags: &HashMap<String, String>,
+    members: &[&Entry],
+    reason: &str,
+    report: &mut Replayed,
+) -> anyhow::Result<()> {
+    let lead = members.last().expect("a group has a member");
+    let mut contents = Vec::with_capacity(members.len());
+    for e in members {
+        let bytes = match &e.record.content {
+            Some(c) => quarantine.get(c).await?,
+            None => None,
+        };
+        let Some(bytes) = bytes else {
+            if std::ptr::eq(*e, *lead) {
+                if e.record.content.is_none() {
+                    report.without_content += 1;
+                }
+            } else {
+                tracing::warn!(source = %lead.record.source, companion = %e.record.source, "a companion has no content to put back; part kept in quarantine");
+                report.incomplete += 1;
+            }
+            return Ok(());
+        };
+        contents.push(bytes);
+    }
+    for (e, bytes) in members.iter().zip(contents) {
+        let ct = if e.record.kind == ALTO {
+            "application/xml"
+        } else {
+            "application/vnd.apache.parquet"
+        };
+        if out.put_new(&e.record.source, bytes.clone(), ct).await? {
+            match e.record.kind.as_str() {
+                PART => report.parts += 1,
+                ALTO => report.alto += 1,
+                _ => report.runs += 1,
+            }
+        } else if out.get(&e.record.source).await?.as_deref() == Some(bytes.as_slice()) {
+            report.already_there += 1;
+        } else {
+            // Something else is at the source path now: keep the rejects
+            // for inspection, and the part out of `ocr-out`.
+            tracing::warn!(source = %e.record.source, record = %e.path, "source path holds other bytes; reject kept in quarantine");
+            report.conflicts += 1;
+            return Ok(());
+        }
+    }
+    for e in members.iter().rev() {
+        remove(quarantine, etags, e).await?;
+        tracing::info!(source = %e.record.source, kind = %e.record.kind, reason, "replayed from quarantine");
+    }
+    Ok(())
+}
+
+/// Remove a replayed reject's content, then its record.
+async fn remove(
+    quarantine: &dyn ObjectStore,
+    etags: &HashMap<String, String>,
+    e: &Entry,
+) -> anyhow::Result<()> {
+    for p in e.record.content.iter().chain(std::iter::once(&e.path)) {
+        if let Some(etag) = etags.get(p.as_str()) {
+            quarantine.delete_if_match(p, etag).await?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

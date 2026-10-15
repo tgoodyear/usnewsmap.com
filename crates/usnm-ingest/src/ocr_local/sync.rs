@@ -498,6 +498,7 @@ async fn drain_batch(
                         size: msg.text.len() as u64,
                         created: None,
                         content: Some(msg.text.clone().into_bytes()),
+                        companions: Vec::new(),
                     },
                 )
                 .await?;
@@ -1103,6 +1104,13 @@ async fn quarantine_part(
         }
         None => None,
     };
+    // Named in the part's record first, so a stop before theirs are written
+    // still keeps the part from a replay without them.
+    let companions = alto
+        .iter()
+        .chain(runs.iter())
+        .map(|(a, _)| a.path.clone())
+        .collect();
     quarantine::put(
         stores.quarantine.as_ref(),
         run,
@@ -1114,6 +1122,7 @@ async fn quarantine_part(
             size: part.size,
             created: to_utc(part.created),
             content,
+            companions,
         },
     )
     .await?;
@@ -1138,6 +1147,7 @@ async fn quarantine_part(
                 size: a.size,
                 created: to_utc(a.created),
                 content,
+                companions: Vec::new(),
             },
         )
         .await?;
