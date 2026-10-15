@@ -1059,6 +1059,7 @@ impl Tesseract {
         opts: TesseractOptions,
         catalog: usnm_ocr_route::Catalog,
     ) -> anyhow::Result<Self> {
+        usnm_ocr_route::check_tesseract_psm(u64::from(opts.psm))?;
         let mut sandbox = None;
         if let Runner::Podman {
             image,
@@ -1529,6 +1530,19 @@ mod tests {
         }
         assert_eq!(route("deu", &lock).as_deref(), Some("frak2021"));
         assert_eq!(models_digest(MODELS_LOCK, "frk"), None);
+    }
+
+    #[tokio::test]
+    async fn osd_modes_fail_before_tesseract_can_start() {
+        for psm in [0, 1, 12] {
+            let result = Tesseract::detect(TesseractOptions {
+                runner: Runner::Host("must-not-run-tesseract".into()),
+                psm,
+                ..Default::default()
+            })
+            .await;
+            assert!(format!("{:#}", result.unwrap_err()).contains("uncataloged osd.traineddata"));
+        }
     }
 
     #[test]

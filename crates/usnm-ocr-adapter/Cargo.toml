@@ -12,6 +12,7 @@ path = "src/bin/usnm-ocr-adapter-tesseract-text.rs"
 
 [dependencies]
 usnm-alto.workspace = true
+usnm-ocr-route.workspace = true
 usnm-ocr-contract = { workspace = true, default-features = true }
 anyhow.workspace = true
 clap.workspace = true

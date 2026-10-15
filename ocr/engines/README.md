@@ -73,3 +73,7 @@ licences of every candidate and cascade target in the route file; `auto`
 checks every profile of that engine. The default route file is
 `ocr/routing/routes.toml`. Full matching and node-capability/lock validation
 are later design steps, not claimed by this command yet.
+
+Tesseract modes `--psm 0`, `1` and `12` implicitly read `osd.traineddata`.
+Both the direct worker and text adapter refuse these modes until OSD is
+cataloged, gated and included in provenance. The default mode 3 is unchanged.

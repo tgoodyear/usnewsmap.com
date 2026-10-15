@@ -147,6 +147,8 @@ impl Reader for Tesseract {
         deadline: Instant,
     ) -> Result<Reading, ReadError> {
         let psm = req.options.get("psm").and_then(|v| v.as_u64()).unwrap_or(3);
+        usnm_ocr_route::check_tesseract_psm(psm)
+            .map_err(|e| ReadError::Unsupported(e.to_string()))?;
         let mut cmd = Command::new(&self.bin);
         cmd.arg(image)
             .arg("stdout")
@@ -256,4 +258,40 @@ fn main() -> anyhow::Result<()> {
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
     serve(&hello, &mut reader, &Root(args.root), stdin, stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osd_modes_fail_before_spawning_tesseract() {
+        let mut engine = Tesseract {
+            bin: "must-not-run-tesseract".into(),
+            threads: 1,
+        };
+        for psm in [0, 1, 12] {
+            let req = PageRequest {
+                deadline_ms: 1000,
+                image: usnm_ocr_contract::engine::Image {
+                    dpi: 300,
+                    dpi_source: usnm_ocr_contract::engine::DpiSource::Assumed,
+                    height: 100,
+                    width: 100,
+                    path: "/in/test.jpg".into(),
+                    sha256: "ab".repeat(32),
+                },
+                language: "eng".into(),
+                options: [("psm".into(), serde_json::json!(psm))].into(),
+                out: "/out/test/".into(),
+                profile: "eng".into(),
+                run_id: "test".into(),
+                script: None,
+            };
+            assert!(
+                matches!(engine.read(&req, Path::new("must-not-read-image"), Instant::now()),
+                Err(ReadError::Unsupported(message)) if message.contains("uncataloged osd.traineddata"))
+            );
+        }
+    }
 }

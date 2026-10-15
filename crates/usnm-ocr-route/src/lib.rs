@@ -11,6 +11,18 @@ pub const ENGINES_TOML: &str = include_str!("../../../ocr/engines/engines.toml")
 pub static ENGINES: LazyLock<Catalog> =
     LazyLock::new(|| Catalog::parse(ENGINES_TOML).expect("built-in engines.toml"));
 
+/// OSD-enabled modes implicitly read a second model, absent from the current
+/// catalog and provenance. Do not permit them until that dependency is tracked.
+pub fn check_tesseract_psm(psm: u64) -> anyhow::Result<()> {
+    if matches!(psm, 0 | 1 | 12) {
+        bail!("Tesseract psm {psm} uses the uncataloged osd.traineddata model");
+    }
+    if psm > 13 {
+        bail!("invalid Tesseract psm {psm}");
+    }
+    Ok(())
+}
+
 /// Code and weights use exactly the same attribution fields. Presence of
 /// `restricted` or `undecided` is a veto, even when the string is empty.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -262,6 +274,16 @@ candidates = [{ engine = "tesseract-5.5", profile = "eng" }]
         let result = c.check_profile("tesseract-5.5", "eng");
         assert_eq!(result.is_ok(), expected, "{result:?}");
         assert_eq!(c.check_routes(ROUTES).is_ok(), expected);
+    }
+
+    #[test]
+    fn osd_enabled_modes_are_refused_until_cataloged_and_recorded() {
+        for psm in 0..=14 {
+            assert_eq!(
+                check_tesseract_psm(psm).is_ok(),
+                !matches!(psm, 0 | 1 | 12 | 14)
+            );
+        }
     }
 
     #[test]

@@ -171,6 +171,11 @@ async fn the_real_tesseract_as_a_text_only_engine() {
     }
     let dir = tempfile::tempdir().unwrap();
     let e = engine(Path::new("tesseract"), dir.path(), Duration::from_secs(60)).await;
+    if !e.can_read("eng") {
+        eprintln!("installed Tesseract is not cleared by the production catalog; skipping");
+        e.shutdown().await;
+        return;
+    }
     let image = dir.path().join("line.pgm");
     std::fs::write(&image, usnm_ocr_worker::testimg::text_image("HELLO")).unwrap();
     let mut out = e.ocr(&image, "eng", dir.path()).await.unwrap();
