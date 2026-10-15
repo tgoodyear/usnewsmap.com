@@ -14,10 +14,12 @@
 #
 # Exit status: 0 when the environment holds nothing, or is up with an
 # experiment tag (one older than 7 days is a warning); 1 when anything of it
-# exists without the tag, or on an error; 2 for a usage error.
+# exists without the tag, or on an error; 2 for a usage error. Cost query
+# throttling is retried (up to 4 attempts, at most 60 seconds of backoff);
+# exhausted throttling leaves cost unknown without affecting this status.
 #
 # Needs az signed in with Reader on the subscription (Cost Management Reader
-# too for the cost, which is otherwise left out), and jq.
+# too for the cost, which is otherwise left out), jq, and python3.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 TARGET=dev SUBSCRIPTION=""
@@ -88,9 +90,51 @@ body=$(jq -n --arg from "$from" --arg to "$now" '{
   type: "ActualCost", timeframe: "Custom", timePeriod: {from: $from, to: $to},
   dataset: {granularity: "None", aggregation: {totalCost: {name: "Cost", function: "Sum"}},
     grouping: [{type: "Dimension", name: "ResourceGroupName"}]}}')
-if cost=$(az rest --method post \
-  --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/providers/Microsoft.CostManagement/query?api-version=2023-11-01" \
-  --body "$body" 2>&1); then
+# az rest normally prints only the HTTP reason and response body, not headers
+# (azure.cli.core.util.send_raw_request). Honour retry headers if included in
+# that text; otherwise use exponential backoff, without enabling verbose/debug
+# logging of requests. Never retry sooner than the server asks.
+cost_throttled() {
+  grep -qiE 'Too[[:space:]]*Many[[:space:]]*Requests|^ERROR:[[:space:]]*\(?429([^[:alnum:]_]|$)|HTTP(/[0-9.]+)?[[:space:]]+429([^[:alnum:]_]|$)|"(code|status|statusCode)"[[:space:]]*:[[:space:]]*"?429([^[:alnum:]_]|$)' <<< "$cost"
+}
+cost_query() {
+  local attempt=1 waited=0 backoff=2 delay
+  while :; do
+    if cost=$(az rest --method post \
+      --url "https://management.azure.com/subscriptions/$SUBSCRIPTION/providers/Microsoft.CostManagement/query?api-version=2023-11-01" \
+      --body "$body" 2>&1); then
+      return 0
+    fi
+    if ! cost_throttled; then
+      return 1
+    fi
+    [ "$attempt" -lt 4 ] || return 1
+    delay=$(python3 -c '
+import math, re, sys
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+text = sys.stdin.read()
+delays = [int(sys.argv[1])]
+for value in re.findall(r"(?:\bretry-after|\bx-ms-ratelimit-microsoft\.costmanagement-[\w-]+-retry-after)[\"\x27]?\s*[:=]\s*[\"\x27]?([^\r\n\"\x27}]+)", text, re.I):
+    value = value.strip().rstrip(",")
+    try:
+        delay = int(value) if value.isdigit() else math.ceil(
+            (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
+        delays.append(max(0, delay))
+    except (ValueError, TypeError, OverflowError):
+        pass
+print(max(delays))
+' "$backoff" <<< "$cost") || return 1
+    # An over-budget Retry-After means stop, not retry before it has elapsed.
+    [ "$delay" -le "$((60 - waited))" ] || return 1
+    echo "warning: Cost Management throttled; retrying in $delay seconds (attempt $((attempt + 1))/4)" >&2
+    sleep "$delay"
+    waited=$((waited + delay))
+    backoff=$((backoff * 2))
+    attempt=$((attempt + 1))
+  done
+}
+if cost_query; then
   cost=$(jq -r --arg groups "$ENV_GROUPS" --arg infra "$LEGACY_INFRA_GROUP" '
     .properties as $p | ($p.columns | map(.name)) as $c
     | ($groups | ascii_downcase | split(" ")) as $g | ($infra | ascii_downcase) as $i
@@ -100,6 +144,8 @@ if cost=$(az rest --method post \
     | "\((map(.cost) | add // 0) * 100 | round / 100) \(.[0].cur // "")"' <<< "$cost") ||
     die "can't read Cost Management's answer"
   echo "cost since $from: $cost"
+elif cost_throttled; then
+  echo "warning: cost unknown (Cost Management throttled; retry limit reached): $cost" >&2
 elif grep -qiE 'AuthorizationFailed|RBACAccessDenied|Forbidden|does not have authorization' <<< "$cost"; then
   # Reading costs needs Cost Management Reader; the rest of the check doesn't.
   echo "warning: no cost (needs Cost Management Reader): $cost" >&2
