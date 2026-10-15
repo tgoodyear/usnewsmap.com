@@ -31,6 +31,14 @@ param allowedOrigins array = []
 @description('0 lets dev scale to zero; production keeps one warm replica.')
 param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
 
+@description('Maximum API replicas; also divides the visitor computation budget when one remote searcher is shared (#364).')
+@minValue(1)
+param apiMaxReplicas int = 2
+
+@description('Visitor computations allowed per searcher. Remote searchers divide this budget by API max replicas, rounding down; sidecars keep it per replica.')
+@minValue(1)
+param computeConcurrency int = 2
+
 @description('fixtures: the API serves its baked synthetic data. quickwit: reference data from Blob and a read-only Quickwit sidecar over qw-index (needs published indexes).')
 @allowed(['fixtures', 'quickwit'])
 param searchBackend string = 'fixtures'
@@ -738,6 +746,8 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     cosmosEndpoint: cosmos.outputs.endpoint
     allowedOrigins: siteOrigins
     minReplicas: apiMinReplicas
+    maxReplicas: apiMaxReplicas
+    computeConcurrency: computeConcurrency
     searchBackend: searchBackend
     searcherApp: searcherApp
     searcherAppRetain: searcherAppRetain

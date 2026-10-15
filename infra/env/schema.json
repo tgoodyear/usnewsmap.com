@@ -41,6 +41,12 @@
       "x-usnm-visibility": "public",
       "type": "string"
     },
+    "USNM_API_MAX_REPLICAS": {
+      "x-usnm-visibility": "public",
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum API replicas (default 2); divides the shared-searcher computation budget."
+    },
     "USNM_ARCHIVE_ACCOUNT": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The archival account's resource id, which names its subscription.",
@@ -80,6 +86,12 @@
     "USNM_BUDGET_START": {
       "x-usnm-visibility": "public",
       "type": "string"
+    },
+    "USNM_COMPUTE_CONCURRENCY": {
+      "x-usnm-visibility": "public",
+      "type": "integer",
+      "minimum": 1,
+      "description": "Visitor computation budget per searcher (default 2); shared searchers allocate floor(budget / API max replicas) to each API replica."
     },
     "USNM_CONGRESS": {
       "x-usnm-visibility": "public",
