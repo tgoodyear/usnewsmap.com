@@ -1285,7 +1285,13 @@ impl Engine for Tesseract {
         // containers can't reach; the scan is copied in.
         match &self.sandbox {
             Some(sb) => {
-                let (dir, level) = sb.page_dir().await?;
+                // The worker's own scratch, before Tesseract starts: no
+                // engine read to report (13 §13.8.3).
+                let (dir, level) = sb.page_dir().await.map_err(|e| {
+                    anyhow::Error::new(crate::worker::ScratchError(format!(
+                        "the page's scratch slot: {e:#}"
+                    )))
+                })?;
                 let out = self
                     .read_page(image, &models, &dir.path, level.as_deref())
                     .await;
@@ -1315,9 +1321,11 @@ impl Tesseract {
             _ => {
                 let ext = image.extension().and_then(|e| e.to_str()).unwrap_or("img");
                 let copy = work.join(format!("input.{ext}"));
-                tokio::fs::copy(image, &copy)
-                    .await
-                    .context("copying the scan into the scratch directory")?;
+                tokio::fs::copy(image, &copy).await.map_err(|e| {
+                    anyhow::Error::new(crate::worker::ScratchError(format!(
+                        "copying the scan into the scratch directory: {e}"
+                    )))
+                })?;
                 copy
             }
         };
@@ -1507,6 +1515,58 @@ mod tests {
             ..t
         };
         assert!(!host.tag("eng").unwrap().pinned());
+    }
+
+    /// Direct Tesseract's scratch (its slot, the scan's copy) is the
+    /// worker's: a failure there is a `ScratchError`, so no engine read is
+    /// reported, and Tesseract isn't run.
+    #[tokio::test]
+    async fn scratch_failures_before_tesseract_are_the_workers() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("page.png");
+        std::fs::write(&image, b"png").unwrap();
+        let t = Tesseract {
+            runner: Runner::Host(dir.path().join("no-tesseract")),
+            sandbox: None,
+            version: "5.5.0".into(),
+            installed: ["eng".to_owned()].into(),
+            psm: 3,
+            dpi: 300,
+            threads: 1,
+            timeout: Duration::from_secs(1),
+        };
+        let scratch_error = |r: Result<EngineOutput, EngineError>| match r {
+            Err(EngineError::Failed(e)) => {
+                assert!(e.is::<crate::worker::ScratchError>(), "{e:#}");
+            }
+            other => panic!("{:?}", other.map(|o| o.engine)),
+        };
+        // The scan can't be copied into a work directory that isn't there.
+        scratch_error(t.ocr(&image, "eng", &dir.path().join("gone")).await);
+        // No slot on a scratch that isn't there.
+        let t = Tesseract {
+            sandbox: Some(Sandbox {
+                podman: "podman".into(),
+                url: String::new(),
+                image: String::new(),
+                scratch: dir.path().join("no-scratch"),
+                info: RuntimeInfo {
+                    engine_uid: 1,
+                    runtime_uid: None,
+                    selinux: false,
+                },
+            }),
+            ..t
+        };
+        scratch_error(t.ocr(&image, "eng", dir.path()).await);
+        // Tesseract that isn't there is the engine's failure, not scratch.
+        let t = Tesseract { sandbox: None, ..t };
+        match t.ocr(&image, "eng", dir.path()).await {
+            Err(EngineError::Failed(e)) => {
+                assert!(!e.is::<crate::worker::ScratchError>(), "{e:#}")
+            }
+            other => panic!("{:?}", other.map(|o| o.engine)),
+        }
     }
 
     #[test]

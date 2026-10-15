@@ -115,6 +115,9 @@ struct Runner {
     /// limit.
     protocol: Vec<String>,
     pages: u32,
+    /// The last page's request to reply on the instance (13 §13.4.8's
+    /// deadline): none if it was never sent.
+    exchange: Option<Duration>,
 }
 
 impl Runner {
@@ -136,6 +139,7 @@ impl Runner {
             .engine
             .read_bytes(inst, bytes, ext, size, language, profile, &run_id)
             .await;
+        self.exchange = inst.last_exchange.take();
         Ok(match r {
             Ok(o) => {
                 let text = stored_text(&o, language, self.engine.opts.dpi);
@@ -205,6 +209,7 @@ pub async fn run(mut opts: ContractOptions, fixtures: &Path) -> anyhow::Result<R
         inst: None,
         protocol: Vec::new(),
         pages: 0,
+        exchange: None,
     };
     let done = suite(&mut runner, &corrupt, &mut report).await;
     if let Some(i) = runner.inst.take() {
@@ -230,12 +235,12 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
         report.push("text_line", Err("the hello has no profiles".into()));
         return Ok(());
     };
-    let line = testimg::text_image(LINE);
+    let line = testimg::png(&testimg::text_image(LINE));
     let (w, h) = testimg::lines_size(&[LINE]);
     let size = (w as u32, h as u32);
 
     // A rendered line, its text and its boxes.
-    let a = r.page(&line, "pgm", size, &language, &profile).await?;
+    let a = r.page(&line, "png", size, &language, &profile).await?;
     let outcome = match &a {
         Answer::Read(o, text) => check_line(o, text, size),
         other => Err(other.describe()),
@@ -266,8 +271,8 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     }
 
     // A blank page reads as no text.
-    let blank = testimg::blank_image(w, h);
-    let outcome = match r.page(&blank, "pgm", size, &language, &profile).await? {
+    let blank = testimg::png(&testimg::blank_image(w, h));
+    let outcome = match r.page(&blank, "png", size, &language, &profile).await? {
         Answer::Read(_, text) if text.trim().is_empty() => Ok("no text".into()),
         Answer::Read(_, text) => Err(format!("text on a blank page: {text:?}")),
         other => Err(other.describe()),
@@ -283,7 +288,7 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     report.push("corrupt_image", outcome);
 
     // An unknown profile is `unsupported`.
-    let outcome = match r.page(&line, "pgm", size, &language, NO_PROFILE).await? {
+    let outcome = match r.page(&line, "png", size, &language, NO_PROFILE).await? {
         Answer::Kept(EngineError::Unsupported(_)) => Ok("unsupported".into()),
         other => Err(format!("not unsupported: {}", other.describe())),
     };
@@ -293,16 +298,17 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     let big: Vec<String> = (0..120).map(|_| [LINE; 8].join(" ")).collect();
     let big: Vec<&str> = big.iter().map(String::as_str).collect();
     let (bw, bh) = testimg::lines_size(&big);
-    let large = testimg::lines_image(&big);
+    let large = testimg::png(&testimg::lines_image(&big));
     let normal = r.engine.opts.page_timeout;
     r.engine.opts.page_timeout = SHORT_DEADLINE;
-    let started = std::time::Instant::now();
     let a = r
-        .page(&large, "pgm", (bw as u32, bh as u32), &language, &profile)
+        .page(&large, "png", (bw as u32, bh as u32), &language, &profile)
         .await;
     r.engine.opts.page_timeout = normal;
     let a = a?;
-    let took = started.elapsed();
+    // The adapter's time, request to reply: not the instance's start, the
+    // scan's copy, nor reading and converting its output.
+    let took = r.exchange.unwrap_or_default();
     let cut = match (hello.cancel, &a) {
         // Read in time: nothing was cut, so there's nothing to check.
         (_, Answer::Read(..)) if took <= SHORT_DEADLINE => Err(None),
@@ -328,7 +334,7 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     };
     match cut {
         Ok(d) => {
-            let outcome = match r.page(&line, "pgm", size, &language, &profile).await? {
+            let outcome = match r.page(&line, "png", size, &language, &profile).await? {
                 Answer::Read(_, text) if text.contains(LINE) => {
                     Ok(format!("{d}; the next page read"))
                 }
@@ -570,6 +576,59 @@ fn check_line(o: &EngineOutput, text: &str, (w, h): (u32, u32)) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The deadline case times the adapter, request to reply: not the
+    /// instance's start before it, nor the worker's work on the scan.
+    #[tokio::test]
+    async fn the_exchange_is_timed_without_the_worker_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = super::super::tests::script_engine_with(
+            dir.path(),
+            "sleep 1.2",
+            r#"while IFS= read -r l; do
+  run=$(printf '%s\n' "$l" | sed 's/.*"run_id":"\([^"]*\)".*/\1/')
+  sleep 0.2
+  printf '{"engine_stats":{},"error":{"kind":"timeout","message":"timeout"},"markup":"none","run_id":"%s","status":"timeout","type":"result","warnings":[]}\n' "$run"
+done
+"#,
+        )
+        .await;
+        // The page starts its own instance, as after one was replaced.
+        let idle = engine.idle.lock().unwrap().pop().unwrap();
+        idle.retire().await;
+        let mut r = Runner {
+            engine,
+            inst: None,
+            protocol: Vec::new(),
+            pages: 0,
+            exchange: None,
+        };
+        let big: Vec<String> = (0..120).map(|_| [LINE; 8].join(" ")).collect();
+        let big: Vec<&str> = big.iter().map(String::as_str).collect();
+        let (bw, bh) = testimg::lines_size(&big);
+        let large = testimg::png(&testimg::lines_image(&big));
+        let t = std::time::Instant::now();
+        let a = r
+            .page(&large, "png", (bw as u32, bh as u32), "eng", "eng")
+            .await
+            .unwrap();
+        let wall = t.elapsed();
+        assert!(matches!(a, Answer::Kept(_)), "{}", a.describe());
+        let took = r.exchange.expect("timed");
+        assert!(wall >= Duration::from_millis(1400), "{wall:?}");
+        assert!(
+            took >= Duration::from_millis(200) && took < Duration::from_secs(1),
+            "{took:?} of {wall:?}"
+        );
+        // A page that never reaches the adapter has no exchange.
+        let a = r.page(b"", "png", (0, 0), "eng", "eng").await.unwrap();
+        assert!(!matches!(a, Answer::Read(..)));
+        assert_eq!(r.exchange, None);
+        if let Some(i) = r.inst.take() {
+            i.retire().await;
+        }
+        r.engine.shutdown().await;
+    }
 
     #[test]
     fn the_dpi_must_be_its_own_argument() {

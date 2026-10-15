@@ -128,6 +128,10 @@ struct Instance {
     jobs: u32,
     /// Start to `hello`.
     load_seconds: f64,
+    /// The last page's request to its reply (or to giving up on one),
+    /// without the worker's work before and after: the conformance
+    /// suite's deadline case times the adapter by it.
+    last_exchange: Option<Duration>,
 }
 
 impl std::fmt::Debug for Instance {
@@ -582,6 +586,8 @@ impl ContractEngine {
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         tracing::debug!(run_id, "page to engine");
         let line = encode(&ToAdapter::Page(req.clone()));
+        let asked = std::time::Instant::now();
+        inst.last_exchange = None;
         let sent = match inst.stdin.as_mut() {
             Some(stdin) => match stdin.write_all(&line).await {
                 Ok(()) => stdin.flush().await,
@@ -601,7 +607,9 @@ impl ContractEngine {
             .into());
         }
         let wait = self.opts.page_timeout + KILL_GRACE;
-        let reply = match tokio::time::timeout(wait, read_line(&mut inst.stdout)).await {
+        let reply = tokio::time::timeout(wait, read_line(&mut inst.stdout)).await;
+        inst.last_exchange = Some(asked.elapsed());
+        let reply = match reply {
             Err(_) => {
                 // Killed now, not after retire's grace: the page's budget
                 // allows the deadline plus 15 s and no more.
@@ -1107,6 +1115,7 @@ async fn spawn(
         cleanups: cleanups.clone(),
         jobs: 0,
         load_seconds: 0.0,
+        last_exchange: None,
     };
     match read_hello(&mut inst, opts.start_timeout).await {
         Ok(h) => {
@@ -1389,9 +1398,18 @@ mod tests {
 
     /// An adapter that sends its hello, then runs `body` on its requests.
     async fn script_engine(dir: &Path, body: &str) -> ContractEngine {
+        script_engine_with(dir, "", body).await
+    }
+
+    /// [`script_engine`], running `before` before each instance's hello.
+    pub(super) async fn script_engine_with(dir: &Path, before: &str, body: &str) -> ContractEngine {
         let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"silent","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":[],"tunable":[]}],"type":"hello"}"#;
         let script = dir.join("adapter");
-        std::fs::write(&script, format!("#!/bin/sh\necho '{hello}'\n{body}")).unwrap();
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\n{before}\necho '{hello}'\n{body}"),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

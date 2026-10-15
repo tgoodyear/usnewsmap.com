@@ -1,5 +1,8 @@
 //! A rendered line of capitals as a binary PGM, for tests that run the real
-//! Tesseract and for `check-engine`, without a checked-in image.
+//! Tesseract and for `check-engine`, without a checked-in image; [`png`]
+//! encodes one as the contract's PNG.
+
+use image::ImageEncoder;
 
 /// 5×7 glyphs for the letters the tests use.
 fn glyph(c: char) -> [&'static str; 7] {
@@ -108,6 +111,36 @@ pub fn word_boxes(text: &str) -> Vec<(String, [f64; 4])> {
     out
 }
 
+/// A PGM from this module as a PNG (8-bit grey), the contract's input
+/// format (13 §13.4.1). Deterministic: the same image encodes to the same
+/// bytes.
+pub fn png(pgm: &[u8]) -> Vec<u8> {
+    let (w, h) = pgm_size(pgm);
+    let px = &pgm[pgm.len() - w * h..];
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut out,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::NoFilter,
+    )
+    .write_image(px, w as u32, h as u32, image::ExtendedColorType::L8)
+    .expect("a PNG in memory");
+    out
+}
+
+/// The width and height in a PGM header from [`pgm`].
+fn pgm_size(pgm: &[u8]) -> (usize, usize) {
+    let head = std::str::from_utf8(&pgm[..pgm.len().min(32)])
+        .unwrap_or_else(|e| std::str::from_utf8(&pgm[..e.valid_up_to()]).expect("valid up to"));
+    let mut nums = head[2..]
+        .split_ascii_whitespace()
+        .map(|t| t.parse::<usize>().expect("a PGM from this module"));
+    (
+        nums.next().expect("a width"),
+        nums.next().expect("a height"),
+    )
+}
+
 fn pgm(w: usize, h: usize, px: Vec<u8>) -> Vec<u8> {
     let mut out = format!("P5\n{w} {h}\n255\n").into_bytes();
     out.extend_from_slice(&px);
@@ -117,6 +150,20 @@ fn pgm(w: usize, h: usize, px: Vec<u8>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_holds_the_same_pixels() {
+        let pgm = text_image("HELLO");
+        let (w, h) = lines_size(&["HELLO"]);
+        let png = png(&pgm);
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(png, super::png(&pgm), "deterministic");
+        let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .unwrap()
+            .into_luma8();
+        assert_eq!((img.width() as usize, img.height() as usize), (w, h));
+        assert_eq!(img.as_raw().as_slice(), &pgm[pgm.len() - w * h..]);
+    }
 
     #[test]
     fn word_boxes_cover_the_ink() {

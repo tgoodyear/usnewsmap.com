@@ -24,10 +24,11 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
 }
 
 /// A `tesseract` that reads the suite's pages by what they hold: the
-/// corrupt fixture fails as Leptonica does, a large page is slow, a page
-/// with no black pixel has no text, and any other page reads as `text`
-/// (a shell command's output).
+/// corrupt fixture fails as Leptonica does, a large page is slow, the
+/// blank page has no text, and any other page reads as `text` (a shell
+/// command's output).
 fn stand_in(dir: &Path, text: &str) -> PathBuf {
+    let blank = blank_png(dir);
     let tessdata = dir.join("tessdata");
     std::fs::create_dir_all(&tessdata).unwrap();
     std::fs::write(tessdata.join("eng.traineddata"), b"model").unwrap();
@@ -46,12 +47,33 @@ if grep -q badcrc "$1"; then
   echo "Error during processing." >&2
   exit 1
 fi
-if [ "$(wc -c < "$1")" -gt 1000000 ]; then sleep 30; fi
-if ! od -An -v -tu1 "$1" | grep -qw 0; then exit 0; fi
+case "$1" in *.png) ;; *) echo "not a PNG: $1" >&2; exit 1 ;; esac
+if {large}; then sleep 30; fi
+if cmp -s "$1" '{blank}'; then exit 0; fi
 {text}
 "#,
-            tessdata.display()
+            tessdata.display(),
+            large = is_large("1"),
+            blank = blank.display(),
         ),
+    )
+}
+
+/// The suite's blank page as it sends it, so a stand-in can tell it by
+/// its bytes: its pages are PNGs (13 §13.4.1), with no raw pixels to read.
+fn blank_png(dir: &Path) -> PathBuf {
+    let (w, h) = usnm_ocr_worker::testimg::lines_size(&[conformance::LINE]);
+    let path = dir.join("blank.png");
+    let png = usnm_ocr_worker::testimg::png(&usnm_ocr_worker::testimg::blank_image(w, h));
+    std::fs::write(&path, png).unwrap();
+    path
+}
+
+/// The shell for "the PNG `$1` (a variable) is the suite's large page":
+/// its `IHDR` width is over 3,000 px.
+fn is_large(var: &str) -> String {
+    format!(
+        r#"[ "$(od -An -j16 -N4 -tu1 "${var}" | awk 'NF{{print $1*16777216+$2*65536+$3*256+$4}}')" -gt 3000 ]"#
     )
 }
 
@@ -198,10 +220,11 @@ async fn noise_on_stdout_is_caught() {
 /// it runs `big` (shell), which answers `timeout` by default; one that sets
 /// `$big` instead reads the page as blank. For the other pages `page`
 /// (shell) sets `$text`, the block's text, and `$sidecar`, the text file's
-/// (`-` for none), from `$blank` (1 for a page with no black pixel); it may
+/// (`-` for none), from `$blank` (1 for the suite's blank page); it may
 /// set `$blocks` to replace the blocks.
 fn boxes_adapter(dir: &Path, page: &str, big: Option<&str>) -> PathBuf {
     let big = big.unwrap_or("fail timeout timeout; continue");
+    let blank = blank_png(dir);
     script(
         dir,
         "adapter",
@@ -218,7 +241,8 @@ while IFS= read -r l; do
   if grep -q badcrc "$img"; then fail bad_input image; continue; fi
   big=
   case "$l" in *'"width":3500'*) {big} ;; esac
-  if [ -n "$big" ]; then blank=1; elif od -An -v -tu1 "$img" | grep -qw 0; then blank=0; else blank=1; fi
+  case "$img" in *.png) ;; *) fail failed not_png; continue ;; esac
+  if [ -n "$big" ] || cmp -s "$img" '{blank_png}'; then blank=1; else blank=0; fi
   blocks=
   {page}
   [ -n "$blocks" ] || blocks=$(printf '{{"bbox":[0,0,%s,%s],"kind":"text","text":"%s"}}' "$w" "$h" "$text")
@@ -232,6 +256,7 @@ while IFS= read -r l; do
 done
 "#,
             hello = HELLO.replace("CANCEL", "adapter"),
+            blank_png = blank.display(),
         ),
     )
 }

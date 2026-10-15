@@ -21,6 +21,7 @@ bytes.workspace = true
 chrono.workspace = true
 md-5.workspace = true
 httpdate.workspace = true
+image.workspace = true
 clap.workspace = true
 moka.workspace = true
 opentelemetry.workspace = true
