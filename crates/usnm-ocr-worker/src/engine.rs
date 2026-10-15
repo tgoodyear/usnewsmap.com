@@ -147,6 +147,42 @@ pub fn exited_136(e: &anyhow::Error) -> bool {
         .is_some_and(Exited::is_status_136)
 }
 
+/// A failed read's status and error kind as 13 §13.4.6 names them, for
+/// the `ocr_engine_run` event (§13.8.3). Its message is the error's whole
+/// text, so logs read as before.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct ReadFailed {
+    /// `failed`, `timeout` or `bad_input`.
+    pub status: &'static str,
+    /// `engine`, `engine_timeout`, `engine_oom`, `engine_crash`,
+    /// `engine_protocol` or `convert`.
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl ReadFailed {
+    pub fn error(status: &'static str, kind: &'static str, message: String) -> anyhow::Error {
+        anyhow::Error::new(Self {
+            status,
+            kind,
+            message,
+        })
+    }
+}
+
+/// The status and error kind of a read that failed with `e`: what the
+/// engine said ([`ReadFailed`]), a crash ([`Exited`]), or else `engine`.
+pub fn read_failure(e: &anyhow::Error) -> (&'static str, &'static str) {
+    if let Some(r) = e.downcast_ref::<ReadFailed>() {
+        (r.status, r.kind)
+    } else if e.is::<Exited>() {
+        ("failed", "engine_crash")
+    } else {
+        ("failed", "engine")
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     /// No model for the language on this node: retrying here won't help.
@@ -174,6 +210,13 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     /// page (long-lived instances); nothing for an engine that starts
     /// one process per page.
     async fn shutdown(&self) {}
+    /// The `ocr_engine` tag and engine fields a read in `language` would
+    /// have, known before the read: for the `ocr_engine_run` event of a
+    /// read that writes nothing (13 §13.8.3). None when nothing is known.
+    fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
+        let _ = language;
+        None
+    }
     /// Read `image` (a file) for a page in `language` (ISO 639-3), using
     /// `work` for scratch files.
     async fn ocr(
@@ -194,6 +237,20 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     ) -> Result<EngineOutput, EngineError> {
         let _ = run_id;
         self.ocr(image, language, work).await
+    }
+    /// [`Engine::read`], calling `on_instance` with the read's engine
+    /// fields once it has the instance it reads on (its `cold_start`),
+    /// before the engine answers: a failed read reports them.
+    async fn read_traced(
+        &self,
+        image: &Path,
+        language: &str,
+        work: &Path,
+        run_id: &str,
+        on_instance: &(dyn Fn(ReadInfo) + Send + Sync),
+    ) -> Result<EngineOutput, EngineError> {
+        let _ = on_instance;
+        self.read(image, language, work, run_id).await
     }
 }
 
@@ -1093,18 +1150,32 @@ pub fn models_from_lock(lock: &str, profile: &str) -> Option<(String, String)> {
 const MAX_TEXT: u64 = 8 << 20;
 const MAX_ALTO: u64 = 64 << 20;
 
+/// An engine's file that breaks the rules on its outputs (13 §13.4.7):
+/// `engine_protocol`, unlike a file it didn't write or an I/O error.
+fn invalid_output(message: String) -> anyhow::Error {
+    ReadFailed::error("failed", "engine_protocol", message)
+}
+
 /// Reads a file an engine wrote: it must be a regular file, not a symlink
 /// (checked before opening, and refused by `O_NOFOLLOW` when opening), and
 /// at most `max` bytes. The container has exited by then, so nothing
-/// changes the file meanwhile.
+/// changes the file meanwhile. A file that breaks these rules is
+/// `engine_protocol` ([`ReadFailed`]).
 pub(crate) fn read_output(path: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
     use std::io::Read;
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
-        bail!("{} isn't a regular file", path.display());
+        return Err(invalid_output(format!(
+            "{} isn't a regular file",
+            path.display()
+        )));
     }
     if meta.len() > max {
-        bail!("{} is {} bytes, over {max}", path.display(), meta.len());
+        return Err(invalid_output(format!(
+            "{} is {} bytes, over {max}",
+            path.display(),
+            meta.len()
+        )));
     }
     let mut opts = std::fs::OpenOptions::new();
     opts.read(true);
@@ -1113,14 +1184,27 @@ pub(crate) fn read_output(path: &Path, max: u64) -> anyhow::Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
-    let file = opts.open(path)?;
+    let file = match opts.open(path) {
+        // A symlink put there after the check.
+        #[cfg(unix)]
+        Err(e) if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) => {
+            return Err(invalid_output(format!("{} is a symlink", path.display())))
+        }
+        r => r?,
+    };
     if !file.metadata()?.file_type().is_file() {
-        bail!("{} isn't a regular file", path.display());
+        return Err(invalid_output(format!(
+            "{} isn't a regular file",
+            path.display()
+        )));
     }
     let mut buf = Vec::new();
     file.take(max + 1).read_to_end(&mut buf)?;
     if buf.len() as u64 > max {
-        bail!("{} is over {max} bytes", path.display());
+        return Err(invalid_output(format!(
+            "{} is over {max} bytes",
+            path.display()
+        )));
     }
     Ok(buf)
 }
@@ -1182,6 +1266,12 @@ impl Engine for Tesseract {
         self.dpi
     }
 
+    fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
+        let profile = route(language, &self.installed)?;
+        let tag = self.tag(&profile).ok()?.to_string();
+        Some((tag, self.read_info(&profile)))
+    }
+
     async fn ocr(
         &self,
         image: &Path,
@@ -1195,7 +1285,13 @@ impl Engine for Tesseract {
         // containers can't reach; the scan is copied in.
         match &self.sandbox {
             Some(sb) => {
-                let (dir, level) = sb.page_dir().await?;
+                // The worker's own scratch, before Tesseract starts: no
+                // engine read to report (13 §13.8.3).
+                let (dir, level) = sb.page_dir().await.map_err(|e| {
+                    anyhow::Error::new(crate::worker::ScratchError(format!(
+                        "the page's scratch slot: {e:#}"
+                    )))
+                })?;
                 let out = self
                     .read_page(image, &models, &dir.path, level.as_deref())
                     .await;
@@ -1225,9 +1321,11 @@ impl Tesseract {
             _ => {
                 let ext = image.extension().and_then(|e| e.to_str()).unwrap_or("img");
                 let copy = work.join(format!("input.{ext}"));
-                tokio::fs::copy(image, &copy)
-                    .await
-                    .context("copying the scan into the scratch directory")?;
+                tokio::fs::copy(image, &copy).await.map_err(|e| {
+                    anyhow::Error::new(crate::worker::ScratchError(format!(
+                        "copying the scan into the scratch directory: {e}"
+                    )))
+                })?;
                 copy
             }
         };
@@ -1249,7 +1347,13 @@ impl Tesseract {
             .output();
         let out = tokio::time::timeout(self.timeout, child)
             .await
-            .map_err(|_| anyhow::anyhow!("tesseract took over {:?}", self.timeout))?
+            .map_err(|_| {
+                ReadFailed::error(
+                    "timeout",
+                    "engine_timeout",
+                    format!("tesseract took over {:?}", self.timeout),
+                )
+            })?
             .context("running tesseract")?;
         let oom = match guard.as_mut() {
             Some(g) => g.finish().await,
@@ -1262,7 +1366,12 @@ impl Tesseract {
                 } => format!(" ({} MiB)", r.limits.memory_mib),
                 _ => String::new(),
             };
-            return Err(anyhow::anyhow!("tesseract ran out of memory{limit}").into());
+            return Err(ReadFailed::error(
+                "failed",
+                "engine_oom",
+                format!("tesseract ran out of memory{limit}"),
+            )
+            .into());
         }
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
@@ -1290,7 +1399,8 @@ impl Tesseract {
         // regular files only, no symlinks, size-capped.
         let text = read_output(&base.with_extension("txt"), MAX_TEXT)
             .with_context(|| format!("tesseract wrote no usable text ({})", said()))?;
-        let text = String::from_utf8(text).context("tesseract's text isn't UTF-8")?;
+        let text = String::from_utf8(text)
+            .map_err(|_| invalid_output("tesseract's text isn't UTF-8".into()))?;
         let alto = read_output(&base.with_extension("xml"), MAX_ALTO)
             .with_context(|| format!("tesseract wrote no usable ALTO ({})", said()))?;
         Ok(EngineOutput {
@@ -1405,6 +1515,58 @@ mod tests {
             ..t
         };
         assert!(!host.tag("eng").unwrap().pinned());
+    }
+
+    /// Direct Tesseract's scratch (its slot, the scan's copy) is the
+    /// worker's: a failure there is a `ScratchError`, so no engine read is
+    /// reported, and Tesseract isn't run.
+    #[tokio::test]
+    async fn scratch_failures_before_tesseract_are_the_workers() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("page.png");
+        std::fs::write(&image, b"png").unwrap();
+        let t = Tesseract {
+            runner: Runner::Host(dir.path().join("no-tesseract")),
+            sandbox: None,
+            version: "5.5.0".into(),
+            installed: ["eng".to_owned()].into(),
+            psm: 3,
+            dpi: 300,
+            threads: 1,
+            timeout: Duration::from_secs(1),
+        };
+        let scratch_error = |r: Result<EngineOutput, EngineError>| match r {
+            Err(EngineError::Failed(e)) => {
+                assert!(e.is::<crate::worker::ScratchError>(), "{e:#}");
+            }
+            other => panic!("{:?}", other.map(|o| o.engine)),
+        };
+        // The scan can't be copied into a work directory that isn't there.
+        scratch_error(t.ocr(&image, "eng", &dir.path().join("gone")).await);
+        // No slot on a scratch that isn't there.
+        let t = Tesseract {
+            sandbox: Some(Sandbox {
+                podman: "podman".into(),
+                url: String::new(),
+                image: String::new(),
+                scratch: dir.path().join("no-scratch"),
+                info: RuntimeInfo {
+                    engine_uid: 1,
+                    runtime_uid: None,
+                    selinux: false,
+                },
+            }),
+            ..t
+        };
+        scratch_error(t.ocr(&image, "eng", dir.path()).await);
+        // Tesseract that isn't there is the engine's failure, not scratch.
+        let t = Tesseract { sandbox: None, ..t };
+        match t.ocr(&image, "eng", dir.path()).await {
+            Err(EngineError::Failed(e)) => {
+                assert!(!e.is::<crate::worker::ScratchError>(), "{e:#}")
+            }
+            other => panic!("{:?}", other.map(|o| o.engine)),
+        }
     }
 
     #[test]
@@ -1580,14 +1742,27 @@ mod tests {
         let f = dir.path().join("page.txt");
         std::fs::write(&f, b"hello").unwrap();
         assert_eq!(read_output(&f, 5).unwrap(), b"hello");
-        assert!(read_output(&f, 4).is_err());
-        assert!(read_output(dir.path(), 100).is_err());
-        assert!(read_output(&dir.path().join("none"), 100).is_err());
+        // Files that break the rules are the engine's protocol failures;
+        // a file it didn't write is an ordinary failure.
+        let kind = |r: anyhow::Result<Vec<u8>>| read_failure(&r.unwrap_err());
+        let protocol = ("failed", "engine_protocol");
+        assert_eq!(kind(read_output(&f, 4)), protocol);
+        assert_eq!(kind(read_output(dir.path(), 100)), protocol);
+        assert_eq!(
+            kind(read_output(&dir.path().join("none"), 100)),
+            ("failed", "engine")
+        );
+        // With the caller's context, as the Tesseract engine adds it.
+        let e = read_output(&f, 4)
+            .context("tesseract wrote no usable text")
+            .unwrap_err();
+        assert_eq!(read_failure(&e), protocol);
+        assert!(format!("{e:#}").contains("over 4"), "{e:#}");
         #[cfg(unix)]
         {
             let link = dir.path().join("page.xml");
             std::os::unix::fs::symlink(&f, &link).unwrap();
-            assert!(read_output(&link, 100).is_err());
+            assert_eq!(kind(read_output(&link, 100)), protocol);
         }
     }
 

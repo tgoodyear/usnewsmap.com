@@ -207,6 +207,17 @@ impl Reader for Tesseract {
         let text = out.join().unwrap_or_default();
         let log = String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned();
         if !status.success() {
+            // Leptonica couldn't decode the image: the page's input, not
+            // the engine (13 §13.4.6).
+            if log.contains("Leptonica Error in pixRead") {
+                let why = log
+                    .lines()
+                    .find(|l| l.contains("Leptonica Error in pixRead"))
+                    .unwrap_or_default();
+                return Err(ReadError::BadInput(format!(
+                    "tesseract can't read the image: {why}"
+                )));
+            }
             let tail: String = log
                 .chars()
                 .rev()

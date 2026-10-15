@@ -31,8 +31,11 @@ use usnm_ocr_contract::engine::{
 
 use crate::engine::{
     checked, podman_command, tail, ContainerGuard, Engine, EngineError, EngineOutput, Limits,
-    PageDir, ReadInfo, Remote, Sandbox, ENGINE_USER, ROUTE, ROUTE_VERSION,
+    PageDir, ReadFailed, ReadInfo, Remote, Sandbox, ENGINE_USER, ROUTE, ROUTE_VERSION,
 };
+
+/// The conformance runner (13 §13.4.8).
+pub mod conformance;
 
 /// The label on instance containers, so stale ones can be found.
 const LABEL: &str = "usnm.engine=contract";
@@ -111,7 +114,8 @@ type Cleanups = Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>;
 
 struct Instance {
     child: Option<Child>,
-    stdin: ChildStdin,
+    /// None once closed: the contract's "finish and exit".
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     /// The last 50 lines of stderr, for a failure's message.
     stderr: Arc<Mutex<VecDeque<String>>>,
@@ -124,6 +128,10 @@ struct Instance {
     jobs: u32,
     /// Start to `hello`.
     load_seconds: f64,
+    /// The last page's request to its reply (or to giving up on one),
+    /// without the worker's work before and after: the conformance
+    /// suite's deadline case times the adapter by it.
+    last_exchange: Option<Duration>,
 }
 
 impl std::fmt::Debug for Instance {
@@ -141,13 +149,21 @@ impl Instance {
     /// then frees its scratch slot. Dropping an instance only starts a
     /// kill; this finishes before a replacement or the worker's exit.
     async fn retire(mut self) {
-        let _ = self.stdin.shutdown().await;
+        self.close_input().await;
         let (child, container, slot) = (
             self.child.take(),
             self.container.take(),
             self.dirs.slot.take(),
         );
         cleanup(child, container, slot, self.sandbox.clone()).await;
+    }
+
+    /// Closes the instance's stdin. Tokio's `shutdown` on a pipe only
+    /// flushes it; the adapter sees EOF when the pipe is dropped.
+    async fn close_input(&mut self) {
+        if let Some(mut s) = self.stdin.take() {
+            let _ = s.flush().await;
+        }
     }
 
     fn stderr_tail(&self) -> String {
@@ -267,9 +283,17 @@ enum PageError {
     Drop(EngineError),
 }
 
+/// Any other failure that drops the instance is the protocol's: a limit,
+/// a path or the schema broken (13 §13.4.6), unless it says otherwise.
 impl<E: Into<anyhow::Error>> From<E> for PageError {
     fn from(e: E) -> Self {
-        PageError::Drop(EngineError::Failed(e.into()))
+        let e = e.into();
+        let e = if e.is::<ReadFailed>() {
+            e
+        } else {
+            ReadFailed::error("failed", "engine_protocol", format!("{e:#}"))
+        };
+        PageError::Drop(EngineError::Failed(e))
     }
 }
 
@@ -363,7 +387,29 @@ impl ContractEngine {
     /// The runs record's engine fields for a read on `inst` with
     /// `profile` that answered `result`.
     fn read_info(&self, inst: &Instance, profile: &str, result: &PageResult) -> ReadInfo {
-        let h = &inst.hello;
+        let cold_start = inst.jobs == 0;
+        ReadInfo {
+            cold_start,
+            model_load_seconds: cold_start.then_some(inst.load_seconds),
+            markup: result.markup.as_str(),
+            engine_stats_json: serde_json::to_string(&result.engine_stats)
+                .unwrap_or_else(|_| "{}".into()),
+            ..self.hello_info(&inst.hello, profile, cold_start)
+        }
+    }
+
+    /// The engine fields a read on `inst` with `profile` has before it
+    /// answers: what a failed read reports.
+    fn instance_info(&self, inst: &Instance, profile: &str) -> ReadInfo {
+        let cold_start = inst.jobs == 0;
+        ReadInfo {
+            model_load_seconds: cold_start.then_some(inst.load_seconds),
+            ..self.hello_info(&inst.hello, profile, cold_start)
+        }
+    }
+
+    /// The engine fields `h` gives for `profile`, before a read.
+    fn hello_info(&self, h: &Hello, profile: &str, cold_start: bool) -> ReadInfo {
         let image_ref = match &self.opts.launch {
             Launch::Podman { image, .. } => image.clone(),
             Launch::Local { .. } => "local".to_owned(),
@@ -382,7 +428,6 @@ impl ContractEngine {
         });
         let (models_digest, models_json) =
             models.unwrap_or_else(|| ("local".to_owned(), "{}".to_owned()));
-        let cold_start = inst.jobs == 0;
         ReadInfo {
             engine_id: h.engine.id.clone(),
             adapter: format!(
@@ -400,10 +445,9 @@ impl ContractEngine {
                 usnm_ocr_contract::engine::ModelsLoaded::PerPage => "per_page",
             },
             cold_start,
-            model_load_seconds: cold_start.then_some(inst.load_seconds),
-            markup: result.markup.as_str(),
-            engine_stats_json: serde_json::to_string(&result.engine_stats)
-                .unwrap_or_else(|_| "{}".into()),
+            model_load_seconds: None,
+            markup: "none",
+            engine_stats_json: "{}".into(),
         }
     }
 
@@ -450,13 +494,32 @@ impl ContractEngine {
             .await
             .context("reading the scan")
             .map_err(keep)?;
-        let (width, height) = image_size(&bytes)
+        let size = image_size(&bytes)
             .context("the scan's size isn't readable")
             .map_err(keep)?;
         let ext = image.extension().and_then(|e| e.to_str()).unwrap_or("img");
+        self.read_bytes(inst, &bytes, ext, size, language, profile, &run_id)
+            .await
+    }
+
+    /// Reads `bytes`, a scan `width` by `height`, on `inst`: the scan in
+    /// the instance's `in/`, a page directory in its `out/`, then the
+    /// exchange, and both removed after it.
+    #[allow(clippy::too_many_arguments)]
+    async fn read_bytes(
+        &self,
+        inst: &mut Instance,
+        bytes: &[u8],
+        ext: &str,
+        (width, height): (u32, u32),
+        language: &str,
+        profile: &str,
+        run_id: &str,
+    ) -> Result<EngineOutput, PageError> {
+        let keep = |e: anyhow::Error| PageError::Keep(EngineError::Failed(e));
         let name = format!("{run_id}.{ext}");
         let host_image = inst.dirs.host_in.join(&name);
-        tokio::fs::write(&host_image, &bytes)
+        tokio::fs::write(&host_image, bytes)
             .await
             .map_err(|e| {
                 anyhow::Error::new(crate::worker::ScratchError(format!(
@@ -464,15 +527,15 @@ impl ContractEngine {
                 )))
             })
             .map_err(keep)?;
-        let host_out = inst.dirs.host_out.join(&run_id);
+        let host_out = inst.dirs.host_out.join(run_id);
         let made = make_out_dir(&host_out, self.sandbox.as_ref(), inst.dirs.level.as_deref()).await;
         let result = match made {
             Ok(()) => {
                 self.exchange(
                     inst,
-                    &run_id,
+                    run_id,
                     &name,
-                    &bytes,
+                    bytes,
                     (width, height),
                     language,
                     profile,
@@ -480,7 +543,10 @@ impl ContractEngine {
                 )
                 .await
             }
-            Err(e) => Err(PageError::Keep(EngineError::Failed(e))),
+            // The worker's own scratch, before the engine sees the page.
+            Err(e) => Err(PageError::Keep(EngineError::Failed(anyhow::Error::new(
+                crate::worker::ScratchError(format!("the page's out directory: {e:#}")),
+            )))),
         };
         let _ = tokio::fs::remove_file(&host_image).await;
         let _ = tokio::fs::remove_dir_all(&host_out).await;
@@ -520,27 +586,42 @@ impl ContractEngine {
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         tracing::debug!(run_id, "page to engine");
         let line = encode(&ToAdapter::Page(req.clone()));
-        let sent = inst
-            .stdin
-            .write_all(&line)
-            .await
-            .and(inst.stdin.flush().await);
+        let asked = std::time::Instant::now();
+        inst.last_exchange = None;
+        let sent = match inst.stdin.as_mut() {
+            Some(stdin) => match stdin.write_all(&line).await {
+                Ok(()) => stdin.flush().await,
+                Err(e) => Err(e),
+            },
+            None => Err(std::io::Error::other("input already closed")),
+        };
         if let Err(e) = sent {
-            return Err(anyhow::anyhow!(
-                "the engine instance closed its input: {e}; {}",
-                inst.stderr_tail()
+            return Err(ReadFailed::error(
+                "failed",
+                "engine_crash",
+                format!(
+                    "the engine instance closed its input: {e}; {}",
+                    inst.stderr_tail()
+                ),
             )
             .into());
         }
         let wait = self.opts.page_timeout + KILL_GRACE;
-        let reply = match tokio::time::timeout(wait, read_line(&mut inst.stdout)).await {
+        let reply = tokio::time::timeout(wait, read_line(&mut inst.stdout)).await;
+        inst.last_exchange = Some(asked.elapsed());
+        let reply = match reply {
             Err(_) => {
                 // Killed now, not after retire's grace: the page's budget
                 // allows the deadline plus 15 s and no more.
                 if let Some(c) = inst.child.as_mut() {
                     let _ = c.start_kill();
                 }
-                return Err(anyhow::anyhow!("no result from the engine in {wait:?}").into());
+                return Err(ReadFailed::error(
+                    "timeout",
+                    "engine_timeout",
+                    format!("no result from the engine in {wait:?}"),
+                )
+                .into());
             }
             Ok(Err(e)) => return Err(anyhow::anyhow!("engine protocol: {e}").into()),
             Ok(Ok(None)) => {
@@ -549,9 +630,12 @@ impl ContractEngine {
                     let _ = tokio::time::timeout(Duration::from_secs(2), c.wait()).await;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                return Err(
-                    anyhow::anyhow!("the engine instance exited; {}", inst.stderr_tail()).into(),
-                );
+                return Err(ReadFailed::error(
+                    "failed",
+                    "engine_crash",
+                    format!("the engine instance exited; {}", inst.stderr_tail()),
+                )
+                .into());
             }
             Ok(Ok(Some(l))) => l,
         };
@@ -583,10 +667,15 @@ impl ContractEngine {
                 // The instance is kept unless the adapter asked for a
                 // restart; a timeout's stray processes are its own to stop
                 // (`cancel = adapter`).
-                let e = EngineError::Failed(anyhow::anyhow!(
-                    "engine {}: {}",
-                    result.status.as_str(),
-                    message()
+                let (status, kind) = match result.status {
+                    Status::BadInput => ("bad_input", "engine"),
+                    Status::Timeout => ("timeout", "engine_timeout"),
+                    _ => ("failed", "engine"),
+                };
+                let e = EngineError::Failed(ReadFailed::error(
+                    status,
+                    kind,
+                    format!("engine {}: {}", result.status.as_str(), message()),
                 ));
                 return Err(if result.restart {
                     PageError::Drop(e)
@@ -620,8 +709,13 @@ impl ContractEngine {
         // A layout that doesn't convert is the page's `convert` failure and
         // the instance stays; one that breaks a limit or the declared
         // granularity is a broken protocol, and it goes.
-        let convert =
-            |e: String| PageError::Keep(EngineError::Failed(anyhow::anyhow!("convert: {e}")));
+        let convert = |e: String| {
+            PageError::Keep(EngineError::Failed(ReadFailed::error(
+                "failed",
+                "convert",
+                format!("convert: {e}"),
+            )))
+        };
         let full = (f64::from(width), f64::from(height));
         let mut page = match layout.kind {
             Layout::Alto => {
@@ -643,9 +737,7 @@ impl ContractEngine {
                             )
                     );
                     if limit {
-                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
-                            "engine protocol: {e}"
-                        )))
+                        PageError::from(anyhow::anyhow!("engine protocol: {e}"))
                     } else {
                         convert(e.to_string())
                     }
@@ -664,9 +756,7 @@ impl ContractEngine {
             Layout::Boxes => {
                 let b = boxes::parse(&raw, &BoxLimits::default()).map_err(|e| {
                     if e.is_protocol() {
-                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
-                            "engine protocol: {e}"
-                        )))
+                        PageError::from(anyhow::anyhow!("engine protocol: {e}"))
                     } else {
                         convert(e.to_string())
                     }
@@ -682,9 +772,7 @@ impl ContractEngine {
                 )
                 .map_err(|e| {
                     if e.is_protocol() {
-                        PageError::Drop(EngineError::Failed(anyhow::anyhow!(
-                            "engine protocol: {e}"
-                        )))
+                        PageError::from(anyhow::anyhow!("engine protocol: {e}"))
                     } else {
                         convert(e.to_string())
                     }
@@ -1017,7 +1105,7 @@ async fn spawn(
     }
     let mut inst = Instance {
         child: Some(child),
-        stdin,
+        stdin: Some(stdin),
         stdout: BufReader::new(out),
         stderr,
         dirs,
@@ -1027,6 +1115,7 @@ async fn spawn(
         cleanups: cleanups.clone(),
         jobs: 0,
         load_seconds: 0.0,
+        last_exchange: None,
     };
     match read_hello(&mut inst, opts.start_timeout).await {
         Ok(h) => {
@@ -1151,6 +1240,19 @@ impl Engine for ContractEngine {
         self.opts.dpi
     }
 
+    fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
+        let profile = self.profile(language)?;
+        let tag = self.tag(profile).ok()?;
+        // A guess, before the page has a slot: the instance `instance()`
+        // would take now (the last idle one, cold if it hasn't read a page
+        // yet, or a new one). The read reports the one it gets.
+        let cold_start = self
+            .idle
+            .lock()
+            .map_or(true, |v| v.last().is_none_or(|i| i.jobs == 0));
+        Some((tag, self.hello_info(&self.hello, profile, cold_start)))
+    }
+
     async fn shutdown(&self) {
         let idle: Vec<Instance> = self
             .idle
@@ -1190,8 +1292,20 @@ impl Engine for ContractEngine {
         &self,
         image: &Path,
         language: &str,
+        work: &Path,
+        run_id: &str,
+    ) -> Result<EngineOutput, EngineError> {
+        self.read_traced(image, language, work, run_id, &|_| {})
+            .await
+    }
+
+    async fn read_traced(
+        &self,
+        image: &Path,
+        language: &str,
         _work: &Path,
         run_id: &str,
+        on_instance: &(dyn Fn(ReadInfo) + Send + Sync),
     ) -> Result<EngineOutput, EngineError> {
         let profile = self
             .profile(language)
@@ -1203,6 +1317,7 @@ impl Engine for ContractEngine {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut inst = self.instance().await?;
+        on_instance(self.instance_info(&inst, &profile));
         match self
             .read_page(&mut inst, image, language, &profile, run_id)
             .await
@@ -1273,6 +1388,145 @@ mod tests {
         // The page's directory itself may not be a symlink.
         std::os::unix::fs::symlink(dir.path(), dir.path().join("sub/link")).unwrap();
         assert!(open_dir(&dir.path().join("sub/link")).is_err());
+    }
+
+    /// An adapter that sends its hello and reads requests without
+    /// answering.
+    async fn silent_engine(dir: &Path) -> ContractEngine {
+        script_engine(dir, "cat >/dev/null\n").await
+    }
+
+    /// An adapter that sends its hello, then runs `body` on its requests.
+    async fn script_engine(dir: &Path, body: &str) -> ContractEngine {
+        script_engine_with(dir, "", body).await
+    }
+
+    /// [`script_engine`], running `before` before each instance's hello.
+    pub(super) async fn script_engine_with(dir: &Path, before: &str, body: &str) -> ContractEngine {
+        let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"silent","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":[],"tunable":[]}],"type":"hello"}"#;
+        let script = dir.join("adapter");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\n{before}\necho '{hello}'\n{body}"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        ContractEngine::start(ContractOptions {
+            launch: Launch::Local {
+                program: script,
+                args: Vec::new(),
+                scratch: dir.to_owned(),
+            },
+            instances: 1,
+            threads: 1,
+            start_timeout: Duration::from_secs(10),
+            page_timeout: Duration::from_secs(10),
+            max_jobs: 100,
+            dpi: 300,
+            node: "test1".into(),
+        })
+        .await
+        .unwrap()
+    }
+
+    /// A page directory the worker can't make is its own scratch failure,
+    /// before the engine sees the page: no `ocr_engine_run` for it.
+    #[tokio::test]
+    async fn an_out_directory_that_cant_be_made_is_scratch() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = silent_engine(dir.path()).await;
+        let mut inst = e.instance().await.unwrap();
+        std::fs::create_dir(inst.dirs.host_out.join("r1")).unwrap();
+        let img = crate::testimg::text_image("HELLO");
+        let r = e
+            .read_bytes(&mut inst, &img, "pgm", (10, 10), "eng", "eng", "r1")
+            .await;
+        match r {
+            Err(PageError::Keep(EngineError::Failed(err))) => {
+                assert!(err.is::<crate::worker::ScratchError>(), "{err:#}")
+            }
+            Err(PageError::Keep(e) | PageError::Drop(e)) => panic!("{e:#}"),
+            Ok(_) => panic!("read"),
+        }
+        inst.retire().await;
+        e.shutdown().await;
+    }
+
+    /// The first read of a new idle instance is a cold start, before it
+    /// (`describe`, used when the read fails) as after it.
+    #[tokio::test]
+    async fn a_fresh_idle_instance_is_cold() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = silent_engine(dir.path()).await;
+        assert_eq!(e.idle.lock().unwrap().len(), 1);
+        assert!(e.describe("eng").unwrap().1.cold_start);
+        let inst = e.instance().await.unwrap();
+        e.give_back(inst).await;
+        assert!(!e.describe("eng").unwrap().1.cold_start);
+        // None idle: the read starts one.
+        let inst = e.instance().await.unwrap();
+        assert!(e.describe("eng").unwrap().1.cold_start);
+        inst.retire().await;
+        e.shutdown().await;
+    }
+
+    /// A read reports the instance it got once it has a slot, not the
+    /// guess `describe` made before: here the page waits for the one
+    /// instance, which another page has warmed by then.
+    #[tokio::test]
+    async fn a_read_reports_the_instance_it_got() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = std::sync::Arc::new(
+            script_engine(
+                dir.path(),
+                r#"while IFS= read -r l; do
+  run=$(printf '%s\n' "$l" | sed 's/.*"run_id":"\([^"]*\)".*/\1/')
+  printf '{"engine_stats":{},"error":{"kind":"image","message":"unreadable"},"markup":"none","run_id":"%s","status":"bad_input","type":"result","warnings":[]}\n' "$run"
+done
+"#,
+            )
+            .await,
+        );
+        let image = dir.path().join("page.pgm");
+        std::fs::write(&image, crate::testimg::text_image("HELLO")).unwrap();
+        let read = |run_id: &'static str| {
+            let (e, image) = (e.clone(), image.clone());
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let s = seen.clone();
+            let task = tokio::spawn(async move {
+                let on = move |i: ReadInfo| s.lock().unwrap().push(i.cold_start);
+                e.read_traced(&image, "eng", Path::new("."), run_id, &on)
+                    .await
+            });
+            (task, seen)
+        };
+        // The first page holds the only slot and instance.
+        let permit = e.slots.acquire().await.unwrap();
+        let mut inst = e.instance().await.unwrap();
+        assert!(e.describe("eng").unwrap().1.cold_start, "none idle");
+        let (second, seen) = read("r2");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(seen.lock().unwrap().is_empty(), "waits for the slot");
+        inst.jobs = 1;
+        e.give_back(inst).await;
+        drop(permit);
+        let r = second.await.unwrap();
+        assert!(
+            matches!(&r, Err(EngineError::Failed(err)) if crate::engine::read_failure(err) == ("bad_input", "engine")),
+            "{r:?}"
+        );
+        assert_eq!(*seen.lock().unwrap(), vec![false], "the warm instance");
+        // A new instance's first read is cold.
+        let idle = e.idle.lock().unwrap().pop().unwrap();
+        idle.retire().await;
+        let (third, seen) = read("r3");
+        assert!(third.await.unwrap().is_err());
+        assert_eq!(*seen.lock().unwrap(), vec![true]);
+        e.shutdown().await;
     }
 
     #[tokio::test]
