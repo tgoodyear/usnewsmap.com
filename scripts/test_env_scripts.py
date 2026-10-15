@@ -10,7 +10,8 @@ the tags fails with that message),
 STUB_TAGGED_GROUP (when set, the only group `group show` finds),
 STUB_PARAMS (the guard-rail stack's parameters as two tsv rows) and
 STUB_COST (Cost Management's answer; STUB_COST_ERROR makes it fail with that
-message). For a job execution (scripts/start-job.sh, and
+message, for STUB_COST_FAILS calls when set; then STUB_COST_NEXT_ERROR
+if set, otherwise success). Cost calls are counted in STUB_LOG.cost. For a job execution (scripts/start-job.sh, and
 scripts/titles-seed.sh through it): STUB_EXECUTION (the started execution's name) and
 STUB_EXEC_STATUS (its status). For the settings store (#295): STUB_KEYS
 (the keys under the label, one per line), STUB_KV_<KEY> (a key's value),
@@ -170,7 +171,11 @@ print(json.dumps([{"key": k, "value": os.environ.get("STUB_KV_" + k, "")} for k 
     esac ;;
   "rest --method")
     case "$*" in *"/jobs/"*"/start?"*) echo "${STUB_EXECUTION:-}"; exit 0 ;; esac
-    if [ -n "${STUB_COST_ERROR:-}" ]; then echo "$STUB_COST_ERROR" >&2; exit 1; fi
+    count=$(cat "$STUB_LOG.cost" 2> /dev/null || echo 0)
+    count=$((count + 1)); echo "$count" > "$STUB_LOG.cost"
+    if [ "$count" -le "${STUB_COST_FAILS:-999}" ]; then
+      if [ -n "${STUB_COST_ERROR:-}" ]; then echo "$STUB_COST_ERROR" >&2; exit 1; fi
+    elif [ -n "${STUB_COST_NEXT_ERROR:-}" ]; then echo "$STUB_COST_NEXT_ERROR" >&2; exit 1; fi
     printf '%s\n' "${STUB_COST:-}" ;;
   *) echo "stub az: unexpected: $*" >&2; exit 9 ;;
 esac
@@ -494,6 +499,24 @@ class GuardrailBudget(Stubbed):
 
 
 class DevStatus(Stubbed):
+    def setUp(self):
+        super().setUp()
+        sleep = os.path.join(self.tmp, "bin", "sleep")
+        with open(sleep, "w") as f:
+            f.write('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$STUB_LOG.sleep"\n')
+        os.chmod(sleep, 0o755)
+
+    def retry_delays(self):
+        path = self.log + ".sleep"
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return [int(line) for line in f]
+
+    def cost_calls(self):
+        with open(self.log + ".cost") as f:
+            return int(f.read())
+
     def status(self, **extra):
         return subprocess.run([os.path.join(HERE, "dev-status.sh"), "--subscription", "sub-1"], cwd=ROOT,
                               env={**self.env, "STUB_COST": COST, **extra}, capture_output=True, text=True)
@@ -588,11 +611,89 @@ class DevStatus(Stubbed):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("needs Cost Management Reader", r.stderr)
 
-    def test_any_other_cost_error_fails(self):
-        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\n2026-10-01T12:00:00Z",
-                        STUB_COST_ERROR="ERROR: (TooManyRequests) throttled")
+    def test_throttle_then_success_honours_retry_headers(self):
+        for error, delay in (
+            ('ERROR: Too Many Requests({"error":{"code":"429"}})', 2),
+            ('ERROR: (TooManyRequests) throttled\nRetry-After: 7', 7),
+            ('ERROR: 429 {"Retry-After": "09"}', 9),
+            ("ERROR: 429 {'x-ms-ratelimit-microsoft.costmanagement-qpu-retry-after': '5', "
+             "'x-ms-ratelimit-microsoft.costmanagement-entity-retry-after': '11'}", 11),
+            ('ERROR: 429\nRetry-After: invalid', 2),
+            ('ERROR: 429\nRetry-After: 0', 2),
+            ('ERROR: 429\nRetry-After: Wed, 21 Oct 2015 07:28:00 GMT', 2),
+        ):
+            with self.subTest(error=error):
+                for suffix in (".cost", ".sleep"):
+                    path = self.log + suffix
+                    if os.path.exists(path):
+                        os.remove(path)
+                r = self.status(STUB_COST_ERROR=error, STUB_COST_FAILS="1")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("1.75 USD", r.stdout)
+                self.assertNotIn("cost unknown", r.stderr)
+                self.assertEqual(self.retry_delays(), [delay])
+                self.assertEqual(self.cost_calls(), 2)
+
+    def test_http_date_retry_after(self):
+        from email.utils import format_datetime
+        after = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=30), usegmt=True)
+        r = self.status(STUB_COST_ERROR=f"ERROR: 429\nRetry-After: {after}", STUB_COST_FAILS="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.cost_calls(), 2)
+        self.assertTrue(25 <= self.retry_delays()[0] <= 30, self.retry_delays())
+
+    def test_persistent_throttle_leaves_empty_environment_successful(self):
+        r = self.status(STUB_COST_ERROR="ERROR: (TooManyRequests) throttled")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("cost unknown", r.stderr)
+        self.assertIn("dev holds nothing", r.stdout)
+        self.assertNotIn("cost since", r.stdout)
+        self.assertEqual(self.retry_delays(), [2, 4, 8])
+        self.assertEqual(self.cost_calls(), 4)
+
+    def test_persistent_throttle_keeps_experiment_successful(self):
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\n",
+                        STUB_COST_ERROR="ERROR: 429 throttled")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("cost unknown", r.stderr)
+        self.assertIn("experiment #275", r.stdout)
+
+    def test_throttle_does_not_hide_missing_experiment_tag(self):
+        r = self.status(STUB_GROUPS="rg-usnm-dev", STUB_TAGS="\n",
+                        STUB_COST_ERROR="ERROR: 429 throttled")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("cost unknown", r.stderr)
+        self.assertIn("no experiment tag", r.stderr)
+
+    def test_retry_wait_budget(self):
+        r = self.status(STUB_COST_ERROR="ERROR: 429\nRetry-After: 30")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("cost unknown", r.stderr)
+        self.assertEqual(self.retry_delays(), [30, 30])
+        self.assertEqual(self.cost_calls(), 3)
+
+    def test_over_budget_header_is_not_retried_early(self):
+        r = self.status(STUB_COST_ERROR="ERROR: 429\nRetry-After: 61")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("cost unknown", r.stderr)
+        self.assertEqual(self.retry_delays(), [])
+        self.assertEqual(self.cost_calls(), 1)
+
+    def test_non_throttle_error_after_retry_still_fails(self):
+        r = self.status(STUB_COST_ERROR="ERROR: 429", STUB_COST_FAILS="1",
+                        STUB_COST_NEXT_ERROR="ERROR: InternalServerError")
         self.assertEqual(r.returncode, 1)
         self.assertIn("can't read the cost", r.stderr)
+        self.assertEqual(self.retry_delays(), [2])
+        self.assertEqual(self.cost_calls(), 2)
+
+    def test_any_other_cost_error_fails(self):
+        r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\n2026-10-01T12:00:00Z",
+                        STUB_COST_ERROR="ERROR: InternalServerError")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't read the cost", r.stderr)
+        self.assertEqual(self.cost_calls(), 1)
+        self.assertEqual(self.retry_delays(), [])
 
 
 class StartQuality(Stubbed):
