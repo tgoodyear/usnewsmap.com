@@ -21,7 +21,7 @@ class CampaignTest(unittest.TestCase):
             image = f"SYNTHETIC PIXELS {source}".encode()
             (directory / "one.png").write_bytes(image)
             row = {"crop_id": source + "-one", "image": "one.png", "lang": "eng",
-                   "group": source, "for_scoring": True, "transcription": f"SYNTHETIC {source}",
+                   "group": source, "for_scoring": True, "transcription": f"SYNTHETIC {source}\u0085\u2028\u2029",
                    "transcriber": "synthetic", "reviewer": "synthetic-reviewer"}
             meta = {"crop_id": row["crop_id"], "source_dataset": source, "page_id": source,
                     "source_url": "https://example.org/synthetic", "source_license": "CC-BY-4.0",
@@ -39,8 +39,17 @@ class CampaignTest(unittest.TestCase):
             self.assertFalse(result["replayed"])
             self.assertTrue(replay["replayed"])
             self.assertEqual(len(result["jobs"]), 2)
+            other = c.prepare(root / "cache", root / "campaigns/other",
+                              "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "b" * 64)
+            self.assertTrue(set(result["jobs"]).isdisjoint(other["jobs"]))
             self.assertEqual(c.collect(out, root / "seen")["returned_trials"], 0)
+            (root / "seen/.candidate.unpublished").mkdir(parents=True)
             self.assertEqual(len(c.collect(out, root / "seen")["pending_trials"]), 2)
+            import zipfile
+            with zipfile.ZipFile(out / "training.zip") as archive:
+                manifest = json.loads(archive.read("training.json"))
+                self.assertTrue(manifest["examples"][0]["text"].endswith("\u0085\u2028\u2029"))
+                self.assertIn(b"Synthetic fixture", archive.read("NOTICE.txt"))
             split = json.loads((out / "split.json").read_text())
             self.assertEqual(split["counts"], {"train": 1, "validation": 1, "test": 1})
             project = root / "project"
@@ -92,6 +101,7 @@ class CampaignTest(unittest.TestCase):
                       "adapter_sha256": sha(adapter), "adapter_bytes": len(adapter),
                       "elapsed_seconds": 10.0, "peak_gpu_bytes": 6_000_000_000,
                       "gpu": "synthetic", "torch": "2.8.0",
+                      "assigned_gpu": 1,
                       "candidate_status": "untrusted-requires-held-out-evaluation"}
             raw = json.dumps(report).encode()
             check.validate(adapter, raw, unit)

@@ -20,6 +20,7 @@ class TrainingContract(unittest.TestCase):
                     "examples": [example], "notices": ["Synthetic test; no real source pixels"]}
         self.bundle(root, manifest, {"images/a.png": pixels})
         job = {"v": 1, "base_revision": w.BASE_REVISION,
+               "campaign_sha256": "c" * 64,
                "bundle_sha256": w.sha((root / "training.zip").read_bytes()),
                "seed": 542, "steps": 2, "learning_rate": 1e-4, "rank": 4}
         (root / "train.json").write_text(json.dumps(job))
@@ -102,9 +103,32 @@ class TrainingContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.job(root)
+            (root / "init_data.xml").write_text(
+                "<app_init_data><gpu_type>NVIDIA</gpu_type><gpu_device_num>1</gpu_device_num></app_init_data>"
+            )
             with patch("torch.cuda.is_available", return_value=False), \
                     self.assertRaisesRegex(ValueError, "CPU fallback is disabled"):
                 w.run(root, root / "no-model-needed")
+
+    def test_assigned_gpu_is_selected_before_cuda_and_ambiguous_devices_fail(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(w.os.environ):
+            root = Path(tmp)
+            path = root / "init_data.xml"
+            path.write_text(
+                "<app_init_data><gpu_type>NVIDIA</gpu_type><gpu_device_num>2</gpu_device_num></app_init_data>"
+            )
+            self.assertEqual(w.select_gpu(root), 2)
+            self.assertEqual(w.os.environ["CUDA_VISIBLE_DEVICES"], "2")
+            for content in (
+                "<app_init_data/>",
+                "<app_init_data><gpu_type>ATI</gpu_type><gpu_device_num>0</gpu_device_num></app_init_data>",
+                "<app_init_data><gpu_type>NVIDIA</gpu_type><gpu_device_num>-1</gpu_device_num></app_init_data>",
+                "<app_init_data><gpu_type>NVIDIA</gpu_type><gpu_device_num>0</gpu_device_num>"
+                "<gpu_device_num>1</gpu_device_num></app_init_data>",
+            ):
+                path.write_text(content)
+                with self.assertRaises(ValueError):
+                    w.select_gpu(root)
 
 
 def visual_smoke(processor_dir: Path) -> dict:

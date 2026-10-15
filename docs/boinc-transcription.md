@@ -77,6 +77,9 @@ at least 15 GiB VRAM. Scheduling reserves two CPUs, 16 GiB host memory and
 40 GiB disk (including the cold CUDA/model image). The sandbox is offline,
 read-only except for outputs/tmpfs, with no credentials, no CPU fallback and a
 one-hour trial timeout. Step/rank/token/image/archive/output limits are enforced.
+Before importing PyTorch, the worker reads BOINC's assigned GPU ordinal from
+`init_data.xml` and restricts CUDA visibility to that device; multi-GPU hosts must
+not run every trial on device zero. A missing/ambiguous assignment fails explicitly.
 
 `boinc-train.yml` builds the pinned CUDA image, verifies every model file against
 its pinned Git/LFS identity and exercises real tiny Qwen3-VL visual
@@ -105,6 +108,8 @@ BLN600, NZZ and American Stories are not training inputs. Only `training.zip`
 and the immutable trial configuration enter the public download tree.
 Missing/changed data fail explicitly; an uncertain `submitting` marker requires
 database reconciliation before retry, never blind duplicate submission.
+Trial hashes bind the campaign name, worker image and dataset identities, so
+separately named campaigns cannot collide on workunit names or quarantine lookup.
 
 Each trial requests one result: floating-point GPU training is not byte-consensus.
 The validator binds returned identity/configuration/checksums to a submitted job,

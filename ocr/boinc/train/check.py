@@ -16,6 +16,7 @@ REPORT_KEYS = {
     "v", "job_sha256", "base_revision", "bundle_sha256", "steps", "rank", "seed",
     "learning_rate", "losses", "adapter_sha256", "adapter_bytes", "elapsed_seconds",
     "peak_gpu_bytes", "gpu", "torch", "candidate_status",
+    "campaign_sha256", "assigned_gpu",
 }
 
 
@@ -86,7 +87,7 @@ def validate(adapter: bytes, raw_report: bytes, unit: Path) -> dict:
         raise ValueError("invalid training result fields")
     job, _ = load_job(unit)
     identity = sha((unit / "train.json").read_bytes())
-    for key in ("base_revision", "bundle_sha256", "steps", "rank", "seed", "learning_rate"):
+    for key in ("base_revision", "bundle_sha256", "campaign_sha256", "steps", "rank", "seed", "learning_rate"):
         if type(report[key]) is not type(job[key]) or report[key] != job[key]:
             raise ValueError(f"training result differs from submitted {key}")
     if (type(report["v"]) is not int or report["v"] != 1 or report["job_sha256"] != identity
@@ -105,6 +106,8 @@ def validate(adapter: bytes, raw_report: bytes, unit: Path) -> dict:
     for key in ("gpu", "torch"):
         if not isinstance(report[key], str) or not 1 <= len(report[key]) <= 256:
             raise ValueError(f"invalid {key}")
+    if type(report["assigned_gpu"]) is not int or not 0 <= report["assigned_gpu"] <= 999:
+        raise ValueError("invalid assigned GPU ordinal")
     check_tensors(adapter, job["rank"])
     return report
 

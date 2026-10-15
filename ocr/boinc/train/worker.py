@@ -6,12 +6,14 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import random
 import re
 import signal
 import time
 import zipfile
+import xml.etree.ElementTree as ET
 
 BASE_REVISION = "89644892e4d85e24eaac8bacfd4f463576704203"
 MAX_BUNDLE = 64 * 1024 * 1024
@@ -23,7 +25,7 @@ PROMPT = (
 )
 PERMITTED_LICENSES = {"CC0-1.0", "CC-BY-4.0", "CC-BY-4.0 (Zenodo record)",
                       "CC0-1.0 (GitHub LICENSE file); CC-BY-4.0 (Zenodo record); images Public Domain Mark 1.0"}
-CONFIG_KEYS = {"v", "base_revision", "bundle_sha256", "seed", "steps", "learning_rate", "rank"}
+CONFIG_KEYS = {"v", "base_revision", "bundle_sha256", "campaign_sha256", "seed", "steps", "learning_rate", "rank"}
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -40,6 +42,8 @@ def load_job(root: Path) -> tuple[dict, list[dict]]:
         raise ValueError("invalid training configuration fields")
     if type(job["v"]) is not int or job["v"] != 1 or job["base_revision"] != BASE_REVISION:
         raise ValueError("unsupported training contract or base revision")
+    if not isinstance(job["campaign_sha256"], str) or not HEX.fullmatch(job["campaign_sha256"]):
+        raise ValueError("invalid immutable campaign identity")
     for key, low, high in (("seed", 0, 2**31 - 1), ("steps", 1, 64), ("rank", 4, 8)):
         if type(job[key]) is not int or not low <= job[key] <= high:
             raise ValueError(f"{key} is outside the bounded trial range")
@@ -167,13 +171,30 @@ def optimize(model, batches: list, job: dict, device: str) -> list[float]:
     return losses
 
 
+def select_gpu(root: Path) -> int:
+    with (root / "init_data.xml").open("rb") as source:
+        raw = source.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError("BOINC init_data.xml exceeds size limit")
+    init = ET.fromstring(raw)
+    devices = init.findall("gpu_device_num")
+    types = init.findall("gpu_type")
+    if (len(devices) != 1 or not re.fullmatch(r"[0-9]{1,3}", devices[0].text or "")
+            or len(types) != 1 or types[0].text not in ("NVIDIA", "CUDA")):
+        raise ValueError("expected one BOINC-assigned NVIDIA CUDA device")
+    device = int(devices[0].text)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(device)
+    return device
+
+
 def run(root: Path, model_dir: Path) -> dict:
+    assigned_gpu = select_gpu(root)
     import torch
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
     from peft import get_peft_model_state_dict
     from safetensors.torch import save_file
     job, examples = load_job(root)
-    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
+    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported(including_emulation=False):
         raise ValueError("this training app requires a BF16-capable NVIDIA GPU; CPU fallback is disabled")
     if torch.cuda.get_device_properties(0).total_memory < 15 * 1024**3:
         raise ValueError("training trial requires at least 15 GiB GPU memory")
@@ -209,6 +230,7 @@ def run(root: Path, model_dir: Path) -> dict:
     report = {
         "v": 1, "job_sha256": sha((root / "train.json").read_bytes()),
         "base_revision": BASE_REVISION, "bundle_sha256": job["bundle_sha256"],
+        "campaign_sha256": job["campaign_sha256"], "assigned_gpu": assigned_gpu,
         "steps": job["steps"], "rank": job["rank"], "seed": job["seed"],
         "learning_rate": job["learning_rate"], "losses": losses,
         "adapter_sha256": sha(adapter), "adapter_bytes": len(adapter),

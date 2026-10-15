@@ -45,9 +45,8 @@ def prepare(cache: Path, out: Path, worker_image: str) -> dict:
             transcription.prepare([f"{s}={cache / s}" for s in SOURCES],
                                   candidate, 542, False, list(SOURCES))
             train = candidate / "train"
-            rows = [json.loads(line) for line in (train / "crops.jsonl").read_text().splitlines()]
-            meta = {row["crop_id"]: row for row in
-                    map(json.loads, (train / "manifest.jsonl").read_text().splitlines())}
+            rows = transcription.read_jsonl(train / "crops.jsonl")
+            meta = {row["crop_id"]: row for row in transcription.read_jsonl(train / "manifest.jsonl")}
             examples, images = [], {}
             for row in rows:
                 if len(examples) == 16:
@@ -88,8 +87,14 @@ def prepare(cache: Path, out: Path, worker_image: str) -> dict:
             units = candidate / "units"
             units.mkdir()
             jobs = []
+            campaign_sha = sha(encoded({
+                "name": out.name, "worker_image": worker_image,
+                "split_sha256": manifest["split_sha256"],
+                "bundle_sha256": sha(public.read_bytes()),
+            }))
             for seed, rank in ((542, 4), (543, 8)):
                 job = {"v": 1, "base_revision": BASE_REVISION, "bundle_sha256": sha(public.read_bytes()),
+                       "campaign_sha256": campaign_sha,
                        "seed": seed, "rank": rank, "steps": 16, "learning_rate": 1e-4}
                 raw = encoded(job)
                 identity = sha(raw)
@@ -193,6 +198,8 @@ def collect(root: Path, seen: Path) -> dict:
     returned, candidates = set(), []
     if seen.exists():
         for path in sorted(seen.iterdir()):
+            if path.name.startswith(".candidate.") and path.is_dir() and not path.is_symlink():
+                continue
             if not HEX.fullmatch(path.name):
                 raise ValueError("unexpected entry in candidate quarantine")
             raw = bounded(path / "result.json", 16384)
