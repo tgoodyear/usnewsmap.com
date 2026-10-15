@@ -464,6 +464,20 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(any("qwen stage --quality-root" in c for c in self.calls()))
 
+        for step, expected in [
+            ("qwen-benchmark-stage", "qwen benchmark-stage"),
+            ("qwen-benchmark-collect", "qwen benchmark-collect"),
+        ]:
+            r = subprocess.run(
+                [bridge_copy], cwd=ROOT,
+                env={**base, "BRIDGE_STEP": step, "QWEN_SPOOL": "/spool/v"},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(any(expected in c for c in self.calls()))
+        self.assertTrue(any("--crops " + share + "/qwen/pilot-1/test/crops.jsonl" in c for c in self.calls()))
+        self.assertTrue(any("--out " + share + "/qwen/pilot-1/out" in c for c in self.calls()))
+
         r = subprocess.run(
             [bridge_copy],
             cwd=ROOT,

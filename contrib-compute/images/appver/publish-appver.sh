@@ -37,7 +37,12 @@ if ! mkdir "$lock" 2> /dev/null; then
     fail "another publish holds $lock; wait for it to end"
   fi
 fi
-trap 'rm -rf "$lock"' EXIT
+registration=""
+cleanup() {
+  [ -z "$registration" ] || rm -rf "$registration"
+  rmdir "$lock"
+}
+trap cleanup EXIT
 mkdir -p "$PROJ/apps/$APPVER_APP" "$PROJ/templates"
 has_existing_version=false
 if [ -d "$version_dir" ] && [ -n "$(find "$version_dir" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -print -quit)" ]; then
@@ -79,7 +84,44 @@ done
 fetch_secrets
 render_config
 (cd "$PROJ" && cp "$src/project.xml" project.xml && bin/xadd)
-(cd "$PROJ" && bin/update_versions --noconfirm)
+# Stock update_versions has no app selector and can abort on an unrelated version's
+# immutable files. Keep its code and signed payloads unchanged, but isolate its apps tree.
+registration=$(mktemp -d)
+mkdir -p "$registration/html" "$registration/apps/$APPVER_APP/$APPVER_VERSION"
+cp -LR "$PROJ/html/inc" "$registration/html/inc"
+ln -s "$PROJ/config.xml" "$registration/config.xml"
+ln -s "$dst" "$registration/apps/$APPVER_APP/$APPVER_VERSION/$subdir"
+(cd "$registration" && "$PROJ/bin/update_versions" --noconfirm)
+# PHP die(string) exits zero; the job status alone is not evidence of registration.
+(cd "$registration" && php <<'PHP'
+<?php
+chdir("html/inc");
+require_once("boinc_db.inc");
+$name = getenv("APPVER_APP");
+$version = getenv("APPVER_VERSION");
+$platformName = getenv("APPVER_PLATFORM") ?: "x86_64-pc-linux-gnu";
+$plan = getenv("APPVER_PLAN_CLASS") ?: "docker";
+if (!preg_match('/^usnm_[a-z_]+$/D', $name)
+    || !preg_match('/^[1-9][0-9]*\.[0-9]+$/D', $version)
+    || !in_array($platformName, ["x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin"], true)
+    || !in_array($plan, ["docker", "docker_mt", "docker_nvidia_cuda"], true)) {
+    fwrite(STDERR, "Invalid app-version verification inputs\n"); exit(1);
+}
+$app = BoincApp::lookup("name='$name'");
+$platform = BoincPlatform::lookup("name='$platformName'");
+if (!$app || !$platform) {
+    fwrite(STDERR, "App or platform registration is missing\n"); exit(1);
+}
+[$major, $minor] = array_map("intval", explode(".", $version));
+$number = 100 * $major + $minor;
+$versions = BoincAppVersion::enum("appid=$app->id and version_num=$number and platformid=$platform->id and plan_class='$plan'");
+if (count($versions) != 1) {
+    fwrite(STDERR, "Expected exactly one registered app version\n"); exit(1);
+}
+echo "Verified $name $version $platformName $plan (app_version ".$versions[0]->id.")\n";
+PHP
+)
+touch "$PROJ/reread_db"
 chown -R boincadm:boincadm "$dst" "$PROJ/templates" "$PROJ/download" 2> /dev/null ||
   log "chown on the share failed (UNVERIFIED semantics, design.md 2.3)"
 log "published $APPVER_APP $APPVER_VERSION"

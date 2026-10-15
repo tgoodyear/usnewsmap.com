@@ -13,11 +13,16 @@ class PublishTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.project = self.root / 'project'
         (self.project / 'bin').mkdir(parents=True)
+        (self.project / 'html/inc').mkdir(parents=True)
+        (self.project / 'config.xml').write_text('<config/>')
         (self.project / '.usnm-initialised').touch()
         for name in ('xadd', 'update_versions'):
             command = self.project / 'bin' / name
-            command.write_text('#!/bin/sh\nprintf "%s\\n" "$0" >> calls\n')
+            command.write_text(f'#!/bin/sh\nprintf "%s\\n" "$0" >> "{self.project}/calls"\n')
             command.chmod(0o755)
+        php = self.root / 'php'
+        php.write_text('#!/bin/sh\ncat >/dev/null\nexit "${STUB_VERIFY_STATUS:-0}"\n')
+        php.chmod(0o755)
         self.source = self.root / 'appver'
         (self.source / 'templates').mkdir(parents=True)
         (self.source / 'templates' / 'usnm_ocr_1.0.xml').write_text('template')
@@ -36,7 +41,8 @@ class PublishTests(unittest.TestCase):
         (src / 'docker_wrapper').write_text(payload)
         return subprocess.run(['bash', str(self.script)], capture_output=True, text=True,
                               env={**os.environ, 'PROJ': str(self.project), 'APPVER_APP': 'usnm_ocr',
-                                   'APPVER_VERSION': version, 'APPVER_PLATFORM': platform})
+                                   'APPVER_VERSION': version, 'APPVER_PLATFORM': platform,
+                                   'PATH': str(self.root) + os.pathsep + os.environ['PATH']})
 
     def test_sibling_platform_publish_and_replay_preserve_linux(self):
         self.assertEqual(self.publish('x86_64-pc-linux-gnu', 'linux').returncode, 0)
@@ -73,6 +79,23 @@ class PublishTests(unittest.TestCase):
         self.assertNotEqual(template.stat().st_ino, old_ino)
         (self.source / 'templates' / 'usnm_ocr_1.0.xml').write_text('drifted sibling template')
         self.assertNotEqual(self.publish('arm64-apple-darwin', 'v1.1-mac', version='1.1').returncode, 0)
+
+    def test_isolates_requested_platform_and_verifies_even_after_zero_exit(self):
+        command = self.project / 'bin/update_versions'
+        command.write_text(
+            '#!/bin/sh\n'
+            'test "$(find apps -type l | wc -l | tr -d " ")" = 1 || exit 9\n'
+            'test -L "apps/usnm_ocr/$APPVER_VERSION/${APPVER_PLATFORM}__docker" || exit 9\n'
+        )
+        self.assertEqual(self.publish('x86_64-pc-linux-gnu').returncode, 0)
+        self.assertTrue((self.project / 'reread_db').exists())
+        (self.project / 'reread_db').unlink()
+        php = self.root / 'php'
+        php.write_text('#!/bin/sh\ncat >/dev/null\nexit 1\n')
+        result = self.publish('x86_64-pc-linux-gnu')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.project / 'reread_db').exists())
+        self.assertFalse((self.project / '.usnm-publish.lock').exists())
 
 
 if __name__ == '__main__':

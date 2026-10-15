@@ -1,5 +1,9 @@
 # OCR quality on BOINC
 
+The [transcription post-training pilot](boinc-transcription.md) reuses `usnm_qwen`
+for held-out public-gold inference. Its references stay on the server; central
+training is separate from volunteer work.
+
 Issue: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522). Two apps estimate, for every page and without anyone transcribing it, how accurate and how complete each text we hold of it is, how much a careful reader could recover, and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (NVIDIA GPU, with a CPU fallback) adds a vision-language reading of a sample of crops, as one more reader. The other apps are described in [boinc.md](boinc.md), [boinc-assessment.md](boinc-assessment.md) and [boinc-surya.md](boinc-surya.md).
 
 Status: implemented in code and tested locally; UNVERIFIED on the live BOINC server and volunteer hosts. Every number below is a limit the code enforces, not a live measurement.
