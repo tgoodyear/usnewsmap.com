@@ -236,7 +236,7 @@ impl Options {
             }
         }
         for b in &self.batches {
-            if !usnm_store::is_safe_segment(b) {
+            if !usnm_ocr_contract::message::is_base_batch_name(base_batch(b)) {
                 bail!("unsafe seed batch name {b:?}");
             }
         }

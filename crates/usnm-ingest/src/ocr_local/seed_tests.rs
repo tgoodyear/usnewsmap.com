@@ -512,6 +512,44 @@ fn unroutable_waits_double_up_to_48_hours() {
 }
 
 #[test]
+fn seed_batch_filters_use_the_message_contract() {
+    for batch in [
+        "curiv_joshuaTree",
+        "lu_Cypher",
+        "me_Bissonnette",
+        "vi_White",
+        "wvu_Quote",
+        &format!("nbu_{}", "A".repeat(124)),
+    ] {
+        for filter in [batch.to_owned(), format!("{batch}_ver01")] {
+            let opts = Options {
+                batches: vec![filter],
+                ..plan(1)
+            };
+            opts.check().unwrap();
+            assert!(opts.batch_set().contains(batch));
+        }
+    }
+    for batch in [
+        "NBU_gage",
+        "nbu_bad-name",
+        "nbu_",
+        "nbu_name_ver001",
+        &format!("nbu_{}", "A".repeat(125)),
+    ] {
+        assert!(
+            Options {
+                batches: vec![batch.into()],
+                ..plan(1)
+            }
+            .check()
+            .is_err(),
+            "{batch}"
+        );
+    }
+}
+
+#[test]
 fn window_and_years() {
     assert_eq!(seed::auto_window(0.0), seed::MIN_AUTO_WINDOW);
     assert_eq!(seed::auto_window(1000.0), 2000);
