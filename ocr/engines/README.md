@@ -26,17 +26,17 @@ No tier-2 or credit-required profiles are added before the credits page (#372).
 
 Attribution fields are direct TOML keys, **not embedded JSON, Markdown or HTML**:
 
-| Key | TOML type | Meaning |
-| --- | --- | --- |
-| `license` | string | SPDX id, project `LicenseRef-*`, `none`, or `unknown` |
-| `author` | string | Author/publisher, as named by the source |
-| `source` | string | Source URL; for attributed weights, the download source |
-| `credit` | string | Plain-text, human-readable credit line (render as text) |
-| `fetched` | local date (`YYYY-MM-DD`, unquoted) | Recorded source/fetch date from the design's checked snapshot |
-| `note` | string | Evidence, including absence of a licence and where checked for `none` |
-| `terms` | string | Licence-text URL; required for cleared `LicenseRef-*` entries |
-| `restricted` | optional string | Quoted restrictive clause and its source link; presence always vetoes production |
-| `undecided` | optional string | Open maintainer decision and terms link; presence always vetoes production |
+| Key          | TOML type                           | Meaning                                                                          |
+| ------------ | ----------------------------------- | -------------------------------------------------------------------------------- |
+| `license`    | string                              | SPDX id, project `LicenseRef-*`, `none`, or `unknown`                            |
+| `author`     | string                              | Author/publisher, as named by the source                                         |
+| `source`     | string                              | Source URL; for attributed weights, the download source                          |
+| `credit`     | string                              | Plain-text, human-readable credit line (render as text)                          |
+| `fetched`    | local date (`YYYY-MM-DD`, unquoted) | Recorded source/fetch date from the design's checked snapshot                    |
+| `note`       | string                              | Evidence, including absence of a licence and where checked for `none`            |
+| `terms`      | string                              | Licence-text URL; required for cleared `LicenseRef-*` entries                    |
+| `restricted` | optional string                     | Quoted restrictive clause and its source link; presence always vetoes production |
+| `undecided`  | optional string                     | Open maintainer decision and terms link; presence always vetoes production       |
 
 For the credits page, identify code by `engine.id` and weights by
 `(engine.id, model.name)`. Read each entry's `credit`, `author`, `source` and
