@@ -5,8 +5,10 @@
 //! strict, since a node is outside Azure. The survey writes the same
 //! [`RunRecord`] as JSON lines with `"schema": 1`.
 //!
-//! Nothing writes it yet: the worker's provenance step (13 §13.11 step 8)
-//! does.
+//! The worker writes one per page it reads, between the page's ALTO and
+//! its overlay part (13 §13.11 step 8). `ocr-sync` checks it (12 Step 8,
+//! check 7) and copies it to the curated account with [`write_curated`],
+//! which adds the server's `ocred_at`.
 
 use std::sync::Arc;
 
@@ -326,8 +328,40 @@ pub fn validate(rows: &[RunRecord]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A page's record in `ocr-out`, from its issue
+/// (`<lccn>_<date>_ed-<n>`) and run_id (13 §13.8.4).
+pub fn path(issue: &str, run_id: &str) -> String {
+    format!("{PREFIX}/{issue}.{run_id}.parquet")
+}
+
+/// The curated copy's schema: [`schema`] and a last column, `ocred_at`,
+/// the time the server stamped on the page's part (12 Step 8).
+pub fn curated_schema() -> SchemaRef {
+    let mut fields: Vec<Field> = schema().fields().iter().map(|f| (**f).clone()).collect();
+    fields.push(Field::new(
+        "ocred_at",
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        false,
+    ));
+    Arc::new(Schema::new(fields))
+}
+
 /// The record as Parquet bytes, within [`crate::engine::limits::RUNS`].
 pub fn write(rows: &[RunRecord]) -> anyhow::Result<Vec<u8>> {
+    let out = encode(rows, None)?;
+    // The pickup's reader must take what a node writes, its bound on the
+    // uncompressed size included.
+    read(Bytes::from(out.clone())).context("the written runs record doesn't read back")?;
+    Ok(out)
+}
+
+/// The curated copy `ocr-sync` writes: the rows it checked, with
+/// `ocred_at` on each.
+pub fn write_curated(rows: &[RunRecord], ocred_at: DateTime<Utc>) -> anyhow::Result<Vec<u8>> {
+    encode(rows, Some(ocred_at))
+}
+
+fn encode(rows: &[RunRecord], ocred_at: Option<DateTime<Utc>>) -> anyhow::Result<Vec<u8>> {
     validate(rows)?;
     let maps: Vec<Map<String, Value>> = rows
         .iter()
@@ -336,11 +370,22 @@ pub fn write(rows: &[RunRecord]) -> anyhow::Result<Vec<u8>> {
             _ => bail!("a runs row didn't serialize"),
         })
         .collect::<anyhow::Result<_>>()?;
-    let cols = COLUMNS
+    let mut cols = COLUMNS
         .iter()
         .map(|(n, k, _)| column(&maps, n, *k))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let batch = RecordBatch::try_new(schema(), cols)?;
+    let schema = match ocred_at {
+        Some(t) => {
+            let mut b = TimestampMicrosecondBuilder::with_capacity(rows.len());
+            for _ in rows {
+                b.append_value(t.timestamp_micros());
+            }
+            cols.push(Arc::new(b.finish().with_timezone("UTC")) as ArrayRef);
+            curated_schema()
+        }
+        None => schema(),
+    };
+    let batch = RecordBatch::try_new(schema.clone(), cols)?;
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(ZstdLevel::try_new(3)?))
         .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
@@ -348,7 +393,7 @@ pub fn write(rows: &[RunRecord]) -> anyhow::Result<Vec<u8>> {
             SCHEMA.to_string(),
         )]))
         .build();
-    let mut w = ArrowWriter::try_new(Vec::new(), schema(), Some(props))?;
+    let mut w = ArrowWriter::try_new(Vec::new(), schema, Some(props))?;
     w.write(&batch)?;
     let out = w.into_inner()?;
     ensure!(
@@ -357,9 +402,6 @@ pub fn write(rows: &[RunRecord]) -> anyhow::Result<Vec<u8>> {
         out.len(),
         crate::engine::limits::RUNS
     );
-    // The pickup's reader must take what a node writes, its bound on the
-    // uncompressed size included.
-    read(Bytes::from(out.clone())).context("the written runs record doesn't read back")?;
     Ok(out)
 }
 
@@ -571,5 +613,30 @@ mod tests {
         assert!(write(&[huge]).is_err());
         let big = Bytes::from(vec![0u8; crate::engine::limits::RUNS + 1]);
         assert!(read(big).is_err());
+    }
+
+    #[test]
+    fn the_curated_copy_adds_ocred_at() {
+        assert_eq!(
+            path("sn1_1890-05-03_ed-1", "nuc1.20261020T140431123456Z"),
+            "runs/sn1_1890-05-03_ed-1.nuc1.20261020T140431123456Z.parquet"
+        );
+        let at: DateTime<Utc> = "2026-10-20T15:00:00.25Z".parse().unwrap();
+        let bytes = write_curated(&[row()], at).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(bytes.clone())).unwrap();
+        assert_eq!(builder.schema().fields(), curated_schema().fields());
+        let batch = builder.build().unwrap().next().unwrap().unwrap();
+        let col = batch
+            .column_by_name("ocred_at")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap()
+            .clone();
+        assert_eq!(col.value(0), at.timestamp_micros());
+        assert_eq!(col.null_count(), 0);
+        // Not a node's record: the pickup's reader refuses it.
+        assert!(read(Bytes::from(bytes)).is_err());
+        assert!(write_curated(&[], at).is_err());
     }
 }

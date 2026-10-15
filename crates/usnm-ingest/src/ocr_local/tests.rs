@@ -977,3 +977,492 @@ async fn an_alto_already_imported_with_other_bytes_stops_the_run() {
     // Nothing was deleted.
     assert_eq!(fx.out_paths().await.len(), 2);
 }
+
+/// The runs record a worker writes for `page` (13 §13.8.3).
+fn runs_row(page: &OverlayRow, stamp: &str) -> usnm_ocr_contract::runs::RunRecord {
+    usnm_ocr_contract::runs::RunRecord {
+        run_id: format!("{NODE}.{stamp}"),
+        doc_id: page.key.doc_id(),
+        node: NODE.into(),
+        worker_version: "0.1.0+1dcc5c3".into(),
+        contract: 1,
+        ocr_engine: page.ocr_engine.clone(),
+        engine_id: "tesseract-5.5".into(),
+        family: "tesseract".into(),
+        engine_version: "5.5.3".into(),
+        adapter: "usnm-ocr-adapter-tesseract 0.1.0 (rust)".into(),
+        image_ref: "local".into(),
+        image_digest: "sha256:3f9a".into(),
+        models_digest: "sha256:8c2d".into(),
+        models_json: "{}".into(),
+        profile: "deu".into(),
+        options_json: "{\"psm\":3}".into(),
+        scale: 1.0,
+        tiles: 0,
+        route_id: "german-pre1920".into(),
+        routing_version: 1,
+        routing_digest: None,
+        candidate_rank: 0,
+        selection: Some("route".into()),
+        selected: true,
+        status: "ok".into(),
+        error_kind: None,
+        seconds_wall: 41.5,
+        seconds_cpu: Some(40.25),
+        peak_mem_mb: Some(512.0),
+        instance_peak_mem_mb: None,
+        oom: false,
+        instance_restarts: 0,
+        model_load_seconds: Some(0.5),
+        models_loaded: "per_page".into(),
+        cold_start: true,
+        image_sha256: "02".into(),
+        image_width: 5412,
+        image_height: 7208,
+        dpi: 300,
+        dpi_source: "assumed".into(),
+        granularity: "word".into(),
+        reading_order: None,
+        markup: "none".into(),
+        blocks: Some(12),
+        lines: Some(400),
+        words: Some(6034),
+        mean_conf: Some(0.71),
+        text_chars: Some(30000),
+        text_sha256: Some("ab".into()),
+        engine_stats_json: "{}".into(),
+        damage_before: Some(0.62),
+        damage_after: None,
+        language: "deu".into(),
+        script: Some("Latf".into()),
+        reason: "bulk".into(),
+        queued_at: None,
+        node_finished_at: "2026-10-20T14:04:31.123456Z".parse().unwrap(),
+    }
+}
+
+impl Fx {
+    /// What a worker writes for a page since #307: its ALTO, its runs
+    /// record (`runs`'s bytes), then its part.
+    async fn node_writes_with_runs(
+        &self,
+        row: &OverlayRow,
+        runs: Vec<u8>,
+        stamp: &str,
+    ) -> (String, String, String) {
+        let k = &row.key;
+        let issue = format!("{}_{}_ed-{}", k.lccn, k.date.format("%Y-%m-%d"), k.edition);
+        let alto_path = format!("alto/{}.{NODE}.{stamp}.xml", k.doc_id());
+        let runs_path = format!("runs/{issue}.{NODE}.{stamp}.parquet");
+        let part_path = format!("pages/{issue}.{NODE}.{stamp}.parquet");
+        for (path, bytes) in [
+            (&alto_path, ALTO.as_bytes().to_vec()),
+            (&runs_path, runs),
+            (
+                &part_path,
+                usnm_overlay::write_part(std::slice::from_ref(row)).unwrap(),
+            ),
+        ] {
+            assert!(self.out.put_new(path, bytes, "x").await.unwrap());
+        }
+        (alto_path, runs_path, part_path)
+    }
+}
+
+#[tokio::test]
+async fn imports_a_page_with_its_runs_record() {
+    let fx = fixture(false).await;
+    let page = row(3, &GERMAN.repeat(4));
+    let doc = page.key.doc_id();
+    fx.ask(&[queued(&doc, BATCH, "bulk")]).await;
+    let record = runs_row(&page, &stamp(1));
+    let bytes = usnm_ocr_contract::runs::write(std::slice::from_ref(&record)).unwrap();
+    let (alto_src, runs_src, part_src) = fx.node_writes_with_runs(&page, bytes, &stamp(1)).await;
+
+    let status = fx.sync().await;
+    assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
+    assert!(
+        fx.out.list("runs").await.unwrap().is_empty(),
+        "runs record consumed"
+    );
+    assert!(fx.out_paths().await.is_empty());
+
+    // The curated copy: the checked rows, with the part's server time.
+    let c = &fx.stores.curated;
+    let dest = super::runs_path(&format!("{LCCN}_1890-05-03_ed-1"), NODE, &stamp(1));
+    assert_eq!(
+        c.list(&format!("{ROOT}/runs")).await.unwrap(),
+        vec![dest.clone()]
+    );
+    let curated = c.get(&dest).await.unwrap().unwrap();
+    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        bytes::Bytes::from(curated),
+    )
+    .unwrap();
+    assert_eq!(
+        reader.schema().fields(),
+        usnm_ocr_contract::runs::curated_schema().fields()
+    );
+    let batch = reader.build().unwrap().next().unwrap().unwrap();
+    assert_eq!(batch.num_rows(), 1);
+    let parts = c.list(&format!("{ROOT}/pages/{LCCN}")).await.unwrap();
+    let overlay =
+        usnm_overlay::read_part(bytes::Bytes::from(c.get(&parts[0]).await.unwrap().unwrap()))
+            .unwrap();
+    let ocred_at = batch
+        .column_by_name("ocred_at")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow_array::TimestampMicrosecondArray>()
+        .unwrap()
+        .value(0);
+    assert_eq!(ocred_at, overlay[0].ocred_at);
+
+    let records = c.list(&format!("{ROOT}/import")).await.unwrap();
+    let rec: ImportRecord =
+        serde_json::from_slice(&c.get(&records[0]).await.unwrap().unwrap()).unwrap();
+    let mut srcs: Vec<&str> = rec.sources.iter().map(|s| s.path.as_str()).collect();
+    srcs.sort();
+    assert_eq!(
+        srcs,
+        [alto_src.as_str(), part_src.as_str(), runs_src.as_str()]
+    );
+}
+
+/// Check 7: each way a runs record can fail, and the record goes to
+/// quarantine with its part and ALTO.
+#[tokio::test]
+async fn check_7_refuses_a_bad_runs_record() {
+    type Case = (&'static str, Box<dyn Fn(&OverlayRow) -> Vec<u8>>);
+    let write =
+        |r: usnm_ocr_contract::runs::RunRecord| usnm_ocr_contract::runs::write(&[r]).unwrap();
+    let cases: Vec<Case> = vec![
+        ("runs_unreadable", Box::new(|_| b"not parquet".to_vec())),
+        (
+            "runs_too_large",
+            Box::new(|_| vec![0u8; checks::MAX_PART_BYTES as usize + 1]),
+        ),
+        (
+            "runs_mismatch",
+            Box::new(move |p| {
+                let mut r = runs_row(p, &stamp(1));
+                r.run_id = format!("{NODE}.{}", stamp(9));
+                write(r)
+            }),
+        ),
+        (
+            "runs_mismatch",
+            Box::new(move |p| {
+                let mut r = runs_row(p, &stamp(1));
+                r.doc_id = key(4).doc_id();
+                write(r)
+            }),
+        ),
+        (
+            "runs_mismatch",
+            Box::new(move |p| {
+                let mut r = runs_row(p, &stamp(1));
+                r.node = "node2".into();
+                write(r)
+            }),
+        ),
+        (
+            "runs_engine",
+            Box::new(move |p| {
+                let mut r = runs_row(p, &stamp(1));
+                r.ocr_engine = "tesseract-5.4.0/deu".into();
+                write(r)
+            }),
+        ),
+    ];
+    for (code, bad) in cases {
+        let fx = fixture(false).await;
+        let page = row(3, &GERMAN.repeat(4));
+        fx.ask(&[queued(&page.key.doc_id(), BATCH, "bulk")]).await;
+        let (alto_src, runs_src, part_src) =
+            fx.node_writes_with_runs(&page, bad(&page), &stamp(1)).await;
+        let status = fx.sync().await;
+        assert_eq!(status.last_run.imported, 0, "{code}");
+        assert_eq!(
+            status.last_run.rejected.get(code),
+            Some(&1),
+            "{code}: {:?}",
+            status.last_run
+        );
+        assert!(fx.out.list("runs").await.unwrap().is_empty(), "{code}");
+        assert!(fx.out_paths().await.is_empty(), "{code}");
+        let mut kept: Vec<(String, String, bool)> = fx
+            .records()
+            .await
+            .into_iter()
+            .map(|r| (r.kind, r.source, r.content.is_some()))
+            .collect();
+        kept.sort();
+        let too_large = code == "runs_too_large";
+        assert_eq!(
+            kept,
+            [
+                (quarantine::ALTO.to_owned(), alto_src, true),
+                (quarantine::PART.to_owned(), part_src, true),
+                (quarantine::RUNS.to_owned(), runs_src, !too_large),
+            ],
+            "{code}"
+        );
+        assert!(fx
+            .stores
+            .curated
+            .list(&format!("{ROOT}/runs"))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+}
+
+/// A runs record quarantined with its part comes back with it.
+#[tokio::test]
+async fn a_replay_puts_the_runs_record_back_too() {
+    let fx = fixture(false).await;
+    let page = row(3, &GERMAN.repeat(4));
+    let bytes = usnm_ocr_contract::runs::write(&[runs_row(&page, &stamp(1))]).unwrap();
+    fx.node_writes_with_runs(&page, bytes, &stamp(1)).await;
+    let first = fx.sync().await;
+    assert_eq!(first.last_run.rejected.get("not_requested"), Some(&1));
+    assert_eq!(fx.records().await.len(), 3);
+    fx.ask(&[queued(&page.key.doc_id(), BATCH, "bulk")]).await;
+    let opts = Options {
+        from_quarantine: Some("not_requested".into()),
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &fx.stores, &opts)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
+    assert!(fx.records().await.is_empty());
+    assert_eq!(
+        fx.stores
+            .curated
+            .list(&format!("{ROOT}/runs"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+impl Fx {
+    /// A page with a good runs record, quarantined as `not_requested`, and
+    /// its ledger row then written: ready to replay.
+    async fn quarantined_with_runs(&self) -> OverlayRow {
+        let page = row(3, &GERMAN.repeat(4));
+        let bytes = usnm_ocr_contract::runs::write(&[runs_row(&page, &stamp(1))]).unwrap();
+        self.node_writes_with_runs(&page, bytes, &stamp(1)).await;
+        let first = self.sync().await;
+        assert_eq!(first.last_run.rejected.get("not_requested"), Some(&1));
+        self.ask(&[queued(&page.key.doc_id(), BATCH, "bulk")]).await;
+        page
+    }
+
+    async fn replay(
+        &self,
+        out: &dyn ObjectStore,
+        reason: &str,
+    ) -> anyhow::Result<quarantine::Replayed> {
+        quarantine::replay(self.stores.quarantine.as_ref(), out, &self.queue, reason).await
+    }
+
+    async fn all_out(&self) -> Vec<String> {
+        let mut v = self.out_paths().await;
+        v.extend(self.out.list("runs").await.unwrap());
+        v.sort();
+        v
+    }
+
+    /// The quarantine record paths, by kind.
+    async fn record_paths(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for p in self.stores.quarantine.list(quarantine::TOP).await.unwrap() {
+            if p.ends_with(".reason.json") {
+                let b = self.stores.quarantine.get(&p).await.unwrap().unwrap();
+                let r: Record = serde_json::from_slice(&b).unwrap();
+                out.push((r.kind, p));
+            }
+        }
+        out
+    }
+}
+
+/// A part's record names its ALTO and runs record.
+#[tokio::test]
+async fn a_quarantined_part_names_its_companions() {
+    let fx = fixture(false).await;
+    let page = row(3, &GERMAN.repeat(4));
+    let bytes = usnm_ocr_contract::runs::write(&[runs_row(&page, &stamp(1))]).unwrap();
+    let (alto_src, runs_src, _) = fx.node_writes_with_runs(&page, bytes, &stamp(1)).await;
+    fx.sync().await;
+    let part = fx
+        .records()
+        .await
+        .into_iter()
+        .find(|r| r.kind == quarantine::PART)
+        .unwrap();
+    assert_eq!(part.companions, [alto_src, runs_src]);
+}
+
+/// A runs record over the size limit isn't kept, so its part can never be
+/// replayed: it would pass as one from a worker without runs records.
+#[tokio::test]
+async fn a_replay_keeps_a_part_whose_runs_record_was_too_large() {
+    let fx = fixture(false).await;
+    let page = row(3, &GERMAN.repeat(4));
+    fx.ask(&[queued(&page.key.doc_id(), BATCH, "bulk")]).await;
+    let big = vec![0u8; checks::MAX_PART_BYTES as usize + 1];
+    fx.node_writes_with_runs(&page, big, &stamp(1)).await;
+    let first = fx.sync().await;
+    assert_eq!(first.last_run.rejected.get("runs_too_large"), Some(&1));
+
+    let r = fx.replay(fx.out.as_ref(), "runs_too_large").await.unwrap();
+    assert_eq!(r.incomplete, 1, "{r:?}");
+    assert_eq!((r.parts, r.alto, r.runs), (0, 0, 0), "{r:?}");
+    assert!(fx.all_out().await.is_empty(), "nothing put back");
+    assert_eq!(fx.records().await.len(), 3, "all kept in quarantine");
+
+    let opts = Options {
+        from_quarantine: Some("runs_too_large".into()),
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &fx.stores, &opts)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.imported, 0, "{:?}", status.last_run);
+    assert_eq!(fx.records().await.len(), 3);
+}
+
+/// A part whose runs record's quarantine entry is gone (a stop between the
+/// part's record and the runs record's) stays in quarantine.
+#[tokio::test]
+async fn a_replay_keeps_a_part_whose_runs_record_is_missing() {
+    let fx = fixture(false).await;
+    fx.quarantined_with_runs().await;
+    let q = &fx.stores.quarantine;
+    let etags: std::collections::HashMap<String, String> = q
+        .list_info(quarantine::TOP)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|i| (i.path, i.etag))
+        .collect();
+    for (kind, path) in fx.record_paths().await {
+        if kind == quarantine::RUNS {
+            let r: Record = serde_json::from_slice(&q.get(&path).await.unwrap().unwrap()).unwrap();
+            for p in [r.content.unwrap(), path] {
+                assert!(q.delete_if_match(&p, &etags[&p]).await.unwrap());
+            }
+        }
+    }
+    let r = fx.replay(fx.out.as_ref(), "not_requested").await.unwrap();
+    assert_eq!(r.incomplete, 1, "{r:?}");
+    assert_eq!(r.alto, 0, "the ALTO stays with its part: {r:?}");
+    assert!(fx.all_out().await.is_empty());
+    assert_eq!(fx.records().await.len(), 2);
+}
+
+/// `ocr-out` that refuses parts, to stop a replay midway.
+#[derive(Debug)]
+struct NoParts(Arc<dyn ObjectStore>);
+
+#[async_trait::async_trait]
+impl ObjectStore for NoParts {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        self.0.get(path).await
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        if path.starts_with("pages/") {
+            return Err(usnm_store::StoreError::Io("stopped".into()));
+        }
+        self.0.put_new(path, body, content_type).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.0.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.0.list(prefix).await
+    }
+}
+
+/// A replay stopped before the part leaves its ALTO and runs record in
+/// `ocr-out` and every entry in quarantine; never a part without its runs
+/// record. The next replay finishes it.
+#[tokio::test]
+async fn an_interrupted_replay_never_leaves_a_part_without_its_runs_record() {
+    let fx = fixture(false).await;
+    fx.quarantined_with_runs().await;
+    let stopped = NoParts(Arc::clone(&fx.out));
+    assert!(fx.replay(&stopped, "not_requested").await.is_err());
+    let out = fx.all_out().await;
+    assert!(out.iter().any(|p| p.starts_with("runs/")), "{out:?}");
+    assert!(!out.iter().any(|p| p.starts_with("pages/")), "{out:?}");
+    assert_eq!(fx.records().await.len(), 3);
+
+    // A normal pass meanwhile imports nothing.
+    assert_eq!(fx.sync().await.last_run.imported, 0);
+
+    let opts = Options {
+        from_quarantine: Some("not_requested".into()),
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &fx.stores, &opts)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
+    assert!(fx.records().await.is_empty());
+    assert_eq!(
+        fx.stores
+            .curated
+            .list(&format!("{ROOT}/runs"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// A part's record from before companions were named replays as before.
+#[tokio::test]
+async fn a_legacy_part_record_replays_on_its_own() {
+    let fx = fixture(false).await;
+    let doc = key(3).doc_id();
+    fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(1))
+        .await;
+    fx.sync().await;
+    let q = &fx.stores.quarantine;
+    for (kind, path) in fx.record_paths().await {
+        if kind == quarantine::PART {
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&q.get(&path).await.unwrap().unwrap()).unwrap();
+            assert!(v.as_object_mut().unwrap().remove("companions").is_some());
+            q.put(&path, serde_json::to_vec(&v).unwrap(), "application/json")
+                .await
+                .unwrap();
+        }
+    }
+    fx.ask(&[queued(&doc, BATCH, "bulk")]).await;
+    let opts = Options {
+        from_quarantine: Some("not_requested".into()),
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &fx.stores, &opts)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.imported, 1, "{:?}", status.last_run);
+    assert!(fx.records().await.is_empty());
+}
