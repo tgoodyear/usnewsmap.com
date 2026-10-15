@@ -38,6 +38,8 @@ def prepare(sources: list[str], out: Path, seed: int, evaluation_only: bool,
     images = {}
     text_groups = {}
     source_records = []
+    page_identities = {}
+    title_identities = {}
     for spec in sources:
         name, sep, directory = spec.partition("=")
         if not sep or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
@@ -88,6 +90,14 @@ def prepare(sources: list[str], out: Path, seed: int, evaluation_only: bool,
                 lccn = match.group(1) if match else None
             title = meta.get("title")
             group = f"lccn:{lccn}" if lccn else f"title:{title}" if title else f"source:{name}"
+            page_id = meta.get("page_id")
+            if not page_id:
+                raise ValueError(f"{cid}: missing page_id")
+            page_key = (name, page_id)
+            if page_identities.setdefault(page_key, group) != group:
+                raise ValueError(f"{cid}: inconsistent page identity; reconcile title/LCCN metadata")
+            if title and title_identities.setdefault(title, group) != group:
+                raise ValueError(f"{cid}: inconsistent title identity; reconcile LCCN metadata")
             groups.add(group)
             text_key = digest(" ".join(row["transcription"].split()).encode())
             for key in (digest(image_bytes), text_key):

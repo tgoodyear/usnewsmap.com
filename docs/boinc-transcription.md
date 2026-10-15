@@ -109,9 +109,11 @@ usnm-boinc qwen submit --root CAMPAIGN --project PROJECT --max-units 20
 ```
 
 One crop is one unit, with two independent results through the existing validator
-and assimilator. The input template includes only `page.jpg` and `qwen.json`;
+and assimilator. The benchmark input template includes `page.jpg`, `qwen.json` and a reference-free
+`NOTICE.txt` with source, licence, attribution and modification notices;
 despite its logical name the image is the original crop file, without re-encoding.
-The job uses the full crop and an empty `loc_text`. Human text stays only in
+The job uses the full crop and an empty `loc_text`. The notice checksum is pinned
+in the job's input source and checked again at submission. Human text stays only in
 `CAMPAIGN/benchmark.json`, outside `units/`, and is not staged for download.
 The campaign is immutable and rerunnable; a changed source, model or selection
 requires a new root. Submission retains the existing write-ahead recovery markers.

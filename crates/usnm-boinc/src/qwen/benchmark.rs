@@ -18,6 +18,45 @@ use usnm_ocr_quality::align::{align, Op};
 use usnm_ocr_survey::score;
 
 const MANIFEST: &str = "benchmark.json";
+pub const NOTICE_FILE: &str = "NOTICE.txt";
+pub const MAX_NOTICE: usize = 64 * 1024;
+
+fn notice(provenance: &Value) -> anyhow::Result<Vec<u8>> {
+    let field = |name: &str| {
+        provenance[name]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .with_context(|| format!("missing source {name}"))
+    };
+    let license = field("source_license")?;
+    let upper = license.to_uppercase().replace(' ', "-");
+    let url = if upper.contains("BY-NC-SA") {
+        "https://creativecommons.org/licenses/by-nc-sa/4.0/"
+    } else if upper.contains("BY-NC") {
+        "https://creativecommons.org/licenses/by-nc/4.0/"
+    } else if upper.contains("BY-SA") {
+        "https://creativecommons.org/licenses/by-sa/4.0/"
+    } else if upper.contains("BY") {
+        "https://creativecommons.org/licenses/by/4.0/"
+    } else if upper.contains("CC0") {
+        "https://creativecommons.org/publicdomain/zero/1.0/"
+    } else {
+        anyhow::bail!("unsupported source licence");
+    };
+    let bytes = format!(
+        "Source: {}\nAttribution: {}\nLicence: {license}\nLicence terms: {url}\n\
+         Modifications: cropped/re-encoded by the public dataset converter where applicable; \
+         this campaign redistributes those crop bytes unchanged. No reference text is included.\n",
+        field("source_url")?,
+        field("source_attribution")?,
+    )
+    .into_bytes();
+    ensure!(
+        bytes.len() <= MAX_NOTICE,
+        "source notices exceed size limit"
+    );
+    Ok(bytes)
+}
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -83,6 +122,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
     }
     let mut entries = Vec::new();
     let mut images = Vec::new();
+    let mut notices = Vec::new();
     for row in rows.into_iter().take(opts.max_crops) {
         ensure!(
             row["for_scoring"] == true,
@@ -110,6 +150,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         let image = base.join(relative).canonicalize()?;
         ensure!(image.starts_with(&base), "image escapes dataset directory");
         let bytes = read(&image, MAX_SCAN)?;
+        let notice = notice(provenance)?;
         ensure!(
             provenance["crop_sha256"].as_str() == Some(&sha256(&bytes)),
             "crop checksum differs from source manifest"
@@ -135,7 +176,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
             doc_id: format!("benchmark-{}", sha256(cid.as_bytes())),
             engine: opts.engine.clone(),
             group: row["group"].as_str().context("missing group")?.into(),
-            input: Input::of(&bytes, &format!("benchmark:{cid}")),
+            input: Input::of(&bytes, &format!("benchmark:{}", sha256(&notice))),
             language: row["lang"].as_str().context("missing lang")?.into(),
             max_tokens_per_1000px2: 4,
             prompt_version: PROMPT_VERSION,
@@ -148,6 +189,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
             provenance: provenance.clone(),
         });
         images.push(bytes);
+        notices.push(notice);
     }
     let manifest = Manifest {
         v: 1,
@@ -167,7 +209,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         );
         atomic(&path, &serde_json::to_vec_pretty(&manifest)?)?;
     }
-    for (entry, bytes) in manifest.entries.iter().zip(images) {
+    for ((entry, bytes), notice) in manifest.entries.iter().zip(images).zip(notices) {
         let dir = units(&opts.root).join(&entry.job.id);
         std::fs::create_dir_all(&dir)?;
         if dir.join(JOB_FILE).exists() {
@@ -180,8 +222,13 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
                     .matches(&read(&dir.join(PAGE_FILE), MAX_SCAN)?),
                 "staged image changed"
             );
+            ensure!(
+                read(&dir.join(NOTICE_FILE), MAX_NOTICE)? == notice,
+                "staged notices changed"
+            );
         } else {
             atomic(&dir.join(PAGE_FILE), &bytes)?;
+            atomic(&dir.join(NOTICE_FILE), &notice)?;
             atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&entry.job)?)?;
         }
     }
@@ -365,6 +412,8 @@ mod tests {
         std::fs::create_dir(dir.join("LICENSES")).unwrap();
         let provenance = serde_json::json!({
             "crop_id": "public-001", "source_license": "CC-BY-4.0",
+            "source_url": "https://example.org/public",
+            "source_attribution": "Synthetic dataset authors",
             "crop_sha256": sha256(&std::fs::read(dir.join("image.jpg")).unwrap()),
         });
         std::fs::write(dir.join("manifest.jsonl"), provenance.to_string()).unwrap();
@@ -393,6 +442,10 @@ mod tests {
             .unwrap()
             .contains("HELLO NEWSPAPER"));
         assert_eq!(job.crops[0].loc_text, "");
+        let notice = std::fs::read(units(&opts.root).join(&job.id).join(NOTICE_FILE)).unwrap();
+        assert!(String::from_utf8_lossy(&notice).contains("Synthetic dataset authors"));
+        assert!(!String::from_utf8_lossy(&notice).contains("HELLO NEWSPAPER"));
+        assert_eq!(job.input.source, format!("benchmark:{}", sha256(&notice)));
         let out = tmp.path().join("out");
         let spool = tmp.path().join("spool");
         std::fs::create_dir(&spool).unwrap();

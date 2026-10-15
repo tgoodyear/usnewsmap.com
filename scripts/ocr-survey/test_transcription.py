@@ -91,6 +91,21 @@ class TranscriptionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum differs"):
                 t.prepare([f"public={src}"], root / "out", 542, True, [])
 
+    def test_partial_page_identity_metadata_rejected(self):
+        for field in ("title", "lccn"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                src = self.source(root)
+                rows = t.read_jsonl(src / "manifest.jsonl")
+                rows[1]["page_id"] = rows[0]["page_id"]
+                if field == "title":
+                    rows[1].pop("title")
+                else:
+                    rows[0]["lccn"] = "sn12345678"
+                write_jsonl(src / "manifest.jsonl", rows)
+                with self.assertRaisesRegex(ValueError, "inconsistent page identity"):
+                    t.prepare([f"public={src}"], root / "out", 542, False, ["public"])
+
 
 if __name__ == "__main__":
     unittest.main()
