@@ -41,6 +41,7 @@ standin = []
 
 [dev-dependencies]
 tower.workspace = true
+tracing-subscriber.workspace = true
 usnm-ingest = { path = "../usnm-ingest" }
 tokio = { workspace = true, features = ["fs", "io-util", "process", "sync", "time", "net", "test-util"] }
 

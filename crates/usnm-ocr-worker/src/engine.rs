@@ -147,6 +147,42 @@ pub fn exited_136(e: &anyhow::Error) -> bool {
         .is_some_and(Exited::is_status_136)
 }
 
+/// A failed read's status and error kind as 13 §13.4.6 names them, for
+/// the `ocr_engine_run` event (§13.8.3). Its message is the error's whole
+/// text, so logs read as before.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct ReadFailed {
+    /// `failed`, `timeout` or `bad_input`.
+    pub status: &'static str,
+    /// `engine`, `engine_timeout`, `engine_oom`, `engine_crash`,
+    /// `engine_protocol` or `convert`.
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl ReadFailed {
+    pub fn error(status: &'static str, kind: &'static str, message: String) -> anyhow::Error {
+        anyhow::Error::new(Self {
+            status,
+            kind,
+            message,
+        })
+    }
+}
+
+/// The status and error kind of a read that failed with `e`: what the
+/// engine said ([`ReadFailed`]), a crash ([`Exited`]), or else `engine`.
+pub fn read_failure(e: &anyhow::Error) -> (&'static str, &'static str) {
+    if let Some(r) = e.downcast_ref::<ReadFailed>() {
+        (r.status, r.kind)
+    } else if e.is::<Exited>() {
+        ("failed", "engine_crash")
+    } else {
+        ("failed", "engine")
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     /// No model for the language on this node: retrying here won't help.
@@ -174,6 +210,13 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     /// page (long-lived instances); nothing for an engine that starts
     /// one process per page.
     async fn shutdown(&self) {}
+    /// The `ocr_engine` tag and engine fields a read in `language` would
+    /// have, known before the read: for the `ocr_engine_run` event of a
+    /// read that writes nothing (13 §13.8.3). None when nothing is known.
+    fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
+        let _ = language;
+        None
+    }
     /// Read `image` (a file) for a page in `language` (ISO 639-3), using
     /// `work` for scratch files.
     async fn ocr(
@@ -1182,6 +1225,12 @@ impl Engine for Tesseract {
         self.dpi
     }
 
+    fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
+        let profile = route(language, &self.installed)?;
+        let tag = self.tag(&profile).ok()?.to_string();
+        Some((tag, self.read_info(&profile)))
+    }
+
     async fn ocr(
         &self,
         image: &Path,
@@ -1249,7 +1298,13 @@ impl Tesseract {
             .output();
         let out = tokio::time::timeout(self.timeout, child)
             .await
-            .map_err(|_| anyhow::anyhow!("tesseract took over {:?}", self.timeout))?
+            .map_err(|_| {
+                ReadFailed::error(
+                    "timeout",
+                    "engine_timeout",
+                    format!("tesseract took over {:?}", self.timeout),
+                )
+            })?
             .context("running tesseract")?;
         let oom = match guard.as_mut() {
             Some(g) => g.finish().await,
@@ -1262,7 +1317,12 @@ impl Tesseract {
                 } => format!(" ({} MiB)", r.limits.memory_mib),
                 _ => String::new(),
             };
-            return Err(anyhow::anyhow!("tesseract ran out of memory{limit}").into());
+            return Err(ReadFailed::error(
+                "failed",
+                "engine_oom",
+                format!("tesseract ran out of memory{limit}"),
+            )
+            .into());
         }
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);

@@ -17,7 +17,7 @@ use usnm_core::ids::PageKey;
 use usnm_overlay::OverlayRow;
 use usnm_store::{ObjectStore, StoreError};
 
-use crate::engine::{exited_136, Engine, EngineError, EngineOutput};
+use crate::engine::{exited_136, Engine, EngineError, EngineOutput, ReadInfo};
 use crate::loc::{FetchError, LocClient, Scan, ScanFormat};
 use crate::message::{self, Cause, DeadLetter, OcrMessage};
 use crate::queue::{random_token, LeaseLost, Queue, Received, BULK, DEADLETTER, PRIORITY};
@@ -164,6 +164,48 @@ pub struct Done {
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub(crate) struct ScratchError(pub(crate) String);
+
+/// What a page's engine read got to, for the `ocr_engine_run` event of a
+/// read that writes nothing (13 §13.8.3).
+#[derive(Debug, Default)]
+struct ReadTrace(std::sync::Mutex<TraceState>);
+
+#[derive(Debug, Default)]
+struct TraceState {
+    /// When the engine was called; none if it wasn't, or the failure
+    /// wasn't the read's (no model, scratch files).
+    started: Option<Instant>,
+    /// The `ocr_engine` tag and engine fields the read would have.
+    planned: Option<(String, ReadInfo)>,
+    /// The ones it had, once it answered.
+    read: Option<(String, ReadInfo)>,
+    /// The engine's status and error kind, if it failed.
+    error: Option<(&'static str, &'static str)>,
+}
+
+impl ReadTrace {
+    fn start(&self, planned: Option<(String, ReadInfo)>) {
+        if let Ok(mut t) = self.0.lock() {
+            *t = TraceState {
+                started: Some(Instant::now()),
+                planned,
+                ..TraceState::default()
+            };
+        }
+    }
+
+    fn ended(&self, out: &Result<EngineOutput, EngineError>) {
+        let Ok(mut t) = self.0.lock() else { return };
+        match out {
+            Ok(o) => t.read = Some((o.engine.clone(), o.read.clone())),
+            Err(EngineError::Failed(e)) if !e.is::<ScratchError>() => {
+                t.error = Some(crate::engine::read_failure(e));
+            }
+            // Not a read: no model here, or the worker's own scratch files.
+            Err(_) => t.started = None,
+        }
+    }
+}
 
 /// The page's failure for an engine error.
 fn engine_failure(e: EngineError, node: &str) -> Failure {
@@ -614,12 +656,65 @@ impl Worker {
         token: &str,
         deadline: Instant,
     ) -> Result<Done, Failure> {
-        let work = tempfile::tempdir()
-            .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
         // Minted before the engine call: it names the page's request to
         // an engine behind the contract, its outputs and its runs record
         // (13 §13.4.3).
         let run_id = crate::provenance::mint_run_id(&self.cfg.node_id);
+        let trace = ReadTrace::default();
+        let result = self
+            .process_page(m, key, token, deadline, &run_id, &trace)
+            .await;
+        if let Err(f) = &result {
+            self.report_failed_read(key, &run_id, &trace, f);
+        }
+        result
+    }
+
+    /// The `ocr_engine_run` event for a page that failed after its engine
+    /// was called, so wrote nothing (13 §13.8.3).
+    fn report_failed_read(&self, key: &PageKey, run_id: &str, trace: &ReadTrace, f: &Failure) {
+        let Ok(t) = trace.0.lock() else { return };
+        let Some(started) = t.started else { return };
+        let (status, error_kind) = match (f, t.error) {
+            (Failure::Abandoned, _) => ("abandoned", "budget"),
+            (_, Some(e)) => e,
+            (Failure::Transient(kind, _), None) => ("failed", *kind),
+            (Failure::Permanent(_), None) => ("failed", "permanent"),
+        };
+        let fallback;
+        let (ocr_engine, info) = match t.read.as_ref().or(t.planned.as_ref()) {
+            Some((e, i)) => (e.as_str(), i),
+            None => {
+                fallback = ReadInfo::local(self.engine.source());
+                ("", &fallback)
+            }
+        };
+        crate::provenance::emit_failed(&crate::provenance::FailedRead {
+            run_id,
+            doc_id: &key.doc_id(),
+            node: &self.cfg.node_id,
+            worker_version: &crate::stored::worker_version(),
+            ocr_source: self.engine.source(),
+            ocr_engine,
+            info,
+            status,
+            error_kind,
+            seconds_wall: started.elapsed().as_secs_f64(),
+        });
+    }
+
+    async fn process_page(
+        &self,
+        m: &OcrMessage,
+        key: &PageKey,
+        token: &str,
+        deadline: Instant,
+        run_id: &str,
+        trace: &ReadTrace,
+    ) -> Result<Done, Failure> {
+        let run_id = run_id.to_owned();
+        let work = tempfile::tempdir()
+            .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
         tracing::debug!(run_id, doc_id = %key.doc_id(), "page started");
         // Another node may have the model: leave the message, and let the
         // dequeue count dead-letter it if no node does. Asked before the
@@ -656,7 +751,7 @@ impl Worker {
             let mut read_secs = t;
             let mut jpeg_fallback = false;
             let mut evict_jp2 = None;
-            let (scan, out) = match self.read_scan(&scan, m, work.path(), &run_id).await {
+            let (scan, out) = match self.read_scan(&scan, m, work.path(), &run_id, trace).await {
                 Ok(out) => (scan, out),
                 // Some intact JP2s crash the engine with status 136 (#454);
                 // their IIIF JPEG reads. One more run on it; no second
@@ -677,7 +772,7 @@ impl Worker {
                         .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
                     read_secs = Instant::now();
                     let out = self
-                        .read_scan(&jpeg, m, &again, &run_id)
+                        .read_scan(&jpeg, m, &again, &run_id, trace)
                         .await
                         .map_err(|e| engine_failure(e, &self.cfg.node_id))?;
                     // The JP2's buffer copy goes with the JPEG's, after the upload.
@@ -823,6 +918,7 @@ impl Worker {
         m: &OcrMessage,
         work: &Path,
         run_id: &str,
+        trace: &ReadTrace,
     ) -> Result<EngineOutput, EngineError> {
         // The extension names the format: Tesseract (Leptonica) reads
         // JPEG and, through OpenJPEG, JP2.
@@ -830,7 +926,10 @@ impl Worker {
         tokio::fs::write(&image, &scan.bytes)
             .await
             .map_err(|e| anyhow::anyhow!(ScratchError(format!("scratch image: {e}"))))?;
-        self.engine.read(&image, &m.language, work, run_id).await
+        trace.start(self.engine.describe(&m.language));
+        let out = self.engine.read(&image, &m.language, work, run_id).await;
+        trace.ended(&out);
+        out
     }
 
     /// Write a page's ALTO, then its part, create-only under fresh names.
@@ -1460,6 +1559,214 @@ mod tests {
         assert_eq!(cfg.budget(), Duration::from_secs(1440));
     }
 
+    /// The `ocr_engine_run` events (13 §13.8.3) sent while `f` runs, as
+    /// their fields.
+    async fn engine_runs<F: std::future::Future<Output = ()>>(
+        f: F,
+    ) -> Vec<std::collections::BTreeMap<String, String>> {
+        use tracing_subscriber::layer::SubscriberExt;
+        type Seen = Arc<std::sync::Mutex<Vec<std::collections::BTreeMap<String, String>>>>;
+        struct Fields<'a>(&'a mut std::collections::BTreeMap<String, String>);
+        impl tracing::field::Visit for Fields<'_> {
+            fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+                self.0.insert(f.name().into(), v.into());
+            }
+            fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                self.0.insert(f.name().into(), format!("{v:?}"));
+            }
+        }
+        struct Capture(Seen);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+            fn on_event(
+                &self,
+                e: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if e.metadata().target() == crate::provenance::ENGINE_RUN {
+                    let mut m = std::collections::BTreeMap::new();
+                    e.record(&mut Fields(&mut m));
+                    m.insert("level".into(), e.metadata().level().to_string());
+                    self.0.lock().unwrap().push(m);
+                }
+            }
+        }
+        let seen = Seen::default();
+        let sub = tracing_subscriber::registry().with(Capture(seen.clone()));
+        let _guard = tracing::subscriber::set_default(sub);
+        f.await;
+        let v = seen.lock().unwrap().clone();
+        v
+    }
+
+    /// Fails each read as its scan's bytes say, after describing it.
+    #[derive(Debug)]
+    struct FailingEngine;
+
+    #[async_trait]
+    impl Engine for FailingEngine {
+        fn source(&self) -> &str {
+            "usnm-tesseract"
+        }
+        fn can_read(&self, language: &str) -> bool {
+            language != "haw"
+        }
+        fn describe(&self, _: &str) -> Option<(String, crate::engine::ReadInfo)> {
+            Some((
+                "tesseract/5.5.0 profile=frak2021 image=local models=local route=minimal@r1 contract=0".into(),
+                crate::engine::ReadInfo {
+                    adapter: "usnm-ocr-adapter-tesseract 0.1.0 (rust)".into(),
+                    models_loaded: "at_start",
+                    cold_start: false,
+                    ..crate::engine::ReadInfo::local("tesseract-5.5")
+                },
+            ))
+        }
+        async fn ocr(&self, image: &Path, _: &str, _: &Path) -> Result<EngineOutput, EngineError> {
+            let bytes = std::fs::read(image).unwrap();
+            if bytes.starts_with(b"jp2 exit") {
+                return Err(exited(1));
+            }
+            // The IIIF JPEG: the adapter's timeout.
+            Err(EngineError::Failed(crate::engine::ReadFailed::error(
+                "timeout",
+                "engine_timeout",
+                "no result from the engine in 16s".into(),
+            )))
+        }
+    }
+
+    /// Reads into ALTO that doesn't convert.
+    #[derive(Debug)]
+    struct BadAltoEngine;
+
+    #[async_trait]
+    impl Engine for BadAltoEngine {
+        fn source(&self) -> &str {
+            "usnm-tesseract"
+        }
+        fn can_read(&self, _: &str) -> bool {
+            true
+        }
+        async fn ocr(&self, _: &Path, _: &str, _: &Path) -> Result<EngineOutput, EngineError> {
+            Ok(EngineOutput {
+                text: "secret page text".into(),
+                alto: b"<not alto".to_vec(),
+                page: None,
+                layout_from: "ALTO",
+                engine: "tesseract-5.5.1/deu_latf+deu".into(),
+                read: crate::engine::ReadInfo::local("tesseract-5.5.1"),
+            })
+        }
+    }
+
+    fn with_engine(w: &Arc<Worker>, engine: Arc<dyn Engine>) -> Arc<Worker> {
+        Arc::new(Worker {
+            engine,
+            cfg: w.cfg.clone(),
+            queue: w.queue.clone(),
+            out: w.out.clone(),
+            scans: w.scans.clone(),
+            metrics: w.metrics.clone(),
+            tracker: w.tracker.clone(),
+        })
+    }
+
+    async fn one_page(w: &Arc<Worker>, queue: &LocalQueue, page: &str, language: &str) {
+        queue.send(BULK, &msg(page, language)).await.unwrap();
+        let m = queue.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
+        w.handle(m, Instant::now()).await;
+    }
+
+    #[tokio::test]
+    async fn a_read_that_writes_nothing_sends_an_engine_run_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out) = worker(dir.path());
+        let failing = with_engine(&w, Arc::new(FailingEngine));
+        let runs = engine_runs(one_page(
+            &failing,
+            &queue,
+            "sn83045462/1890-05-03/ed-1/seq-7",
+            "deu",
+        ))
+        .await;
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        let e = &runs[0];
+        assert_eq!(e["level"], "WARN");
+        assert_eq!(e["status"], "timeout");
+        assert_eq!(e["error_kind"], "engine_timeout");
+        assert_eq!(e["doc_id"], "sn83045462_1890-05-03_ed-1_seq-7");
+        assert_eq!(e["node"], "node1");
+        assert!(e["run_id"].starts_with("node1."), "{e:?}");
+        // The engine's side, from `describe` before the read.
+        assert_eq!(e["family"], "tesseract");
+        assert_eq!(e["engine_version"], "5.5.0");
+        assert_eq!(e["profile"], "frak2021");
+        assert_eq!(e["engine_id"], "tesseract-5.5");
+        assert_eq!(e["adapter"], "usnm-ocr-adapter-tesseract 0.1.0 (rust)");
+        assert_eq!(e["route_id"], "minimal");
+        assert_eq!(e["routing_version"], "1");
+        assert_eq!(e["contract"], "0");
+        assert_eq!(e["selected"], "false");
+        assert_eq!(e["oom"], "false");
+        assert_eq!(e["models_loaded"], "at_start");
+        assert!(e["seconds_wall"].parse::<f64>().unwrap() >= 0.0);
+        assert!(out.list("runs").await.unwrap().is_empty());
+        drop(failing);
+
+        // A JP2 crash with status 1 has no JPEG fallback. (A fresh queue:
+        // the failed page is back already, its visibility being zero.)
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, _) = worker(dir.path());
+        let failing = with_engine(&w, Arc::new(FailingEngine));
+        let runs = engine_runs(one_page(
+            &failing,
+            &queue,
+            "sn83045462/1890-05-03/ed-1/seq-95",
+            "deu",
+        ))
+        .await;
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(
+            (runs[0]["status"].as_str(), runs[0]["error_kind"].as_str()),
+            ("failed", "engine_crash")
+        );
+
+        // No read, no event: no model here, or a page written.
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out) = worker(dir.path());
+        let runs = engine_runs(async {
+            one_page(&w, &queue, "sn83045462/1890-05-03/ed-1/seq-9", "deu").await;
+            one_page(&w, &queue, "sn83045462/1890-05-03/ed-1/seq-8", "haw").await;
+        })
+        .await;
+        assert!(runs.is_empty(), "{runs:?}");
+        assert_eq!(out.list("runs").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_convert_failure_sends_its_engine_run_without_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, _out) = worker(dir.path());
+        let bad = with_engine(&w, Arc::new(BadAltoEngine));
+        let runs = engine_runs(one_page(
+            &bad,
+            &queue,
+            "sn83045462/1890-05-03/ed-1/seq-7",
+            "deu",
+        ))
+        .await;
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        let e = &runs[0];
+        assert_eq!(
+            (e["status"].as_str(), e["error_kind"].as_str()),
+            ("failed", "convert")
+        );
+        // The tag the read had, in its older form.
+        assert_eq!(e["ocr_engine"], "tesseract-5.5.1/deu_latf+deu");
+        assert_eq!(e["profile"], "deu_latf+deu");
+        assert!(!format!("{e:?}").contains("secret"), "no page text: {e:?}");
+    }
+
     #[derive(Debug)]
     struct SlowEngine;
 
@@ -1513,9 +1820,19 @@ mod tests {
             .unwrap()
             .unwrap();
         let t0 = Instant::now();
-        tokio::time::timeout(Duration::from_secs(10), w.handle(m, t0))
-            .await
-            .unwrap();
+        let runs = engine_runs(async {
+            tokio::time::timeout(Duration::from_secs(10), w.handle(m, t0))
+                .await
+                .unwrap();
+        })
+        .await;
+        // The engine was called and nothing was written.
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(
+            (runs[0]["status"].as_str(), runs[0]["error_kind"].as_str()),
+            ("abandoned", "budget")
+        );
+        assert_eq!(runs[0]["ocr_engine"], "");
         assert!(t0.elapsed() >= Duration::from_millis(1600));
         assert!(
             t0.elapsed() < Duration::from_secs(2),
