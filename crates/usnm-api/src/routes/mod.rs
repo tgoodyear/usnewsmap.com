@@ -52,6 +52,8 @@ pub(crate) struct Ctx {
     /// A warm-up, not a visitor: always compute on an in-process miss (so the
     /// search engine's caches fill too), and leave the request metrics alone.
     pub warm_up: bool,
+    /// Recompute searches even when the response caches are warm.
+    pub refresh_search: bool,
 }
 
 impl Ctx {
@@ -60,6 +62,7 @@ impl Ctx {
             snap: state.snapshot.load_full(),
             timeout: state.config.compute_cap,
             warm_up: false,
+            refresh_search: false,
         }
     }
 }
@@ -178,6 +181,8 @@ pub(crate) struct Job {
     /// A search: it takes one of the `compute_concurrency` slots while it
     /// runs. The reference-data responses (places, titles, coverage) don't.
     pub search: bool,
+    /// Refresh without removing the response visitors can still read.
+    pub refresh: bool,
     /// Limit on the whole computation, after which it is cancelled.
     pub limit: Duration,
 }
@@ -189,6 +194,7 @@ impl Job {
             endpoint,
             warm_up,
             search: true,
+            refresh: false,
             limit,
         }
     }
@@ -199,6 +205,7 @@ impl Job {
             endpoint,
             warm_up,
             search: false,
+            refresh: false,
             limit,
         }
     }
@@ -245,6 +252,7 @@ pub(crate) struct FromCache;
 /// Where a request's body comes from.
 enum Source {
     Cached(Arc<Vec<u8>>),
+    Refreshed(Arc<Vec<u8>>),
     /// A computation; `started` when this request started it.
     Flight {
         entry: Entry,
@@ -260,7 +268,9 @@ enum Source {
 /// `202 Accepted` and the computation carries on, up to `job.limit` and as
 /// long as someone keeps asking, so that asking again later finds it running
 /// or done. A warm-up skips the persistent read, so the backend runs and its
-/// caches warm; the result is still persisted if it was slow.
+/// caches warm; the result is still persisted if it was slow. Restart
+/// refreshes also bypass memory and flights, leaving cached visitor responses
+/// available while computing on the warm-up slot.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn cached<F, T>(
     state: &Arc<AppState>,
@@ -304,7 +314,7 @@ where
         .clone()
         .map(|store| (store, persisted_path(serving, &key)));
     let metrics = &state.metrics;
-    let source = find_or_start(state, job, &key, persistent, compute).await;
+    let source = find_or_start(state, job, &key, persistent, compute).await?;
     let from_cache = matches!(source, Source::Cached(_));
     let body = match source {
         Source::Cached(body) => {
@@ -313,6 +323,7 @@ where
             }
             body
         }
+        Source::Refreshed(body) => body,
         Source::Flight { entry, started } => {
             if started && !job.warm_up {
                 metrics.cache("memory", false);
@@ -358,36 +369,44 @@ where
     Ok((resp, Some(body)))
 }
 
-/// Join the computation running for `key`, take its cached body, or start it.
+/// Refresh `key`, or join its computation, take its cached body, or start it.
 async fn find_or_start<F, T>(
     state: &Arc<AppState>,
     job: Job,
     key: &str,
     persistent: Option<(Arc<dyn ObjectStore>, String)>,
     compute: F,
-) -> Source
+) -> Result<Source, ApiError>
 where
     F: Future<Output = Result<T, ApiError>> + Send + 'static,
     T: Serialize + Send + 'static,
 {
+    if job.refresh {
+        // Do not join a visitor's flight: it might only be reading Blob.
+        // Keep the old body available while warming the backend, and leave
+        // it intact if the refresh fails or is cancelled.
+        let body = produce(state, job, &Spot::default(), persistent, compute).await?;
+        state.cache.insert(key.to_owned(), body.clone()).await;
+        return Ok(Source::Refreshed(body));
+    }
     let flights = &state.flights;
     if let Some(entry) = flights.get(key) {
-        return Source::Flight {
+        return Ok(Source::Flight {
             entry,
             started: false,
-        };
+        });
     }
     if let Some(body) = state.cache.get(key).await {
-        return Source::Cached(body);
+        return Ok(Source::Cached(body));
     }
     loop {
         {
             let mut running = flights.lock();
             if let Some(entry) = running.get(key) {
-                return Source::Flight {
+                return Ok(Source::Flight {
                     entry: entry.clone(),
                     started: false,
-                };
+                });
             }
             // A computation stores its body before it leaves the map, so
             // under the lock the body is either running or cached (unless
@@ -395,14 +414,14 @@ where
             if !state.cache.contains_key(key) {
                 let entry = start(state, job, key.to_owned(), persistent, compute);
                 running.insert(key.to_owned(), entry.clone());
-                return Source::Flight {
+                return Ok(Source::Flight {
                     entry,
                     started: true,
-                };
+                });
             }
         }
         if let Some(body) = state.cache.get(key).await {
-            return Source::Cached(body);
+            return Ok(Source::Cached(body));
         }
     }
 }
