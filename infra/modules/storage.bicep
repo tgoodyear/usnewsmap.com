@@ -198,14 +198,17 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           }
         }
         {
-          // Completed day payloads become empty tombstones. Keep only a short
-          // recovery window for their old versions. Tombstones and completion
-          // markers are durable and have no lifecycle deletion rule.
+          // Completed day payloads and curated lookup checkpoints become empty.
+          // Keep only a short recovery window for their old versions. Tombstones
+          // and completion markers are durable and have no lifecycle deletion rule.
           name: 'prune-ocr-request-day-versions'
           enabled: true
           type: 'Lifecycle'
           definition: {
-            filters: { blobTypes: ['blockBlob'], prefixMatch: ['ocr-requests/days/'] }
+            filters: {
+              blobTypes: ['blockBlob']
+              prefixMatch: ['ocr-requests/days/', 'curated/ocr-local/requests/']
+            }
             actions: {
               version: { delete: { daysAfterCreationGreaterThan: 1 } }
             }

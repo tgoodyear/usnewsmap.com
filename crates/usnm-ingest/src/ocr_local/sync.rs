@@ -683,21 +683,26 @@ async fn run_locked(
     let mut request_error = None;
     if let Some(requests) = &stores.requests {
         if !opts.deadline.is_some_and(|d| Instant::now() >= d) {
+            let mut report = super::requests::RequestReport::default();
             let request_result = super::requests::process(
                 state,
-                requests.as_ref(),
-                stores.curated.as_ref(),
-                stores.reference.as_ref(),
-                &stores.queue,
+                super::requests::Stores {
+                    requests: requests.as_ref(),
+                    curated: stores.curated.as_ref(),
+                    reference: stores.reference.as_ref(),
+                    queue: &stores.queue,
+                },
                 lease,
                 super::requests::Options {
                     daily_max: opts.user_daily_max,
                     deadline: opts.deadline,
                 },
+                &mut report,
             )
             .await;
+            counts.user_requests_queued += report.queued as u64;
             match request_result {
-                Ok(report) => counts.user_requests_queued += report.queued as u64,
+                Ok(()) => {}
                 Err(e) => {
                     tracing::error!(error = %format!("{e:#}"), "OCR hit requests failed; publishing imports' status before returning the error");
                     request_error = Some(e);

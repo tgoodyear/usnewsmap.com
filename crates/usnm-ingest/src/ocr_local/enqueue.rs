@@ -739,6 +739,10 @@ async fn enqueue_with_policy(
     let run = run_id(now);
     let mut out = Vec::new();
     let mut seen = HashSet::new();
+    let charged = policy
+        .request_day
+        .map(|day| ledger.charged_user_requests(day))
+        .unwrap_or_default();
     for doc_id in &opts.pages {
         if policy.deadline.is_some_and(|d| Instant::now() >= d) {
             report.paused = true;
@@ -751,6 +755,10 @@ async fn enqueue_with_policy(
             skip_page(&mut report, "bad_doc_id", doc_id, policy.private_pages);
             continue;
         };
+        if charged.contains(doc_id.as_str()) {
+            skip_page(&mut report, "charged_request_day", doc_id, true);
+            continue;
+        }
         if !opts.include_outstanding && ledger.outstanding(doc_id).is_some() {
             skip_page(&mut report, "outstanding", doc_id, policy.private_pages);
             continue;
@@ -855,10 +863,20 @@ async fn enqueue_with_policy(
             out,
             &mut report,
         )
-        .await?;
+        .await
+        .map_err(|error| error.context(SuccessfulSends(report.queued)))?;
     }
     tracing::info!(queued = report.queued, skipped = ?report.skipped, ledger = ?report.ledger, "ocr-enqueue finished");
     Ok(report)
+}
+
+#[derive(Debug)]
+pub(super) struct SuccessfulSends(pub usize);
+
+impl std::fmt::Display for SuccessfulSends {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} messages successfully sent before failure", self.0)
+    }
 }
 
 /// `ocr-requeue`'s options.

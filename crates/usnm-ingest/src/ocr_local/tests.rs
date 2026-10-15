@@ -78,6 +78,107 @@ struct FailFirstQueue {
 }
 
 #[derive(Debug)]
+struct FailSecondQueue {
+    inner: Arc<dyn Queue>,
+    attempts: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl Queue for FailSecondQueue {
+    async fn receive(&self, queue: &str, visibility: Duration) -> anyhow::Result<Option<Received>> {
+        self.inner.receive(queue, visibility).await
+    }
+
+    async fn delete(&self, msg: &Received) -> anyhow::Result<()> {
+        self.inner.delete(msg).await
+    }
+
+    async fn send(&self, queue: &str, text: &str) -> anyhow::Result<()> {
+        if self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 1
+        {
+            anyhow::bail!("injected second-send failure");
+        }
+        self.inner.send(queue, text).await
+    }
+
+    async fn approximate_count(&self, queue: &str) -> anyhow::Result<u64> {
+        self.inner.approximate_count(queue).await
+    }
+}
+
+#[derive(Debug)]
+struct FailWriteStore {
+    inner: Arc<dyn ObjectStore>,
+    path: &'static str,
+    empty_only: bool,
+    failed: std::sync::atomic::AtomicBool,
+}
+
+impl FailWriteStore {
+    fn check(&self, path: &str, body: &[u8]) -> Result<(), usnm_store::StoreError> {
+        if path == self.path
+            && (!self.empty_only || body.is_empty())
+            && !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(usnm_store::StoreError::Io(
+                "injected completion failure".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ObjectStore for FailWriteStore {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        self.inner.get(path).await
+    }
+
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        kind: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.check(path, &body)?;
+        self.inner.put_new(path, body, kind).await
+    }
+
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        kind: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.check(path, &body)?;
+        self.inner.put(path, body, kind).await
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.inner.list(prefix).await
+    }
+
+    async fn list_info(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<usnm_store::ObjectInfo>, usnm_store::StoreError> {
+        self.inner.list_info(prefix).await
+    }
+
+    async fn get_if_match(
+        &self,
+        path: &str,
+        etag: &str,
+        max: u64,
+    ) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        self.inner.get_if_match(path, etag, max).await
+    }
+}
+
+#[derive(Debug)]
 struct StallAfterFirstQueue {
     inner: Arc<dyn Queue>,
     sent: std::sync::atomic::AtomicBool,
@@ -1080,6 +1181,15 @@ async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_complete_the_day(
         .exists("completed/2026-10-14.json")
         .await
         .unwrap());
+    assert_eq!(
+        fx.stores
+            .curated
+            .get("ocr-local/requests/2026-10-14/lookup.json")
+            .await
+            .unwrap(),
+        Some(Vec::new()),
+        "normal completion clears the bounded daily ID list and resolved scores"
+    );
     let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
     assert_eq!(ledger.user_requests_for_day(request_day), 2);
     for expected in [key(1), key(2)] {
@@ -1104,6 +1214,160 @@ async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_complete_the_day(
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn request_retry_skips_charged_dead_letters_and_counts_partial_successes() {
+    let fx = fixture(true).await;
+    let mut body = Vec::new();
+    for seq in 1..=3 {
+        serde_json::to_writer(
+            &mut body,
+            &serde_json::json!({"v":1,"doc_id":key(seq).doc_id()}),
+        )
+        .unwrap();
+        body.push(b'\n');
+    }
+    fx.requests
+        .put_new("days/2026-10-14.jsonl", body, "application/x-ndjson")
+        .await
+        .unwrap();
+    let stores = Stores {
+        queue: Arc::new(FailSecondQueue {
+            inner: Arc::clone(&fx.queue),
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+        }),
+        ..fx.stores.clone()
+    };
+    let opts = Options {
+        user_daily_max: 3,
+        ..Options::default()
+    };
+    let error = sync::run(&fx.state, "test", &stores, &opts)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("injected second-send failure"));
+    let status: Status =
+        serde_json::from_slice(&fx.stores.reference.get(STATUS_PATH).await.unwrap().unwrap())
+            .unwrap();
+    assert_eq!(status.last_run.user_requests_queued, 1);
+    assert_eq!(status.totals.user_requests_queued, 1);
+    let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    assert_eq!(ledger.user_requests_for_day(day), 2);
+    let charged = ledger.charged_user_requests(day);
+    assert!(charged.contains(key(1).doc_id().as_str()));
+    assert!(charged.contains(key(2).doc_id().as_str()));
+    assert!(!charged.contains(key(3).doc_id().as_str()));
+
+    let sent = fx
+        .queue
+        .receive(PRIORITY, Duration::from_secs(60))
+        .await
+        .unwrap()
+        .unwrap();
+    let (message, page) = usnm_ocr_contract::message::decode(&sent.text).unwrap();
+    assert_eq!(page, key(1));
+    fx.queue.delete(&sent).await.unwrap();
+    let letter = DeadLetter::new(
+        PRIORITY,
+        &sent.id,
+        Some(&message),
+        Cause::Permanent,
+        None,
+        None,
+        "no image",
+        1,
+        NODE,
+    );
+    fx.queue.send(DEADLETTER, &letter.encode()).await.unwrap();
+    let resumed = sync::run(&fx.state, "test", &stores, &opts).await.unwrap();
+    assert_eq!(resumed.last_run.user_requests_queued, 1);
+    assert_eq!(resumed.totals.user_requests_queued, 2);
+    assert_eq!(resumed.last_run.dead_letters.get("permanent"), Some(&1));
+    let next = fx
+        .queue
+        .receive(PRIORITY, Duration::from_secs(60))
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, page) = usnm_ocr_contract::message::decode(&next.text).unwrap();
+    assert_eq!(
+        page,
+        key(3),
+        "terminal A stays charged; confirmed-unsent C gets the remaining slot"
+    );
+    assert_eq!(fx.queue.approximate_count(PRIORITY).await.unwrap(), 1);
+    assert!(fx
+        .requests
+        .exists("completed/2026-10-14.json")
+        .await
+        .unwrap());
+    let final_status = sync::run(&fx.state, "test", &stores, &opts).await.unwrap();
+    assert_eq!(final_status.totals.user_requests_queued, 2);
+}
+
+#[tokio::test]
+async fn request_completion_failures_preserve_success_counts_and_cleanup_on_retry() {
+    for path in [
+        "completed/2026-10-14.json",
+        "days/2026-10-14.jsonl",
+        "ocr-local/requests/2026-10-14/lookup.json",
+    ] {
+        let fx = fixture(true).await;
+        fx.requests
+            .put_new(
+                "days/2026-10-14.jsonl",
+                serde_json::to_vec(&serde_json::json!({"v":1,"doc_id":key(1).doc_id()})).unwrap(),
+                "application/x-ndjson",
+            )
+            .await
+            .unwrap();
+        let mut stores = fx.stores.clone();
+        let checkpoint = path.starts_with("ocr-local/");
+        let failing: Arc<dyn ObjectStore> = Arc::new(FailWriteStore {
+            inner: Arc::clone(if checkpoint {
+                &fx.stores.curated
+            } else {
+                &fx.requests
+            }),
+            path,
+            empty_only: checkpoint,
+            failed: std::sync::atomic::AtomicBool::new(false),
+        });
+        if checkpoint {
+            stores.curated = failing;
+        } else {
+            stores.requests = Some(failing);
+        }
+        let error = sync::run(&fx.state, "test", &stores, &Options::default())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("injected completion failure"));
+        let published: Status =
+            serde_json::from_slice(&fx.stores.reference.get(STATUS_PATH).await.unwrap().unwrap())
+                .unwrap();
+        assert_eq!(published.last_run.user_requests_queued, 1, "{path}");
+        assert_eq!(published.totals.user_requests_queued, 1, "{path}");
+        let resumed = sync::run(&fx.state, "test", &stores, &Options::default())
+            .await
+            .unwrap();
+        assert_eq!(resumed.last_run.user_requests_queued, 0);
+        assert_eq!(resumed.totals.user_requests_queued, 1);
+        assert_eq!(fx.queue.approximate_count(PRIORITY).await.unwrap(), 1);
+        assert_eq!(
+            fx.stores
+                .curated
+                .get("ocr-local/requests/2026-10-14/lookup.json")
+                .await
+                .unwrap(),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            fx.requests.get("days/2026-10-14.jsonl").await.unwrap(),
+            Some(Vec::new())
+        );
+    }
 }
 
 #[tokio::test]
@@ -1167,6 +1431,29 @@ async fn failed_request_sends_keep_the_day_for_unsent_retry_and_charge_only_sent
 async fn completed_request_days_are_tombstoned_without_spending_the_next_days_slot() {
     let fx = fixture(true).await;
     let day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    for completed_day in ["2026-10-13", "2026-10-14"] {
+        fx.stores
+            .curated
+            .put(
+                &format!("ocr-local/requests/{completed_day}/lookup.json"),
+                b"previous daily IDs and scores".to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+    }
+    fx.requests
+        .put_new("days/2026-10-13.jsonl", Vec::new(), "application/x-ndjson")
+        .await
+        .unwrap();
+    fx.requests
+        .put_new(
+            "completed/2026-10-13.json",
+            br#"{"v":1}"#.to_vec(),
+            "application/json",
+        )
+        .await
+        .unwrap();
     let body = serde_json::to_vec(&serde_json::json!({
         "v": 1,
         "doc_id": key(1).doc_id()
@@ -1195,6 +1482,17 @@ async fn completed_request_days_are_tombstoned_without_spending_the_next_days_sl
         .unwrap();
     let status = fx.sync().await;
     assert_eq!(status.last_run.user_requests_queued, 1);
+    for completed_day in ["2026-10-13", "2026-10-14"] {
+        assert_eq!(
+            fx.stores
+                .curated
+                .get(&format!("ocr-local/requests/{completed_day}/lookup.json"))
+                .await
+                .unwrap(),
+            Some(Vec::new()),
+            "cleanup clears checkpoints even when the day payload is already empty"
+        );
+    }
     assert_eq!(
         fx.requests.get("days/2026-10-14.jsonl").await.unwrap(),
         Some(Vec::new())

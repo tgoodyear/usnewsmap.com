@@ -372,16 +372,20 @@ impl Ledger {
         self.imported_pages.contains(doc_id)
     }
 
+    /// Pages with at least one attempt still charged to this UTC day.
+    pub fn charged_user_requests(&self, day: chrono::NaiveDate) -> HashSet<&str> {
+        self.user_requests_by_day
+            .get(&day)
+            .into_iter()
+            .flatten()
+            .filter(|attempt| !self.not_sent_attempts.contains(*attempt))
+            .map(|(doc_id, _)| doc_id.as_str())
+            .collect()
+    }
+
     /// Distinct user-requested pages already charged to this UTC day's cap.
     pub fn user_requests_for_day(&self, day: chrono::NaiveDate) -> usize {
-        self.user_requests_by_day.get(&day).map_or(0, |attempts| {
-            attempts
-                .iter()
-                .filter(|attempt| !self.not_sent_attempts.contains(*attempt))
-                .map(|(doc_id, _)| doc_id)
-                .collect::<HashSet<_>>()
-                .len()
-        })
+        self.charged_user_requests(day).len()
     }
 
     /// Pages outstanding now.
