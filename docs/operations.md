@@ -208,14 +208,36 @@ The provision creates the searcher app and its role first, then rolls the API on
 - **Idle billing of each app:** Cost Management, per resource and meter, daily: idle and active vCPU-seconds of `usnm-search-ca-prod` and of `ca-usnm-prod`, against about 180,000 idle and 14,000 to 32,000 active vCPU-seconds a day for the one app at 2.25 vCPU (3 to 8 October 2026, 09 §9.5). The searcher still polls the metastore every 30 s and answers the API's metrics read every minute; the API app now bills on its own between visitors.
 - **Capacity:** with two API replicas, both send searches to the one searcher (each with its own computation slots, 06 §6.6), and both report its metrics, so read one replica's rows in `searcher-caches` and `searcher-threads`. Each replica also warms the searcher after it restarts, one warm-up at a time within a replica but not across them: while two replicas run (a rollout, or the HTTP rule's second replica), a searcher restart gets a warm-up from each, which compute the same misses side by side for up to the warm-up's budget (5 minutes). The searcher app runs one replica in prod and the API usually one, so that's a rollout's few minutes.
 
-**Roll back:**
+**Roll back in two provisions (#362):** Keep `USNM_SEARCH_BACKEND=quickwit` and leave unrelated settings and images unchanged throughout. `USNM_SEARCHER_APP_RETAIN` keeps the searcher app and its Blob Data Reader role without routing the new API revision to it. It defaults to false and is a committed public setting, like `USNM_SEARCHER_APP`.
 
-```sh
-scripts/settings.sh --env prod --key USNM_SEARCHER_APP --unset
-scripts/provision.sh --env prod
-```
+1. Set retention and turn off routing **together**, then commit `infra/env/prod.json`, merge its pull request and pull before provisioning:
 
-The API gets its sidecar back in a new revision, using the system-assigned identity and role on `qw-index` it kept, and the stack deletes the searcher app and its role. The stack deletes them when the deployment returns, which is before the API's new revision is ready, so the old revision has no searcher until then: searches fail, and once its readiness fails the site too, for the new revision's load and warm-up (up to about 13 minutes). Roll back at a quiet hour.
+   ```sh
+   scripts/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --value true
+   scripts/settings.sh --env prod --key USNM_SEARCHER_APP --unset
+   scripts/provision.sh --env prod
+   ```
+
+   The API gets its sidecar back using the system-assigned identity and role it kept. The old API revision still searches the retained app until the sidecar revision finishes loading and warming (up to about 13 minutes). `SEARCHER_APP` becomes empty because it describes the new API's backend, not the retained resource. CPU alerts and the workbook also return to the API.
+
+2. **Do not remove retention just because provision returned.** Check that the API's `latestRevisionName` is nonempty and equals `latestReadyRevisionName`, and that its template has both `api` and `quickwit` and `USNM_QUICKWIT_URL=http://127.0.0.1:7280`. For prod:
+
+   ```sh
+   az containerapp show --name ca-usnm-prod --resource-group rg-usnm-prod \
+     --query '{latest:properties.latestRevisionName,ready:properties.latestReadyRevisionName,containers:properties.template.containers[].{name:name,quickwitUrl:env[?name==`USNM_QUICKWIT_URL`].value}}' -o json
+   curl --fail --show-error https://api.usnewsmap.com/readyz
+   ```
+
+   Verify a real search succeeds too. In single-revision mode the ready sidecar revision takes over traffic before the old revision stops. If readiness or search fails, **leave retention on**, investigate and retry; the old revision keeps its searcher. In a scale-to-zero environment send a request to wake the API before checking readiness.
+
+3. Only after those checks, unset retention, commit and merge that **second** settings change, pull, then provision again:
+
+   ```sh
+   scripts/settings.sh --env prod --key USNM_SEARCHER_APP_RETAIN --unset
+   scripts/provision.sh --env prod
+   ```
+
+   The stack now deletes the unused searcher app and its role without changing the API's sidecar template or its identity. Keeping retention on longer is safe but continues billing for the extra searcher. Unsetting both settings in the first provision skips this protection and can drop search until the sidecar is ready.
 
 ## The Quickwit image
 

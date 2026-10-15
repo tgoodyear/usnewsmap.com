@@ -35,8 +35,11 @@ param apiMinReplicas int = toLower(environmentName) == 'prod' ? 1 : 0
 @allowed(['fixtures', 'quickwit'])
 param searchBackend string = 'fixtures'
 
-@description('Run the Quickwit searcher as its own Container App, usnm-search-ca-{env}, with internal ingress, instead of a sidecar in each API replica (#267): a new API image, and so a site change, then doesn\'t restart it. Needs searchBackend quickwit. Off (the default) keeps the sidecar; turning it off again deletes the searcher app (docs/operations.md, "Searcher app").')
+@description('Run the Quickwit searcher as its own Container App, usnm-search-ca-{env}, with internal ingress, instead of a sidecar in each API replica (#267): a new API image, and so a site change, then doesn\'t restart it. Needs searchBackend quickwit. Off (the default) keeps the sidecar; roll back with searcherAppRetain first to keep the searcher app until the API sidecar is ready (docs/operations.md, "Searcher app").')
 param searcherApp bool = false
+
+@description('Keep the searcher app and its Blob reader role during rollback to the API sidecar (#362), without routing the API to it. Clear only after the sidecar revision is ready and serving (docs/operations.md, "Searcher app").')
+param searcherAppRetain bool = false
 
 @description('Create an Entra-only Quickwit account, without versioning or blob soft delete (#283), and stage full rebuilds there. Off preserves the lake index. Keep on after cutover: turning off would delete the account and its data (docs/operations.md, "Index storage cutover").')
 param indexStorage bool = false
@@ -737,6 +740,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     minReplicas: apiMinReplicas
     searchBackend: searchBackend
     searcherApp: searcherApp
+    searcherAppRetain: searcherAppRetain
     searcherName: n.searcherApp
     // Warm where the API keeps a replica warm (prod); elsewhere it scales to
     // zero with the API.
