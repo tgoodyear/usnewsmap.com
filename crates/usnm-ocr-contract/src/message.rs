@@ -156,10 +156,7 @@ impl OcrMessage {
         }
         let key = self.key()?;
         let b = &self.batch;
-        if b.is_empty()
-            || b.len() > 128
-            || !b.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-        {
+        if !is_batch_identifier(b) {
             return Err(MessageError::Batch(b.clone()));
         }
         let l = &self.language;
@@ -182,6 +179,15 @@ impl OcrMessage {
     }
 }
 
+/// The shared batch alphabet and byte bound, including legacy wire formats.
+pub(crate) fn is_batch_identifier(batch: &str) -> bool {
+    !batch.is_empty()
+        && batch.len() <= 128
+        && batch
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+}
+
 /// Whether `batch` has the shape of a base batch name: the awardee's code
 /// (2 to 10 lower-case ASCII letters), `_`, and a nonempty name. The whole
 /// batch is at most 128 bytes of `[A-Za-z0-9_]`, with no curation version.
@@ -192,9 +198,8 @@ pub fn is_base_batch_name(batch: &str) -> bool {
     };
     (2..=10).contains(&awardee.len())
         && awardee.bytes().all(|c| c.is_ascii_lowercase())
-        && batch.len() <= 128
+        && is_batch_identifier(batch)
         && !name.is_empty()
-        && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
         && !is_versioned_batch(batch)
 }
 

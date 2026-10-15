@@ -1024,6 +1024,78 @@ async fn real_loc_batches_seed_enqueue_and_sync_with_original_case() {
 }
 
 #[tokio::test]
+async fn fetched_source_preserves_mixed_case_and_full_length_batches() {
+    use usnm_ocr_contract::{fetched, prefetch};
+
+    for batch in [
+        "curiv_joshuaTree",
+        "lu_Cypher",
+        "me_Bissonnette",
+        "vi_White",
+        "wvu_Quote",
+        &format!("nbu_{}", "A".repeat(61)),
+        &format!("nbu_{}", "A".repeat(101)),
+        &format!("nbu_{}", "A".repeat(124)),
+    ] {
+        let fx = fixture_with_batch(true, batch).await;
+        let excluded = format!("excluded_{}", "B".repeat(119));
+        let rows = [
+            prefetch::ManifestRow::new(&key(1), batch, 1, Some("deu".into()), "detected", 0.5),
+            prefetch::ManifestRow::new(&key(2), &excluded, 1, Some("deu".into()), "detected", 0.5),
+        ];
+        let path = format!("{}/manifest.parquet", crate::ocr_prefetch::dir("v1", None));
+        fx.stores
+            .curated
+            .put_new(&path, prefetch::encode(&rows).unwrap(), "x")
+            .await
+            .unwrap();
+        let pages = [fetched::Fetched {
+            batch: batch.into(),
+            doc_id: key(1).doc_id(),
+        }]
+        .into_iter()
+        .collect();
+        fx.out
+            .put_new(
+                &fetched::path("v1", NODE, "20261012T010500Z"),
+                fetched::encode("v1", &pages).unwrap(),
+                "x",
+            )
+            .await
+            .unwrap();
+        let status = sync::run(
+            &fx.state,
+            "test",
+            &fx.stores,
+            &Options {
+                seed: super::seed::Options {
+                    plan: "mixed-case-fetched".into(),
+                    batches: vec![batch.into()],
+                    window: 1,
+                    source: super::seed::Source::Fetched,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.seed.unwrap().queued, 1, "{batch}");
+        let received = fx
+            .queue
+            .receive(BULK, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let msg = usnm_ocr_contract::message::decode(&received.text)
+            .unwrap()
+            .0;
+        assert_eq!(msg.batch, batch);
+        assert_eq!(msg.page, key(1).to_string());
+    }
+}
+
+#[tokio::test]
 async fn enqueue_finds_the_page_and_writes_the_ledger_first() {
     let fx = fixture(true).await;
     let doc = key(4).doc_id();
