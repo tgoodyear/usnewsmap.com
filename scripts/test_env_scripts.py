@@ -278,6 +278,28 @@ class SearcherRollbackSettings(Stubbed):
 
 
 @unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
+class IngestTimeoutTemplate(unittest.TestCase):
+    def test_only_explicit_full_or_staging_extends_the_ingest_timeout(self):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
+                              "infra/modules/ingestjobs.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        template = json.loads(run.stdout)
+        self.assertEqual(template["variables"]["ingestReplicaTimeoutSecs"],
+                         "[if(or(parameters('full'), parameters('stageIndexStorage')), 345600, 172800)]")
+        resources = template["resources"]
+        if isinstance(resources, dict):
+            resources = list(resources.values())
+        ingest = next(r for r in resources if r.get("name") == "[parameters('ingestJobName')]")
+        backfill = next(r for r in resources if r.get("name") == "[parameters('backfillJobName')]")
+        config = ingest["properties"]["configuration"]
+        self.assertEqual(config["replicaTimeout"], "[variables('ingestReplicaTimeoutSecs')]")
+        self.assertEqual(config["replicaRetryLimit"], 0)
+        self.assertEqual(template["variables"]["replicaTimeoutSecs"], 86400)
+        self.assertEqual(backfill["properties"]["configuration"]["replicaTimeout"],
+                         "[variables('replicaTimeoutSecs')]")
+
+
+@unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
 class SearcherRollbackTemplate(unittest.TestCase):
     """Offline ARM contracts: retention keeps resources, never API routing."""
 
