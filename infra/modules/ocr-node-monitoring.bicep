@@ -113,7 +113,7 @@ param locHoldAlertName string
 param capAlertName string
 @description('The nodes\' workspace\'s daily ingestion cap in GB. ops/queries/ocr-node-health.kql has the same figure (cap_gb).')
 param dailyCapGb string = '0.1'
-@description('Object id of the nodes\' Entra group (usnm-ocr-nodes-<env>, ADR-0015); empty grants it nothing.')
+@description('Object id of the nodes\' Entra group (usnm-ocr-nodes-grp-<env>, ADR-0015); empty grants it nothing.')
 param nodeGroupId string = ''
 @description('The environment\'s action group; no alerts when empty.')
 param actionGroupId string = ''

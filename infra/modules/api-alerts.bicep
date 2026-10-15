@@ -45,7 +45,7 @@ param workspaceId string
 param appInsightsId string
 param actionGroupId string
 
-@description('The alert rules\' names (infra/naming.bicep): serverErrors, aggregateSlow, searchesSlow, searchQueueWait, replicaCpu and siteUnavailable.')
+@description('The alert rules\' names (infra/naming.bicep): serverErrors, failures, aggregateSlow, searchesSlow, searchQueueWait, replicaCpu and siteUnavailable.')
 param alertNames object
 
 @description('The site availability test\'s name (infra/naming.bicep).')
@@ -68,6 +68,23 @@ param siteUrl string = ''
 @description('Seconds between availability test runs from each location.')
 @allowed(['300', '600', '900'])
 param availabilityFrequency string = '900'
+
+// Explicitly owned, unlike Application Insights' auto-created legacy rule.
+// Delete that unmanaged rule only after this replacement is provisioned.
+resource failures 'Microsoft.AlertsManagement/smartDetectorAlertRules@2021-04-01' = {
+  name: alertNames.failures
+  location: 'global'
+  tags: tags
+  properties: {
+    description: 'Application Insights failure anomalies on the API component (ADR-0017).'
+    state: 'Enabled'
+    severity: 'Sev3'
+    frequency: 'PT1M'
+    detector: { id: 'FailureAnomaliesDetector' }
+    scope: [appInsightsId]
+    actionGroups: { groupIds: [actionGroupId] }
+  }
+}
 
 // At least 8 server errors in 15 minutes that are also more than 2% of the
 // requests (5 in 10 minutes until #308 moved the rule from every 5 minutes

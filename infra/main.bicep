@@ -235,7 +235,7 @@ param ocrNodes bool = false
 @description('Public IPv4 addresses or CIDR ranges the OCR nodes connect from, comma separated (the operator\'s home IP). Only in the environment\'s settings, never in the repository.')
 param ocrNodeIps string = ''
 
-@description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-<env> (scripts/ocr-node/group.sh creates it and saves its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
+@description('Object id of the OCR nodes\' Entra security group, usnm-ocr-nodes-grp-<env> (scripts/ocr-node/group.sh creates or relabels the saved group without changing its id). The group gets the node roles on the exchange account and Monitoring Metrics Publisher on the nodes\' own Application Insights component, usnm-ocr-appi-<env>; onboard.sh adds each node\'s Arc identity to it.')
 param ocrNodeGroupId string = ''
 
 @description('Schedule for the OCR pickup job usnm-ocrs-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
@@ -985,6 +985,7 @@ module apiAlerts 'modules/api-alerts.bicep' = if (!empty(emails) && deployApi) {
     actionGroupId: monitoring.outputs.actionGroupId
     alertNames: {
       serverErrors: n.apiServerErrorsAlert
+      failures: n.apiFailuresAlert
       aggregateSlow: n.apiAggregateSlowAlert
       searchesSlow: n.apiSearchesSlowAlert
       searchQueueWait: n.apiSearchQueueWaitAlert

@@ -18,6 +18,13 @@
 # account and its data are never changed (#275).
 #
 #   scripts/teardown.sh --env NAME [--subscription ID] [--repo OWNER/NAME]
+#     [--allow-rename=<exact-old-name>]...
+#
+# Archive detachment provisions without the search cluster, which can
+# remove protected NFS scratch storage and its file private-DNS zone.
+# Approve each such removal explicitly with --allow-rename, just as for
+# provision.sh. The environment-name confirmation is not a guard bypass;
+# incomplete/failed plans cannot be approved.
 #
 # The subscription defaults to the environment's own (from its settings).
 # Passing another --subscription removes the copy left there after a move:
@@ -37,11 +44,17 @@ if [ $# -ge 1 ] && [[ $1 != -* ]]; then
   set -- --env "$@"
 fi
 ENV_NAME="" SUBSCRIPTION="" REPO=""
+ALLOW_RENAMES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --subscription) [ $# -ge 2 ] || usage; SUBSCRIPTION=$2; shift 2 ;;
     --repo) [ $# -ge 2 ] || usage; REPO=$2; shift 2 ;;
+    --allow-rename=*)
+      name=${1#*=}
+      [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.\ -]*$ ]] || usage
+      ALLOW_RENAMES+=("--allow-rename=$name")
+      shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -135,10 +148,9 @@ sort_ids() {
 }
 sort_ids
 # The guard-rail definitions go with the last environment in the subscription.
-# Any other usnm- stack keeps them, the archival account's (usnm-archive)
-# too: its group assigns them. The settings store's (usnm-config) assigns
-# none, so it doesn't count.
-others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$STACK' && name != '$GUARDRAILS_STACK' && name != '$SETTINGS_STACK'].name" -o tsv)
+# Other closed-list environment stacks keep them; usnm-archive is an
+# explicit non-environment user too. Settings/guardrail stacks don't count.
+others=$(guardrail_stack_users "$STACK") || die "can't list users of $GUARDRAILS_STACK"
 guardrails=false
 if [ -z "$others" ]; then
   if out=$(az stack sub show -n "$GUARDRAILS_STACK" -o none 2>&1); then
@@ -285,6 +297,8 @@ if [ -n "$archive" ]; then
   printf '%s\n' "$archive" > "$archive_mark"
   aset USNM_ARCHIVE_ACCOUNT ""
   aset USNM_SEARCH_CLUSTER false
+  # Keep the caller's exact ALLOW_RENAMES for this partial provision.
+  # Never infer approvals from the final environment-deletion confirmation.
   NO_EXPERIMENT_CHECK=true provision
   # Nothing of the environment's may be left in the account's group: no
   # role assignment for one of its identities, and no endpoint connection
@@ -382,7 +396,7 @@ done
 # check again just before deleting.
 if [ "$guardrails" = true ]; then
   # Fail closed: if the list can't be read, keep the stack.
-  others=$(az stack sub list --query "[?starts_with(name, 'usnm-') && name != '$GUARDRAILS_STACK' && name != '$SETTINGS_STACK'].name" -o tsv) ||
+  others=$(guardrail_stack_users) ||
     die "can't list deployment stacks; kept $GUARDRAILS_STACK (delete it when no environment uses it)"
   if [ -n "$others" ]; then
     echo "keeping $GUARDRAILS_STACK: another stack was created meanwhile ($others)"

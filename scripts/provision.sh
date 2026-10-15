@@ -18,9 +18,13 @@
 # Azure's preflight validation of the stack (a policy denial fails it) and
 # shows the template's changes.
 #
+# --allow-rename=NAME explicitly permits removal of that protected resource.
+# Repeat for each intentional deletion; this never bypasses a failed or
+# incomplete what-if (ADR-0017).
+#
 # Needs az 2.61+, signed in to the environment's subscription with Owner.
 set -euo pipefail
-usage() { echo "usage: scripts/provision.sh --env <env> [--allow-dirty] [--what-if]" >&2; exit 2; }
+usage() { echo "usage: scripts/provision.sh --env <env> [--allow-dirty] [--what-if] [--allow-rename=<exact-old-name>]..." >&2; exit 2; }
 # The positional form (`provision.sh prod`) works for one release, with a
 # warning (#277).
 if [ $# -eq 1 ] && [[ $1 != -* ]]; then
@@ -28,11 +32,17 @@ if [ $# -eq 1 ] && [[ $1 != -* ]]; then
   set -- --env "$1"
 fi
 ENV_NAME="" ALLOW_DIRTY=false WHAT_IF=false
+ALLOW_RENAMES=()
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --allow-dirty) ALLOW_DIRTY=true; shift ;;
     --what-if) WHAT_IF=true; shift ;;
+    --allow-rename=*)
+      name=${1#*=}
+      [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.\ -]*$ ]] || usage
+      ALLOW_RENAMES+=("--allow-rename=$name")
+      shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac

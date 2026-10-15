@@ -23,7 +23,7 @@ param subnetId string
 param boincSubnetId string = ''
 @description('Principals given Storage Blob Data Reader on `scans`: the BOINC bridge\'s identity (usnm-boinc-id-<env>), which stages pages from the archive before going to LoC (ADR-0018, decision 7).')
 param readerIds array = []
-@description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-<env>). It gets the writer role; empty grants none.')
+@description('Object id of the Entra security group of the nodes\' Arc machine identities (usnm-ocr-nodes-grp-<env>). It gets the writer role; empty grants none.')
 param nodeGroupId string = ''
 @description('The scan writer role\'s name, before its scope (infra/naming.bicep).')
 param writerRoleLabel string

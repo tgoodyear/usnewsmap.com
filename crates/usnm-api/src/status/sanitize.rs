@@ -163,7 +163,7 @@ fn redact_component(c: &str) -> &str {
     if has_worker_id(c) {
         return "[worker]";
     }
-    let pieces = || lower.split(':');
+    let pieces = || lower.split(':').map(|p| p.trim_matches('\''));
     if pieces().any(|p| RESOURCE_PREFIXES.iter().any(|r| p.starts_with(r)) || is_adr_0017_name(p)) {
         return "[resource]";
     }
@@ -387,6 +387,19 @@ mod tests {
             sanitize("account stusnmdataxyz: 403"),
             "account [resource]: 403"
         );
+    }
+
+    #[test]
+    fn replaces_quoted_resource_names() {
+        assert_eq!(
+            sanitize("resource 'usnm-api-ca-dev' was not found"),
+            "resource [resource]' was not found"
+        );
+        assert_eq!(
+            sanitize("resource 'di-usnm-prod-abc123' was not found"),
+            "resource [resource]' was not found"
+        );
+        assert_eq!(sanitize("'usnm-ingest' failed"), "'usnm-ingest' failed");
     }
 
     #[test]
