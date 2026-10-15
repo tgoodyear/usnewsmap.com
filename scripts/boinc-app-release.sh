@@ -38,18 +38,23 @@
 # key status and podman) and prints the plan.
 set -euo pipefail
 usage() {
-  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen> --version <N.M> --signing-host HOST [--plan-class docker|docker_mt|docker_nvidia_cuda] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM --wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
+  echo "usage: scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...]] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--what-if]" >&2
   exit 2
 }
-ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" PLAN_CLASS=docker WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false
-PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN=""
+ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false
+PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA=""
+EXTRA_FILES=()
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
     --app) [ $# -ge 2 ] || usage; APP=$2; shift 2 ;;
     --version) [ $# -ge 2 ] || usage; VERSION=$2; shift 2 ;;
     --signing-host) [ $# -ge 2 ] || usage; SIGNING_HOST=$2; shift 2 ;;
-    --plan-class) [ $# -ge 2 ] || usage; PLAN_CLASS=$2; shift 2 ;;
+    --kind) [ $# -ge 2 ] || usage; KIND=$2; shift 2 ;;
+    --binary) [ $# -ge 2 ] || usage; BINARY=$2; shift 2 ;;
+    --binary-sha256) [ $# -ge 2 ] || usage; BINARY_SHA=$2; shift 2 ;;
+    --extra-file) [ $# -ge 2 ] || usage; EXTRA_FILES+=("$2"); shift 2 ;;
+    --plan-class) [ $# -ge 2 ] || usage; PLAN_CLASS=$2; PLAN_CLASS_SET=true; shift 2 ;;
     --worker-image) [ $# -ge 2 ] || usage; WORKER_OVERRIDE=$2; shift 2 ;;
     --platform) [ $# -ge 2 ] || usage; PLATFORM=$2; shift 2 ;;
     --wrapper) [ $# -ge 2 ] || usage; WRAPPER=$2; shift 2 ;;
@@ -64,11 +69,40 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ENV_NAME" ] && [ -n "$APP" ] && [ -n "$VERSION" ] && [ -n "$SIGNING_HOST" ] || usage
 die() { echo "error: $*" >&2; exit 1; }
-case "$APP:$PLAN_CLASS" in
-  usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker | usnm_quality:docker) ;;
-  usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt | usnm_qwen:docker_nvidia_cuda)
-    [ -n "$WORKER_OVERRIDE" ] || die "$APP has its own worker image: give --worker-image" ;;
-  *) die "--app and --plan-class must be usnm_ocr, usnm_assess, usnm_gold or usnm_quality with docker, or usnm_surya or usnm_qwen with docker_mt or docker_nvidia_cuda (scripts/boinc/install.py)" ;;
+case "$KIND" in
+  container)
+    $PLAN_CLASS_SET || PLAN_CLASS=docker
+    [ -z "$BINARY$BINARY_SHA" ] && [ "${#EXTRA_FILES[@]}" -eq 0 ] || die "--binary and --extra-file are only valid with --kind native"
+    case "$APP:$PLAN_CLASS" in
+      usnm_ocr:docker | usnm_assess:docker | usnm_gold:docker | usnm_quality:docker) ;;
+      usnm_surya:docker_mt | usnm_surya:docker_nvidia_cuda | usnm_qwen:docker_mt | usnm_qwen:docker_nvidia_cuda)
+        [ -n "$WORKER_OVERRIDE" ] || die "$APP has its own worker image: give --worker-image" ;;
+      *) die "--app and --plan-class must be usnm_ocr, usnm_assess, usnm_gold or usnm_quality with docker, or usnm_surya or usnm_qwen with docker_mt or docker_nvidia_cuda (scripts/boinc/install.py)" ;;
+    esac
+    ;;
+  native)
+    $PLAN_CLASS_SET || PLAN_CLASS=""
+    [ -z "$WRAPPER$WRAPPER_SHA$WRAPPER_PIN$WORKER_OVERRIDE" ] || die "--wrapper and --worker-image are only valid with --kind container"
+    [ -n "$BINARY" ] && [ -f "$BINARY" ] || die "--binary must be an existing file when --kind native"
+    if [ -n "$BINARY_SHA" ]; then
+      [[ $BINARY_SHA =~ ^[0-9a-f]{64}$ ]] || die "--binary-sha256 must be 64 lower-case hex digits"
+      python3 - --binary "$BINARY" --sha256 "$BINARY_SHA" << 'PY' || die "--binary SHA-256 verification failed"
+import argparse, hashlib, pathlib, sys
+p = argparse.ArgumentParser()
+p.add_argument("--binary", required=True, type=pathlib.Path)
+p.add_argument("--sha256", required=True)
+a = p.parse_args()
+sys.exit(0 if hashlib.sha256(a.binary.read_bytes()).hexdigest() == a.sha256 else 1)
+PY
+    fi
+    case "$APP:$PLAN_CLASS" in
+      usnm_quality: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b) ;;
+      *) die "--app and --plan-class for --kind native must be usnm_quality with empty --plan-class, or usnm_qwen with mt, apple_gpu_8b, nvidia_cuda_8b or nvidia_cuda_2b (scripts/boinc/install.py)" ;;
+    esac
+    ;;
+  *)
+    die "--kind must be container or native"
+    ;;
 esac
 [ -z "$WORKER_OVERRIDE" ] || [[ $WORKER_OVERRIDE =~ ^ghcr\.io/tgoodyear/usnm-boinc-worker@sha256:[0-9a-f]{64}$ ]] ||
   die "--worker-image must be ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<64 hex>"
@@ -77,16 +111,60 @@ esac
 [[ $KEY_DIR =~ ^/[A-Za-z0-9/._-]+$ ]] || die "--signing-key-dir must be an absolute path"
 [[ $KEY_DATASET =~ ^[A-Za-z0-9/._-]+$ ]] || die "--signing-dataset must be a ZFS dataset name"
 cd "$(dirname "$0")/.."
-case "$PLATFORM" in
-  x86_64-pc-linux-gnu) [ -z "$WRAPPER$WRAPPER_SHA$WRAPPER_PIN" ] || die "Linux uses the wrapper built in the pinned server image" ;;
-  arm64-apple-darwin|x86_64-apple-darwin)
-    [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
-    [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
-      die "Mac requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
-    python3 scripts/boinc/check-mac-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \
-      --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Mac wrapper verification failed" ;;
-  *) die "unsupported --platform" ;;
-esac
+if [ "$KIND" = container ]; then
+  case "$PLATFORM" in
+    x86_64-pc-linux-gnu) [ -z "$WRAPPER$WRAPPER_SHA$WRAPPER_PIN" ] || die "Linux uses the wrapper built in the pinned server image" ;;
+    windows_x86_64)
+      [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
+      [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
+        die "Windows requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
+      python3 scripts/boinc/check-windows-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \
+        --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Windows wrapper verification failed" ;;
+    aarch64-unknown-linux-gnu)
+      [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
+      [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
+        die "Linux arm64 requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
+      python3 scripts/boinc/check-linux-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \
+        --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Linux arm64 wrapper verification failed" ;;
+    arm64-apple-darwin|x86_64-apple-darwin)
+      [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
+      [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
+        die "Mac requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
+      python3 scripts/boinc/check-mac-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \
+        --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Mac wrapper verification failed" ;;
+    *) die "unsupported --platform" ;;
+  esac
+else
+  case "$PLATFORM" in
+    x86_64-pc-linux-gnu|aarch64-unknown-linux-gnu|arm64-apple-darwin|x86_64-apple-darwin|windows_x86_64) ;;
+    *) die "unsupported --platform" ;;
+  esac
+  case "$PLAN_CLASS:$PLATFORM" in
+    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64) ;;
+    *) die "native --plan-class $PLAN_CLASS is not supported on $PLATFORM" ;;
+  esac
+  for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
+    [[ $spec == *=* ]] || die "--extra-file must have the form LOGICAL=PATH"
+    logical=${spec%%=*}
+    src_file=${spec#*=}
+    [[ $logical =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$ ]] || die "invalid --extra-file logical name $logical"
+    [ -f "$src_file" ] || die "missing --extra-file source $src_file"
+  done
+  if [ "$APP" = usnm_qwen ]; then
+    required_server="llama-server"
+    [ "$PLATFORM" != windows_x86_64 ] || required_server="llama-server.exe"
+    for req_extra in "$required_server" "llama.lock" "weights.lock"; do
+      found_extra=false
+      for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
+        if [ "${spec%%=*}" = "$req_extra" ]; then
+          found_extra=true
+          break
+        fi
+      done
+      $found_extra || die "native usnm_qwen on $PLATFORM requires --extra-file $req_extra=PATH"
+    done
+  fi
+fi
 # shellcheck source=scripts/lib/boinc.sh disable=SC1091
 . scripts/lib/boinc.sh
 boinc_load_settings
@@ -106,9 +184,16 @@ sha=$(git rev-parse HEAD)
 registry=$(jq -er .registry infra/names/"$ENV_NAME".json) || die "no registry in infra/names/$ENV_NAME.json"
 APPVER_REPO=usnm-boinc-appver
 APPVER_TAG="$APP-$VERSION"
-[ "$PLAN_CLASS" = docker ] || APPVER_TAG="$APPVER_TAG-${PLAN_CLASS//_/-}"
+[ "$KIND" = container ] || APPVER_TAG="$APPVER_TAG-native"
+if [ -n "$PLAN_CLASS" ] && [ "$PLAN_CLASS" != docker ]; then
+  APPVER_TAG="$APPVER_TAG-${PLAN_CLASS//_/-}"
+fi
 [ "$PLATFORM" = x86_64-pc-linux-gnu ] || APPVER_TAG="$APPVER_TAG-$PLATFORM"
-VERSION_SUBDIR="apps/$APP/$VERSION/${PLATFORM}__${PLAN_CLASS}"
+if [ -n "$PLAN_CLASS" ]; then
+  VERSION_SUBDIR="apps/$APP/$VERSION/${PLATFORM}__${PLAN_CLASS}"
+else
+  VERSION_SUBDIR="apps/$APP/$VERSION/${PLATFORM}"
+fi
 ssh_host() { ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SIGNING_HOST" "$@"; }
 
 # --- 1. Worker image -------------------------------------------------------------------------
@@ -166,7 +251,9 @@ build_worker_in_acr() {
   echo "worker image builds: $registry.azurecr.io/usnm-boinc-worker@$(digest usnm-boinc-worker "$worker_key") (ACR, not pullable by volunteers)"
 }
 
-if [ -z "$WORKER_IMAGE" ] && $WHAT_IF; then
+if [ "$KIND" = native ]; then
+  echo "1. native binary $BINARY: no worker container image required"
+elif [ -z "$WORKER_IMAGE" ] && $WHAT_IF; then
   echo "1. no images.worker in $BOINC_SETTINGS: a real run builds the worker in ACR as a check and stops there (publish it with .github/workflows/boinc-worker.yml)"
 elif [ -z "$WORKER_IMAGE" ]; then
   build_worker_in_acr
@@ -194,8 +281,8 @@ echo "signing host: $KEY_DATASET unlocked, key present, podman available"
 if $WHAT_IF; then
   cat << PLAN
 would, from commit $sha:
-2. stage $APP $VERSION ($PLATFORM, $PLAN_CLASS) on the signing host: pull $SERVER_IMAGE (short-lived ACR token), run
-   scripts/boinc/install.py in it with --network=none, pinned to $WORKER_IMAGE
+2. stage $APP $VERSION ($KIND, $PLATFORM, ${PLAN_CLASS:-default}) on the signing host: pull $SERVER_IMAGE (short-lived ACR token), run
+   scripts/boinc/install.py in it with --network=none
 3. sign each file with sign_executable (--network=none, key $KEY_DIR read-only); bring back the .sig files
 4. build $registry.azurecr.io/$APPVER_REPO:$APPVER_TAG in ACR Tasks (every signature verified),
    scripts/provision-boinc.sh --env $ENV_NAME --publish-image <it>, then start the publish job
@@ -210,10 +297,34 @@ cleanup() {
   rm -rf "$work"
 }
 trap cleanup EXIT
-if [ "$PLATFORM" != x86_64-pc-linux-gnu ]; then
+binary_name="binary_payload"
+[ "$PLATFORM" != windows_x86_64 ] || binary_name="binary_payload.exe"
+if [ "$KIND" = native ]; then
+  cp "$BINARY" "$work/$binary_name"
+  if [ "${#EXTRA_FILES[@]}" -gt 0 ]; then
+    mkdir -p "$work/extra"
+    for spec in "${EXTRA_FILES[@]}"; do
+      [[ $spec == *=* ]] || die "--extra-file must have the form LOGICAL=PATH"
+      logical=${spec%%=*}
+      src_file=${spec#*=}
+      [ -f "$src_file" ] || die "missing --extra-file source $src_file"
+      cp "$src_file" "$work/extra/$logical"
+    done
+  fi
+elif [ -n "$WRAPPER" ]; then
   cp "$WRAPPER" "$work/wrapper"
-  python3 scripts/boinc/check-mac-wrapper.py --wrapper "$work/wrapper" --platform "$PLATFORM" \
-    --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Mac wrapper changed since verification"
+  cp "$WRAPPER_PIN" "$work/wrapper.pin"
+  case "$PLATFORM" in
+    windows_x86_64)
+      python3 scripts/boinc/check-windows-wrapper.py --wrapper "$work/wrapper" --platform "$PLATFORM" \
+        --sha256 "$WRAPPER_SHA" --source-pin "$work/wrapper.pin" || die "Windows wrapper changed since verification" ;;
+    aarch64-unknown-linux-gnu)
+      python3 scripts/boinc/check-linux-wrapper.py --wrapper "$work/wrapper" --platform "$PLATFORM" \
+        --sha256 "$WRAPPER_SHA" --source-pin "$work/wrapper.pin" || die "Linux arm64 wrapper changed since verification" ;;
+    arm64-apple-darwin|x86_64-apple-darwin)
+      python3 scripts/boinc/check-mac-wrapper.py --wrapper "$work/wrapper" --platform "$PLATFORM" \
+        --sha256 "$WRAPPER_SHA" --source-pin "$work/wrapper.pin" || die "Mac wrapper changed since verification" ;;
+  esac
 fi
 
 # --- 2. Stage --------------------------------------------------------------------------------
@@ -228,17 +339,32 @@ ssh_host "podman pull -q --authfile $remote/auth.json $SERVER_IMAGE > /dev/null;
   die "the signing host can't pull $SERVER_IMAGE"
 git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc contrib-compute/boinc/project.xml | ssh_host "mkdir $remote/src && tar -x -C $remote/src" ||
   die "can't copy the sources to the signing host"
-wrapper_path=/usr/local/lib/usnm-boinc/docker_wrapper
-wrapper_mount=""
-if [ "$PLATFORM" != x86_64-pc-linux-gnu ]; then
-  ssh_host "cat > $remote/wrapper" < "$work/wrapper" || die "can't copy the verified Mac wrapper"
-  wrapper_path=/wrapper
-  wrapper_mount="-v $remote/wrapper:/wrapper:ro"
+if [ "$KIND" = native ]; then
+  ssh_host "cat > $remote/$binary_name" < "$work/$binary_name" || die "can't copy the native binary to the signing host"
+  extra_mount=""
+  extra_arg=""
+  if [ -d "$work/extra" ]; then
+    tar -C "$work" -c extra | ssh_host "tar -x -C $remote" || die "can't copy extra files to the signing host"
+    extra_mount="-v $remote/extra:/extra:ro"
+    extra_arg="--bundle-dir /extra"
+  fi
+  ssh_host "mkdir -p $remote/proj && touch $remote/proj/config.xml &&
+    podman run --rm --network=none -v $remote/$binary_name:/$binary_name:ro $extra_mount -v $remote/src:/src:ro -v $remote/proj:/proj --entrypoint python3 $SERVER_IMAGE \
+      /src/scripts/boinc/install.py --kind native --project /proj --binary /$binary_name $extra_arg \
+      --version $VERSION --app $APP --plan-class \"$PLAN_CLASS\" --platform $PLATFORM > /dev/null" || die "staging failed on the signing host"
+else
+  wrapper_path=/usr/local/lib/usnm-boinc/docker_wrapper
+  wrapper_mount=""
+  if [ -f "$work/wrapper" ]; then
+    ssh_host "cat > $remote/wrapper" < "$work/wrapper" || die "can't copy the verified wrapper"
+    wrapper_path=/wrapper
+    wrapper_mount="-v $remote/wrapper:/wrapper:ro"
+  fi
+  ssh_host "mkdir -p $remote/proj && touch $remote/proj/config.xml &&
+    podman run --rm --network=none $wrapper_mount -v $remote/src:/src:ro -v $remote/proj:/proj --entrypoint python3 $SERVER_IMAGE \
+      /src/scripts/boinc/install.py --kind container --project /proj --wrapper $wrapper_path \
+      --image $WORKER_IMAGE --version $VERSION --app $APP --plan-class $PLAN_CLASS --platform $PLATFORM > /dev/null" || die "staging failed on the signing host"
 fi
-ssh_host "mkdir -p $remote/proj && touch $remote/proj/config.xml &&
-  podman run --rm --network=none $wrapper_mount -v $remote/src:/src:ro -v $remote/proj:/proj --entrypoint python3 $SERVER_IMAGE \
-    /src/scripts/boinc/install.py --project /proj --wrapper $wrapper_path \
-    --image $WORKER_IMAGE --version $VERSION --app $APP --plan-class $PLAN_CLASS --platform $PLATFORM > /dev/null" || die "staging failed on the signing host"
 
 # --- 3. Sign ---------------------------------------------------------------------------------
 
@@ -260,24 +386,36 @@ echo "   signatures: $(cd "$work/sigs" && echo *)"
 
 echo "4. building $APPVER_REPO:$APPVER_TAG in $registry"
 ctx="$work/ctx"
-mkdir -p "$ctx/src"
-git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc contrib-compute/boinc/project.xml | tar -x -C "$ctx/src"
+mkdir -p "$ctx/src" "$ctx/extra"
+git archive --format=tar HEAD scripts/boinc/install.py scripts/boinc/check-mac-wrapper.py scripts/boinc/check-linux-wrapper.py scripts/boinc/check-windows-wrapper.py contrib-compute/images/base/Containerfile ocr/boinc contrib-compute/boinc/project.xml | tar -x -C "$ctx/src"
 git show "HEAD:contrib-compute/images/appver/Containerfile" > "$ctx/Containerfile"
 git show "HEAD:contrib-compute/images/appver/publish-appver.sh" > "$ctx/publish-appver.sh"
 git show "HEAD:contrib-compute/images/appver/check_appver.py" > "$ctx/check_appver.py"
 mv "$work/sigs" "$ctx/sigs"
 mkdir "$ctx/wrapper-candidate"
 appver_wrapper=/usr/local/lib/usnm-boinc/docker_wrapper
-if [ "$PLATFORM" != x86_64-pc-linux-gnu ]; then
+appver_wrapper_pin=""
+appver_binary=""
+if [ "$KIND" = native ]; then
+  cp "$work/$binary_name" "$ctx/wrapper-candidate/$binary_name"
+  appver_binary="/tmp/wrapper-candidate/$binary_name"
+  if [ -d "$work/extra" ]; then
+    cp -r "$work/extra" "$ctx/wrapper-candidate/extra"
+    cp "$work/extra"/* "$ctx/extra/"
+  fi
+elif [ -f "$work/wrapper" ]; then
   cp "$work/wrapper" "$ctx/wrapper-candidate/docker_wrapper"
+  cp "$work/wrapper.pin" "$ctx/wrapper-candidate/wrapper.pin"
   appver_wrapper=/tmp/wrapper-candidate/docker_wrapper
+  appver_wrapper_pin=/tmp/wrapper-candidate/wrapper.pin
 fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
   --no-logs --query '{runId:runId,status:status}' -o json \
-  --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
+  --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
   --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \
-  --build-arg "WRAPPER_PATH=$appver_wrapper" --file "$ctx/Containerfile" "$ctx" ||
+  --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin" \
+  --build-arg "BINARY_PATH=$appver_binary" --file "$ctx/Containerfile" "$ctx" ||
   die "the app version image build failed (a signature that doesn't verify fails it)"
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"

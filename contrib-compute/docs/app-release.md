@@ -12,19 +12,62 @@ scripts/boinc-app-release.sh --env prod --app usnm_ocr --version 1.0 --signing-h
 `usbbak/signing`) name where the private key is on the signing host. `--what-if` runs the
 read-only checks and prints the plan.
 
-`usnm_ocr`, `usnm_assess`, `usnm_gold` and `usnm_quality` use `--plan-class docker` (the
-default) and `images.worker` from `infra/boinc/env/<env>.json`. `usnm_surya` (#516) and
-`usnm_qwen` (#522) have their own worker images (`.github/workflows/boinc-surya.yml` and
-`.github/workflows/boinc-qwen.yml`) and two plan classes (`docker_mt` for version `1.0`,
-`docker_nvidia_cuda` for version `1.1`), passed with `--plan-class` and `--worker-image`:
+The release script and `scripts/boinc/install.py` support two distribution kinds (`--kind`):
 
-```sh
-scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
-scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt \
-  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
-scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda \
-  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
-```
+1. **`--kind container` (default)**: stages a signed `docker_wrapper`, `Dockerfile`, `job.toml`
+   and `version.xml` under `apps/<app>/<version>/<platform>__<plan_class>` across the five
+   registered platforms (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`,
+   `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64`) and the three container plan
+   classes (`docker`, `docker_mt`, `docker_nvidia_cuda`).
+   - `usnm_ocr`, `usnm_assess`, `usnm_gold` and container `usnm_quality` use `--plan-class docker`
+     (the default) and `images.worker` from `infra/boinc/env/<env>.json`.
+   - `usnm_surya` (#516) and container `usnm_qwen` (#522) have their own worker images
+     (`.github/workflows/boinc-surya.yml` and `.github/workflows/boinc-qwen.yml`) and two
+     container plan classes (`docker_mt` and `docker_nvidia_cuda`), passed with `--plan-class`
+     and `--worker-image`:
+
+   ```sh
+   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
+   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt \
+     --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
+   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda \
+     --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
+   ```
+
+2. **`--kind native --binary`**: stages a native executable built by CI without `docker_wrapper`
+   or a container image (#533):
+   - **`usnm_quality`**: `.github/workflows/boinc-quality-native.yml` builds static musl, Mach-O
+     and MSVC executables (`usnm_quality_<ver>_<platform>[.exe]`) plus `SHA256SUMS` across all
+     five platforms (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`,
+     `x86_64-apple-darwin`, `windows_x86_64`). Stage and sign each platform binary with
+     `--kind native --binary <FILE> --binary-sha256 <HEX>` (writes
+     `apps/usnm_quality/<version>/<platform>/` with no plan-class suffix):
+
+   ```sh
+   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+     --platform x86_64-pc-linux-gnu \
+     --binary /path/to/usnm_quality_1.1_x86_64-pc-linux-gnu \
+     --binary-sha256 CHECKED_SHA256 --signing-host HOST
+   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+     --platform arm64-apple-darwin \
+     --binary /path/to/usnm_quality_1.1_arm64-apple-darwin \
+     --binary-sha256 CHECKED_SHA256 --signing-host HOST
+   scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
+     --platform windows_x86_64 \
+     --binary /path/to/usnm_quality_1.1_windows_x86_64.exe \
+     --binary-sha256 CHECKED_SHA256 --signing-host HOST
+   ```
+
+   - **`usnm_qwen`**: stages the native `usnm_qwen` driver binary together with the platform's
+     pinned `llama-server` executable (`llama-server.exe` on `windows_x86_64`),
+     `ocr/boinc/qwen/llama.lock`, and `ocr/boinc/qwen/weights.lock` (plus any runtime shared
+     libraries) passed via repeatable `--extra-file LOGICAL=PATH` flags under
+     `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
+     (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
+     `aarch64-unknown-linux-gnu`, `windows_x86_64`), and `mt` (all five platforms). Model files
+     are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
+     plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
+     `usnm_qwen_2b_in` for 2B/`mt` classes).
 
 ## What it needs
 
@@ -58,9 +101,12 @@ flowchart LR
    (cached by input key), as a build check, and stops.
 2. **Stage.** The server image goes to the signing host with a short-lived ACR pull token
    (deleted after the pull). `scripts/boinc/install.py` and `ocr/boinc/`, from the committed
-   HEAD, run in it with `--network=none` and write
-   `apps/<app>/<version>/<platform>__docker/` (`x86_64-pc-linux-gnu` by default) (wrapper, `job.toml`, a `Dockerfile`
-   pinned to the worker digest, `version.xml`).
+   HEAD, run in it with `--network=none` and write either
+   `apps/<app>/<version>/<platform>__<plan_class>/` for `--kind container` (`x86_64-pc-linux-gnu`
+   and `docker` by default: wrapper, `job.toml`, a `Dockerfile` pinned to the worker digest,
+   `version.xml` with `<is_wrapper/>`) or `apps/<app>/<version>/<platform>[__<plan_class>]/` for
+   `--kind native --binary` (the native `<main_program/>` binary, plus the `llama.lock` archive
+   for `usnm_qwen`, and `version.xml` without `<is_wrapper/>`).
 3. **Sign.** BOINC's `sign_executable` runs in the server image with `--network=none` and the
    key directory mounted read-only, and signs every file but `version.xml`. Only the `.sig`
    files come back. The work directory on the signing host is removed on exit.
@@ -165,7 +211,9 @@ maintainer publishes and signs from the merged commit.
    ```
 
    The script checks out exactly the BOINC commit pinned by the server
-   Containerfile, builds both Mach-O executables and records checksums. The
+   Containerfile, applies `scripts/boinc/patch-mac-wrapper.py` to fix the
+   `Run_Podman` `--format` pipe quoting bug in `samples/docker_wrapper/docker_wrapper.cpp`
+   (`get_container_state`), builds both Mach-O executables and records checksums. The
    artifact is a BOINC code-signing candidate, not an Apple-notarized installer.
    A checksum and source-pin file check integrity and consistency; use artifacts
    from a trusted, reviewed build. Record the workflow run, commit and SDK in the
@@ -200,8 +248,11 @@ maintainer publishes and signs from the merged commit.
    gold campaign before calling Mac support complete.
 
 The standalone Mac spike found an upstream `Run_Podman` command-quoting failure
-when restarting a paused container. Native image execution succeeds; BOINC
-lifecycle behavior still needs a tested fix and full client/server validation.
-See [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476) and the separate
+when restarting a paused container, which `scripts/boinc/patch-mac-wrapper.py`
+fixes during `scripts/boinc/build-mac-wrapper.sh` ([evaluation note](../../docs/notes/boinc-buda-arm-evaluation.md)).
+Native image execution succeeds; BOINC lifecycle behavior still needs full
+client/server validation on a reserved Mac workunit.
+See [#476](https://github.com/tgoodyear/usnewsmap.com/issues/476),
+[#533](https://github.com/tgoodyear/usnewsmap.com/issues/533) and the separate
 [BUDA evaluation PR #503](https://github.com/tgoodyear/usnewsmap.com/pull/503).
 These release tools contribute to #476 without closing it or the BUDA spike #481.

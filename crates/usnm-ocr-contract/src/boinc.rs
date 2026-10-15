@@ -1,9 +1,12 @@
 //! File-based transport for stock BOINC. Identity covers the selected page,
 //! scan bytes and processing specification; no credentials or LoC text.
+#[cfg(feature = "pipeline")]
 use crate::message::OcrMessage;
+#[cfg(feature = "pipeline")]
 use anyhow::{bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 pub const VERSION: u32 = 1;
 pub const MAX_JSON: usize = 16 * 1024;
@@ -21,6 +24,34 @@ pub fn is_sha256(s: &str) -> bool {
     s.len() == 64
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Words as score.py counts them, close enough for agreement between two
+/// hosts: lower case, letters and digits only.
+fn words(text: &str) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for w in text
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        *out.entry(w.to_owned()).or_insert(0) += 1;
+    }
+    out
+}
+
+/// 2 * shared words / (words of both), 1.0 for two empty texts.
+pub fn dice(a: &str, b: &str) -> f64 {
+    let (wa, wb) = (words(a), words(b));
+    let total: usize = wa.values().sum::<usize>() + wb.values().sum::<usize>();
+    if total == 0 {
+        return 1.0;
+    }
+    let shared: usize = wa
+        .iter()
+        .map(|(w, n)| (*n).min(*wb.get(w).unwrap_or(&0)))
+        .sum();
+    2.0 * shared as f64 / total as f64
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,6 +78,7 @@ pub struct Engine {
     pub timeout_secs: u32,
 }
 
+#[cfg(feature = "pipeline")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
@@ -57,6 +89,7 @@ pub struct Job {
     pub scan: Scan,
     pub engine: Engine,
 }
+#[cfg(feature = "pipeline")]
 impl Job {
     pub fn identity(&self) -> anyhow::Result<String> {
         Ok(sha256(&serde_json::to_vec(&(
@@ -150,6 +183,7 @@ impl Job {
     }
 }
 
+#[cfg(feature = "pipeline")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResultManifest {
@@ -162,6 +196,7 @@ pub struct ResultManifest {
     pub elapsed_ms: u64,
     pub completed_at: String,
 }
+#[cfg(feature = "pipeline")]
 impl ResultManifest {
     pub fn matches(&self, job: &Job, text: &[u8], alto: &[u8]) -> anyhow::Result<()> {
         job.validate()?;

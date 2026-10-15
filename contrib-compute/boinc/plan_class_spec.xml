@@ -40,4 +40,52 @@
         <gpu_ram_used_mb>2500</gpu_ram_used_mb>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
+    <!-- Native plan classes for usnm_qwen (#533): no Docker/Podman required. -->
+    <plan_class>
+        <name>mt</name>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_ncpus>4</min_ncpus>
+        <max_threads>8</max_threads>
+    </plan_class>
+    <!-- Apple Silicon Metal GPU class for usnm_qwen (#533). Upstream sched/plan_class_spec.cpp
+         checks gpu_type == "apple" for device eligibility and gpu_type == "apple_gpu" when
+         assigning PROC_TYPE_APPLE_GPU; scripts/boinc/patch-server-apple-gpu.py patches both
+         branches in contrib-compute/images/base/Containerfile so the scheduler reserves the
+         Apple GPU as well as matching the host's Metal device. -->
+    <plan_class>
+        <name>apple_gpu_8b</name>
+        <gpu_type>apple</gpu_type>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_gpu_ram_mb>8192</min_gpu_ram_mb>
+        <gpu_ram_used_mb>6500</gpu_ram_used_mb>
+        <min_batch>8</min_batch>
+        <max_batch>8</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
+    <plan_class>
+        <name>nvidia_cuda_8b</name>
+        <gpu_type>nvidia</gpu_type>
+        <cuda/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_cuda_version>12000</min_cuda_version>
+        <min_nvidia_compcap>600</min_nvidia_compcap>
+        <min_gpu_ram_mb>7000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>6000</gpu_ram_used_mb>
+        <min_batch>8</min_batch>
+        <max_batch>8</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
+    <plan_class>
+        <name>nvidia_cuda_2b</name>
+        <gpu_type>nvidia</gpu_type>
+        <cuda/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_cuda_version>12000</min_cuda_version>
+        <min_nvidia_compcap>500</min_nvidia_compcap>
+        <min_gpu_ram_mb>3000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>2500</gpu_ram_used_mb>
+        <min_batch>2</min_batch>
+        <max_batch>2</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
 </plan_classes>

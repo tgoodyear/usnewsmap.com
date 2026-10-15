@@ -517,6 +517,8 @@ mod tests {
             root: opts.root.clone(),
             project: project.clone(),
             max_units: 1,
+            target: super::super::submit::Target::Container,
+            model_dir: None,
         };
         std::fs::write(&path, "changed notices").unwrap();
         assert!(super::super::submit::run(&submit).await.is_err());

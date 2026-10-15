@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 usnm-core.workspace = true
-usnm-ocr-contract.workspace = true
+usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
 anyhow.workspace = true
 axum.workspace = true

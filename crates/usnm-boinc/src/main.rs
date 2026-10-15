@@ -712,6 +712,10 @@ enum Qwen {
         project: PathBuf,
         #[arg(long, default_value_t = 20)]
         max_units: usize,
+        #[arg(long, value_enum, default_value_t = usnm_boinc::qwen::submit::Target::Container)]
+        target: usnm_boinc::qwen::submit::Target,
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
     },
     /// Write a unit from a local page and ALTO, to check a host or the image without LoC or BOINC.
     /// Inside the worker image the engine values default to the image's own.
@@ -1434,11 +1438,15 @@ async fn qwen(c: Qwen) -> anyhow::Result<()> {
             root,
             project,
             max_units,
+            target,
+            model_dir,
         } => {
             let s = x::submit::run(&x::submit::Options {
                 root,
                 project,
                 max_units,
+                target,
+                model_dir,
             })
             .await?;
             eprintln!("{s:?}");

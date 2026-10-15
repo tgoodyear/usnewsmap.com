@@ -1,4 +1,6 @@
 """Host contract regressions; no registry, system changes or account credentials."""
+from __future__ import annotations
+
 import importlib.util
 import json
 import shlex
@@ -7,7 +9,6 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
-import tomllib
 
 
 def load(name):
@@ -101,8 +102,8 @@ class PreflightTest(unittest.TestCase):
         runtime = Runtime()
         pre.preflight(self.data, IMAGE, runtime)
         create = next(call for call in runtime.calls if call[1] == "create")
-        job = tomllib.loads((Path(__file__).resolve().parents[2] / "ocr/boinc/job.toml").read_text())
-        for option in shlex.split(job["create_args"]):
+        job = pre._load_toml((Path(__file__).resolve().parents[2] / "ocr/boinc/job.toml").read_text())
+        for option in shlex.split(str(job["create_args"])):
             self.assertIn(option, create)
         self.assertEqual(job["workdir"], "/work")
 
@@ -161,6 +162,143 @@ class PreflightTest(unittest.TestCase):
                 with self.assertRaises(pre.PreflightError):
                     pre.preflight(self.data, IMAGE, runtime, service=service)
             self.assertEqual(runtime.calls, [])
+
+    def test_limits_from_job_toml_parses_ocr_surya_and_qwen_jobs(self):
+        repo = Path(__file__).resolve().parents[2]
+        ocr_limits = pre.limits_from_job_toml(repo / "ocr/boinc/job.toml")
+        self.assertEqual(ocr_limits.workdir, "/work")
+        self.assertEqual(ocr_limits.memory, 1536 * 1024 * 1024)
+        self.assertEqual(ocr_limits.pids, 64)
+        self.assertEqual(ocr_limits.cpus, 1)
+        self.assertFalse(ocr_limits.use_gpu)
+
+        qwen_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/qwen/job-cpu.toml")
+        self.assertEqual(qwen_cpu.memory, 6144 * 1024 * 1024)
+        self.assertEqual(qwen_cpu.pids, 1024)
+        self.assertFalse(qwen_cpu.use_gpu)
+
+        surya_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/surya/job-cpu.toml")
+        self.assertEqual(surya_cpu.memory, 12 * 1024 ** 3)
+        self.assertEqual(surya_cpu.pids, 1024)
+        self.assertFalse(surya_cpu.use_gpu)
+
+        for gpu_path in [repo / "ocr/boinc/surya/job-gpu.toml", repo / "ocr/boinc/qwen/job-gpu.toml"]:
+            gpu_limits = pre.limits_from_job_toml(gpu_path)
+            self.assertTrue(gpu_limits.use_gpu)
+            self.assertEqual(gpu_limits.pids, 1024)
+
+    def test_preflight_runs_with_job_toml_and_discovers_project_jobs(self):
+        repo = Path(__file__).resolve().parents[2]
+        qwen_cpu_path = repo / "ocr/boinc/qwen/job-cpu.toml"
+        qwen_values = {
+            "cpu": "100000 100000",
+            "memory": str(6144 * 1024 * 1024),
+            "swap": "0",
+            "pids": "1024",
+            "ready": "yes",
+        }
+        runtime = Runtime(qwen_values)
+        result = pre.preflight(self.data, IMAGE, runtime, job_toml=qwen_cpu_path)
+        self.assertEqual(result["kernel_limits"]["memory"], str(6144 * 1024 * 1024))
+        create = next(call for call in runtime.calls if call[1] == "create")
+        self.assertIn("--memory=6g", create)
+        self.assertIn("--pids-limit=1024", create)
+        self.assertIn("--cpus=1", create)
+
+        # Also test auto-discovery from --data-dir/projects/**/job*.toml
+        proj_dir = self.data / "projects" / "boinc.usnewsmap.com_usnmocr"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "job_qwen.toml").write_text(qwen_cpu_path.read_text())
+        runtime_auto = Runtime(qwen_values)
+        pre.preflight(self.data, IMAGE, runtime_auto)
+        create_auto = next(call for call in runtime_auto.calls if call[1] == "create")
+        self.assertIn("--memory=6g", create_auto)
+        self.assertIn("--pids-limit=1024", create_auto)
+
+    def test_preflight_gpu_job_passes_gpus_all_and_reports_gpu_failure(self):
+        repo = Path(__file__).resolve().parents[2]
+        qwen_gpu_path = repo / "ocr/boinc/qwen/job-gpu.toml"
+        gpu_values = {
+            "cpu": "100000 100000",
+            "memory": str(6144 * 1024 * 1024),
+            "swap": "0",
+            "pids": "1024",
+            "ready": "yes",
+        }
+        runtime = Runtime(gpu_values)
+        pre.preflight(self.data, IMAGE, runtime, job_toml=qwen_gpu_path)
+        create = next(call for call in runtime.calls if call[1] == "create")
+        self.assertIn("--gpus", create)
+        self.assertIn("all", create)
+
+        def failing_gpu_runner(args, timeout=30):
+            if args[1] == "create":
+                raise pre.PreflightError("podman create failed: CDI device nvidia.com/gpu=all not found")
+            return runtime(args, timeout=timeout)
+
+        with self.assertRaisesRegex(pre.PreflightError, "nvidia-ctk cdi generate"):
+            pre.preflight(self.data, IMAGE, failing_gpu_runner, job_toml=qwen_gpu_path)
+
+    def test_invalid_job_toml_is_rejected(self):
+        bad_toml = self.data / "bad_job.toml"
+        for content in [
+            'workdir = "relative"\ncreate_args = "--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=1536m --memory-swap=1536m --pids-limit=64"\n',
+            'workdir = "/work"\ncreate_args = "--read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=1536m --memory-swap=1536m --pids-limit=64"\n',
+            'workdir = "/work"\ncreate_args = "--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=1536m --memory-swap=2048m --pids-limit=64"\n',
+        ]:
+            bad_toml.write_text(content)
+            with self.assertRaises(pre.PreflightError):
+                pre.limits_from_job_toml(bad_toml)
+
+    def test_python39_toml_fallback_parses_released_job_files_and_rejects_malformed_toml(self):
+        repo = Path(__file__).resolve().parents[2]
+        with patch.object(pre, "tomllib", None):
+            ocr_limits = pre.limits_from_job_toml(repo / "ocr/boinc/job.toml")
+            self.assertEqual(ocr_limits.workdir, "/work")
+            self.assertEqual(ocr_limits.memory, 1536 * 1024 * 1024)
+            self.assertEqual(ocr_limits.pids, 64)
+            self.assertFalse(ocr_limits.use_gpu)
+
+            surya_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/surya/job-cpu.toml")
+            self.assertEqual(surya_cpu.memory, 12 * 1024 ** 3)
+            self.assertEqual(surya_cpu.pids, 1024)
+            self.assertFalse(surya_cpu.use_gpu)
+
+            qwen_gpu = pre.limits_from_job_toml(repo / "ocr/boinc/qwen/job-gpu.toml")
+            self.assertEqual(qwen_gpu.memory, 6 * 1024 ** 3)
+            self.assertEqual(qwen_gpu.pids, 1024)
+            self.assertTrue(qwen_gpu.use_gpu)
+
+            multiline_toml = self.data / "multiline_job.toml"
+            multiline_toml.write_text(
+                '# comment with "quotes"\n'
+                'workdir = "/work" # inline comment\n'
+                "use_gpu = false\n"
+                "create_args = [\n"
+                '  "--network=none",\n'
+                '  "--read-only",\n'
+                '  "--cap-drop=ALL",\n'
+                '  "--security-opt=no-new-privileges",\n'
+                '  "--memory=2048m",\n'
+                '  "--memory-swap=2048m",\n'
+                '  "--pids-limit=128",\n'
+                "]\n"
+            )
+            multiline_limits = pre.limits_from_job_toml(multiline_toml)
+            self.assertEqual(multiline_limits.memory, 2048 * 1024 * 1024)
+            self.assertEqual(multiline_limits.pids, 128)
+
+            bad_toml = self.data / "malformed.toml"
+            for bad_content in [
+                'workdir = "/work\n',
+                "not_an_assignment\n",
+                "[section]\nworkdir = \"/work\"\n",
+                'workdir = "/work"\nworkdir = "/work"\n',
+                'workdir = "/work"\ncreate_args = ["unterminated"\n',
+            ]:
+                bad_toml.write_text(bad_content)
+                with self.assertRaises(pre.PreflightError):
+                    pre.limits_from_job_toml(bad_toml)
 
 
 class SetupTest(unittest.TestCase):
@@ -240,6 +378,14 @@ class SetupTest(unittest.TestCase):
         self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/999/bus", dropin)
         self.assertIn('conmon_cgroup="pod"', config)
         self.assertNotIn("docker", dropin)
+        _, dropin_jobs, _, _ = setup.profile(
+            "boinc-client.service",
+            Path("/var/lib/boinc"),
+            IMAGE,
+            999,
+            job_tomls=[Path("/etc/usnm-boinc-volunteer/job-cpu.toml")],
+        )
+        self.assertIn("--job-toml=/etc/usnm-boinc-volunteer/job-cpu.toml", dropin_jobs)
 
     def test_conflicting_later_dropin_cannot_silently_bypass_profile(self):
         service = "boinc-client.service"
@@ -377,6 +523,32 @@ class SetupTest(unittest.TestCase):
             with self.assertRaises(setup.SetupError):
                 setup.merge_xml(cc, "cc_config", {"ncpus": "1", "no_gpus": "1"}, "options")
             self.assertEqual(cc.read_text(), dup_sections)
+
+    def test_architecture_check_accepts_x86_64_and_aarch64_and_rejects_others(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            with patch.object(
+                setup,
+                "resolve_launch",
+                return_value=("/usr/bin/boinc", str(data), []),
+            ), patch.object(
+                setup,
+                "run",
+                side_effect=setup.SetupError("reached post-arch systemctl User query"),
+            ):
+                for arch in ("x86_64", "aarch64"):
+                    fake_uname = unittest.mock.Mock(machine=arch)
+                    with patch.object(setup.os, "uname", return_value=fake_uname):
+                        with self.assertRaisesRegex(
+                            setup.SetupError, "reached post-arch systemctl User query"
+                        ):
+                            setup.setup("boinc-client.service", data, IMAGE)
+                fake_uname = unittest.mock.Mock(machine="armv7l")
+                with patch.object(setup.os, "uname", return_value=fake_uname):
+                    with self.assertRaisesRegex(
+                        setup.SetupError, "supports Linux x86_64 and aarch64 only"
+                    ):
+                        setup.setup("boinc-client.service", data, IMAGE)
 
 
 if __name__ == "__main__":

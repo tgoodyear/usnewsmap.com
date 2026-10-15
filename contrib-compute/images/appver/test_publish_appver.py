@@ -80,6 +80,71 @@ class PublishTests(unittest.TestCase):
         (self.source / 'templates' / 'usnm_ocr_1.0.xml').write_text('drifted sibling template')
         self.assertNotEqual(self.publish('arm64-apple-darwin', 'v1.1-mac', version='1.1').returncode, 0)
 
+    def test_native_quality_and_qwen_publish_and_new_platforms(self):
+        path_env = str(self.root) + os.pathsep + os.environ['PATH']
+        for platform in ('aarch64-unknown-linux-gnu', 'windows_x86_64'):
+            self.assertEqual(self.publish(platform, f'payload-{platform}').returncode, 0)
+            self.assertTrue((self.project / f'apps/usnm_ocr/1.0/{platform}__docker/docker_wrapper').is_file())
+
+        qual_src = self.source / 'apps/usnm_quality/1.0/windows_x86_64'
+        qual_src.mkdir(parents=True, exist_ok=True)
+        (qual_src / 'usnm_quality_1.0_windows_x86_64.exe').write_text('win-bin')
+        res = subprocess.run(
+            ['bash', str(self.script)],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                'PROJ': str(self.project),
+                'APPVER_KIND': 'native',
+                'APPVER_APP': 'usnm_quality',
+                'APPVER_VERSION': '1.0',
+                'APPVER_PLATFORM': 'windows_x86_64',
+                'APPVER_PLAN_CLASS': '',
+                'PATH': path_env,
+            },
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertTrue((self.project / 'apps/usnm_quality/1.0/windows_x86_64/usnm_quality_1.0_windows_x86_64.exe').is_file())
+
+        qwen_src = self.source / 'apps/usnm_qwen/1.0/arm64-apple-darwin__apple_gpu_8b'
+        qwen_src.mkdir(parents=True, exist_ok=True)
+        (qwen_src / 'usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b').write_text('mac-gpu')
+        res_qwen = subprocess.run(
+            ['bash', str(self.script)],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                'PROJ': str(self.project),
+                'APPVER_KIND': 'native',
+                'APPVER_APP': 'usnm_qwen',
+                'APPVER_VERSION': '1.0',
+                'APPVER_PLATFORM': 'arm64-apple-darwin',
+                'APPVER_PLAN_CLASS': 'apple_gpu_8b',
+                'PATH': path_env,
+            },
+        )
+        self.assertEqual(res_qwen.returncode, 0, res_qwen.stderr)
+        self.assertTrue((self.project / 'apps/usnm_qwen/1.0/arm64-apple-darwin__apple_gpu_8b/usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b').is_file())
+
+        bad_res = subprocess.run(
+            ['bash', str(self.script)],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                'PROJ': str(self.project),
+                'APPVER_KIND': 'native',
+                'APPVER_APP': 'usnm_qwen',
+                'APPVER_VERSION': '1.0',
+                'APPVER_PLATFORM': 'x86_64-pc-linux-gnu',
+                'APPVER_PLAN_CLASS': 'apple_gpu_8b',
+                'PATH': path_env,
+            },
+        )
+        self.assertNotEqual(bad_res.returncode, 0)
+
     def test_isolates_requested_platform_and_verifies_even_after_zero_exit(self):
         command = self.project / 'bin/update_versions'
         command.write_text(

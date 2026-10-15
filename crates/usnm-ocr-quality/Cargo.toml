@@ -8,14 +8,18 @@ rust-version.workspace = true
 
 [dependencies]
 usnm-alto.workspace = true
-usnm-ocr-contract.workspace = true
-usnm-ocr-survey.workspace = true
+usnm-ocr-contract = { workspace = true, default-features = false }
 anyhow.workspace = true
+chrono.workspace = true
 image.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 unicode-normalization.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

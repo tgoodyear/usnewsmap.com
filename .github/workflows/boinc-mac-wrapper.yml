@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/boinc-mac-wrapper.yml
       - scripts/boinc/build-mac-wrapper.sh
+      - scripts/boinc/patch-mac-wrapper.py
       - scripts/boinc/check-mac-wrapper.py
       - contrib-compute/images/base/Containerfile
 permissions:

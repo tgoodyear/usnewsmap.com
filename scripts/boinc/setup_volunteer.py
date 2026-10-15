@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Preview/install a rootless Podman BOINC profile and mandatory startup preflight."""
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -95,10 +97,27 @@ def merge_xml(path, root_name, edits, section=None):
     return ET.tostring(root, encoding="unicode") + "\n"
 
 
-def profile(service, data_dir, image, uid):
+def normalize_job_tomls(job_toml=None, job_tomls=None) -> list[Path]:
+    paths: list[Path] = []
+    for source in (job_toml, job_tomls):
+        if source is None:
+            continue
+        if isinstance(source, (str, Path)):
+            paths.append(Path(source))
+        else:
+            paths.extend(Path(item) for item in source)
+    for path in paths:
+        if not SAFE_PATH.fullmatch(str(path)):
+            raise SetupError(f"Unsupported --job-toml path {path}; use an absolute path without spaces/special characters.")
+    return paths
+
+
+def profile(service, data_dir, image, uid, job_toml=None, job_tomls=None):
     config_dir = Path("/etc/usnm-boinc-volunteer") / service
     runtime = f"usnm-boinc-{uid}-{service.removesuffix('.service')}"
     preflight = "/usr/local/lib/usnm-boinc-volunteer/preflight.py"
+    normalized_tomls = normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)
+    job_args = "".join(f" --job-toml={path}" for path in normalized_tomls)
     dropin = f"""# Managed by scripts/boinc/setup_volunteer.py. See docs/boinc-volunteer.md.
 [Unit]
 Requires=user@{uid}.service
@@ -119,7 +138,7 @@ ProtectControlGroups=false
 ProtectHome=read-only
 ReadWritePaths={data_dir} /tmp /var/tmp
 TimeoutStartSec=10min
-ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} --service={service}
+ExecStartPre=/usr/bin/python3 {preflight} --data-dir={data_dir} --image={image} --service={service}{job_args}
 """
     # Separate, service-selected config; do not replace a user's global Podman configuration.
     containers = '[engine]\ncgroup_manager="systemd"\nconmon_cgroup="pod"\n'
@@ -221,7 +240,8 @@ def resolve_launch(service):
     return binary, working, dir_overrides
 
 
-def check_effective(service, data_dir, config_dir, uid, image=None):
+def check_effective(service, data_dir, config_dir, uid, image=None, job_toml=None, job_tomls=None):
+    expected_job_tomls = [f"--job-toml={path}" for path in normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)]
     user_unit = f"user@{uid}.service"
     requires = run(["systemctl", "show", service, "--property=Requires", "--value"]).split()
     after = run(["systemctl", "show", service, "--property=After", "--value"]).split()
@@ -266,10 +286,11 @@ def check_effective(service, data_dir, config_dir, uid, image=None):
             continue
         matched += 1
         valid_argv = (
-            len(argv) == 5
+            len(argv) == 5 + len(expected_job_tomls)
             and argv[:3] == ["/usr/bin/python3", preflight_path, f"--data-dir={data_dir}"]
             and (argv[3] == f"--image={image}" if image is not None else argv[3].startswith("--image=") and bool(IMAGE.fullmatch(argv[3].removeprefix("--image="))))
             and argv[4] == f"--service={service}"
+            and argv[5:] == expected_job_tomls
         )
         if fields.get("path") != "/usr/bin/python3" or not valid_argv or fields.get("ignore_errors") != "no":
             raise SetupError("Another service drop-in altered or weakened the startup preflight. Resolve that conflict before starting BOINC.")
@@ -336,7 +357,8 @@ def prepare_slots(data_dir, uid, gid, trust=None):
         os.close(parent_fd)
 
 
-def setup(service, data_dir, image, apply=False):
+def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None):
+    normalized_tomls = normalize_job_tomls(job_toml=job_toml, job_tomls=job_tomls)
     if not SERVICE.fullmatch(service) or (data_dir is not None and not SAFE_PATH.fullmatch(str(data_dir))) or not IMAGE.fullmatch(image):
         raise SetupError("Use a plain systemd service name, an absolute path without spaces/special characters, and a registry image pinned by full sha256 digest.")
     binary, working, dir_overrides = resolve_launch(service)
@@ -347,8 +369,8 @@ def setup(service, data_dir, image, apply=False):
     data_dir = data_dir.resolve(strict=True)
     if not SAFE_PATH.fullmatch(str(data_dir)):
         raise SetupError("The resolved data directory contains unsupported special characters; configure this custom service manually.")
-    if os.uname().machine != "x86_64":
-        raise SetupError("This pilot profile supports Linux x86-64 only.")
+    if os.uname().machine not in ("x86_64", "aarch64"):
+        raise SetupError("This pilot profile supports Linux x86_64 and aarch64 only.")
     user = run(["systemctl", "show", service, "--property=User", "--value"])
     account = pwd.getpwnam(user)
     if account.pw_uid == 0:
@@ -384,7 +406,7 @@ def setup(service, data_dir, image, apply=False):
     selinux = bool(shutil.which("getenforce") and run(["getenforce"]) != "Disabled")
     if selinux and (not shutil.which("semanage") or not shutil.which("restorecon")):
         raise SetupError("Install SELinux policy-management tools (RHEL: policycoreutils-python-utils) first.")
-    config_dir, dropin, containers, storage = profile(service, data_dir, image, account.pw_uid)
+    config_dir, dropin, containers, storage = profile(service, data_dir, image, account.pw_uid, job_tomls=normalized_tomls)
     cc = merge_xml(data_dir / "cc_config.xml", "cc_config", {"ncpus": "1", "no_gpus": "1"}, "options")
     prefs = merge_xml(data_dir / "global_prefs_override.xml", "global_preferences", PREFS)
     print(f"Service: {service}; unprivileged user: {user}; data stays at {data_dir}")
@@ -443,7 +465,7 @@ def setup(service, data_dir, image, apply=False):
     run(["systemctl", "start", f"user@{account.pw_uid}.service"])
     write_file(target, dropin, mode=0o644)
     run(["systemctl", "daemon-reload"])
-    check_effective(service, data_dir, config_dir, account.pw_uid, image)
+    check_effective(service, data_dir, config_dir, account.pw_uid, image, job_tomls=normalized_tomls)
     run(["systemctl", "start", service], timeout=START_TIMEOUT)
     print("Profile installed; BOINC started only after its preflight passed. Attach through BOINC Manager, then check one task's upload and validation.")
 
@@ -453,6 +475,7 @@ def main():
     parser.add_argument("--service", default="boinc-client.service")
     parser.add_argument("--data-dir", type=Path, help="Defaults to the service's existing working directory; never moves data")
     parser.add_argument("--image", help="Defaults to the worker digest released in this checkout's prod.json")
+    parser.add_argument("--job-toml", type=Path, action="append", default=None, help="Task job.toml whose limits the preflight must verify")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     try:
@@ -460,7 +483,7 @@ def main():
         if image is None:
             settings = Path(__file__).resolve().parents[2] / "contrib-compute/infra/boinc/env/prod.json"
             image = json.loads(settings.read_text())["images"]["worker"]
-        setup(args.service, args.data_dir, image, args.apply)
+        setup(args.service, args.data_dir, image, args.apply, job_tomls=args.job_toml)
     except (SetupError, OSError, KeyError, TypeError, ValueError, ET.ParseError, subprocess.TimeoutExpired) as error:
         print(f"Volunteer setup failed: {error}", file=sys.stderr)
         print("After an installation failure, BOINC may remain stopped. Inspect journalctl -u " + args.service + " and the setup backups before retrying.", file=sys.stderr)

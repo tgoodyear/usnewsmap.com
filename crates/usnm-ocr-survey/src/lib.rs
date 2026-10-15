@@ -4,6 +4,5 @@
 //! has the rules and the source policy.
 
 pub mod bundle;
-pub mod distance;
 pub mod score;
-pub mod text;
+pub use usnm_ocr_quality::{distance, text};

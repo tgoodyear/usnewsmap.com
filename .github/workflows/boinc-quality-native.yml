@@ -1,0 +1,102 @@
+name: boinc-quality-native
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/boinc-quality-native.yml
+      - crates/usnm-quality-app/**
+      - crates/usnm-qwen-app/**
+      - crates/usnm-ocr-quality/**
+      - crates/usnm-ocr-contract/**
+      - crates/usnm-alto/**
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            boinc_platform: x86_64-pc-linux-gnu
+            ext: ""
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            boinc_platform: aarch64-unknown-linux-gnu
+            ext: ""
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            boinc_platform: arm64-apple-darwin
+            ext: ""
+          - runner: macos-15
+            target: x86_64-apple-darwin
+            boinc_platform: x86_64-apple-darwin
+            ext: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            boinc_platform: windows_x86_64
+            ext: ".exe"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install Linux musl tools
+        if: startsWith(matrix.runner, 'ubuntu-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Ensure Rosetta 2 for x86_64-apple-darwin tests
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+      - name: Run target determinism and loopback tests (${{ matrix.target }})
+        shell: bash
+        run: |
+          cargo test --locked --target "${{ matrix.target }}" -p usnm-ocr-contract --no-default-features
+          cargo test --locked --target "${{ matrix.target }}" -p usnm-ocr-quality -p usnm-quality-app -p usnm-qwen-app
+      - name: Build native BOINC binaries (${{ matrix.target }})
+        shell: bash
+        run: |
+          cargo build --release --locked --target "${{ matrix.target }}" -p usnm-quality-app -p usnm-qwen-app
+          out_dir="$RUNNER_TEMP/boinc-native-${{ matrix.boinc_platform }}"
+          mkdir -p "$out_dir"
+          cp "target/${{ matrix.target }}/release/usnm_quality${{ matrix.ext }}" \
+            "$out_dir/usnm_quality_${{ matrix.boinc_platform }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/usnm_qwen${{ matrix.ext }}" \
+            "$out_dir/usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}"
+          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
+            codesign --force --sign - "$out_dir/usnm_quality_${{ matrix.boinc_platform }}"
+            codesign --force --sign - "$out_dir/usnm_qwen_${{ matrix.boinc_platform }}"
+          fi
+          git rev-parse HEAD > "$out_dir/GIT_COMMIT"
+          (
+            cd "$out_dir"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "usnm_quality_${{ matrix.boinc_platform }}${{ matrix.ext }}" \
+                "usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}" > SHA256SUMS
+            else
+              shasum -a 256 "usnm_quality_${{ matrix.boinc_platform }}${{ matrix.ext }}" \
+                "usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}" > SHA256SUMS
+            fi
+          )
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boinc-native-${{ matrix.boinc_platform }}
+          path: ${{ runner.temp }}/boinc-native-${{ matrix.boinc_platform }}/
+          if-no-files-found: error

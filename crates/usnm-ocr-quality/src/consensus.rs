@@ -8,11 +8,13 @@
 //! tokens that are consensus words. Where a reader's token is aligned as a
 //! substitution against a consensus occurrence it does not share, the pair
 //! is kept for the confusion counts.
-use crate::align::{self, Op};
+use crate::{
+    align::{self, Op},
+    text,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
-use usnm_ocr_survey::text;
 
 /// A reader's text as tokens: the gold normalisation (NFC, hyphenated line
 /// breaks joined, whitespace squashed), split on whitespace, each token

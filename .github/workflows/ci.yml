@@ -124,7 +124,7 @@ jobs:
         run: |
           python3 -m unittest -v scripts/boinc/test_install.py
           python3 -m unittest -v scripts/boinc/test_volunteer.py
-          python3 -m unittest -v scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_worker_platform.py
+          python3 -m unittest -v scripts/boinc/test_patch_server_apple_gpu.py scripts/boinc/test_check_mac_wrapper.py scripts/boinc/test_check_linux_wrapper.py scripts/boinc/test_check_windows_wrapper.py scripts/boinc/test_check_worker_platform.py
           python3 -m unittest -v contrib-compute/images/appver/test_check_appver.py
           python3 -m unittest -v contrib-compute/images/appver/test_publish_appver.py
       - name: Install Bicep
@@ -168,7 +168,7 @@ jobs:
       # The base (BOINC from source) is the slow layer: cached across runs.
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: contrib-compute/images/base
+          context: .
           file: contrib-compute/images/base/Containerfile
           tags: usnm-boinc-base:check
           load: true

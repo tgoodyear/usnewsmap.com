@@ -8,11 +8,23 @@ spec.loader.exec_module(module)
 
 
 class WorkerPlatformTests(unittest.TestCase):
-    def test_mac_refuses_old_single_manifest_and_wrong_architecture(self):
-        for manifest in ({"config": {}}, {"manifests": [{"platform": {"os": "linux", "architecture": "amd64"}}]},
-                         {"manifests": [{"platform": {"os": "darwin", "architecture": "arm64"}}]}):
-            with self.assertRaises(ValueError):
-                module.check(manifest, "arm64-apple-darwin")
+    def test_mac_and_arm64_linux_and_windows_refuse_old_single_manifest_and_wrong_architecture(self):
+        for platform in ("arm64-apple-darwin", "aarch64-unknown-linux-gnu"):
+            for manifest in (
+                {"config": {}},
+                {"manifests": [{"platform": {"os": "linux", "architecture": "amd64"}}]},
+                {"manifests": [{"platform": {"os": "darwin", "architecture": "arm64"}}]},
+            ):
+                with self.assertRaises(ValueError):
+                    module.check(manifest, platform)
+        for platform in ("x86_64-apple-darwin", "windows_x86_64"):
+            for manifest in (
+                {"config": {}},
+                {"manifests": [{"platform": {"os": "linux", "architecture": "arm64"}}]},
+                {"manifests": [{"platform": {"os": "windows", "architecture": "amd64"}}]},
+            ):
+                with self.assertRaises(ValueError):
+                    module.check(manifest, platform)
 
     def test_native_index_and_linux_compatibility(self):
         index = {"manifests": [{"platform": {"os": "linux", "architecture": arch}} for arch in ("amd64", "arm64")]}

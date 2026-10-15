@@ -3073,14 +3073,15 @@ name = "usnm-ocr-quality"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "image",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "unicode-normalization",
  "usnm-alto",
  "usnm-ocr-contract",
- "usnm-ocr-survey",
 ]
 
 [[package]]
@@ -3098,6 +3099,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "usnm-ocr-quality",
  "zip",
 ]
 
@@ -3150,6 +3152,39 @@ dependencies = [
  "parquet",
  "sha2",
  "usnm-core",
+]
+
+[[package]]
+name = "usnm-quality-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "image",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "usnm-alto",
+ "usnm-ocr-contract",
+ "usnm-ocr-quality",
+]
+
+[[package]]
+name = "usnm-qwen-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "chrono",
+ "image",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "usnm-ocr-contract",
+ "usnm-ocr-quality",
 ]
 
 [[package]]
