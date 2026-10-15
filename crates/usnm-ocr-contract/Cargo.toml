@@ -10,6 +10,7 @@ rust-version.workspace = true
 usnm-core.workspace = true
 usnm-overlay.workspace = true
 usnm-alto.workspace = true
+usnm-ocr-quality.workspace = true
 anyhow.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
