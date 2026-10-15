@@ -22,6 +22,7 @@ use anyhow::{bail, Context};
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
+use tokio::time::Instant;
 use usnm_core::ids::PageKey;
 use usnm_ocr_contract::message::{DeadLetter, OcrMessage, Reason};
 use usnm_state::state::{RunBatch, State};
@@ -34,6 +35,95 @@ use crate::ocr_damage::{self, StoredScore};
 
 /// The most pages one `ocr-enqueue` or `ocr-requeue` queues.
 pub const MAX_PAGES: usize = 10_000;
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct StalledStore;
+
+    #[async_trait::async_trait]
+    impl ObjectStore for StalledStore {
+        async fn get(&self, _: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+            std::future::pending().await
+        }
+        async fn put_new(
+            &self,
+            _: &str,
+            _: Vec<u8>,
+            _: &str,
+        ) -> Result<bool, usnm_store::StoreError> {
+            panic!("deadline during lookup must not write queued rows");
+        }
+        async fn put(&self, _: &str, _: Vec<u8>, _: &str) -> Result<(), usnm_store::StoreError> {
+            panic!("deadline during lookup must not write");
+        }
+        async fn list(&self, _: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn deadline_during_lookup_pauses_without_creating_outstanding_rows() {
+        let state = State::new(Arc::new(usnm_state::docs::MemoryDocs::default()));
+        state.set_current_version("v1").await.unwrap();
+        let queue: Arc<dyn Queue> = Arc::new(usnm_store::queue::LocalQueue::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/deadline-unused"),
+        ));
+        let report = enqueue_with_policy(
+            &state,
+            &StalledStore,
+            &StalledStore,
+            &queue,
+            &EnqueueOptions {
+                pages: vec!["sn83045462_1890-05-03_ed-1_seq-7".into()],
+                reason: Reason::User,
+                plan: "hit-results".into(),
+                batch: None,
+                include_outstanding: false,
+                dry_run: false,
+            },
+            None,
+            QueuePolicy {
+                deadline: Some(Instant::now() + std::time::Duration::from_millis(10)),
+                ..QueuePolicy::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(report.paused);
+        assert_eq!(report.queued, 0);
+        assert!(report.ledger.is_none());
+    }
+
+    #[test]
+    fn only_requested_scores_from_one_table_are_retained() {
+        let day = NaiveDate::from_ymd_opt(1890, 5, 3).unwrap();
+        let mut rows = Vec::new();
+        for seq in 1..=200 {
+            let key = PageKey::new("sn83045462", day, 1, seq).unwrap();
+            let row = crate::curated::CuratedRow::from_ocr(
+                key,
+                "the newspaper and the people",
+                "batch",
+                1,
+                "loc",
+                Utc::now(),
+            );
+            rows.push(ocr_damage::score_row(&row, &["eng"]));
+        }
+        let bytes = Bytes::from(ocr_damage::encode_table(&rows).unwrap());
+        let wanted = rows[0].doc_id.clone();
+        let mut cache = ScoreCache::new([wanted.clone()]);
+        for batch in ["one", "two", "three"] {
+            cache.read_table(batch, bytes.clone()).unwrap();
+            assert_eq!(cache.tables.len(), 1);
+            assert_eq!(cache.tables[batch].len(), 1);
+            assert!(cache.tables[batch].contains_key(&wanted));
+        }
+    }
+}
 
 pub fn queue_for(reason: Reason) -> &'static str {
     match reason {
@@ -49,6 +139,7 @@ pub struct QueueReport {
     /// Pages left out, by why.
     pub skipped: BTreeMap<String, usize>,
     pub ledger: Option<String>,
+    pub paused: bool,
 }
 
 pub(super) struct SendContext<'a> {
@@ -56,12 +147,14 @@ pub(super) struct SendContext<'a> {
     pub(super) run: &'a str,
     pub(super) now: DateTime<Utc>,
     pub(super) private_pages: bool,
+    pub(super) deadline: Option<Instant>,
 }
 
 pub(super) struct HitRequestBatch {
     pub pages: Vec<String>,
     pub day: chrono::NaiveDate,
     pub max_queued: usize,
+    pub deadline: Option<Instant>,
 }
 
 pub(super) fn skip(r: &mut QueueReport, why: &str, doc_id: &str) {
@@ -127,17 +220,42 @@ pub(super) async fn send_all(
     batch: Vec<(Queued, OcrMessage)>,
     report: &mut QueueReport,
 ) -> anyhow::Result<()> {
+    if context.deadline.is_some_and(|d| Instant::now() >= d) {
+        report.paused = true;
+        return Ok(());
+    }
     if let Some(l) = context.lease {
         l.check()?;
     }
     let rows: Vec<Queued> = batch.iter().map(|(q, _)| q.clone()).collect();
     report.ledger = ledger::write_queued(curated, &rows, context.now, context.run).await?;
     for (i, (q, m)) in batch.iter().enumerate() {
+        if context.deadline.is_some_and(|d| Instant::now() >= d) {
+            record_not_sent(curated, context.run, &batch[i..]).await;
+            report.paused = true;
+            return Ok(());
+        }
         if let Some(Err(e)) = context.lease.map(Lease::check) {
             let n = record_not_sent(curated, context.run, &batch[i..]).await;
             return Err(e.context(format!("{n} pages recorded as not sent")));
         }
-        if let Err(e) = queue.send(queue_for(m.reason), &m.encode()).await {
+        let encoded = m.encode();
+        let send = queue.send(queue_for(m.reason), &encoded);
+        let send = if let Some(deadline) = context.deadline {
+            match tokio::time::timeout_at(deadline, send).await {
+                Ok(result) => result,
+                Err(_) => {
+                    // A timed-out send is ambiguous; only later messages are
+                    // confirmed unsent and may safely release their cap charge.
+                    record_not_sent(curated, context.run, &batch[i + 1..]).await;
+                    report.paused = true;
+                    return Ok(());
+                }
+            }
+        } else {
+            send.await
+        };
+        if let Err(e) = send {
             // The pages after this one never went out: not outstanding.
             let n = record_not_sent(curated, context.run, &batch[i + 1..]).await;
             let page = if context.private_pages {
@@ -161,7 +279,7 @@ async fn find_page(
     curated: &dyn ObjectStore,
     batches: &[RunBatch],
     tables: &Option<HashMap<String, String>>,
-    cache: &mut HashMap<String, HashMap<String, StoredScore>>,
+    cache: &mut ScoreCache,
     titles: &HashMap<String, Vec<String>>,
     key: &PageKey,
     only: Option<&str>,
@@ -175,21 +293,23 @@ async fn find_page(
         let found = match tables.as_ref().and_then(|t| t.get(&b.batch)) {
             Some(path) => {
                 // Each table is read once per run, whatever the pages asked.
-                if !cache.contains_key(&b.batch) {
+                if !cache.tables.contains_key(&b.batch) {
                     let bytes = curated
                         .get(path)
                         .await?
                         .with_context(|| format!("damage table {path} not found"))?;
-                    let all = ocr_damage::read_scores(Bytes::from(bytes), None)?;
-                    cache.insert(b.batch.clone(), all);
+                    cache.read_table(&b.batch, Bytes::from(bytes))?;
                 }
-                &cache[&b.batch]
+                &cache.tables[&b.batch]
             }
             None => {
                 let key = format!("curated:{}", b.batch);
                 let scored = super::sync::score_from_curated(curated, b, titles, &wanted).await?;
-                cache.entry(key.clone()).or_default().extend(scored);
-                &cache[&key]
+                if !cache.tables.contains_key(&key) {
+                    cache.tables.clear();
+                }
+                cache.tables.entry(key.clone()).or_default().extend(scored);
+                &cache.tables[&key]
             }
         };
         if let Some(s) = found.get(&doc_id) {
@@ -197,6 +317,27 @@ async fn find_page(
         }
     }
     Ok(None)
+}
+
+struct ScoreCache {
+    wanted: HashSet<String>,
+    tables: HashMap<String, HashMap<String, StoredScore>>,
+}
+
+impl ScoreCache {
+    fn new(pages: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            wanted: pages.into_iter().collect(),
+            tables: HashMap::new(),
+        }
+    }
+
+    fn read_table(&mut self, batch: &str, bytes: Bytes) -> anyhow::Result<()> {
+        self.tables.clear();
+        let scores = ocr_damage::read_scores(bytes, Some(&self.wanted))?;
+        self.tables.insert(batch.to_owned(), scores);
+        Ok(())
+    }
 }
 
 /// `ocr-enqueue`'s options.
@@ -282,6 +423,7 @@ struct QueuePolicy {
     min_damage: Option<f64>,
     max_queued: Option<usize>,
     private_pages: bool,
+    deadline: Option<Instant>,
 }
 
 /// Queue pages from a closed daily hit-request file while `ocr-sync` holds
@@ -315,6 +457,7 @@ pub(super) async fn enqueue_hit_requests(
             min_damage: Some(0.1),
             max_queued: Some(requests.max_queued),
             private_pages: true,
+            deadline: requests.deadline,
         },
     )
     .await
@@ -338,33 +481,51 @@ async fn enqueue_with_policy(
     if !usnm_store::is_safe_segment(&opts.plan) {
         bail!("--plan must be letters, digits, `.`, `_` or `-`");
     }
-    let version = state
-        .current_version()
-        .await?
-        .context("no published version to find the pages in")?;
-    let batches = ocr_damage::version_batches(reference, &version, &[]).await?;
-    let titles = ocr_damage::title_languages(reference, &version).await?;
-    let tables = match curated.get(&ocr_damage::versions_path(&version)).await? {
-        Some(b) => {
-            let list: ocr_damage::VersionList = serde_json::from_slice(&b)?;
-            Some(
-                list.batches
-                    .into_iter()
-                    .map(|b| (b.batch, b.table))
-                    .collect(),
-            )
-        }
-        None => None,
+    let mut report = QueueReport::default();
+    let prepare = async {
+        let version = state
+            .current_version()
+            .await?
+            .context("no published version to find the pages in")?;
+        let batches = ocr_damage::version_batches(reference, &version, &[]).await?;
+        let titles = ocr_damage::title_languages(reference, &version).await?;
+        let tables = match curated.get(&ocr_damage::versions_path(&version)).await? {
+            Some(b) => {
+                let list: ocr_damage::VersionList = serde_json::from_slice(&b)?;
+                Some(
+                    list.batches
+                        .into_iter()
+                        .map(|b| (b.batch, b.table))
+                        .collect(),
+                )
+            }
+            None => None,
+        };
+        let ledger = ledger::load(curated).await?;
+        Ok::<_, anyhow::Error>((batches, titles, tables, ledger))
     };
-    let ledger = ledger::load(curated).await?;
+    let (batches, titles, tables, ledger) = if let Some(deadline) = policy.deadline {
+        match tokio::time::timeout_at(deadline, prepare).await {
+            Ok(prepared) => prepared?,
+            Err(_) => {
+                report.paused = true;
+                return Ok(report);
+            }
+        }
+    } else {
+        prepare.await?
+    };
     let now = Utc::now();
     let message_queued_at = policy.message_queued_at.unwrap_or(now);
     let run = run_id(now);
-    let mut report = QueueReport::default();
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    let mut table_cache = HashMap::new();
+    let mut table_cache = ScoreCache::new(opts.pages.iter().cloned());
     for doc_id in &opts.pages {
+        if policy.deadline.is_some_and(|d| Instant::now() >= d) {
+            report.paused = true;
+            return Ok(report);
+        }
         if !seen.insert(doc_id.clone()) {
             continue;
         }
@@ -385,7 +546,7 @@ async fn enqueue_with_policy(
             skip_page(&mut report, "japanese_title", doc_id, policy.private_pages);
             continue;
         }
-        let Some(found) = find_page(
+        let lookup = find_page(
             curated,
             &batches,
             &tables,
@@ -393,9 +554,19 @@ async fn enqueue_with_policy(
             &titles,
             &key,
             opts.batch.as_deref(),
-        )
-        .await?
-        else {
+        );
+        let found = if let Some(deadline) = policy.deadline {
+            match tokio::time::timeout_at(deadline, lookup).await {
+                Ok(found) => found?,
+                Err(_) => {
+                    report.paused = true;
+                    return Ok(report);
+                }
+            }
+        } else {
+            lookup.await?
+        };
+        let Some(found) = found else {
             skip_page(&mut report, "not_published", doc_id, policy.private_pages);
             continue;
         };
@@ -461,6 +632,7 @@ async fn enqueue_with_policy(
                 run: &run,
                 now,
                 private_pages: policy.private_pages,
+                deadline: policy.deadline,
             },
             out,
             &mut report,
@@ -647,6 +819,7 @@ async fn requeue_locked(
                 run: &run,
                 now,
                 private_pages: false,
+                deadline: None,
             },
             out,
             &mut report,

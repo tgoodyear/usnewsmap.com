@@ -77,6 +77,34 @@ struct FailFirstQueue {
     failed: std::sync::atomic::AtomicBool,
 }
 
+#[derive(Debug)]
+struct StallAfterFirstQueue {
+    inner: Arc<dyn Queue>,
+    sent: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Queue for StallAfterFirstQueue {
+    async fn receive(&self, queue: &str, visibility: Duration) -> anyhow::Result<Option<Received>> {
+        self.inner.receive(queue, visibility).await
+    }
+
+    async fn delete(&self, msg: &Received) -> anyhow::Result<()> {
+        self.inner.delete(msg).await
+    }
+
+    async fn send(&self, queue: &str, text: &str) -> anyhow::Result<()> {
+        if self.sent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+        self.inner.send(queue, text).await
+    }
+
+    async fn approximate_count(&self, queue: &str) -> anyhow::Result<u64> {
+        self.inner.approximate_count(queue).await
+    }
+}
+
 #[async_trait]
 impl Queue for FailFirstQueue {
     async fn receive(&self, queue: &str, visibility: Duration) -> anyhow::Result<Option<Received>> {
@@ -1015,7 +1043,7 @@ async fn an_alto_already_imported_with_other_bytes_stops_the_run() {
 }
 
 #[tokio::test]
-async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_delete_the_day() {
+async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_complete_the_day() {
     let fx = fixture(true).await;
     let request_day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
     let mut body = Vec::new();
@@ -1042,7 +1070,11 @@ async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_delete_the_day() 
         .await
         .unwrap();
     assert_eq!(status.last_run.user_requests_queued, 2);
-    assert!(!fx.requests.exists("days/2026-10-14.jsonl").await.unwrap());
+    assert_eq!(status.outstanding, 2);
+    assert_eq!(
+        fx.requests.get("days/2026-10-14.jsonl").await.unwrap(),
+        Some(Vec::new())
+    );
     assert!(fx
         .requests
         .exists("completed/2026-10-14.json")
@@ -1113,7 +1145,10 @@ async fn failed_request_sends_keep_the_day_for_unsent_retry_and_charge_only_sent
 
     let second = sync::run(&fx.state, "test", &stores, &opts).await.unwrap();
     assert_eq!(second.last_run.user_requests_queued, 2);
-    assert!(!fx.requests.exists("days/2026-10-14.jsonl").await.unwrap());
+    assert_eq!(
+        fx.requests.get("days/2026-10-14.jsonl").await.unwrap(),
+        Some(Vec::new())
+    );
     assert!(fx
         .requests
         .exists("completed/2026-10-14.json")
@@ -1129,7 +1164,7 @@ async fn failed_request_sends_keep_the_day_for_unsent_retry_and_charge_only_sent
 }
 
 #[tokio::test]
-async fn completed_request_days_are_deleted_without_requeueing() {
+async fn completed_request_days_are_tombstoned_without_spending_the_next_days_slot() {
     let fx = fixture(true).await;
     let day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
     let body = serde_json::to_vec(&serde_json::json!({
@@ -1150,11 +1185,32 @@ async fn completed_request_days_are_deleted_without_requeueing() {
         .await
         .unwrap();
 
-    fx.sync().await;
-    assert!(!fx.requests.exists("days/2026-10-14.jsonl").await.unwrap());
+    fx.requests
+        .put_new(
+            "days/2026-10-15.jsonl",
+            serde_json::to_vec(&serde_json::json!({"v": 1, "doc_id":key(2).doc_id()})).unwrap(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    let status = fx.sync().await;
+    assert_eq!(status.last_run.user_requests_queued, 1);
+    assert_eq!(
+        fx.requests.get("days/2026-10-14.jsonl").await.unwrap(),
+        Some(Vec::new())
+    );
+    assert!(!fx
+        .requests
+        .put_new(
+            "days/2026-10-14.jsonl",
+            b"stale aggregate from a concurrent API close".to_vec(),
+            "application/x-ndjson"
+        )
+        .await
+        .unwrap());
     assert_eq!(
         fx.queue.approximate_count(PRIORITY).await.unwrap(),
-        0,
+        1,
         "the durable marker prevents a consumed day from replaying"
     );
     assert_eq!(
@@ -1163,6 +1219,81 @@ async fn completed_request_days_are_deleted_without_requeueing() {
             .unwrap()
             .user_requests_for_day(day),
         0
+    );
+}
+
+#[tokio::test]
+async fn request_deadline_marks_unattempted_pages_unsent_and_recovers_next_run() {
+    let fx = fixture(true).await;
+    let mut body = Vec::new();
+    for seq in 1..=3 {
+        serde_json::to_writer(
+            &mut body,
+            &serde_json::json!({"v":1,"doc_id":key(seq).doc_id()}),
+        )
+        .unwrap();
+        body.push(b'\n');
+    }
+    fx.requests
+        .put_new("days/2026-10-14.jsonl", body, "application/x-ndjson")
+        .await
+        .unwrap();
+    let stores = Stores {
+        queue: Arc::new(StallAfterFirstQueue {
+            inner: Arc::clone(&fx.queue),
+            sent: std::sync::atomic::AtomicBool::new(false),
+        }),
+        ..fx.stores.clone()
+    };
+    let options = Options {
+        user_daily_max: 3,
+        deadline: Some(tokio::time::Instant::now() + Duration::from_secs(1)),
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &stores, &options)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.user_requests_queued, 1);
+    assert_eq!(
+        status.outstanding, 2,
+        "successful and ambiguous sends stay outstanding"
+    );
+    assert!(!fx
+        .requests
+        .exists("completed/2026-10-14.json")
+        .await
+        .unwrap());
+    assert!(!fx
+        .requests
+        .get("days/2026-10-14.jsonl")
+        .await
+        .unwrap()
+        .unwrap()
+        .is_empty());
+    let before = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(before.outcomes[&key(3).doc_id()].outcome, ledger::NOT_SENT);
+    assert_eq!(
+        before.user_requests_for_day(NaiveDate::from_ymd_opt(2026, 10, 14).unwrap()),
+        2
+    );
+
+    let resumed = sync::run(
+        &fx.state,
+        "test",
+        &fx.stores,
+        &Options {
+            user_daily_max: 3,
+            ..Options::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.last_run.user_requests_queued, 1);
+    assert_eq!(resumed.outstanding, 3);
+    assert_eq!(fx.queue.approximate_count(PRIORITY).await.unwrap(), 2);
+    assert_eq!(
+        fx.requests.get("days/2026-10-14.jsonl").await.unwrap(),
+        Some(Vec::new())
     );
 }
 

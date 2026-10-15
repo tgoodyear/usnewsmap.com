@@ -689,7 +689,10 @@ async fn run_locked(
                 stores.reference.as_ref(),
                 &stores.queue,
                 lease,
-                opts.user_daily_max,
+                super::requests::Options {
+                    daily_max: opts.user_daily_max,
+                    deadline: opts.deadline,
+                },
             )
             .await?;
             counts.user_requests_queued += request_report.queued as u64;
@@ -748,17 +751,18 @@ async fn run_locked(
         totals,
         queues,
         outstanding: {
-            // Seeding may have written queued rows, even when it failed:
-            // read the ledger again.
-            let reread = match seeded {
-                Some(_) => match ledger::load(stores.curated.as_ref()).await {
+            // Requests and seeding may have written queued rows: reread even
+            // when seeding is disabled or only some messages were sent.
+            let reread = if seeded.is_some() || stores.requests.is_some() {
+                match ledger::load(stores.curated.as_ref()).await {
                     Ok(l) => Some(l),
                     Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), "ledger not read again after seeding");
+                        tracing::warn!(error = %format!("{e:#}"), "ledger not read again after queueing");
                         None
                     }
-                },
-                None => None,
+                }
+            } else {
+                None
             };
             let after = reread.unwrap_or_else(|| {
                 let mut after = ctx.ledger.clone();

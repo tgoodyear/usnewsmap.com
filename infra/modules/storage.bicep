@@ -184,7 +184,8 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
         }
         {
           // Hit requests contain page ids only, grouped and shuffled by UTC
-          // day. The API stages them; ocr-sync deletes each closed day.
+          // day. The API stages them; ocr-sync empties each completed day,
+          // keeping a create-only tombstone so concurrent closes cannot replay it.
           name: 'expire-ocr-request-staging'
           enabled: true
           type: 'Lifecycle'
@@ -197,8 +198,8 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           }
         }
         {
-          // Closed day files are deleted after ocr-sync consumes them. Keep
-          // only a short recovery window for their old versions. Completion
+          // Completed day payloads become empty tombstones. Keep only a short
+          // recovery window for their old versions. Tombstones and completion
           // markers are durable and have no lifecycle deletion rule.
           name: 'prune-ocr-request-day-versions'
           enabled: true

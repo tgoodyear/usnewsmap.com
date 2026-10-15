@@ -10,6 +10,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use chrono::NaiveDate;
 use serde::Deserialize;
+use tokio::time::Instant;
 use usnm_core::ids::PageKey;
 use usnm_state::state::State;
 use usnm_store::queue::Queue;
@@ -35,7 +36,12 @@ pub struct RequestReport {
     pub day: Option<NaiveDate>,
     pub queued: usize,
     pub skipped: usize,
-    pub deleted: bool,
+    pub completed: bool,
+}
+
+pub(super) struct Options {
+    pub daily_max: usize,
+    pub deadline: Option<Instant>,
 }
 
 fn request_day(info: &ObjectInfo) -> Option<NaiveDate> {
@@ -83,13 +89,26 @@ pub(super) async fn process(
     reference: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
     lease: &Lease,
-    daily_max: usize,
+    options: Options,
 ) -> anyhow::Result<RequestReport> {
-    let mut days: Vec<(NaiveDate, ObjectInfo)> = requests
-        .list_info("days")
-        .await?
+    let completed: HashSet<String> = requests.list("completed").await?.into_iter().collect();
+    let listed = requests.list_info("days").await?;
+    // Complete an interrupted cleanup without spending this run's processing
+    // slot. The empty object also stops an in-flight API close from recreating it.
+    for info in &listed {
+        if request_day(info).is_some_and(|day| completed.contains(&format!("completed/{day}.json")))
+            && info.size > 0
+        {
+            lease.check()?;
+            requests
+                .put(&info.path, Vec::new(), "application/x-ndjson")
+                .await?;
+        }
+    }
+    let mut days: Vec<(NaiveDate, ObjectInfo)> = listed
         .into_iter()
         .filter_map(|info| request_day(&info).map(|day| (day, info)))
+        .filter(|(day, _)| !completed.contains(&format!("completed/{day}.json")))
         .collect();
     days.sort_by_key(|(day, info)| (*day, info.path.clone()));
     let Some((day, info)) = days.into_iter().next() else {
@@ -104,17 +123,33 @@ pub(super) async fn process(
     let completed = format!("completed/{day}.json");
     if requests.exists(&completed).await? {
         lease.check()?;
-        report.deleted = requests.delete_if_match(&info.path, &info.etag).await?;
+        requests
+            .put(&info.path, Vec::new(), "application/x-ndjson")
+            .await?;
+        report.completed = true;
         return Ok(report);
     }
-    let ledger = ledger::load(curated).await?;
+    let ledger = if let Some(deadline) = options.deadline {
+        match tokio::time::timeout_at(deadline, ledger::load(curated)).await {
+            Ok(ledger) => ledger?,
+            Err(_) => return Ok(report),
+        }
+    } else {
+        ledger::load(curated).await?
+    };
     let already_queued = ledger.user_requests_for_day(day);
-    let remaining = daily_max.saturating_sub(already_queued);
+    let remaining = options.daily_max.saturating_sub(already_queued);
     if remaining > 0 {
-        let body = requests
-            .get_if_match(&info.path, &info.etag, MAX_REQUEST_FILE_BYTES)
-            .await?
-            .with_context(|| format!("request file {} changed or vanished", info.path))?;
+        let read = requests.get_if_match(&info.path, &info.etag, MAX_REQUEST_FILE_BYTES);
+        let body = if let Some(deadline) = options.deadline {
+            match tokio::time::timeout_at(deadline, read).await {
+                Ok(body) => body?,
+                Err(_) => return Ok(report),
+            }
+        } else {
+            read.await?
+        }
+        .with_context(|| format!("request file {} changed or vanished", info.path))?;
         let (ids, rejected) =
             decode(&body).with_context(|| format!("reading OCR request day {}", info.path))?;
         report.skipped += rejected;
@@ -128,24 +163,34 @@ pub(super) async fn process(
                 pages: ids,
                 day,
                 max_queued: remaining,
+                deadline: options.deadline,
             },
         )
         .await
         .with_context(|| format!("queueing OCR requests for {day}"))?;
         report.queued = queued.queued;
         report.skipped += queued.skipped.values().sum::<usize>();
+        if queued.paused {
+            return Ok(report);
+        }
     }
 
     lease.check()?;
+    if options.deadline.is_some_and(|d| Instant::now() >= d) {
+        return Ok(report);
+    }
     requests
         .put_new(&completed, br#"{"v":1}"#.to_vec(), "application/json")
         .await?;
-    report.deleted = requests.delete_if_match(&info.path, &info.etag).await?;
+    requests
+        .put(&info.path, Vec::new(), "application/x-ndjson")
+        .await?;
+    report.completed = true;
     tracing::info!(
         day = %day,
         queued = report.queued,
         skipped = report.skipped,
-        deleted = report.deleted,
+        completed = report.completed,
         "OCR hit requests processed"
     );
     Ok(report)

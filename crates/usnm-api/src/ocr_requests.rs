@@ -174,16 +174,7 @@ impl Writer {
                 _ = self.stopped.changed() => break,
                 batch = self.rx.recv() => match batch {
                     Some((day, ids)) => {
-                        let retained = self.pending.len()
-                            + self.batches.iter().map(|batch| batch.requests).sum::<usize>();
-                        let capacity = MAX_PENDING.saturating_sub(retained);
-                        for id in ids {
-                            if self.pending.len() < capacity {
-                                self.pending.push((day, id));
-                            } else {
-                                self.metrics.requests("dropped", 1);
-                            }
-                        }
+                        self.admit(day, ids);
                         if self.pending.len() >= MAX_BATCH {
                             self.flush().await;
                         }
@@ -195,22 +186,21 @@ impl Writer {
             }
         }
         while let Ok((day, ids)) = self.rx.try_recv() {
-            let retained = self.pending.len()
-                + self
-                    .batches
-                    .iter()
-                    .map(|batch| batch.requests)
-                    .sum::<usize>();
-            let capacity = MAX_PENDING.saturating_sub(retained);
-            for id in ids {
-                if self.pending.len() < capacity {
-                    self.pending.push((day, id));
-                } else {
-                    self.metrics.requests("dropped", 1);
-                }
-            }
+            self.admit(day, ids);
         }
         self.flush().await;
+    }
+
+    fn admit(&mut self, day: NaiveDate, ids: Vec<String>) {
+        let retries: usize = self.batches.iter().map(|batch| batch.requests).sum();
+        let capacity = MAX_PENDING.saturating_sub(retries);
+        for id in ids {
+            if self.pending.len() < capacity {
+                self.pending.push((day, id));
+            } else {
+                self.metrics.requests("dropped", 1);
+            }
+        }
     }
 
     async fn flush(&mut self) {
@@ -404,11 +394,18 @@ mod tests {
     struct FailOnceStore {
         inner: LocalStore,
         fail: std::sync::atomic::AtomicBool,
+        staging_read: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     }
 
     #[async_trait]
     impl ObjectStore for FailOnceStore {
         async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            if path.starts_with("staging/") {
+                if let Some((started, resume)) = &self.staging_read {
+                    started.notify_one();
+                    resume.notified().await;
+                }
+            }
             self.inner.get(path).await
         }
 
@@ -566,6 +563,7 @@ mod tests {
         let store = Arc::new(FailOnceStore {
             inner: LocalStore::new(&root),
             fail: std::sync::atomic::AtomicBool::new(true),
+            staging_read: None,
         });
         let day = Utc::now().date_naive();
         let (tx, rx) = mpsc::channel(1);
@@ -584,10 +582,22 @@ mod tests {
         writer.flush().await;
         assert!(writer.pending.is_empty());
         assert_eq!(writer.batches.len(), 1);
+        let retry_path = writer.batches[0].path.clone();
+        writer.batches[0].requests = 18_000;
+        writer.admit(day, vec!["sn83045462_1890-05-03_ed-1_seq-7".into(); 1_000]);
+        writer.admit(day, vec!["sn83045462_1890-05-03_ed-1_seq-7".into(); 1_001]);
+        assert_eq!(
+            writer.pending.len(),
+            2_000,
+            "all free slots are used, without exceeding the cap"
+        );
+        writer.pending.clear();
+        writer.batches[0].requests = 1;
         writer.flush().await;
         assert!(writer.batches.is_empty());
         let staged = store.list(&staging_dir(day)).await.unwrap();
         assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0], retry_path);
         assert_eq!(
             store
                 .get(&staged[0])
@@ -598,6 +608,94 @@ mod tests {
                 .count(),
             2
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_close_already_in_flight_cannot_replace_a_consumed_day_tombstone() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("test-ocr-requests-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let store = Arc::new(FailOnceStore {
+            inner: LocalStore::new(&root),
+            fail: std::sync::atomic::AtomicBool::new(false),
+            staging_read: Some((started.clone(), resume.clone())),
+        });
+        let day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        store
+            .put_new(
+                &format!("{}/a.jsonl", staging_dir(day)),
+                br#"{"v":1,"doc_id":"sn83045462_1890-05-03_ed-1_seq-7"}"#.to_vec(),
+                CONTENT_TYPE,
+            )
+            .await
+            .unwrap();
+        let closer = Arc::clone(&store);
+        let closing = tokio::spawn(async move { close_day(closer.as_ref(), day).await });
+        started.notified().await;
+        store
+            .put_new(
+                &completed_path(day),
+                br#"{"v":1}"#.to_vec(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        store
+            .put(&day_path(day), Vec::new(), CONTENT_TYPE)
+            .await
+            .unwrap();
+        resume.notify_one();
+        closing.await.unwrap().unwrap();
+        assert_eq!(store.get(&day_path(day)).await.unwrap(), Some(Vec::new()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn shutdown_uses_every_free_slot_without_exceeding_the_combined_buffer_bound() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("test-ocr-requests-drain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Arc::new(LocalStore::new(&root));
+        let day = Utc::now().date_naive();
+        let id = "sn83045462_1890-05-03_ed-1_seq-7".to_owned();
+        let mut line = serde_json::to_vec(&Request::new(id.clone())).unwrap();
+        line.push(b'\n');
+        let (tx, rx) = mpsc::channel(1);
+        tx.send((day, vec![id.clone(); 1_001])).await.unwrap();
+        let (stop, stopped) = watch::channel(false);
+        stop.send(true).unwrap();
+        let writer = Writer {
+            store: store.clone(),
+            rx,
+            stopped,
+            pending: vec![(day, id); 1_000],
+            batches: vec![Batch {
+                day,
+                path: staging_path(day),
+                body: line.repeat(18_000),
+                requests: 18_000,
+            }],
+            closed: BTreeSet::new(),
+            metrics: Metrics::new(&opentelemetry::global::meter("test")),
+        };
+        writer.run().await;
+        let mut count = 0;
+        for path in store.list(&staging_dir(day)).await.unwrap() {
+            count += store
+                .get(&path)
+                .await
+                .unwrap()
+                .unwrap()
+                .iter()
+                .filter(|b| **b == b'\n')
+                .count();
+        }
+        assert_eq!(count, MAX_PENDING);
         let _ = std::fs::remove_dir_all(root);
     }
 }
