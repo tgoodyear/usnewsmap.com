@@ -26,8 +26,6 @@
 // Clear retention only after role propagation and the sidecar revision's
 // readiness and search checks (docs/operations.md, "Searcher app").
 
-import { replicaComputeSlots } from '../api-capacity.bicep'
-
 param location string
 param tags object
 param name string
@@ -49,9 +47,9 @@ param storageAccountName string
 param minReplicas int
 @minValue(1)
 param maxReplicas int = 2
-@description('Visitor computation slots per searcher. Shared remote searchers divide this budget by API maxReplicas; sidecars keep the full per-replica budget.')
+@description('Allocated visitor computation slots per API replica, calculated by main.bicep from the searcher budget and API maximum replicas.')
 @minValue(1)
-param computeConcurrency int = 2
+param computeSlots int = 2
 @description('Proxies appending to X-Forwarded-For: 1 = Container Apps ingress only.')
 param trustedProxyHops int = 1
 @allowed(['fixtures', 'quickwit'])
@@ -92,7 +90,6 @@ var quickwit = searchBackend == 'quickwit'
 var sidecar = quickwit && !searcherApp && !indexStorageServe
 var searcherOn = quickwit && searcherApp
 var searcherDeployed = quickwit && (searcherApp || searcherAppRetain)
-var computeSlots = replicaComputeSlots(computeConcurrency, maxReplicas, quickwit && !sidecar)
 var computeEnv = [{ name: 'USNM_COMPUTE_CONCURRENCY', value: string(computeSlots) }]
 var indexSearcherOn = quickwit && !empty(indexStorageAccountName)
 // Drop the API identity only for the permanent standalone-searcher setting.

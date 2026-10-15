@@ -278,6 +278,56 @@ class SearcherRollbackSettings(Stubbed):
 
 
 @unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
+class DnsWhatIfTemplate(unittest.TestCase):
+    def test_cname_loop_count_does_not_depend_on_runtime_fqdn(self):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
+                              "infra/modules/dns.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        template = json.loads(run.stdout)
+        resources = template["resources"]
+        if isinstance(resources, dict):
+            resources = list(resources.values())
+        hosts = next(r for r in resources if r["type"] == "Microsoft.Network/dnsZones/CNAME")
+        self.assertNotIn("appFqdn", hosts["copy"]["count"])
+        self.assertIn("'www'", hosts["copy"]["count"])
+        self.assertIn("'api'", hosts["copy"]["count"])
+        self.assertEqual(hosts["condition"], "[parameters('deployAppRecords')]")
+        self.assertEqual(template["parameters"]["deployAppRecords"]["defaultValue"],
+                         "[not(empty(parameters('appFqdn')))]")
+        self.assertEqual(hosts["properties"]["CNAMERecord"]["cname"], "[parameters('appFqdn')]")
+        zone = next(r for r in resources if r["type"] == "Microsoft.Network/dnsZones")
+        self.assertNotIn("condition", zone)
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build", "infra/main.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        root = json.loads(run.stdout)
+        dns = root["resources"]["dns"]
+        self.assertEqual(dns["properties"]["parameters"]["deployAppRecords"]["value"],
+                         "[variables('deployApi')]")
+
+
+@unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
+class IngestTimeoutTemplate(unittest.TestCase):
+    def test_only_explicit_full_or_staging_extends_the_ingest_timeout(self):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
+                              "infra/modules/ingestjobs.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        template = json.loads(run.stdout)
+        self.assertEqual(template["variables"]["ingestReplicaTimeoutSecs"],
+                         "[if(or(parameters('full'), parameters('stageIndexStorage')), 345600, 172800)]")
+        resources = template["resources"]
+        if isinstance(resources, dict):
+            resources = list(resources.values())
+        ingest = next(r for r in resources if r.get("name") == "[parameters('ingestJobName')]")
+        backfill = next(r for r in resources if r.get("name") == "[parameters('backfillJobName')]")
+        config = ingest["properties"]["configuration"]
+        self.assertEqual(config["replicaTimeout"], "[variables('ingestReplicaTimeoutSecs')]")
+        self.assertEqual(config["replicaRetryLimit"], 0)
+        self.assertEqual(template["variables"]["replicaTimeoutSecs"], 86400)
+        self.assertEqual(backfill["properties"]["configuration"]["replicaTimeout"],
+                         "[variables('replicaTimeoutSecs')]")
+
+
+@unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
 class SearcherRollbackTemplate(unittest.TestCase):
     """Offline ARM contracts: retention keeps resources, never API routing."""
 
@@ -287,21 +337,18 @@ class SearcherRollbackTemplate(unittest.TestCase):
                               "infra/modules/containerapp.bicep", "--stdout"],
                              cwd=ROOT, capture_output=True, text=True, check=True)
         cls.template = json.loads(run.stdout)
-        # Imported functions use ARM languageVersion 2.0's named resources.
-        if isinstance(cls.template["resources"], dict):
-            cls.template["resources"] = list(cls.template["resources"].values())
 
-    def test_compute_slots_are_wired_to_configured_max_replicas(self):
+    def test_api_consumes_allocated_slots_without_nested_user_functions(self):
+        self.assertNotIn("functions", self.template)
+        self.assertIsInstance(self.template["resources"], list)
         variables = self.template["variables"]
-        self.assertEqual(variables["computeSlots"],
-                         "[__bicep.replicaComputeSlots(parameters('computeConcurrency'), parameters('maxReplicas'), and(variables('quickwit'), not(variables('sidecar'))))]")
         self.assertEqual(variables["computeEnv"],
-                         [{"name": "USNM_COMPUTE_CONCURRENCY", "value": "[string(variables('computeSlots'))]"}])
+                         [{"name": "USNM_COMPUTE_CONCURRENCY", "value": "[string(parameters('computeSlots'))]"}])
         self.assertIn("variables('computeEnv')", variables["apiContainer"]["env"])
         app = next(r for r in self.template["resources"] if r["name"] == "[parameters('name')]")
         self.assertEqual(app["properties"]["template"]["scale"]["maxReplicas"], "[parameters('maxReplicas')]")
         self.assertEqual(self.template["parameters"]["maxReplicas"]["minValue"], 1)
-        self.assertEqual(self.template["parameters"]["computeConcurrency"]["minValue"], 1)
+        self.assertEqual(self.template["parameters"]["computeSlots"]["minValue"], 1)
 
     def test_main_passes_the_same_replica_cap_and_searcher_budget(self):
         run = subprocess.run([os.environ.get("BICEP", "bicep"), "build", "infra/main.bicep", "--stdout"],
@@ -312,7 +359,9 @@ class SearcherRollbackTemplate(unittest.TestCase):
             resources = list(resources.values())
         api = next(r for r in resources if r.get("name") == "api")
         self.assertEqual(api["properties"]["parameters"]["maxReplicas"]["value"], "[parameters('apiMaxReplicas')]")
-        self.assertEqual(api["properties"]["parameters"]["computeConcurrency"]["value"], "[parameters('computeConcurrency')]")
+        self.assertEqual(api["properties"]["parameters"]["computeSlots"]["value"], "[variables('apiComputeSlots')]")
+        self.assertEqual(template["variables"]["apiComputeSlots"],
+                         "[__bicep.replicaComputeSlots(parameters('computeConcurrency'), parameters('apiMaxReplicas'), and(equals(parameters('searchBackend'), 'quickwit'), or(parameters('searcherApp'), parameters('indexStorageServe'))))]")
 
     def test_slot_budget_rounds_down_and_sidecars_keep_the_budget(self):
         from pathlib import Path
@@ -382,7 +431,7 @@ class SearcherRollbackTemplate(unittest.TestCase):
                         if "parameters('indexStorageAccountName')" in reader["name"] else "[variables('apiSystemIdentity')]")
             self.assertEqual(reader["condition"], expected)
             self.assertIn(".identity.principalId", reader["properties"]["principalId"])
-            self.assertIn("app", reader["dependsOn"])
+            self.assertIn("[resourceId('Microsoft.App/containerApps', parameters('name'))]", reader["dependsOn"])
 
     def test_index_storage_cutover_keeps_old_sidecar_identity(self):
         variables = self.template["variables"]
