@@ -1,3 +1,13 @@
 {
-  "$schema": "./schema.json"
+  "$schema": "./schema.json",
+  "USNM_AMERICAN_STORIES": true,
+  "USNM_AMERICAN_STORIES_SEARCH": true,
+  "USNM_INGEST_JOBS": true,
+  "USNM_INGEST_SCRATCH_GIB": 0,
+  "USNM_LOG_DAILY_CAP_GB": "1",
+  "USNM_SEARCHER_APP": true,
+  "USNM_SEARCH_BACKEND": "quickwit",
+  "USNM_SEARCH_CLUSTER": true,
+  "USNM_SEARCH_CLUSTER_INDEXERS": 1,
+  "USNM_SEARCH_CLUSTER_NODES": 1
 }
