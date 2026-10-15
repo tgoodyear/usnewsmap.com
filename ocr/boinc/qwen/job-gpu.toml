@@ -1,8 +1,11 @@
-# usnm_qwen, NVIDIA GPU version (plan class docker_nvidia_cuda). use_gpu makes the stock
+# usnm_qwen, NVIDIA GPU version (plan class docker_nvidia_cuda_8b). use_gpu makes the stock
 # docker_wrapper add --gpus all: Docker needs the NVIDIA Container Toolkit's runtime, Podman a CDI
 # spec (nvidia-ctk cdi generate). The wrapper adds --cpus from the plan class's avg_ncpus (2).
-# Qwen3-VL-8B at Q4_K_M needs about 7 GB of GPU memory and 4 GiB of RAM; a GPU with less gets
-# the 2B model. 6 GiB of RAM, no swap.
+# Qwen3-VL-8B at Q4_K_M needs at least 7 GB of GPU memory and 4 GiB of RAM.
+# No 2B fallback is bundled. Smaller GPUs use the native nvidia_cuda_2b class.
+# 6 GiB of RAM, no swap.
 workdir = "/work"
+# usnm_disk_cold_bytes=51539607552
+# usnm_disk_warm_bytes=2147483648
 use_gpu = true
 create_args = "--network=none --read-only --cap-drop=ALL --cap-add=DAC_OVERRIDE --security-opt=no-new-privileges --memory=6g --memory-swap=6g --pids-limit=1024 --tmpfs=/tmp:rw,size=1g"

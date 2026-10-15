@@ -33,7 +33,9 @@ BATCH_INFEASIBLE_PATCHED = """\
         return true;
     }
     if (wu && wu->batch > 0) {
-        const int expected_batch = pc->docker ? 1
+        const int expected_batch = pc->docker
+            ? (!strcmp(pc->name, "docker_mt_2b") ? 12
+            : (!strcmp(pc->name, "docker_nvidia_cuda_8b") ? 18 : 1))
             : (strstr(pc->name, "_8b") != NULL ? 8
             : ((strstr(pc->name, "_2b") != NULL || !strcmp(pc->name, "mt")) ? 2 : 0));
         if (expected_batch && wu->batch != expected_batch) {

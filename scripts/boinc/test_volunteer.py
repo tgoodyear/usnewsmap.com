@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from collections import namedtuple
 import shlex
 from pathlib import Path
 import tempfile
@@ -38,7 +39,8 @@ class Runtime:
     def __call__(self, args, timeout=30):
         self.calls.append(args)
         if args[1] == "info":
-            return json.dumps(INFO)
+            return json.dumps(dict(INFO, store={"graphRoot": str(Path(tempfile.gettempdir()) / "fake-images"),
+                                               "imageCopyTmpDir": tempfile.gettempdir()}))
         if args[1] == "run" and self.hello_error:
             raise pre.PreflightError("Cannot run podman: timed out")
         if args[1] == "create":
@@ -97,6 +99,55 @@ class PreflightTest(unittest.TestCase):
         run_call = next(call for call in runtime.calls if call[1] == "run")
         hello_name = run_call[run_call.index("--name") + 1]
         self.assertIn(["podman", "rm", "--force", "--ignore", hello_name], runtime.calls)
+
+    def test_disk_admission_is_before_any_pull_or_probe_even_with_cached_image(self):
+        usage = namedtuple("Usage", "total used free")
+        required = 34359738368
+        job = Path(__file__).resolve().parents[2] / "ocr/boinc/qwen/job-cpu.toml"
+        runtime = Runtime()
+        with patch.object(pre.shutil, "disk_usage", return_value=usage(required, 1, required - 1)):
+            with self.assertRaisesRegex(pre.PreflightError, "34359738368 cold-cache bytes"):
+                pre.preflight(self.data, IMAGE, runtime, job_toml=job)
+        self.assertEqual([call[1] for call in runtime.calls], ["info"])
+        with patch.object(pre.shutil, "disk_usage", return_value=usage(required, 0, required)):
+            self.assertTrue(pre.check_disk([self.data], required))
+        # A different image store/scratch filesystem cannot hide behind the slot's free space.
+        with patch.object(pre.shutil, "disk_usage", side_effect=[usage(required, 0, required), usage(required, 1, required - 1)]):
+            with self.assertRaises(pre.PreflightError):
+                pre.check_disk([self.data / "slots", self.data], required)
+        with patch.object(pre, "filesystem_id", side_effect=[1, 2]):
+            with self.assertRaisesRegex(pre.PreflightError, "share BOINC's filesystem"):
+                pre.check_disk([self.data / "slots", self.data], required, co_located=True)
+
+    def test_qwen_metadata_enforces_cold_disk_even_without_an_explicit_job(self):
+        runtime = Runtime()
+        with patch.object(pre.qwen_disk, "image_metadata", return_value={"container_cold_bytes": 51539607552}), \
+                patch.object(pre, "check_disk", side_effect=pre.PreflightError("Insufficient free disk")) as check:
+            with self.assertRaisesRegex(pre.PreflightError, "Insufficient"):
+                pre.preflight(self.data, pre.qwen_disk.REPOSITORY + "@sha256:" + "a" * 64, runtime)
+        self.assertEqual(check.call_args.args[1], 51539607552)
+        self.assertEqual([call[1] for call in runtime.calls], ["info"])
+
+    def test_qwen_cannot_admit_unknown_storage_or_malformed_disk_markers(self):
+        source = Path(__file__).resolve().parents[2] / "ocr/boinc/qwen/job-cpu.toml"
+        runtime = Runtime()
+
+        def missing_store(args, timeout=30):
+            return json.dumps(INFO) if args[1] == "info" else runtime(args, timeout)
+
+        with self.assertRaisesRegex(pre.PreflightError, "did not report absolute"):
+            pre.preflight(self.data, IMAGE, missing_store, job_toml=source)
+        self.assertFalse(runtime.calls)
+        job = self.data / "job.toml"
+        for raw in [
+            source.read_text() + "\n# usnm_disk_cold_bytes=1\n",
+            source.read_text().replace("# usnm_disk_warm_bytes=2147483648", ""),
+            source.read_text().replace("# usnm_disk_cold_bytes=34359738368", "# usnm_disk_cold_bytes=0"),
+            source.read_text().replace("# usnm_disk_cold_bytes=34359738368", "# usnm_disk_cold_bytes=1"),
+        ]:
+            job.write_text(raw)
+            with self.assertRaises(pre.PreflightError):
+                pre.limits_from_job_toml(job)
 
     def test_probe_keeps_the_released_wrapper_runtime_policy(self):
         runtime = Runtime()

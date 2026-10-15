@@ -7,8 +7,8 @@
 //! 1. Diagnostics as the Surya worker writes them: selected fields of
 //!    `init_data.xml`, the container runtime, the GPU the container sees.
 //! 2. Unless the unit is broken (input checksum, an engine that differs
-//!    from the job), the model for the host is chosen (8B on a GPU with
-//!    [`super::GPU_MB_FOR_8B`] MB free, else 2B), llama-server is started
+//!    from the job), the immutable payload's model is chosen (8B requires a GPU
+//!    with [`super::GPU_MB_FOR_8B`] MB free; 2B runs on CPU), llama-server is started
 //!    as a child on 127.0.0.1 with a free port, and each crop is cut from
 //!    the page as a PNG and sent as a data URL in an OpenAI-style chat
 //!    completion with the fixed prompt at temperature 0, within the unit's
@@ -22,8 +22,8 @@
 //! does. The requests go over a plain HTTP/1.1 client on the loopback
 //! (`http`): no HTTP library, nothing leaves the container.
 use super::{
-    choose_model, outputs, DIAG_FILE, ENV_LLAMA_IMAGE, ENV_WEIGHTS, JOB_FILE, MODEL_DIR, PAGE_FILE,
-    READINGS_FILE, RESULT_FILE,
+    outputs, payload_model, DIAG_FILE, ENV_LLAMA_IMAGE, ENV_MODEL, ENV_WEIGHTS, JOB_FILE,
+    MODEL_DIR, PAGE_FILE, READINGS_FILE, RESULT_FILE,
 };
 use crate::surya::work::{
     boinc_info, container_info, gpu_info, gpu_mem_used, kill_all, llama_device, others, quick,
@@ -635,10 +635,16 @@ fn read_crops(
 fn read_unit(job: &Job, page: &[u8], gpu: Option<u32>, threads: u32, diag: &mut Diag) -> Done {
     let mut done = Done::none(Outcome::Failed);
     let gpu_free = gpu_free_mb(gpu);
-    let Some(model) = choose_model(&job.engine.models, gpu_free) else {
-        diag.section("model", "the job names no model", 256);
+    let payload = std::env::var(ENV_MODEL).unwrap_or_default();
+    let Some(model) = payload_model(&job.engine.models, &payload, gpu_free) else {
+        diag.section(
+            "model",
+            "no compatible model in this immutable payload (or insufficient GPU memory)",
+            256,
+        );
         return done;
     };
+    let gpu = if payload == "2b" { None } else { gpu };
     diag.section(
         "model",
         &format!(

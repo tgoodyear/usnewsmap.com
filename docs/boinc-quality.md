@@ -4,9 +4,9 @@ The [transcription post-training pilot](boinc-transcription.md) reuses `usnm_qwe
 for held-out public-gold inference. Its references stay on the server; central
 training is separate from volunteer work.
 
-Issues: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533). Two apps estimate, for every page and without anyone transcribing it, how accurate and how complete each text we hold of it is, how much a careful reader could recover, and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (Apple Silicon Metal and NVIDIA CUDA GPUs, with a multi-thread CPU fallback) adds a vision-language reading of a sample of crops, as one more reader. Both apps support **dual native and container distribution**: native platform executables across Linux (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`), macOS (`arm64-apple-darwin`, `x86_64-apple-darwin`) and Windows (`windows_x86_64`) that require no container runtime on volunteer hosts, alongside the container app versions (`docker`, `docker_mt`, `docker_nvidia_cuda`). The other apps are described in [boinc.md](boinc.md), [boinc-assessment.md](boinc-assessment.md) and [boinc-surya.md](boinc-surya.md).
+Issues: [#522](https://github.com/tgoodyear/usnewsmap.com/issues/522), [#533](https://github.com/tgoodyear/usnewsmap.com/issues/533), [#559](https://github.com/tgoodyear/usnewsmap.com/issues/559). Two apps estimate, for every page and without anyone transcribing it, how accurate and how complete each text we hold of it is, how much a careful reader could recover, and what the scan looks like. `usnm_quality` (CPU) compares the texts; `usnm_qwen` (Apple Silicon Metal and NVIDIA CUDA GPUs, with a multi-thread CPU fallback) adds a vision-language reading of a sample of crops, as one more reader. Both apps support **dual native and container distribution**: native platform executables across Linux (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`), macOS (`arm64-apple-darwin`, `x86_64-apple-darwin`) and Windows (`windows_x86_64`) that require no container runtime on volunteer hosts, alongside the container app versions (`docker`, `docker_mt_2b`, `docker_nvidia_cuda_8b`). The other apps are described in [boinc.md](boinc.md), [boinc-assessment.md](boinc-assessment.md) and [boinc-surya.md](boinc-surya.md).
 
-Status: implemented in code and tested locally; UNVERIFIED on the live BOINC server and volunteer hosts. Every number below is a limit the code enforces, not a live measurement.
+Status: implemented in code and tested locally; new split-payload releases remain UNVERIFIED on the live BOINC server and volunteer hosts. Disk metadata observations below are distinguished from conservative limits and live acceptance.
 
 ## What a unit is
 
@@ -55,7 +55,7 @@ Stock BOINC does not accept a plain executable that simply writes its output fil
 
 Rather than linking the C++ BOINC API across five targets or adding `samples/wrapper`, our native Rust binaries (`crates/usnm-quality-app` and the native `usnm_qwen` driver) satisfy the slot contract directly:
 
-- Every input and output in `ocr/boinc/usnm_quality_in`, `ocr/boinc/usnm_quality_out`, `ocr/boinc/usnm_qwen_in`, `ocr/boinc/usnm_qwen_8b_in`, `ocr/boinc/usnm_qwen_2b_in`, and `ocr/boinc/usnm_qwen_out` carries `<copy_file/>`, so the BOINC client places real files in the slot directory rather than XML `<soft_link>` files (`client/file_names.cpp:47-56`).
+- Page/control inputs and outputs carry `<copy_file/>`, so the BOINC client places real files in the slot directory (`client/file_names.cpp:47-56`). Native Qwen's sticky GGUF inputs are the deliberate exception: their slot `<soft_link>` aliases resolve to shared project-cache files, not another model copy.
 - During execution, the binary writes `fraction_done` (`0o644`) in the current directory.
 - After flushing all output files (`result.json`, `confusions.json` or `readings.json`, and `diag.txt`) and setting `fraction_done` to `1.000000\n`, the binary atomically writes `boinc_finish_called` containing `0\n` as its final step before exiting `0`.
 
@@ -83,23 +83,23 @@ The workflow runs the cross-platform golden determinism test on every target and
      - `<no_delete/>` (`sched/file_deleter.cpp:22, 160-171`) instructs the server's `file_deleter` daemon never to unlink the shared model files from `download/` when the first workunit referencing them is assimilated and purged.
    - Serving sticky models from the server Container App's Azure Files share incurs Azure internet egress after the first 100 GB/month free tier (~$0.087/GB in North America: ~$0.50 per new 8B volunteer and ~$0.20 per new 2B volunteer).
 2. **Container image (`ocr/boinc/qwen/Containerfile`, `ocr/boinc/qwen/weights.lock`, `ocr/boinc/qwen/NOTICE`)**:
-   - Built on `ghcr.io/ggml-org/llama.cpp:server-cuda` at digest `sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea` (llama.cpp build 11610, `0.6.0-dev`), which runs Qwen3-VL natively with no Python stack. It bakes Qwen3-VL-8B-Instruct at `Q4_K_M` (`Qwen3VL-8B-Instruct-Q4_K_M.gguf` and `mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf`) and Qwen3-VL-2B-Instruct at `Q8_0` (`Qwen3-VL-2B-Instruct-Q8_0.gguf` and `mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf`) from Hugging Face at pinned revisions, checked against `ocr/boinc/qwen/weights.lock`, into `/opt/qwen/models` (`usnm_boinc::qwen::MODEL_DIR`), alongside Apache-2.0 `LICENSE` and `NOTICE`. Keeping the GHCR container path on Linux x86-64 avoids Azure Files egress for container volunteers.
-   - `.github/workflows/boinc-qwen.yml` (`.github/actions/boinc-qwen-build/action.yml`) builds the image on the runner's scratch volume, runs `usnm-boinc qwen probe` and a synthetic CPU unit (`usnm-boinc qwen local-unit --synthetic --dir /work --timeout-secs 600`, `usnm-boinc work --dir /work`, `usnm-boinc qwen check`), and on `main` pushes `ghcr.io/tgoodyear/usnm-boinc-worker:qwen-<commit>` and writes its `sha256:...` digest to the step summary.
+   - Built on `ghcr.io/ggml-org/llama.cpp:server-cuda` at digest `sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea` (llama.cpp build 11610, `0.6.0-dev`), with no Python stack. **Separate payloads**: `QWEN_MODEL=2b` (the build default) includes only the 2B Q8_0 model and projector; `QWEN_MODEL=8b` includes only the 8B Q4_K_M model and projector. Both retain the pinned CUDA base (including CPU backends), immutable Hugging Face revisions, SHA-256 checks, full `weights.lock` identity, Apache-2.0 `LICENSE` and `NOTICE`. A full lock identifies the allowed artifacts, not a claim that every model in it is installed. `USNM_QWEN_MODEL` and the image's model label identify the actual payload. CPU execution cannot pick 8B; the 8B image refuses insufficient/missing GPUs instead of silently falling back. Smaller NVIDIA GPUs can use the native 2B class.
+   - `.github/workflows/boinc-qwen.yml` builds/checks both payloads separately. Only a manually authorized run on `main` publishes `ghcr.io/tgoodyear/usnm-boinc-worker:qwen-2b-<commit>` and `:qwen-8b-<commit>`. Each gets a **different digest** in the step summary. Releases continue to use anonymous digest-pinned pulls and signed wrapper/Dockerfile/job files; the release preflight now checks anonymous config metadata against the plan class's model, pinned base/weights identity and compressed-size envelope.
 
 ## App versions and plan classes
 
 Plan classes are defined in `contrib-compute/boinc/plan_class_spec.xml`:
 
-| App            | Kind        | Plan class           | Platforms                                                                                                         | Runtime / resource requirements                                                                                                  |
-| -------------- | ----------- | -------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `usnm_quality` | `native`    | _(default CPU)_      | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Native binary (`crates/usnm-quality-app`), 1 CPU, writes `boinc_finish_called`                                                   |
-| `usnm_quality` | `container` | `docker`             | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | `ocr/boinc/job.toml`: 1 CPU, 1.5 GiB, no swap                                                                                    |
-| `usnm_qwen`    | `native`    | `apple_gpu_8b`       | `arm64-apple-darwin`                                                                                              | `<gpu_type>apple</gpu_type>`, Metal support (`min_metal_support` 1), >= 7,000 MB available unified RAM (~8 GiB Mac), 8B `Q4_K_M` |
-| `usnm_qwen`    | `native`    | `nvidia_cuda_8b`     | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 7,000 MB GPU RAM, 2 host CPUs, 8B `Q4_K_M`         |
-| `usnm_qwen`    | `native`    | `nvidia_cuda_2b`     | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 3,000 MB GPU RAM, 2 host CPUs, 2B `Q8_0`           |
-| `usnm_qwen`    | `native`    | `mt`                 | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Multi-thread CPU (`min_ncpus` 4, `max_threads` 8), 2B `Q8_0` fallback                                                            |
-| `usnm_qwen`    | `container` | `docker_mt`          | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-cpu.toml`: `--cpus` from the thread count (4–8), 6 GiB, no swap                                              |
-| `usnm_qwen`    | `container` | `docker_nvidia_cuda` | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-gpu.toml`: `--gpus all`, 2 CPUs, >= 3,000 MB GPU RAM, 6 GiB, no swap                                         |
+| App            | Kind        | Plan class              | Platforms                                                                                                         | Runtime / resource requirements                                                                                                  |
+| -------------- | ----------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `usnm_quality` | `native`    | _(default CPU)_         | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Native binary (`crates/usnm-quality-app`), 1 CPU, writes `boinc_finish_called`                                                   |
+| `usnm_quality` | `container` | `docker`                | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | `ocr/boinc/job.toml`: 1 CPU, 1.5 GiB, no swap                                                                                    |
+| `usnm_qwen`    | `native`    | `apple_gpu_8b`          | `arm64-apple-darwin`                                                                                              | `<gpu_type>apple</gpu_type>`, Metal support (`min_metal_support` 1), >= 7,000 MB available unified RAM (~8 GiB Mac), 8B `Q4_K_M` |
+| `usnm_qwen`    | `native`    | `nvidia_cuda_8b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 7,000 MB GPU RAM, 2 host CPUs, 8B `Q4_K_M`         |
+| `usnm_qwen`    | `native`    | `nvidia_cuda_2b`        | `x86_64-pc-linux-gnu`, `windows_x86_64`                                                                           | `<gpu_type>nvidia</gpu_type><cuda/>`, CUDA 12+, compute capability >= 5.0, >= 3,000 MB GPU RAM, 2 host CPUs, 2B `Q8_0`           |
+| `usnm_qwen`    | `native`    | `mt`                    | `x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`, `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64` | Multi-thread CPU (`min_ncpus` 4, `max_threads` 8), 2B `Q8_0` fallback                                                            |
+| `usnm_qwen`    | `container` | `docker_mt_2b`          | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-cpu.toml`: 2B only, `--cpus` from the thread count (4–8), 6 GiB, no swap                                     |
+| `usnm_qwen`    | `container` | `docker_nvidia_cuda_8b` | `x86_64-pc-linux-gnu`                                                                                             | `ocr/boinc/qwen/job-gpu.toml`: 8B only, `--gpus all`, 2 CPUs, >= 7,000 MB GPU RAM, compute capability >= 6.0, 6 GiB, no swap     |
 
 `scripts/boinc/install.py` supports both `--kind container` (the default) and `--kind native --binary <FILE>`. `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
 
@@ -108,16 +108,129 @@ Register the apps and platforms on the server (`scripts/start-boinc-bridge.sh --
 ```sh
 # Container versions:
 scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host <host>
-scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt \
-  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-digest> --signing-host <host>
-scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda \
-  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-digest> --signing-host <host>
+scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
+  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-2b-digest> --signing-host <host>
+scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
+  --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:<qwen-8b-digest> --signing-host <host>
 
 # Native usnm_quality binary (from .github/workflows/boinc-quality-native.yml artifacts):
 scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.1 --kind native \
   --platform arm64-apple-darwin --binary /path/to/usnm_quality_1.1_arm64-apple-darwin \
   --binary-sha256 <sha256> --signing-host <host>
 ```
+
+## Qwen disk admission and cold-cache acceptance (#559)
+
+[`ocr/boinc/qwen/disk-policy.json`](../ocr/boinc/qwen/disk-policy.json)
+is the versioned policy used by submission, release checks, host preflight and
+tests. **GiB = 1,073,741,824 bytes.** The scheduler always advertises the cold
+bound, even for warm caches; presence of an image/tag is not proof that every
+shared layer is complete. This intentionally over-reserves per concurrent unit.
+
+| Target (`qwen submit --target`) | Payload                         | Cold `rsc_disk_bound`, bytes (GiB) | Warm incremental disk envelope                |
+| ------------------------------- | ------------------------------- | ---------------------------------- | --------------------------------------------- |
+| `container` (default)           | CPU 2B only                     | 34,359,738,368 (32)                | 2 GiB slot/workspace; no new image layers     |
+| `container-8b`                  | GPU 8B only                     | 51,539,607,552 (48)                | 2 GiB slot/workspace; no new image layers     |
+| `native-2b`                     | sticky 2B model + native bundle | 12,884,901,888 (12)                | up to 4 GiB: app bundle slot copy + workspace |
+| `native-8b`                     | sticky 8B model + native bundle | 19,327,352,832 (18)                | up to 4 GiB: app bundle slot copy + workspace |
+
+Warm numbers assume the **exact digest-qualified payload is already resident**,
+are incremental rather than total retained cache, and exclude a further 2 GiB
+free-space reserve. They are not the scheduler admission threshold: warm hosts
+still need the full cold bound free. Multiple retained image/model revisions
+consume additional disk; nothing prunes volunteers' caches.
+
+Read-only metadata retrieved 2026-10-15 (sources in the policy):
+
+- The pinned CUDA index's Linux/amd64 manifest is
+  `sha256:cb7f872937c65952258e5670d8c1da7bae7394aef50c1c90a8bb251bde46c32e`:
+  its compressed layer descriptors sum to **2,592,304,104 bytes**.
+  This is the base only, not a new worker-image measurement.
+- Pinned Hugging Face LFS metadata, whose SHA-256 OIDs match `weights.lock`:
+  2B model **1,834,427,296** + projector **445,053,056** =
+  **2,279,480,352 bytes**; 8B model **5,027,784,800** + projector
+  **752,289,728** = **5,780,074,528 bytes**. Native and container paths use the
+  same model bytes, not the same filesystem overhead.
+- These observations fetch manifests/configs/LFS metadata only, not layer/model
+  bodies. No local Docker daemon/cache was available for new extraction measurements.
+  #559's historical ~27 GiB shared-layer `du` / ~20 GiB filesystem observation
+  lacks exact artifact/node provenance in the issue, so is **not** treated as
+  a measured size of either new split image.
+
+Conservative, **not measured**, envelopes: compressed image <= base compressed
+bytes + selected uncompressed GGUF bytes + 512 MiB app/licence overhead;
+unpacked image <= 8 GiB base + selected GGUF bytes + 512 MiB overhead.
+Cold container admission covers compressed storage **plus two unpacked copies**
+(extraction/copy overlap), 2 GiB workspace and 2 GiB reserve, rounded up to
+32/48 GiB. CI must fail rather than publish if the actual image exceeds these
+envelopes. Native cold admission covers one shared model set, **two copies of a
+native app bundle bounded at 2 GiB** (project cache plus slot), 2 GiB workspace
+and 2 GiB reserve. `install.py` rejects larger native bundles. The native model
+templates deliberately do **not** copy GGUFs into slots: BOINC soft-link files
+resolve to the shared project model cache. Native bounds must be reconsidered
+if this layout changes.
+
+Before dispatch, stock BOINC's pinned `sched/sched_check.cpp::check_disk`
+rejects `rsc_disk_bound > disk_available`; `sched_send.cpp` subtracts the bound
+for each dispatched unit. Thus the old 2 GiB selection criterion is gone.
+BOINC disk preferences/quota must permit the new bound as well as filesystem
+free space. The managed rootless-Podman preflight checks free disk **before
+even hello-world or a model-image pull**, on BOINC slots, image graph storage
+and extraction scratch. Qwen requires these to share BOINC's filesystem so
+subsequent scheduler reports reflect runtime consumption. The managed profile
+puts graph storage and image-copy scratch under the BOINC data directory; a
+separate mounted store/scratch is rejected, not optimistically admitted. A
+cached image does not bypass this check. Startup pull budget is 30 minutes
+within a 40-minute service startup budget, not an inference deadline.
+Manual Docker installations must provide equivalent co-location and free-disk
+checks before enabling work; a server cannot inspect a remote Docker store.
+
+### Activation and acceptance (operator authorization required)
+
+1. Build/publish **both** split images via the reviewed manual workflow on
+   `main`; retain the anonymous manifest/config check and signed app release
+   procedure. Release CPU with the 2B digest and `docker_mt_2b`, GPU with the 8B
+   digest and **new** `docker_nvidia_cuda_8b`. Legacy dual-model images/old GPU
+   plan classes are refused by the release script. Do not reuse one digest.
+2. Roll out the server base's updated batch routing, plan-class XML, bridge and
+   templates **before** submitting new units. Batch 12 is the CPU container,
+   batch 18 the GPU container, batch 2 native 2B and batch 8 native 8B. Other
+   apps and legacy work retain batch 1's `docker_mt` / `docker_nvidia_cuda`;
+   those old app versions cannot receive new batch 12/18 units. Retire superseded Qwen app versions through
+   the normal reviewed release process; do not reset nodes or rewrite queued
+   workunits. Previously submitted workunits keep their old bounds and must
+   drain or be handled explicitly by the operator.
+3. Stage separate CPU/GPU campaigns using each actual image digest, the pinned
+   base digest and the full lock's weights identity from the build summary.
+   Submit GPU with `--target container-8b` (bridge:
+   `--var QWEN_TARGET=container-8b`); default `container` submits CPU. Native
+   targets retain their model-specific sticky input templates. The workunit
+   engine/identity continues to carry the immutable campaign image digest.
+   Benchmark NOTICE inputs preserve the selected container target's batch and
+   disk bound; native benchmark targets fail explicitly before submission
+   because native NOTICE/model templates are not yet installed.
+4. On a **disposable acceptance runner**, `qwen_cold_cache.py` streams a locally
+   built, cached image into a new isolated Docker daemon/store, without pulling
+   or pruning an existing daemon. Each model's CI artifact `qwen-disk-2b` /
+   `qwen-disk-8b` records image ID, local gzip archive bytes (not registry
+   compressed bytes), logical unpacked size, graph `du`, filesystem delta/peak,
+   second-load warm increment and load wall time. It asserts bounds and exact
+   GGUF membership. Do not sum shared-layer `du` as unique filesystem usage.
+   The build action checks all three error outputs for both payloads and runs
+   the synthetic 2B CPU reading under the released memory/swap/PID/isolation
+   limits. Native fake-model/loopback tests cover shared aliases and outputs.
+5. Live acceptance still needs authorized publication/signing/rollout plus an
+   eligible >=7 GB NVIDIA host: anonymous cold pull, all three output files,
+   upload/validation, a warm repeat and a deliberately insufficient-disk host
+   rejected before selection/pull. Record exact digest/platform/runtime/storage
+   driver, pre/post/peak free bytes on each filesystem, transfer/extraction time,
+   model load time and inference time **separately**. No live reset/deletion,
+   cloud build/deployment or volunteer mutation is part of this code change.
+
+Cold image transfer/extraction is shared startup overhead, not model inference.
+The historical ~513-second elapsed acceptance must not calibrate per-crop
+inference or FLOPS. Existing `load_ms`, `engine_ms` and per-crop timing semantics
+are unchanged.
 
 ## Diagnostics
 
@@ -204,7 +317,7 @@ On the server (`contrib-compute/images/server/bridge-job.sh`) and the hand-off j
      --var QUALITY_CAMPAIGN=v1-probe --var QWEN_CAMPAIGN=v1-probe \
      --var QWEN_ENGINE_IMAGE=sha256:<qwen-digest> \
      --var QWEN_ENGINE_LLAMA=sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea \
-     --var QWEN_ENGINE_WEIGHTS=sha256:884ccbc56c47ac7c4e74df187fa9a0ac3a3b6423d28f6132b00ca82d67ce8406 \
+     --var QWEN_ENGINE_WEIGHTS=sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd \
      --var QWEN_MAX=20 --wait-mins 15
    ```
 
@@ -238,7 +351,10 @@ On the server (`contrib-compute/images/server/bridge-job.sh`) and the hand-off j
 
 ## Measured
 
-Nothing yet. This section gets the first live campaign's and the full calibration's numbers.
+No split-image live extraction/inference measurements yet. Registry/LFS size
+metadata and the historical #559 observation are qualified in the disk section
+above; neither is a cold/warm acceptance result for the new artifacts. This
+section gets the first new live campaign's and full calibration's numbers.
 
 ## Unconfirmed
 

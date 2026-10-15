@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "metadata_observed_at": "2026-10-15",
+  "metadata_sources": [
+    "https://ghcr.io/v2/ggml-org/llama.cpp/manifests/sha256:cb7f872937c65952258e5670d8c1da7bae7394aef50c1c90a8bb251bde46c32e",
+    "https://huggingface.co/api/models/Qwen/Qwen3-VL-8B-Instruct-GGUF/tree/f982a07559d4a2f6c8744d840bf6fccab30eea96",
+    "https://huggingface.co/api/models/ggml-org/Qwen3-VL-2B-Instruct-GGUF/tree/ea6a11058182570be6436b9a2e4ee7f7b49f908d"
+  ],
+  "limitations": "Registry compressed layer sum and LFS sizes only. Unpacked, scratch, and cold admission values are conservative enforced envelopes, not measurements. See docs/boinc-quality.md.",
+  "base_index": "sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea",
+  "base_amd64_manifest": "sha256:cb7f872937c65952258e5670d8c1da7bae7394aef50c1c90a8bb251bde46c32e",
+  "base_compressed_bytes": 2592304104,
+  "base_unpacked_bound_bytes": 8589934592,
+  "image_overhead_bound_bytes": 536870912,
+  "native_bundle_bound_bytes": 2147483648,
+  "weights_identity": "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd",
+  "warm_incremental_bytes": 2147483648,
+  "native_warm_incremental_bytes": 4294967296,
+  "reserve_bytes": 2147483648,
+  "models": {
+    "2b": {
+      "files": {
+        "Qwen3-VL-2B-Instruct-Q8_0.gguf": 1834427296,
+        "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf": 445053056
+      },
+      "container_cold_bytes": 34359738368,
+      "native_cold_bytes": 12884901888
+    },
+    "8b": {
+      "files": {
+        "Qwen3VL-8B-Instruct-Q4_K_M.gguf": 5027784800,
+        "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf": 752289728
+      },
+      "container_cold_bytes": 51539607552,
+      "native_cold_bytes": 19327352832
+    }
+  }
+}
