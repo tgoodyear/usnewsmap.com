@@ -18,10 +18,13 @@ const EMBEDDED_WEIGHTS_LOCK: &str = include_str!("../../../../ocr/boinc/qwen/wei
 /// Execution target and input template routing for `usnm_qwen` workunits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum Target {
-    /// Docker/Podman container worker (`templates/usnm_qwen_in`, models baked into image).
+    /// 2B CPU Docker/Podman container (`templates/usnm_qwen_in`, model baked into image).
     #[default]
     #[value(name = "container")]
     Container,
+    /// Model-specific 8B GPU container; never sent to a CPU/2B app version.
+    #[value(name = "container-8b")]
+    Container8b,
     /// Native 8B GPU worker (`templates/usnm_qwen_8b_in`, stages sticky 8B GGUF + mmproj).
     #[value(name = "native-8b", alias = "native8b")]
     Native8b,
@@ -33,7 +36,7 @@ pub enum Target {
 impl Target {
     pub fn wu_template(self) -> &'static str {
         match self {
-            Self::Container => "templates/usnm_qwen_in",
+            Self::Container | Self::Container8b => "templates/usnm_qwen_in",
             Self::Native8b => "templates/usnm_qwen_8b_in",
             Self::Native2b => "templates/usnm_qwen_2b_in",
         }
@@ -42,12 +45,14 @@ impl Target {
     /// BOINC `workunit.batch` identifier passed via `create_work --batch` so
     /// `sched/plan_class_spec.cpp` (`wu_is_infeasible_for_plan_class`) binds each
     /// Qwen target exclusively to compatible app-version plan classes:
-    /// - `1` (`Container`): `docker*` (`docker_mt`, `docker_nvidia_cuda`)
+    /// - `12` (`Container`): `docker_mt_2b` (2B CPU)
+    /// - `18` (`Container8b`): `docker_nvidia_cuda_8b` (8B GPU)
     /// - `2` (`Native2b`): native 2B/CPU plan classes (`mt`, `nvidia_cuda_2b`)
     /// - `8` (`Native8b`): native 8B GPU plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`)
     pub fn batch(self) -> i32 {
         match self {
-            Self::Container => 1,
+            Self::Container => 12,
+            Self::Container8b => 18,
             Self::Native2b => 2,
             Self::Native8b => 8,
         }
@@ -55,7 +60,8 @@ impl Target {
 
     pub fn batch_str(self) -> &'static str {
         match self {
-            Self::Container => "1",
+            Self::Container => "12",
+            Self::Container8b => "18",
             Self::Native2b => "2",
             Self::Native8b => "8",
         }
@@ -64,7 +70,8 @@ impl Target {
     /// Returns whether `plan_class` is eligible to execute workunits created for `self`.
     pub fn is_plan_class_compatible(self, plan_class: &str) -> bool {
         match self {
-            Self::Container => plan_class == "docker" || plan_class.starts_with("docker_"),
+            Self::Container => plan_class == "docker_mt_2b",
+            Self::Container8b => plan_class == "docker_nvidia_cuda_8b",
             Self::Native8b => !plan_class.starts_with("docker") && plan_class.ends_with("_8b"),
             Self::Native2b => {
                 !plan_class.starts_with("docker")
@@ -75,7 +82,7 @@ impl Target {
 
     pub fn model_files(self) -> &'static [&'static str] {
         match self {
-            Self::Container => &[],
+            Self::Container | Self::Container8b => &[],
             Self::Native8b => &[
                 "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
                 "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
@@ -85,6 +92,21 @@ impl Target {
                 "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
             ],
         }
+    }
+
+    /// Conservative cold-cache admission, including transfer/extraction overlap,
+    /// shared payload, slot workspace and reserve. Never discounts unproven caches.
+    pub fn disk_bound(self) -> u64 {
+        let policy: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../ocr/boinc/qwen/disk-policy.json"))
+                .expect("valid embedded Qwen disk policy");
+        let (model, kind) = match self {
+            Self::Container => ("2b", "container_cold_bytes"),
+            Self::Container8b => ("8b", "container_cold_bytes"),
+            Self::Native2b => ("2b", "native_cold_bytes"),
+            Self::Native8b => ("8b", "native_cold_bytes"),
+        };
+        policy["models"][model][kind].as_u64().expect("disk bound")
     }
 }
 
@@ -154,7 +176,7 @@ pub fn create_work_args_with_lock(
         "--rsc_memory_bound",
         MEMORY_BOUND,
         "--rsc_disk_bound",
-        "2147483648",
+        &target.disk_bound().to_string(),
         "--delay_bound",
         "259200",
     ]
@@ -342,7 +364,7 @@ async fn stage_shared_models_with_lock(
     target: Target,
     weights_lock_text: &str,
 ) -> anyhow::Result<()> {
-    if target == Target::Container {
+    if matches!(target, Target::Container | Target::Container8b) {
         return Ok(());
     }
     let dir = model_dir.unwrap_or_else(|| Path::new(MODEL_DIR));
@@ -359,14 +381,22 @@ async fn stage_shared_models_with_lock(
 }
 
 pub fn benchmark_work_args(job: &Job) -> Vec<String> {
-    let mut args = create_work_args(job);
+    benchmark_work_args_for_target(job, Target::Container).expect("CPU container benchmark")
+}
+
+pub fn benchmark_work_args_for_target(job: &Job, target: Target) -> anyhow::Result<Vec<String>> {
+    ensure!(
+        matches!(target, Target::Container | Target::Container8b),
+        "benchmark NOTICE input templates support container targets only; native benchmark templates are not installed"
+    );
+    let mut args = create_work_args_for_target(job, target);
     let template = args
         .iter_mut()
         .find(|s| *s == "templates/usnm_qwen_in")
         .expect("Qwen input template");
     *template = "templates/usnm_qwen_benchmark_in".into();
     args.push(format!("{}_notice_txt", job.id));
-    args
+    Ok(args)
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
@@ -405,6 +435,11 @@ pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::R
             job.doc_id
         );
         let benchmark = opts.root.join("benchmark.json").exists();
+        let work_args = if benchmark {
+            benchmark_work_args_for_target(&job, opts.target)?
+        } else {
+            create_work_args_with_lock(&job, opts.target, weights_lock_text)?
+        };
         let mut names = physical_names(&job);
         if benchmark {
             let notice = read(
@@ -449,11 +484,7 @@ pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::R
         }
         let status = Command::new(project.join("bin/create_work"))
             .current_dir(&project)
-            .args(if benchmark {
-                benchmark_work_args(&job)
-            } else {
-                create_work_args_with_lock(&job, opts.target, weights_lock_text)?
-            })
+            .args(work_args)
             .status()
             .await?;
         ensure!(
@@ -494,7 +525,7 @@ mod tests {
         assert_eq!(names[1].1, JOB_FILE);
         let args = create_work_args(&j);
         assert!(args.contains(&"templates/usnm_qwen_in".to_string()));
-        assert!(args.windows(2).any(|w| w == ["--batch", "1"]));
+        assert!(args.windows(2).any(|w| w == ["--batch", "12"]));
         assert!(args.ends_with(&[names[0].0.clone(), names[1].0.clone()]));
         let args = benchmark_work_args(&j);
         assert!(args.contains(&"templates/usnm_qwen_benchmark_in".into()));
@@ -503,12 +534,29 @@ mod tests {
             names[1].0.clone(),
             format!("{}_notice_txt", j.id)
         ]));
+        let gpu_args = benchmark_work_args_for_target(&j, Target::Container8b).unwrap();
+        assert!(gpu_args.windows(2).any(|w| w == ["--batch", "18"]));
+        assert!(gpu_args
+            .windows(2)
+            .any(|w| w == ["--rsc_disk_bound", "51539607552"]));
+        assert!(gpu_args.ends_with(&[
+            names[0].0.clone(),
+            names[1].0.clone(),
+            format!("{}_notice_txt", j.id)
+        ]));
+        assert!(benchmark_work_args_for_target(&j, Target::Native2b).is_err());
+        assert!(benchmark_work_args_for_target(&j, Target::Native8b).is_err());
     }
 
     #[test]
     fn target_plan_class_compatibility_rejects_incompatible_assignments() {
-        assert!(Target::Container.is_plan_class_compatible("docker_mt"));
-        assert!(Target::Container.is_plan_class_compatible("docker_nvidia_cuda"));
+        assert!(Target::Container.is_plan_class_compatible("docker_mt_2b"));
+        assert!(!Target::Container.is_plan_class_compatible("docker_mt"));
+        assert!(!Target::Container.is_plan_class_compatible("docker_nvidia_cuda"));
+        assert!(!Target::Container.is_plan_class_compatible("docker_nvidia_cuda_8b"));
+        assert!(Target::Container8b.is_plan_class_compatible("docker_nvidia_cuda_8b"));
+        assert!(!Target::Container8b.is_plan_class_compatible("docker_mt_2b"));
+        assert!(!Target::Container8b.is_plan_class_compatible("nvidia_cuda_8b"));
         assert!(!Target::Container.is_plan_class_compatible("mt"));
         assert!(!Target::Container.is_plan_class_compatible("apple_gpu_8b"));
         assert!(!Target::Container.is_plan_class_compatible("nvidia_cuda_2b"));
@@ -544,6 +592,20 @@ mod tests {
         .unwrap();
 
         let digests = parse_weights_lock(EMBEDDED_WEIGHTS_LOCK).unwrap();
+        for (target, batch, bound) in [
+            (Target::Container, "12", "34359738368"),
+            (Target::Container8b, "18", "51539607552"),
+            (Target::Native2b, "2", "12884901888"),
+            (Target::Native8b, "8", "19327352832"),
+        ] {
+            let args = create_work_args_for_target(&j, target);
+            assert!(args.windows(2).any(|w| w == ["--batch", batch]));
+            assert!(args.windows(2).any(|w| w == ["--rsc_disk_bound", bound]));
+            assert!(args
+                .windows(2)
+                .any(|w| w == ["--rsc_memory_bound", MEMORY_BOUND]));
+            assert_eq!(args, create_work_args_for_target(&j, target));
+        }
         let args_8b = create_work_args_for_target(&j, Target::Native8b);
         assert!(args_8b.contains(&"templates/usnm_qwen_8b_in".to_string()));
         assert!(args_8b.windows(2).any(|w| w == ["--batch", "8"]));

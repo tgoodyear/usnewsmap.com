@@ -334,14 +334,14 @@ class AppReleaseArgs(unittest.TestCase):
         r = self.run_release("--app", "usnm_quality", "--plan-class", "docker")
         self.assertIn("--signing-host must be a host name", r.stderr)
 
-        for pc in ("docker_mt", "docker_nvidia_cuda"):
+        for pc in ("docker_mt_2b", "docker_nvidia_cuda_8b"):
             r = self.run_release("--app", "usnm_qwen", "--plan-class", pc, "--worker-image", img)
             self.assertIn("--signing-host must be a host name", r.stderr)
         r = self.run_release("--app", "usnm_qwen_train", "--plan-class", "docker_nvidia_train", "--worker-image", img)
         self.assertIn("--signing-host must be a host name", r.stderr)
 
     def test_rejects_qwen_without_worker_image_or_wrong_plan_class(self):
-        r = self.run_release("--app", "usnm_qwen", "--plan-class", "docker_nvidia_cuda")
+        r = self.run_release("--app", "usnm_qwen", "--plan-class", "docker_nvidia_cuda_8b")
         self.assertEqual(r.returncode, 1)
         self.assertIn("usnm_qwen has its own worker image: give --worker-image", r.stderr)
 

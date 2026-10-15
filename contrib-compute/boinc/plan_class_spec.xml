@@ -40,6 +40,32 @@
         <gpu_ram_used_mb>2500</gpu_ram_used_mb>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
+    <!-- New classes keep legacy dual-model app versions out of split-payload work. -->
+    <plan_class>
+        <name>docker_mt_2b</name>
+        <docker/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_ncpus>4</min_ncpus>
+        <max_threads>8</max_threads>
+        <min_batch>12</min_batch>
+        <max_batch>12</max_batch>
+    </plan_class>
+    <!-- Model-specific Qwen GPU container (#559): no bundled 2B fallback.
+         Other applications retain docker_nvidia_cuda and its smaller GPU requirement. -->
+    <plan_class>
+        <name>docker_nvidia_cuda_8b</name>
+        <docker/>
+        <gpu_type>nvidia</gpu_type>
+        <cuda/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_cuda_version>12000</min_cuda_version>
+        <min_nvidia_compcap>600</min_nvidia_compcap>
+        <min_gpu_ram_mb>7000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>6500</gpu_ram_used_mb>
+        <min_batch>18</min_batch>
+        <max_batch>18</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
     <!-- Bounded independent BF16 LoRA trials. No CPU fallback or float-byte consensus. -->
     <plan_class>
         <name>docker_nvidia_train</name>

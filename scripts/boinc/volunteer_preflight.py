@@ -17,6 +17,10 @@ import sys
 import tempfile
 import time
 import uuid
+try:
+    import qwen_disk
+except ModuleNotFoundError:
+    from scripts.boinc import qwen_disk
 
 try:
     import tomllib  # type: ignore[import-not-found]
@@ -70,6 +74,8 @@ class JobLimits(NamedTuple):
     cpus: int | float = 1
     use_gpu: bool = False
     create_args: tuple[str, ...] = DEFAULT_CREATE_ARGS
+    disk_cold_bytes: int = 2 * 1024 ** 3
+    disk_warm_bytes: int = 2 * 1024 ** 3
 
 
 DEFAULT_LIMITS = JobLimits()
@@ -176,7 +182,8 @@ def parse_bytes(raw: str) -> int:
 
 def limits_from_job_toml(path: Path) -> JobLimits:
     try:
-        raw_toml = _load_toml(Path(path).read_text())
+        text = Path(path).read_text()
+        raw_toml = _load_toml(text)
     except (OSError, ValueError) as error:
         raise PreflightError(f"Cannot parse job.toml {path}: {error}") from error
     workdir = raw_toml.get("workdir", WORKDIR)
@@ -263,6 +270,15 @@ def limits_from_job_toml(path: Path) -> JobLimits:
         raise PreflightError(f"{path} must specify --memory, --memory-swap, and --pids-limit")
     if memory_swap != memory:
         raise PreflightError(f"{path} must set --memory-swap equal to --memory so no extra swap is allowed")
+    disk = {}
+    for key in ("cold", "warm"):
+        markers = re.findall(rf"^# usnm_disk_{key}_bytes=(.*)$", text, re.MULTILINE)
+        if markers:
+            if len(markers) != 1 or not re.fullmatch(r"[1-9][0-9]*", markers[0]):
+                raise PreflightError(f"Invalid {key} disk policy in {path}")
+            disk[f"disk_{key}_bytes"] = int(markers[0])
+    if disk and (len(disk) != 2 or disk["disk_cold_bytes"] < disk["disk_warm_bytes"]):
+        raise PreflightError(f"Incomplete/inconsistent disk policy in {path}")
     return JobLimits(
         workdir=workdir,
         memory=memory,
@@ -271,6 +287,7 @@ def limits_from_job_toml(path: Path) -> JobLimits:
         cpus=cpus,
         use_gpu=use_gpu,
         create_args=tokens,
+        **disk,
     )
 
 
@@ -360,6 +377,38 @@ def wait_state(name, status, runner):
     raise PreflightError(f"Podman did not enter {status}; pause/resume is unusable.")
 
 
+def filesystem_id(path):
+    return path.stat().st_dev
+
+
+def check_disk(paths, required, disk_usage=None, co_located=False):
+    """No cache discounts: image presence alone does not prove complete shared layers."""
+    disk_usage = disk_usage or shutil.disk_usage
+    checked = {}
+    device = None
+    for path in paths:
+        path = Path(path)
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        if co_located:
+            current = filesystem_id(path)
+            if device is not None and current != device:
+                raise PreflightError(
+                    "Qwen image store and extraction scratch must share BOINC's filesystem "
+                    "so the scheduler's reported free disk remains meaningful before each dispatch."
+                )
+            device = current
+        free = disk_usage(path).free
+        if free < required:
+            raise PreflightError(
+                f"Insufficient free disk at {path}: {free} bytes available, "
+                f"{required} cold-cache bytes required before accepting work "
+                "(includes extraction overlap, slot workspace and reserve)."
+            )
+        checked[str(path)] = free
+    return checked
+
+
 def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tomls=None):
     runner = runner or run
     if not IMAGE.fullmatch(image):
@@ -378,10 +427,32 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
         if any(os.environ.get(key) != value for key, value in expected.items()):
             raise PreflightError("Managed Podman service environment was overridden or unset; resolve conflicting systemd drop-ins or EnvironmentFile settings.")
     limits_list = resolve_job_limits(data_dir, job_toml=job_toml, job_tomls=job_tomls)
-    check_info(json.loads(runner(["podman", "info", "--format=json"])))
+    if service is not None:
+        (data_dir / "usnm-podman-tmp").mkdir(mode=0o700, exist_ok=True)
+    info = json.loads(runner(["podman", "info", "--format=json"]))
+    check_info(info)
     slots = data_dir.resolve(strict=True) / "slots"
     if not slots.is_dir() or not os.access(slots, os.W_OK):
         raise PreflightError("The BOINC slots directory must exist and be writable by the service user.")
+    required = max(limits.disk_cold_bytes for limits in limits_list)
+    if image.startswith(qwen_disk.REPOSITORY + "@"):
+        try:
+            metadata = qwen_disk.image_metadata(image)
+        except Exception as error:
+            raise PreflightError(f"Cannot verify anonymous image disk metadata: {error}") from error
+        if metadata is not None:
+            required = max(required, metadata["container_cold_bytes"])
+    store = info.get("store", {})
+    # Runtime graph storage and copy/extraction scratch may be on different disks
+    # from BOINC. Require the full envelope on each (intentionally conservative).
+    graph = store.get("graphRoot", data_dir / "usnm-podman-storage")
+    scratch = store.get("imageCopyTmpDir", os.environ.get("TMPDIR", "/var/tmp"))
+    if required > 2 * 1024 ** 3 and not all(
+        isinstance(store.get(key), str) and Path(store[key]).is_absolute()
+        for key in ("graphRoot", "imageCopyTmpDir")
+    ):
+        raise PreflightError("Podman did not report absolute graphRoot and imageCopyTmpDir; cannot admit Qwen safely.")
+    disk_free = check_disk([slots, graph, scratch], required, co_located=required > 2 * 1024 ** 3)
     # Work under the real slots parent; no :z/:Z shortcut that hides a broken host setup.
     # The official client also runs an unqualified hello-world during runtime detection.
     hello_name = "usnm-preflight-hello-" + uuid.uuid4().hex
@@ -398,7 +469,7 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
     try:
         runner(["podman", "image", "inspect", image])
     except PreflightError:
-        runner(["podman", "pull", image], timeout=180)
+        runner(["podman", "pull", image], timeout=1800)
     last_values = {}
     for limits in limits_list:
         name = "usnm-preflight-" + uuid.uuid4().hex
@@ -455,7 +526,8 @@ def preflight(data_dir, image, runner=None, service=None, job_toml=None, job_tom
                 shutil.rmtree(scratch)
             else:
                 raise PreflightError(f"Preflight cleanup failed; BOINC remains stopped: {cleanup_error}")
-    return {"rootless": True, "slot_io": True, "pause_resume": True, "kernel_limits": last_values}
+    return {"rootless": True, "slot_io": True, "pause_resume": True, "kernel_limits": last_values,
+            "disk_cold_required_bytes": required, "disk_free_bytes": disk_free}
 
 
 def main():

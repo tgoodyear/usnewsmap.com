@@ -354,7 +354,7 @@ case "$step" in
   qwen-submit)
     stamp="$(mktemp)"
     rc=0
-    usnm-boinc qwen submit --root "$QWEN" --project "$PROJ" --max-units "${QWEN_MAX:-20}" || rc=$?
+    usnm-boinc qwen submit --root "$QWEN" --project "$PROJ" --target "${QWEN_TARGET:-container}" --max-units "${QWEN_MAX:-20}" || rc=$?
     for d in "$PROJ/download" "$PROJ/templates"; do
       find "$d" -newer "$stamp" -exec chgrp boincadm {} + -exec chmod g+rX,o+rX {} + 2>/dev/null || true
     done

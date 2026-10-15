@@ -37,7 +37,7 @@
         <rsc_fpops_est>5e12</rsc_fpops_est>
         <rsc_fpops_bound>1e16</rsc_fpops_bound>
         <rsc_memory_bound>4294967296</rsc_memory_bound>
-        <rsc_disk_bound>6442450944</rsc_disk_bound>
+        <rsc_disk_bound>12884901888</rsc_disk_bound>
         <delay_bound>259200</delay_bound>
         <min_quorum>2</min_quorum>
         <target_nresults>2</target_nresults>

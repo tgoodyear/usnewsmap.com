@@ -35,13 +35,14 @@ pub const APP: &str = "usnm_qwen";
 /// carries the same values and the host refuses one staged for another.
 pub const ENV_LLAMA_IMAGE: &str = "USNM_QWEN_LLAMA_IMAGE";
 pub const ENV_WEIGHTS: &str = "USNM_QWEN_WEIGHTS";
+pub const ENV_MODEL: &str = "USNM_QWEN_MODEL";
 /// Where the image keeps the models (`ocr/boinc/qwen/weights.lock`).
 pub const MODEL_DIR: &str = "/opt/qwen/models";
 
 /// GPU memory, in MB, free on the host's GPU for the 8B model to be chosen.
 pub const GPU_MB_FOR_8B: u32 = 7000;
 
-/// The models in the image, largest first (`ocr/boinc/qwen/weights.lock`).
+/// Allowed model alternatives, largest first; each split image carries only one.
 pub fn default_models() -> Vec<Model> {
     vec![
         Model {
@@ -69,6 +70,23 @@ pub fn choose_model(models: &[Model], gpu_free_mb: Option<u64>) -> Option<&Model
             .or(models.last()),
         None => models.last(),
     }
+}
+
+/// A split container must never fall back to a model it does not carry, or run
+/// the GPU-only payload on a CPU after GPU pass-through failed.
+pub fn payload_model<'a>(
+    models: &'a [Model],
+    payload: &str,
+    gpu_free_mb: Option<u64>,
+) -> Option<&'a Model> {
+    let name = match payload {
+        "2b" => "qwen3-vl-2b-q8",
+        "8b" if gpu_free_mb.is_some_and(|free| free >= u64::from(GPU_MB_FOR_8B)) => {
+            "qwen3-vl-8b-q4km"
+        }
+        _ => return None,
+    };
+    models.iter().find(|m| m.name == name)
 }
 
 /// Where the units live under the staging root.
@@ -109,5 +127,23 @@ mod tests {
         assert_eq!(choose_model(&m, Some(4000)).unwrap().name, "qwen3-vl-2b-q8");
         assert_eq!(choose_model(&m, None).unwrap().name, "qwen3-vl-2b-q8");
         assert!(choose_model(&[], None).is_none());
+    }
+
+    #[test]
+    fn split_payload_never_uses_another_model_or_cpu_fallback() {
+        let models = default_models();
+        assert_eq!(
+            payload_model(&models, "2b", Some(24000)).unwrap().name,
+            "qwen3-vl-2b-q8"
+        );
+        assert_eq!(
+            payload_model(&models, "8b", Some(7000)).unwrap().name,
+            "qwen3-vl-8b-q4km"
+        );
+        assert!(payload_model(&models, "8b", Some(6999)).is_none());
+        assert!(payload_model(&models, "8b", None).is_none());
+        assert!(payload_model(&models[..1], "2b", None).is_none());
+        assert!(payload_model(&models, "all", Some(24000)).is_none());
+        assert_eq!(outputs(), ["readings.json", "result.json", "diag.txt"]);
     }
 }

@@ -1,7 +1,7 @@
 name: boinc-qwen
 # The usnm_qwen worker image (#522, docs/boinc-quality.md): Qwen3-VL on llama.cpp's CUDA server
 # image, with usnm-boinc. A manual run on main publishes it to the public package
-# ghcr.io/tgoodyear/usnm-boinc-worker under the tag qwen-<commit>, and its summary gives the
+# ghcr.io/tgoodyear/usnm-boinc-worker under tags qwen-2b-<commit> / qwen-8b-<commit>, and its summary gives the
 # registry digest and the two values a campaign is staged with. A pull request that changes what
 # it is built from builds it without pushing.
 #
@@ -20,6 +20,8 @@ on:
       - ".github/workflows/boinc-qwen.yml"
       - ".github/actions/boinc-qwen-build/**"
       - "ocr/boinc/qwen/**"
+      - "scripts/boinc/qwen_disk.py"
+      - "scripts/boinc/qwen_cold_cache.py"
       # The image builds usnm-boinc from this checkout.
       - "crates/**"
       - "Cargo.toml"
@@ -44,6 +46,10 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [2b, 8b]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,7 +57,8 @@ jobs:
       - uses: ./.github/actions/boinc-qwen-build
         with:
           image: ${{ env.IMAGE }}
-          tag: qwen-${{ github.sha }}
+          tag: qwen-${{ matrix.model }}-${{ github.sha }}
+          model: ${{ matrix.model }}
 
   # A manual run on main: the same build, then the push. Only this job can write packages.
   publish:
@@ -60,6 +67,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [2b, 8b]
     permissions:
       contents: read
       packages: write
@@ -70,23 +81,26 @@ jobs:
       - uses: ./.github/actions/boinc-qwen-build
         with:
           image: ${{ env.IMAGE }}
-          tag: qwen-${{ github.sha }}
+          tag: qwen-${{ matrix.model }}-${{ github.sha }}
+          model: ${{ matrix.model }}
       - name: Push to GHCR
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
           SHA: ${{ github.sha }}
+          MODEL: ${{ matrix.model }}
         run: |
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
-          docker push "$IMAGE:qwen-$SHA"
-          digest=$(docker buildx imagetools inspect "$IMAGE:qwen-$SHA" --format '{{json .Manifest}}' | jq -r .digest)
+          docker push "$IMAGE:qwen-$MODEL-$SHA"
+          digest=$(docker buildx imagetools inspect "$IMAGE:qwen-$MODEL-$SHA" --format '{{json .Manifest}}' | jq -r .digest)
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest after the push"; exit 1; }
           docker logout ghcr.io
-          env=$(docker image inspect --format '{{json .Config.Env}}' "$IMAGE:qwen-$SHA")
+          python3 scripts/boinc/qwen_disk.py --image "$IMAGE@$digest" --model "$MODEL"
+          env=$(docker image inspect --format '{{json .Config.Env}}' "$IMAGE:qwen-$MODEL-$SHA")
           llama=$(jq -r '.[] | select(startswith("USNM_QWEN_LLAMA_IMAGE=")) | sub("^[^=]*="; "")' <<< "$env")
           weights=$(jq -r '.[] | select(startswith("USNM_QWEN_WEIGHTS=")) | sub("^[^=]*="; "")' <<< "$env")
           {
-            echo "### Qwen worker image"
+            echo "### Qwen $MODEL worker image"
             echo
             echo "| | |"
             echo "| --- | --- |"

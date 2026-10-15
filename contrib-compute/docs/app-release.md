@@ -17,20 +17,23 @@ The release script and `scripts/boinc/install.py` support two distribution kinds
 1. **`--kind container` (default)**: stages a signed `docker_wrapper`, `Dockerfile`, `job.toml`
    and `version.xml` under `apps/<app>/<version>/<platform>__<plan_class>` across the five
    registered platforms (`x86_64-pc-linux-gnu`, `aarch64-unknown-linux-gnu`,
-   `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64`) and the three container plan
-   classes (`docker`, `docker_mt`, `docker_nvidia_cuda`).
+   `arm64-apple-darwin`, `x86_64-apple-darwin`, `windows_x86_64`) and the container plan
+   classes (`docker`, `docker_mt`, `docker_nvidia_cuda`, `docker_mt_2b`, `docker_nvidia_cuda_8b`).
    - `usnm_ocr`, `usnm_assess`, `usnm_gold` and container `usnm_quality` use `--plan-class docker`
      (the default) and `images.worker` from `infra/boinc/env/<env>.json`.
    - `usnm_surya` (#516) and container `usnm_qwen` (#522) have their own worker images
-     (`.github/workflows/boinc-surya.yml` and `.github/workflows/boinc-qwen.yml`) and two
-     container plan classes (`docker_mt` and `docker_nvidia_cuda`), passed with `--plan-class`
-     and `--worker-image`:
+     (`.github/workflows/boinc-surya.yml` and `.github/workflows/boinc-qwen.yml`).
+     Surya retains `docker_mt` / `docker_nvidia_cuda`; Qwen uses **separate immutable
+     2B/8B images** with `docker_mt_2b` / `docker_nvidia_cuda_8b`, passed with `--plan-class`
+     and the corresponding digest-pinned `--worker-image`. Qwen release checks reject
+     legacy dual-model or wrong-model images using anonymous config metadata; signing
+     is unchanged. See [disk policy and rollout](../../docs/boinc-quality.md#qwen-disk-admission-and-cold-cache-acceptance-559).
 
    ```sh
    scripts/boinc-app-release.sh --env prod --app usnm_quality --version 1.0 --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt \
+   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.0 --plan-class docker_mt_2b \
      --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
-   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda \
+   scripts/boinc-app-release.sh --env prod --app usnm_qwen --version 1.1 --plan-class docker_nvidia_cuda_8b \
      --worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:... --signing-host HOST
    ```
 

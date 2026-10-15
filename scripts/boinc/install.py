@@ -6,6 +6,7 @@ Does not edit project config, publish/sign files, or install server packages.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -46,8 +47,8 @@ JOB_TOML = {
     ("usnm_surya", "docker_mt"): "ocr/boinc/surya/job-cpu.toml",
     ("usnm_surya", "docker_nvidia_cuda"): "ocr/boinc/surya/job-gpu.toml",
     ("usnm_quality", "docker"): "ocr/boinc/job.toml",
-    ("usnm_qwen", "docker_mt"): "ocr/boinc/qwen/job-cpu.toml",
-    ("usnm_qwen", "docker_nvidia_cuda"): "ocr/boinc/qwen/job-gpu.toml",
+    ("usnm_qwen", "docker_mt_2b"): "ocr/boinc/qwen/job-cpu.toml",
+    ("usnm_qwen", "docker_nvidia_cuda_8b"): "ocr/boinc/qwen/job-gpu.toml",
     ("usnm_qwen_train", "docker_nvidia_train"): "ocr/boinc/train/job.toml",
 }
 
@@ -217,6 +218,9 @@ def install(
             raise ValueError(".exe binaries are only supported on windows_x86_64")
         parsed_extras = parse_extra_files(extra_files, bundle_dir)
         if app == "usnm_qwen":
+            disk_policy = json.loads((root / "ocr/boinc/qwen/disk-policy.json").read_text())
+            if binary.stat().st_size + sum(src.stat().st_size for _, src in parsed_extras) > disk_policy["native_bundle_bound_bytes"]:
+                raise ValueError("native Qwen app bundle exceeds the reviewed 2 GiB disk envelope")
             present_extras = {logical for logical, _ in parsed_extras}
             required_server = "llama-server.exe" if platform == "windows_x86_64" else "llama-server"
             required_extras = (required_server, "llama.lock", "weights.lock")
