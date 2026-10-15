@@ -29,7 +29,10 @@ export default function PrivacyPage() {
         <h2>Page views</h2>
         <p>When you open a page on this site, your browser sends the site's server a short page-view record with:</p>
         <ul>
-          <li>the page's name and title (search, dataset details, privacy or page not found), never your search;</li>
+          <li>
+            the page's name and title (search, dataset details, privacy, OCR credits or page not found), never your
+            search;
+          </li>
           <li>
             the site that linked you here, cut down to its domain (for example https://www.google.com), or "direct" if
             there was none;
@@ -114,7 +117,7 @@ export default function PrivacyPage() {
         </p>
       </main>
       <footer className="credits">
-        <a href="/">Search</a> · <a href="/datasets">Dataset details</a>
+        <a href="/">Search</a> · <a href="/datasets">Dataset details</a> · <a href="/credits">OCR credits</a>
       </footer>
     </div>
   );

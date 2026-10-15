@@ -214,6 +214,8 @@ pub struct RefData {
     /// text, not LoC's (#203), from the snapshot's `ja_latin.json`: their
     /// hits are marked as our OCR. Empty for snapshots without it.
     pub ja_latin: HashMap<String, JaLatinPage>,
+    /// Frozen attribution from this version, absent on older releases.
+    pub ocr_credits: Option<serde_json::Value>,
     /// Pages whose main-index document holds our own OCR's text in place of
     /// LoC's (12 §12.5 Step 9), from the snapshot's `ocr_local_pages.bin`,
     /// less the copies the version hides: their hits are marked as our OCR.
@@ -365,6 +367,10 @@ impl RefData {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
         };
+        let ocr_credits = match optional("credits.json") {
+            Some(entry) => Some(fetch_checked(store, dir, entry).await?),
+            None => None,
+        };
         let ocr_local = match optional(OCR_LOCAL_PAGES_FILE) {
             Some(entry) => Some(fetch_checked(store, dir, entry).await?),
             None => None,
@@ -410,6 +416,9 @@ impl RefData {
                 }
                 rd.page_language_sets = Some(Arc::new(page_language_sets(&lb.sets, rd.pages)));
                 rd.page_language_baselines = Some(lb.sets);
+            }
+            if let Some((path, bytes)) = ocr_credits {
+                rd.ocr_credits = Some(parse(&path, &bytes)?);
             }
             if let Some((path, bytes)) = ja_latin {
                 let latin: JaLatin = parse(&path, &bytes)?;
@@ -579,6 +588,7 @@ impl RefData {
             american_stories_built: None,
             hidden: Vec::new(),
             ja_latin: HashMap::new(),
+            ocr_credits: None,
             ocr_local: OcrLocalPages::default(),
             american_stories_search: true,
             congress_search: true,

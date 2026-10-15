@@ -2560,7 +2560,10 @@ async fn put_overlay_part(e: &Env, path: &str, rows: &[JaRow<'_>]) {
             s(rows.iter().map(|r| r.batch.to_owned()).collect()),
         ),
         ("ocr_source", s(vec!["usnm-ndlocr-lite".into(); rows.len()])),
-        ("ocr_engine", s(vec!["ndlocr-lite test".into(); rows.len()])),
+        (
+            "ocr_engine",
+            s(vec!["ndlocr-lite 636d1cf".into(); rows.len()]),
+        ),
         (
             "loc_text",
             s(rows.iter().map(|r| r.loc_text.to_owned()).collect()),
@@ -2692,7 +2695,7 @@ async fn a_release_indexes_the_japanese_ocr_and_counts_missing_pages() {
         missing["text"],
         usnm_core::ja::index_text("米國と日本の戰爭", Analyzer::LATEST)
     );
-    assert_eq!(missing["ocr_engine"], "ndlocr-lite test");
+    assert_eq!(missing["ocr_engine"], "ndlocr-lite 636d1cf");
 
     // The missing pages join the baselines once; the garbled one, and the one
     // curation had in spite of its label, were counted already.
@@ -2989,7 +2992,7 @@ async fn our_ocr_latin_text_reaches_the_main_index_once() {
         .iter()
         .collect::<Vec<_>>()
     );
-    assert_eq!(latin["pages"][at(90)]["ocr_engine"], "ndlocr-lite test");
+    assert_eq!(latin["pages"][at(90)]["ocr_engine"], "ndlocr-lite 636d1cf");
     assert_eq!(latin["pages"][at(90)]["loc_text"], "missing");
     assert_eq!(latin["pages"][id(blank)]["loc_text"], "empty");
     let record = e.reference_json(&format!("{v}/ocr_ja.json")).await;
@@ -5876,6 +5879,18 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     assert_eq!(record["revocations"][0]["reason"], "a bad model");
     assert!(record["estimate_published"].is_null(), "a full base");
     let manifest = e.reference_json(&format!("{v}/manifest.json")).await;
+    let credits = e.reference_json(&format!("{v}/credits.json")).await;
+    assert_eq!(credits["schema"], 1);
+    let credit = credits["engines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "tesseract/5.5.1 eng")
+        .unwrap();
+    assert_eq!(credit["engine"]["author"], "Tesseract OCR project");
+    assert_eq!(credit["models"][0]["name"], "tessdata/eng.traineddata");
+    assert_eq!(credit["models"].as_array().unwrap().len(), 1);
+    assert_eq!(credit["models"][0]["fetched"], "2026-10-11");
     assert_eq!(manifest["built_from"]["ocr_local"], record["parts"]);
     assert_eq!(manifest["build"]["features"]["ocr_local"], 1);
     let bin = |v: &str| {
@@ -5965,6 +5980,8 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
         .unwrap();
     assert_eq!(refdata.ocr_local.len(), 2);
     assert!(refdata.ocr_local.get(&id(&late[g])).is_some());
+    let frozen = e.reference_json(&format!("{v}/credits.json")).await;
+    assert_eq!(refdata.ocr_credits, Some(frozen));
 }
 
 /// Congress pages curated from the recorded UNT responses (#229), as

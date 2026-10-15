@@ -2440,6 +2440,30 @@ impl Release {
                 serde_json::to_vec(record)?,
             ));
         }
+        // Freeze the credits used by this version, and refuse publication if
+        // any serving engine key lacks complete attribution.
+        let local_pages = local
+            .pages
+            .as_ref()
+            .map(|bytes| {
+                usnm_state::ocr_local::OcrLocalPages::decode(bytes, batches.len())
+                    .map_err(|e| anyhow::anyhow!(e))
+            })
+            .transpose()?;
+        let keys = latin
+            .version
+            .pages
+            .values()
+            .map(|p| p.ocr_engine.as_str())
+            .chain(
+                local_pages
+                    .iter()
+                    .flat_map(|p| p.engines.iter().map(|e| e.engine.as_str())),
+            );
+        let credits = usnm_ocr_route::ENGINES.credits(keys)?;
+        if !credits.engines.is_empty() {
+            snapshot_files.push((usnm_ocr_route::credits::FILE, serde_json::to_vec(&credits)?));
+        }
         // The Congress set's units and baselines (#229), when it has one.
         if let Some(c) = congress {
             snapshot_files.extend(c.files.iter().map(|(n, b)| (*n, b.clone())));

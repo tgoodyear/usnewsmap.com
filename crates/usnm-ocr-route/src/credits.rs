@@ -1,0 +1,148 @@
+//! Frozen attribution for the exact engine keys whose text a release publishes.
+
+use anyhow::{bail, Context};
+use serde::{Deserialize, Serialize};
+
+use crate::{Catalog, Engine, Model};
+
+pub const FILE: &str = "credits.json";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Credit {
+    pub key: String,
+    pub version: String,
+    pub engine: Engine,
+    pub models: Vec<Model>,
+    pub languages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Snapshot {
+    pub schema: u32,
+    pub credit_required: Vec<String>,
+    pub engines: Vec<Credit>,
+}
+
+impl Catalog {
+    /// Legacy Japanese OCR predates catalog routing. Crediting it does not
+    /// enable a route to the survey-only catalog entry.
+    pub fn credit(&self, key: &str) -> anyhow::Result<Credit> {
+        let (family, version, profile) = if let Some(rest) = key.strip_prefix("ndlocr-lite ") {
+            if !(7..=40).contains(&rest.len()) || !rest.bytes().all(|b| b.is_ascii_hexdigit()) {
+                bail!("missing OCR credit: {key}");
+            }
+            ("ndlocr-lite", rest, None)
+        } else if let Some(rest) = key.strip_prefix("tesseract-") {
+            let (version, profile) = rest.split_once('/').context("legacy Tesseract key")?;
+            ("tesseract", version, Some(profile))
+        } else {
+            let (family, rest) = key.split_once('/').context("OCR key family")?;
+            let (version, profile) = rest.split_once(' ').context("OCR key profile")?;
+            (family, version, Some(profile))
+        };
+        let series = version.split('.').take(2).collect::<Vec<_>>().join(".");
+        let engine = self
+            .engine
+            .iter()
+            .find(|e| {
+                e.family == family
+                    && if family == "ndlocr-lite" {
+                        profile.is_none()
+                    } else {
+                        e.production && e.id == format!("{family}-{series}")
+                    }
+            })
+            .with_context(|| format!("missing OCR credit: {key}"))?;
+        let (models, languages) = if let Some(profile) = profile {
+            let profile = engine
+                .profile
+                .iter()
+                .find(|p| p.id == profile)
+                .with_context(|| format!("missing OCR profile credit: {key}"))?;
+            self.check_production(&engine.id, &profile.models)?;
+            (
+                profile
+                    .models
+                    .iter()
+                    .map(|name| {
+                        engine
+                            .model
+                            .iter()
+                            .find(|m| &m.name == name)
+                            .cloned()
+                            .with_context(|| format!("missing OCR model credit: {key}: {name}"))
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+                profile.languages.clone(),
+            )
+        } else {
+            (engine.model.clone(), vec!["jpn".to_owned()])
+        };
+        self.check_attribution(&engine.attribution)?;
+        for model in &models {
+            self.check_attribution(&model.attribution)?;
+        }
+        let mut engine = engine.clone();
+        // The snapshot contains only selected models, not the survey inventory.
+        engine.model.clear();
+        engine.profile.clear();
+        Ok(Credit {
+            key: key.to_owned(),
+            version: version.to_owned(),
+            engine,
+            models,
+            languages,
+        })
+    }
+
+    /// Release-time coverage check: an uncredited serving key blocks publication.
+    pub fn credits<'a>(&self, keys: impl IntoIterator<Item = &'a str>) -> anyhow::Result<Snapshot> {
+        let keys: std::collections::BTreeSet<_> = keys.into_iter().collect();
+        Ok(Snapshot {
+            schema: 1,
+            credit_required: self.credit_required.clone(),
+            engines: keys
+                .into_iter()
+                .map(|key| self.credit(key))
+                .collect::<anyhow::Result<_>>()?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ENGINES;
+
+    #[test]
+    fn every_serving_key_needs_a_credit() {
+        let credits = ENGINES
+            .credits([
+                "tesseract/5.5.1 eng",
+                "ndlocr-lite 636d1cf",
+                "tesseract/5.5.1 eng",
+            ])
+            .unwrap();
+        assert_eq!(credits.engines.len(), 2);
+        let ndl = &credits.engines[0];
+        assert_eq!(
+            ndl.engine.attribution.author.as_deref(),
+            Some("National Diet Library")
+        );
+        assert_eq!(ndl.models[0].attribution.license, "LicenseRef-DINOv3");
+        let tesseract = &credits.engines[1];
+        assert_eq!(tesseract.models.len(), 1);
+        assert_eq!(tesseract.models[0].name, "tessdata/eng.traineddata");
+        assert!(tesseract.engine.model.is_empty());
+        assert!(ENGINES.credits(["not-credited/1 eng"]).is_err());
+        assert!(ENGINES.credits(["tesseract/5.5.1 german_print"]).is_err());
+        assert!(ENGINES.credits(["tesseract/6.0 eng"]).is_err());
+        assert_eq!(
+            ENGINES
+                .credit("tesseract-5.5.1/deu_latf+deu")
+                .unwrap()
+                .models
+                .len(),
+            2
+        );
+    }
+}

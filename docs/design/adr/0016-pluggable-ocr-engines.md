@@ -136,3 +136,29 @@ We compared three full designs. This decision is the one with a container per en
 ## Optional BOINC batch transport (#438)
 
 The [BOINC pilot](../../boinc.md) is a separate, file-based single-page transport for trusted volunteers. It reuses the current Tesseract models/routing and native ingestion checks, retains `contract=0`, and records its route as `boinc@r1`. It does not implement or replace the long-lived adapter protocol above. Migration to that protocol remains a later change. Only the central bridge reserves native work and publishes results; volunteers hold no Azure identity.
+
+### OCR credits page (#372)
+
+`/credits` reads the serving version's per-engine page counts from
+`/v1/status` (`published.sources.ocr_local.by_engine` and
+`published.sources.ja_latin.by_engine`). The latter is derived from the
+version's Japanese page provenance, not the latest OCR job. Each “Our OCR”
+badge links to the exact engine key's fragment; the footer and “Pages we
+read ourselves” also link to the page.
+
+Vite parses `ocr/engines/engines.toml` at build time for both the page and
+its tests. Only serving engines and their selected profile models appear;
+the pre-catalog Japanese NDLOCR-Lite pipeline uses its catalog credit and
+bundled DINOv3 model. Survey inventory alone is not evidence of use.
+Unknown serving keys or incomplete credits produce an explicit error, and
+the end-to-end inventory coverage test fails rather than silently omitting
+them. Licence links, mandatory attribution, and attributed-tier evidence
+come directly from the catalog. Model revisions absent from the existing
+serving inventory are labelled as unrecorded rather than invented.
+
+New releases freeze the used catalog entries and mandatory-attribution list
+in `credits.json`, checked by the reference manifest and exposed as
+`published.sources.ocr_credits`. Publication fails if a serving engine key
+cannot be credited. The page prefers that frozen snapshot; only releases
+predating this file use the catalog bundled at web build time. This keeps
+credits for a serving version independent of later catalog edits.

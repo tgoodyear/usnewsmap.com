@@ -1830,3 +1830,11 @@ details.status-error > summary {
     white-space: normal;
   }
 }
+
+.ocr-credit dd {
+  margin-inline-start: 0;
+  overflow-wrap: anywhere;
+}
+.ocr-credit dt {
+  font-weight: 600;
+}
