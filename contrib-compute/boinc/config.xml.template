@@ -37,6 +37,7 @@
         <disable_account_creation>0</disable_account_creation>
         <enable_delete_account>1</enable_delete_account>
         <enable_privacy_by_default>1</enable_privacy_by_default>
+        <show_results>1</show_results>
         <one_result_per_user_per_wu/>
         <min_sendwork_interval>30</min_sendwork_interval>
         <max_wus_in_progress>4</max_wus_in_progress>
