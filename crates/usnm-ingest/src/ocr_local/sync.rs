@@ -680,9 +680,10 @@ async fn run_locked(
     }
 
     // Hit requests, after imports so the ledger skips pages just imported.
+    let mut request_error = None;
     if let Some(requests) = &stores.requests {
         if !opts.deadline.is_some_and(|d| Instant::now() >= d) {
-            let request_report = super::requests::process(
+            let request_result = super::requests::process(
                 state,
                 requests.as_ref(),
                 stores.curated.as_ref(),
@@ -694,8 +695,14 @@ async fn run_locked(
                     deadline: opts.deadline,
                 },
             )
-            .await?;
-            counts.user_requests_queued += request_report.queued as u64;
+            .await;
+            match request_result {
+                Ok(report) => counts.user_requests_queued += report.queued as u64,
+                Err(e) => {
+                    tracing::error!(error = %format!("{e:#}"), "OCR hit requests failed; publishing imports' status before returning the error");
+                    request_error = Some(e);
+                }
+            }
         } else {
             tracing::info!("max runtime reached; OCR hit requests wait for the next run");
         }
@@ -801,6 +808,12 @@ async fn run_locked(
         "ocr sync finished"
     );
     // A failed seeding fails the run, once the imports' status is written.
+    if let Some(e) = request_error {
+        if let Some(Err(seed_error)) = &seeded {
+            tracing::error!(error = %format!("{seed_error:#}"), "bulk seeding also failed");
+        }
+        return Err(e.context("processing OCR hit requests"));
+    }
     if let Some(Err(e)) = seeded {
         return Err(e.context("seeding ocr-bulk"));
     }

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context};
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use usnm_core::ids::PageKey;
 use usnm_ocr_contract::message::{DeadLetter, OcrMessage, Reason};
@@ -97,8 +97,51 @@ mod cache_tests {
         assert!(report.ledger.is_none());
     }
 
-    #[test]
-    fn only_requested_scores_from_one_table_are_retained() {
+    #[derive(Debug, Default)]
+    struct CountingStore {
+        objects: std::sync::Mutex<HashMap<String, Vec<u8>>>,
+        reads: std::sync::Mutex<HashMap<String, usize>>,
+        stall_b: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for CountingStore {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+            *self.reads.lock().unwrap().entry(path.into()).or_default() += 1;
+            if path == "b" && self.stall_b.load(std::sync::atomic::Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            Ok(self.objects.lock().unwrap().get(path).cloned())
+        }
+        async fn put_new(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            _: &str,
+        ) -> Result<bool, usnm_store::StoreError> {
+            let mut objects = self.objects.lock().unwrap();
+            if objects.contains_key(path) {
+                return Ok(false);
+            }
+            objects.insert(path.into(), body);
+            Ok(true)
+        }
+        async fn put(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            _: &str,
+        ) -> Result<(), usnm_store::StoreError> {
+            self.objects.lock().unwrap().insert(path.into(), body);
+            Ok(())
+        }
+        async fn list(&self, _: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn tables_are_scanned_once_and_partial_lookup_progress_survives_deadline() {
         let day = NaiveDate::from_ymd_opt(1890, 5, 3).unwrap();
         let mut rows = Vec::new();
         for seq in 1..=200 {
@@ -113,15 +156,165 @@ mod cache_tests {
             );
             rows.push(ocr_damage::score_row(&row, &["eng"]));
         }
-        let bytes = Bytes::from(ocr_damage::encode_table(&rows).unwrap());
-        let wanted = rows[0].doc_id.clone();
-        let mut cache = ScoreCache::new([wanted.clone()]);
-        for batch in ["one", "two", "three"] {
-            cache.read_table(batch, bytes.clone()).unwrap();
-            assert_eq!(cache.tables.len(), 1);
-            assert_eq!(cache.tables[batch].len(), 1);
-            assert!(cache.tables[batch].contains_key(&wanted));
+        let store = CountingStore::default();
+        rows[0].batch = "nbu_a".into();
+        store
+            .put("a", ocr_damage::encode_table(&rows[..1]).unwrap(), "x")
+            .await
+            .unwrap();
+        for row in &mut rows {
+            row.batch = "nbu_b".into();
         }
+        store
+            .put("b", ocr_damage::encode_table(&rows).unwrap(), "x")
+            .await
+            .unwrap();
+        let batches: Vec<RunBatch> = ["a", "b"]
+            .into_iter()
+            .map(|batch| RunBatch {
+                batch: batch.into(),
+                curated: usnm_state::state::Curated {
+                    version: 1,
+                    parts: Vec::new(),
+                    counts: String::new(),
+                    pages: 200,
+                    ok_pages: 200,
+                    lccns: vec!["sn83045462".into()],
+                    source_sha256: String::new(),
+                    first: String::new(),
+                    last: String::new(),
+                },
+            })
+            .collect();
+        store
+            .put(
+                "v1/batches.json",
+                serde_json::to_vec(&batches).unwrap(),
+                "x",
+            )
+            .await
+            .unwrap();
+        store
+            .put(
+                "v1/titles.json",
+                serde_json::to_vec(&serde_json::json!([
+                    {"lccn":"sn83045462","languages":["eng"]}
+                ]))
+                .unwrap(),
+                "x",
+            )
+            .await
+            .unwrap();
+        store
+            .put(
+                &ocr_damage::versions_path("v1"),
+                serde_json::to_vec(&serde_json::json!({
+                    "metric_version": usnm_core::damage::VERSION,
+                    "index_version": "v1",
+                    "batches": [
+                        {"batch":"a","version":1,"table":"a","summary":""},
+                        {"batch":"b","version":1,"table":"b","summary":""}
+                    ]
+                }))
+                .unwrap(),
+                "x",
+            )
+            .await
+            .unwrap();
+        let state = State::new(Arc::new(usnm_state::docs::MemoryDocs::default()));
+        state.set_current_version("v1").await.unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("test-request-checkpoint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let queue: Arc<dyn Queue> = Arc::new(usnm_store::queue::LocalQueue::new(&root));
+        let options = EnqueueOptions {
+            pages: rows[..10].iter().map(|row| row.doc_id.clone()).collect(),
+            reason: Reason::User,
+            plan: "hit-results".into(),
+            batch: None,
+            include_outstanding: false,
+            dry_run: false,
+        };
+        let policy = QueuePolicy {
+            request_day: Some(day),
+            deadline: Some(Instant::now() + std::time::Duration::from_millis(100)),
+            ..QueuePolicy::default()
+        };
+        store
+            .stall_b
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let paused = enqueue_with_policy(&state, &store, &store, &queue, &options, None, policy)
+            .await
+            .unwrap();
+        assert!(paused.paused);
+        assert_eq!(paused.queued, 0);
+        let checkpoint = format!("{ROOT}/requests/{day}/lookup.json");
+        let saved = store.get(&checkpoint).await.unwrap().unwrap();
+        let cache: ScoreCache = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(cache.next_batch, 1);
+        assert_eq!(
+            cache.scores.len(),
+            1,
+            "resolved candidate was persisted before timeout"
+        );
+        store
+            .stall_b
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let resumed = enqueue_with_policy(
+            &state,
+            &store,
+            &store,
+            &queue,
+            &options,
+            None,
+            QueuePolicy {
+                deadline: None,
+                ..policy
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resumed.queued, 10,
+            "previously resolved candidates survive the deadline: {resumed:?}"
+        );
+        for row in &rows[..10] {
+            let message = queue
+                .receive(PRIORITY, std::time::Duration::from_secs(60))
+                .await
+                .unwrap()
+                .unwrap();
+            let (_, key) = usnm_ocr_contract::message::decode(&message.text).unwrap();
+            assert_eq!(
+                key.doc_id(),
+                row.doc_id,
+                "original shuffled enqueue order is preserved"
+            );
+        }
+        let cache: ScoreCache =
+            serde_json::from_slice(&store.get(&checkpoint).await.unwrap().unwrap()).unwrap();
+        assert_eq!(
+            cache.scores.len(),
+            10,
+            "unrequested scores are never retained"
+        );
+        assert_eq!(
+            cache.scores[&rows[0].doc_id].batch, "nbu_a",
+            "first published batch wins"
+        );
+        assert_eq!(cache.next_batch, 2);
+        let reads = store.reads.lock().unwrap();
+        assert_eq!(
+            reads["a"], 1,
+            "completed table is not reread after resuming"
+        );
+        assert_eq!(
+            reads["b"], 2,
+            "one canceled read and one completed read for all nine pages"
+        );
+        drop(reads);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
@@ -285,57 +478,65 @@ async fn find_page(
     only: Option<&str>,
 ) -> anyhow::Result<Option<StoredScore>> {
     let doc_id = key.doc_id();
-    let wanted: HashSet<String> = [doc_id.clone()].into();
-    for b in batches {
-        if only.is_some_and(|o| o != b.batch) || !b.curated.lccns.contains(&key.lccn) {
-            continue;
-        }
-        let found = match tables.as_ref().and_then(|t| t.get(&b.batch)) {
-            Some(path) => {
-                // Each table is read once per run, whatever the pages asked.
-                if !cache.tables.contains_key(&b.batch) {
+    while !cache.scores.contains_key(&doc_id) && cache.next_batch < batches.len() {
+        let b = &batches[cache.next_batch];
+        let wanted: HashSet<String> = cache
+            .wanted
+            .iter()
+            .filter(|id| !cache.scores.contains_key(*id))
+            .filter(|id| {
+                PageKey::from_doc_id(id).is_ok_and(|key| b.curated.lccns.contains(&key.lccn))
+            })
+            .cloned()
+            .collect();
+        let found = if only.is_some_and(|o| o != b.batch) || wanted.is_empty() {
+            HashMap::new()
+        } else {
+            match tables.as_ref().and_then(|t| t.get(&b.batch)) {
+                Some(path) => {
                     let bytes = curated
                         .get(path)
                         .await?
                         .with_context(|| format!("damage table {path} not found"))?;
-                    cache.read_table(&b.batch, Bytes::from(bytes))?;
+                    ocr_damage::read_scores(Bytes::from(bytes), Some(&wanted))?
                 }
-                &cache.tables[&b.batch]
-            }
-            None => {
-                let key = format!("curated:{}", b.batch);
-                let scored = super::sync::score_from_curated(curated, b, titles, &wanted).await?;
-                if !cache.tables.contains_key(&key) {
-                    cache.tables.clear();
-                }
-                cache.tables.entry(key.clone()).or_default().extend(scored);
-                &cache.tables[&key]
+                None => super::sync::score_from_curated(curated, b, titles, &wanted).await?,
             }
         };
-        if let Some(s) = found.get(&doc_id) {
-            return Ok(Some(s.clone()));
-        }
+        cache.scores.extend(found);
+        cache.next_batch += 1;
+        cache.save(curated).await?;
     }
-    Ok(None)
+    Ok(cache.scores.get(&doc_id).cloned())
 }
 
+#[derive(Serialize, Deserialize)]
 struct ScoreCache {
+    version: String,
     wanted: HashSet<String>,
-    tables: HashMap<String, HashMap<String, StoredScore>>,
+    next_batch: usize,
+    scores: HashMap<String, StoredScore>,
+    #[serde(skip)]
+    checkpoint: Option<String>,
 }
 
 impl ScoreCache {
     fn new(pages: impl IntoIterator<Item = String>) -> Self {
         Self {
+            version: String::new(),
             wanted: pages.into_iter().collect(),
-            tables: HashMap::new(),
+            next_batch: 0,
+            scores: HashMap::new(),
+            checkpoint: None,
         }
     }
 
-    fn read_table(&mut self, batch: &str, bytes: Bytes) -> anyhow::Result<()> {
-        self.tables.clear();
-        let scores = ocr_damage::read_scores(bytes, Some(&self.wanted))?;
-        self.tables.insert(batch.to_owned(), scores);
+    async fn save(&self, curated: &dyn ObjectStore) -> anyhow::Result<()> {
+        if let Some(path) = &self.checkpoint {
+            curated
+                .put(path, serde_json::to_vec(self)?, "application/json")
+                .await?;
+        }
         Ok(())
     }
 }
@@ -502,9 +703,27 @@ async fn enqueue_with_policy(
             None => None,
         };
         let ledger = ledger::load(curated).await?;
-        Ok::<_, anyhow::Error>((batches, titles, tables, ledger))
+        let mut cache = ScoreCache::new(opts.pages.iter().cloned());
+        if let Some(day) = policy.request_day {
+            let path = format!("{ROOT}/requests/{day}/lookup.json");
+            if let Some(bytes) = curated.get(&path).await? {
+                let saved: ScoreCache =
+                    serde_json::from_slice(&bytes).context("reading request lookup checkpoint")?;
+                if saved.version == version && saved.wanted == cache.wanted {
+                    anyhow::ensure!(
+                        saved.scores.len() <= MAX_PAGES && saved.next_batch <= batches.len(),
+                        "invalid request lookup checkpoint"
+                    );
+                    cache = saved;
+                }
+            }
+            cache.checkpoint = Some(path);
+        }
+        cache.version = version;
+        Ok::<_, anyhow::Error>((batches, titles, tables, ledger, cache))
     };
-    let (batches, titles, tables, ledger) = if let Some(deadline) = policy.deadline {
+    let (batches, titles, tables, ledger, mut table_cache) = if let Some(deadline) = policy.deadline
+    {
         match tokio::time::timeout_at(deadline, prepare).await {
             Ok(prepared) => prepared?,
             Err(_) => {
@@ -520,7 +739,6 @@ async fn enqueue_with_policy(
     let run = run_id(now);
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    let mut table_cache = ScoreCache::new(opts.pages.iter().cloned());
     for doc_id in &opts.pages {
         if policy.deadline.is_some_and(|d| Instant::now() >= d) {
             report.paused = true;

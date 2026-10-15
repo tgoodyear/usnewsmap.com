@@ -1297,6 +1297,55 @@ async fn request_deadline_marks_unattempted_pages_unsent_and_recovers_next_run()
     );
 }
 
+#[tokio::test]
+async fn request_failure_publishes_completed_import_counts_before_returning_the_error() {
+    let fx = fixture(true).await;
+    fx.ask(&[queued(&key(3).doc_id(), BATCH, "bulk")]).await;
+    fx.node_writes(&row(3, &GERMAN.repeat(4)), ALTO, &stamp(1))
+        .await;
+    fx.requests
+        .put_new(
+            "days/2026-10-14.jsonl",
+            serde_json::to_vec(&serde_json::json!({"v":1,"doc_id":key(1).doc_id()})).unwrap(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    let stores = Stores {
+        queue: Arc::new(FailFirstQueue {
+            inner: Arc::clone(&fx.queue),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        }),
+        ..fx.stores.clone()
+    };
+    let err = sync::run(&fx.state, "test", &stores, &Options::default())
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("injected first-send failure"),
+        "{err:#}"
+    );
+    assert!(
+        fx.out_paths().await.is_empty(),
+        "successful import deleted its source"
+    );
+    let published: Status =
+        serde_json::from_slice(&fx.stores.reference.get(STATUS_PATH).await.unwrap().unwrap())
+            .unwrap();
+    assert_eq!(published.last_run.imported, 1);
+    assert_eq!(published.totals.imported, 1);
+    assert_eq!(
+        published.outstanding, 1,
+        "ambiguous request send is reflected in status"
+    );
+    let resumed = fx.sync().await;
+    assert_eq!(resumed.last_run.imported, 0);
+    assert_eq!(
+        resumed.totals.imported, 1,
+        "completed import remains counted exactly once"
+    );
+}
+
 /// The runs record a worker writes for `page` (13 §13.8.3).
 fn runs_row(page: &OverlayRow, stamp: &str) -> usnm_ocr_contract::runs::RunRecord {
     usnm_ocr_contract::runs::RunRecord {
