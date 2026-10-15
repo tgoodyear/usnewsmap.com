@@ -3370,6 +3370,15 @@ async fn latin_text_with_nothing_to_add_is_weighed_once() {
 /// and the snapshot hides ours, so the page counts once.
 #[tokio::test]
 async fn a_copy_with_our_text_that_loses_to_locs_is_hidden() {
+    superseded_ocr_copy("empty").await;
+}
+
+#[tokio::test]
+async fn a_superseded_latin_only_copy_loses_its_credits_but_japanese_text_does_not() {
+    superseded_ocr_copy("mixed").await;
+}
+
+async fn superseded_ocr_copy(reason: &str) {
     let e = env().await;
     let (early, _, early_pages, _) = curate_early_and_late(&e).await;
     curate(&e, early).await;
@@ -3388,7 +3397,7 @@ async fn a_copy_with_our_text_that_loses_to_locs_is_hidden() {
             date: blank.date,
             seq: blank.seq,
             batch: "batch_fx_early",
-            loc_text: "empty",
+            loc_text: reason,
             text: "The relocation center held a meeting",
             ocred_at: 1,
         }],
@@ -3421,6 +3430,33 @@ async fn a_copy_with_our_text_that_loses_to_locs_is_hidden() {
         serde_json::json!([{"doc_id": id, "batch": "batch_fx_early"}])
     );
     assert_eq!(v2.pages, early_pages as u64, "the page counts once");
+    let frozen = e
+        .reference
+        .get(&format!("{}/credits.json", v2.index_version))
+        .await
+        .unwrap();
+    let rd = usnm_api::refdata::RefData::load(e.reference.as_ref())
+        .await
+        .unwrap();
+    assert!(!rd.ja_latin.contains_key(&id));
+    if reason == "mixed" {
+        // English-only mixed text never entered the Japanese index, and
+        // its main-index copy is hidden: no serving OCR credit remains.
+        assert!(frozen.is_none());
+        assert!(usnm_api::status::assemble::sources(&rd).ocr_ja.is_none());
+    } else {
+        // The Japanese index still serves this reading independently.
+        let frozen: Value = serde_json::from_slice(&frozen.unwrap()).unwrap();
+        assert_eq!(frozen["japanese"]["pages"], 1);
+        assert_eq!(frozen["engines"][0]["key"], "ndlocr-lite 636d1cf");
+        assert_eq!(
+            usnm_api::status::assemble::sources(&rd)
+                .ocr_ja
+                .unwrap()
+                .pages,
+            1
+        );
+    }
 }
 
 /// A later batch that ships a page with no text of LoC's doesn't take over

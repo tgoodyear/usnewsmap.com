@@ -1070,7 +1070,9 @@ Node 2's GPUs aren't known yet. Before Turing, vLLM and the mistral.rs prebuilds
 `/v1/status` (`published.sources.ocr_local.by_engine` and
 `published.sources.ocr_ja.by_engine`). The latter is the union of Japanese
 search-index pages and main-index Latin-script replacements, deduplicated
-per page and engine. It is frozen in the release, not taken from the latest
+per page and engine. Hidden main-index copies are excluded; a reading still
+served independently by the Japanese index keeps its credit. It is frozen
+in the release, not taken from the latest
 OCR job; older releases fall back to `ja_latin.by_engine` when available. Each “Our OCR”
 badge links to the exact engine key's fragment; the footer and “Pages we
 read ourselves” also link to the page.

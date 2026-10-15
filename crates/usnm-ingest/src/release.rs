@@ -2460,7 +2460,15 @@ impl Release {
                 .or_default()
                 .insert(p.key.doc_id());
         }
+        let hidden: BTreeSet<_> = dedup
+            .hidden
+            .iter()
+            .map(|h| (h.doc_id.as_str(), h.batch.as_str()))
+            .collect();
         for (doc_id, p) in &latin.version.pages {
+            if hidden.contains(&(doc_id.as_str(), p.batch.as_str())) {
+                continue;
+            }
             japanese
                 .entry((&p.ocr_source, &p.ocr_engine))
                 .or_default()
