@@ -50,6 +50,24 @@ describe("OCR credits page", () => {
     expect(screen.queryByText(/no pages with our replacement OCR/)).toBeNull();
   });
 
+  it("spells out every language in the Bosnian, Norwegian and Ancient Greek profiles", async () => {
+    renderPage({
+      ja_latin: null,
+      ocr_local: {
+        by_engine: [
+          { engine: "tesseract/5.5.1 hrv", pages: 1 },
+          { engine: "tesseract/5.5.1 nor", pages: 1 },
+          { engine: "tesseract/5.5.1 grc", pages: 1 },
+        ],
+      },
+    });
+    await screen.findByRole("heading", { name: "tesseract/5.5.1 hrv" });
+    expect(screen.getByText(/Language: Croatian, Bosnian/)).toBeTruthy();
+    expect(screen.getByText(/Norwegian Bokmål, Norwegian Nynorsk/)).toBeTruthy();
+    expect(screen.getByText(/Ancient Greek/)).toBeTruthy();
+    expect(screen.queryByText(/Language:.*\b(?:Bos|Nob|Nno|Grc)\b/)).toBeNull();
+  });
+
   it("reports an unknown serving engine instead of dropping it", async () => {
     renderPage({ ocr_local: { by_engine: [{ engine: "uncredited/1 eng", pages: 1 }] } });
     expect((await screen.findByRole("alert")).textContent).toContain("Missing OCR credit: uncredited/1 eng");
