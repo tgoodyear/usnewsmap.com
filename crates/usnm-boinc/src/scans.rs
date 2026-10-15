@@ -187,12 +187,19 @@ impl Sources {
                 .archived_base(&blob_name(b, key, ScanFormat::Jp2))
                 .await
             {
-                return self.tile_jpeg(base).await;
+                if let Some(g) = self.tile_jpeg(base).await? {
+                    return Ok(Some(g));
+                }
             }
         }
         for (b, v) in batches {
             match self.loc.resolve(key, b, *v).await {
-                Ok(Some(p)) => return self.tile_jpeg(p.iiif_base).await,
+                Ok(Some(p)) => {
+                    // A 404 for this batch's image: another may still have it.
+                    if let Some(g) = self.tile_jpeg(p.iiif_base).await? {
+                        return Ok(Some(g));
+                    }
+                }
                 Ok(None) | Err(FetchError::Permanent(_)) => continue,
                 Err(e) => return Err(e),
             }
@@ -311,6 +318,7 @@ mod tests {
     use usnm_store::credential::{Credential, StaticToken};
 
     const BATCH: &str = "/storage-services/service/ndnp/xx/batch_xx_test_ver01/";
+    const OTHER: &str = "/storage-services/service/ndnp/yy/batch_yy_other_ver02/";
 
     /// A blob's bytes and metadata.
     type Blob = (Vec<u8>, Vec<(String, String)>);
@@ -545,6 +553,32 @@ mod tests {
             gaps.iter().all(|g| *g >= Duration::from_millis(40)),
             "{gaps:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_missing_image_moves_on_to_the_next_candidate() {
+        let s = StandIn::start().await;
+        // Both batches place the page; only the second's image is there,
+        // and the archive's JP2 names the first's (absent) image.
+        let first = issue(&s, OTHER);
+        let first_base = iiif_base(&s.iiif_root(), &first).unwrap();
+        let jp2 = issue(&s, BATCH);
+        tile(&s, &jp2, b"tile jpeg");
+        let (store, a) = archive_server().await;
+        put_blob(
+            &store,
+            &blob_name("yy_other", &key(), ScanFormat::Jp2),
+            b"jp2 two",
+            &[("iiif_base", &first_base), ("loc_url", &first)],
+        );
+        let g = sources(&s, Some(a))
+            .jpeg(&key(), &batches())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&g.bytes[..], b"tile jpeg");
+        // The archived base's image, then the first batch's (the same), then the second's.
+        assert_eq!(s.hits("default.jpg"), 3);
     }
 
     #[tokio::test]

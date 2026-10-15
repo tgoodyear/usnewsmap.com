@@ -1032,6 +1032,26 @@ impl LocClient {
                 );
                 continue;
             }
+            if self.cfg.html_is_block {
+                // Staging: only a 404 or 410 is an absent batch; a challenge
+                // page or a server error is a block, never "not there".
+                if status.is_success() {
+                    if let Some(why) = html_page(&resp) {
+                        self.storage.hold(self.cfg.backoff);
+                        return Err(FetchError::Transient(format!(
+                            "{url} answered HTTP {} with {why} instead of a redirect: a bot challenge or block page; holding",
+                            status.as_u16()
+                        )));
+                    }
+                }
+                if status.is_server_error() {
+                    self.storage.hold(self.cfg.backoff);
+                    return Err(FetchError::Transient(format!(
+                        "{url} returned HTTP {}; holding",
+                        status.as_u16()
+                    )));
+                }
+            }
             return Ok(None);
         }
         Err(FetchError::Transient(format!("giving up on {url}: held")))
@@ -1968,6 +1988,35 @@ mod tests {
         assert!(matches!(e, FetchError::Transient(_)), "{e:?}");
         assert!(e.to_string().contains("Cloudflare challenge"), "{e}");
         assert!(staging.held_until().is_some());
+    }
+
+    /// The batch lookup through Chronicling America: for staging, a
+    /// challenge page or a 5xx is a hold, not an absent batch.
+    #[tokio::test]
+    async fn the_batch_lookup_holds_on_a_challenge_or_server_error_when_asked() {
+        let s = StandIn::start().await;
+        let via = "/data/batches/zz_none_ver01/manifest-md5.txt";
+        let worker = batch_client(&s, Duration::from_millis(10), None, false);
+        let staging = |s: &StandIn| {
+            LocClient::new(LocConfig {
+                html_is_block: true,
+                attempts: 1,
+                ..batch_client(s, Duration::from_millis(10), None, false)
+                    .cfg
+                    .clone()
+            })
+            .unwrap()
+        };
+        s.script(via, Scripted::Status(500));
+        assert!(worker.bag("zz_none", 1).await.unwrap().is_none());
+        s.script(via, Scripted::Status(500));
+        let e = staging(&s).bag("zz_none", 1).await.unwrap_err();
+        assert!(e.to_string().contains("HTTP 500"), "{e}");
+        s.script(via, Scripted::Challenge(200));
+        let e = staging(&s).bag("zz_none", 1).await.unwrap_err();
+        assert!(e.to_string().contains("Cloudflare challenge"), "{e}");
+        // A plain 404 is still an absent batch.
+        assert!(staging(&s).bag("zz_none", 1).await.unwrap().is_none());
     }
 
     /// One issue of sn1 (1890-05-03, ed. 1) in batch `xx_test_ver01`,
