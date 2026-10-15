@@ -67,7 +67,7 @@ export function creditFor(key: string, pages = 1, japanese = false): UsedCredit 
       e.family === family &&
       (family === "ndlocr-lite"
         ? !!legacyNdl
-        : e.production && e.id === `${family}-${version.split(".").slice(0, 2).join(".")}`),
+        : e.id === `${family}-${version}` || e.id === `${family}-${version.split(".").slice(0, 2).join(".")}`),
   );
   const profile = engine?.profile?.find((p) => p.id === profileId);
   if (!engine || (family !== "ndlocr-lite" && !profile)) throw new Error(`Missing OCR credit: ${key}`);

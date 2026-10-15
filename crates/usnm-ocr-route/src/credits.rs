@@ -49,7 +49,8 @@ impl Catalog {
                     && if family == "ndlocr-lite" {
                         profile.is_none()
                     } else {
-                        e.production && e.id == format!("{family}-{series}")
+                        e.id == format!("{family}-{version}")
+                            || e.id == format!("{family}-{series}")
                     }
             })
             .with_context(|| format!("missing OCR credit: {key}"))?;
@@ -59,7 +60,6 @@ impl Catalog {
                 .iter()
                 .find(|p| p.id == profile)
                 .with_context(|| format!("missing OCR profile credit: {key}"))?;
-            self.check_production(&engine.id, &profile.models)?;
             (
                 profile
                     .models
@@ -112,6 +112,24 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use crate::ENGINES;
+
+    #[test]
+    fn retired_routes_keep_their_published_credits() {
+        let mut catalog = ENGINES.clone();
+        catalog
+            .engine
+            .iter_mut()
+            .find(|e| e.id == "tesseract-5.5")
+            .unwrap()
+            .production = false;
+        assert!(catalog
+            .check_production("tesseract-5.5", &["tessdata/eng.traineddata".into()])
+            .is_err());
+        assert_eq!(
+            catalog.credit("tesseract/5.5.1 eng").unwrap().models.len(),
+            1
+        );
+    }
 
     #[test]
     fn every_serving_key_needs_a_credit() {
