@@ -11,7 +11,176 @@ use crate::boinc::{is_sha256, sha256};
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use usnm_ocr_quality::report::{HatReport, Legibility, PageFeatures, ReaderReport};
+
+/// Rounds to six decimals (half away from zero); non-finite values become 0.
+pub fn round6(x: f64) -> f64 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    (x * 1e6).round() / 1e6
+}
+
+pub fn round6_opt(x: Option<f64>) -> Option<f64> {
+    x.map(round6)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImageFeatures {
+    pub bleed_through: f64,
+    pub blur: f64,
+    pub contrast: f64,
+    /// Pixels of the page.
+    pub height: u32,
+    pub ink_density: f64,
+    pub noise: f64,
+    /// The integer factor the page was downscaled by.
+    pub scale: u32,
+    pub skew_deg: f64,
+    /// The Otsu threshold on the grey copy.
+    pub threshold: u8,
+    pub width: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutFeatures {
+    /// Text blocks.
+    pub blocks: usize,
+    /// Columns: text blocks clustered by x-centre.
+    pub columns: usize,
+    /// Median line height in pixels (an x-height proxy); none without lines.
+    pub line_height_px: Option<f64>,
+    pub lines: usize,
+    /// Mean word confidence over the words that have one (LoC's WC).
+    pub mean_word_conf: Option<f64>,
+    pub words: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PageFeatures {
+    pub image: Option<ImageFeatures>,
+    pub layout: Option<LayoutFeatures>,
+}
+
+/// How two readings of one page differ. `a` is this reader, `b` the other;
+/// `cer_a` is `a` as the hypothesis against `b` as the reference.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PairMetrics {
+    pub cer_a: f64,
+    pub cer_b: f64,
+    /// Character edits over the mean of the two lengths: the symmetric
+    /// disagreement the hat is solved on.
+    pub cer_sym: f64,
+    pub char_edits: usize,
+    pub chars_a: usize,
+    pub chars_b: usize,
+    pub dice: f64,
+    pub wer_a: f64,
+    pub wer_b: f64,
+    pub word_edits: usize,
+    pub words_a: usize,
+    pub words_b: usize,
+}
+
+impl PairMetrics {
+    /// The same pair seen from the other reader.
+    pub fn flipped(&self) -> Self {
+        Self {
+            cer_a: self.cer_b,
+            cer_b: self.cer_a,
+            cer_sym: self.cer_sym,
+            char_edits: self.char_edits,
+            chars_a: self.chars_b,
+            chars_b: self.chars_a,
+            dice: self.dice,
+            wer_a: self.wer_b,
+            wer_b: self.wer_a,
+            word_edits: self.word_edits,
+            words_a: self.words_b,
+            words_b: self.words_a,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderReport {
+    /// Characters of the normalised text.
+    pub chars: usize,
+    pub completeness: Option<f64>,
+    /// Distinct consensus content words the reader has, over the total.
+    pub content_found: usize,
+    pub content_total: usize,
+    /// The hat's estimate of this reader's CER, clipped at 0; none when
+    /// the hat is underdetermined.
+    pub est_cer: Option<f64>,
+    pub est_cer_low_bound_note: String,
+    /// The estimate before clipping.
+    pub est_cer_raw: Option<f64>,
+    pub findable_content: Option<f64>,
+    pub findable_places: Option<f64>,
+    pub name: String,
+    /// Pairwise metrics against each other reader, by name; this reader
+    /// is `a`.
+    pub pairs: BTreeMap<String, PairMetrics>,
+    pub places_found: usize,
+    pub places_total: usize,
+    pub precision: Option<f64>,
+    pub source: String,
+    /// Tokens of the text.
+    pub words: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HatReport {
+    pub determined: bool,
+    pub n_readers: usize,
+    pub pairs: usize,
+    pub residual: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Legibility {
+    /// What the estimate is based on: `page-hat` here (the readers of the
+    /// whole page); the crop-level estimate with the vision-language
+    /// reading is joined on the server.
+    pub basis: String,
+    /// `1 - min est_cer` over the readers, in 0..1; none when the hat is
+    /// underdetermined.
+    pub ceiling_est: Option<f64>,
+    /// Consensus words on the page.
+    pub consensus_words: usize,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfusionKind {
+    /// Reference characters replaced by the reader's.
+    Sub,
+    /// Characters the reader has that the reference does not.
+    Ins,
+    /// Reference characters the reader dropped.
+    Del,
+}
+
+/// One pair with how often it was seen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConfusionPair {
+    pub count: usize,
+    /// What the reference has (empty for an insertion).
+    pub from: String,
+    pub kind: ConfusionKind,
+    /// What the reader has (empty for a deletion).
+    pub to: String,
+}
 
 pub const VERSION: u32 = 1;
 /// `quality.json`: the job holds the function-word list.
@@ -407,8 +576,7 @@ impl ResultManifest {
                 && self.confusions_bytes == confusions.len() as u64,
             "confusions checksum mismatch"
         );
-        let parsed: BTreeMap<String, Vec<usnm_ocr_quality::confusion::ConfusionPair>> =
-            serde_json::from_slice(confusions)?;
+        let parsed: BTreeMap<String, Vec<ConfusionPair>> = serde_json::from_slice(confusions)?;
         ensure!(
             self.unit_error
                 .as_ref()
@@ -485,8 +653,7 @@ pub fn canonicalise(v: serde_json::Value) -> serde_json::Value {
     match v {
         Value::Number(n) => match n.as_f64() {
             Some(f) if !n.is_i64() && !n.is_u64() => {
-                serde_json::Number::from_f64(usnm_ocr_quality::report::round6(f))
-                    .map_or(Value::Null, Value::Number)
+                serde_json::Number::from_f64(round6(f)).map_or(Value::Null, Value::Number)
             }
             _ => Value::Number(n),
         },
@@ -576,22 +743,38 @@ pub(crate) mod tests {
         } else {
             br#"{"as":[],"loc":[]}"#.to_vec()
         };
-        let places = usnm_ocr_quality::findability::Places::parse("");
-        let analysis = usnm_ocr_quality::report::analyse(&usnm_ocr_quality::report::PageInputs {
-            image: None,
-            alto: None,
-            readers: ["loc", "as"]
-                .iter()
-                .map(|n| usnm_ocr_quality::report::ReaderInput {
-                    name: n.to_string(),
-                    source: n.to_string(),
-                    text: "one two three".into(),
-                })
-                .collect(),
-            function_words: Default::default(),
-            places: &places,
-        });
-        let r = analysis.report;
+        let pair = PairMetrics {
+            cer_a: 0.0,
+            cer_b: 0.0,
+            cer_sym: 0.0,
+            char_edits: 0,
+            chars_a: 13,
+            chars_b: 13,
+            dice: 1.0,
+            wer_a: 0.0,
+            wer_b: 0.0,
+            word_edits: 0,
+            words_a: 3,
+            words_b: 3,
+        };
+        let reader = |name: &str, other: &str| ReaderReport {
+            chars: 13,
+            completeness: Some(1.0),
+            content_found: 1,
+            content_total: 1,
+            est_cer: None,
+            est_cer_low_bound_note: "three-cornered hat".into(),
+            est_cer_raw: None,
+            findable_content: Some(1.0),
+            findable_places: None,
+            name: name.into(),
+            pairs: BTreeMap::from([(other.into(), pair.clone())]),
+            places_found: 0,
+            places_total: 0,
+            precision: Some(1.0),
+            source: name.into(),
+            words: 3,
+        };
         let unit = outcome == Outcome::UnitError;
         (
             ResultManifest {
@@ -603,12 +786,28 @@ pub(crate) mod tests {
                 diag_bytes: 0,
                 diag_sha256: sha256(b""),
                 engine: engine(),
-                hat: (!unit).then_some(r.hat),
+                hat: (!unit).then_some(HatReport {
+                    determined: false,
+                    n_readers: 2,
+                    pairs: 1,
+                    residual: None,
+                }),
                 host: Host::default(),
-                legibility: (!unit).then_some(r.legibility),
+                legibility: (!unit).then_some(Legibility {
+                    basis: "page-hat".into(),
+                    ceiling_est: None,
+                    consensus_words: 3,
+                }),
                 outcome,
-                page: (!unit).then_some(r.page),
-                readers: if unit { vec![] } else { r.readers },
+                page: (!unit).then_some(PageFeatures {
+                    image: None,
+                    layout: None,
+                }),
+                readers: if unit {
+                    vec![]
+                } else {
+                    vec![reader("loc", "as"), reader("as", "loc")]
+                },
                 timings: Timings::default(),
                 unit_error: unit.then(|| "checksum".into()),
             },

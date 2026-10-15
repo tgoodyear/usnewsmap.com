@@ -4,33 +4,8 @@
 //! into one pair, so `rn` read as `m` is one substitution, not a
 //! substitution and a deletion.
 use crate::align::{self, Op};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    /// Reference characters replaced by the reader's.
-    Sub,
-    /// Characters the reader has that the reference does not.
-    Ins,
-    /// Reference characters the reader dropped.
-    Del,
-}
-
-/// One pair with how often it was seen.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ConfusionPair {
-    pub count: usize,
-    /// What the reference has (empty for an insertion).
-    pub from: String,
-    pub kind: Kind,
-    /// What the reader has (empty for a deletion).
-    pub to: String,
-}
+pub use usnm_ocr_contract::quality::{ConfusionKind as Kind, ConfusionPair};
 
 /// How many pairs a reader's list keeps.
 pub const TOP: usize = 50;

@@ -105,39 +105,37 @@ fn full<T: PartialEq>(a: &[T], b: &[T], out: &mut Vec<Op>) {
     let (m, n) = (a.len(), b.len());
     let w = n + 1;
     let mut cost = vec![0u32; (m + 1) * w];
-    for (j, c) in cost.iter_mut().enumerate().take(n + 1) {
-        *c = j as u32;
+    for j in 0..=n {
+        cost[m * w + j] = (n - j) as u32;
     }
-    for i in 1..=m {
-        cost[i * w] = i as u32;
-        for j in 1..=n {
-            let sub = cost[(i - 1) * w + j - 1] + u32::from(a[i - 1] != b[j - 1]);
-            let del = cost[(i - 1) * w + j] + 1;
-            let ins = cost[i * w + j - 1] + 1;
+    for i in (0..m).rev() {
+        cost[i * w + n] = (m - i) as u32;
+        for j in (0..n).rev() {
+            let sub = cost[(i + 1) * w + j + 1] + u32::from(a[i] != b[j]);
+            let del = cost[(i + 1) * w + j] + 1;
+            let ins = cost[i * w + j + 1] + 1;
             cost[i * w + j] = sub.min(del).min(ins);
         }
     }
-    let start = out.len();
-    let (mut i, mut j) = (m, n);
-    while i > 0 || j > 0 {
-        if i > 0 && j > 0 {
-            let same = a[i - 1] == b[j - 1];
-            if cost[(i - 1) * w + j - 1] + u32::from(!same) == cost[i * w + j] {
+    let (mut i, mut j) = (0, 0);
+    while i < m || j < n {
+        if i < m && j < n {
+            let same = a[i] == b[j];
+            if cost[(i + 1) * w + j + 1] + u32::from(!same) == cost[i * w + j] {
                 out.push(if same { Op::Match } else { Op::Sub });
-                i -= 1;
-                j -= 1;
+                i += 1;
+                j += 1;
                 continue;
             }
         }
-        if i > 0 && cost[(i - 1) * w + j] + 1 == cost[i * w + j] {
+        if i < m && cost[(i + 1) * w + j] + 1 == cost[i * w + j] {
             out.push(Op::Del);
-            i -= 1;
+            i += 1;
             continue;
         }
         out.push(Op::Ins);
-        j -= 1;
+        j += 1;
     }
-    out[start..].reverse();
 }
 
 /// The edit script between two strings, over Unicode scalar values.
@@ -195,46 +193,7 @@ pub fn rate(edits: usize, reference: usize, hypothesis: usize) -> f64 {
     }
 }
 
-/// How two readings of one page differ. `a` is this reader, `b` the other;
-/// `cer_a` is `a` as the hypothesis against `b` as the reference.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PairMetrics {
-    pub cer_a: f64,
-    pub cer_b: f64,
-    /// Character edits over the mean of the two lengths: the symmetric
-    /// disagreement the hat is solved on.
-    pub cer_sym: f64,
-    pub char_edits: usize,
-    pub chars_a: usize,
-    pub chars_b: usize,
-    pub dice: f64,
-    pub wer_a: f64,
-    pub wer_b: f64,
-    pub word_edits: usize,
-    pub words_a: usize,
-    pub words_b: usize,
-}
-
-impl PairMetrics {
-    /// The same pair seen from the other reader.
-    pub fn flipped(&self) -> Self {
-        Self {
-            cer_a: self.cer_b,
-            cer_b: self.cer_a,
-            cer_sym: self.cer_sym,
-            char_edits: self.char_edits,
-            chars_a: self.chars_b,
-            chars_b: self.chars_a,
-            dice: self.dice,
-            wer_a: self.wer_b,
-            wer_b: self.wer_a,
-            word_edits: self.word_edits,
-            words_a: self.words_b,
-            words_b: self.words_a,
-        }
-    }
-}
+pub use usnm_ocr_contract::quality::PairMetrics;
 
 /// The pairwise metrics of two texts, after normalisation.
 pub fn pair(a: &str, b: &str) -> PairMetrics {

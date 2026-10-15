@@ -3,92 +3,24 @@
 //! computation; the record's floats are rounded to six decimals so two
 //! hosts' bytes compare equal.
 use crate::{
-    align::{self, PairMetrics},
-    confusion::{self, ConfusionPair, Confusions},
-    consensus,
-    features::{self, ImageFeatures, LayoutFeatures},
+    align,
+    confusion::{self, Confusions},
+    consensus, features,
     findability::{self, Findability, Places},
     hat,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+pub use usnm_ocr_contract::quality::{
+    round6, round6_opt, ConfusionPair, HatReport, ImageFeatures, LayoutFeatures, Legibility,
+    PageFeatures, PairMetrics, ReaderReport,
+};
 
 /// The record's schema version.
 pub const VERSION: u32 = 1;
 
 /// The note every estimate carries.
 pub const LOW_BOUND_NOTE: &str = "three-cornered hat over pairwise disagreement: correlated reader failures bias the estimate low; calibration on public ground truth measures the gap";
-
-/// Rounds to six decimals (half away from zero); non-finite values become 0.
-pub fn round6(x: f64) -> f64 {
-    if !x.is_finite() {
-        return 0.0;
-    }
-    (x * 1e6).round() / 1e6
-}
-
-fn round6_opt(x: Option<f64>) -> Option<f64> {
-    x.map(round6)
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PageFeatures {
-    pub image: Option<ImageFeatures>,
-    pub layout: Option<LayoutFeatures>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReaderReport {
-    /// Characters of the normalised text.
-    pub chars: usize,
-    pub completeness: Option<f64>,
-    /// Distinct consensus content words the reader has, over the total.
-    pub content_found: usize,
-    pub content_total: usize,
-    /// The hat's estimate of this reader's CER, clipped at 0; none when
-    /// the hat is underdetermined.
-    pub est_cer: Option<f64>,
-    pub est_cer_low_bound_note: String,
-    /// The estimate before clipping.
-    pub est_cer_raw: Option<f64>,
-    pub findable_content: Option<f64>,
-    pub findable_places: Option<f64>,
-    pub name: String,
-    /// Pairwise metrics against each other reader, by name; this reader
-    /// is `a`.
-    pub pairs: BTreeMap<String, PairMetrics>,
-    pub places_found: usize,
-    pub places_total: usize,
-    pub precision: Option<f64>,
-    pub source: String,
-    /// Tokens of the text.
-    pub words: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct HatReport {
-    pub determined: bool,
-    pub n_readers: usize,
-    pub pairs: usize,
-    pub residual: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Legibility {
-    /// What the estimate is based on: `page-hat` here (the readers of the
-    /// whole page); the crop-level estimate with the vision-language
-    /// reading is joined on the server.
-    pub basis: String,
-    /// `1 - min est_cer` over the readers, in 0..1; none when the hat is
-    /// underdetermined.
-    pub ceiling_est: Option<f64>,
-    /// Consensus words on the page.
-    pub consensus_words: usize,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -346,5 +278,45 @@ mod tests {
         assert_eq!(round6(f64::NAN), 0.0);
         let s = serde_json::to_value(schema()).unwrap();
         assert!(s["properties"]["readers"].is_object());
+    }
+
+    #[test]
+    fn unconfirmed_tokens_do_not_invent_place_names() {
+        let places = Places::parse("New York\n");
+        let a = analyse(&inputs(
+            &places,
+            &[
+                ("loc", "New damaged York"),
+                ("as", "New smudged York"),
+                ("ours", "New unreadable York"),
+            ],
+        ));
+        for r in &a.report.readers {
+            assert_eq!(r.places_total, 0);
+            assert_eq!(r.places_found, 0);
+            assert_eq!(r.findable_places, None);
+        }
+    }
+
+    #[test]
+    fn findability_includes_consensus_words_absent_from_pivot() {
+        let places = Places::parse("Albany\nBoston\nAlbany Boston\n");
+        let a = analyse(&inputs(
+            &places,
+            &[
+                ("r1", "Albany"),
+                ("r2", "Albany"),
+                ("r3", "Boston"),
+                ("r4", "Boston"),
+            ],
+        ));
+        for r in &a.report.readers {
+            assert_eq!(r.content_total, 2);
+            assert_eq!(r.content_found, 1);
+            assert_eq!(r.findable_content, Some(0.5));
+            assert_eq!(r.places_total, 2);
+            assert_eq!(r.places_found, 1);
+            assert_eq!(r.findable_places, Some(0.5));
+        }
     }
 }

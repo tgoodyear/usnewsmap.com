@@ -27,8 +27,10 @@ class Quickwit(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.repo = self.tmp / "repo"
         subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(ROOT), str(self.repo)], check=True)
-        # The working tree's changes.sh, committed or not.
-        shutil.copy(ROOT / "scripts/ci/changes.sh", self.repo / "scripts/ci/changes.sh")
+        # The working tree's changes.sh and Cargo manifests, committed or not.
+        for rel in ["scripts/ci/changes.sh", "Cargo.toml", "Cargo.lock",
+                    *(p.relative_to(ROOT) for p in (ROOT / "crates").glob("*/Cargo.toml"))]:
+            shutil.copy(ROOT / rel, self.repo / rel)
         self.commit("this changes.sh")
 
     def tearDown(self):

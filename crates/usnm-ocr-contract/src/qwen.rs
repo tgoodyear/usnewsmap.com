@@ -412,9 +412,8 @@ pub fn agree(
             ra.is_some_and(|r| !r.text.trim().is_empty()),
             rb.is_some_and(|r| !r.text.trim().is_empty()),
         );
-        let dice = (read.0 && read.1).then(|| {
-            usnm_ocr_quality::align::dice(ra.map_or("", |r| &r.text), rb.map_or("", |r| &r.text))
-        });
+        let dice = (read.0 && read.1)
+            .then(|| crate::assess::dice(ra.map_or("", |r| &r.text), rb.map_or("", |r| &r.text)));
         if verdict.is_ok() {
             if read.0 != read.1 {
                 verdict = Err(format!("{id}: read by one host only"));

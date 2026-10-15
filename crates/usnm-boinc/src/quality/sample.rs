@@ -96,7 +96,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                     }
                     found.insert(r.doc_id.clone());
                     out.push((
-                        crate::assess::sample::order(&opts.seed, "ocr", &r.doc_id),
+                        crate::assess::sample::order(&opts.seed, Mode::Ocr, &r.doc_id),
                         SampleRow {
                             batch: r.batch.clone(),
                             batch_version: r.batch_version,
@@ -135,7 +135,6 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             opts.pages,
             opts.min_per_stratum,
             &opts.seed,
-            "ocr",
             &BTreeSet::new(),
             Mode::Ocr,
         ),

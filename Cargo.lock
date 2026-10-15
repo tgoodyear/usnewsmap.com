@@ -3041,7 +3041,6 @@ dependencies = [
  "thiserror",
  "usnm-alto",
  "usnm-core",
- "usnm-ocr-quality",
  "usnm-overlay",
 ]
 
@@ -3080,6 +3079,7 @@ dependencies = [
  "serde_json",
  "unicode-normalization",
  "usnm-alto",
+ "usnm-ocr-contract",
  "usnm-ocr-survey",
 ]
 

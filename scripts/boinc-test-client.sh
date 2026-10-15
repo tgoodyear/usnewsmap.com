@@ -4,12 +4,13 @@
 #
 # Usage:
 #   scripts/boinc-test-client.sh --env <prod|dev> --create [--sku Standard_NC4as_T4_v3] [--spot|--paygo]
-#     [--authenticator-secret boinc-test-authenticator] [--what-if]
+#     [--authenticator-file <PATH>] [--what-if]
 #   scripts/boinc-test-client.sh --env <prod|dev> --delete [--what-if]
 #
-# The test volunteer account's authenticator is read by Azure Resource Manager directly from the
-# BOINC Key Vault via a deployment parameter secret reference, so the secret value never touches
-# disk, stdout, or process arguments on this machine.
+# The BOINC Key Vault disables public network access and template deployment, so the test VM
+# either creates a disposable volunteer account on the server via `boinccmd --create_account`
+# (the default) or reads an existing account's authenticator from `--authenticator-file <PATH>`
+# into a mode-0600 `@params` file passed to the `@secure()` Bicep parameter.
 set -euo pipefail
 
 usage() {
@@ -22,8 +23,8 @@ usage: scripts/boinc-test-client.sh --env <prod|dev> (--create | --delete) [opti
   --sku <SKU>                      Azure VM size (default: Standard_NC4as_T4_v3)
   --spot                           Deploy as an Azure Spot VM (default)
   --paygo                          Deploy as a regular pay-as-you-go VM
-  --authenticator-secret <NAME>    Key Vault secret holding the BOINC authenticator (default: boinc-test-authenticator)
-  --what-if                        Check settings and Key Vault secret and print the plan without creating or deleting resources
+  --authenticator-file <PATH>      Optional file holding an existing BOINC authenticator (default: create a disposable account on the server)
+  --what-if                        Check settings and print the plan without creating or deleting resources
   -h, --help                       Show this help
 EOF
   exit 2
@@ -38,7 +39,7 @@ ENV_NAME=""
 MODE=""
 SKU="Standard_NC4as_T4_v3"
 SPOT=true
-AUTH_SECRET="boinc-test-authenticator"
+AUTH_FILE=""
 WHAT_IF=false
 
 while [ $# -gt 0 ]; do
@@ -49,7 +50,7 @@ while [ $# -gt 0 ]; do
     --sku) [ $# -ge 2 ] || usage; SKU=$2; shift 2 ;;
     --spot) SPOT=true; shift ;;
     --paygo) SPOT=false; shift ;;
-    --authenticator-secret) [ $# -ge 2 ] || usage; AUTH_SECRET=$2; shift 2 ;;
+    --authenticator-file) [ $# -ge 2 ] || usage; AUTH_FILE=$2; shift 2 ;;
     --what-if) WHAT_IF=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
@@ -58,7 +59,14 @@ done
 
 [ -n "$ENV_NAME" ] && [ -n "$MODE" ] || usage
 [[ $SKU =~ ^[A-Za-z0-9_]+$ ]] || die "--sku must be an Azure VM size name"
-[[ $AUTH_SECRET =~ ^[A-Za-z0-9-]+$ ]] || die "--authenticator-secret must be a Key Vault secret name"
+
+auth_val=""
+if [ -n "$AUTH_FILE" ]; then
+  [ -f "$AUTH_FILE" ] || die "--authenticator-file $AUTH_FILE does not exist"
+  auth_val=$(tr -d '[:space:]' < "$AUTH_FILE")
+  [[ -n $auth_val && $auth_val =~ ^[0-9a-fA-F_]+$ ]] ||
+    die "--authenticator-file $AUTH_FILE must contain a non-empty BOINC authenticator"
+fi
 
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/boinc.sh disable=SC1091
@@ -84,13 +92,10 @@ fi
 
 vault=$(boinc_output keyVaultName)
 [ -n "$vault" ] || die "stack $BOINC_STACK has no keyVaultName output: run scripts/provision-boinc.sh --env $ENV_NAME first"
-baz keyvault secret show --vault-name "$vault" --name "$AUTH_SECRET" --query id -o tsv > /dev/null ||
-  die "secret $AUTH_SECRET not found in Key Vault $vault (store the test volunteer account's authenticator there first)"
 
-vault_id="/subscriptions/$SUBSCRIPTION/resourceGroups/$BOINC_RG/providers/Microsoft.KeyVault/vaults/$vault"
 master_url="${PROJECT_URL}usnmocr/"
 
-params=$(mktemp)
+params=$(umask 077 && mktemp)
 trap 'rm -f "$params"' EXIT
 jq -n \
   --arg env "$ENV_NAME" \
@@ -98,8 +103,7 @@ jq -n \
   --arg vmSize "$SKU" \
   --argjson spot "$SPOT" \
   --arg projectUrl "$master_url" \
-  --arg vaultId "$vault_id" \
-  --arg secretName "$AUTH_SECRET" \
+  --arg auth "$auth_val" \
   '{
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
     contentVersion: "1.0.0.0",
@@ -109,21 +113,18 @@ jq -n \
       vmSize: { value: $vmSize },
       spot: { value: $spot },
       projectUrl: { value: $projectUrl },
-      projectAuthenticator: {
-        reference: {
-          keyVault: { id: $vaultId },
-          secretName: $secretName
-        }
-      }
+      projectAuthenticator: { value: $auth }
     }
   }' > "$params"
 
 if $WHAT_IF; then
+  auth_plan="create disposable account via boinccmd --create_account"
+  [ -z "$AUTH_FILE" ] || auth_plan="from $AUTH_FILE"
   cat <<PLAN
 would create $TEST_RG in $LOCATION and deploy contrib-compute/infra/boinc/test-client.bicep:
   vmSize: $SKU (spot=$SPOT)
   projectUrl: $master_url
-  projectAuthenticator: Key Vault $vault / $AUTH_SECRET
+  projectAuthenticator: $auth_plan
 PLAN
   exit 0
 fi

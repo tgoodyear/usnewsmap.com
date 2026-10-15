@@ -53,11 +53,11 @@ Text from `texts.json` is used as the readers' text for every reader, LoC includ
 
 ## App versions and plan classes
 
-| App            | Version | Plan class           | Container                                                                          |
-| -------------- | ------- | -------------------- | ---------------------------------------------------------------------------------- |
-| `usnm_quality` | 1.0     | `docker`             | `ocr/boinc/job.toml`: 1 CPU, 1.5 GiB, no swap                                      |
-| `usnm_qwen`    | 1.0     | `docker_mt`          | `ocr/boinc/qwen/job-cpu.toml`: `--cpus` from the thread count, 6 GiB, no swap      |
-| `usnm_qwen`    | 1.1     | `docker_nvidia_cuda` | `ocr/boinc/qwen/job-gpu.toml`: `--gpus all`, 2 CPUs, 6 GiB, no swap                |
+| App            | Version | Plan class           | Container                                                                     |
+| -------------- | ------- | -------------------- | ----------------------------------------------------------------------------- |
+| `usnm_quality` | 1.0     | `docker`             | `ocr/boinc/job.toml`: 1 CPU, 1.5 GiB, no swap                                 |
+| `usnm_qwen`    | 1.0     | `docker_mt`          | `ocr/boinc/qwen/job-cpu.toml`: `--cpus` from the thread count, 6 GiB, no swap |
+| `usnm_qwen`    | 1.1     | `docker_nvidia_cuda` | `ocr/boinc/qwen/job-gpu.toml`: `--gpus all`, 2 CPUs, 6 GiB, no swap           |
 
 The two `usnm_qwen` classes are the Surya app's (`contrib-compute/boinc/plan_class_spec.xml`); `docker_nvidia_cuda` asks for 3,000 MB of GPU memory, enough for the 2B model. `scripts/boinc/install.py` knows all three (`TEMPLATES`, `JOB_TOML`). `create_work` bounds: `usnm_quality` 1e12 flops estimated, 1e14 bound, 1.5 GiB; `usnm_qwen` 1e13 estimated, 1e16 bound, 6 GiB. UNVERIFIED until the first units return.
 
@@ -100,7 +100,7 @@ The daemons are in `ocr/boinc/daemons.xml` and `contrib-compute/images/server/li
 - `compare`: `script_validator`'s `--compare_script` (`--files <r1...> --files2 <r2...>`, optional `--log <pairs.jsonl>`).
 - `collect`: joins the assimilated canonical results of `usnm_quality` (`--root`, `--spool`) and `usnm_qwen` (`--qwen-root`, `--qwen-spool`) for `--campaign`. Recomputes the crop-level three-cornered hat per page when a `usnm_qwen` reading is present (`legibility.basis` becomes `crop-hat+qwen`), and writes `pages.parquet`, `crops.parquet`, and `summary.md` either to `--out-dir` or to `--curated-url` under `audit/quality/<campaign>/`.
 - `calibrate`: runs the estimator on gold crops with human transcriptions (`--crops <crops.jsonl>`, repeatable `--hyp ENGINE=FILE.jsonl`, optional `--readings <readings.jsonl>`, `--out <dir>`) and writes `calibration.csv`, `calibration.md`, and `by-crop.csv`.
-- `estimate`: runs the quality computation offline over a directory of pages (`--dir`, `--out`, `--places`, `--function-words`, `--crop-seed` default 522, `--k-crops` default 12, repeatable `--reader NAME=PATTERN` for the OCR survey layout `<dir>/sample/{images,alto,loctext}`), writing per-page `result.json`, `confusions.json`, and `crops.jsonl` plus aggregate `pages.jsonl` and `crops.jsonl`.
+- `estimate`: runs the quality computation offline over a directory of pages (`--dir`, `--out`, `--places`, `--function-words`, `--crop-seed` default 522, `--k-crops` default 12, repeatable `--reader NAME=PATTERN` for the OCR survey layout `<dir>/sample/{images,alto,loctext}`), verifying the originating `qwen.json` (or `readings/<page>.qwen.json`) and joining on its recorded crops when `readings.json` is present, and writing per-page `result.json`, `confusions.json`, and `crops.jsonl` plus aggregate `pages.jsonl` and `crops.jsonl`.
 - `summary`: reads `<root>/units/`, `<project>/quality/seen` (`--seen`), and `<project>/quality/pairs.jsonl` (`--pairs`) and prints a Markdown summary table of kept results and compared pairs.
 
 ### usnm-boinc qwen

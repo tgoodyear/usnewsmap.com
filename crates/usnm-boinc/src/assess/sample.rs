@@ -54,8 +54,12 @@ pub fn prefix(batch: &str) -> &str {
     batch.split('_').next().unwrap_or(batch)
 }
 
-pub fn order(seed: &str, salt: &str, doc_id: &str) -> String {
-    sha256(format!("{seed}\0{salt}\0{doc_id}").as_bytes())
+pub fn order(seed: &str, mode: Mode, doc_id: &str) -> String {
+    let stream = match mode {
+        Mode::Ocr => "ocr",
+        Mode::Crash => "crash",
+    };
+    sha256(format!("{seed}\0{stream}\0{doc_id}").as_bytes())
 }
 
 /// How many pages each stratum gets out of `n`.
@@ -79,7 +83,6 @@ pub fn draw(
     n: usize,
     min: usize,
     seed: &str,
-    salt: &str,
     skip: &BTreeSet<String>,
     mode: Mode,
 ) -> Vec<(String, SampleRow)> {
@@ -90,7 +93,7 @@ pub fn draw(
                 .iter()
                 .filter(|(r, _)| !skip.contains(&r.doc_id))
                 .collect();
-            v.sort_by_cached_key(|(r, _)| order(seed, salt, &r.doc_id));
+            v.sort_by_cached_key(|(r, _)| order(seed, mode, &r.doc_id));
             (k.clone(), v)
         })
         .filter(|(_, v)| !v.is_empty())
@@ -102,7 +105,7 @@ pub fn draw(
         let t = take[k];
         for (r, lang) in pool.iter().take(t) {
             out.push((
-                order(seed, salt, &r.doc_id),
+                order(seed, mode, &r.doc_id),
                 SampleRow {
                     batch: r.batch.clone(),
                     batch_version: r.batch_version,
@@ -222,7 +225,6 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         opts.ocr_pages,
         opts.min_per_stratum,
         &opts.seed,
-        "ocr",
         &BTreeSet::new(),
         Mode::Ocr,
     );
@@ -235,7 +237,6 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             opts.crash_pages,
             opts.min_per_stratum,
             &opts.seed,
-            "crash",
             &taken,
             Mode::Crash,
         )

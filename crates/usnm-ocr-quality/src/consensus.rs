@@ -10,7 +10,7 @@
 //! is kept for the confusion counts.
 use crate::align::{self, Op};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 use usnm_ocr_survey::text;
 
@@ -66,28 +66,48 @@ pub type Disagreement = (usize, String, String);
 pub struct Consensus {
     pub words: Vec<Word>,
     pub coverage: Vec<Coverage>,
-    /// The consensus words in reading order: the occurrences of the reader
-    /// with the most of them (ties to the first), in its order.
+    /// The consensus words in reading order: the pivot reader's supported
+    /// runs first, then any consensus words or supported adjacent phrases
+    /// present only in other readers, with `""` separating non-adjacent runs.
     pub sequence: Vec<String>,
     pub disagreements: Vec<Disagreement>,
 }
 
-struct Dsu(Vec<usize>);
+struct Dsu {
+    parent: Vec<usize>,
+    members: Vec<Vec<(usize, usize)>>,
+}
 impl Dsu {
+    fn new(total: usize, reader_of: impl Fn(usize) -> (usize, usize)) -> Self {
+        Self {
+            parent: (0..total).collect(),
+            members: (0..total).map(|occ| vec![reader_of(occ)]).collect(),
+        }
+    }
     fn find(&mut self, mut x: usize) -> usize {
-        while self.0[x] != x {
-            self.0[x] = self.0[self.0[x]];
-            x = self.0[x];
+        while self.parent[x] != x {
+            self.parent[x] = self.parent[self.parent[x]];
+            x = self.parent[x];
         }
         x
     }
-    fn union(&mut self, a: usize, b: usize) {
+    fn union_if_disjoint_readers(&mut self, a: usize, b: usize) {
         let (ra, rb) = (self.find(a), self.find(b));
-        if ra != rb {
-            // The lower index is the root, so roots are a function of the data.
-            let (lo, hi) = if ra < rb { (ra, rb) } else { (rb, ra) };
-            self.0[hi] = lo;
+        if ra == rb {
+            return;
         }
+        if self.members[ra]
+            .iter()
+            .any(|(r1, _)| self.members[rb].iter().any(|(r2, _)| r1 == r2))
+        {
+            return;
+        }
+        // The lower index is the root, so roots are a function of the data.
+        let (lo, hi) = if ra < rb { (ra, rb) } else { (rb, ra) };
+        self.parent[hi] = lo;
+        let hi_members = std::mem::take(&mut self.members[hi]);
+        self.members[lo].extend(hi_members);
+        self.members[lo].sort_unstable();
     }
 }
 
@@ -106,7 +126,12 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
         })
         .collect();
     let total: usize = readers.iter().map(Vec::len).sum();
-    let mut dsu = Dsu((0..total).collect());
+    let reader_of = |occ: usize| -> (usize, usize) {
+        let r = offsets.partition_point(|o| *o <= occ) - 1;
+        (r, occ - offsets[r])
+    };
+    let mut dsu = Dsu::new(total, reader_of);
+    let mut matches: Vec<(usize, usize)> = Vec::new();
     // Substitutions per pair, resolved against the components afterwards.
     let mut subs: Vec<(usize, usize, usize, usize)> = Vec::new();
     for i in 0..readers.len() {
@@ -116,7 +141,7 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
             for op in ops {
                 match op {
                     Op::Match => {
-                        dsu.union(offsets[i] + a, offsets[j] + b);
+                        matches.push((offsets[i] + a, offsets[j] + b));
                         a += 1;
                         b += 1;
                     }
@@ -131,10 +156,29 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
             }
         }
     }
-    let reader_of = |occ: usize| -> (usize, usize) {
-        let r = offsets.partition_point(|o| *o <= occ) - 1;
-        (r, occ - offsets[r])
-    };
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); total];
+    for &(u, v) in &matches {
+        adj[u].push(v);
+        adj[v].push(u);
+    }
+    for nbrs in &mut adj {
+        nbrs.sort_unstable();
+        nbrs.dedup();
+    }
+    let mut scored_edges: Vec<(usize, usize, usize)> = matches
+        .iter()
+        .map(|&(u, v)| {
+            let support = adj[u]
+                .iter()
+                .filter(|w| adj[v].binary_search(w).is_ok())
+                .count();
+            (support, u, v)
+        })
+        .collect();
+    scored_edges.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    for (_, u, v) in scored_edges {
+        dsu.union_if_disjoint_readers(u, v);
+    }
     let mut groups: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
     for occ in 0..total {
         let root = dsu.find(occ);
@@ -178,15 +222,69 @@ pub fn build(readers: &[Vec<String>]) -> Consensus {
         .enumerate()
         .max_by(|a, b| a.1.words.cmp(&b.1.words).then(b.0.cmp(&a.0)))
         .map_or(0, |(i, _)| i);
-    let sequence: Vec<String> = readers
-        .get(pivot)
-        .map(|toks| {
-            (0..toks.len())
-                .filter(|p| root_of_word.contains_key(&dsu.find(offsets[pivot] + p)))
-                .map(|p| folded[pivot][p].clone())
-                .collect()
-        })
-        .unwrap_or_default();
+    let is_adjacent = |wa: usize, wb: usize| -> bool {
+        let (mut adj_count, mut non_adj_count) = (0usize, 0usize);
+        for &(r, pa) in &words[wa].members {
+            if let Some(&(_, pb)) = words[wb].members.iter().find(|&&(r2, _)| r2 == r) {
+                if pb == pa + 1 {
+                    adj_count += 1;
+                } else {
+                    non_adj_count += 1;
+                }
+            }
+        }
+        adj_count >= 2 || (adj_count >= 1 && non_adj_count == 0)
+    };
+    let mut sequence: Vec<String> = Vec::new();
+    let mut covered_words = vec![false; words.len()];
+    let mut covered_adj: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut reader_order = Vec::with_capacity(readers.len());
+    if !readers.is_empty() {
+        reader_order.push(pivot);
+        for r in 0..readers.len() {
+            if r != pivot {
+                reader_order.push(r);
+            }
+        }
+    }
+    for (idx, &r) in reader_order.iter().enumerate() {
+        let occs: Vec<(usize, usize)> = (0..readers[r].len())
+            .filter_map(|p| root_of_word.get(&dsu.find(offsets[r] + p)).map(|&w| (p, w)))
+            .collect();
+        let mut runs: Vec<Vec<usize>> = Vec::new();
+        for &(p, w) in &occs {
+            let continues = runs.last().is_some_and(|run| {
+                let prev_w = *run.last().unwrap();
+                let prev_p = occs[runs.iter().map(Vec::len).sum::<usize>() - 1].0;
+                p == prev_p + 1 && is_adjacent(prev_w, w)
+            });
+            if continues {
+                runs.last_mut().unwrap().push(w);
+            } else {
+                runs.push(vec![w]);
+            }
+        }
+        for run in runs {
+            let need = idx == 0
+                || run.iter().any(|&w| !covered_words[w])
+                || run
+                    .windows(2)
+                    .any(|pair| !covered_adj.contains(&(pair[0], pair[1])));
+            if !need {
+                continue;
+            }
+            if !sequence.is_empty() {
+                sequence.push(String::new());
+            }
+            for &w in &run {
+                covered_words[w] = true;
+                sequence.push(words[w].token.clone());
+            }
+            for pair in run.windows(2) {
+                covered_adj.insert((pair[0], pair[1]));
+            }
+        }
+    }
     // A substitution counts against a reader when the other side's
     // occurrence is a consensus word the reader has no occurrence in; one
     // per reader and word.
@@ -272,5 +370,36 @@ mod tests {
         assert!(none.words.is_empty());
         assert_eq!(none.coverage[0].completeness, None);
         assert!(build(&[]).words.is_empty());
+    }
+
+    #[test]
+    fn repeated_token_does_not_merge_two_positions_from_one_reader() {
+        let cons = build(&[tokens("the"), tokens("the the"), tokens("the x")]);
+        assert_eq!(cons.words.len(), 1);
+        assert_eq!(cons.words[0].token, "the");
+        assert_eq!(cons.words[0].members, vec![(0, 0), (1, 0), (2, 0)]);
+        assert_eq!(cons.coverage[1].tokens, 2);
+        assert_eq!(cons.coverage[1].in_consensus, 1);
+        assert_eq!(cons.coverage[1].words, 1);
+        assert_eq!(cons.coverage[1].completeness, Some(1.0));
+        assert_eq!(cons.coverage[1].precision, Some(0.5));
+    }
+
+    #[test]
+    fn sequence_preserves_gaps_and_includes_non_pivot_consensus_words() {
+        let gapped = build(&[
+            tokens("New damaged York"),
+            tokens("New smudged York"),
+            tokens("New unreadable York"),
+        ]);
+        assert_eq!(gapped.sequence, vec!["new", "", "york"]);
+
+        let split = build(&[
+            tokens("Albany"),
+            tokens("Albany"),
+            tokens("Boston"),
+            tokens("Boston"),
+        ]);
+        assert_eq!(split.sequence, vec!["albany", "", "boston"]);
     }
 }

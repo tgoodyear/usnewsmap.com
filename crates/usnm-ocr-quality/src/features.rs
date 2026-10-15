@@ -14,46 +14,13 @@
 //!   between the ink mode and the background mode.
 //! - `ink_density`: the share of pixels below the Otsu threshold.
 use image::GrayImage;
-use serde::{Deserialize, Serialize};
 use usnm_alto::Page;
+pub use usnm_ocr_contract::quality::{ImageFeatures, LayoutFeatures};
 
 /// Long side of the grey copy the features are computed on.
 pub const MAX_SIDE: u32 = 1024;
 /// Skew search: `-SKEW_STEPS..=SKEW_STEPS` tenths of a degree.
 pub const SKEW_STEPS: i32 = 30;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ImageFeatures {
-    pub bleed_through: f64,
-    pub blur: f64,
-    pub contrast: f64,
-    /// Pixels of the page.
-    pub height: u32,
-    pub ink_density: f64,
-    pub noise: f64,
-    /// The integer factor the page was downscaled by.
-    pub scale: u32,
-    pub skew_deg: f64,
-    /// The Otsu threshold on the grey copy.
-    pub threshold: u8,
-    pub width: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct LayoutFeatures {
-    /// Text blocks.
-    pub blocks: usize,
-    /// Columns: text blocks clustered by x-centre.
-    pub columns: usize,
-    /// Median line height in pixels (an x-height proxy); none without lines.
-    pub line_height_px: Option<f64>,
-    pub lines: usize,
-    /// Mean word confidence over the words that have one (LoC's WC).
-    pub mean_word_conf: Option<f64>,
-    pub words: usize,
-}
 
 /// A grey copy with its long side at most [`MAX_SIDE`], each pixel the
 /// mean of a `scale` by `scale` block (truncated to the pixels inside the

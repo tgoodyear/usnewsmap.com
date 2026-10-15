@@ -92,36 +92,37 @@ group (`usnm-boinc-test-rg-<env>`) and delete the group when the test is done:
 
 ```sh
 scripts/boinc-test-client.sh --env prod --create [--sku Standard_NC4as_T4_v3] [--spot|--paygo] \
-  [--authenticator-secret boinc-test-authenticator] [--what-if]
+  [--authenticator-file <path>] [--what-if]
 scripts/boinc-test-client.sh --env prod --delete [--what-if]
 ```
 
 Flags:
 
-- `--env <prod|dev>`: reads subscription, location and `masterHost` from
-  `contrib-compute/infra/boinc/env/<env>.json`, and finds the BOINC Key Vault from the
-  `usnm-boinc-<env>` stack's `keyVaultName` output.
-- `--create`: checks that the `boinc-test-authenticator` secret (or `--authenticator-secret
-  <NAME>`) exists in the BOINC Key Vault, creates `usnm-boinc-test-rg-<env>`, and deploys
-  `contrib-compute/infra/boinc/test-client.bicep` with an ARM Key Vault parameter reference
-  for `projectAuthenticator` so the secret value never touches disk, stdout or process
-  arguments on the caller's machine. Create the test volunteer account once on the server and
-  store its authenticator in Key Vault as `boinc-test-authenticator` before running `--create`.
+- `--env <prod|dev>`: reads subscription, location and `projectUrl` from
+  `contrib-compute/infra/boinc/env/<env>.json`, and checks that the `usnm-boinc-<env>` stack is
+  deployed.
+- `--create`: creates `usnm-boinc-test-rg-<env>` and deploys
+  `contrib-compute/infra/boinc/test-client.bicep`. By default, cloud-init creates a fresh
+  disposable test volunteer account on the server with `boinccmd --create_account`; if
+  `--authenticator-file <PATH>` is given, the script reads that file into a mode-`0600`
+  `@params` file and passes it to the `@secure()` `projectAuthenticator` parameter without
+  putting the value in process arguments or stdout.
 - `--delete`: deletes the resource group `usnm-boinc-test-rg-<env>` and everything in it, so
   nothing stands between tests.
 - `--sku <SKU>`: Azure VM size (default `Standard_NC4as_T4_v3`, 4 vCPUs, 28 GiB RAM, 1x NVIDIA
   T4 16 GiB, which exercises `docker`, `docker_mt` and `docker_nvidia_cuda`).
 - `--spot` / `--paygo`: deploys as an Azure Spot VM with `Delete` eviction policy (`--spot`,
   the default) or a regular pay-as-you-go VM (`--paygo`).
-- `--what-if`: checks settings and the Key Vault secret and prints the plan without creating or
-  deleting resources.
+- `--what-if`: checks settings and prints the plan without creating or deleting resources.
 
 `contrib-compute/infra/boinc/test-client.bicep` provisions an Ubuntu 24.04 LTS x86-64 VM in
 its own VNet (`100.64.0.0/24`, RFC 6598 shared address space) with an NSG that denies all
 inbound traffic; outbound HTTPS reaches `https://<masterHost>/usnmocr/`, `ghcr.io`, and the
-Ubuntu and NVIDIA package repositories. Cloud-init installs Docker, `boinc-client`, and (when
-an NVIDIA GPU is present) the NVIDIA driver and `nvidia-container-toolkit`, adds `boinc` to
-the `docker` group, starts the client, and runs
+Ubuntu, BOINC (`https://boinc.berkeley.edu/dl/linux/stable/noble`), and NVIDIA package
+repositories. Cloud-init installs Docker, `boinc-client` (>= 8.2.13 from the upstream BOINC
+noble repository, using `/var/lib/boinc`), and (when an NVIDIA GPU is present) the NVIDIA
+driver and `nvidia-container-toolkit`, adds `boinc` to the `docker` group, starts the client,
+creates a disposable account when `projectAuthenticator` is empty, and runs
 `boinccmd --project_attach https://<masterHost>/usnmocr/ <authenticator>`.
 
 UNVERIFIED against a live deployment: cloud-init package installation, GPU detection by

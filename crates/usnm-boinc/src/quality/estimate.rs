@@ -3,15 +3,16 @@
 //! Two layouts are read:
 //!
 //! - Per-page directories: `<dir>/<page>/{page.jpg, loc.xml, texts.json}`
-//!   with optional `ours.xml` and `readings.json` (the `usnm_qwen` app's
-//!   output for the page).
+//!   with optional `ours.xml` and `{qwen.json, readings.json}` (the
+//!   `usnm_qwen` app's job and output for the page).
 //! - The engine survey's: `<dir>/sample/images/<page>.jpg`,
 //!   `sample/alto/<page>.xml`, `sample/loctext/<page>.txt` (LoC's text,
 //!   reader `loc`) and one `--reader NAME=PATTERN` per engine, the pattern
 //!   a path with one `*` that stands for the page name (for instance
 //!   `out/tesseract/*.txt`). A page is read when its image, ALTO and LoC
 //!   text exist; a reader whose file is missing for a page is left out of
-//!   that page. Optional readings: `readings/<page>.json`.
+//!   that page. Optional readings: `readings/<page>.json` alongside its
+//!   originating job `readings/<page>.qwen.json` (or `qwen/<page>.json`).
 //!
 //! The campaign's `places.txt` and function words apply to every page.
 //! Writes `<out>/<page>/{result.json, confusions.json}` and, where the page
@@ -24,15 +25,19 @@ use super::{
     work, ALTO_FILE, CONFUSIONS_FILE, PAGE_FILE, RESULT_FILE, TEXTS_FILE,
 };
 use crate::{atomic, read};
-use anyhow::Context;
+use anyhow::{ensure, Context};
 use image::GenericImageView as _;
 use std::{
+    collections::BTreeSet,
     fmt::Write as _,
     path::{Path, PathBuf},
 };
 use usnm_ocr_contract::{
     quality::{Engine, TextReader, Texts, MAX_ALTO, MAX_SCAN, MAX_TEXT, MAX_TEXTS},
-    qwen::{Readings, MAX_READINGS},
+    qwen::{
+        Job as QwenJob, Readings, MAX_JOB_JSON as MAX_QWEN_JOB_JSON, MAX_READINGS,
+        VERSION as QWEN_VERSION,
+    },
 };
 
 pub const READINGS_FILE: &str = "readings.json";
@@ -66,6 +71,7 @@ struct PageFiles {
     texts: Result<PathBuf, Vec<(String, String, PathBuf)>>,
     ours: Option<PathBuf>,
     readings: Option<PathBuf>,
+    qwen_job: PathBuf,
 }
 
 fn file_name(p: &Path) -> String {
@@ -104,6 +110,7 @@ fn per_page_dirs(dir: &Path) -> anyhow::Result<Vec<PageFiles>> {
             texts: Ok(p.join(TEXTS_FILE)),
             ours: Some(p.join(OURS_FILE)).filter(|o| o.exists()),
             readings: Some(p.join(READINGS_FILE)).filter(|r| r.exists()),
+            qwen_job: p.join(crate::qwen::JOB_FILE),
         })
         .collect())
 }
@@ -141,6 +148,12 @@ fn survey_dirs(dir: &Path, readers: &[String]) -> anyhow::Result<Vec<PageFiles>>
             }
         }
         let readings = dir.join("readings").join(format!("{name}.json"));
+        let qwen_sidecar = dir.join("readings").join(format!("{name}.qwen.json"));
+        let qwen_job = if qwen_sidecar.exists() {
+            qwen_sidecar
+        } else {
+            dir.join("qwen").join(format!("{name}.json"))
+        };
         out.push(PageFiles {
             name,
             page: image,
@@ -148,6 +161,7 @@ fn survey_dirs(dir: &Path, readers: &[String]) -> anyhow::Result<Vec<PageFiles>>
             texts: Err(texts),
             ours: None,
             readings: Some(readings).filter(|r| r.exists()),
+            qwen_job,
         });
     }
     Ok(out)
@@ -236,14 +250,58 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             if let Some(rp) = &files.readings {
                 let readings: Readings = serde_json::from_slice(&read(rp, MAX_READINGS)?)
                     .with_context(|| format!("{rp:?}"))?;
+                let qwen_job: QwenJob =
+                    serde_json::from_slice(&read(&files.qwen_job, MAX_QWEN_JOB_JSON)?)
+                        .with_context(|| {
+                            format!("{:?} requires originating job {:?}", rp, files.qwen_job)
+                        })?;
+                qwen_job
+                    .validate()
+                    .with_context(|| format!("{:?}", files.qwen_job))?;
+                ensure!(
+                    qwen_job.input.matches(&l.page),
+                    "{:?} input does not match {:?}",
+                    files.qwen_job,
+                    files.page
+                );
+                ensure!(
+                    readings.v == QWEN_VERSION
+                        && readings.job_id == qwen_job.id
+                        && readings.prompt_version == qwen_job.prompt_version,
+                    "{rp:?} does not belong to {:?}",
+                    files.qwen_job
+                );
+                let crop_ids: BTreeSet<&str> =
+                    qwen_job.crops.iter().map(|c| c.id.as_str()).collect();
+                let mut seen_ids = BTreeSet::new();
+                for r in &readings.readings {
+                    ensure!(
+                        crop_ids.contains(r.id.as_str()),
+                        "{rp:?} has crop {:?} not in {:?}",
+                        r.id,
+                        files.qwen_job
+                    );
+                    ensure!(
+                        seen_ids.insert(r.id.as_str()),
+                        "{rp:?} repeats crop {:?}",
+                        r.id
+                    );
+                }
                 let (w, h) = image::load_from_memory(&l.page)?.dimensions();
                 let loc = parse_alto(&l.alto, f64::from(w), f64::from(h))?;
+                for crop in &qwen_job.crops {
+                    ensure!(
+                        crop.loc_text == usnm_ocr_quality::crops::text_in_box(&loc, crop.rect),
+                        "{:?} crop {:?} does not match {:?}",
+                        files.qwen_job,
+                        crop.id,
+                        files.alto
+                    );
+                }
                 let ours = match &files.ours {
                     Some(o) => Some(parse_alto(&read(o, MAX_ALTO)?, f64::from(w), f64::from(h))?),
                     None => None,
                 };
-                let crops =
-                    crate::qwen::stage::cut(&l.page, &l.alto, opts.crop_seed, opts.k_crops)?;
                 let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
                 let rows = collect::crop_rows(&CropInputs {
                     doc_id: &name,
@@ -251,7 +309,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                     ours: ours.as_ref(),
                     texts: &l.texts,
                     readers: &readers,
-                    crops: &crops,
+                    crops: &qwen_job.crops,
                     readings: Some(&readings),
                 });
                 let mut text = String::new();
@@ -317,18 +375,28 @@ mod tests {
                 .count(),
             3
         );
-        // Readings for the page's crops join into crops.jsonl.
-        let l = crate::quality::work::prepare(&page).unwrap();
-        let crops = crate::qwen::stage::cut(&l.page, &l.alto, 522, 4).unwrap();
+        // Readings for the page's crops join into crops.jsonl via the originating qwen.json.
+        let qwen_job = crate::qwen::stage::local_unit(
+            &page.join(PAGE_FILE),
+            &page.join(ALTO_FILE),
+            &page,
+            crate::qwen::stage::tests::engine(),
+            999,
+            4,
+            600,
+            4,
+        )
+        .unwrap();
         let readings = Readings {
             v: usnm_ocr_contract::qwen::VERSION,
-            job_id: job.id,
+            job_id: qwen_job.id.clone(),
             device: "cpu".into(),
             diag: Default::default(),
             model: None,
             outcome: usnm_ocr_contract::qwen::Outcome::Ok,
             prompt_version: 1,
-            readings: crops
+            readings: qwen_job
+                .crops
                 .iter()
                 .map(|c| usnm_ocr_contract::qwen::Reading {
                     id: c.id.clone(),
@@ -345,8 +413,30 @@ mod tests {
         .unwrap();
         let s = run(&opts).unwrap();
         assert_eq!(s.with_readings, 1);
-        assert_eq!(s.crop_rows, crops.len() * 4);
+        assert_eq!(s.failed, 0);
+        assert_eq!(s.crop_rows, qwen_job.crops.len() * 4);
         assert!(tmp.path().join("out/p1/crops.jsonl").exists());
+
+        // Mismatched job_id in readings.json is rejected.
+        let mut bad_readings = readings.clone();
+        bad_readings.job_id = job.id;
+        std::fs::write(
+            page.join(READINGS_FILE),
+            serde_json::to_vec(&bad_readings).unwrap(),
+        )
+        .unwrap();
+        let s = run(&opts).unwrap();
+        assert_eq!(s.failed, 1);
+
+        // Missing qwen.json alongside readings.json is rejected.
+        std::fs::write(
+            page.join(READINGS_FILE),
+            serde_json::to_vec(&readings).unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(page.join(crate::qwen::JOB_FILE)).unwrap();
+        let s = run(&opts).unwrap();
+        assert_eq!(s.failed, 1);
     }
 
     #[test]

@@ -2,8 +2,9 @@
 // usnm-boinc-test-rg-<env> by scripts/boinc-test-client.sh and removed by deleting that group.
 //
 // Outbound-only: the NSG denies all inbound traffic. Cloud-init installs Docker, the NVIDIA
-// driver and container toolkit when a GPU is present, and boinc-client, then attaches to the
-// project with the authenticator passed by Key Vault secret reference.
+// driver and container toolkit when a GPU is present, and boinc-client (>= 8.2.13 from the
+// upstream BOINC repository), then attaches to the project using either the provided
+// authenticator or a disposable test account created via boinccmd.
 targetScope = 'resourceGroup'
 
 import { checkedEnvName, usnmName } from '../../../infra/naming.bicep'
@@ -23,8 +24,8 @@ param spot bool = true
 param projectUrl string
 
 @secure()
-@description('BOINC account authenticator for the test volunteer account, passed via Key Vault reference.')
-param projectAuthenticator string
+@description('Optional BOINC account authenticator; when empty, cloud-init creates a disposable test account on the project server.')
+param projectAuthenticator string = ''
 
 @description('Admin username for the Linux OS profile.')
 param adminUsername string = 'azureuser'
@@ -46,8 +47,17 @@ var names = {
 var cloudInitTemplate = '''#!/usr/bin/env bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+export PATH="/usr/local/bin:$PATH"
 apt-get update -q
-apt-get install -y -q ca-certificates curl gnupg pciutils docker.io boinc-client ubuntu-drivers-common
+apt-get install -y -q ca-certificates curl gnupg openssl pciutils docker.io ubuntu-drivers-common
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://boinc.berkeley.edu/dl/linux/stable/noble/boinc.gpg -o /etc/apt/keyrings/boinc.gpg
+chmod a+r /etc/apt/keyrings/boinc.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/boinc.gpg] https://boinc.berkeley.edu/dl/linux/stable/noble noble main" > /etc/apt/sources.list.d/boinc.list
+apt-get update -q
+apt-get install -y -q boinc-client
+boinc_ver=$(boinc --version | awk '{print $1}')
+dpkg --compare-versions "$boinc_ver" ge 8.2.13
 usermod -aG docker boinc
 if lspci | grep -qi nvidia; then
   ubuntu-drivers install --gpgpu || apt-get install -y -q nvidia-headless-550-server nvidia-utils-550-server
@@ -64,12 +74,20 @@ systemctl enable --now docker
 systemctl restart docker
 systemctl enable --now boinc-client
 systemctl restart boinc-client
-cd /var/lib/boinc-client
+cd /var/lib/boinc
 for _ in $(seq 1 30); do
   boinccmd --get_state >/dev/null 2>&1 && break
   sleep 2
 done
-boinccmd --project_attach '__PROJECT_URL__' '__PROJECT_AUTHENTICATOR__'
+auth_key='__PROJECT_AUTHENTICATOR__'
+if [ -z "$auth_key" ]; then
+  auth_key=$(boinccmd --create_account '__PROJECT_URL__' \
+    "test-$(hostname)-$(openssl rand -hex 6)@usnewsmap.invalid" \
+    "$(openssl rand -hex 24)" \
+    "$(hostname)" | awk -F': ' '/account key/ {print $2}' | tr -d '[:space:]')
+fi
+[ -n "$auth_key" ]
+boinccmd --project_attach '__PROJECT_URL__' "$auth_key"
 '''
 
 var cloudInit = replace(

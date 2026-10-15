@@ -209,9 +209,6 @@ case "$*" in
   "stack group show"*)
     if [ -n "${STUB_NO_VAULT:-}" ]; then echo '{}'
     else echo '{"keyVaultName": {"type": "String", "value": "usnmboinckvprod"}}'; fi ;;
-  "keyvault secret show"*)
-    if [ -n "${STUB_NO_SECRET:-}" ]; then exit 1; fi
-    echo "https://usnmboinckvprod.vault.azure.net/secrets/boinc-test-authenticator/1" ;;
   "group create"*) ;;
   "group exists"*) echo "${STUB_GROUP_EXISTS:-true}" ;;
   "group delete"*) ;;
@@ -263,11 +260,10 @@ class TestClient(unittest.TestCase):
         with open(self.log) as f:
             return f.read().splitlines()
 
-    def test_create_passes_key_vault_reference_and_deploys_test_group(self):
+    def test_create_defaults_to_disposable_account_and_deploys_test_group(self):
         r = self.run_script("--create")
         self.assertEqual(r.returncode, 0, r.stderr)
         calls = self.calls()
-        self.assertTrue(any(c.startswith("keyvault secret show --vault-name usnmboinckvprod --name boinc-test-authenticator") for c in calls))
         self.assertTrue(any(c.startswith("group create --name usnm-boinc-test-rg-prod") for c in calls))
         self.assertTrue(any(c.startswith("deployment group create --name usnm-boinc-test-prod --resource-group usnm-boinc-test-rg-prod") for c in calls))
         with open(self.params_out) as f:
@@ -276,21 +272,19 @@ class TestClient(unittest.TestCase):
         self.assertEqual(params["vmSize"]["value"], "Standard_NC4as_T4_v3")
         self.assertIs(params["spot"]["value"], True)
         self.assertEqual(params["projectUrl"]["value"], "https://boinc.usnewsmap.com/usnmocr/")
-        ref = params["projectAuthenticator"]["reference"]
-        self.assertEqual(
-            ref["keyVault"]["id"],
-            f"/subscriptions/{SUB}/resourceGroups/usnm-boinc-rg-prod/providers/Microsoft.KeyVault/vaults/usnmboinckvprod",
-        )
-        self.assertEqual(ref["secretName"], "boinc-test-authenticator")
+        self.assertEqual(params["projectAuthenticator"]["value"], "")
 
-    def test_create_supports_paygo_custom_sku_and_secret(self):
-        r = self.run_script("--create", "--paygo", "--sku", "Standard_D4s_v5", "--authenticator-secret", "custom-auth")
+    def test_create_supports_paygo_custom_sku_and_authenticator_file(self):
+        auth_file = os.path.join(self.tmp, "auth.txt")
+        with open(auth_file, "w") as f:
+            f.write("0123456789abcdef0123456789abcdef\n")
+        r = self.run_script("--create", "--paygo", "--sku", "Standard_D4s_v5", "--authenticator-file", auth_file)
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(self.params_out) as f:
             params = json.load(f)["parameters"]
         self.assertEqual(params["vmSize"]["value"], "Standard_D4s_v5")
         self.assertIs(params["spot"]["value"], False)
-        self.assertEqual(params["projectAuthenticator"]["reference"]["secretName"], "custom-auth")
+        self.assertEqual(params["projectAuthenticator"]["value"], "0123456789abcdef0123456789abcdef")
 
     def test_create_what_if_does_not_create_group_or_deployment(self):
         r = self.run_script("--create", "--what-if")
@@ -298,11 +292,17 @@ class TestClient(unittest.TestCase):
         self.assertIn("would create usnm-boinc-test-rg-prod", r.stdout)
         self.assertFalse([c for c in self.calls() if c.startswith("group create") or c.startswith("deployment group create")])
 
-    def test_create_fails_when_secret_is_missing(self):
-        r = self.run_script("--create", STUB_NO_SECRET="1")
+    def test_create_fails_when_stack_or_authenticator_file_is_invalid(self):
+        r = self.run_script("--create", STUB_NO_VAULT="1")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("secret boinc-test-authenticator not found", r.stderr)
+        self.assertIn("has no keyVaultName output", r.stderr)
         self.assertFalse([c for c in self.calls() if c.startswith("group create")])
+
+        empty_auth = os.path.join(self.tmp, "empty.txt")
+        open(empty_auth, "w").close()
+        r = self.run_script("--create", "--authenticator-file", empty_auth)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("must contain a non-empty BOINC authenticator", r.stderr)
 
     def test_delete_removes_group_or_respects_what_if(self):
         r = self.run_script("--delete", "--what-if")
@@ -315,7 +315,7 @@ class TestClient(unittest.TestCase):
         self.assertTrue(any(c.startswith("group delete --name usnm-boinc-test-rg-prod --yes --no-wait") for c in self.calls()))
 
     def test_rejects_invalid_arguments(self):
-        for bad in (["--create", "--delete"], [], ["--create", "--sku", "bad/sku"], ["--create", "--authenticator-secret", "bad_secret"]):
+        for bad in (["--create", "--delete"], [], ["--create", "--sku", "bad/sku"], ["--create", "--authenticator-file", "/nonexistent/auth"]):
             r = self.run_script(*bad)
             self.assertNotEqual(r.returncode, 0, bad)
 
