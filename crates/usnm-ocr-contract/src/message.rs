@@ -147,20 +147,16 @@ impl OcrMessage {
     }
 
     /// The rules messages were checked by before 12 Step 7, for messages
-    /// kept in v1 dead letters: a batch of 1 to 128 `[a-z0-9_]` and any
-    /// three lower-case letters as the language.
+    /// kept in v1 dead letters: a batch of 1 to 128 `[A-Za-z0-9_]` and any
+    /// three lower-case letters as the language. ASCII capitals are accepted
+    /// without tightening the historical batch shape.
     pub fn validate_v1(&self) -> Result<PageKey, MessageError> {
         if self.v != 1 {
             return Err(MessageError::Version(self.v));
         }
         let key = self.key()?;
         let b = &self.batch;
-        if b.is_empty()
-            || b.len() > 128
-            || !b
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
-        {
+        if !is_batch_identifier(b) {
             return Err(MessageError::Batch(b.clone()));
         }
         let l = &self.language;
@@ -183,18 +179,27 @@ impl OcrMessage {
     }
 }
 
+/// The shared batch alphabet and byte bound, including legacy wire formats.
+pub(crate) fn is_batch_identifier(batch: &str) -> bool {
+    !batch.is_empty()
+        && batch.len() <= 128
+        && batch
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+}
+
 /// Whether `batch` has the shape of a base batch name: the awardee's code
-/// (2 to 10 lower-case letters), `_`, and the batch's name (1 to 40 letters
-/// or digits), with no curation version. LoC's 3,010 batches of October
-/// 2026 all have it.
+/// (2 to 10 lower-case ASCII letters), `_`, and a nonempty name. The whole
+/// batch is at most 128 bytes of `[A-Za-z0-9_]`, with no curation version.
+/// Case is significant in LoC URLs and must be preserved.
 pub fn is_base_batch_name(batch: &str) -> bool {
     let Some((awardee, name)) = batch.split_once('_') else {
         return false;
     };
     (2..=10).contains(&awardee.len())
         && awardee.bytes().all(|c| c.is_ascii_lowercase())
-        && (1..=40).contains(&name.len())
-        && name.bytes().all(|c| c.is_ascii_alphanumeric())
+        && is_batch_identifier(batch)
+        && !name.is_empty()
         && !is_versioned_batch(batch)
 }
 
@@ -343,7 +348,7 @@ impl DeadLetter {
         }
         if let Some(m) = &self.message {
             // A v1 dead letter holds a message checked by v1's looser rules
-            // (any batch of `[a-z0-9_]`, any three lower-case letters).
+            // (any batch of `[A-Za-z0-9_]`, any three lower-case letters).
             let ok = if self.v == 1 {
                 m.validate_v1().is_ok()
             } else {
@@ -519,15 +524,6 @@ mod tests {
             bad(|m| m.language = "zzz".into()),
             MessageError::Language(_)
         ));
-        // Words joined by underscores aren't a batch name.
-        assert!(matches!(
-            bad(|m| m.batch = "cross_of_gold".into()),
-            MessageError::Batch(_)
-        ));
-        assert!(matches!(
-            bad(|m| m.batch = "batch_nbu_gage".into()),
-            MessageError::Batch(_)
-        ));
         assert!(is_base_batch_name("curiv_joshuaTree"));
         assert!(is_base_batch_name("dlc_1arp"));
         assert!(!is_base_batch_name("x_gage"));
@@ -553,6 +549,76 @@ mod tests {
             Err(MessageError::TooLarge(_))
         ));
         assert!(matches!(decode("not base64!"), Err(MessageError::Json(_))));
+    }
+
+    #[test]
+    fn real_loc_batch_names_preserve_case_in_messages_and_dead_letters() {
+        for batch in [
+            "curiv_joshuaTree",
+            "lu_Cypher",
+            "me_Bissonnette",
+            "vi_White",
+            "wvu_Quote",
+        ] {
+            let mut m = sample();
+            m.batch = batch.into();
+            assert_eq!(decode(&m.encode()).unwrap().0, m);
+            let raw = serde_json::to_string(&m).unwrap();
+            assert_eq!(decode(&raw).unwrap().0.batch, batch);
+            for v in [1, 2] {
+                let mut d = dead(Cause::Permanent);
+                d.v = v;
+                d.cause = (v == 2).then_some(Cause::Permanent);
+                d.message = Some(m.clone());
+                assert_eq!(decode_dead_letter(&d.encode()).unwrap(), d);
+            }
+        }
+    }
+
+    #[test]
+    fn batch_alphabet_awardee_and_length_are_checked() {
+        for batch in ["nbu_name_With_123", &format!("nbu_{}", "A".repeat(124))] {
+            let mut m = sample();
+            m.batch = batch.into();
+            assert!(m.validate().is_ok(), "{batch}");
+            assert!(m.validate_v1().is_ok(), "{batch}");
+        }
+        for batch in [
+            "",
+            "nbu_bad-name",
+            "nbu_bad/name",
+            "nbu_bad.name",
+            "nbu_bad name",
+            "nbu_café",
+            &format!("nbu_{}", "A".repeat(125)),
+        ] {
+            let mut m = sample();
+            m.batch = batch.into();
+            assert!(
+                matches!(m.validate(), Err(MessageError::Batch(_))),
+                "{batch}"
+            );
+            assert!(
+                matches!(m.validate_v1(), Err(MessageError::Batch(_))),
+                "{batch}"
+            );
+        }
+        for batch in [
+            "NBU_gage",
+            "nBu_gage",
+            "x_gage",
+            "abcdefghijk_name",
+            "nbu_",
+            "nbu_name_ver01",
+        ] {
+            let mut m = sample();
+            m.batch = batch.into();
+            assert!(
+                matches!(m.validate(), Err(MessageError::Batch(_))),
+                "{batch}"
+            );
+            assert!(m.validate_v1().is_ok(), "legacy rules: {batch}");
+        }
     }
 
     fn dead(cause: Cause) -> DeadLetter {
