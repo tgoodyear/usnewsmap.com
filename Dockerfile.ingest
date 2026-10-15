@@ -32,6 +32,8 @@ COPY crates ./crates
 # The index config and the catalog overrides are compiled into the binary.
 COPY infra/quickwit ./infra/quickwit
 COPY catalog ./catalog
+# Release-frozen OCR attribution (usnm-ocr-route include_str!).
+COPY ocr/engines/engines.toml ./ocr/engines/engines.toml
 RUN cargo build --release --locked -p usnm-ingest
 
 FROM ${QUICKWIT_IMAGE}
