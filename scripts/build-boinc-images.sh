@@ -70,10 +70,11 @@ have() { baz acr repository show --name "$registry" --image "$1:$2" -o none 2> /
 # The slow layers are keyed on their inputs and built only when that key is new:
 # - usnm-boinc-base: BOINC compiled from the pinned commit plus the runtime packages, keyed on
 #   images/base/Containerfile (which pins both);
-# - usnm-boinc-bridge-bin: the usnm-boinc binary, keyed on the Rust sources, .dockerignore (the context is the repository) and its Containerfile.
+# - usnm-boinc-bridge-bin: the usnm-boinc binary, keyed on the Rust sources, embedded BOINC
+#   templates, .dockerignore (the context is the repository) and its Containerfile.
 # Keys are git object hashes of the committed tree, so they name exactly what was built.
 base_key=$(git rev-parse "HEAD:contrib-compute/images/base/Containerfile" | cut -c1-16)
-bin_inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:.dockerignore HEAD:contrib-compute/images/bridge-bin/Containerfile)
+bin_inputs=(HEAD:crates HEAD:Cargo.toml HEAD:Cargo.lock HEAD:ocr/boinc HEAD:.dockerignore HEAD:contrib-compute/images/bridge-bin/Containerfile)
 if git rev-parse -q --verify HEAD:rust-toolchain.toml > /dev/null; then bin_inputs+=(HEAD:rust-toolchain.toml); fi
 bin_key=$(git rev-parse "${bin_inputs[@]}" | git hash-object --stdin | cut -c1-16)
 
