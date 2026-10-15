@@ -24,6 +24,7 @@ use usnm_store::ObjectStore;
 pub mod config;
 pub mod error;
 pub mod flights;
+pub mod ocr_requests;
 pub mod prewarm;
 pub mod ratelimit;
 pub mod refdata;
@@ -191,6 +192,9 @@ pub struct AppState {
     pub(crate) warm_ups: WarmUps,
     /// The anonymous search log (`None` records nothing).
     pub search_log: Option<Arc<searchlog::SearchLog>>,
+    /// Page ids from qualifying hit responses, for on-prem OCR. `None`
+    /// disables the request path.
+    pub ocr_requests: Option<Arc<ocr_requests::OcrRequests>>,
 }
 
 impl AppState {
@@ -232,6 +236,7 @@ impl AppState {
             warming: AtomicBool::new(false),
             warm_ups: WarmUps::default(),
             search_log: None,
+            ocr_requests: None,
         }
     }
 
@@ -243,6 +248,11 @@ impl AppState {
     /// Record visitors' searches in `log` (see [`searchlog`]).
     pub fn with_search_log(mut self, log: Arc<searchlog::SearchLog>) -> Self {
         self.search_log = Some(log);
+        self
+    }
+
+    pub fn with_ocr_requests(mut self, requests: Arc<ocr_requests::OcrRequests>) -> Self {
+        self.ocr_requests = Some(requests);
         self
     }
 

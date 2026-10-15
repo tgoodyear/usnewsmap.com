@@ -33,6 +33,7 @@ var grants = [
   { container: 'curated', principal: ingestPrincipalId, role: blobContributor }
   { container: 'reference', principal: ingestPrincipalId, role: blobContributor }
   { container: 'qw-index', principal: ingestPrincipalId, role: blobContributor }
+  { container: 'ocr-requests', principal: ingestPrincipalId, role: blobContributor }
 ]
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
@@ -91,6 +92,11 @@ resource searches 'Microsoft.Storage/storageAccounts/blobServices/containers@202
   name: 'searches'
 }
 
+resource ocrRequests 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' existing = {
+  parent: account::blobs
+  name: 'ocr-requests'
+}
+
 resource searchLogApp 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: searches
   name: guid(searches.id, appPrincipalId, 'usnm-search-log-writer')
@@ -98,6 +104,16 @@ resource searchLogApp 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: appPrincipalId
     principalType: 'ServicePrincipal'
     // Custom roles are addressed at subscription level wherever they're defined.
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchLogWriter.name)
+  }
+}
+
+resource ocrRequestsApp 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: ocrRequests
+  name: guid(ocrRequests.id, appPrincipalId, 'usnm-search-log-writer')
+  properties: {
+    principalId: appPrincipalId
+    principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', searchLogWriter.name)
   }
 }

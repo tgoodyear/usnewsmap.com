@@ -146,6 +146,12 @@ param ocrSync bool = false
 param ocrQueueEndpoint string = ''
 @description('The OCR exchange account\'s blob endpoint (OCR_BLOB_ENDPOINT), with its trailing slash.')
 param ocrBlobEndpoint string = ''
+@description('The lake\'s page-id-only daily OCR request container URL.')
+param ocrRequestsUrl string = ''
+@description('Maximum distinct hit-request pages queued per UTC request day.')
+@minValue(0)
+@maxValue(10000)
+param ocrUserDailyMax int = 1000
 @description('Schedule for the OCR pickup job (UTC cron). Empty: manual only.')
 param ocrSyncCron string = '17 * * * *'
 @description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name: USNM_OCR_SEED_PLAN (empty: no seeding), USNM_OCR_SEED_BATCHES, USNM_OCR_SEED_LANGUAGES, USNM_OCR_SEED_YEARS, USNM_OCR_SEED_MIN_DAMAGE, USNM_OCR_SEED_MAX_PAGES, USNM_OCR_SEED_PILOT, USNM_OCR_SEED_SKIP_AMERICAN_STORIES, USNM_OCR_SEED_SOURCE (damage or fetched), USNM_OCR_SEED_MANIFEST, USNM_OCR_BULK_WINDOW, USNM_OCR_BULK_REFILL_BELOW. Empty values are left out, so the job\'s defaults apply.')
@@ -558,6 +564,8 @@ resource ocrSyncJob 'Microsoft.App/jobs@2025-01-01' = if (ocrSync) {
             { name: 'USNM_OCR_QUEUE_URL', value: ocrQueueEndpoint }
             { name: 'USNM_OCR_OUT_URL', value: '${ocrBlobEndpoint}ocr-out' }
             { name: 'USNM_OCR_QUARANTINE_URL', value: '${ocrBlobEndpoint}ocr-quarantine' }
+            { name: 'USNM_OCR_REQUESTS_URL', value: ocrRequestsUrl }
+            { name: 'USNM_OCR_USER_DAILY_MAX', value: string(ocrUserDailyMax) }
           ], ocrSeedEnv)
         }
       ]

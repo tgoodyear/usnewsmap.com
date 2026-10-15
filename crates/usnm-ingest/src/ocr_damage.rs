@@ -675,7 +675,7 @@ pub struct VersionBatch {
 
 /// A page's LoC scores as a page table holds them, for `ocr-sync` and
 /// `ocr-enqueue` (12 §12.5 Step 8).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredScore {
     pub batch: String,
     pub batch_version: u16,

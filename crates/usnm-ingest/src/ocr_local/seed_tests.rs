@@ -434,6 +434,7 @@ fn mine(doc_id: &str, attempt: u32, at: DateTime<Utc>) -> Queued {
         language: "deu".into(),
         plan: "bulk-1".into(),
         attempt,
+        request_day: None,
         queued_at: at,
     }
 }
@@ -534,6 +535,7 @@ async fn ocr_sync_seeds_after_its_imports() {
         reference: Arc::clone(&fx.reference),
         out: open(&fx.dir, "out"),
         quarantine: open(&fx.dir, "quarantine"),
+        requests: None,
         queue: Arc::clone(&fx.queue),
     };
     // No plan: nothing queued.

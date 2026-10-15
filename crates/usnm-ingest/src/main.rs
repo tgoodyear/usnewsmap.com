@@ -437,6 +437,9 @@ enum Command {
         /// The exchange account's `ocr-quarantine` container: a Blob container URL or a directory.
         #[arg(long, env = "USNM_OCR_QUARANTINE_URL")]
         quarantine_url: Option<String>,
+        /// The API's daily page-id-only request container.
+        #[arg(long, env = "USNM_OCR_REQUESTS_URL")]
+        requests_url: Option<String>,
         /// The most parts checked in one run; the rest wait for the next.
         #[arg(long, default_value_t = 2000)]
         max_parts: usize,
@@ -446,6 +449,9 @@ enum Command {
         /// The most dead letters drained in one run.
         #[arg(long, default_value_t = 5000)]
         max_dead_letters: usize,
+        /// Maximum distinct hit-request pages queued per UTC request day.
+        #[arg(long, env = "USNM_OCR_USER_DAILY_MAX", default_value_t = 1000)]
+        user_daily_max: usize,
         /// Only apply rule v1 to the stored scores of all of `ocr-local`
         /// and write `ocr-local/report/<run>.json`; picks nothing up.
         #[arg(long, conflicts_with = "from_quarantine")]
@@ -1407,9 +1413,11 @@ async fn command(
             queue_url,
             out_url,
             quarantine_url,
+            requests_url,
             max_parts,
             chunk,
             max_dead_letters,
+            user_daily_max,
             report,
             from_quarantine,
             reason,
@@ -1430,12 +1438,14 @@ async fn command(
                 reference: usnm_store::open(&cli.stores.reference)?,
                 out: usnm_store::open(&need(out_url, "--out-url")?)?,
                 quarantine: usnm_store::open(&need(quarantine_url, "--quarantine-url")?)?,
+                requests: requests_url.as_deref().map(usnm_store::open).transpose()?,
                 queue: usnm_store::queue::open(&need(queue_url, "--queue-url")?)?,
             };
             let opts = usnm_ingest::ocr_local::sync::Options {
                 max_parts: *max_parts,
                 chunk: *chunk,
                 max_dead_letters: *max_dead_letters,
+                user_daily_max: *user_daily_max,
                 from_quarantine: from_quarantine.then(|| reason.clone()).flatten(),
                 deadline: deadline(start, *max_runtime_secs),
                 seed,
