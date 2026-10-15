@@ -15,6 +15,7 @@ use anyhow::ensure;
 use std::path::{Path, PathBuf};
 use usnm_ocr_contract::qwen::Model;
 
+pub mod benchmark;
 pub mod stage;
 pub mod submit;
 pub mod summary;

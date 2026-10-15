@@ -14,6 +14,8 @@ see [boinc-surya.md](boinc-surya.md). A fifth and sixth, `usnm_quality` and
 deterministic word crops with Qwen3-VL (#522); see
 [boinc-quality.md](boinc-quality.md).
 Volunteers start with [boinc-volunteer.md](boinc-volunteer.md).
+The [transcription post-training pilot](boinc-transcription.md) uses `usnm_qwen`
+for public-gold baseline and adapted-model evaluation.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/pipeline-boinc-dark.svg">

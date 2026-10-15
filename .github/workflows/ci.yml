@@ -539,6 +539,7 @@ jobs:
         run: |
           python3 -m pip install --quiet --break-system-packages pillow==11.3.0
           python3 -m unittest -v scripts/ocr-survey/test_gold.py
+          python3 -m unittest discover -s scripts/ocr-survey -p test_transcription.py -v
       - name: The Rust scorer's golden files match gold.py (#457)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
