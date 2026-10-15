@@ -791,17 +791,39 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Normalizes early NDNP ALTO 1.x files (`http://schema.ccs-gmbh.com/ALTO`)
+/// to the LoC ALTO v2 namespace (`http://www.loc.gov/standards/alto/ns-v2#`)
+/// so `usnm_alto::check` and `usnm_alto::parse` accept 2008-era NDNP batches.
+pub fn normalize_alto_ns(xml: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    const CCS_NS: &[u8] = b"http://schema.ccs-gmbh.com/ALTO";
+    const V2_NS: &[u8] = b"http://www.loc.gov/standards/alto/ns-v2#";
+    let head_len = xml.len().min(4096);
+    if let Some(pos) = xml[..head_len]
+        .windows(CCS_NS.len())
+        .position(|w| w == CCS_NS)
+    {
+        let mut out = Vec::with_capacity(xml.len() + V2_NS.len() - CCS_NS.len());
+        out.extend_from_slice(&xml[..pos]);
+        out.extend_from_slice(V2_NS);
+        out.extend_from_slice(&xml[pos + CCS_NS.len()..]);
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(xml)
+    }
+}
+
 /// Reads an ALTO into a page in the image's pixels. LoC's ALTO is in
 /// 1/1200 inch; it is read at 1200 dpi (its own units) and then scaled to
 /// the image by the page's width and height, as the gold set's `crops.py`
 /// scales it, so the units never matter.
 pub fn parse_alto(xml: &[u8], width: f64, height: f64) -> anyhow::Result<Page> {
     ensure!(width > 0.0 && height > 0.0, "page has no size");
+    let xml = normalize_alto_ns(xml);
     let opts = ParseOptions::default();
-    let mut page = match usnm_alto::parse(xml, &opts) {
+    let mut page = match usnm_alto::parse(&xml, &opts) {
         Ok(p) => p,
         Err(ParseError::NeedsDpi(_)) => usnm_alto::parse(
-            xml,
+            &xml,
             &ParseOptions {
                 dpi: Some(1200.0),
                 ..opts

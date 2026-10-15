@@ -298,9 +298,11 @@ fi
 
 work=$(boinc_workdir)
 remote=""
+boinc_acquire_lock "boinc-app-release.sh --env $ENV_NAME --app $APP --version $VERSION"
 cleanup() {
   [ -z "$remote" ] || ssh_host "rm -rf $remote" || echo "warning: could not remove $remote on the signing host" >&2
   rm -rf "$work"
+  boinc_release_lock
 }
 trap cleanup EXIT
 binary_name="binary_payload"

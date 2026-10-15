@@ -417,6 +417,17 @@ boinccmd --project https://boinc.usnewsmap.com/ detach
 
 The client stops its tasks for this project and deletes the project's files, sticky files included. To delete your account too, use the project website.
 
+## Proxmox VE (PVE) LXC client template
+
+To provision an unprivileged Debian 13 (`trixie`) LXC container as a BOINC volunteer client on a Proxmox VE host, run `scripts/boinc/pve-boinc-ct.sh` on the Proxmox host as `root`:
+
+```sh
+scripts/boinc/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2 --what-if
+scripts/boinc/pve-boinc-ct.sh --ctid 101 --name boinc-volunteer-2
+```
+
+The script creates an unprivileged LXC container with `--features nesting=1,keyctl=1`, installs Docker and `boinc-client >= 8.2.13` from Berkeley's official Debian `trixie` repository, configures `global_prefs_override.xml`, and attaches to `https://boinc.usnewsmap.com/` using either `--authenticator-file <path>` or a newly created account named after `--account-name` (defaulting to `--name`). Because the BOINC server sets `<one_result_per_user_per_wu/>` with `--min_quorum 2`, each PVE container intended to validate a second replica of the same workunit should use a distinct BOINC account.
+
 ## Remove the managed profile
 
 First select **No new tasks** and let BOINC finish and report all queued and running work before stopping the service. Stopping BOINC with unfinished work can leave task containers paused in the profile's managed Podman storage; removing the drop-in also removes `CONTAINERS_STORAGE_CONF` and `XDG_RUNTIME_DIR`, so restarting cannot find those containers and may recreate tasks while leaving the originals stranded. Once all work is reported, stop BOINC, remove `/etc/systemd/system/boinc-client.service.d/zz-usnm-volunteer.conf`, and restore the XML state recorded on first installation in `/etc/usnm-boinc-volunteer/boinc-client.service/backups/` (substitute the service name if different): copy back each backed-up XML file, or if `<file>.absent` is present because the file did not exist before installation, delete that XML file (or remove only this profile's settings if you added others afterward). Run `systemctl daemon-reload` before starting the client. Account data and container images are retained. Only disable the user's lingering session or remove its slots-label rule when that user/slots tree no longer needs them. Do not remove the preflight while continuing to rely on this profile's resource/isolation guarantees.

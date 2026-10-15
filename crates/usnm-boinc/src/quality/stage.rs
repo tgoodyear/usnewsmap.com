@@ -315,7 +315,8 @@ async fn page(
         .context("decoding page.jpg")?
         .to_luma8()
         .dimensions();
-    let parsed = super::parse_alto(&scan.alto, f64::from(width), f64::from(height))?;
+    let alto = usnm_ocr_quality::slot::normalize_alto_ns(&scan.alto);
+    let parsed = super::parse_alto(&alto, f64::from(width), f64::from(height))?;
     let texts = join_texts(
         exported,
         &usnm_alto::text(&parsed),
@@ -332,7 +333,7 @@ async fn page(
         language: &p.lang,
         page: &scan.page,
         page_source: &scan.page_source,
-        alto: &scan.alto,
+        alto: &alto,
         alto_source: &scan.alto_source,
         texts: &texts,
         texts_source: &format!("handoff:texts/{}.json", p.doc_id),

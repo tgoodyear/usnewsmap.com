@@ -110,3 +110,48 @@ boinc_output() {
   fi
   jq -r --arg n "$1" '(. // {}) | to_entries[] | select((.key | ascii_downcase) == ($n | ascii_downcase)) | .value.value // empty' <<< "$out"
 }
+
+BOINC_LOCK_DIR=""
+BOINC_LOCK_HELD_BY_SELF=false
+
+boinc_pid_alive() {
+  kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1
+}
+
+# boinc_acquire_lock LABEL: takes a host-local mutex directory per environment so concurrent
+# local invocations of provision-boinc.sh, start-boinc-bridge.sh, and boinc-app-release.sh
+# cannot collide. Re-entrant for child processes when USNM_BOINC_LOCK_OWNER matches the live
+# lock holder PID (e.g. provision-boinc.sh calling start-boinc-bridge.sh).
+boinc_acquire_lock() {
+  local label=${1:-$0} holder_pid holder_cmd
+  BOINC_LOCK_DIR="${USNM_BOINC_LOCK_DIR:-/var/tmp/usnm-boinc-$ENV_NAME.lock}"
+  if [ -n "${USNM_BOINC_LOCK_OWNER:-}" ] && [ -f "$BOINC_LOCK_DIR/pid" ]; then
+    holder_pid=$(cat "$BOINC_LOCK_DIR/pid" 2>/dev/null || true)
+    if [ "$holder_pid" = "$USNM_BOINC_LOCK_OWNER" ] && boinc_pid_alive "$holder_pid"; then
+      BOINC_LOCK_HELD_BY_SELF=false
+      return 0
+    fi
+  fi
+  if ! mkdir "$BOINC_LOCK_DIR" 2>/dev/null; then
+    holder_pid=$(cat "$BOINC_LOCK_DIR/pid" 2>/dev/null || true)
+    if [[ "$holder_pid" =~ ^[0-9]+$ ]] && ! boinc_pid_alive "$holder_pid"; then
+      rm -rf "$BOINC_LOCK_DIR"
+      mkdir "$BOINC_LOCK_DIR" 2>/dev/null ||
+        die "another BOINC operation is holding $BOINC_LOCK_DIR; wait for it to finish"
+    else
+      holder_cmd=$(cat "$BOINC_LOCK_DIR/cmd" 2>/dev/null || echo "unknown")
+      die "another BOINC operation is already holding $BOINC_LOCK_DIR (pid ${holder_pid:-unknown}: $holder_cmd); wait for it to finish"
+    fi
+  fi
+  printf '%s\n' "$$" > "$BOINC_LOCK_DIR/pid"
+  printf '%s\n' "$label" > "$BOINC_LOCK_DIR/cmd"
+  export USNM_BOINC_LOCK_OWNER="$$"
+  BOINC_LOCK_HELD_BY_SELF=true
+}
+
+boinc_release_lock() {
+  if [ "${BOINC_LOCK_HELD_BY_SELF:-false}" = true ] && [ -n "${BOINC_LOCK_DIR:-}" ]; then
+    rm -rf "$BOINC_LOCK_DIR"
+    BOINC_LOCK_HELD_BY_SELF=false
+  fi
+}

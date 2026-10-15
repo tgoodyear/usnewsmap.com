@@ -59,7 +59,10 @@ boinc_az_check
 PUBLISH_IMAGE=${PUBLISH_OVERRIDE:-$APPVER_IMAGE}
 
 work=$(boinc_workdir)
-trap 'rm -rf "$work"' EXIT
+if ! $WHAT_IF; then
+  boinc_acquire_lock "provision-boinc.sh --env $ENV_NAME"
+fi
+trap 'rm -rf "$work"; boinc_release_lock' EXIT
 # No secret goes in the parameters: the template makes the admin password itself.
 names_file="$(dirname "$0")/../infra/names/$ENV_NAME.json"
 REGISTRY_NAME=$(jq -er .registry "$names_file") || die "no registry in $names_file"
@@ -147,6 +150,14 @@ echo "preview retained for three hours: /subscriptions/$SUBSCRIPTION/resourceGro
 if $WHAT_IF; then
   [ -n "$SERVER_IMAGE" ] || echo "no images in $BOINC_SETTINGS yet: this deploys the base resources only; then scripts/build-boinc-images.sh --env $ENV_NAME"
   exit 0
+fi
+
+existing_bridge=$(boinc_output bridgeJobName)
+if [ -n "$existing_bridge" ]; then
+  active_bridge=$(baz containerapp job execution list --name "$existing_bridge" --resource-group "$BOINC_RG" \
+    --query "[?properties.status=='Running' || properties.status=='Processing'].name" -o tsv 2>/dev/null || true)
+  [ -z "$active_bridge" ] ||
+    die "$existing_bridge already has an active execution ($(echo "$active_bridge" | tr '\n' ' ')); wait for it to finish before redeploying the stack"
 fi
 
 echo "deploying stack $BOINC_STACK (custom domain stage $STAGE)"
