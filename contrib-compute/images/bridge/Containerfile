@@ -18,7 +18,12 @@ COPY contrib-compute/images/bridge/usnm_assess_check contrib-compute/images/brid
      contrib-compute/images/bridge/usnm_surya_compare \
      contrib-compute/images/bridge/usnm_quality_check contrib-compute/images/bridge/usnm_quality_compare \
      contrib-compute/images/bridge/usnm_qwen_check contrib-compute/images/bridge/usnm_qwen_compare \
+     contrib-compute/images/bridge/usnm_qwen_train_check \
      /usr/local/lib/usnm-boinc/
+COPY ocr/boinc/train/worker.py ocr/boinc/train/campaign.py ocr/boinc/train/check.py \
+     /usr/local/lib/usnm-boinc/train/
+COPY ocr/boinc/usnm_qwen_train_in ocr/boinc/usnm_qwen_train_out /usr/local/lib/usnm-boinc/
+RUN chmod 0755 /usr/local/lib/usnm-boinc/usnm_qwen_train_check
 COPY docs/reports/2026-10-jp2-vs-jpeg-ocr/score.py docs/reports/2026-10-jp2-vs-jpeg-ocr/aggregate.py \
      /usr/local/lib/usnm-boinc/assess/
 # The gold-bundle step (docs/boinc.md#build-the-gold-bundle): gold.py with Pillow and bsdtar
@@ -42,6 +47,7 @@ COPY scripts/ocr-survey/gold.py scripts/ocr-survey/locfetch.py scripts/ocr-surve
      scripts/ocr-survey/altotext.py scripts/ocr-survey/transcription.py /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/
 COPY ja-ocr/jaocr.py ja-ocr/alto.py /usr/local/lib/usnm-boinc/gold/ja-ocr/
 COPY fixtures/ocr-gold/bundle-v1.lock.json /usr/local/lib/usnm-boinc/gold/bundle-v1.lock.json
+COPY fixtures/ocr-gold/selections/ /usr/local/lib/usnm-boinc/gold/selections/
 COPY contrib-compute/images/bridge/gold-bundle.sh /usr/local/lib/usnm-boinc/gold-bundle.sh
 # The hand-off job (#469): the same image, run in the main environment with this command.
 COPY contrib-compute/images/bridge/handoff-job.sh /usr/local/lib/usnm-boinc/handoff-job.sh

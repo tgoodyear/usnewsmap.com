@@ -133,7 +133,7 @@ async fn the_text_adapter_conforms() {
         assert_eq!(r.outcome(case), Some(Outcome::Pass), "{}", outcomes(&r));
     }
     assert_eq!(r.outcome("deadline_cgroup"), Some(Outcome::Skipped));
-    assert_eq!(r.engine, "tesseract-text 5.5.9");
+    assert_eq!(r.engine, "tesseract-5.5 5.5.9");
 }
 
 #[tokio::test]

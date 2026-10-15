@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare title-disjoint public gold data for central SFT and BOINC evaluation (#542)."""
+"""Prepare title-disjoint public gold data for SFT and BOINC evaluation (#542)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from gold import read_jsonl, validate_rows, write_jsonl
@@ -157,9 +158,130 @@ def prepare(sources: list[str], out: Path, seed: int, evaluation_only: bool,
     return record
 
 
+def prepare_benchmark(selection: Path, cache: Path, out: Path) -> dict:
+    """Resolve a reviewed evaluation selection against private, already converted gold."""
+    raw = selection.read_bytes()
+    spec = json.loads(raw)
+    if not isinstance(spec, dict) or spec.get("v") != 1 or spec.get("evaluation_only") is not True:
+        raise ValueError("selection must be a v1 evaluation-only audit")
+    items = spec["included"]
+    if not isinstance(items, list) or not items or len(items) > 1000:
+        raise ValueError("selection must include 1-1000 audited crops")
+    engine = spec["engine"]
+    if (not isinstance(engine, dict)
+            or any(not re.fullmatch(r"sha256:[0-9a-f]{64}", str(engine.get(k, "")))
+                   for k in ("image", "llama", "weights"))
+            or not isinstance(engine.get("models"), list) or len(engine["models"]) != 1):
+        raise ValueError("selection needs immutable engine digests and exactly one model")
+    wanted = {}
+    ids = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("selection entries must be crop objects")
+        cid, source, sha = item["crop_id"], item["source_dataset"], item["image_sha256"]
+        if (not isinstance(cid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", cid)
+                or not isinstance(source, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", source)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(sha))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(item["reference_sha256"]))):
+            raise ValueError("invalid selection crop identity or checksum")
+        key = (source, sha)
+        if cid in ids or key in wanted:
+            raise ValueError(f"{cid}: duplicate selection crop or image")
+        if not isinstance(item.get("provenance"), dict) or not {
+            "page_id", "source_url", "source_license", "source_attribution",
+        }.issubset(item["provenance"]):
+            raise ValueError(f"{cid}: missing reviewed provenance")
+        ids.add(cid)
+        wanted[key] = item
+    cache = cache.resolve(strict=True)
+    out = out.absolute()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lock = out.parent / f".{out.name}.prepare.lock"
+    try:
+        lock.mkdir()
+    except FileExistsError as error:
+        raise ValueError(f"another preparation holds {lock}; verify it stopped before recovery") from error
+    try:
+        with tempfile.TemporaryDirectory(prefix=f".{out.name}.prepare-", dir=out.parent) as temp:
+            work = Path(temp)
+            sources = []
+            found = set()
+            for source in sorted({key[0] for key in wanted}):
+                base = (cache / source).resolve(strict=True)
+                if not base.is_relative_to(cache):
+                    raise ValueError(f"{source}: dataset escapes cache")
+                rows = read_jsonl(base / "crops.jsonl")
+                crops = {row["crop_id"]: row for row in rows}
+                if len(crops) != len(rows):
+                    raise ValueError(f"{source}: duplicate cached crop")
+                dest = work / "sources" / source
+                (dest / "images").mkdir(parents=True)
+                selected, metadata = [], []
+                for meta in read_jsonl(base / "manifest.jsonl"):
+                    key = (source, meta["crop_sha256"])
+                    if key not in wanted:
+                        continue
+                    item = wanted[key]
+                    cid = item["crop_id"]
+                    if key in found:
+                        raise ValueError(f"{cid}: duplicate cached image match")
+                    found.add(key)
+                    if (meta.get("source_dataset") != source
+                            or any(meta.get(k) != v for k, v in item["provenance"].items())):
+                        raise ValueError(f"{cid}: reviewed provenance differs from cache")
+                    row = crops[meta["crop_id"]]
+                    if digest(row["transcription"].encode()) != item["reference_sha256"]:
+                        raise ValueError(f"{cid}: reference checksum differs from audit")
+                    relative = Path(row["image"])
+                    image = (base / relative).resolve(strict=True)
+                    if relative.is_absolute() or not image.is_relative_to(base):
+                        raise ValueError(f"{cid}: source image escapes dataset")
+                    data = image.read_bytes()
+                    if digest(data) != item["image_sha256"]:
+                        raise ValueError(f"{cid}: image checksum differs from audit")
+                    path = f"images/{key[1]}{image.suffix.lower()}"
+                    (dest / path).write_bytes(data)
+                    selected.append({**row, "crop_id": cid, "image": path})
+                    metadata.append({**meta, "crop_id": cid, "image": path})
+                if not selected:
+                    raise ValueError(f"{source}: audited selection is missing from cache")
+                write_jsonl(dest / "crops.jsonl", selected)
+                write_jsonl(dest / "manifest.jsonl", metadata)
+                shutil.copytree(base / "LICENSES", dest / "LICENSES")
+                sources.append(f"{source}={dest}")
+            if found != set(wanted):
+                missing = sorted(wanted[key]["crop_id"] for key in wanted.keys() - found)
+                raise ValueError(f"audited selection missing from cache: {missing}")
+            candidate = work / "campaign"
+            record = prepare(sources, candidate, 542, True, [])
+            (candidate / "engine.json").write_text(json.dumps(engine, sort_keys=True) + "\n")
+            (candidate / "audit.json").write_bytes(raw)
+            files = {str(p.relative_to(candidate)): digest(p.read_bytes())
+                     for p in sorted(candidate.rglob("*")) if p.is_file()}
+            marker = {"v": 1, "selection_sha256": digest(raw), "files": files}
+            if out.exists():
+                if (out.is_symlink() or not out.is_dir()
+                        or not (out / "prepared.json").is_file()
+                        or json.loads((out / "prepared.json").read_bytes()) != marker):
+                    raise ValueError(f"{out}: existing campaign differs from reviewed preparation")
+                for path, sha in files.items():
+                    target = (out / path).resolve(strict=True)
+                    if not target.is_relative_to(out.resolve()) or digest(target.read_bytes()) != sha:
+                        raise ValueError(f"{path}: prepared campaign checksum differs")
+            else:
+                (candidate / "prepared.json").write_text(json.dumps(marker, sort_keys=True) + "\n")
+                candidate.rename(out)
+            return record
+    finally:
+        lock.rmdir()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", action="append", required=True, help="DATASET=DIRECTORY; repeatable")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--source", action="append", help="DATASET=DIRECTORY; repeatable")
+    mode.add_argument("--selection", type=Path, help="Reviewed evaluation-only audit with engine pins")
+    parser.add_argument("--cache", type=Path, help="Converted gold cache containing dataset directories")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=542)
     parser.add_argument("--evaluation-only", action="store_true")
@@ -167,8 +289,15 @@ def main() -> int:
                         help="Affirm training/distribution rights were checked; repeatable")
     args = parser.parse_args()
     try:
-        record = prepare(args.source, args.out, args.seed, args.evaluation_only, args.allow_training_source)
-    except (ValueError, KeyError, OSError) as error:
+        if args.selection:
+            if not args.cache or args.allow_training_source:
+                raise ValueError("--selection requires --cache and cannot authorize training")
+            record = prepare_benchmark(args.selection, args.cache, args.out)
+        else:
+            if args.cache:
+                raise ValueError("--cache requires --selection")
+            record = prepare(args.source, args.out, args.seed, args.evaluation_only, args.allow_training_source)
+    except (ValueError, KeyError, OSError, TypeError) as error:
         print(f"transcription: {error}", file=sys.stderr)
         return 1
     print(json.dumps(record, sort_keys=True))

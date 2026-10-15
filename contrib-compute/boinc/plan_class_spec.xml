@@ -66,6 +66,19 @@
         <max_batch>18</max_batch>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
+    <!-- Bounded independent BF16 LoRA trials. No CPU fallback or float-byte consensus. -->
+    <plan_class>
+        <name>docker_nvidia_train</name>
+        <docker/>
+        <gpu_type>nvidia</gpu_type>
+        <cuda/>
+        <min_core_client_version>80213</min_core_client_version>
+        <min_cuda_version>12080</min_cuda_version>
+        <min_nvidia_compcap>800</min_nvidia_compcap>
+        <min_gpu_ram_mb>15360</min_gpu_ram_mb>
+        <gpu_ram_used_mb>15360</gpu_ram_used_mb>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
     <!-- Native plan classes for usnm_qwen (#533): no Docker/Podman required. -->
     <plan_class>
         <name>mt</name>

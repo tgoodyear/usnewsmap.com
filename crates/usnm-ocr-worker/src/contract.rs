@@ -300,6 +300,7 @@ impl<E: Into<anyhow::Error>> From<E> for PageError {
 /// An engine behind the contract.
 #[derive(Debug)]
 pub struct ContractEngine {
+    catalog: usnm_ocr_route::Catalog,
     opts: ContractOptions,
     sandbox: Option<Sandbox>,
     /// The first instance's `hello`; every later one must match it.
@@ -314,6 +315,13 @@ pub struct ContractEngine {
 impl ContractEngine {
     /// Starts the first instance and keeps its `hello`.
     pub async fn start(opts: ContractOptions) -> anyhow::Result<Self> {
+        Self::start_with_catalog(opts, usnm_ocr_route::ENGINES.clone()).await
+    }
+
+    pub async fn start_with_catalog(
+        opts: ContractOptions,
+        catalog: usnm_ocr_route::Catalog,
+    ) -> anyhow::Result<Self> {
         let (sandbox, image) = match &opts.launch {
             Launch::Local { .. } => (None, Digest::Local),
             Launch::Podman {
@@ -345,6 +353,7 @@ impl ContractEngine {
             "engine instance ready"
         );
         Ok(Self {
+            catalog,
             source: format!("usnm-{}", hello.engine.family),
             slots: tokio::sync::Semaphore::new(opts.instances.max(1)),
             idle: Mutex::new(vec![first]),
@@ -365,7 +374,17 @@ impl ContractEngine {
         self.hello
             .profiles
             .iter()
-            .find(|p| p.languages.iter().any(|l| l == language))
+            .find(|p| {
+                p.languages.iter().any(|l| l == language)
+                    && self
+                        .catalog
+                        .engine(&self.hello.engine.id)
+                        .is_ok_and(|e| e.family == self.hello.engine.family)
+                    && self
+                        .catalog
+                        .check_production(&self.hello.engine.id, &p.models)
+                        .is_ok()
+            })
             .map(|p| p.id.as_str())
     }
 
@@ -1403,7 +1422,7 @@ mod tests {
 
     /// [`script_engine`], running `before` before each instance's hello.
     pub(super) async fn script_engine_with(dir: &Path, before: &str, body: &str) -> ContractEngine {
-        let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"silent","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":[],"tunable":[]}],"type":"hello"}"#;
+        let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"silent","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[{"name":"test-model","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":["test-model"],"tunable":[]}],"type":"hello"}"#;
         let script = dir.join("adapter");
         std::fs::write(
             &script,
@@ -1415,22 +1434,77 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        ContractEngine::start(ContractOptions {
-            launch: Launch::Local {
-                program: script,
-                args: Vec::new(),
-                scratch: dir.to_owned(),
+        let mut catalog = usnm_ocr_route::ENGINES.clone();
+        let mut engine = catalog.engine[0].clone();
+        engine.id = "silent".into();
+        engine.family = "silent".into();
+        engine.model[0].name = "test-model".into();
+        catalog.engine.push(engine);
+        ContractEngine::start_with_catalog(
+            ContractOptions {
+                launch: Launch::Local {
+                    program: script,
+                    args: Vec::new(),
+                    scratch: dir.to_owned(),
+                },
+                instances: 1,
+                threads: 1,
+                start_timeout: Duration::from_secs(10),
+                page_timeout: Duration::from_secs(10),
+                max_jobs: 100,
+                dpi: 300,
+                node: "test1".into(),
             },
-            instances: 1,
-            threads: 1,
-            start_timeout: Duration::from_secs(10),
-            page_timeout: Duration::from_secs(10),
-            max_jobs: 100,
-            dpi: 300,
-            node: "test1".into(),
-        })
+            catalog,
+        )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn contract_profiles_gate_actual_hello_models_and_engine_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = silent_engine(dir.path()).await;
+        assert!(e.can_read("eng"));
+        let original = e.catalog.clone();
+        for code in [true, false] {
+            for field in [
+                "author",
+                "source",
+                "credit",
+                "restricted",
+                "undecided",
+                "unknown",
+            ] {
+                e.catalog = original.clone();
+                let a = if code {
+                    &mut e.catalog.engine.last_mut().unwrap().attribution
+                } else {
+                    &mut e.catalog.engine.last_mut().unwrap().model[0].attribution
+                };
+                match field {
+                    "author" => a.author = None,
+                    "source" => a.source = None,
+                    "credit" => a.credit = None,
+                    "restricted" => a.restricted = Some("excluded".into()),
+                    "undecided" => a.undecided = Some("pending".into()),
+                    "unknown" => a.license = "unknown".into(),
+                    _ => unreachable!(),
+                }
+                assert!(!e.can_read("eng"), "{code} {field}");
+                assert!(e.describe("eng").is_none());
+            }
+        }
+        e.catalog = original.clone();
+        e.hello.profiles[0].models.push("unrecorded-model".into());
+        assert!(!e.can_read("eng"));
+        e.hello.profiles[0].models.pop();
+        e.catalog.engine.last_mut().unwrap().production = false;
+        assert!(!e.can_read("eng"));
+        e.catalog = original;
+        e.hello.engine.family = "wrong-family".into();
+        assert!(!e.can_read("eng"));
+        e.shutdown().await;
     }
 
     /// A page directory the worker can't make is its own scratch failure,

@@ -14,7 +14,8 @@
 # ocr_gold: the OCR gold set (scripts/ocr-survey/, fixtures/ocr-gold/, and the
 # Rust scorer's golden files that gold.py writes), whose unit tests and golden
 # check run in the infra job. fixtures/ocr-gold/ is read by no build, test
-# or generator, so it counts for none of rust/quickwit/web/image/fixtures.
+# or generator outside the bridge's reviewed selections, so it counts for none
+# of rust/quickwit/web/image/fixtures. Reviewed selections also build the bridge.
 # boinc_pages: the BOINC project's own web pages (contrib-compute/boinc/html/), which
 # only need a PHP syntax check; a change to them alone runs nothing else.
 # contrib: the hosting for the stock BOINC server (contrib-compute/: shell,
@@ -114,7 +115,7 @@ files=$(grep -Ev '^\.github/' <<< "$files" || true)
 # metric the damage port is checked against (its tables, its word lists and
 # their sha256).
 rust_files='^(rust-toolchain\.toml$|fixtures/|ocr/contract/|infra/quickwit/|catalog/|web/src/examples\.json$|ops/index-history\.json$|ja-ocr/damage_v2\.py$|ja-ocr/wordlists/|scripts/quickwit-fixtures\.sh)'
-rust="^(crates/|Cargo\.(toml|lock)$)|$rust_files"
+rust="^(crates/|Cargo\.(toml|lock)$|ocr/engines/engines\.toml$|ocr/routing/)|$rust_files"
 # The Quickwit job (parity against a real searcher, a release into a real
 # writer) runs `cargo test -p usnm-search --test quickwit_parity` and
 # `cargo test -p usnm-ingest --test pipeline`: the files those tests load
@@ -136,7 +137,7 @@ rust="$rust|^contrib-compute/images/server/bridge-job\.sh$"
 fixtures='^fixtures/'
 # The OCR worker's release: the worker and the LAN dashboard, the crates they use, the workspace's
 # build files, its Tesseract image and the release script.
-ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-alto|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|scripts/ci/ocr-worker-release\.sh$)'
+ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-ocr-route|usnm-alto|usnm-core|usnm-overlay|usnm-store|usnm-telemetry)/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|ocr/engines/tesseract/|ocr/engines/engines\.toml$|ocr/routing/|scripts/ci/ocr-worker-release\.sh$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
@@ -144,7 +145,7 @@ ocr_worker='^(crates/(usnm-ocr-worker|usnm-ocr-dash|usnm-ocr-contract|usnm-alto|
 page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.rs$|crates/usnm-core/data/page-language-words\.txt$|crates/usnm-core/Cargo\.toml$|Cargo\.lock$|crates/usnm-core/tests/page_language_samples\.rs$|fixtures/page-language/|scripts/(page-language-samples|build-page-language-words)\.py$)'
 # The BOINC server hosting: its scripts, templates and Bicep (its Markdown counts as
 # documentation, above), and the workflow, which matches earlier.
-contrib='^(contrib-compute/|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/boinc-app-release\.sh$|scripts/ci/check-boinc-server-image\.sh$)'
+contrib='^(contrib-compute/|fixtures/ocr-gold/selections/|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|ocr/boinc/|scripts/boinc/|scripts/boinc-app-release\.sh$|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # closure_crates ROOT...: the directories of the workspace crates the roots
 # depend on, directly or not (normal, build and dev dependencies: path

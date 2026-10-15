@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 usnm-alto.workspace = true
+usnm-ocr-route.workspace = true
 usnm-core = { workspace = true, features = ["damage"] }
 usnm-ocr-contract = { workspace = true, default-features = true }
 usnm-overlay.workspace = true
