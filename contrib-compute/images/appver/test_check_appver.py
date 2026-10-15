@@ -192,6 +192,21 @@ class CheckAppver(unittest.TestCase):
         with self.assertRaisesRegex(ca.Refused, "missing required bundle files: llama-server"):
             ca.check(native_dir, sigs, self.key, str(self.crypt), kind="native")
 
+        # Restore llama-server in version.xml and disk, then strip <api_version> to verify check_appver refuses it
+        srv_file.write_bytes(b"llama-server")
+        digest = hashlib.md5(srv_file.read_bytes()).hexdigest()
+        (sigs / (srv_file.name + ".sig")).write_text(f"good {digest}\n")
+        item = ca.ET.SubElement(spec, "file")
+        ca.ET.SubElement(item, "physical_name").text = srv_file.name
+        ca.ET.SubElement(item, "logical_name").text = "llama-server"
+        ca.ET.SubElement(item, "copy_file")
+        api_el = spec.find("api_version")
+        if api_el is not None:
+            spec.remove(api_el)
+        ca.ET.ElementTree(spec).write(native_dir / "version.xml", encoding="unicode")
+        with self.assertRaisesRegex(ca.Refused, "must specify <api_version> >= 6.0.0"):
+            ca.check(native_dir, sigs, self.key, str(self.crypt), kind="native")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,11 +3,12 @@
 use super::{units, APP, JOB_FILE, MODEL_DIR, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
+use sha2::Digest as _;
 use std::collections::BTreeMap;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use usnm_ocr_contract::{
-    boinc::sha256,
     quality::MAX_SCAN,
     qwen::{Job, MAX_JOB_JSON},
 };
@@ -129,14 +130,14 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
 }
 
 /// All physical file names passed to `create_work` in input template order
-/// (`<id>_page_jpg`, optional shared sticky `.gguf` and `.mmproj`, `<id>_qwen_json`).
+/// (`<id>_page_jpg`, `<id>_qwen_json`, and optional shared sticky `.gguf` and `.mmproj`).
 pub fn workunit_physical_names(job: &Job, target: Target) -> Vec<String> {
     let mut out = Vec::with_capacity(2 + target.model_files().len());
     out.push(format!("{}_page_jpg", job.id));
+    out.push(format!("{}_qwen_json", job.id));
     for &model_file in target.model_files() {
         out.push(model_file.to_string());
     }
-    out.push(format!("{}_qwen_json", job.id));
     out
 }
 
@@ -155,6 +156,87 @@ pub fn parse_weights_lock(text: &str) -> anyhow::Result<BTreeMap<String, String>
     Ok(map)
 }
 
+/// Streams `src` through a SHA-256 hasher into a temporary file in `dir_hier_path`'s
+/// directory, verifies the digest against `expected_sha256`, and atomically publishes
+/// the file with `0o664` permissions without loading the multi-GiB GGUF into RAM.
+async fn stage_shared_model_streaming(
+    project: &Path,
+    physical: &str,
+    src: &Path,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
+    let output = Command::new(project.join("bin/dir_hier_path"))
+        .arg(physical)
+        .current_dir(project)
+        .output()
+        .await?;
+    ensure!(output.status.success(), "dir_hier_path failed");
+    let rel_or_abs = String::from_utf8(output.stdout)?;
+    let rel_or_abs = Path::new(rel_or_abs.trim());
+    ensure!(!rel_or_abs.as_os_str().is_empty(), "empty staging path");
+    let dst = if rel_or_abs.is_absolute() {
+        rel_or_abs.to_owned()
+    } else {
+        project.join(rel_or_abs)
+    };
+    let parent = dst.parent().context("download path has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let download_root = project.join("download");
+        let mut dir = parent;
+        while dir.starts_with(&download_root) {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o2775))?;
+            if dir == download_root {
+                break;
+            }
+            let Some(next) = dir.parent() else { break };
+            dir = next;
+        }
+    }
+
+    let mut reader = std::fs::File::open(src)
+        .with_context(|| format!("opening model file {}", src.display()))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temp file in {}", parent.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = vec![0u8; 8 * 1024 * 1024];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .with_context(|| format!("reading model file {}", src.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        temp.write_all(&buf[..n])
+            .with_context(|| format!("writing staged model {}", dst.display()))?;
+    }
+    let actual: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    ensure!(
+        actual == expected_sha256,
+        "model file {} sha256 mismatch against weights.lock: expected {}, got {}",
+        src.display(),
+        expected_sha256,
+        actual
+    );
+    temp.as_file().sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o664))?;
+    }
+    temp.persist(&dst)
+        .map_err(|e| e.error)
+        .with_context(|| format!("publishing {}", dst.display()))?;
+    Ok(())
+}
+
 async fn stage_shared_models_with_lock(
     project: &Path,
     model_dir: Option<&Path>,
@@ -171,17 +253,7 @@ async fn stage_shared_models_with_lock(
             .get(file)
             .with_context(|| format!("missing {file} in weights.lock"))?;
         let path = dir.join(file);
-        let bytes = std::fs::read(&path)
-            .with_context(|| format!("reading model file {}", path.display()))?;
-        let actual = sha256(&bytes);
-        ensure!(
-            actual == *expected,
-            "model file {} sha256 mismatch against weights.lock: expected {}, got {}",
-            path.display(),
-            expected,
-            actual
-        );
-        crate::assess::submit::stage_file(project, file, &bytes).await?;
+        stage_shared_model_streaming(project, file, &path, expected).await?;
     }
     Ok(())
 }
@@ -253,6 +325,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use usnm_ocr_contract::boinc::sha256;
 
     #[test]
     fn two_inputs_in_template_order() {
@@ -299,18 +372,18 @@ mod tests {
         assert!(args_8b.contains(&"templates/usnm_qwen_8b_in".to_string()));
         assert!(args_8b.ends_with(&[
             format!("{}_page_jpg", j.id),
+            format!("{}_qwen_json", j.id),
             "Qwen3VL-8B-Instruct-Q4_K_M.gguf".to_string(),
             "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf".to_string(),
-            format!("{}_qwen_json", j.id),
         ]));
 
         let args_2b = create_work_args_for_target(&j, Target::Native2b);
         assert!(args_2b.contains(&"templates/usnm_qwen_2b_in".to_string()));
         assert!(args_2b.ends_with(&[
             format!("{}_page_jpg", j.id),
+            format!("{}_qwen_json", j.id),
             "Qwen3-VL-2B-Instruct-Q8_0.gguf".to_string(),
             "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf".to_string(),
-            format!("{}_qwen_json", j.id),
         ]));
     }
 

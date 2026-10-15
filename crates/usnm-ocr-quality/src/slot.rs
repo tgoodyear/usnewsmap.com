@@ -43,6 +43,13 @@ pub const FRACTION_FILE: &str = "fraction_done";
 pub const FINISH_FILE: &str = "boinc_finish_called";
 pub const MMAP_FILE: &str = "boinc_mmap_file";
 
+/// Embedded BOINC `API_VERSION_` marker (`lib/boinc_api.cpp` convention) so
+/// `update_versions` (`strings | grep 'API_VERSION_[0-9]+\.[0-9]+\.[0-9]+$'`)
+/// and the BOINC client recognize the 6.0+ file-backed `boinc_mmap_file` protocol.
+pub const BOINC_API_VERSION: &str = "8.3.0";
+#[used]
+pub static BOINC_API_VERSION_MARKER: [u8; 18] = *b"API_VERSION_8.3.0\0";
+
 /// Upstream BOINC `MSG_CHANNEL_SIZE` (`lib/app_ipc.h`).
 pub const MSG_CHANNEL_SIZE: usize = 1024;
 /// Upstream BOINC `SHARED_MEM` total size: 8 consecutive `MSG_CHANNEL` blocks.
@@ -157,10 +164,32 @@ impl BoincControl {
 
     /// Starts monitoring `boinc_mmap_file` in `work` with a custom heartbeat timeout.
     pub fn start_with_heartbeat_timeout(work: &Path, heartbeat_timeout: Duration) -> Self {
+        std::hint::black_box(&BOINC_API_VERSION_MARKER);
         let init_path = resolve_slot_file(work, "init_data.xml");
-        let no_heartbeat_check =
-            std::fs::read_to_string(init_path).is_ok_and(|xml| xml.contains("<no_heartbeat_check"));
+        let has_init_data = init_path.is_file();
+        let no_heartbeat_check = std::fs::read_to_string(&init_path)
+            .is_ok_and(|xml| xml.contains("<no_heartbeat_check"));
         let mmap_path = resolve_slot_file(work, MMAP_FILE);
+        // Mirror BOINC `boinc_init()` (`create_shmem_mmap`): when running in a
+        // BOINC slot (`init_data.xml` present) and `boinc_mmap_file` has not yet
+        // been initialized to `SHARED_MEM_SIZE`, create/pad it so the 6.0+
+        // file-backed shared-memory channel is always active on startup.
+        if has_init_data
+            && !mmap_path
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.len() >= SHARED_MEM_SIZE as u64)
+        {
+            if let Ok(f) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&mmap_path)
+            {
+                let _ = f.set_len(SHARED_MEM_SIZE as u64);
+                let _ = f.sync_all();
+            }
+        }
         let inner = Arc::new(BoincControlInner {
             state: Mutex::new(BoincControlState {
                 suspended: false,
@@ -1171,5 +1200,29 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(control.should_exit(), Some("heartbeat_lost"));
+    }
+
+    #[test]
+    fn boinc_startup_with_init_data_creates_mmap_channel_and_advertises_api_version() {
+        assert_eq!(
+            std::str::from_utf8(&BOINC_API_VERSION_MARKER[..17]).unwrap(),
+            format!("API_VERSION_{BOINC_API_VERSION}")
+        );
+        let tmp = TestDir::new("init-creates-mmap");
+        let slot = tmp.path();
+        std::fs::write(slot.join("init_data.xml"), "<app_init_data/>\n").unwrap();
+        let mmap = slot.join(MMAP_FILE);
+        assert!(!mmap.exists());
+
+        let control = BoincControl::start(slot);
+        assert!(mmap.is_file());
+        assert_eq!(mmap.metadata().unwrap().len(), SHARED_MEM_SIZE as u64);
+
+        write_mmap_channel(&mmap, PROCESS_CONTROL_REQUEST_OFFSET, "<quit/>").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while control.should_exit().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(control.should_exit(), Some("quit"));
     }
 }

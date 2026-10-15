@@ -19,13 +19,19 @@ bool PLAN_CLASS_SPEC::check(SCHEDULER_REQUEST& sreq, HOST_USAGE& hu) {
     if (!strcmp(gpu_type, "nvidia")) {
         // nvidia eligibility
     } else if (!strcmp(gpu_type, "apple")) {
-        // apple eligibility
+        COPROC& cp = sreq.coprocs.apple_gpu;
+        cpp = &cp;
     }
 
-    if (!strcmp(gpu_type, "nvidia")) {
+    if (strstr(gpu_type, "nvidia") == gpu_type) {
         hu.proc_type = PROC_TYPE_NVIDIA_GPU;
-    } else if (!strcmp(gpu_type, "apple_gpu")) {
+        hu.gpu_usage = gpu_usage;
+    } else if (strstr(gpu_type, "intel") == gpu_type) {
+        hu.proc_type = PROC_TYPE_INTEL_GPU;
+        hu.gpu_usage = gpu_usage;
+    } else if (strstr(gpu_type, "apple_gpu") == gpu_type) {
         hu.proc_type = PROC_TYPE_APPLE_GPU;
+        hu.gpu_usage = gpu_usage;
     }
     return true;
 }
@@ -39,7 +45,8 @@ class PatchServerAppleGpuTest(unittest.TestCase):
             cpp.write_text(SNIPPET)
             module.patch_file(cpp)
             patched = cpp.read_text()
-            self.assertEqual(patched.count(module.PATCHED), 2)
+            self.assertEqual(patched.count(module.ELIGIBILITY_PATCHED), 1)
+            self.assertEqual(patched.count(module.DISPATCH_PATCHED), 1)
             self.assertNotIn(module.ELIGIBILITY_ORIGINAL, patched)
             self.assertNotIn(module.DISPATCH_ORIGINAL, patched)
             self.assertIn("hu.proc_type = PROC_TYPE_APPLE_GPU;", patched)

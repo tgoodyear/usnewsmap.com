@@ -6,8 +6,9 @@ import argparse
 from pathlib import Path
 
 ELIGIBILITY_ORIGINAL = '} else if (!strcmp(gpu_type, "apple")) {'
-DISPATCH_ORIGINAL = '} else if (!strcmp(gpu_type, "apple_gpu")) {'
-PATCHED = '} else if (!strcmp(gpu_type, "apple") || !strcmp(gpu_type, "apple_gpu")) {'
+ELIGIBILITY_PATCHED = '} else if (!strcmp(gpu_type, "apple") || !strcmp(gpu_type, "apple_gpu")) {'
+DISPATCH_ORIGINAL = '} else if (strstr(gpu_type, "apple_gpu") == gpu_type) {'
+DISPATCH_PATCHED = '} else if (strstr(gpu_type, "apple_gpu") == gpu_type || !strcmp(gpu_type, "apple")) {'
 
 
 def patch_source(text: str) -> str:
@@ -15,8 +16,8 @@ def patch_source(text: str) -> str:
         count = text.count(target)
         if count != 1:
             raise ValueError(f"expected exactly 1 occurrence of the {label} branch {target!r}, found {count}")
-    text = text.replace(ELIGIBILITY_ORIGINAL, PATCHED, 1)
-    text = text.replace(DISPATCH_ORIGINAL, PATCHED, 1)
+    text = text.replace(ELIGIBILITY_ORIGINAL, ELIGIBILITY_PATCHED, 1)
+    text = text.replace(DISPATCH_ORIGINAL, DISPATCH_PATCHED, 1)
     return text
 
 

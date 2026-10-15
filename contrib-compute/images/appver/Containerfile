@@ -67,8 +67,7 @@ RUN set -eu; \
           *) echo "unsupported container platform: $PLATFORM" >&2; exit 1 ;; \
         esac; \
         python3 "$checker" --wrapper "$WRAPPER_PATH" --platform "$PLATFORM" \
-          --sha256 "$WRAPPER_SHA256" --source-pin "$WRAPPER_SOURCE_PIN" \
-          --containerfile /tmp/appver-src/contrib-compute/images/base/Containerfile; \
+          --sha256 "$WRAPPER_SHA256" --source-pin "$WRAPPER_SOURCE_PIN"; \
       fi; \
       python3 /tmp/appver-src/scripts/boinc/install.py --project "$p" \
         --kind container --wrapper "$WRAPPER_PATH" --image "$WORKER_IMAGE" --version "$VERSION" \

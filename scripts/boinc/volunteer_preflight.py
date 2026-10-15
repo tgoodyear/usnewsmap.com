@@ -39,12 +39,6 @@ DEFAULT_CREATE_ARGS = (
     "--pids-limit=64",
     "--tmpfs=/tmp:rw,size=512m",
 )
-JOB_TOML_ALIASES = {
-    "surya_cpu_job.toml": ("surya", "job-cpu.toml"),
-    "surya_gpu_job.toml": ("surya", "job-gpu.toml"),
-    "qwen_cpu_job.toml": ("qwen", "job-cpu.toml"),
-    "qwen_gpu_job.toml": ("qwen", "job-gpu.toml"),
-}
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}\Z")
 SIZE_RE = re.compile(r"([1-9][0-9]*)\s*([kmgKMG](?:i?[bB])?|[bB])?\Z")
 PROBE = r"""set -eu
@@ -181,13 +175,8 @@ def parse_bytes(raw: str) -> int:
 
 
 def limits_from_job_toml(path: Path) -> JobLimits:
-    target = Path(path)
-    if not target.is_file() and target.name in JOB_TOML_ALIASES:
-        candidate = target.parent.joinpath(*JOB_TOML_ALIASES[target.name])
-        if candidate.is_file():
-            target = candidate
     try:
-        raw_toml = _load_toml(target.read_text())
+        raw_toml = _load_toml(Path(path).read_text())
     except (OSError, ValueError) as error:
         raise PreflightError(f"Cannot parse job.toml {path}: {error}") from error
     workdir = raw_toml.get("workdir", WORKDIR)

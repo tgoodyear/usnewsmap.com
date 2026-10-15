@@ -167,6 +167,7 @@ class InstallTest(unittest.TestCase):
             self.assertEqual((target / phys).stat().st_mode & 0o777, 0o755)
             self.assertTrue((target / f"{phys}.sig").is_file())
             xml_text = (target / "version.xml").read_text()
+            self.assertIn("<api_version>8.3.0</api_version>", xml_text)
             self.assertIn(f"<physical_name>{phys}</physical_name>", xml_text)
             self.assertIn("<main_program />", xml_text)
             self.assertIn("<copy_file />", xml_text)

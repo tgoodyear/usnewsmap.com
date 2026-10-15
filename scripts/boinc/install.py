@@ -65,6 +65,7 @@ NATIVE_PLAN_CLASSES = {
     ("usnm_qwen", "nvidia_cuda_2b"): ("x86_64-pc-linux-gnu", "aarch64-unknown-linux-gnu", "windows_x86_64"),
 }
 GPU_NATIVE_PLAN_CLASSES = frozenset({"apple_gpu_8b", "nvidia_cuda_8b", "nvidia_cuda_2b"})
+NATIVE_API_VERSION = "8.3.0"
 LOGICAL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}\Z")
 
 
@@ -231,6 +232,7 @@ def install(
         shutil.copyfile(binary, target / main_name)
         (target / main_name).chmod(0o755)
         spec = ET.Element("version")
+        ET.SubElement(spec, "api_version").text = NATIVE_API_VERSION
         main_file = ET.SubElement(spec, "file")
         ET.SubElement(main_file, "physical_name").text = main_name
         ET.SubElement(main_file, "main_program")

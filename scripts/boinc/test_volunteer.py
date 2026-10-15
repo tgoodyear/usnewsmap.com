@@ -172,17 +172,17 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual(ocr_limits.cpus, 1)
         self.assertFalse(ocr_limits.use_gpu)
 
-        qwen_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/qwen_cpu_job.toml")
+        qwen_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/qwen/job-cpu.toml")
         self.assertEqual(qwen_cpu.memory, 6144 * 1024 * 1024)
         self.assertEqual(qwen_cpu.pids, 1024)
         self.assertFalse(qwen_cpu.use_gpu)
 
-        surya_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/surya_cpu_job.toml")
+        surya_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/surya/job-cpu.toml")
         self.assertEqual(surya_cpu.memory, 12 * 1024 ** 3)
         self.assertEqual(surya_cpu.pids, 1024)
         self.assertFalse(surya_cpu.use_gpu)
 
-        for gpu_path in [repo / "ocr/boinc/surya_gpu_job.toml", repo / "ocr/boinc/qwen_gpu_job.toml"]:
+        for gpu_path in [repo / "ocr/boinc/surya/job-gpu.toml", repo / "ocr/boinc/qwen/job-gpu.toml"]:
             gpu_limits = pre.limits_from_job_toml(gpu_path)
             self.assertTrue(gpu_limits.use_gpu)
             self.assertEqual(gpu_limits.pids, 1024)
@@ -259,12 +259,12 @@ class PreflightTest(unittest.TestCase):
             self.assertEqual(ocr_limits.pids, 64)
             self.assertFalse(ocr_limits.use_gpu)
 
-            surya_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/surya_cpu_job.toml")
+            surya_cpu = pre.limits_from_job_toml(repo / "ocr/boinc/surya/job-cpu.toml")
             self.assertEqual(surya_cpu.memory, 12 * 1024 ** 3)
             self.assertEqual(surya_cpu.pids, 1024)
             self.assertFalse(surya_cpu.use_gpu)
 
-            qwen_gpu = pre.limits_from_job_toml(repo / "ocr/boinc/qwen_gpu_job.toml")
+            qwen_gpu = pre.limits_from_job_toml(repo / "ocr/boinc/qwen/job-gpu.toml")
             self.assertEqual(qwen_gpu.memory, 6 * 1024 ** 3)
             self.assertEqual(qwen_gpu.pids, 1024)
             self.assertTrue(qwen_gpu.use_gpu)

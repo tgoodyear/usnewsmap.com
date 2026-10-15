@@ -124,6 +124,9 @@ def check(
     if kind == "native":
         if spec.find("is_wrapper") is not None:
             raise Refused("native version.xml must not contain <is_wrapper/>")
+        api_version = (spec.findtext("api_version") or "").strip()
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", api_version) or int(api_version.split(".", 1)[0]) < 6:
+            raise Refused("native version.xml must specify <api_version> >= 6.0.0 for boinc_mmap_file IPC")
         mains = [f for f in spec.findall("file") if f.find("main_program") is not None]
         if len(mains) != 1 or mains[0].find("copy_file") is None:
             raise Refused("native version.xml must have one <main_program/> with <copy_file/>")
