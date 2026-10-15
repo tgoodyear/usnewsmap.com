@@ -39,6 +39,40 @@ impl Target {
         }
     }
 
+    /// BOINC `workunit.batch` identifier passed via `create_work --batch` so
+    /// `sched/plan_class_spec.cpp` (`wu_is_infeasible_for_plan_class`) binds each
+    /// Qwen target exclusively to compatible app-version plan classes:
+    /// - `1` (`Container`): `docker*` (`docker_mt`, `docker_nvidia_cuda`)
+    /// - `2` (`Native2b`): native 2B/CPU plan classes (`mt`, `nvidia_cuda_2b`)
+    /// - `8` (`Native8b`): native 8B GPU plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`)
+    pub fn batch(self) -> i32 {
+        match self {
+            Self::Container => 1,
+            Self::Native2b => 2,
+            Self::Native8b => 8,
+        }
+    }
+
+    pub fn batch_str(self) -> &'static str {
+        match self {
+            Self::Container => "1",
+            Self::Native2b => "2",
+            Self::Native8b => "8",
+        }
+    }
+
+    /// Returns whether `plan_class` is eligible to execute workunits created for `self`.
+    pub fn is_plan_class_compatible(self, plan_class: &str) -> bool {
+        match self {
+            Self::Container => plan_class == "docker" || plan_class.starts_with("docker_"),
+            Self::Native8b => !plan_class.starts_with("docker") && plan_class.ends_with("_8b"),
+            Self::Native2b => {
+                !plan_class.starts_with("docker")
+                    && (plan_class == "mt" || plan_class.ends_with("_2b"))
+            }
+        }
+    }
+
     pub fn model_files(self) -> &'static [&'static str] {
         match self {
             Self::Container => &[],
@@ -101,6 +135,8 @@ pub fn create_work_args_with_lock(
         target.wu_template(),
         "--result_template",
         "templates/usnm_qwen_out",
+        "--batch",
+        target.batch_str(),
         "--min_quorum",
         "2",
         "--target_nresults",
@@ -193,9 +229,32 @@ pub fn parse_weights_lock(text: &str) -> anyhow::Result<BTreeMap<String, String>
     Ok(map)
 }
 
+fn sha256_file_streaming(path: &Path) -> anyhow::Result<String> {
+    let mut reader = std::fs::File::open(path)
+        .with_context(|| format!("opening file for sha256 {}", path.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = vec![0u8; 8 * 1024 * 1024];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .with_context(|| format!("reading file for sha256 {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
 /// Streams `src` through a SHA-256 hasher into a temporary file in `dir_hier_path`'s
 /// directory, verifies the digest against `expected_sha256`, and atomically publishes
 /// the file with `0o664` permissions without loading the multi-GiB GGUF into RAM.
+/// If `dst` already exists in the download hierarchy with the expected digest,
+/// reuses it in place without copying or rewriting.
 async fn stage_shared_model_streaming(
     project: &Path,
     physical: &str,
@@ -216,6 +275,9 @@ async fn stage_shared_model_streaming(
     } else {
         project.join(rel_or_abs)
     };
+    if dst.is_file() && sha256_file_streaming(&dst).is_ok_and(|d| d == expected_sha256) {
+        return Ok(());
+    }
     let parent = dst.parent().context("download path has no parent")?;
     std::fs::create_dir_all(parent)?;
     #[cfg(unix)]
@@ -297,6 +359,10 @@ async fn stage_shared_models_with_lock(
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
+    run_with_lock(opts, EMBEDDED_WEIGHTS_LOCK).await
+}
+
+pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::Result<Summary> {
     let project = opts.project.canonicalize()?;
     let dir = units(&opts.root);
     let mut names: Vec<_> = std::fs::read_dir(&dir)
@@ -306,14 +372,8 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         .map(|e| e.path())
         .collect();
     names.sort();
-    stage_shared_models_with_lock(
-        &project,
-        opts.model_dir.as_deref(),
-        opts.target,
-        EMBEDDED_WEIGHTS_LOCK,
-    )
-    .await?;
     let mut summary = Summary::default();
+    let mut models_staged = false;
     for unit in names {
         if summary.submitted >= opts.max_units {
             break;
@@ -333,6 +393,16 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
             "staged page changed for {}",
             job.doc_id
         );
+        if !models_staged {
+            stage_shared_models_with_lock(
+                &project,
+                opts.model_dir.as_deref(),
+                opts.target,
+                weights_lock_text,
+            )
+            .await?;
+            models_staged = true;
+        }
         atomic(&unit.join("submitting"), job.workunit().as_bytes())?;
         for (physical, file) in physical_names(&job) {
             let limit = if file == JOB_FILE {
@@ -345,7 +415,11 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         }
         let status = Command::new(project.join("bin/create_work"))
             .current_dir(&project)
-            .args(create_work_args_for_target(&job, opts.target))
+            .args(create_work_args_with_lock(
+                &job,
+                opts.target,
+                weights_lock_text,
+            )?)
             .status()
             .await?;
         ensure!(
@@ -386,7 +460,29 @@ mod tests {
         assert_eq!(names[1].1, JOB_FILE);
         let args = create_work_args(&j);
         assert!(args.contains(&"templates/usnm_qwen_in".to_string()));
+        assert!(args.windows(2).any(|w| w == ["--batch", "1"]));
         assert!(args.ends_with(&[names[0].0.clone(), names[1].0.clone()]));
+    }
+
+    #[test]
+    fn target_plan_class_compatibility_rejects_incompatible_assignments() {
+        assert!(Target::Container.is_plan_class_compatible("docker_mt"));
+        assert!(Target::Container.is_plan_class_compatible("docker_nvidia_cuda"));
+        assert!(!Target::Container.is_plan_class_compatible("mt"));
+        assert!(!Target::Container.is_plan_class_compatible("apple_gpu_8b"));
+        assert!(!Target::Container.is_plan_class_compatible("nvidia_cuda_2b"));
+
+        assert!(Target::Native8b.is_plan_class_compatible("apple_gpu_8b"));
+        assert!(Target::Native8b.is_plan_class_compatible("nvidia_cuda_8b"));
+        assert!(!Target::Native8b.is_plan_class_compatible("mt"));
+        assert!(!Target::Native8b.is_plan_class_compatible("nvidia_cuda_2b"));
+        assert!(!Target::Native8b.is_plan_class_compatible("docker_nvidia_cuda"));
+
+        assert!(Target::Native2b.is_plan_class_compatible("mt"));
+        assert!(Target::Native2b.is_plan_class_compatible("nvidia_cuda_2b"));
+        assert!(!Target::Native2b.is_plan_class_compatible("apple_gpu_8b"));
+        assert!(!Target::Native2b.is_plan_class_compatible("nvidia_cuda_8b"));
+        assert!(!Target::Native2b.is_plan_class_compatible("docker_mt"));
     }
 
     #[test]
@@ -409,6 +505,7 @@ mod tests {
         let digests = parse_weights_lock(EMBEDDED_WEIGHTS_LOCK).unwrap();
         let args_8b = create_work_args_for_target(&j, Target::Native8b);
         assert!(args_8b.contains(&"templates/usnm_qwen_8b_in".to_string()));
+        assert!(args_8b.windows(2).any(|w| w == ["--batch", "8"]));
         assert!(args_8b.ends_with(&[
             format!("{}_page_jpg", j.id),
             format!("{}_qwen_json", j.id),
@@ -424,6 +521,7 @@ mod tests {
 
         let args_2b = create_work_args_for_target(&j, Target::Native2b);
         assert!(args_2b.contains(&"templates/usnm_qwen_2b_in".to_string()));
+        assert!(args_2b.windows(2).any(|w| w == ["--batch", "2"]));
         assert!(args_2b.ends_with(&[
             format!("{}_page_jpg", j.id),
             format!("{}_qwen_json", j.id),
@@ -536,5 +634,29 @@ mod tests {
             .unwrap(),
             mmproj_2b
         );
+
+        // Existing verified downloads are reused in place without reading/copying from model_dir.
+        std::fs::remove_dir_all(&model_dir).unwrap();
+        stage_shared_models_with_lock(&project, Some(&model_dir), Target::Native2b, &lock)
+            .await
+            .unwrap();
+
+        // When no work is pending (empty units directory or max_units == 0), run_with_lock
+        // does not stage models at all.
+        let campaign_root = tmp.path().join("campaign");
+        std::fs::create_dir_all(units(&campaign_root)).unwrap();
+        let empty_summary = run_with_lock(
+            &Options {
+                root: campaign_root,
+                project: project.clone(),
+                max_units: 10,
+                target: Target::Native8b,
+                model_dir: Some(tmp.path().join("nonexistent-models")),
+            },
+            &lock,
+        )
+        .await
+        .unwrap();
+        assert_eq!(empty_summary.submitted, 0);
     }
 }

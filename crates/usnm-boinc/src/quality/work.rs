@@ -6,12 +6,13 @@
 //! [`usnm_ocr_quality::slot::run_slot`] in the slot.
 use std::path::Path;
 pub use usnm_ocr_quality::slot::{
-    compute, cpu_ms, peak_rss_kib, prepare, run_slot, Computed, Inputs, Loaded, DEADLINE,
+    compute, cpu_ms, peak_rss_kib, prepare, run_container_slot, run_slot, Computed, Inputs, Loaded,
+    DEADLINE,
 };
 
 pub async fn run(work: &Path) -> anyhow::Result<()> {
     let work = work.to_owned();
-    tokio::task::spawn_blocking(move || run_slot(&work)).await?
+    tokio::task::spawn_blocking(move || run_container_slot(&work)).await?
 }
 
 #[cfg(test)]

@@ -58,6 +58,8 @@
         <min_core_client_version>80213</min_core_client_version>
         <min_gpu_ram_mb>8192</min_gpu_ram_mb>
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
+        <min_batch>8</min_batch>
+        <max_batch>8</max_batch>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>
@@ -69,6 +71,8 @@
         <min_nvidia_compcap>600</min_nvidia_compcap>
         <min_gpu_ram_mb>7000</min_gpu_ram_mb>
         <gpu_ram_used_mb>6000</gpu_ram_used_mb>
+        <min_batch>8</min_batch>
+        <max_batch>8</max_batch>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>
@@ -80,6 +84,8 @@
         <min_nvidia_compcap>500</min_nvidia_compcap>
         <min_gpu_ram_mb>3000</min_gpu_ram_mb>
         <gpu_ram_used_mb>2500</gpu_ram_used_mb>
+        <min_batch>2</min_batch>
+        <max_batch>2</max_batch>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
 </plan_classes>

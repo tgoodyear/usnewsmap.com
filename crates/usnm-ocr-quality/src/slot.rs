@@ -384,6 +384,26 @@ pub struct BoincControl {
 pub type BoincRuntime = BoincControl;
 
 impl BoincControl {
+    /// Returns an inert controller for container workers where `docker_wrapper`
+    /// already owns `boinc_mmap_file`, `<comm_obj_name>`, and `boinc_finish_called`.
+    pub fn noop() -> Self {
+        Self {
+            inner: Arc::new(BoincControlInner {
+                state: Mutex::new(BoincControlState {
+                    suspended: false,
+                    quit_requested: false,
+                    abort_requested: false,
+                    heartbeat_lost: false,
+                    heartbeat_enabled: false,
+                    last_heartbeat: Instant::now(),
+                    child_pgid: None,
+                    child_hook: None,
+                }),
+                cvar: Condvar::new(),
+            }),
+        }
+    }
+
     /// Starts monitoring `boinc_mmap_file` in `work` with the standard 30-second
     /// heartbeat timeout.
     pub fn start(work: &Path) -> Self {
@@ -1228,29 +1248,43 @@ fn compute_with_deadline(
     }
 }
 
-/// Runs a complete `usnm_quality` unit in `work`, writing `fraction_done`,
+/// Runs a complete native `usnm_quality` unit in `work`, monitoring BOINC's
+/// shared-memory lifecycle channels and writing `fraction_done`,
 /// `confusions.json`, `diag.txt`, `result.json`, and `boinc_finish_called`.
 pub fn run_slot(work: &Path) -> anyhow::Result<()> {
+    run_slot_with_mode(work, true)
+}
+
+/// Runs a complete container `usnm_quality` unit in `work`, writing
+/// `fraction_done`, `confusions.json`, `diag.txt`, and `result.json` while
+/// leaving `boinc_mmap_file` and `boinc_finish_called` exclusively to
+/// `docker_wrapper`.
+pub fn run_container_slot(work: &Path) -> anyhow::Result<()> {
+    run_slot_with_mode(work, false)
+}
+
+fn run_slot_with_mode(work: &Path, native_lifecycle: bool) -> anyhow::Result<()> {
     let confusions_out = resolve_slot_file(work, CONFUSIONS_FILE);
     let diag_out = resolve_slot_file(work, DIAG_FILE);
     let result_out = resolve_slot_file(work, RESULT_FILE);
     let fraction_out = work.join(FRACTION_FILE);
     let finish_out = work.join(FINISH_FILE);
 
-    for p in [
-        &confusions_out,
-        &diag_out,
-        &result_out,
-        &fraction_out,
-        &finish_out,
-    ] {
+    for p in [&confusions_out, &diag_out, &result_out, &fraction_out] {
         if p.exists() {
             std::fs::remove_file(p)?;
         }
     }
+    if native_lifecycle && finish_out.exists() {
+        std::fs::remove_file(&finish_out)?;
+    }
     write_atomic(&fraction_out, b"0.0\n")?;
 
-    let control = BoincControl::start(work);
+    let control = if native_lifecycle {
+        BoincControl::start(work)
+    } else {
+        BoincControl::noop()
+    };
     let mut diag = Diag::new();
     let mut host = Host::default();
     boinc_info(work, &mut host, &mut diag);
@@ -1386,7 +1420,9 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
     write_atomic(&diag_out, &diag)?;
     write_atomic(&result_out, &serde_json::to_vec_pretty(&result)?)?;
     write_atomic(&fraction_out, b"1.0\n")?;
-    write_atomic(&finish_out, b"0\n")?;
+    if native_lifecycle {
+        write_atomic(&finish_out, b"0\n")?;
+    }
     Ok(())
 }
 
@@ -1520,6 +1556,23 @@ mod tests {
             None
         );
         assert_eq!(parse_comm_obj_name("<app_init_data/>"), None);
+    }
+
+    #[test]
+    fn container_slot_leaves_mmap_and_finish_file_to_docker_wrapper() {
+        let tmp = TestDir::new("container-slot");
+        let slot = tmp.path();
+        let mmap = slot.join(MMAP_FILE);
+        write_mmap_channel(&mmap, PROCESS_CONTROL_REQUEST_OFFSET, "<quit/>").unwrap();
+        write_mmap_channel(&mmap, HEARTBEAT_OFFSET, "<heartbeat/>").unwrap();
+
+        run_container_slot(slot).unwrap();
+        // Container slot must not consume docker_wrapper's mmap messages or write boinc_finish_called.
+        let bytes = std::fs::read(&mmap).unwrap();
+        assert_eq!(bytes[PROCESS_CONTROL_REQUEST_OFFSET], 1);
+        assert_eq!(bytes[HEARTBEAT_OFFSET], 1);
+        assert!(!slot.join(FINISH_FILE).exists());
+        assert!(slot.join(RESULT_FILE).is_file());
     }
 
     #[cfg(windows)]
