@@ -6,8 +6,12 @@
 //! stored.
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use std::collections::BTreeMap;
 use usnm_alto::{Description, Page, ParseOptions, Software, Step};
-use usnm_core::ocr_engine::EngineTag;
+
+use usnm_core::ocr_engine::{EngineTag, OcrEngineTag};
+
+use crate::engine::ReadInfo;
 
 /// This worker as the stored ALTO names it: the crate version, plus the
 /// commit CI built it from (`USNM_GIT_SHA`), e.g. `0.1.0+1dcc5c3`.
@@ -28,6 +32,10 @@ pub struct Source<'a> {
     pub sha256: &'a str,
     /// A batch JP2's md5 from its bag manifest, which the bytes matched.
     pub md5: Option<&'a str>,
+    /// The page's `run_id` (13 §13.4.3), when the worker minted one.
+    pub run_id: Option<&'a str>,
+    /// The queue message's `score`, the page's damage before.
+    pub damage_before: Option<f64>,
 }
 
 /// What the worker uploads for a page.
@@ -84,27 +92,21 @@ pub fn from_output(
     worker_version: &str,
     now: DateTime<Utc>,
 ) -> Result<Stored, ConvertError> {
-    match out.page.take() {
-        Some(page) => Ok(store_from(
-            page,
-            out.layout_from,
-            &out.engine,
-            language,
-            dpi,
-            source,
-            worker_version,
-            now,
-        )),
-        None => from_engine_alto(
-            &out.alto,
-            &out.engine,
-            language,
-            dpi,
-            source,
-            worker_version,
-            now,
-        ),
-    }
+    let page = match out.page.take() {
+        Some(page) => page,
+        None => usnm_alto::parse(&out.alto, &ParseOptions::default())?,
+    };
+    Ok(store_from(
+        page,
+        out.layout_from,
+        &out.engine,
+        Some(&out.read),
+        language,
+        dpi,
+        source,
+        worker_version,
+        now,
+    ))
 }
 
 /// The stored outputs for a page parsed from engine ALTO.
@@ -121,6 +123,7 @@ pub fn store(
         page,
         "ALTO",
         ocr_engine,
+        None,
         language,
         dpi,
         source,
@@ -130,12 +133,14 @@ pub fn store(
 }
 
 /// The stored outputs for a page parsed from what the engine wrote
-/// (`from`: `ALTO` or `boxes.json`).
+/// (`from`: `ALTO` or `boxes.json`), with the engine's side of its
+/// provenance when known.
 #[allow(clippy::too_many_arguments)]
 pub fn store_from(
     page: Page,
     from: &str,
     ocr_engine: &str,
+    read: Option<&ReadInfo>,
     language: &str,
     dpi: u32,
     source: &Source<'_>,
@@ -151,9 +156,13 @@ pub fn store_from(
     }
     // The engine's name and version from its tag; the whole tag goes in
     // the settings, with what it names (13 §13.8.2).
-    let (family, version) = match EngineTag::parse(ocr_engine) {
-        Ok(EngineTag::Tag(t)) => (t.family().to_owned(), t.version().to_owned()),
-        _ => (
+    let tag = match EngineTag::parse(ocr_engine) {
+        Ok(EngineTag::Tag(t)) => Some(t),
+        _ => None,
+    };
+    let (family, version) = match &tag {
+        Some(t) => (t.family().to_owned(), t.version().to_owned()),
+        None => (
             ocr_engine.split('/').next().unwrap_or("").to_owned(),
             String::new(),
         ),
@@ -167,11 +176,14 @@ pub fn store_from(
         file_identifiers: ids,
         ocr: Step {
             date_time: Some(now.to_rfc3339_opts(SecondsFormat::Secs, true)),
-            settings: vec![
-                ("ocr_engine".into(), ocr_engine.to_owned()),
-                ("granularity".into(), page.granularity.as_str().to_owned()),
-                ("dpi".into(), format!("{dpi} (assumed)")),
-            ],
+            settings: settings(
+                ocr_engine,
+                tag.as_ref(),
+                read,
+                page.granularity.as_str(),
+                source,
+                dpi,
+            ),
             software: Software {
                 creator,
                 name: family,
@@ -197,6 +209,68 @@ pub fn store_from(
     let alto = usnm_alto::write(&page, &desc, language);
     let text = usnm_core::text::normalize_ocr(&usnm_alto::text(&page));
     Stored { alto, text, page }
+}
+
+/// The stored ALTO's `processingStepSettings`, in 13 §13.8.2's order:
+/// the full tag first, then what it abbreviates and the page's run.
+fn settings(
+    ocr_engine: &str,
+    tag: Option<&OcrEngineTag>,
+    read: Option<&ReadInfo>,
+    granularity: &str,
+    source: &Source<'_>,
+    dpi: u32,
+) -> Vec<(String, String)> {
+    let mut s = vec![("ocr_engine".to_owned(), ocr_engine.to_owned())];
+    if let Some(r) = read {
+        s.push(("image".into(), r.image_ref.clone()));
+        let models: Vec<String> = serde_json::from_str::<BTreeMap<String, String>>(&r.models_json)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, sha)| {
+                let sha = sha.strip_prefix("sha256:").unwrap_or(&sha).to_owned();
+                format!("{name}:sha256:{sha}")
+            })
+            .collect();
+        if !models.is_empty() {
+            s.push(("models".into(), models.join(",")));
+        }
+    }
+    if let Some(t) = tag {
+        s.push(("profile".into(), t.profile().to_owned()));
+    }
+    if let Some(r) = read {
+        let opts: BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(&r.options_json).unwrap_or_default();
+        let opts: Vec<String> = opts
+            .into_iter()
+            .map(|(k, v)| match v {
+                serde_json::Value::String(v) => format!("{k}={v}"),
+                v => format!("{k}={}", v),
+            })
+            .collect();
+        s.push(("options".into(), opts.join(",")));
+    }
+    if let Some(t) = tag {
+        s.push(("route".into(), t.route().to_owned()));
+        s.push(("routing".into(), format!("r{}", t.route_version())));
+        s.push(("contract".into(), t.contract().to_string()));
+    }
+    if let Some(r) = read {
+        s.push(("adapter".into(), r.adapter.clone()));
+    }
+    s.push(("granularity".into(), granularity.to_owned()));
+    if let Some(id) = source.run_id {
+        s.push(("run_id".into(), id.to_owned()));
+    }
+    if hex(source.sha256) {
+        s.push(("input_sha256".into(), source.sha256.to_owned()));
+    }
+    s.push(("dpi".into(), format!("{dpi} (assumed)")));
+    if let Some(d) = source.damage_before {
+        s.push(("damage_before".into(), format!("{d}")));
+    }
+    s
 }
 
 #[cfg(test)]
@@ -263,6 +337,10 @@ mod tests {
                     url: URL,
                     sha256: SHA,
                     md5,
+
+                    run_id: None,
+
+                    damage_before: None,
                 };
                 let new = from_engine_alto(&xml, TAG, "eng", 300, &source, "0.1.0", now).unwrap();
                 let old_alto = set_alto_source(&String::from_utf8_lossy(&xml), URL, SHA, md5);
@@ -290,12 +368,74 @@ mod tests {
         }
     }
 
+    /// The stored ALTO's settings name the engine's provenance and the
+    /// page's run, in 13 §13.8.2's order.
+    #[test]
+    fn settings_carry_the_provenance() {
+        let (_, xml, _) = fixtures().into_iter().next().unwrap();
+        let page = usnm_alto::parse(&xml, &ParseOptions::default()).unwrap();
+        let read = ReadInfo {
+            image_ref: "ghcr.io/x/usnm-ocr/tesseract@sha256:3f9a".into(),
+            models_json: r#"{"tessdata/eng.traineddata":"7af2"}"#.into(),
+            options_json: r#"{"dpi":300,"psm":3}"#.into(),
+            ..ReadInfo::local("tesseract-5.5")
+        };
+        let source = Source {
+            url: URL,
+            sha256: SHA,
+            md5: None,
+            run_id: Some("nuc1.20261020T140431123456Z"),
+            damage_before: Some(0.25),
+        };
+        let now: DateTime<Utc> = "2026-10-20T14:04:31Z".parse().unwrap();
+        let stored = store_from(
+            page,
+            "ALTO",
+            TAG,
+            Some(&read),
+            "eng",
+            300,
+            &source,
+            "0.1.0",
+            now,
+        );
+        let settings = stored
+            .alto
+            .split_once("<processingStepSettings>")
+            .and_then(|(_, s)| s.split_once("</processingStepSettings>"))
+            .unwrap()
+            .0;
+        let keys: Vec<&str> = settings.split('\n').collect();
+        assert_eq!(
+            keys,
+            [
+                format!("ocr_engine={TAG}"),
+                "image=ghcr.io/x/usnm-ocr/tesseract@sha256:3f9a".into(),
+                "models=tessdata/eng.traineddata:sha256:7af2".into(),
+                "profile=eng".into(),
+                "options=dpi=300,psm=3".into(),
+                "route=minimal".into(),
+                "routing=r1".into(),
+                "contract=0".into(),
+                format!("adapter={}", read.adapter),
+                "granularity=word".into(),
+                "run_id=nuc1.20261020T140431123456Z".into(),
+                format!("input_sha256={SHA}"),
+                "dpi=300 (assumed)".into(),
+                "damage_before=0.25".into(),
+            ]
+        );
+        usnm_ingest::ocr_local::checks::check_alto(stored.alto.as_bytes()).unwrap();
+    }
+
     #[test]
     fn engine_alto_that_doesnt_parse_is_a_convert_failure() {
         let source = Source {
             url: URL,
             sha256: SHA,
             md5: None,
+            run_id: None,
+            damage_before: None,
         };
         let now = Utc::now();
         assert!(from_engine_alto(b"<alto/>", TAG, "eng", 300, &source, "0.1.0", now).is_err());

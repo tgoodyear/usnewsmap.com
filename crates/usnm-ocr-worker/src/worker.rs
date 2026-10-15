@@ -148,7 +148,9 @@ impl From<StoreError> for Failure {
 /// What was written for a page.
 #[derive(Debug)]
 pub struct Done {
+    pub run_id: String,
     pub alto: String,
+    pub runs: String,
     pub part: String,
     pub chars: usize,
     pub status: &'static str,
@@ -178,22 +180,32 @@ fn engine_failure(e: EngineError, node: &str) -> Failure {
     }
 }
 
-/// A page's output names, unique per node and moment (the nodes can create
-/// blobs in `ocr-out` but not replace or delete them, ADR-0015):
-/// `alto/<doc_id>.<node>.<stamp>.xml` and
-/// `pages/<issue>.<node>.<stamp>.parquet`, with the same stamp.
-pub fn output_paths(key: &PageKey, node: &str) -> (String, String) {
+/// A page's output names in `ocr-out`, all from its `run_id`
+/// (`<node>.<stamp>`, 13 §13.8.4), which is unique per node and moment
+/// (the nodes can create blobs in `ocr-out` but not replace or delete
+/// them, ADR-0015).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputPaths {
+    /// `alto/<doc_id>.<run_id>.xml`.
+    pub alto: String,
+    /// `runs/<issue>.<run_id>.parquet` (13 §13.8.3).
+    pub runs: String,
+    /// `pages/<issue>.<run_id>.parquet`.
+    pub part: String,
+}
+
+pub fn output_paths(key: &PageKey, run_id: &str) -> OutputPaths {
     let issue = format!(
         "{}_{}_ed-{}",
         key.lccn,
         key.date.format("%Y-%m-%d"),
         key.edition
     );
-    let stamp = Utc::now().format("%Y%m%dT%H%M%S%6fZ");
-    (
-        format!("alto/{}.{node}.{stamp}.xml", key.doc_id()),
-        format!("pages/{issue}.{node}.{stamp}.parquet"),
-    )
+    OutputPaths {
+        alto: format!("alto/{}.{run_id}.xml", key.doc_id()),
+        runs: usnm_ocr_contract::runs::path(&issue, run_id),
+        part: format!("pages/{issue}.{run_id}.parquet"),
+    }
 }
 
 #[derive(Debug)]
@@ -543,7 +555,7 @@ impl Worker {
                     page, queue = %msg.queue, reason = m.reason.as_str(), language = %m.language,
                     engine = %done.engine, status = done.status, chars = done.chars,
                     jpeg_fallback = done.jpeg_fallback,
-                    alto = %done.alto, part = %done.part,
+                    run_id = %done.run_id, alto = %done.alto, runs = %done.runs, part = %done.part,
                     secs = received.elapsed().as_secs_f64(), "page done"
                 );
                 if let Err(e) = self.queue.delete(&msg).await {
@@ -604,6 +616,11 @@ impl Worker {
     ) -> Result<Done, Failure> {
         let work = tempfile::tempdir()
             .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
+        // Minted before the engine call: it names the page's request to
+        // an engine behind the contract, its outputs and its runs record
+        // (13 §13.4.3).
+        let run_id = crate::provenance::mint_run_id(&self.cfg.node_id);
+        tracing::debug!(run_id, doc_id = %key.doc_id(), "page started");
         // Another node may have the model: leave the message, and let the
         // dequeue count dead-letter it if no node does. Asked before the
         // scan is fetched, so it costs loc.gov nothing.
@@ -636,9 +653,10 @@ impl Worker {
                 tracing::debug!(doc_id = %key.doc_id(), format = scan.format.name(), "scan read from the cache");
             }
             let t = Instant::now();
+            let mut read_secs = t;
             let mut jpeg_fallback = false;
             let mut evict_jp2 = None;
-            let (scan, out) = match self.read_scan(&scan, m, work.path()).await {
+            let (scan, out) = match self.read_scan(&scan, m, work.path(), &run_id).await {
                 Ok(out) => (scan, out),
                 // Some intact JP2s crash the engine with status 136 (#454);
                 // their IIIF JPEG reads. One more run on it; no second
@@ -657,8 +675,9 @@ impl Worker {
                     tokio::fs::create_dir(&again)
                         .await
                         .map_err(|e| Failure::Transient("scratch", format!("scratch dir: {e}")))?;
+                    read_secs = Instant::now();
                     let out = self
-                        .read_scan(&jpeg, m, &again)
+                        .read_scan(&jpeg, m, &again, &run_id)
                         .await
                         .map_err(|e| engine_failure(e, &self.cfg.node_id))?;
                     // The JP2's buffer copy goes with the JPEG's, after the upload.
@@ -668,6 +687,7 @@ impl Worker {
                 }
                 Err(e) => return Err(engine_failure(e, &self.cfg.node_id)),
             };
+            let seconds_wall = read_secs.elapsed().as_secs_f64();
             let scan_sha256 = crate::prefetch::sha256(&scan.bytes);
             self.metrics.ocr_seconds.record(
                 t.elapsed().as_secs_f64(),
@@ -692,12 +712,22 @@ impl Worker {
                 out,
                 jpeg_fallback,
                 evict_jp2,
+                seconds_wall,
             ))
         };
-        let (iiif_base, scan_url, scan_sha256, scan_md5, evict, out, jpeg_fallback, evict_jp2) =
-            tokio::time::timeout_at(deadline.into(), read)
-                .await
-                .map_err(|_| Failure::Abandoned)??;
+        let (
+            iiif_base,
+            scan_url,
+            scan_sha256,
+            scan_md5,
+            evict,
+            out,
+            jpeg_fallback,
+            evict_jp2,
+            seconds_wall,
+        ) = tokio::time::timeout_at(deadline.into(), read)
+            .await
+            .map_err(|_| Failure::Abandoned)??;
         // The stored ALTO is written from the engine's parsed ALTO, and the
         // text is derived from it in reading order (13 §13.4.7), so the two
         // hold the same words. The ALTO names the file read (the IIIF JPEG
@@ -707,6 +737,8 @@ impl Worker {
             url: &scan_url,
             sha256: &scan_sha256,
             md5: scan_md5.as_deref(),
+            run_id: Some(&run_id),
+            damage_before: m.score,
         };
         let mut out = out;
         let stored = crate::stored::from_output(
@@ -718,6 +750,25 @@ impl Worker {
             Utc::now(),
         )
         .map_err(|e| Failure::Transient("convert", e.to_string()))?;
+        let worker_version = crate::stored::worker_version();
+        let runs = crate::provenance::record(&crate::provenance::Read {
+            run_id: &run_id,
+            doc_id: &key.doc_id(),
+            node: &self.cfg.node_id,
+            worker_version: &worker_version,
+            message: m,
+            ocr_source: self.engine.source(),
+            ocr_engine: &out.engine,
+            info: &out.read,
+            page: &stored.page,
+            text: &stored.text,
+            image_sha256: &scan_sha256,
+            dpi: self.engine.dpi(),
+            seconds_wall,
+            finished_at: Utc::now(),
+        });
+        let runs = usnm_ocr_contract::runs::write(std::slice::from_ref(&runs))
+            .map_err(|e| Failure::Transient("output", format!("runs record: {e:#}")))?;
         let (text, alto) = (stored.text, stored.alto);
         let row = OverlayRow {
             key: key.clone(),
@@ -739,10 +790,13 @@ impl Worker {
         // may be with another node already. An ALTO without its part is
         // harmless; parts are only read with their ALTO.
         self.tracker.stage(token, "upload");
-        let (alto_path, part_path) =
-            tokio::time::timeout_at(deadline.into(), self.write_output(key, alto, part))
-                .await
-                .map_err(|_| Failure::Abandoned)??;
+        let paths = output_paths(key, &run_id);
+        tokio::time::timeout_at(
+            deadline.into(),
+            self.write_output(key, &paths, alto, runs, part),
+        )
+        .await
+        .map_err(|_| Failure::Abandoned)??;
         // The output is uploaded: a buffer-set scan isn't needed any more.
         // Best effort; a failure is logged, never the page's.
         for url in evict.into_iter().chain(evict_jp2) {
@@ -751,8 +805,10 @@ impl Worker {
             let _ = tokio::time::timeout_at(deadline.into(), self.scans.evict(&url)).await;
         }
         Ok(Done {
-            alto: alto_path,
-            part: part_path,
+            run_id,
+            alto: paths.alto,
+            runs: paths.runs,
+            part: paths.part,
             chars,
             status,
             engine: out.engine,
@@ -766,6 +822,7 @@ impl Worker {
         scan: &Scan,
         m: &OcrMessage,
         work: &Path,
+        run_id: &str,
     ) -> Result<EngineOutput, EngineError> {
         // The extension names the format: Tesseract (Leptonica) reads
         // JPEG and, through OpenJPEG, JP2.
@@ -773,39 +830,36 @@ impl Worker {
         tokio::fs::write(&image, &scan.bytes)
             .await
             .map_err(|e| anyhow::anyhow!(ScratchError(format!("scratch image: {e}"))))?;
-        self.engine.ocr(&image, &m.language, work).await
+        self.engine.read(&image, &m.language, work, run_id).await
     }
 
     /// Write a page's ALTO, then its part, create-only under fresh names.
     async fn write_output(
         &self,
         key: &PageKey,
+        paths: &OutputPaths,
         alto: String,
+        runs: Vec<u8>,
         part: Vec<u8>,
-    ) -> Result<(String, String), Failure> {
-        for _ in 0..3 {
-            let (alto_path, part_path) = output_paths(key, &self.cfg.node_id);
-            // ALTO first, as the Japanese job does: a part is only written
-            // once its page's ALTO is there. Both are create-only.
-            if !self
-                .out
-                .put_new(&alto_path, alto.clone().into_bytes(), "application/xml")
-                .await?
-            {
-                continue;
-            }
-            if self
-                .out
-                .put_new(&part_path, part.clone(), "application/vnd.apache.parquet")
-                .await?
-            {
-                return Ok((alto_path, part_path));
+    ) -> Result<(), Failure> {
+        // ALTO first, then the runs record, then the part (13 §13.8.3): a
+        // part is only written once its page's ALTO and record are there.
+        // All are create-only, and their names come from the page's
+        // run_id, so a name already taken isn't retried under another.
+        let outputs = [
+            (&paths.alto, alto.into_bytes(), "application/xml"),
+            (&paths.runs, runs, "application/vnd.apache.parquet"),
+            (&paths.part, part, "application/vnd.apache.parquet"),
+        ];
+        for (path, bytes, content_type) in outputs {
+            if !self.out.put_new(path, bytes, content_type).await? {
+                return Err(Failure::Transient(
+                    "output",
+                    format!("{path} for {key} already exists ({})", random_token()),
+                ));
             }
         }
-        Err(Failure::Transient(
-            "output",
-            format!("no free output name for {key} ({})", random_token()),
-        ))
+        Ok(())
     }
 }
 
@@ -947,6 +1001,7 @@ mod tests {
                 page: None,
                 layout_from: "ALTO",
                 engine: "tesseract-5.5.1/deu_latf+deu".into(),
+                read: crate::engine::ReadInfo::local("tesseract-5.5.1"),
             })
         }
     }
@@ -1074,6 +1129,53 @@ mod tests {
         assert_eq!(
             parts[0],
             format!("pages/sn83045462_1890-05-03_ed-1.node1.{stamp}.parquet")
+        );
+        // The provenance: the run_id in the stored ALTO, and the runs
+        // record under the same name (13 §13.8).
+        assert!(
+            alto.contains("<processingStepSettings>")
+                && alto.contains(&format!("run_id=node1.{stamp}"))
+                && alto.contains("damage_before=0.62"),
+            "{alto}"
+        );
+        let runs = out.list("runs").await.unwrap();
+        assert_eq!(
+            runs,
+            vec![format!(
+                "runs/sn83045462_1890-05-03_ed-1.node1.{stamp}.parquet"
+            )]
+        );
+        let record = out.get(&runs[0]).await.unwrap().unwrap();
+        let record = usnm_ocr_contract::runs::read(bytes::Bytes::from(record)).unwrap();
+        assert_eq!(record.len(), 1);
+        let r = &record[0];
+        assert_eq!(r.run_id, format!("node1.{stamp}"));
+        assert_eq!(r.doc_id, "sn83045462_1890-05-03_ed-1_seq-7");
+        assert_eq!(r.node, "node1");
+        assert_eq!(r.ocr_engine, "tesseract-5.5.1/deu_latf+deu");
+        assert_eq!(
+            (
+                r.family.as_str(),
+                r.engine_version.as_str(),
+                r.profile.as_str()
+            ),
+            ("tesseract", "5.5.1", "deu_latf+deu")
+        );
+        assert!(r.selected && r.status == "ok");
+        assert_eq!(r.image_sha256, crate::prefetch::sha256(b"jpeg"));
+        assert_eq!(r.damage_before, Some(0.62));
+        assert!(r.damage_after.is_some_and(|d| (0.0..=1.0).contains(&d)));
+        assert_eq!(r.reason, "bulk");
+        assert_eq!(r.language, "deu");
+        assert_eq!(r.queued_at, Some("2026-10-10T12:00:00Z".parse().unwrap()));
+        assert_eq!(r.words, Some(7));
+        assert_eq!(
+            r.text_chars,
+            Some(
+                "Die Nebraska Staats-Zeitung\nerscheint jeden Sonnabend."
+                    .chars()
+                    .count() as u32
+            )
         );
         let bytes = out.get(&parts[0]).await.unwrap().unwrap();
         let pages = usnm_ingest::ocr_ja::read_part(bytes::Bytes::from(bytes), &parts[0]).unwrap();
@@ -1333,13 +1435,24 @@ mod tests {
     #[test]
     fn output_names() {
         let key: PageKey = "sn83045462/1890-05-03/ed-2/seq-7".parse().unwrap();
-        let (a, p) = output_paths(&key, "nuc1");
-        assert!(a.starts_with("alto/sn83045462_1890-05-03_ed-2_seq-7.nuc1."));
-        assert!(a.ends_with("Z.xml"));
-        assert!(p.starts_with("pages/sn83045462_1890-05-03_ed-2.nuc1."));
-        assert!(p.ends_with("Z.parquet"));
-        assert!(usnm_store::validate_path(&a).is_ok());
-        assert!(usnm_store::validate_path(&p).is_ok());
+        let run_id = crate::provenance::mint_run_id("nuc1");
+        let stamp = run_id.strip_prefix("nuc1.").unwrap();
+        let p = output_paths(&key, &run_id);
+        assert_eq!(
+            p.alto,
+            format!("alto/sn83045462_1890-05-03_ed-2_seq-7.nuc1.{stamp}.xml")
+        );
+        assert_eq!(
+            p.runs,
+            format!("runs/sn83045462_1890-05-03_ed-2.nuc1.{stamp}.parquet")
+        );
+        assert_eq!(
+            p.part,
+            format!("pages/sn83045462_1890-05-03_ed-2.nuc1.{stamp}.parquet")
+        );
+        for path in [&p.alto, &p.runs, &p.part] {
+            assert!(usnm_store::validate_path(path).is_ok());
+        }
         assert!(check_node_id("nuc-1").is_ok());
         assert!(check_node_id("a.b").is_err());
         assert!(check_node_id("").is_err());

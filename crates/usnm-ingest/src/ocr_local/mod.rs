@@ -83,6 +83,12 @@ pub fn alto_path(doc_id: &str, node: &str, stamp: &str) -> String {
     format!("{ROOT}/alto/{doc_id}.{node}.{stamp}.xml")
 }
 
+/// A page's curated runs record (12 Step 8, 13 §13.8.3), named as in
+/// `ocr-out`: `<lccn>_<date>_ed-<n>.<node>.<stamp>`.
+pub fn runs_path(issue: &str, node: &str, stamp: &str) -> String {
+    format!("{ROOT}/runs/{issue}.{node}.{stamp}.parquet")
+}
+
 pub fn pages_path(lccn: &str, run: &str) -> String {
     format!("{ROOT}/pages/{lccn}/{run}.parquet")
 }

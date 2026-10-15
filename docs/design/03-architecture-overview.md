@@ -88,6 +88,15 @@ The **growth profile** adds Azure Front Door in front of both origins (edge cach
 | **Document state + work queue**        | Cosmos DB for NoSQL, free tier, private endpoint                                                            | Per-title, per-batch, per-issue and per-index-run status; batch claiming via leases (replaces a Storage Queue); change feed driving incremental indexing. Not on the API request path                                           | Free tier (1,000 RU/s)              |
 | **Observability**                      | App Insights via the managed OpenTelemetry agent; Log Analytics (free tier with daily cap)                  | Traces, metrics, logs, availability tests, alerts                                                                                                                                                                               | Managed                             |
 
+The #283 index-account move is opt-in: a separate private Entra-only Blob
+account holds Quickwit's derived metastore and splits, without the lake's
+versioning or soft delete. During migration a parallel internal searcher
+reads it while the old searcher serves the lake. A staged reference pointer
+and the separately gated API-reader switch preserve the serving version
+until cutover ([ADR-0021](adr/0021-separate-index-storage.md),
+[operations](../operations.md#index-storage-cutover)). Curated data and
+reference snapshots remain in the protected lake.
+
 ## 3.4 Key runtime flows
 
 ### 3.4.1 Search → map → playback (the main flow)

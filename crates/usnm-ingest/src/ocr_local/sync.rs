@@ -38,7 +38,9 @@ use super::checks::{self, Context as CheckContext, PartName, Reject};
 use super::ledger::{self, Outcome, DEAD_LETTERED, IMPORTED};
 use super::pages::{self, Imported, Scores};
 use super::quarantine::{self, Item};
-use super::{alto_path, deadletter_path, import_path, pages_path, run_id, ROOT, STATUS_PATH};
+use super::{
+    alto_path, deadletter_path, import_path, pages_path, run_id, runs_path, ROOT, STATUS_PATH,
+};
 use crate::ocr_damage::{self, StoredScore};
 
 /// How long the lock lasts without renewal, and how often it is renewed.
@@ -506,6 +508,7 @@ async fn drain_batch(
                         size: msg.text.len() as u64,
                         created: None,
                         content: Some(msg.text.clone().into_bytes()),
+                        companions: Vec::new(),
                     },
                 )
                 .await?;
@@ -584,15 +587,20 @@ async fn run_locked(
 
     let (version, batches, ctx) = context(state, stores).await?;
 
-    // Parts first, then ALTO: a node writes a page's ALTO before its part,
-    // so every part listed has its ALTO in the second listing.
+    // Parts first, then ALTO and runs records: a node writes a page's
+    // ALTO and runs record before its part, so every part listed has them
+    // in the later listings.
     let mut parts = stores.out.list_info("pages").await?;
     let altos = stores.out.list_info("alto").await?;
+    let runs = stores
+        .out
+        .list_info(usnm_ocr_contract::runs::PREFIX)
+        .await?;
 
     // A stopped run's consumed sources: delete without importing again.
     let consumed = consumed_before(stores.curated.as_ref(), started).await?;
     let mut gone: HashSet<String> = HashSet::new();
-    for o in parts.iter().chain(altos.iter()) {
+    for o in parts.iter().chain(altos.iter()).chain(runs.iter()) {
         if consumed.contains(&(o.path.clone(), o.etag.clone())) {
             lease.check()?;
             if stores.out.delete_if_match(&o.path, &o.etag).await? {
@@ -606,6 +614,11 @@ async fn run_locked(
         .into_iter()
         .filter(|a| !gone.contains(&a.path))
         .map(|a| (a.path.clone(), a))
+        .collect();
+    let runs_by_path: HashMap<String, ObjectInfo> = runs
+        .into_iter()
+        .filter(|r| !gone.contains(&r.path))
+        .map(|r| (r.path.clone(), r))
         .collect();
     // An ALTO's node and stamp, so a rejected part's ALTO goes with it.
     let alto_by_run: HashMap<(String, String), String> = alto_by_path
@@ -657,6 +670,7 @@ async fn run_locked(
             chunk,
             &alto_by_path,
             &alto_by_run,
+            &runs_by_path,
             &mut counts,
             &mut taken,
             &mut written,
@@ -801,6 +815,7 @@ async fn import(
     chunk: &[&ObjectInfo],
     alto_by_path: &HashMap<String, ObjectInfo>,
     alto_by_run: &HashMap<(String, String), String>,
+    runs_by_path: &HashMap<String, ObjectInfo>,
     counts: &mut Counts,
     taken: &mut HashSet<String>,
     written_outcomes: &mut Vec<Outcome>,
@@ -810,7 +825,7 @@ async fn import(
     let mut sources: Vec<Consumed> = Vec::new();
     let mut accepted: Vec<(Imported, String)> = Vec::new();
     for part in chunk {
-        let outcome = check_one(stores, ctx, part, alto_by_path, alto_by_run).await?;
+        let outcome = check_one(stores, ctx, part, alto_by_path, alto_by_run, runs_by_path).await?;
         match outcome {
             Checked::Changed => {
                 counts.changed += 1;
@@ -819,17 +834,27 @@ async fn import(
                 reason,
                 part: bytes,
                 alto,
+                runs,
             } => {
                 let code = reason.code();
                 lease.check()?;
-                quarantine_part(stores, run, part, bytes, &code, alto.as_ref()).await?;
+                quarantine_part(
+                    stores,
+                    run,
+                    part,
+                    bytes,
+                    &code,
+                    alto.as_ref(),
+                    runs.as_ref(),
+                )
+                .await?;
                 sources.push(Consumed {
                     path: part.path.clone(),
                     etag: part.etag.clone(),
                     outcome: "quarantined".into(),
                     reason: Some(code.clone()),
                 });
-                if let Some((a, _)) = &alto {
+                for (a, _) in alto.iter().chain(runs.iter()) {
                     sources.push(Consumed {
                         path: a.path.clone(),
                         etag: a.etag.clone(),
@@ -853,8 +878,12 @@ async fn import(
                 row,
                 alto,
                 alto_bytes,
+                runs,
             } => {
                 lease.check()?;
+                // The server's time, not the node's: the row's and the
+                // runs record's.
+                let ocred_at = to_utc(part.created).unwrap_or_else(Utc::now);
                 // (1) The ALTO, the bytes that were checked.
                 let doc_id = row.key.doc_id();
                 let dest = alto_path(&doc_id, &name.node, &name.stamp);
@@ -871,6 +900,22 @@ async fn import(
                         bail!("{dest} exists with other bytes than the checked source's");
                     }
                 }
+                // ... and the runs record, with `ocred_at` (12 Step 8).
+                if let Some((info, rows)) = &runs {
+                    let dest = runs_path(&name.issue(), &name.node, &name.stamp);
+                    let bytes = usnm_ocr_contract::runs::write_curated(rows, ocred_at)
+                        .with_context(|| format!("curated runs record for {}", info.path))?;
+                    if !stores
+                        .curated
+                        .put_new(&dest, bytes.clone(), "application/vnd.apache.parquet")
+                        .await?
+                    {
+                        let existing = stores.curated.get(&dest).await?;
+                        if existing.as_deref() != Some(bytes.as_slice()) {
+                            bail!("{dest} exists with other bytes than the checked source's");
+                        }
+                    }
+                }
                 let queued = ctx
                     .ledger
                     .outstanding(&doc_id)
@@ -883,8 +928,7 @@ async fn import(
                     loc_text: row.loc_text.clone(),
                     text: row.text.clone().unwrap_or_default(),
                     image_url: row.image_url.clone(),
-                    // The server's time, not the node's.
-                    ocred_at: to_utc(part.created).unwrap_or_else(Utc::now),
+                    ocred_at,
                 };
                 let languages = ctx.title_languages(&row.key.lccn);
                 let ours = Scores::of(&overlay.text, &languages);
@@ -916,6 +960,14 @@ async fn import(
                     outcome: IMPORTED.into(),
                     reason: None,
                 });
+                if let Some((info, _)) = &runs {
+                    sources.push(Consumed {
+                        path: info.path.clone(),
+                        etag: info.etag.clone(),
+                        outcome: IMPORTED.into(),
+                        reason: None,
+                    });
+                }
                 metrics.ocr_sync_parts.add(
                     1,
                     &[
@@ -1046,16 +1098,21 @@ enum Checked {
         part: Option<Vec<u8>>,
         /// The part's ALTO, if one is there, with its bytes if they were read.
         alto: Option<(ObjectInfo, Option<Vec<u8>>)>,
+        /// The part's runs record, likewise.
+        runs: Option<(ObjectInfo, Option<Vec<u8>>)>,
     },
     Passed {
         name: PartName,
         row: Box<usnm_overlay::NodeRow>,
         alto: ObjectInfo,
         alto_bytes: Vec<u8>,
+        /// The runs record and its checked rows; none from a worker that
+        /// predates them.
+        runs: Option<(ObjectInfo, Vec<usnm_ocr_contract::runs::RunRecord>)>,
     },
 }
 
-/// Keep a rejected part, and its ALTO if there is one, in quarantine:
+/// Keep a rejected part, and its ALTO and runs record if they are there, in quarantine:
 /// the bytes that were checked, or for a source not read yet, its bytes if
 /// within the size limit.
 async fn quarantine_part(
@@ -1065,6 +1122,7 @@ async fn quarantine_part(
     bytes: Option<Vec<u8>>,
     reason: &str,
     alto: Option<&(ObjectInfo, Option<Vec<u8>>)>,
+    runs: Option<&(ObjectInfo, Option<Vec<u8>>)>,
 ) -> anyhow::Result<()> {
     let content = match bytes {
         Some(b) => Some(b),
@@ -1076,6 +1134,13 @@ async fn quarantine_part(
         }
         None => None,
     };
+    // Named in the part's record first, so a stop before theirs are written
+    // still keeps the part from a replay without them.
+    let companions = alto
+        .iter()
+        .chain(runs.iter())
+        .map(|(a, _)| a.path.clone())
+        .collect();
     quarantine::put(
         stores.quarantine.as_ref(),
         run,
@@ -1087,18 +1152,18 @@ async fn quarantine_part(
             size: part.size,
             created: to_utc(part.created),
             content,
+            companions,
         },
     )
     .await?;
-    if let Some((a, bytes)) = alto {
+    let others = alto
+        .map(|a| (a, quarantine::ALTO, checks::MAX_ALTO_BYTES))
+        .into_iter()
+        .chain(runs.map(|r| (r, quarantine::RUNS, checks::MAX_PART_BYTES)));
+    for ((a, bytes), kind, limit) in others {
         let content = match bytes {
             Some(b) => Some(b.clone()),
-            None if a.size <= checks::MAX_ALTO_BYTES => {
-                stores
-                    .out
-                    .get_if_match(&a.path, &a.etag, checks::MAX_ALTO_BYTES)
-                    .await?
-            }
+            None if a.size <= limit => stores.out.get_if_match(&a.path, &a.etag, limit).await?,
             None => None,
         };
         quarantine::put(
@@ -1106,12 +1171,13 @@ async fn quarantine_part(
             run,
             Item {
                 reason: reason.to_owned(),
-                kind: quarantine::ALTO,
+                kind,
                 source: a.path.clone(),
                 etag: Some(a.etag.clone()),
                 size: a.size,
                 created: to_utc(a.created),
                 content,
+                companions: Vec::new(),
             },
         )
         .await?;
@@ -1119,28 +1185,47 @@ async fn quarantine_part(
     Ok(())
 }
 
-/// Checks 1 to 6 on one part and its ALTO.
+/// Checks 1 to 7 on one part, its ALTO and its runs record.
 async fn check_one(
     stores: &Stores,
     ctx: &CheckContext,
     part: &ObjectInfo,
     alto_by_path: &HashMap<String, ObjectInfo>,
     alto_by_run: &HashMap<(String, String), String>,
+    runs_by_path: &HashMap<String, ObjectInfo>,
 ) -> anyhow::Result<Checked> {
-    let reject =
-        |reason: Reject, part: Option<Vec<u8>>, alto: Option<(ObjectInfo, Option<Vec<u8>>)>| {
-            Ok(Checked::Rejected { reason, part, alto })
-        };
     // 1: name and size, before anything is read.
     let Some(name) = checks::parse_part_name(&part.path) else {
-        return reject(Reject::Name, None, None);
+        return Ok(Checked::Rejected {
+            reason: Reject::Name,
+            part: None,
+            alto: None,
+            runs: None,
+        });
     };
+    let runs_info = runs_by_path.get(&checks::source_runs_path(&name)).cloned();
+    let runs_partner = runs_info.clone().map(|r| (r, None));
+    let reject =
+        |reason: Reject, part: Option<Vec<u8>>, alto: Option<(ObjectInfo, Option<Vec<u8>>)>| {
+            Ok(Checked::Rejected {
+                reason,
+                part,
+                alto,
+                runs: runs_partner.clone(),
+            })
+        };
     let partner = alto_by_run
         .get(&(name.node.clone(), name.stamp.clone()))
         .and_then(|p| alto_by_path.get(p))
         .map(|a| (a.clone(), None));
     if part.size > checks::MAX_PART_BYTES {
         return reject(Reject::PartTooLarge, None, partner);
+    }
+    if runs_info
+        .as_ref()
+        .is_some_and(|r| r.size > checks::MAX_PART_BYTES)
+    {
+        return reject(Reject::RunsTooLarge, None, partner);
     }
     let Some(bytes) = stores
         .out
@@ -1169,15 +1254,40 @@ async fn check_one(
     else {
         return Ok(Checked::Changed);
     };
-    // 6: the ALTO itself. (7, the runs record, comes once the worker writes
-    // one, 13 §13.8.3.)
+    // 6: the ALTO itself.
     if let Err(r) = checks::check_alto(&alto_bytes) {
         return reject(r, Some(bytes), Some((alto.clone(), Some(alto_bytes))));
     }
+    // 7: the runs record (13 §13.8.3). A part without one is from a worker
+    // that predates them, and is imported as before.
+    let runs = match runs_info {
+        None => None,
+        Some(info) => {
+            let Some(runs_bytes) = stores
+                .out
+                .get_if_match(&info.path, &info.etag, checks::MAX_PART_BYTES)
+                .await?
+            else {
+                return Ok(Checked::Changed);
+            };
+            match checks::check_runs(runs_bytes.clone(), &name, &row) {
+                Ok(rows) => Some((info, rows)),
+                Err(r) => {
+                    return Ok(Checked::Rejected {
+                        reason: r,
+                        part: Some(bytes),
+                        alto: Some((alto.clone(), Some(alto_bytes))),
+                        runs: Some((info, Some(runs_bytes))),
+                    })
+                }
+            }
+        }
+    };
     Ok(Checked::Passed {
         name,
         row: Box::new(row),
         alto: alto.clone(),
         alto_bytes,
+        runs,
     })
 }

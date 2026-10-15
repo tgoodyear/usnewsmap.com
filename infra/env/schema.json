@@ -129,6 +129,16 @@
       "description": "Local: in the environment's local settings file. The image tag dev runs, which scripts/stand-up.sh sets to the commit it builds; elsewhere the default (main).",
       "not": {}
     },
+    "USNM_INDEX_STORAGE": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Stage rebuilds in the separate Quickwit account. Default false; keep on once created."
+    },
+    "USNM_INDEX_STORAGE_SERVE": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Switch the searcher to the separate account during the documented cutover. Requires USNM_INDEX_STORAGE."
+    },
     "USNM_INGEST_CRON": {
       "x-usnm-visibility": "public",
       "type": "string"
@@ -160,6 +170,13 @@
     "USNM_JA_OCR_REPLICAS": {
       "x-usnm-visibility": "public",
       "type": "integer"
+    },
+    "USNM_LAKE_BLOB_SOFT_DELETE_DAYS": {
+      "x-usnm-visibility": "public",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365,
+      "description": "Default 3; restore 14 only after pruning the old lake index."
     },
     "USNM_LOG_DAILY_CAP_GB": {
       "x-usnm-visibility": "public",

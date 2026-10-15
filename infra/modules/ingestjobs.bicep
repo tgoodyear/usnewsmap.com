@@ -65,6 +65,8 @@ param image string
 param registryServer string
 param ingestIdentityId string
 param ingestClientId string
+param indexStorageAccountName string = ''
+param stageIndexStorage bool = false
 param storageAccountName string
 param storageBlobEndpoint string
 param cosmosEndpoint string
@@ -289,7 +291,8 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
               '--quickwit-index-root'
               'azure://qw-index'
             ],
-            full ? ['--full'] : [],
+            stageIndexStorage ? ['--stage-index-storage'] : [],
+            full || stageIndexStorage ? ['--full'] : [],
             americanStories ? ['--american-stories'] : [],
             jaLatin ? ['--ja-latin'] : [],
             ocrLocal ? ['--ocr-local'] : [],
@@ -301,7 +304,7 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
           )
           resources: ingestResources
           env: concat(env, rawEnv, scratchEnv, writerTuningEnv, [
-            { name: 'QW_AZURE_STORAGE_ACCOUNT', value: storageAccountName }
+            { name: 'QW_AZURE_STORAGE_ACCOUNT', value: empty(indexStorageAccountName) ? storageAccountName : indexStorageAccountName }
             { name: 'USNM_MERGE_TIMEOUT_SECS', value: string(mergeTimeoutSecs) }
           ])
           volumeMounts: scratch ? [{ volumeName: 'scratch', mountPath: '/scratch' }] : null
@@ -602,3 +605,24 @@ output jaAuditJobName string = empty(jaOcrImage) ? '' : jaAudit.name
 output ocrSyncJobName string = ocrSync ? ocrSyncJob.name : ''
 output congressJobName string = congressJob ? congressFetch.name : ''
 output serialSetJobName string = serialSetJob ? serialSetFetch.name : ''
+
+// Keep the lake grants for old revisions and rollback/prune. Never retarget
+// an existing assignment during the rebuild.
+resource indexAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: indexStorageAccountName
+  resource blobs 'blobServices' existing = {
+    name: 'default'
+    resource index 'containers' existing = {
+      name: 'qw-index'
+    }
+  }
+}
+resource newWriterIndexContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(indexStorageAccountName) && true) {
+  scope: indexAccount::blobs::index
+  name: guid(indexAccount::blobs::index.id, ingest.id, blobContributor)
+  properties: {
+    principalId: ingest.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobContributor)
+  }
+}

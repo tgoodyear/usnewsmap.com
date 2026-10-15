@@ -1,0 +1,58 @@
+# ADR-0021: Quickwit's index has its own storage account
+
+- **Status:** Accepted, opt-in for the #283 rebuild
+- **Date:** 2026-10-15
+- **Amends:** ADR-0002 (index storage), 08 §8.1
+
+## Context
+
+The lake's account-wide versioning and blob soft delete retain every split
+Quickwit deletes after a merge/prune (#245). Retention was reduced from
+14 to 3 days (#416) to contain that derived-data cost, shortening the
+recovery window for `curated/` and `reference/`. The maintainer decided on
+12 October to separate the index at the next full rebuild (#283).
+
+## Decision
+
+- Gate creation/writes behind `USNM_INDEX_STORAGE=false` by default. The
+  account is `usnmqwst{env}{suffix}`, named centrally under ADR-0017. Keep
+  its `qw-index` container Hot and disable versioning and blob/container
+  soft delete. Recovery is a retained index version or a rebuild.
+- Follow ADR-0009: Entra only, no shared keys/SAS, no public access or trusted
+  service bypass. Use a Blob private endpoint and the existing private DNS
+  zone. Do not exempt it in `publicAccountIds`; log writes/deletes.
+- Keep all existing lake grants. Add container-scoped Contributor for the
+  writer system identity and ingest user identity, Reader for the parallel
+  searcher system identity and the API system identity during transition.
+- Quickwit Azure URIs select containers, not accounts. Point the writer's
+  account configuration and the parallel searcher's YAML at the new account;
+  both metastore and index root stay `azure://qw-index`. Do not copy a
+  metastore whose relative index URIs would resolve against the wrong blobs.
+- Stage complete rebuilds of **all** index sets (unchanged Congress included)
+  and their normal lake reference snapshots. Publish only
+  `index-storage-pending.json`; keep `current.json` and `ops/current` intact.
+  The staged run is recorded as published to that pending pointer, with the
+  lake version retained as `previous_version`, and prune protects newer runs.
+- Verify the parallel internal searcher, then promote the pending pointer
+  and set `USNM_INDEX_STORAGE_SERVE=true`. The API's URL changes in a new
+  revision; the old revision/searcher keeps serving until readiness switches
+  traffic. Coordinate the pointer/reader window with API image rolls and
+  cold starts, as the runbook specifies. Neither flag is cleared afterwards.
+- Keep the lake rollback through the next verified new-account release.
+  Prune each account through Quickwit, dry-run first. Then restore lake
+  retention with `USNM_LAKE_BLOB_SOFT_DELETE_DAYS=14` (default remains 3).
+  Leave the experiment's `qw-cluster`/`qw-bench` unchanged.
+
+## Consequences
+
+The protected lake no longer pays to retain future merge inputs. The new
+account has no blob-level recovery, and a second searcher costs compute
+while cross-account rollback is retained. A rollback across accounts must
+restore both the pointer and reader selection, with writers paused; a
+pointer alone is insufficient. Disabling account creation is destructive
+stack cleanup, never a rollback mechanism. The old empty container and
+roles can be removed separately after retirement. The defaults and shared
+searcher YAML stay unchanged, so merge alone moves no production data.
+
+See [operations](../../operations.md#index-storage-cutover) for the exact
+rebuild, cutover, rollback and account-specific prune procedure.
