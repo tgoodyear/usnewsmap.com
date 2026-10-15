@@ -1,0 +1,62 @@
+name: boinc-train
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('boinc-train ({0})', inputs.correlation) || github.event.pull_request.title || 'BOINC GPU LoRA worker' }}
+on:
+  workflow_dispatch:
+    inputs:
+      correlation:
+        description: Identifies this publication
+        required: false
+        default: manual
+  pull_request:
+    paths:
+      - ".github/workflows/boinc-train.yml"
+      - ".github/actions/boinc-train-build/**"
+      - "ocr/boinc/train/**"
+      - "scripts/ocr-survey/transcription.py"
+      - ".dockerignore"
+permissions:
+  contents: read
+concurrency:
+  group: boinc-train-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  check:
+    name: GPU training worker (build and visual backward smoke)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/boinc-train-build
+        with:
+          tag: ghcr.io/tgoodyear/usnm-boinc-worker:train-${{ github.sha }}
+  publish:
+    name: GPU training worker (build, check, publish)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/boinc-train-build
+        with:
+          tag: ghcr.io/tgoodyear/usnm-boinc-worker:train-${{ github.sha }}
+      - name: Publish the tested image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ github.sha }}
+        run: |
+          image=ghcr.io/tgoodyear/usnm-boinc-worker
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          docker push "$image:train-$SHA"
+          digest=$(docker buildx imagetools inspect "$image:train-$SHA" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::missing published digest"; exit 1; }
+          docker logout ghcr.io
+          echo "GPU training worker: \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"

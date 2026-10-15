@@ -1,0 +1,29 @@
+name: boinc-train-build
+description: Build the offline GPU training image and exercise real tiny visual LoRA on CPU.
+inputs:
+  tag:
+    description: Local image tag
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Free disk for the CUDA base and pinned model
+      shell: bash
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        docker system prune -af > /dev/null
+    - name: Build and check the training image
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+      run: |
+        docker build -f ocr/boinc/train/Containerfile \
+          --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+          --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+          -t "$TAG" .
+        docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=2g \
+          "$TAG" python /opt/train/test_worker.py -v
+        docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=2g \
+          "$TAG" python /opt/train/test_campaign.py -v
+        docker run --rm --network=none --read-only --tmpfs=/tmp:rw,size=2g \
+          "$TAG" python /opt/train/test_worker.py --visual-smoke /opt/base

@@ -62,6 +62,16 @@
         <beta>0</beta>
         <target_nresults>2</target_nresults>
     </app>
+    <app>
+        <name>usnm_qwen_train</name>
+        <user_friendly_name>usnewsmap experimental transcription LoRA training (NVIDIA GPU)</user_friendly_name>
+        <min_version>0</min_version>
+        <deprecated>0</deprecated>
+        <homogeneous_redundancy>0</homogeneous_redundancy>
+        <weight>1</weight>
+        <beta>0</beta>
+        <target_nresults>1</target_nresults>
+    </app>
     <platform>
         <name>x86_64-pc-linux-gnu</name>
         <user_friendly_name>Linux running on an AMD x86_64 or Intel EM64T CPU</user_friendly_name>

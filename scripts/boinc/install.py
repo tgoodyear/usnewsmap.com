@@ -27,6 +27,7 @@ TEMPLATES = {
     # class; the Qwen app has its own image, a CPU and a GPU version.
     "usnm_quality": ["usnm_quality_in", "usnm_quality_out"],
     "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"],
+    "usnm_qwen_train": ["usnm_qwen_train_in", "usnm_qwen_train_out"],
 }
 QWEN_NATIVE_MODEL_TEMPLATES = {
     "apple_gpu_8b": "usnm_qwen_8b_in",
@@ -47,6 +48,7 @@ JOB_TOML = {
     ("usnm_quality", "docker"): "ocr/boinc/job.toml",
     ("usnm_qwen", "docker_mt"): "ocr/boinc/qwen/job-cpu.toml",
     ("usnm_qwen", "docker_nvidia_cuda"): "ocr/boinc/qwen/job-gpu.toml",
+    ("usnm_qwen_train", "docker_nvidia_train"): "ocr/boinc/train/job.toml",
 }
 
 PLATFORMS = (
