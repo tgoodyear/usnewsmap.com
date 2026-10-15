@@ -1117,6 +1117,7 @@ module dns 'modules/dns.bicep' = if (!empty(dnsZoneName)) {
     tags: tags
     zoneName: dnsZoneName
     appFqdn: deployApi ? api!.outputs.fqdn : ''
+    deployAppRecords: deployApi
     staticIp: containerEnv.outputs.staticIp
     verificationId: containerEnv.outputs.customDomainVerificationId
     apexTxtValues: dnsApexTxtValues[?dnsZoneName] ?? []

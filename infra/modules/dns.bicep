@@ -15,6 +15,8 @@ param tags object
 param zoneName string
 @description('The app\'s FQDN; empty (no app yet) skips the www and api records.')
 param appFqdn string
+@description('Whether to deploy the app CNAMEs. main.bicep passes its static API deployment flag so what-if can enumerate existing records; the default preserves direct-module behavior.')
+param deployAppRecords bool = !empty(appFqdn)
 @description('The Container Apps environment\'s static IP, for the apex.')
 param staticIp string
 @description('The environment\'s custom domain verification ID, for the asuid records.')
@@ -83,10 +85,10 @@ resource apex 'Microsoft.Network/dnsZones/A@2018-05-01' = {
   }
 }
 
-var cnames = empty(appFqdn) ? [] : ['www', 'api']
-
+// The FQDN is a runtime API output. Keep the loop count static so an
+// unresolved FQDN cannot hide the whole zone from ARM what-if.
 resource hosts 'Microsoft.Network/dnsZones/CNAME@2018-05-01' = [
-  for name in cnames: {
+  for name in ['www', 'api']: if (deployAppRecords) {
     parent: zone
     name: name
     properties: {
