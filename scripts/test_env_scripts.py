@@ -247,6 +247,71 @@ class Stubbed(unittest.TestCase):
             return f.read().splitlines()
 
 
+class SearcherRollbackSettings(Stubbed):
+    def test_public_retention_is_exported_for_both_provision_paths(self):
+        for retain in (True, False):
+            with self.subTest(retain=retain):
+                self.committed({"USNM_SEARCH_BACKEND": "quickwit",
+                                "USNM_SEARCHER_APP_RETAIN": retain})
+                r = self.lib('export_stack_settings; printf "%s/%s" '
+                             '"${USNM_SEARCHER_APP:-false}" "$USNM_SEARCHER_APP_RETAIN"')
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout, f"false/{str(retain).lower()}")
+
+    def test_unset_retention_ignores_callers_environment(self):
+        r = self.lib('export_stack_settings; echo "${USNM_SEARCHER_APP_RETAIN:-false}"',
+                     USNM_SEARCHER_APP_RETAIN="true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "false")
+
+
+@unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
+class SearcherRollbackTemplate(unittest.TestCase):
+    """Offline ARM contracts: retention keeps resources, never API routing."""
+
+    @classmethod
+    def setUpClass(cls):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
+                              "infra/modules/containerapp.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        cls.template = json.loads(run.stdout)
+
+    def test_app_and_reader_share_retention_condition(self):
+        variables = self.template["variables"]
+        self.assertEqual(variables["searcherDeployed"],
+                         "[and(variables('quickwit'), or(parameters('searcherApp'), parameters('searcherAppRetain')))]")
+        searcher = next(r for r in self.template["resources"]
+                        if r["name"] == "[parameters('searcherName')]")
+        reader = next(r for r in self.template["resources"]
+                      if r["type"] == "Microsoft.Authorization/roleAssignments"
+                      and "parameters('searcherName')" in r["name"])
+        for resource in (searcher, reader):
+            self.assertEqual(resource["condition"], "[variables('searcherDeployed')]")
+        self.assertFalse(self.template["parameters"]["searcherAppRetain"]["defaultValue"])
+
+    def test_retention_does_not_select_api_backend_or_monitoring(self):
+        variables = self.template["variables"]
+        self.assertEqual(variables["searcherOn"],
+                         "[and(variables('quickwit'), parameters('searcherApp'))]")
+        self.assertEqual(variables["sidecar"],
+                         "[and(and(variables('quickwit'), not(parameters('searcherApp'))), not(parameters('indexStorageServe')))]")
+        self.assertIn("if(variables('searcherOn'), format('http://{0}', parameters('searcherName')), 'http://127.0.0.1:7280')",
+                      variables["backendEnv"])
+        self.assertEqual(self.template["outputs"]["searcherName"]["value"],
+                         "[if(parameters('indexStorageServe'), parameters('indexSearcherName'), if(variables('searcherOn'), parameters('searcherName'), ''))]")
+        app = next(r for r in self.template["resources"] if r["name"] == "[parameters('name')]")
+        self.assertEqual(app["properties"]["template"]["containers"],
+                         "[if(variables('sidecar'), createArray(variables('apiContainer'), variables('quickwitContainer')), createArray(variables('apiContainer')))]")
+
+    def test_api_identity_and_reader_survive_both_rollback_steps(self):
+        self.assertEqual(self.template["variables"]["apiSystemIdentity"], "[variables('quickwit')]")
+        reader = next(r for r in self.template["resources"]
+                      if r["type"] == "Microsoft.Authorization/roleAssignments"
+                      and "parameters('name')" in r["name"]
+                      and "parameters('storageAccountName')" in r["name"])
+        self.assertEqual(reader["condition"], "[variables('apiSystemIdentity')]")
+
+
 class SettingsLocation(Stubbed):
     def test_the_shared_directory_wins(self):
         r = self.lib('echo "$ENV_FILE"')

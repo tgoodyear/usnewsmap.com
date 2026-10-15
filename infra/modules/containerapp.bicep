@@ -24,7 +24,9 @@
 // the setting off brings the sidecar back to a role that has already
 // reached Blob. They go in a later change, once the searcher app is kept
 // (docs/operations.md, "Searcher app"). Off, this module deploys exactly
-// what it did before.
+// what it did before. searcherAppRetain keeps the app and its role during
+// rollback while the API returns to its sidecar; clear it only after that
+// revision is ready and serving (docs/operations.md, "Searcher app").
 
 param location string
 param tags object
@@ -69,7 +71,9 @@ param pageLanguageFilter string = ''
 param browsePages bool = false
 @description('Run the searcher as its own app, `searcherName`, with internal ingress, instead of a sidecar in each API replica (#267). Needs searchBackend quickwit.')
 param searcherApp bool = false
-@description('The searcher app\'s name (with searcherApp); a container app name is under 32 characters (ADR-0017).')
+@description('Keep the searcher app and its Blob reader role while rolling the API back to its sidecar (#362). Does not route the API to it. Clear only after the sidecar revision is ready and serving.')
+param searcherAppRetain bool = false
+@description('The searcher app\'s name (with searcherApp or searcherAppRetain); a container app name is under 32 characters (ADR-0017).')
 @maxLength(31)
 param searcherName string = ''
 @description('The searcher app\'s minimum replicas: 1 keeps it, and its caches, warm; 0 lets it scale to zero with the API.')
@@ -83,6 +87,7 @@ var quickwit = searchBackend == 'quickwit'
 // Where the searcher runs: a sidecar in each API replica, or its own app.
 var sidecar = quickwit && !searcherApp && !indexStorageServe
 var searcherOn = quickwit && searcherApp
+var searcherDeployed = quickwit && (searcherApp || searcherAppRetain)
 var indexSearcherOn = quickwit && !empty(indexStorageAccountName)
 // The API app's system-assigned identity and its role on the index stay with
 // any Quickwit backend, not only with the sidecar. Turning the searcher app
@@ -296,7 +301,7 @@ var searcherContainer = union(quickwitContainer, {
 // second would start cold and split the searches' cache hits between them;
 // more search capacity is a cluster (#239), not more replicas. It takes no
 // traffic from outside the environment.
-resource searcher 'Microsoft.App/containerApps@2024-03-01' = if (searcherOn) {
+resource searcher 'Microsoft.App/containerApps@2024-03-01' = if (searcherDeployed) {
   name: searcherName
   location: location
   tags: tags
@@ -369,7 +374,7 @@ resource indexSearcher 'Microsoft.App/containerApps@2024-03-01' = if (indexSearc
 var blobReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 
 // The same read-only role on the index as the sidecar's (below).
-resource searcherIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (searcherOn) {
+resource searcherIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (searcherDeployed) {
   scope: account::blobs::index
   name: guid(account::blobs::index.id, searcher.id, blobReader)
   properties: {
@@ -454,7 +459,7 @@ resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01
 
 output name string = app.name
 output fqdn string = app.properties.configuration.ingress.fqdn
-// The searcher app's name; empty without one.
+// The API's active searcher app; empty with a sidecar, even if retained.
 output searcherName string = indexStorageServe ? indexSearcher!.name : (searcherOn ? searcher.name : '')
 
 // Keep the lake grants for old revisions and rollback/prune. Never retarget
