@@ -207,9 +207,6 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
     for files in pages {
         let name = files.name.clone();
         summary.pages += 1;
-        if files.readings.is_some() {
-            summary.with_readings += 1;
-        }
         let staged = tempfile::tempdir()?;
         let outcome = (|| -> anyhow::Result<()> {
             let texts = load_texts(&files)?;
@@ -234,20 +231,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 texts: &l.texts,
                 places: &l.places,
             })?;
-            let out = opts.out.join(&name);
-            std::fs::create_dir_all(&out)?;
-            atomic(
-                &out.join(RESULT_FILE),
-                &serde_json::to_vec_pretty(&c.result)?,
-            )?;
-            atomic(&out.join(CONFUSIONS_FILE), &c.confusions)?;
-            let mut job_named = job.clone();
-            job_named.doc_id = name.clone();
-            for row in collect::page_rows(&job_named, &c.result, files.readings.is_some()) {
-                all_pages.push_str(&serde_json::to_string(&row)?);
-                all_pages.push('\n');
-            }
-            if let Some(rp) = &files.readings {
+            let crops_out = if let Some(rp) = &files.readings {
                 let readings: Readings = serde_json::from_slice(&read(rp, MAX_READINGS)?)
                     .with_context(|| format!("{rp:?}"))?;
                 let qwen_job: QwenJob =
@@ -316,13 +300,35 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 for row in &rows {
                     let _ = writeln!(text, "{}", serde_json::to_string(row)?);
                 }
-                atomic(&out.join("crops.jsonl"), text.as_bytes())?;
-                all_crops.push_str(&text);
-                summary.crop_rows += rows.len();
+                Some((text, rows.len()))
+            } else {
+                None
+            };
+            let mut job_named = job.clone();
+            job_named.doc_id = name.clone();
+            let mut page_text = String::new();
+            for row in collect::page_rows(&job_named, &c.result, crops_out.is_some()) {
+                page_text.push_str(&serde_json::to_string(&row)?);
+                page_text.push('\n');
             }
+            let result_bytes = serde_json::to_vec_pretty(&c.result)?;
+            let out = opts.out.join(&name);
+            std::fs::create_dir_all(&out)?;
+            atomic(&out.join(RESULT_FILE), &result_bytes)?;
+            atomic(&out.join(CONFUSIONS_FILE), &c.confusions)?;
+            if let Some((crop_text, row_count)) = crops_out {
+                atomic(&out.join("crops.jsonl"), crop_text.as_bytes())?;
+                all_crops.push_str(&crop_text);
+                summary.crop_rows += row_count;
+                summary.with_readings += 1;
+            } else {
+                let _ = std::fs::remove_file(out.join("crops.jsonl"));
+            }
+            all_pages.push_str(&page_text);
             Ok(())
         })();
         if let Err(e) = outcome {
+            let _ = std::fs::remove_dir_all(opts.out.join(&name));
             summary.failed += 1;
             eprintln!("{name}: {e:#}");
         }
@@ -417,7 +423,7 @@ mod tests {
         assert_eq!(s.crop_rows, qwen_job.crops.len() * 4);
         assert!(tmp.path().join("out/p1/crops.jsonl").exists());
 
-        // Mismatched job_id in readings.json is rejected.
+        // Mismatched job_id in readings.json is rejected and clears stale outputs.
         let mut bad_readings = readings.clone();
         bad_readings.job_id = job.id;
         std::fs::write(
@@ -426,9 +432,26 @@ mod tests {
         )
         .unwrap();
         let s = run(&opts).unwrap();
-        assert_eq!(s.failed, 1);
+        assert_eq!(
+            s,
+            Summary {
+                pages: 1,
+                with_readings: 0,
+                failed: 1,
+                crop_rows: 0,
+            }
+        );
+        assert!(!tmp.path().join("out/p1").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("out/pages.jsonl")).unwrap(),
+            ""
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("out/crops.jsonl")).unwrap(),
+            ""
+        );
 
-        // Missing qwen.json alongside readings.json is rejected.
+        // Missing qwen.json alongside readings.json is rejected and writes no outputs.
         std::fs::write(
             page.join(READINGS_FILE),
             serde_json::to_vec(&readings).unwrap(),
@@ -436,7 +459,24 @@ mod tests {
         .unwrap();
         std::fs::remove_file(page.join(crate::qwen::JOB_FILE)).unwrap();
         let s = run(&opts).unwrap();
-        assert_eq!(s.failed, 1);
+        assert_eq!(
+            s,
+            Summary {
+                pages: 1,
+                with_readings: 0,
+                failed: 1,
+                crop_rows: 0,
+            }
+        );
+        assert!(!tmp.path().join("out/p1").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("out/pages.jsonl")).unwrap(),
+            ""
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("out/crops.jsonl")).unwrap(),
+            ""
+        );
     }
 
     #[test]

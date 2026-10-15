@@ -97,13 +97,12 @@ master_url="${PROJECT_URL}usnmocr/"
 
 params=$(umask 077 && mktemp)
 trap 'rm -f "$params"' EXIT
-jq -n \
+printf '%s' "$auth_val" | jq -Rs \
   --arg env "$ENV_NAME" \
   --arg location "$LOCATION" \
   --arg vmSize "$SKU" \
   --argjson spot "$SPOT" \
   --arg projectUrl "$master_url" \
-  --arg auth "$auth_val" \
   '{
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
     contentVersion: "1.0.0.0",
@@ -113,7 +112,7 @@ jq -n \
       vmSize: { value: $vmSize },
       spot: { value: $spot },
       projectUrl: { value: $projectUrl },
-      projectAuthenticator: { value: $auth }
+      projectAuthenticator: { value: . }
     }
   }' > "$params"
 
