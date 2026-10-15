@@ -16,8 +16,10 @@ use anyhow::{ensure, Context};
 use std::{
     collections::BTreeSet,
     fmt::Write as _,
-    io::{Read as _, Write as _},
+    io::{Read as _, Seek as _, SeekFrom, Write as _},
+    ops::ControlFlow,
     path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
 use usnm_alto::{Page, ParseError, ParseOptions};
@@ -39,6 +41,345 @@ pub const CONFUSIONS_FILE: &str = "confusions.json";
 pub const DIAG_FILE: &str = "diag.txt";
 pub const FRACTION_FILE: &str = "fraction_done";
 pub const FINISH_FILE: &str = "boinc_finish_called";
+pub const MMAP_FILE: &str = "boinc_mmap_file";
+
+/// Upstream BOINC `MSG_CHANNEL_SIZE` (`lib/app_ipc.h`).
+pub const MSG_CHANNEL_SIZE: usize = 1024;
+/// Upstream BOINC `SHARED_MEM` total size: 8 consecutive `MSG_CHANNEL` blocks.
+pub const SHARED_MEM_SIZE: usize = MSG_CHANNEL_SIZE * 8;
+/// Offset of `SHARED_MEM::process_control_request` (client -> app).
+pub const PROCESS_CONTROL_REQUEST_OFFSET: usize = 0;
+/// Offset of `SHARED_MEM::process_control_reply` (app -> client).
+pub const PROCESS_CONTROL_REPLY_OFFSET: usize = MSG_CHANNEL_SIZE;
+/// Offset of `SHARED_MEM::heartbeat` (client -> app).
+pub const HEARTBEAT_OFFSET: usize = MSG_CHANNEL_SIZE * 4;
+/// Offset of `SHARED_MEM::app_status` (app -> client).
+pub const APP_STATUS_OFFSET: usize = MSG_CHANNEL_SIZE * 7;
+/// Default BOINC heartbeat loss timeout when heartbeats are active.
+pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Lifecycle action applied to a registered child process group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildAction {
+    Suspend,
+    Resume,
+    Terminate,
+}
+
+pub type ChildHook = Arc<dyn Fn(u32, ChildAction) + Send + Sync>;
+
+fn default_signal_child(pgid: u32, action: ChildAction) {
+    #[cfg(unix)]
+    {
+        let sig = match action {
+            ChildAction::Suspend => "-STOP",
+            ChildAction::Resume => "-CONT",
+            ChildAction::Terminate => "-TERM",
+        };
+        let group = format!("-{pgid}");
+        let ok = std::process::Command::new("kill")
+            .args([sig, &group])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            let _ = std::process::Command::new("kill")
+                .args([sig, &pgid.to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pgid, action);
+    }
+}
+
+struct BoincControlState {
+    suspended: bool,
+    quit_requested: bool,
+    abort_requested: bool,
+    heartbeat_lost: bool,
+    heartbeat_enabled: bool,
+    last_heartbeat: Instant,
+    child_pgid: Option<u32>,
+    child_hook: Option<ChildHook>,
+}
+
+impl BoincControlState {
+    fn exit_reason(&self) -> Option<&'static str> {
+        if self.abort_requested {
+            Some("abort")
+        } else if self.quit_requested {
+            Some("quit")
+        } else if self.heartbeat_lost {
+            Some("heartbeat_lost")
+        } else {
+            None
+        }
+    }
+
+    fn dispatch_child(&self, action: ChildAction) {
+        if let Some(pgid) = self.child_pgid {
+            if let Some(ref hook) = self.child_hook {
+                hook(pgid, action);
+            } else {
+                default_signal_child(pgid, action);
+            }
+        }
+    }
+}
+
+struct BoincControlInner {
+    state: Mutex<BoincControlState>,
+    cvar: Condvar,
+}
+
+/// Monitors BOINC's shared-memory process-control and heartbeat channels in
+/// `boinc_mmap_file` (`lib/app_ipc.h`).
+#[derive(Clone)]
+pub struct BoincControl {
+    inner: Arc<BoincControlInner>,
+}
+
+pub type BoincRuntime = BoincControl;
+
+impl BoincControl {
+    /// Starts monitoring `boinc_mmap_file` in `work` with the standard 30-second
+    /// heartbeat timeout.
+    pub fn start(work: &Path) -> Self {
+        Self::start_with_heartbeat_timeout(work, HEARTBEAT_TIMEOUT)
+    }
+
+    /// Starts monitoring `boinc_mmap_file` in `work` with a custom heartbeat timeout.
+    pub fn start_with_heartbeat_timeout(work: &Path, heartbeat_timeout: Duration) -> Self {
+        let init_path = resolve_slot_file(work, "init_data.xml");
+        let no_heartbeat_check =
+            std::fs::read_to_string(init_path).is_ok_and(|xml| xml.contains("<no_heartbeat_check"));
+        let mmap_path = resolve_slot_file(work, MMAP_FILE);
+        let inner = Arc::new(BoincControlInner {
+            state: Mutex::new(BoincControlState {
+                suspended: false,
+                quit_requested: false,
+                abort_requested: false,
+                heartbeat_lost: false,
+                heartbeat_enabled: false,
+                last_heartbeat: Instant::now(),
+                child_pgid: None,
+                child_hook: None,
+            }),
+            cvar: Condvar::new(),
+        });
+
+        if mmap_path
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.len() >= SHARED_MEM_SIZE as u64)
+        {
+            poll_mmap_once(&mmap_path, &inner, heartbeat_timeout, no_heartbeat_check);
+            let weak = Arc::downgrade(&inner);
+            let _ = std::thread::Builder::new()
+                .name("boinc-mmap-control".into())
+                .spawn(move || {
+                    while let Some(shared) = weak.upgrade() {
+                        poll_mmap_once(&mmap_path, &shared, heartbeat_timeout, no_heartbeat_check);
+                        if shared
+                            .state
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.exit_reason())
+                            .is_some()
+                        {
+                            break;
+                        }
+                        drop(shared);
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                });
+        }
+
+        Self { inner }
+    }
+
+    /// Registers a custom callback for suspending, resuming, or terminating a child process group.
+    pub fn set_child_hook(&self, hook: Option<ChildHook>) {
+        if let Ok(mut s) = self.inner.state.lock() {
+            s.child_hook = hook;
+        }
+    }
+
+    /// Registers (or clears) a child process/group ID for `<suspend/>`, `<resume/>`,
+    /// `<quit/>`, `<abort/>`, and heartbeat loss signaling.
+    pub fn set_child_pgid(&self, pgid: Option<u32>) {
+        if let Ok(mut s) = self.inner.state.lock() {
+            s.child_pgid = pgid;
+            if pgid.is_some() {
+                if s.exit_reason().is_some() {
+                    s.dispatch_child(ChildAction::Terminate);
+                } else if s.suspended {
+                    s.dispatch_child(ChildAction::Suspend);
+                }
+            }
+        }
+    }
+
+    /// Returns whether the task is currently suspended by `<suspend/>`.
+    pub fn is_suspended(&self) -> bool {
+        self.inner.state.lock().is_ok_and(|s| s.suspended)
+    }
+
+    /// Returns `Some("quit")`, `Some("abort")`, or `Some("heartbeat_lost")` when
+    /// BOINC requested immediate termination or heartbeat was lost.
+    pub fn should_exit(&self) -> Option<&'static str> {
+        self.inner.state.lock().ok().and_then(|s| s.exit_reason())
+    }
+
+    /// Blocks while suspended unless an exit condition (`quit`, `abort`, `heartbeat_lost`)
+    /// is triggered.
+    pub fn wait_if_suspended_or_should_exit(&self) -> ControlFlow<&'static str, ()> {
+        let Ok(mut s) = self.inner.state.lock() else {
+            return ControlFlow::Continue(());
+        };
+        loop {
+            if let Some(reason) = s.exit_reason() {
+                return ControlFlow::Break(reason);
+            }
+            if !s.suspended {
+                return ControlFlow::Continue(());
+            }
+            let Ok((guard, _)) = self.inner.cvar.wait_timeout(s, Duration::from_millis(50)) else {
+                return ControlFlow::Continue(());
+            };
+            s = guard;
+        }
+    }
+}
+
+fn poll_mmap_once(
+    mmap_path: &Path,
+    inner: &BoincControlInner,
+    heartbeat_timeout: Duration,
+    no_heartbeat_check: bool,
+) {
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(mmap_path)
+    else {
+        return;
+    };
+    let Ok(meta) = file.metadata() else {
+        return;
+    };
+    if !meta.is_file() || meta.len() < SHARED_MEM_SIZE as u64 {
+        return;
+    }
+
+    let mut req_buf = [0u8; MSG_CHANNEL_SIZE];
+    if file
+        .seek(SeekFrom::Start(PROCESS_CONTROL_REQUEST_OFFSET as u64))
+        .is_ok()
+        && file.read_exact(&mut req_buf).is_ok()
+        && req_buf[0] != 0
+    {
+        let end = req_buf[1..]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(MSG_CHANNEL_SIZE - 1);
+        let msg = String::from_utf8_lossy(&req_buf[1..1 + end]).into_owned();
+        if file
+            .seek(SeekFrom::Start(PROCESS_CONTROL_REQUEST_OFFSET as u64))
+            .is_ok()
+        {
+            let _ = file.write_all(&[0u8]);
+            let _ = file.sync_data();
+        }
+        if let Ok(mut s) = inner.state.lock() {
+            if msg.contains("<quit") {
+                s.quit_requested = true;
+                s.suspended = false;
+                s.dispatch_child(ChildAction::Terminate);
+                inner.cvar.notify_all();
+            } else if msg.contains("<abort") {
+                s.abort_requested = true;
+                s.suspended = false;
+                s.dispatch_child(ChildAction::Terminate);
+                inner.cvar.notify_all();
+            } else if msg.contains("<suspend") {
+                s.suspended = true;
+                s.dispatch_child(ChildAction::Suspend);
+                inner.cvar.notify_all();
+            } else if msg.contains("<resume") {
+                s.suspended = false;
+                s.last_heartbeat = Instant::now();
+                s.dispatch_child(ChildAction::Resume);
+                inner.cvar.notify_all();
+            }
+        }
+    }
+
+    let mut hb_buf = [0u8; MSG_CHANNEL_SIZE];
+    if file.seek(SeekFrom::Start(HEARTBEAT_OFFSET as u64)).is_ok()
+        && file.read_exact(&mut hb_buf).is_ok()
+        && hb_buf[0] != 0
+    {
+        if file.seek(SeekFrom::Start(HEARTBEAT_OFFSET as u64)).is_ok() {
+            let _ = file.write_all(&[0u8]);
+            let _ = file.sync_data();
+        }
+        if let Ok(mut s) = inner.state.lock() {
+            s.last_heartbeat = Instant::now();
+            s.heartbeat_enabled = true;
+        }
+    }
+
+    if let Ok(mut s) = inner.state.lock() {
+        if !no_heartbeat_check
+            && s.heartbeat_enabled
+            && !s.suspended
+            && !s.heartbeat_lost
+            && s.last_heartbeat.elapsed() > heartbeat_timeout
+        {
+            s.heartbeat_lost = true;
+            s.dispatch_child(ChildAction::Terminate);
+            inner.cvar.notify_all();
+        }
+    }
+}
+
+/// Writes a BOINC `MSG_CHANNEL` frame (`byte[0] = 1`, `byte[1..]` = NUL-terminated XML)
+/// at `offset` in `boinc_mmap_file` (creating/extending it to 8192 bytes if needed).
+pub fn write_mmap_channel(mmap_path: &Path, offset: usize, xml: &str) -> anyhow::Result<()> {
+    ensure!(
+        offset + MSG_CHANNEL_SIZE <= SHARED_MEM_SIZE,
+        "invalid MSG_CHANNEL offset {offset}"
+    );
+    let xml_bytes = xml.as_bytes();
+    ensure!(
+        xml_bytes.len() < MSG_CHANNEL_SIZE - 1,
+        "MSG_CHANNEL payload too large"
+    );
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(mmap_path)?;
+    if f.metadata()?.len() < SHARED_MEM_SIZE as u64 {
+        f.set_len(SHARED_MEM_SIZE as u64)?;
+    }
+    let mut payload = vec![0u8; MSG_CHANNEL_SIZE - 1];
+    payload[..xml_bytes.len()].copy_from_slice(xml_bytes);
+    f.seek(SeekFrom::Start((offset + 1) as u64))?;
+    f.write_all(&payload)?;
+    f.seek(SeekFrom::Start(offset as u64))?;
+    f.write_all(&[1u8])?;
+    f.sync_data()?;
+    Ok(())
+}
 
 /// The output files in output template order.
 pub fn outputs() -> [&'static str; 3] {
@@ -505,8 +846,15 @@ fn empty(
 fn compute_with_deadline(
     l: Loaded,
     deadline: Duration,
+    control: &BoincControl,
 ) -> Result<Computed, Box<(Job, anyhow::Error)>> {
     let job = l.job.clone();
+    if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+        return Err(Box::new((
+            job,
+            anyhow::anyhow!("boinc control requested exit ({reason})"),
+        )));
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("quality-compute".into())
@@ -527,17 +875,46 @@ fn compute_with_deadline(
                 anyhow::Error::from(e).context("starting the computation"),
             ))
         })?;
-    match rx.recv_timeout(deadline) {
-        Ok(Ok(c)) => Ok(c),
-        Ok(Err(e)) => Err(Box::new((job, e))),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(Box::new((
-            job,
-            anyhow::anyhow!("computation exceeded {} s", deadline.as_secs()),
-        ))),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(Box::new((
-            job,
-            anyhow::anyhow!("computation thread ended without a result"),
-        ))),
+    let mut active_elapsed = Duration::ZERO;
+    let poll_step = Duration::from_millis(50);
+    loop {
+        if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+            return Err(Box::new((
+                job,
+                anyhow::anyhow!("boinc control requested exit ({reason})"),
+            )));
+        }
+        let remaining = deadline.saturating_sub(active_elapsed);
+        if remaining.is_zero() {
+            return Err(Box::new((
+                job,
+                anyhow::anyhow!("computation exceeded {} s", deadline.as_secs()),
+            )));
+        }
+        let step_start = Instant::now();
+        match rx.recv_timeout(poll_step.min(remaining)) {
+            Ok(Ok(c)) => {
+                if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+                    return Err(Box::new((
+                        job,
+                        anyhow::anyhow!("boinc control requested exit ({reason})"),
+                    )));
+                }
+                return Ok(c);
+            }
+            Ok(Err(e)) => return Err(Box::new((job, e))),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !control.is_suspended() {
+                    active_elapsed += step_start.elapsed();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(Box::new((
+                    job,
+                    anyhow::anyhow!("computation thread ended without a result"),
+                )));
+            }
+        }
     }
 }
 
@@ -563,10 +940,21 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
     }
     write_atomic(&fraction_out, b"0.0\n")?;
 
+    let control = BoincControl::start(work);
     let mut diag = Diag::new();
     let mut host = Host::default();
     boinc_info(work, &mut host, &mut diag);
     runtime_info(&mut host, &mut diag);
+
+    if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+        diag.section(
+            "boinc control",
+            &format!("exiting without boinc_finish_called: {reason}"),
+            256,
+        );
+        write_atomic(&diag_out, &diag.finish())?;
+        return Ok(());
+    }
 
     let (mut result, confusions) = match prepare(work) {
         Ok(l) => {
@@ -587,12 +975,21 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
                 1024,
             );
             let started = Instant::now();
-            match compute_with_deadline(l, DEADLINE) {
+            match compute_with_deadline(l, DEADLINE, &control) {
                 Ok(c) => {
                     diag.section("timings", &format!("{:?}", c.result.timings), 512);
                     (c.result, c.confusions)
                 }
                 Err(boxed) => {
+                    if let Some(reason) = control.should_exit() {
+                        diag.section(
+                            "boinc control",
+                            &format!("exiting without boinc_finish_called: {reason}"),
+                            256,
+                        );
+                        write_atomic(&diag_out, &diag.finish())?;
+                        return Ok(());
+                    }
                     let (job, e) = *boxed;
                     let outcome = if started.elapsed() >= DEADLINE {
                         Outcome::Timeout
@@ -607,6 +1004,15 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
             }
         }
         Err(e) => {
+            if let Some(reason) = control.should_exit() {
+                diag.section(
+                    "boinc control",
+                    &format!("exiting without boinc_finish_called: {reason}"),
+                    256,
+                );
+                write_atomic(&diag_out, &diag.finish())?;
+                return Ok(());
+            }
             let msg = format!("{e:#}");
             diag.section("unit error", &msg, 1024);
             let job_path = resolve_slot_file(work, JOB_FILE);
@@ -636,6 +1042,16 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
         }
     };
 
+    if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+        diag.section(
+            "boinc control",
+            &format!("exiting without boinc_finish_called: {reason}"),
+            256,
+        );
+        write_atomic(&diag_out, &diag.finish())?;
+        return Ok(());
+    }
+
     result.timings.cpu_ms = cpu_ms();
     result.timings.peak_rss_kib = peak_rss_kib();
     diag.section(
@@ -662,4 +1078,98 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
     write_atomic(&fraction_out, b"1.0\n")?;
     write_atomic(&finish_out, b"0\n")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/test-slot-tmp")
+                .join(format!("{label}-{}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn boinc_mmap_suspend_resume_and_quit_consume_messages() {
+        let tmp = TestDir::new("suspend-resume");
+        let slot = tmp.path();
+        let mmap = slot.join(MMAP_FILE);
+        std::fs::write(&mmap, vec![0u8; SHARED_MEM_SIZE]).unwrap();
+
+        write_mmap_channel(&mmap, PROCESS_CONTROL_REQUEST_OFFSET, "<suspend/>").unwrap();
+        let control = BoincControl::start(slot);
+        assert!(control.is_suspended());
+        // Verify byte 0 was cleared to 0 so the BOINC client sees the message was consumed.
+        assert_eq!(std::fs::read(&mmap).unwrap()[0], 0);
+
+        let control_wait = control.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let flow = control_wait.wait_if_suspended_or_should_exit();
+            tx.send(flow).unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(120)).is_err());
+
+        write_mmap_channel(&mmap, PROCESS_CONTROL_REQUEST_OFFSET, "<resume/>").unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ControlFlow::Continue(())
+        );
+        waiter.join().unwrap();
+        assert!(!control.is_suspended());
+        assert_eq!(std::fs::read(&mmap).unwrap()[0], 0);
+
+        write_mmap_channel(&mmap, PROCESS_CONTROL_REQUEST_OFFSET, "<quit/>").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while control.should_exit().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(control.should_exit(), Some("quit"));
+        assert_eq!(std::fs::read(&mmap).unwrap()[0], 0);
+    }
+
+    #[test]
+    fn boinc_mmap_quit_and_heartbeat_loss_omit_boinc_finish_called() {
+        let tmp = TestDir::new("quit-heartbeat");
+        let quit_slot = tmp.path().join("quit_slot");
+        std::fs::create_dir_all(&quit_slot).unwrap();
+        let quit_mmap = quit_slot.join(MMAP_FILE);
+        write_mmap_channel(&quit_mmap, PROCESS_CONTROL_REQUEST_OFFSET, "<quit/>").unwrap();
+        run_slot(&quit_slot).unwrap();
+        assert!(!quit_slot.join(FINISH_FILE).exists());
+        assert_eq!(std::fs::read(&quit_mmap).unwrap()[0], 0);
+
+        let hb_slot = tmp.path().join("hb_slot");
+        std::fs::create_dir_all(&hb_slot).unwrap();
+        let hb_mmap = hb_slot.join(MMAP_FILE);
+        write_mmap_channel(&hb_mmap, HEARTBEAT_OFFSET, "<heartbeat/>").unwrap();
+        let control =
+            BoincControl::start_with_heartbeat_timeout(&hb_slot, Duration::from_millis(80));
+        assert_eq!(std::fs::read(&hb_mmap).unwrap()[HEARTBEAT_OFFSET], 0);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while control.should_exit().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(control.should_exit(), Some("heartbeat_lost"));
+    }
 }

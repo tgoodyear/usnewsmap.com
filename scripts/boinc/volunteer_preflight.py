@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Fail closed before BOINC starts when its rootless Podman cannot run a bounded task."""
+from __future__ import annotations
+
 import argparse
-from dataclasses import dataclass
+import ast
+from typing import NamedTuple
 import json
 import os
 from pathlib import Path
@@ -13,8 +16,12 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 import uuid
+
+try:
+    import tomllib  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # Python 3.9 / 3.10 fallback
+    tomllib = None  # type: ignore[assignment]
 
 MEMORY = 1536 * 1024 * 1024
 PIDS = 64
@@ -61,8 +68,7 @@ class PreflightError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
-class JobLimits:
+class JobLimits(NamedTuple):
     workdir: str = WORKDIR
     memory: int = MEMORY
     memory_swap: int = MEMORY
@@ -73,6 +79,95 @@ class JobLimits:
 
 
 DEFAULT_LIMITS = JobLimits()
+
+
+def _strip_toml_comment(line: str) -> str:
+    in_single = False
+    in_double = False
+    escaped = False
+    for index, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and in_double:
+            escaped = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            return line[:index]
+    if in_single or in_double or escaped:
+        raise ValueError(f"Unterminated string literal in TOML line: {line!r}")
+    return line
+
+
+def _parse_toml_fallback(raw: str) -> dict[str, object]:
+    """Minimal top-level TOML parser for Python 3.9/3.10 where tomllib is absent."""
+    result: dict[str, object] = {}
+    lines = [_strip_toml_comment(line).strip() for line in raw.splitlines()]
+    index = 0
+    while index < len(lines):
+        stmt = lines[index]
+        index += 1
+        if not stmt:
+            continue
+        if stmt.startswith("["):
+            raise ValueError(f"Unsupported TOML section header: {stmt!r}")
+        if "=" not in stmt:
+            raise ValueError(f"Malformed TOML assignment: {stmt!r}")
+        key, raw_val = stmt.split("=", 1)
+        key = key.strip()
+        raw_val = raw_val.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", key):
+            raise ValueError(f"Invalid TOML key: {key!r}")
+        if key in result:
+            raise ValueError(f"Duplicate TOML key: {key!r}")
+        if raw_val.startswith("["):
+            parts = [raw_val]
+            while not parts[-1].endswith("]"):
+                if index >= len(lines):
+                    raise ValueError(f"Unterminated TOML array for {key!r}")
+                next_line = lines[index]
+                index += 1
+                if next_line:
+                    parts.append(next_line)
+            joined = " ".join(parts)
+            try:
+                parsed = ast.literal_eval(joined)
+            except (SyntaxError, ValueError) as error:
+                raise ValueError(f"Malformed TOML array for {key!r}: {error}") from error
+            if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+                raise ValueError(f"TOML array for {key!r} must contain only strings")
+            result[key] = parsed
+        elif raw_val == "true":
+            result[key] = True
+        elif raw_val == "false":
+            result[key] = False
+        elif re.fullmatch(r"-?[0-9]+", raw_val):
+            result[key] = int(raw_val)
+        elif re.fullmatch(r"-?[0-9]+\.[0-9]+", raw_val):
+            result[key] = float(raw_val)
+        elif (raw_val.startswith('"') and raw_val.endswith('"')) or (
+            raw_val.startswith("'") and raw_val.endswith("'")
+        ):
+            try:
+                parsed_str = ast.literal_eval(raw_val)
+            except (SyntaxError, ValueError) as error:
+                raise ValueError(f"Malformed TOML string for {key!r}: {error}") from error
+            if not isinstance(parsed_str, str):
+                raise ValueError(f"Expected string value for {key!r}")
+            result[key] = parsed_str
+        else:
+            raise ValueError(f"Unsupported TOML value for {key!r}: {raw_val!r}")
+    return result
+
+
+def _load_toml(raw: str) -> dict[str, object]:
+    if tomllib is not None:
+        return tomllib.loads(raw)
+    return _parse_toml_fallback(raw)
 
 
 def parse_bytes(raw: str) -> int:
@@ -92,8 +187,8 @@ def limits_from_job_toml(path: Path) -> JobLimits:
         if candidate.is_file():
             target = candidate
     try:
-        raw_toml = tomllib.loads(target.read_text())
-    except (OSError, tomllib.TOMLDecodeError) as error:
+        raw_toml = _load_toml(target.read_text())
+    except (OSError, ValueError) as error:
         raise PreflightError(f"Cannot parse job.toml {path}: {error}") from error
     workdir = raw_toml.get("workdir", WORKDIR)
     if not isinstance(workdir, str) or not workdir.startswith("/") or workdir == "/":
@@ -102,9 +197,14 @@ def limits_from_job_toml(path: Path) -> JobLimits:
     if not isinstance(use_gpu, bool):
         raise PreflightError(f"Invalid use_gpu setting in {path}")
     raw_args = raw_toml.get("create_args", "")
-    if not isinstance(raw_args, str) or not raw_args.strip():
+    if isinstance(raw_args, str):
+        if not raw_args.strip():
+            raise PreflightError(f"Missing create_args in {path}")
+        tokens = tuple(shlex.split(raw_args))
+    elif isinstance(raw_args, list) and raw_args and all(isinstance(item, str) and item.strip() for item in raw_args):
+        tokens = tuple(raw_args)
+    else:
         raise PreflightError(f"Missing create_args in {path}")
-    tokens = tuple(shlex.split(raw_args))
     memory = None
     memory_swap = None
     pids = None
@@ -131,6 +231,9 @@ def limits_from_job_toml(path: Path) -> JobLimits:
         else:
             index += 1
             continue
+        # Ensure each required option has a non-empty value when passed as --opt=val
+        if flag in ("--memory", "--memory-swap", "--pids-limit", "--cpus", "--gpus", "--device", "--cap-drop", "--security-opt", "--network") and not value:
+            raise PreflightError(f"Option {flag} in {path} is missing a value")
         if flag == "--memory":
             memory = parse_bytes(value)
         elif flag == "--memory-swap":

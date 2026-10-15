@@ -110,6 +110,10 @@ class CheckAppver(unittest.TestCase):
         binary.write_bytes(b"native-qwen")
         llama = self.root / "llama-server"
         llama.write_bytes(b"llama-server")
+        llama_lock = self.root / "llama.lock"
+        llama_lock.write_text("tag = 'b5000'\n")
+        weights_lock = self.root / "weights.lock"
+        weights_lock.write_text("model = 'qwen3-vl'\n")
         native_dir = install.install(
             proj,
             version="1.0",
@@ -118,7 +122,11 @@ class CheckAppver(unittest.TestCase):
             platform="arm64-apple-darwin",
             kind="native",
             binary=binary,
-            extra_files=[f"llama-server={llama}"],
+            extra_files=[
+                f"llama-server={llama}",
+                f"llama.lock={llama_lock}",
+                f"weights.lock={weights_lock}",
+            ],
         )
         native_sigs = self.root / "native_sigs"
         native_sigs.mkdir()
@@ -135,8 +143,54 @@ class CheckAppver(unittest.TestCase):
             [
                 "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b",
                 "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_llama-server",
+                "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_llama.lock",
+                "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_weights.lock",
             ],
         )
+
+    def test_refuses_native_qwen_missing_required_bundle_files_or_windows_non_exe_wrapper(self):
+        # Remove llama-server from a staged native usnm_qwen version directory and verify check_appver refuses it
+        proj = self.root / "bad_qwen_proj"
+        proj.mkdir()
+        (proj / "config.xml").write_text("<boinc/>")
+        binary = self.root / "usnm-qwen"
+        binary.write_bytes(b"native-qwen")
+        llama = self.root / "llama-server"
+        llama.write_bytes(b"llama-server")
+        llama_lock = self.root / "llama.lock"
+        llama_lock.write_text("tag = 'b5000'\n")
+        weights_lock = self.root / "weights.lock"
+        weights_lock.write_text("model = 'qwen3-vl'\n")
+        native_dir = install.install(
+            proj,
+            version="1.0",
+            app="usnm_qwen",
+            plan_class="apple_gpu_8b",
+            platform="arm64-apple-darwin",
+            kind="native",
+            binary=binary,
+            extra_files=[
+                f"llama-server={llama}",
+                f"llama.lock={llama_lock}",
+                f"weights.lock={weights_lock}",
+            ],
+        )
+        # Strip llama-server from disk and version.xml
+        srv_file = native_dir / "usnm_qwen_1.0_arm64-apple-darwin_apple_gpu_8b_llama-server"
+        srv_file.unlink()
+        spec = ca.ET.parse(native_dir / "version.xml").getroot()
+        for f in list(spec.findall("file")):
+            if f.findtext("logical_name") == "llama-server":
+                spec.remove(f)
+        ca.ET.ElementTree(spec).write(native_dir / "version.xml", encoding="unicode")
+        sigs = self.root / "bad_qwen_sigs"
+        sigs.mkdir()
+        for p in native_dir.iterdir():
+            if p.name != "version.xml":
+                digest = hashlib.md5(p.read_bytes()).hexdigest()
+                (sigs / (p.name + ".sig")).write_text(f"good {digest}\n")
+        with self.assertRaisesRegex(ca.Refused, "missing required bundle files: llama-server"):
+            ca.check(native_dir, sigs, self.key, str(self.crypt), kind="native")
 
 
 if __name__ == "__main__":

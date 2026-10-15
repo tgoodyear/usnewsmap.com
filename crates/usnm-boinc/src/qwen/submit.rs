@@ -1,20 +1,65 @@
 //! Hand staged units to stock `create_work`, two results per unit, with the
 //! assessment's write-ahead markers (`submitting`, then `submitted`).
-use super::{units, APP, JOB_FILE, PAGE_FILE};
+use super::{units, APP, JOB_FILE, MODEL_DIR, PAGE_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use usnm_ocr_contract::{
+    boinc::sha256,
     quality::MAX_SCAN,
     qwen::{Job, MAX_JOB_JSON},
 };
+
+const EMBEDDED_WEIGHTS_LOCK: &str = include_str!("../../../../ocr/boinc/qwen/weights.lock");
+
+/// Execution target and input template routing for `usnm_qwen` workunits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Target {
+    /// Docker/Podman container worker (`templates/usnm_qwen_in`, models baked into image).
+    #[default]
+    #[value(name = "container")]
+    Container,
+    /// Native 8B GPU worker (`templates/usnm_qwen_8b_in`, stages sticky 8B GGUF + mmproj).
+    #[value(name = "native-8b", alias = "native8b")]
+    Native8b,
+    /// Native 2B GPU/CPU worker (`templates/usnm_qwen_2b_in`, stages sticky 2B GGUF + mmproj).
+    #[value(name = "native-2b", alias = "native2b")]
+    Native2b,
+}
+
+impl Target {
+    pub fn wu_template(self) -> &'static str {
+        match self {
+            Self::Container => "templates/usnm_qwen_in",
+            Self::Native8b => "templates/usnm_qwen_8b_in",
+            Self::Native2b => "templates/usnm_qwen_2b_in",
+        }
+    }
+
+    pub fn model_files(self) -> &'static [&'static str] {
+        match self {
+            Self::Container => &[],
+            Self::Native8b => &[
+                "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+                "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+            ],
+            Self::Native2b => &[
+                "Qwen3-VL-2B-Instruct-Q8_0.gguf",
+                "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
+            ],
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Options {
     pub root: PathBuf,
     pub project: PathBuf,
     pub max_units: usize,
+    pub target: Target,
+    pub model_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -33,13 +78,17 @@ pub const FPOPS_BOUND: &str = "1e16";
 pub const MEMORY_BOUND: &str = "6442450944";
 
 pub fn create_work_args(job: &Job) -> Vec<String> {
+    create_work_args_for_target(job, Target::Container)
+}
+
+pub fn create_work_args_for_target(job: &Job, target: Target) -> Vec<String> {
     let mut args: Vec<String> = [
         "--appname",
         APP,
         "--wu_name",
         &job.workunit(),
         "--wu_template",
-        "templates/usnm_qwen_in",
+        target.wu_template(),
         "--result_template",
         "templates/usnm_qwen_out",
         "--min_quorum",
@@ -66,17 +115,75 @@ pub fn create_work_args(job: &Job) -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    args.extend(physical_names(job).into_iter().map(|(p, _)| p));
+    args.extend(workunit_physical_names(job, target));
     args
 }
 
-/// Physical names in the download tree, in input template order, with the
-/// unit file each comes from.
+/// Physical names in the download tree for a per-unit staging step, in input
+/// template order for container workunits, with the unit file each comes from.
 pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
     vec![
         (format!("{}_page_jpg", job.id), PAGE_FILE),
         (format!("{}_qwen_json", job.id), JOB_FILE),
     ]
+}
+
+/// All physical file names passed to `create_work` in input template order
+/// (`<id>_page_jpg`, optional shared sticky `.gguf` and `.mmproj`, `<id>_qwen_json`).
+pub fn workunit_physical_names(job: &Job, target: Target) -> Vec<String> {
+    let mut out = Vec::with_capacity(2 + target.model_files().len());
+    out.push(format!("{}_page_jpg", job.id));
+    for &model_file in target.model_files() {
+        out.push(model_file.to_string());
+    }
+    out.push(format!("{}_qwen_json", job.id));
+    out
+}
+
+pub fn parse_weights_lock(text: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        ensure!(parts.len() >= 3, "invalid weights.lock line: {trimmed}");
+        map.insert(parts[0].to_string(), parts[2].to_ascii_lowercase());
+    }
+    ensure!(!map.is_empty(), "weights.lock contained no model digests");
+    Ok(map)
+}
+
+async fn stage_shared_models_with_lock(
+    project: &Path,
+    model_dir: Option<&Path>,
+    target: Target,
+    weights_lock_text: &str,
+) -> anyhow::Result<()> {
+    if target == Target::Container {
+        return Ok(());
+    }
+    let dir = model_dir.unwrap_or_else(|| Path::new(MODEL_DIR));
+    let expected_digests = parse_weights_lock(weights_lock_text)?;
+    for &file in target.model_files() {
+        let expected = expected_digests
+            .get(file)
+            .with_context(|| format!("missing {file} in weights.lock"))?;
+        let path = dir.join(file);
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("reading model file {}", path.display()))?;
+        let actual = sha256(&bytes);
+        ensure!(
+            actual == *expected,
+            "model file {} sha256 mismatch against weights.lock: expected {}, got {}",
+            path.display(),
+            expected,
+            actual
+        );
+        crate::assess::submit::stage_file(project, file, &bytes).await?;
+    }
+    Ok(())
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
@@ -89,6 +196,13 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         .map(|e| e.path())
         .collect();
     names.sort();
+    stage_shared_models_with_lock(
+        &project,
+        opts.model_dir.as_deref(),
+        opts.target,
+        EMBEDDED_WEIGHTS_LOCK,
+    )
+    .await?;
     let mut summary = Summary::default();
     for unit in names {
         if summary.submitted >= opts.max_units {
@@ -121,7 +235,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         }
         let status = Command::new(project.join("bin/create_work"))
             .current_dir(&project)
-            .args(create_work_args(&job))
+            .args(create_work_args_for_target(&job, opts.target))
             .status()
             .await?;
         ensure!(
@@ -162,5 +276,123 @@ mod tests {
         let args = create_work_args(&j);
         assert!(args.contains(&"templates/usnm_qwen_in".to_string()));
         assert!(args.ends_with(&[names[0].0.clone(), names[1].0.clone()]));
+    }
+
+    #[test]
+    fn native_targets_select_model_templates_and_four_physical_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unit = tmp.path().join("q");
+        crate::quality::work::tests::unit(&unit);
+        let j = super::super::stage::local_unit(
+            &unit.join("page.jpg"),
+            &unit.join("loc.xml"),
+            &tmp.path().join("u"),
+            super::super::stage::tests::engine(),
+            1,
+            4,
+            600,
+            4,
+        )
+        .unwrap();
+
+        let args_8b = create_work_args_for_target(&j, Target::Native8b);
+        assert!(args_8b.contains(&"templates/usnm_qwen_8b_in".to_string()));
+        assert!(args_8b.ends_with(&[
+            format!("{}_page_jpg", j.id),
+            "Qwen3VL-8B-Instruct-Q4_K_M.gguf".to_string(),
+            "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf".to_string(),
+            format!("{}_qwen_json", j.id),
+        ]));
+
+        let args_2b = create_work_args_for_target(&j, Target::Native2b);
+        assert!(args_2b.contains(&"templates/usnm_qwen_2b_in".to_string()));
+        assert!(args_2b.ends_with(&[
+            format!("{}_page_jpg", j.id),
+            "Qwen3-VL-2B-Instruct-Q8_0.gguf".to_string(),
+            "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf".to_string(),
+            format!("{}_qwen_json", j.id),
+        ]));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn stage_shared_models_stages_verified_gguf_and_rejects_mismatch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let bin_dir = project.join("bin");
+        let download_dir = project.join("download");
+        let model_dir = tmp.path().join("models");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&download_dir).unwrap();
+        std::fs::create_dir_all(&model_dir).unwrap();
+
+        let dir_hier = bin_dir.join("dir_hier_path");
+        std::fs::write(&dir_hier, "#!/bin/sh\necho \"download/$1\"\n").unwrap();
+        std::fs::set_permissions(&dir_hier, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let gguf_8b = b"synthetic-8b-gguf";
+        let mmproj_8b = b"synthetic-8b-mmproj";
+        let gguf_2b = b"synthetic-2b-gguf";
+        let mmproj_2b = b"synthetic-2b-mmproj";
+        std::fs::write(model_dir.join("Qwen3VL-8B-Instruct-Q4_K_M.gguf"), gguf_8b).unwrap();
+        std::fs::write(
+            model_dir.join("mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"),
+            mmproj_8b,
+        )
+        .unwrap();
+        std::fs::write(model_dir.join("Qwen3-VL-2B-Instruct-Q8_0.gguf"), gguf_2b).unwrap();
+        std::fs::write(
+            model_dir.join("mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf"),
+            mmproj_2b,
+        )
+        .unwrap();
+
+        // Embedded weights.lock rejects synthetic test bytes whose SHA-256 differs from production.
+        let err = stage_shared_models_with_lock(
+            &project,
+            Some(&model_dir),
+            Target::Native8b,
+            EMBEDDED_WEIGHTS_LOCK,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("sha256 mismatch"));
+
+        // Matching lock stages both 8B and 2B sticky files into download/.
+        let lock = format!(
+            "Qwen3VL-8B-Instruct-Q4_K_M.gguf https://example.invalid/8b.gguf {}\n\
+             mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf https://example.invalid/8b.mmproj {}\n\
+             Qwen3-VL-2B-Instruct-Q8_0.gguf https://example.invalid/2b.gguf {}\n\
+             mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf https://example.invalid/2b.mmproj {}\n",
+            sha256(gguf_8b),
+            sha256(mmproj_8b),
+            sha256(gguf_2b),
+            sha256(mmproj_2b),
+        );
+        stage_shared_models_with_lock(&project, Some(&model_dir), Target::Native8b, &lock)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(download_dir.join("Qwen3VL-8B-Instruct-Q4_K_M.gguf")).unwrap(),
+            gguf_8b
+        );
+        assert_eq!(
+            std::fs::read(download_dir.join("mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf")).unwrap(),
+            mmproj_8b
+        );
+
+        stage_shared_models_with_lock(&project, Some(&model_dir), Target::Native2b, &lock)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(download_dir.join("Qwen3-VL-2B-Instruct-Q8_0.gguf")).unwrap(),
+            gguf_2b
+        );
+        assert_eq!(
+            std::fs::read(download_dir.join("mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf")).unwrap(),
+            mmproj_2b
+        );
     }
 }

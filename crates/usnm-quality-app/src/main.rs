@@ -23,8 +23,9 @@ mod tests {
         },
     };
     use usnm_ocr_quality::slot::{
-        run_slot, ALTO_FILE, CONFUSIONS_FILE, DIAG_FILE, FINISH_FILE, FRACTION_FILE, JOB_FILE,
-        PAGE_FILE, PLACES_FILE, RESULT_FILE, TEXTS_FILE,
+        run_slot, write_mmap_channel, ALTO_FILE, CONFUSIONS_FILE, DIAG_FILE, FINISH_FILE,
+        FRACTION_FILE, JOB_FILE, MMAP_FILE, PAGE_FILE, PLACES_FILE, PROCESS_CONTROL_REQUEST_OFFSET,
+        RESULT_FILE, TEXTS_FILE,
     };
 
     const TRUTH: &str =
@@ -256,5 +257,14 @@ mod tests {
             sha256(&std::fs::read(soft_slot.join(CONFUSIONS_FILE)).unwrap()),
             sha256(&confusions_bytes)
         );
+
+        // Verify BOINC process-control <quit/> consumes byte 0 and does not write boinc_finish_called.
+        let quit_slot = tmp.path().join("quit_slot");
+        write_synthetic_unit(&quit_slot);
+        let mmap_path = quit_slot.join(MMAP_FILE);
+        write_mmap_channel(&mmap_path, PROCESS_CONTROL_REQUEST_OFFSET, "<quit/>").unwrap();
+        run_slot(&quit_slot).unwrap();
+        assert!(!quit_slot.join(FINISH_FILE).exists());
+        assert_eq!(std::fs::read(&mmap_path).unwrap()[0], 0);
     }
 }

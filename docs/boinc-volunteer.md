@@ -64,7 +64,7 @@ python3 scripts/boinc/setup_volunteer.py
 sudo python3 scripts/boinc/setup_volunteer.py --apply
 ```
 
-The helper detects the service's existing data directory and uses the published worker digest in this checkout's `contrib-compute/infra/boinc/env/prod.json` (`images.worker`). It does not move data. The default service is `boinc-client.service`; use `--service` if the installed package names it differently. `--data-dir` and `--image` can override the detected directory and released image, but the directory must still be the service's existing working directory and the image must use its full immutable digest.
+The helper accepts both `x86_64` and `aarch64` Linux hosts, detects the service's existing data directory, and uses the published worker digest in this checkout's `contrib-compute/infra/boinc/env/prod.json` (`images.worker`). It does not move data. The default service is `boinc-client.service`; use `--service` if the installed package names it differently. `--data-dir` and `--image` can override the detected directory and released image, but the directory must still be the service's existing working directory and the image must use its full immutable digest.
 
 The helper preserves account data and unrelated settings, backs up the changed preference/configuration XML, and sets a conservative pilot profile: one BOINC CPU, no GPUs, idle-only processing after five minutes, no battery use, 50% memory allowance, and no extra work buffer. Apps stay in memory while suspended so the wrapper can pause their container. CPU-load suspension is disabled because the client can count whole-machine load against its simulated single CPU; the idle policy and actual per-container CPU limit remain active.
 

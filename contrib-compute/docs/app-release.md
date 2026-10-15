@@ -59,11 +59,15 @@ The release script and `scripts/boinc/install.py` support two distribution kinds
    ```
 
    - **`usnm_qwen`**: stages the native `usnm_qwen` driver binary together with the platform's
-     pinned `llama.cpp` release archive from `ocr/boinc/qwen/llama.lock` under
+     pinned `llama-server` executable (`llama-server.exe` on `windows_x86_64`),
+     `ocr/boinc/qwen/llama.lock`, and `ocr/boinc/qwen/weights.lock` (plus any runtime shared
+     libraries) passed via repeatable `--extra-file LOGICAL=PATH` flags under
      `apps/usnm_qwen/<version>/<platform>__<plan_class>` for plan classes `apple_gpu_8b`
      (`arm64-apple-darwin`), `nvidia_cuda_8b` and `nvidia_cuda_2b` (`x86_64-pc-linux-gnu`,
-     `windows_x86_64`), and `mt` (all five platforms). Model files are staged separately as
-     `<sticky/><no_delete/>` inputs in `download/`.
+     `aarch64-unknown-linux-gnu`, `windows_x86_64`), and `mt` (all five platforms). Model files
+     are staged separately as `<sticky/><no_delete/>` inputs in `download/` using the
+     plan-class-specific model input templates (`usnm_qwen_8b_in` for 8B classes and
+     `usnm_qwen_2b_in` for 2B/`mt` classes).
 
 ## What it needs
 

@@ -116,7 +116,10 @@ if [ "$KIND" = container ]; then
     x86_64-pc-linux-gnu) [ -z "$WRAPPER$WRAPPER_SHA$WRAPPER_PIN" ] || die "Linux uses the wrapper built in the pinned server image" ;;
     windows_x86_64)
       [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
-      [ -z "$WRAPPER$WRAPPER_SHA$WRAPPER_PIN" ] || [ -f "$WRAPPER" ] || die "missing --wrapper for $PLATFORM" ;;
+      [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
+        die "Windows requires --wrapper, --wrapper-sha256 and --wrapper-source-pin from the reviewed build artifact"
+      python3 scripts/boinc/check-windows-wrapper.py --wrapper "$WRAPPER" --platform "$PLATFORM" \
+        --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Windows wrapper verification failed" ;;
     aarch64-unknown-linux-gnu)
       [ "$PLAN_CLASS" = docker ] || die "$PLATFORM supports only --plan-class docker"
       [ -f "$WRAPPER" ] && [ -f "$WRAPPER_PIN" ] && [[ $WRAPPER_SHA =~ ^[0-9a-f]{64}$ ]] ||
@@ -140,6 +143,27 @@ else
     :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64) ;;
     *) die "native --plan-class $PLAN_CLASS is not supported on $PLATFORM" ;;
   esac
+  for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
+    [[ $spec == *=* ]] || die "--extra-file must have the form LOGICAL=PATH"
+    logical=${spec%%=*}
+    src_file=${spec#*=}
+    [[ $logical =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$ ]] || die "invalid --extra-file logical name $logical"
+    [ -f "$src_file" ] || die "missing --extra-file source $src_file"
+  done
+  if [ "$APP" = usnm_qwen ]; then
+    required_server="llama-server"
+    [ "$PLATFORM" != windows_x86_64 ] || required_server="llama-server.exe"
+    for req_extra in "$required_server" "llama.lock" "weights.lock"; do
+      found_extra=false
+      for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
+        if [ "${spec%%=*}" = "$req_extra" ]; then
+          found_extra=true
+          break
+        fi
+      done
+      $found_extra || die "native usnm_qwen on $PLATFORM requires --extra-file $req_extra=PATH"
+    done
+  fi
 fi
 # shellcheck source=scripts/lib/boinc.sh disable=SC1091
 . scripts/lib/boinc.sh
@@ -289,13 +313,17 @@ if [ "$KIND" = native ]; then
   fi
 elif [ -n "$WRAPPER" ]; then
   cp "$WRAPPER" "$work/wrapper"
+  cp "$WRAPPER_PIN" "$work/wrapper.pin"
   case "$PLATFORM" in
+    windows_x86_64)
+      python3 scripts/boinc/check-windows-wrapper.py --wrapper "$work/wrapper" --platform "$PLATFORM" \
+        --sha256 "$WRAPPER_SHA" --source-pin "$work/wrapper.pin" || die "Windows wrapper changed since verification" ;;
     aarch64-unknown-linux-gnu)
       python3 scripts/boinc/check-linux-wrapper.py --wrapper "$work/wrapper" --platform "$PLATFORM" \
-        --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Linux arm64 wrapper changed since verification" ;;
+        --sha256 "$WRAPPER_SHA" --source-pin "$work/wrapper.pin" || die "Linux arm64 wrapper changed since verification" ;;
     arm64-apple-darwin|x86_64-apple-darwin)
       python3 scripts/boinc/check-mac-wrapper.py --wrapper "$work/wrapper" --platform "$PLATFORM" \
-        --sha256 "$WRAPPER_SHA" --source-pin "$WRAPPER_PIN" || die "Mac wrapper changed since verification" ;;
+        --sha256 "$WRAPPER_SHA" --source-pin "$work/wrapper.pin" || die "Mac wrapper changed since verification" ;;
   esac
 fi
 
@@ -358,30 +386,35 @@ echo "   signatures: $(cd "$work/sigs" && echo *)"
 
 echo "4. building $APPVER_REPO:$APPVER_TAG in $registry"
 ctx="$work/ctx"
-mkdir -p "$ctx/src"
-git archive --format=tar HEAD scripts/boinc/install.py ocr/boinc contrib-compute/boinc/project.xml | tar -x -C "$ctx/src"
+mkdir -p "$ctx/src" "$ctx/extra"
+git archive --format=tar HEAD scripts/boinc/install.py scripts/boinc/check-mac-wrapper.py scripts/boinc/check-linux-wrapper.py scripts/boinc/check-windows-wrapper.py contrib-compute/images/base/Containerfile ocr/boinc contrib-compute/boinc/project.xml | tar -x -C "$ctx/src"
 git show "HEAD:contrib-compute/images/appver/Containerfile" > "$ctx/Containerfile"
 git show "HEAD:contrib-compute/images/appver/publish-appver.sh" > "$ctx/publish-appver.sh"
 git show "HEAD:contrib-compute/images/appver/check_appver.py" > "$ctx/check_appver.py"
 mv "$work/sigs" "$ctx/sigs"
 mkdir "$ctx/wrapper-candidate"
 appver_wrapper=/usr/local/lib/usnm-boinc/docker_wrapper
+appver_wrapper_pin=""
 appver_binary=""
 if [ "$KIND" = native ]; then
   cp "$work/$binary_name" "$ctx/wrapper-candidate/$binary_name"
   appver_binary="/tmp/wrapper-candidate/$binary_name"
   if [ -d "$work/extra" ]; then
     cp -r "$work/extra" "$ctx/wrapper-candidate/extra"
+    cp "$work/extra"/* "$ctx/extra/"
   fi
 elif [ -f "$work/wrapper" ]; then
   cp "$work/wrapper" "$ctx/wrapper-candidate/docker_wrapper"
+  cp "$work/wrapper.pin" "$ctx/wrapper-candidate/wrapper.pin"
   appver_wrapper=/tmp/wrapper-candidate/docker_wrapper
+  appver_wrapper_pin=/tmp/wrapper-candidate/wrapper.pin
 fi
 printf '%s' "$PUBLIC_KEY" > "$ctx/code_sign_public"
 baz acr build --registry "$registry" --image "$APPVER_REPO:$APPVER_TAG" --platform linux/amd64 --timeout 1800 \
   --build-arg "SERVER_IMAGE=$SERVER_IMAGE" --build-arg "KIND=$KIND" --build-arg "APP=$APP" --build-arg "VERSION=$VERSION" \
   --build-arg "WORKER_IMAGE=$WORKER_IMAGE" --build-arg "PLAN_CLASS=$PLAN_CLASS" --build-arg "PLATFORM=$PLATFORM" \
-  --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "BINARY_PATH=$appver_binary" --file "$ctx/Containerfile" "$ctx" ||
+  --build-arg "WRAPPER_PATH=$appver_wrapper" --build-arg "WRAPPER_SHA256=$WRAPPER_SHA" --build-arg "WRAPPER_SOURCE_PIN=$appver_wrapper_pin" \
+  --build-arg "BINARY_PATH=$appver_binary" --file "$ctx/Containerfile" "$ctx" ||
   die "the app version image build failed (a signature that doesn't verify fails it)"
 appver_image="$registry.azurecr.io/$APPVER_REPO@$(digest "$APPVER_REPO" "$APPVER_TAG")"
 echo "   $appver_image"

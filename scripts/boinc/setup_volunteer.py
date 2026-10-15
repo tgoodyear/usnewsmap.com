@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Preview/install a rootless Podman BOINC profile and mandatory startup preflight."""
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -367,8 +369,8 @@ def setup(service, data_dir, image, apply=False, job_toml=None, job_tomls=None):
     data_dir = data_dir.resolve(strict=True)
     if not SAFE_PATH.fullmatch(str(data_dir)):
         raise SetupError("The resolved data directory contains unsupported special characters; configure this custom service manually.")
-    if os.uname().machine != "x86_64":
-        raise SetupError("This pilot profile supports Linux x86-64 only.")
+    if os.uname().machine not in ("x86_64", "aarch64"):
+        raise SetupError("This pilot profile supports Linux x86_64 and aarch64 only.")
     user = run(["systemctl", "show", service, "--property=User", "--value"])
     account = pwd.getpwnam(user)
     if account.pw_uid == 0:

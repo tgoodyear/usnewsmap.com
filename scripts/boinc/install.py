@@ -3,6 +3,8 @@
 
 Does not edit project config, publish/sign files, or install server packages.
 """
+from __future__ import annotations
+
 import argparse
 import os
 from pathlib import Path
@@ -26,6 +28,13 @@ TEMPLATES = {
     "usnm_quality": ["usnm_quality_in", "usnm_quality_out"],
     "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"],
 }
+QWEN_NATIVE_MODEL_TEMPLATES = {
+    "apple_gpu_8b": "usnm_qwen_8b_in",
+    "nvidia_cuda_8b": "usnm_qwen_8b_in",
+    "nvidia_cuda_2b": "usnm_qwen_2b_in",
+    "mt": "usnm_qwen_2b_in",
+}
+DEFAULT_SERVER_WRAPPER = Path("/usr/local/lib/usnm-boinc/docker_wrapper")
 
 # The plan classes an app version can be installed for (contrib-compute/boinc/plan_class_spec.xml),
 # and the job.toml each app uses under each.
@@ -156,12 +165,19 @@ def install(
             raise ValueError(f"{platform} supports only plan class docker")
         if not image or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", image):
             raise ValueError("--image must be a pullable registry reference pinned by full digest")
+        if platform != "x86_64-pc-linux-gnu" and (
+            wrapper is None or Path(wrapper) == DEFAULT_SERVER_WRAPPER
+        ):
+            raise ValueError(
+                f"{platform} container installs require a verified platform-specific --wrapper, not {DEFAULT_SERVER_WRAPPER}"
+            )
         if wrapper is None or not Path(wrapper).is_file():
             raise ValueError("missing trusted docker_wrapper for the selected platform")
         target = project / "apps" / app / version / f"{platform}__{plan_class}"
         target.mkdir(parents=True, exist_ok=False)
         suffix = f"{app}_{version}_{platform}_{plan_class}"
-        wrapper_name = f"docker_wrapper_{suffix}"
+        wrapper_ext = ".exe" if platform == "windows_x86_64" else ""
+        wrapper_name = f"docker_wrapper_{suffix}{wrapper_ext}"
         dockerfile_name = f"Dockerfile_{suffix}"
         job_name = f"job_{suffix}.toml"
         shutil.copyfile(wrapper, target / wrapper_name)
@@ -197,6 +213,15 @@ def install(
         if platform != "windows_x86_64" and binary.suffix.lower() == ".exe":
             raise ValueError(".exe binaries are only supported on windows_x86_64")
         parsed_extras = parse_extra_files(extra_files, bundle_dir)
+        if app == "usnm_qwen":
+            present_extras = {logical for logical, _ in parsed_extras}
+            required_server = "llama-server.exe" if platform == "windows_x86_64" else "llama-server"
+            required_extras = (required_server, "llama.lock", "weights.lock")
+            missing_extras = [name for name in required_extras if name not in present_extras]
+            if missing_extras:
+                raise ValueError(
+                    f"native usnm_qwen on {platform} requires --extra-file for: {', '.join(missing_extras)}"
+                )
         subdir = f"{platform}__{plan_class}" if plan_class else platform
         suffix = f"{app}_{version}_{platform}_{plan_class}" if plan_class else f"{app}_{version}_{platform}"
         ext = ".exe" if platform == "windows_x86_64" else ""
@@ -211,10 +236,12 @@ def install(
         ET.SubElement(main_file, "main_program")
         ET.SubElement(main_file, "copy_file")
         staged_files = [target / main_name]
+        executable_extras = {"llama-server", "llama-server.exe"}
         for logical, src in parsed_extras:
             phys = f"{suffix}_{logical}"
             shutil.copyfile(src, target / phys)
-            (target / phys).chmod(0o755 if os.access(src, os.X_OK) else 0o644)
+            is_exec = logical in executable_extras or os.access(src, os.X_OK)
+            (target / phys).chmod(0o755 if is_exec else 0o644)
             item = ET.SubElement(spec, "file")
             ET.SubElement(item, "physical_name").text = phys
             ET.SubElement(item, "logical_name").text = logical
@@ -228,7 +255,12 @@ def install(
         for staged in staged_files:
             sign_file(staged, Path(sign_key), crypt_prog)
     (project / "templates").mkdir(exist_ok=True)
-    for name in TEMPLATES[app]:
+    template_names = list(TEMPLATES[app])
+    if kind == "native" and app == "usnm_qwen":
+        model_template = QWEN_NATIVE_MODEL_TEMPLATES[plan_class]
+        if model_template not in template_names:
+            template_names.append(model_template)
+    for name in template_names:
         shutil.copyfile(root / "ocr/boinc" / name, project / "templates" / name)
     return target
 

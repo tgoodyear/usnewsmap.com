@@ -27,27 +27,22 @@ jobs:
             target: x86_64-unknown-linux-musl
             boinc_platform: x86_64-pc-linux-gnu
             ext: ""
-            run_tests: true
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             boinc_platform: aarch64-unknown-linux-gnu
             ext: ""
-            run_tests: false
           - runner: macos-15
             target: aarch64-apple-darwin
             boinc_platform: arm64-apple-darwin
             ext: ""
-            run_tests: true
           - runner: macos-15
             target: x86_64-apple-darwin
             boinc_platform: x86_64-apple-darwin
             ext: ""
-            run_tests: false
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             boinc_platform: windows_x86_64
             ext: ".exe"
-            run_tests: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,21 +53,25 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Install Linux musl cross-linkers
-        if: matrix.runner == 'ubuntu-latest'
+      - name: Install Linux musl tools
+        if: startsWith(matrix.runner, 'ubuntu-')
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools gcc-aarch64-linux-gnu
-      - name: Run host determinism and loopback tests
-        if: matrix.run_tests
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Ensure Rosetta 2 for x86_64-apple-darwin tests
+        if: matrix.target == 'x86_64-apple-darwin'
         shell: bash
         run: |
-          cargo test --locked -p usnm-ocr-contract --no-default-features
-          cargo test --locked -p usnm-ocr-quality -p usnm-quality-app -p usnm-qwen-app
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+      - name: Run target determinism and loopback tests (${{ matrix.target }})
+        shell: bash
+        run: |
+          cargo test --locked --target "${{ matrix.target }}" -p usnm-ocr-contract --no-default-features
+          cargo test --locked --target "${{ matrix.target }}" -p usnm-ocr-quality -p usnm-quality-app -p usnm-qwen-app
       - name: Build native BOINC binaries (${{ matrix.target }})
         shell: bash
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
         run: |
           cargo build --release --locked --target "${{ matrix.target }}" -p usnm-quality-app -p usnm-qwen-app
           out_dir="$RUNNER_TEMP/boinc-native-${{ matrix.boinc_platform }}"
