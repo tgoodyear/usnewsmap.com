@@ -291,10 +291,18 @@ class DnsWhatIfTemplate(unittest.TestCase):
         self.assertNotIn("appFqdn", hosts["copy"]["count"])
         self.assertIn("'www'", hosts["copy"]["count"])
         self.assertIn("'api'", hosts["copy"]["count"])
-        self.assertEqual(hosts["condition"], "[not(empty(parameters('appFqdn')))]")
+        self.assertEqual(hosts["condition"], "[parameters('deployAppRecords')]")
+        self.assertEqual(template["parameters"]["deployAppRecords"]["defaultValue"],
+                         "[not(empty(parameters('appFqdn')))]")
         self.assertEqual(hosts["properties"]["CNAMERecord"]["cname"], "[parameters('appFqdn')]")
         zone = next(r for r in resources if r["type"] == "Microsoft.Network/dnsZones")
         self.assertNotIn("condition", zone)
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build", "infra/main.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        root = json.loads(run.stdout)
+        dns = root["resources"]["dns"]
+        self.assertEqual(dns["properties"]["parameters"]["deployAppRecords"]["value"],
+                         "[variables('deployApi')]")
 
 
 @unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
