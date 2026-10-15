@@ -30,15 +30,15 @@ fn notice(provenance: &Value) -> anyhow::Result<Vec<u8>> {
     };
     let license = field("source_license")?;
     let upper = license.to_uppercase().replace(' ', "-");
-    let url = if upper.contains("BY-NC-SA") {
+    let url = if upper.contains("CC-BY-NC-SA-4.0") {
         "https://creativecommons.org/licenses/by-nc-sa/4.0/"
-    } else if upper.contains("BY-NC") {
+    } else if upper.contains("CC-BY-NC-4.0") {
         "https://creativecommons.org/licenses/by-nc/4.0/"
-    } else if upper.contains("BY-SA") {
+    } else if upper.contains("CC-BY-SA-4.0") {
         "https://creativecommons.org/licenses/by-sa/4.0/"
-    } else if upper.contains("BY") {
+    } else if upper.contains("CC-BY-4.0") {
         "https://creativecommons.org/licenses/by/4.0/"
-    } else if upper.contains("CC0") {
+    } else if upper.contains("CC0-1.0") {
         "https://creativecommons.org/publicdomain/zero/1.0/"
     } else {
         anyhow::bail!("unsupported source licence");
@@ -483,6 +483,77 @@ mod tests {
             std::fs::write(&opts.crops, row.to_string()).unwrap();
             assert!(stage(&opts).is_err(), "{key}");
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submission_pins_notices_and_downloads_only_three_public_inputs() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let opts = fixture(tmp.path());
+        stage(&opts).unwrap();
+        let manifest: Manifest =
+            serde_json::from_slice(&std::fs::read(opts.root.join(MANIFEST)).unwrap()).unwrap();
+        let job = &manifest.entries[0].job;
+        let unit = units(&opts.root).join(&job.id);
+        let path = unit.join(NOTICE_FILE);
+        let original = std::fs::read(&path).unwrap();
+        let project = tmp.path().join("project");
+        for subdir in ["bin", "templates", "download"] {
+            std::fs::create_dir_all(project.join(subdir)).unwrap();
+        }
+        for (name, script) in [
+            (
+                "dir_hier_path",
+                "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n",
+            ),
+            ("create_work", "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\n"),
+        ] {
+            let path = project.join("bin").join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let submit = super::super::submit::Options {
+            root: opts.root.clone(),
+            project: project.clone(),
+            max_units: 1,
+        };
+        std::fs::write(&path, "changed notices").unwrap();
+        assert!(super::super::submit::run(&submit).await.is_err());
+        assert!(!unit.join("submitting").exists());
+        assert!(!project.join("args").exists());
+        std::fs::write(&path, &original).unwrap();
+        assert_eq!(
+            super::super::submit::run(&submit).await.unwrap().submitted,
+            1
+        );
+        assert!(unit.join("submitted").exists());
+        assert_eq!(
+            super::super::submit::run(&submit).await.unwrap().submitted,
+            0
+        );
+        assert!(std::fs::read_to_string(project.join("args"))
+            .unwrap()
+            .contains("templates/usnm_qwen_benchmark_in"));
+        let files: Vec<_> = std::fs::read_dir(project.join("download"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 3);
+        for file in files {
+            assert!(
+                !String::from_utf8_lossy(&std::fs::read(file).unwrap()).contains("HELLO NEWSPAPER")
+            );
+        }
+        assert_eq!(
+            std::fs::read(
+                project
+                    .join("download")
+                    .join(format!("{}_notice_txt", job.id))
+            )
+            .unwrap(),
+            original,
+        );
     }
 
     #[test]
