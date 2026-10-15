@@ -232,6 +232,11 @@ param ocrNodeGroupId string = ''
 @description('Schedule for the OCR pickup job usnm-ocrs-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
 param ocrSyncCron string = '17 * * * *'
 
+@description('Maximum distinct page ids from hit results queued for OCR per UTC request day.')
+@minValue(0)
+@maxValue(10000)
+param ocrUserDailyMax int = 1000
+
 @description('The OCR seeder\'s settings for the pickup job (12 §12.5 Step 10), by environment variable name (USNM_OCR_SEED_* and USNM_OCR_BULK_*; docs/operations.md). Seeding stays off while USNM_OCR_SEED_PLAN is empty (ADR-0015 decision 7).')
 param ocrSeed object = {}
 
@@ -694,6 +699,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     identityId: identities.outputs.appId
     identityClientId: identities.outputs.appClientId
     storageBlobEndpoint: storage.outputs.blobEndpoint
+    ocrRequests: ocrNodes && ingestJobs && useAcr
     storageAccountName: storage.outputs.name
     cosmosEndpoint: cosmos.outputs.endpoint
     allowedOrigins: siteOrigins
@@ -841,6 +847,8 @@ module ingest 'modules/ingestjobs.bicep' = if (ingestJobs && useAcr) {
     ocrSync: ocrNodes
     ocrQueueEndpoint: ocrNodes ? ocrExchange!.outputs.queueEndpoint : ''
     ocrBlobEndpoint: ocrNodes ? ocrExchange!.outputs.blobEndpoint : ''
+    ocrRequestsUrl: ocrNodes ? '${storage.outputs.blobEndpoint}ocr-requests' : ''
+    ocrUserDailyMax: ocrUserDailyMax
     ocrSyncCron: ocrSyncCron == 'manual' ? '' : ocrSyncCron
     ocrSeed: ocrSeed
     rawUrl: !empty(archiveAccountId)

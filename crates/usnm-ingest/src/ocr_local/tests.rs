@@ -64,6 +64,7 @@ struct Fx {
     state: State,
     stores: Stores,
     out: Arc<dyn ObjectStore>,
+    requests: Arc<dyn ObjectStore>,
     queue: Arc<dyn Queue>,
 }
 
@@ -80,6 +81,7 @@ async fn fixture(with_tables: bool) -> Fx {
     let reference = open(dir.path(), "reference");
     let out = open(dir.path(), "out");
     let quarantine = open(dir.path(), "quarantine");
+    let requests = open(dir.path(), "requests");
     let queue: Arc<dyn Queue> = Arc::new(LocalQueue::new(dir.path().join("queue")));
     let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
     let mut batches = Vec::new();
@@ -155,9 +157,11 @@ async fn fixture(with_tables: bool) -> Fx {
             reference,
             out: Arc::clone(&out),
             quarantine,
+            requests: Some(Arc::clone(&requests)),
             queue: Arc::clone(&queue),
         },
         out,
+        requests,
         queue,
     }
 }
@@ -976,4 +980,56 @@ async fn an_alto_already_imported_with_other_bytes_stops_the_run() {
     assert!(format!("{err:#}").contains("other bytes"), "{err:#}");
     // Nothing was deleted.
     assert_eq!(fx.out_paths().await.len(), 2);
+}
+
+#[tokio::test]
+async fn hit_requests_queue_damaged_pages_with_a_daily_cap_and_delete_the_day() {
+    let fx = fixture(true).await;
+    let request_day = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+    let mut body = Vec::new();
+    for doc_id in [
+        key(1).doc_id(),
+        key(2).doc_id(),
+        key(3).doc_id(),
+        key(1).doc_id(),
+        PageKey::new(JA_LCCN, day(), 1, 1).unwrap().doc_id(),
+    ] {
+        serde_json::to_writer(&mut body, &serde_json::json!({"v": 1, "doc_id": doc_id})).unwrap();
+        body.push(b'\n');
+    }
+    fx.requests
+        .put_new("days/2026-10-14.jsonl", body, "application/x-ndjson")
+        .await
+        .unwrap();
+
+    let opts = Options {
+        user_daily_max: 2,
+        ..Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &fx.stores, &opts)
+        .await
+        .unwrap();
+    assert_eq!(status.last_run.user_requests_queued, 2);
+    assert!(!fx.requests.exists("days/2026-10-14.jsonl").await.unwrap());
+    let ledger = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert_eq!(ledger.user_requests_for_day(request_day), 2);
+    for expected in [key(1), key(2)] {
+        let message = fx
+            .queue
+            .receive(PRIORITY, std::time::Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+        let (message, page) = usnm_ocr_contract::message::decode(&message.text).unwrap();
+        assert_eq!(page, expected);
+        assert_eq!(message.reason, Reason::User);
+        assert!(message.score.is_some_and(|score| score >= 0.1));
+        assert_eq!(message.queued_at, "2026-10-14T00:00:00Z");
+    }
+    assert!(fx
+        .queue
+        .receive(PRIORITY, std::time::Duration::from_millis(1))
+        .await
+        .unwrap()
+        .is_none());
 }

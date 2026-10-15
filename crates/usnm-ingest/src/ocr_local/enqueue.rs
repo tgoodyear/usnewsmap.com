@@ -51,9 +51,31 @@ pub struct QueueReport {
     pub ledger: Option<String>,
 }
 
+pub(super) struct SendContext<'a> {
+    pub(super) lease: Option<&'a Lease>,
+    pub(super) run: &'a str,
+    pub(super) now: DateTime<Utc>,
+    pub(super) private_pages: bool,
+}
+
+pub(super) struct HitRequestBatch {
+    pub pages: Vec<String>,
+    pub day: chrono::NaiveDate,
+    pub max_queued: usize,
+}
+
 pub(super) fn skip(r: &mut QueueReport, why: &str, doc_id: &str) {
     tracing::info!(doc_id, why, "page not queued");
     *r.skipped.entry(why.to_owned()).or_default() += 1;
+}
+
+fn skip_page(r: &mut QueueReport, why: &str, doc_id: &str, private: bool) {
+    if private {
+        tracing::info!(why, "user-requested page not queued");
+        *r.skipped.entry(why.to_owned()).or_default() += 1;
+    } else {
+        skip(r, why, doc_id);
+    }
 }
 
 /// The message language for a page: its detected language in ISO 639-3,
@@ -101,29 +123,31 @@ async fn record_not_sent(
 pub(super) async fn send_all(
     curated: &dyn ObjectStore,
     queue: &Arc<dyn Queue>,
-    lease: Option<&Lease>,
-    run: &str,
-    now: DateTime<Utc>,
+    context: SendContext<'_>,
     batch: Vec<(Queued, OcrMessage)>,
     report: &mut QueueReport,
 ) -> anyhow::Result<()> {
-    if let Some(l) = lease {
+    if let Some(l) = context.lease {
         l.check()?;
     }
     let rows: Vec<Queued> = batch.iter().map(|(q, _)| q.clone()).collect();
-    report.ledger = ledger::write_queued(curated, &rows, now, run).await?;
+    report.ledger = ledger::write_queued(curated, &rows, context.now, context.run).await?;
     for (i, (q, m)) in batch.iter().enumerate() {
-        if let Some(Err(e)) = lease.map(Lease::check) {
-            let n = record_not_sent(curated, run, &batch[i..]).await;
+        if let Some(Err(e)) = context.lease.map(Lease::check) {
+            let n = record_not_sent(curated, context.run, &batch[i..]).await;
             return Err(e.context(format!("{n} pages recorded as not sent")));
         }
         if let Err(e) = queue.send(queue_for(m.reason), &m.encode()).await {
             // The pages after this one never went out: not outstanding.
-            let n = record_not_sent(curated, run, &batch[i + 1..]).await;
+            let n = record_not_sent(curated, context.run, &batch[i + 1..]).await;
+            let page = if context.private_pages {
+                "a user-requested page"
+            } else {
+                q.doc_id.as_str()
+            };
             return Err(e.context(format!(
-                "queueing {} ({n} pages after it are recorded as not sent; this one's ledger row \
-                 is written and may have gone out: --include-outstanding queues it again)",
-                q.doc_id
+                "queueing {page} ({n} pages after it are recorded as not sent; this one's ledger row \
+                 is written and may have gone out: --include-outstanding queues it again)"
             )));
         }
         report.queued += 1;
@@ -239,6 +263,70 @@ async fn enqueue_locked(
     opts: &EnqueueOptions,
     lease: Option<&Lease>,
 ) -> anyhow::Result<QueueReport> {
+    enqueue_with_policy(
+        state,
+        curated,
+        reference,
+        queue,
+        opts,
+        lease,
+        QueuePolicy::default(),
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct QueuePolicy {
+    queued_at: Option<DateTime<Utc>>,
+    min_damage: Option<f64>,
+    max_queued: Option<usize>,
+    private_pages: bool,
+}
+
+/// Queue pages from a closed daily hit-request file while `ocr-sync` holds
+/// the shared lock. Only page ids enter this path; logs omit those ids.
+pub(super) async fn enqueue_hit_requests(
+    state: &State,
+    curated: &dyn ObjectStore,
+    reference: &dyn ObjectStore,
+    queue: &Arc<dyn Queue>,
+    lease: &Lease,
+    requests: HitRequestBatch,
+) -> anyhow::Result<QueueReport> {
+    let opts = EnqueueOptions {
+        pages: requests.pages,
+        reason: Reason::User,
+        plan: "hit-results".into(),
+        batch: None,
+        include_outstanding: false,
+        dry_run: false,
+    };
+    enqueue_with_policy(
+        state,
+        curated,
+        reference,
+        queue,
+        &opts,
+        Some(lease),
+        QueuePolicy {
+            queued_at: requests.day.and_hms_opt(0, 0, 0).map(|t| t.and_utc()),
+            min_damage: Some(0.1),
+            max_queued: Some(requests.max_queued),
+            private_pages: true,
+        },
+    )
+    .await
+}
+
+async fn enqueue_with_policy(
+    state: &State,
+    curated: &dyn ObjectStore,
+    reference: &dyn ObjectStore,
+    queue: &Arc<dyn Queue>,
+    opts: &EnqueueOptions,
+    lease: Option<&Lease>,
+    policy: QueuePolicy,
+) -> anyhow::Result<QueueReport> {
     if opts.pages.len() > MAX_PAGES {
         bail!(
             "{} pages; queue at most {MAX_PAGES} at a time",
@@ -268,6 +356,7 @@ async fn enqueue_locked(
     };
     let ledger = ledger::load(curated).await?;
     let now = Utc::now();
+    let queued_at = policy.queued_at.unwrap_or(now);
     let run = run_id(now);
     let mut report = QueueReport::default();
     let mut out = Vec::new();
@@ -278,16 +367,20 @@ async fn enqueue_locked(
             continue;
         }
         let Ok(key) = PageKey::from_doc_id(doc_id) else {
-            skip(&mut report, "bad_doc_id", doc_id);
+            skip_page(&mut report, "bad_doc_id", doc_id, policy.private_pages);
             continue;
         };
         if !opts.include_outstanding && ledger.outstanding(doc_id).is_some() {
-            skip(&mut report, "outstanding", doc_id);
+            skip_page(&mut report, "outstanding", doc_id, policy.private_pages);
+            continue;
+        }
+        if policy.private_pages && ledger.imported(doc_id) {
+            skip_page(&mut report, "already_ocr", doc_id, true);
             continue;
         }
         let langs = titles.get(&key.lccn).cloned().unwrap_or_default();
         if langs.iter().any(|l| l == "jpn") {
-            skip(&mut report, "japanese_title", doc_id);
+            skip_page(&mut report, "japanese_title", doc_id, policy.private_pages);
             continue;
         }
         let Some(found) = find_page(
@@ -301,11 +394,18 @@ async fn enqueue_locked(
         )
         .await?
         else {
-            skip(&mut report, "not_published", doc_id);
+            skip_page(&mut report, "not_published", doc_id, policy.private_pages);
             continue;
         };
+        if policy
+            .min_damage
+            .is_some_and(|min| !found.damage_rate.is_some_and(|damage| damage >= min))
+        {
+            skip_page(&mut report, "not_damaged", doc_id, policy.private_pages);
+            continue;
+        }
         let Some(language) = message_language(found.lang.as_deref(), &langs) else {
-            skip(&mut report, "no_language", doc_id);
+            skip_page(&mut report, "no_language", doc_id, policy.private_pages);
             continue;
         };
         let msg = OcrMessage {
@@ -315,10 +415,10 @@ async fn enqueue_locked(
             language: language.clone(),
             reason: opts.reason,
             score: found.damage_rate.filter(|s| (0.0..=1.0).contains(s)),
-            queued_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            queued_at: queued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         };
         if let Err(e) = msg.validate() {
-            skip(&mut report, e.kind(), doc_id);
+            skip_page(&mut report, e.kind(), doc_id, policy.private_pages);
             continue;
         }
         let attempt = ledger
@@ -336,10 +436,13 @@ async fn enqueue_locked(
                 language,
                 plan: opts.plan.clone(),
                 attempt,
-                queued_at: now,
+                queued_at,
             },
             msg,
         ));
+        if policy.max_queued.is_some_and(|max| out.len() >= max) {
+            break;
+        }
     }
     if opts.dry_run {
         report.queued = out.len();
@@ -347,7 +450,19 @@ async fn enqueue_locked(
         return Ok(report);
     }
     if !out.is_empty() {
-        send_all(curated, queue, lease, &run, now, out, &mut report).await?;
+        send_all(
+            curated,
+            queue,
+            SendContext {
+                lease,
+                run: &run,
+                now,
+                private_pages: policy.private_pages,
+            },
+            out,
+            &mut report,
+        )
+        .await?;
     }
     tracing::info!(queued = report.queued, skipped = ?report.skipped, ledger = ?report.ledger, "ocr-enqueue finished");
     Ok(report)
@@ -520,7 +635,19 @@ async fn requeue_locked(
         return Ok(report);
     }
     if !out.is_empty() {
-        send_all(curated, queue, lease, &run, now, out, &mut report).await?;
+        send_all(
+            curated,
+            queue,
+            SendContext {
+                lease,
+                run: &run,
+                now,
+                private_pages: false,
+            },
+            out,
+            &mut report,
+        )
+        .await?;
     }
     tracing::info!(queued = report.queued, skipped = ?report.skipped, ledger = ?report.ledger, "ocr-requeue finished");
     Ok(report)

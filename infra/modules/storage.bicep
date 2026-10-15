@@ -16,7 +16,7 @@ param name string
 param allowedIps array = []
 
 @description('Blob containers. Access is granted per container in rbac.bicep.')
-var containers = ['curated', 'reference', 'cache', 'qw-index', 'searches']
+var containers = ['curated', 'reference', 'cache', 'qw-index', 'searches', 'ocr-requests']
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: name
@@ -175,6 +175,33 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['searches/staging/'] }
             actions: {
               baseBlob: { delete: { daysAfterModificationGreaterThan: 7 } }
+              version: { delete: { daysAfterCreationGreaterThan: 1 } }
+            }
+          }
+        }
+        {
+          // Hit requests contain page ids only, grouped and shuffled by UTC
+          // day. The API stages them; ocr-sync deletes each closed day.
+          name: 'expire-ocr-request-staging'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['ocr-requests/staging/'] }
+            actions: {
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 7 } }
+              version: { delete: { daysAfterCreationGreaterThan: 1 } }
+            }
+          }
+        }
+        {
+          // Closed day files are deleted after ocr-sync consumes them. Keep
+          // only a short recovery window for their old versions.
+          name: 'prune-ocr-request-day-versions'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['ocr-requests/days/'] }
+            actions: {
               version: { delete: { daysAfterCreationGreaterThan: 1 } }
             }
           }

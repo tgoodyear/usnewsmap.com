@@ -267,10 +267,21 @@ pub struct Ledger {
     /// queues those pages again outside its retry limit, waiting longer
     /// each time (Step 10).
     pub unroutable: HashMap<String, HashSet<String>>,
+    /// Pages already imported at least once, even if a later attempt has a
+    /// newer outcome.
+    pub imported_pages: HashSet<String>,
+    /// Distinct page ids queued by hit requests on each UTC request day.
+    pub user_requests_by_day: HashMap<chrono::NaiveDate, HashSet<String>>,
 }
 
 impl Ledger {
     pub fn add_queued(&mut self, q: Queued) {
+        if q.plan == "hit-results" {
+            self.user_requests_by_day
+                .entry(q.queued_at.date_naive())
+                .or_default()
+                .insert(q.doc_id.clone());
+        }
         let n = self
             .attempts
             .entry((q.doc_id.clone(), q.plan.clone()))
@@ -285,6 +296,9 @@ impl Ledger {
     }
 
     pub fn add_outcome(&mut self, o: Outcome) {
+        if o.outcome == IMPORTED {
+            self.imported_pages.insert(o.doc_id.clone());
+        }
         if o.outcome == DEAD_LETTERED && o.cause.as_deref() == Some(UNROUTABLE) {
             self.unroutable
                 .entry(o.doc_id.clone())
@@ -321,9 +335,12 @@ impl Ledger {
 
     /// Whether the page's latest outcome is an import.
     pub fn imported(&self, doc_id: &str) -> bool {
-        self.outcomes
-            .get(doc_id)
-            .is_some_and(|o| o.outcome == IMPORTED)
+        self.imported_pages.contains(doc_id)
+    }
+
+    /// Distinct user-requested pages already charged to this UTC day's cap.
+    pub fn user_requests_for_day(&self, day: chrono::NaiveDate) -> usize {
+        self.user_requests_by_day.get(&day).map_or(0, HashSet::len)
     }
 
     /// Pages outstanding now.

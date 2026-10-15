@@ -1448,7 +1448,19 @@ pub(super) async fn seed(
     }
     if !out.is_empty() {
         let mut qr = QueueReport::default();
-        enqueue::send_all(curated, stores.queue, lease, &run, now, out, &mut qr).await?;
+        enqueue::send_all(
+            curated,
+            stores.queue,
+            enqueue::SendContext {
+                lease,
+                run: &run,
+                now,
+                private_pages: false,
+            },
+            out,
+            &mut qr,
+        )
+        .await?;
         report.ledger = qr.ledger;
     }
     if !done_now.is_empty() {

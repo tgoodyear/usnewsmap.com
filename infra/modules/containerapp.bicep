@@ -34,6 +34,8 @@ param image string
 param identityId string
 param identityClientId string
 param storageBlobEndpoint string
+@description('Collect page-id-only OCR requests from qualifying hit results.')
+param ocrRequests bool = false
 @description('Cosmos DB endpoint of the pipeline state, read (Data Reader, private endpoint) for the public status page.')
 param cosmosEndpoint string
 param allowedOrigins array
@@ -109,6 +111,9 @@ var apiEnv = [
   // asks for the system-assigned identity (08 §8.2).
   { name: 'AZURE_CLIENT_ID', value: identityClientId }
 ]
+var ocrRequestsEnv = ocrRequests
+  ? [{ name: 'USNM_OCR_REQUESTS_URL', value: '${storageBlobEndpoint}ocr-requests' }]
+  : []
 // Requests, traces and metrics go to Application Insights as id-usnm-app,
 // with an Entra token (08 §8.1.2).
 var telemetryEnv = empty(appInsightsConnectionString)
@@ -160,7 +165,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv)
+  env: concat(backendEnv, apiEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv)
   probes: [
     {
       // A start loads the published version (loadSecs), then warms the

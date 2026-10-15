@@ -534,6 +534,7 @@ async fn ocr_sync_seeds_after_its_imports() {
         reference: Arc::clone(&fx.reference),
         out: open(&fx.dir, "out"),
         quarantine: open(&fx.dir, "quarantine"),
+        requests: None,
         queue: Arc::clone(&fx.queue),
     };
     // No plan: nothing queued.

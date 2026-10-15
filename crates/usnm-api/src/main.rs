@@ -114,6 +114,18 @@ async fn serve(
                 &opentelemetry::global::meter(telemetry::SERVICE.name),
             )
         });
+    let ocr_requests = config
+        .ocr_requests_url
+        .as_deref()
+        .map(usnm_store::open)
+        .transpose()?
+        .map(|store| {
+            tracing::info!(store = ?store, "OCR request queue enabled");
+            usnm_api::ocr_requests::OcrRequests::start(
+                store,
+                &opentelemetry::global::meter(telemetry::SERVICE.name),
+            )
+        });
     let bind = config.bind.clone();
     let mut state = AppState::with_loader(config, snapshot, Some(loader))
         .with_pipeline(pipeline)
@@ -124,6 +136,9 @@ async fn serve(
     }
     if let Some(log) = &search_log {
         state = state.with_search_log(log.clone());
+    }
+    if let Some(requests) = &ocr_requests {
+        state = state.with_ocr_requests(requests.clone());
     }
     let state = Arc::new(state);
     {
@@ -175,6 +190,9 @@ async fn serve(
     // Container Apps allows 30 s after SIGTERM; the requests have drained.
     if let Some(log) = search_log {
         log.shutdown(std::time::Duration::from_secs(10)).await;
+    }
+    if let Some(requests) = ocr_requests {
+        requests.shutdown(std::time::Duration::from_secs(10)).await;
     }
     served?;
     Ok(())

@@ -58,6 +58,7 @@ param ocrNodeIps = readEnvironmentVariable('USNM_OCR_NODE_IPS', '')
 param ocrNodeGroupId = readEnvironmentVariable('USNM_OCR_NODE_GROUP', '')
 param ocrKeyVaultAdmins = readEnvironmentVariable('USNM_OCR_KEYVAULT_ADMINS', '')
 param ocrSyncCron = readEnvironmentVariable('USNM_OCR_SYNC_CRON', '17 * * * *')
+param ocrUserDailyMax = int(readEnvironmentVariable('USNM_OCR_USER_DAILY_MAX', '1000'))
 param ocrSeed = {
   USNM_OCR_SEED_PLAN: readEnvironmentVariable('USNM_OCR_SEED_PLAN', '')
   USNM_OCR_SEED_BATCHES: readEnvironmentVariable('USNM_OCR_SEED_BATCHES', '')
