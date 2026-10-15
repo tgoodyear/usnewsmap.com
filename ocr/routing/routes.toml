@@ -1,0 +1,7 @@
+# The existing minimal Tesseract route; full matching is a later step.
+version = 1
+
+[[route]]
+id = "minimal"
+match = {}
+candidates = [{ engine = "tesseract-5.5", profile = "auto" }]

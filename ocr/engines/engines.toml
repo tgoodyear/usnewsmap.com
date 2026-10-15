@@ -1,0 +1,813 @@
+# Licence decisions transcribed from design 13 §13.7.2 (checked 2026-10-11).
+# Inventory is not deployment: only Tesseract has production profiles here.
+# See README.md for the machine-readable credit schema.
+schema = 1
+production_licenses = ["Apache-2.0", "MIT", "BSD-3-Clause", "CC0-1.0", "CC-BY-4.0", "CC-BY-NC-4.0", "CC-BY-SA-4.0", "LicenseRef-Datalab-OpenRAIL-M", "LicenseRef-MinerU", "LicenseRef-DINOv3", "LicenseRef-dots-MIT"]
+credit_required = ["CC-BY-4.0", "CC-BY-NC-4.0", "CC-BY-SA-4.0", "LicenseRef-Datalab-OpenRAIL-M", "LicenseRef-MinerU", "LicenseRef-dots-MIT"]
+
+[[engine]]
+id = "tesseract-5.5"
+family = "tesseract"
+production = true
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tesseract"
+credit = "tesseract-5.5 — Tesseract OCR project (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/eng.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/eng.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/deu.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/deu.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/deu_latf.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/deu_latf.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/srp.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/srp.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/srp_latn.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/srp_latn.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/rus.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/rus.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/ces.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/ces.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/pol.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/pol.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/hrv.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/hrv.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/nor.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/nor.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/chi_tra.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/chi_tra.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/chi_sim.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/chi_sim.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/yid.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/yid.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/heb.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/heb.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/ell.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/ell.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/grc.traineddata"
+license = "Apache-2.0"
+author = "Tesseract OCR project"
+source = "https://github.com/tesseract-ocr/tessdata_best"
+credit = "tessdata/grc.traineddata — Tesseract OCR project (Apache-2.0)"
+terms = "https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/frak2021.traineddata"
+license = "CC0-1.0"
+author = "Stefan Weil, UB Mannheim"
+source = "https://zenodo.org/records/10125246/files/frak2021-0.905.traineddata"
+credit = "tessdata/frak2021.traineddata — Stefan Weil, UB Mannheim (CC0-1.0)"
+note = "Zenodo record 10125246: \"Creative Commons Zero v1.0 Universal\". Only the 0.905 best file is used by this profile."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/frak2021-fast.traineddata"
+license = "CC0-1.0"
+author = "Stefan Weil, UB Mannheim"
+source = "https://zenodo.org/records/10125246/files/frak2021_0.905.traineddata"
+credit = "frak2021 fast Tesseract model — Stefan Weil, UB Mannheim (CC0-1.0)"
+fetched = 2026-10-11
+note = "Zenodo record 10125246: Creative Commons Zero v1.0 Universal. Inventoried only; no production profile selects the fast file."
+
+[[engine.model]]
+name = "tessdata/german_print.traineddata"
+license = "none"
+author = "Stefan Weil, UB Mannheim"
+source = "https://ub-backup.bib.uni-mannheim.de/~stweil/tesstrain/tesseract/german_print/"
+credit = "tessdata/german_print.traineddata — Stefan Weil, UB Mannheim (published without an explicit licence)"
+note = "No explicit licence: \"no licence or README in the directories or their parents, and no Zenodo record\" (design 13 §13.7.2). nzz training data is CC BY-NC 4.0; nothing says whether that reaches the model."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/nzz.traineddata"
+license = "none"
+author = "Stefan Weil, UB Mannheim"
+source = "https://ub-backup.bib.uni-mannheim.de/~stweil/tesstrain/tesseract/nzz/"
+credit = "tessdata/nzz.traineddata — Stefan Weil, UB Mannheim (published without an explicit licence)"
+note = "No explicit licence: \"no licence or README in the directories or their parents, and no Zenodo record\" (design 13 §13.7.2). nzz training data is CC BY-NC 4.0; nothing says whether that reaches the model."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "tessdata/austriannewspapers.traineddata"
+license = "none"
+author = "Stefan Weil, UB Mannheim"
+source = "https://ub-backup.bib.uni-mannheim.de/~stweil/tesstrain/tesseract/austriannewspapers/"
+credit = "tessdata/austriannewspapers.traineddata — Stefan Weil, UB Mannheim (published without an explicit licence)"
+note = "No explicit licence: \"no licence or README in the directories or their parents, and no Zenodo record\" (design 13 §13.7.2). nzz training data is CC BY-NC 4.0; nothing says whether that reaches the model."
+fetched = 2026-10-11
+
+[[engine.profile]]
+id = "frak2021"
+models = ["tessdata/frak2021.traineddata"]
+languages = ["deu"]
+
+[[engine.profile]]
+id = "deu_latf+deu"
+models = ["tessdata/deu_latf.traineddata", "tessdata/deu.traineddata"]
+languages = ["deu"]
+
+[[engine.profile]]
+id = "deu"
+models = ["tessdata/deu.traineddata"]
+languages = ["deu"]
+
+[[engine.profile]]
+id = "srp+srp_latn"
+models = ["tessdata/srp.traineddata", "tessdata/srp_latn.traineddata"]
+languages = ["srp"]
+
+[[engine.profile]]
+id = "srp"
+models = ["tessdata/srp.traineddata"]
+languages = ["srp"]
+
+[[engine.profile]]
+id = "hrv"
+models = ["tessdata/hrv.traineddata"]
+languages = ["hrv", "bos"]
+
+[[engine.profile]]
+id = "srp_latn"
+models = ["tessdata/srp_latn.traineddata"]
+languages = ["hrv", "bos"]
+
+[[engine.profile]]
+id = "nor"
+models = ["tessdata/nor.traineddata"]
+languages = ["nob", "nno", "nor"]
+
+[[engine.profile]]
+id = "chi_tra"
+models = ["tessdata/chi_tra.traineddata"]
+languages = ["zho"]
+
+[[engine.profile]]
+id = "chi_sim"
+models = ["tessdata/chi_sim.traineddata"]
+languages = ["zho"]
+
+[[engine.profile]]
+id = "yid"
+models = ["tessdata/yid.traineddata"]
+languages = ["yid"]
+
+[[engine.profile]]
+id = "heb"
+models = ["tessdata/heb.traineddata"]
+languages = ["yid", "heb"]
+
+[[engine.profile]]
+id = "ell"
+models = ["tessdata/ell.traineddata"]
+languages = ["ell", "grc"]
+
+[[engine.profile]]
+id = "grc"
+models = ["tessdata/grc.traineddata"]
+languages = ["ell", "grc"]
+
+[[engine.profile]]
+id = "eng"
+models = ["tessdata/eng.traineddata"]
+languages = ["eng"]
+
+[[engine.profile]]
+id = "rus"
+models = ["tessdata/rus.traineddata"]
+languages = ["rus"]
+
+[[engine.profile]]
+id = "ces"
+models = ["tessdata/ces.traineddata"]
+languages = ["ces"]
+
+[[engine.profile]]
+id = "pol"
+models = ["tessdata/pol.traineddata"]
+languages = ["pol"]
+
+[[engine]]
+id = "kraken-7.1"
+family = "kraken"
+production = false
+license = "Apache-2.0"
+author = "Kraken contributors"
+source = "https://github.com/mittagessen/kraken"
+credit = "kraken-7.1 — Kraken contributors (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "austriannewspapers"
+license = "CC-BY-SA-4.0"
+author = "Stefan Weil, Jan Kamlah, Thomas Schmidt"
+source = "https://zenodo.org/records/7933402"
+credit = "austriannewspapers — Stefan Weil, Jan Kamlah, Thomas Schmidt (CC-BY-SA-4.0)"
+note = "Zenodo licence field: \"cc-by-sa-4.0\". Use the Zenodo file, not an unverified older server copy."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "german_print"
+license = "CC0-1.0"
+author = "Stefan Weil, Jan Kamlah, Thomas Schmidt"
+source = "https://zenodo.org/records/10519596"
+credit = "german_print — Stefan Weil, Jan Kamlah, Thomas Schmidt (CC0-1.0)"
+note = "Zenodo licence field: \"cc-zero\". Use the Zenodo file, not an unverified older server copy."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "reichsanzeiger"
+license = "none"
+author = "UB Mannheim"
+source = "https://ub-backup.bib.uni-mannheim.de/~stweil/"
+credit = "reichsanzeiger — UB Mannheim (published without an explicit licence)"
+note = "No explicit licence: \"Not on Zenodo; nothing on UB Mannheim's server or in its wikis.\" Ground-truth CC0 covers the data only (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "digitue"
+license = "none"
+author = "UB Mannheim"
+source = "https://ub-backup.bib.uni-mannheim.de/~stweil/"
+credit = "digitue — UB Mannheim (published without an explicit licence)"
+note = "No explicit licence: \"Not on Zenodo; nothing on UB Mannheim's server or in its wikis.\" Ground-truth CC0 covers the data only (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "ubma_segmentation"
+license = "none"
+author = "UB Mannheim"
+source = "https://ub-backup.bib.uni-mannheim.de/~stweil/"
+credit = "ubma_segmentation — UB Mannheim (published without an explicit licence)"
+note = "No explicit licence: \"Not on Zenodo; nothing on UB Mannheim's server or in its wikis.\" Ground-truth CC0 covers the data only (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine]]
+id = "doctr-survey"
+family = "doctr"
+production = false
+license = "Apache-2.0"
+author = "Mindee"
+source = "https://github.com/mindee/doctr"
+credit = "doctr-survey — Mindee (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "parseq-multilingual-v1"
+license = "Apache-2.0"
+author = "Felix Dittrich"
+source = "https://huggingface.co/Felix92/doctr-torch-parseq-multilingual-v1"
+credit = "parseq-multilingual-v1 — Felix Dittrich (Apache-2.0)"
+note = "Model card: \"license: apache-2.0\"."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "db_resnet50"
+license = "none"
+author = "Mindee"
+source = "https://doctr-static.mindee.com/"
+credit = "db_resnet50 — Mindee (published without an explicit licence)"
+note = "No explicit licence: \"No licence for the weights in the repository, the documentation or the download host. The Apache-2.0 LICENSE covers the code.\" Checked https://github.com/mindee/doctr and https://mindee.github.io/doctr/ (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "crnn_vgg16_bn"
+license = "none"
+author = "Mindee"
+source = "https://doctr-static.mindee.com/"
+credit = "crnn_vgg16_bn — Mindee (published without an explicit licence)"
+note = "No explicit licence: \"No licence for the weights in the repository, the documentation or the download host. The Apache-2.0 LICENSE covers the code.\" Checked https://github.com/mindee/doctr and https://mindee.github.io/doctr/ (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine]]
+id = "american-stories-survey"
+family = "american-stories"
+production = false
+license = "none"
+author = "Dell Research Harvard (Dell et al. 2023)"
+source = "https://github.com/dell-research-harvard/AmericanStories"
+credit = "american-stories-survey — Dell Research Harvard (Dell et al. 2023) (published without an explicit licence)"
+note = "No explicit licence: \"the repository has no LICENSE (GitHub's API reports none), and the weights zip has none\". https://github.com/dell-research-harvard/AmericanStories. Maintainer decision 2026-10-11: the Ultralytics AGPL-3.0 ONNX export stamp does not block running these weights on our own nodes without distributing them or offering a modified network service (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "layout"
+license = "none"
+author = "Dell Research Harvard (Dell et al. 2023)"
+source = "https://github.com/dell-research-harvard/AmericanStories"
+credit = "layout — Dell Research Harvard (Dell et al. 2023) (published without an explicit licence)"
+note = "No explicit licence: \"the repository has no LICENSE (GitHub's API reports none), and the weights zip has none\". https://github.com/dell-research-harvard/AmericanStories. Maintainer decision 2026-10-11: the Ultralytics AGPL-3.0 ONNX export stamp does not block running these weights on our own nodes without distributing them or offering a modified network service (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "legibility"
+license = "none"
+author = "Dell Research Harvard (Dell et al. 2023)"
+source = "https://github.com/dell-research-harvard/AmericanStories"
+credit = "legibility — Dell Research Harvard (Dell et al. 2023) (published without an explicit licence)"
+note = "No explicit licence: \"the repository has no LICENSE (GitHub's API reports none), and the weights zip has none\". https://github.com/dell-research-harvard/AmericanStories. Maintainer decision 2026-10-11: the Ultralytics AGPL-3.0 ONNX export stamp does not block running these weights on our own nodes without distributing them or offering a modified network service (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "recognition"
+license = "none"
+author = "Dell Research Harvard (Dell et al. 2023)"
+source = "https://github.com/dell-research-harvard/AmericanStories"
+credit = "recognition — Dell Research Harvard (Dell et al. 2023) (published without an explicit licence)"
+note = "No explicit licence: \"the repository has no LICENSE (GitHub's API reports none), and the weights zip has none\". https://github.com/dell-research-harvard/AmericanStories. Maintainer decision 2026-10-11: the Ultralytics AGPL-3.0 ONNX export stamp does not block running these weights on our own nodes without distributing them or offering a modified network service (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine]]
+id = "ndnp-open-ocr-1.2"
+family = "ndnp-open-ocr"
+production = false
+license = "CC0-1.0"
+author = "Library of Congress"
+source = "https://github.com/LibraryOfCongress/ndnp-open-ocr"
+credit = "ndnp-open-ocr-1.2 — Library of Congress (CC0-1.0)"
+note = "LICENSE.md: \"we waive copyright and related rights in the work worldwide through the CC0 1.0 Universal public domain dedication.\""
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "american-stories-layout"
+license = "none"
+author = "Dell Research Harvard (Dell et al. 2023); Library of Congress"
+source = "https://github.com/LibraryOfCongress/ndnp-open-ocr"
+credit = "american-stories-layout — Dell Research Harvard (Dell et al. 2023); Library of Congress (published without an explicit licence)"
+note = "No explicit licence: \"the repository has no LICENSE (GitHub's API reports none), and the weights zip has none\". https://github.com/dell-research-harvard/AmericanStories. Maintainer decision 2026-10-11: the Ultralytics AGPL-3.0 ONNX export stamp does not block running these weights on our own nodes without distributing them or offering a modified network service (design 13 §13.7.2). NDNP uses American Stories' layout model from the same Dropbox folder."
+fetched = 2026-10-11
+
+[[engine]]
+id = "efficientocr-survey"
+family = "efficientocr"
+production = false
+license = "Apache-2.0"
+author = "Dell Research Harvard"
+source = "https://github.com/dell-research-harvard/efficient_ocr"
+credit = "efficientocr-survey — Dell Research Harvard (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "effocr_en"
+license = "none"
+author = "Dell Research Harvard"
+source = "https://huggingface.co/dell-research-harvard/effocr_en"
+credit = "effocr_en — Dell Research Harvard (published without an explicit licence)"
+note = "No explicit licence: \"No card and no licence on effocr_en\". Same AGPL-3.0 export stamp in localizer.onnx; maintainer decision 2026-10-11 as for American Stories (design 13 §13.7.2)."
+fetched = 2026-10-11
+
+[[engine]]
+id = "got-ocr-2.0"
+family = "got-ocr"
+production = false
+license = "Apache-2.0"
+author = "StepFun, UCAS"
+source = "https://github.com/Ucas-HaoranWei/GOT-OCR2.0"
+credit = "got-ocr-2.0 — StepFun, UCAS (Apache-2.0)"
+note = "Repository badge: \"Code License: Apache_2.0\"; no licence file. Model card says apache-2.0."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "GOT-OCR2_0"
+license = "Apache-2.0"
+author = "StepFun, UCAS"
+source = "https://huggingface.co/stepfun-ai/GOT-OCR2_0"
+credit = "GOT-OCR2_0 — StepFun, UCAS (Apache-2.0)"
+note = "Model card: \"license: apache-2.0\"; repository data badge CC BY-NC 4.0 is also cleared for this site."
+fetched = 2026-10-11
+
+[[engine]]
+id = "granite-docling-survey"
+family = "granite-docling"
+production = false
+license = "unknown"
+author = "IBM"
+source = "https://huggingface.co/ibm-granite/granite-docling-258M"
+credit = "granite-docling-survey — IBM (unknown)"
+note = "Code licence not separately recorded in the tier table; no production deployment."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "granite-docling-258M-GGUF"
+license = "Apache-2.0"
+author = "IBM; ggml-org"
+source = "https://huggingface.co/ggml-org/granite-docling-258M-GGUF"
+credit = "granite-docling-258M-GGUF — IBM; ggml-org (Apache-2.0)"
+note = "Model card: \"license: apache-2.0\". Use ggml-org GGUF; IBM's own GGUF repository has no card or licence."
+fetched = 2026-10-11
+
+[[engine]]
+id = "nougat-survey"
+family = "nougat"
+production = false
+license = "unknown"
+author = "Meta"
+source = "https://github.com/facebookresearch/nougat"
+credit = "nougat-survey — Meta (unknown)"
+note = "Code licence not separately recorded in the tier table; no production deployment."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "nougat-small"
+license = "CC-BY-NC-4.0"
+author = "Meta"
+source = "https://huggingface.co/facebook/nougat-small"
+credit = "nougat-small — Meta (CC-BY-NC-4.0)"
+note = "Upstream LICENSE-MODEL.md: \"Creative Commons Attribution-NonCommercial 4.0 International Public License\". Conflicting model-card CC BY 4.0 is not relied on."
+terms = "https://github.com/facebookresearch/nougat/blob/main/LICENSE-MODEL.md"
+fetched = 2026-10-11
+
+[[engine]]
+id = "mineru-4"
+family = "mineru"
+production = false
+license = "LicenseRef-MinerU"
+author = "OpenDataLab"
+source = "https://github.com/opendatalab/MinerU"
+credit = "mineru-4 — OpenDataLab (LicenseRef-MinerU)"
+note = "§2: \"you must clearly and prominently indicate\" that MinerU is used. §3: \"this License and all rights granted under this License will terminate automatically\" without credit. Credits page required before a production route."
+terms = "https://github.com/opendatalab/MinerU/blob/master/LICENSE.md"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "MinerU2.5-Pro-2605-1.2B"
+license = "Apache-2.0"
+author = "OpenDataLab"
+source = "https://huggingface.co/opendatalab/MinerU2.5-Pro-2605-1.2B"
+credit = "MinerU2.5-Pro-2605-1.2B — OpenDataLab (Apache-2.0)"
+note = "Model card: \"license: apache-2.0\"; older MinerU2.5-2509 AGPL-3.0 weights are not cleared."
+fetched = 2026-10-11
+
+[[engine]]
+id = "ndlocr-lite-survey"
+family = "ndlocr-lite"
+production = false
+license = "CC-BY-4.0"
+author = "National Diet Library"
+source = "https://github.com/ndl-lab/ndlocr-lite"
+credit = "ndlocr-lite-survey — National Diet Library (CC-BY-4.0)"
+note = "README: \"本プログラムは、国立国会図書館がCC BY 4.0ライセンスで公開するものです。\""
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "bundled-layout-dinov3"
+license = "LicenseRef-DINOv3"
+author = "National Diet Library; Meta"
+source = "https://github.com/ndl-lab/ndlocr-lite"
+credit = "bundled-layout-dinov3 — National Diet Library; Meta (LicenseRef-DINOv3)"
+note = "NDL README asks users of its bundled trained model to also follow the DINOv3 License. §8: \"Meta may modify this Agreement from time to time\". Maintainer cleared 2026-10-11; see design 13 §13.7.2."
+terms = "https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md"
+fetched = 2026-10-11
+
+[[engine]]
+id = "surya-survey"
+family = "surya"
+production = false
+license = "Apache-2.0"
+author = "Datalab"
+source = "https://github.com/datalab-to/surya"
+credit = "surya-survey — Datalab (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "surya-weights"
+license = "LicenseRef-Datalab-OpenRAIL-M"
+author = "Datalab"
+source = "https://github.com/datalab-to/surya"
+credit = "surya-weights — Datalab (LicenseRef-Datalab-OpenRAIL-M)"
+note = "Modified Open RAIL-M: attribution and Share-a-Like on Output; revenue/funding and competitor limits; licensor can restrict use remotely. Maintainer cleared 2026-10-10 (design 13 §13.7.2 and §13.12). Consult this model's published terms; the terms differ across Datalab models."
+terms = "https://github.com/datalab-to/surya/blob/master/MODEL_LICENSE"
+fetched = 2026-10-11
+
+[[engine]]
+id = "marker-survey"
+family = "marker"
+production = false
+license = "Apache-2.0"
+author = "Datalab"
+source = "https://github.com/datalab-to/marker"
+credit = "marker-survey — Datalab (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "marker-weights"
+license = "LicenseRef-Datalab-OpenRAIL-M"
+author = "Datalab"
+source = "https://github.com/datalab-to/marker"
+credit = "marker-weights — Datalab (LicenseRef-Datalab-OpenRAIL-M)"
+note = "Modified Open RAIL-M: attribution and Share-a-Like on Output; revenue/funding and competitor limits; licensor can restrict use remotely. Maintainer cleared 2026-10-10 (design 13 §13.7.2 and §13.12). Consult this model's published terms; the terms differ across Datalab models."
+terms = "https://github.com/datalab-to/marker/blob/master/MODEL_LICENSE"
+fetched = 2026-10-11
+
+[[engine]]
+id = "chandra-survey"
+family = "chandra"
+production = false
+license = "Apache-2.0"
+author = "Datalab"
+source = "https://github.com/datalab-to/chandra"
+credit = "chandra-survey — Datalab (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "chandra-weights"
+license = "LicenseRef-Datalab-OpenRAIL-M"
+author = "Datalab"
+source = "https://github.com/datalab-to/chandra"
+credit = "chandra-weights — Datalab (LicenseRef-Datalab-OpenRAIL-M)"
+note = "Modified Open RAIL-M: attribution and Share-a-Like on Output; revenue/funding and competitor limits; licensor can restrict use remotely. Maintainer cleared 2026-10-10 (design 13 §13.7.2 and §13.12). Consult this model's published terms; the terms differ across Datalab models."
+terms = "https://github.com/datalab-to/chandra/blob/master/MODEL_LICENSE"
+fetched = 2026-10-11
+
+[[engine]]
+id = "ocrs-0.13"
+family = "ocrs"
+production = false
+license = "MIT"
+author = "ocrs contributors"
+source = "https://github.com/robertknight/ocrs"
+credit = "ocrs-0.13 — ocrs contributors (MIT)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "ocrs-weights"
+license = "CC-BY-SA-4.0"
+author = "ocrs contributors"
+source = "https://huggingface.co/robertknight/ocrs"
+credit = "ocrs-weights — ocrs contributors (CC-BY-SA-4.0)"
+note = "Hugging Face card: \"cc-by-sa-4.0\" (design 13 §13.12)."
+fetched = 2026-10-11
+
+[[engine]]
+id = "chronicling-germany-survey"
+family = "chronicling-germany"
+production = false
+license = "EUPL-1.2"
+author = "University of Bonn"
+source = "https://github.com/Digital-History-Bonn/Chronicling-Germany-Code"
+credit = "chronicling-germany-survey — University of Bonn (EUPL-1.2)"
+note = "Design 13 §13.12 records EUPL-1.2 code; not on production_licenses, so code is not cleared by this catalog."
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "chronicling-germany-models"
+license = "CC-BY-NC-4.0"
+author = "University of Bonn"
+source = "https://gitlab.uni-bonn.de/digital-history/Chronicling-Germany-Dataset"
+credit = "chronicling-germany-models — University of Bonn (CC-BY-NC-4.0)"
+note = "Design 13 §13.12: \"dataset and models CC-BY-NC-4.0\"; maintainer cleared 2026-10-10."
+fetched = 2026-10-11
+
+[[engine]]
+id = "dots-ocr-survey"
+family = "dots-ocr"
+production = false
+license = "LicenseRef-dots-MIT"
+author = "rednote-hilab"
+source = "https://github.com/rednote-hilab/dots.ocr"
+credit = "dots-ocr-survey — rednote-hilab (LicenseRef-dots-MIT)"
+note = "Agreement 1.6: \"the terms of the MIT License shall prevail\" on conflict. Maintainer cleared 2026-10-11: LoC scans are not unauthorized digitization. 6.2 requires appropriate disclosures; §9 requires migration to revised terms. Credits page required (design 13 §13.7.2)."
+terms = "https://github.com/rednote-hilab/dots.ocr/blob/master/dots.ocr%20LICENSE%20AGREEMENT"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "dots-ocr-weights"
+license = "LicenseRef-dots-MIT"
+author = "rednote-hilab"
+source = "https://github.com/rednote-hilab/dots.ocr"
+credit = "dots-ocr-weights — rednote-hilab (LicenseRef-dots-MIT)"
+note = "Agreement 1.6: \"the terms of the MIT License shall prevail\" on conflict. Maintainer cleared 2026-10-11: LoC scans are not unauthorized digitization. 6.2 requires appropriate disclosures; §9 requires migration to revised terms. Credits page required (design 13 §13.7.2)."
+terms = "https://github.com/rednote-hilab/dots.ocr/blob/master/dots.ocr%20LICENSE%20AGREEMENT"
+fetched = 2026-10-11
+
+[[engine]]
+id = "dots-mocr-survey"
+family = "dots-mocr"
+production = false
+license = "LicenseRef-dots-MIT"
+author = "studio-dots-ai"
+source = "https://github.com/studio-dots-ai/dots.mocr"
+credit = "dots-mocr-survey — studio-dots-ai (LicenseRef-dots-MIT)"
+note = "Agreement 1.6: \"the terms of the MIT License shall prevail\" on conflict. Maintainer cleared 2026-10-11: LoC scans are not unauthorized digitization. 6.2 requires appropriate disclosures; §9 requires migration to revised terms. Credits page required (design 13 §13.7.2)."
+terms = "https://github.com/studio-dots-ai/dots.mocr/blob/main/dots.mocr%20LICENSE%20AGREEMENT"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "dots-mocr-weights"
+license = "LicenseRef-dots-MIT"
+author = "studio-dots-ai"
+source = "https://github.com/studio-dots-ai/dots.mocr"
+credit = "dots-mocr-weights — studio-dots-ai (LicenseRef-dots-MIT)"
+note = "Agreement 1.6: \"the terms of the MIT License shall prevail\" on conflict. Maintainer cleared 2026-10-11: LoC scans are not unauthorized digitization. 6.2 requires appropriate disclosures; §9 requires migration to revised terms. Credits page required (design 13 §13.7.2)."
+terms = "https://github.com/studio-dots-ai/dots.mocr/blob/main/dots.mocr%20LICENSE%20AGREEMENT"
+fetched = 2026-10-11
+
+[[engine]]
+id = "qwen2.5-vl-survey"
+family = "qwen2.5-vl"
+production = false
+license = "unknown"
+author = "Alibaba Qwen"
+source = "https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct"
+credit = "qwen2.5-vl-survey — Alibaba Qwen (unknown)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "Qwen2.5-VL-3B-Instruct"
+license = "LicenseRef-Qwen-Research"
+author = "Alibaba Qwen"
+source = "https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct"
+credit = "Qwen2.5-VL-3B-Instruct — Alibaba Qwen (LicenseRef-Qwen-Research)"
+note = "Source terms exclude public-site use."
+terms = "https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE"
+restricted = "Qwen Research License 1(i): \"'Non-Commercial' shall mean for research or evaluation purposes only\"; 2(a): \"FOR NON-COMMERCIAL PURPOSES ONLY\". https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE A public site is not research or evaluation."
+fetched = 2026-10-11
+
+[[engine]]
+id = "churro-survey"
+family = "churro"
+production = false
+license = "Apache-2.0"
+author = "Stanford OVAL"
+source = "https://huggingface.co/stanford-oval/churro-3B"
+credit = "churro-survey — Stanford OVAL (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "churro-3B"
+license = "LicenseRef-Qwen-Research"
+author = "Stanford OVAL"
+source = "https://huggingface.co/stanford-oval/churro-3B"
+credit = "churro-3B — Stanford OVAL (LicenseRef-Qwen-Research)"
+note = "Model card: \"license_name: qwen-research\". https://huggingface.co/stanford-oval/churro-3B"
+terms = "https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE"
+restricted = "Qwen Research License 1(i): \"'Non-Commercial' shall mean for research or evaluation purposes only\"; 2(a): \"FOR NON-COMMERCIAL PURPOSES ONLY\". https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE A public site is not research or evaluation."
+fetched = 2026-10-11
+
+[[engine]]
+id = "nanonets-ocr2-survey"
+family = "nanonets-ocr2"
+production = false
+license = "unknown"
+author = "Nanonets"
+source = "https://huggingface.co/nanonets/Nanonets-OCR2-3B"
+credit = "nanonets-ocr2-survey — Nanonets (unknown)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "Nanonets-OCR2-3B"
+license = "LicenseRef-Qwen-Research"
+author = "Nanonets"
+source = "https://huggingface.co/nanonets/Nanonets-OCR2-3B"
+credit = "Nanonets-OCR2-3B — Nanonets (LicenseRef-Qwen-Research)"
+note = "Model card names base_model Qwen/Qwen2.5-VL-3B-Instruct, so its research-only terms apply. https://huggingface.co/nanonets/Nanonets-OCR2-3B"
+terms = "https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE"
+restricted = "Qwen Research License 1(i): \"'Non-Commercial' shall mean for research or evaluation purposes only\"; 2(a): \"FOR NON-COMMERCIAL PURPOSES ONLY\". https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/blob/main/LICENSE A public site is not research or evaluation."
+fetched = 2026-10-11
+
+[[engine]]
+id = "hunyuanocr-survey"
+family = "hunyuanocr"
+production = false
+license = "unknown"
+author = "Tencent"
+source = "https://huggingface.co/tencent/HunyuanOCR"
+credit = "hunyuanocr-survey — Tencent (unknown)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "HunyuanOCR"
+license = "LicenseRef-Hunyuan"
+author = "Tencent"
+source = "https://huggingface.co/tencent/HunyuanOCR"
+credit = "HunyuanOCR — Tencent (LicenseRef-Hunyuan)"
+terms = "https://huggingface.co/tencent/HunyuanOCR/blob/main/LICENSE"
+restricted = "5(c): \"You must not use, reproduce, modify, distribute, or display the Tencent Hunyuan Works, Output or results of the Tencent Hunyuan Works outside the Territory.\" https://huggingface.co/tencent/HunyuanOCR/blob/main/LICENSE Territory excludes EU, UK and South Korea; public output is displayed there."
+fetched = 2026-10-11
+
+[[engine]]
+id = "easyocr-survey"
+family = "easyocr"
+production = false
+license = "Apache-2.0"
+author = "Jaided AI"
+source = "https://github.com/JaidedAI/EasyOCR"
+credit = "easyocr-survey — Jaided AI (Apache-2.0)"
+fetched = 2026-10-11
+
+[[engine.model]]
+name = "easyocr-weights"
+license = "unknown"
+author = "Jaided AI"
+source = "https://www.jaided.ai/"
+credit = "easyocr-weights — Jaided AI (unknown)"
+terms = "https://www.jaided.ai/terms/"
+restricted = "\"For the free version, you may use our Services only for your personal, non-commercial use, unless you obtain our permission.\" https://www.jaided.ai/terms/ Whether Services covers weights is unclear; maintainer excluded on 2026-10-11."
+fetched = 2026-10-11

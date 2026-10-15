@@ -180,3 +180,26 @@ podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
 ## Optional BOINC batch pool
 
 The [BOINC pilot](../../docs/boinc.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO/Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing; volunteers receive no Azure credentials. The existing `run` command is unchanged.
+
+## Engine catalog and production licences
+
+The worker embeds `ocr/engines/engines.toml`; `--engines <path>` (or
+`USNM_OCR_ENGINES`) overrides it for `run`, `ocr-file` and `check-engine`.
+The Tesseract profile preference order now comes from that catalog. An
+unrecorded engine/version or model is never implicitly cleared, even when
+installed locally. Both direct Tesseract and contract profiles pass the same
+`usnm-ocr-route::Catalog::check_production` gate before a page can be read.
+Contract profiles are checked against their actual `hello` model list.
+
+Validate the minimal route without an engine, credentials or network access:
+
+```sh
+usnm-ocr-worker routes check
+usnm-ocr-worker routes check --engines ocr/engines/engines.toml --routes ocr/routing/routes.toml
+```
+
+This command checks all named candidates, `auto` profiles and cascade targets;
+it is a licence check, not the later route-matching/capability/lock validator.
+The [catalog schema](../../ocr/engines/README.md) documents the attribution data
+for the follow-on credits page (#372). No attributed or credit-required
+production profiles are introduced here.

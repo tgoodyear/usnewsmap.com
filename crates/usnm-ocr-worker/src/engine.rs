@@ -254,10 +254,8 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// The route in every `ocr_engine` tag the worker writes (13 §13.8.1):
-/// [`candidates`], version 1. TODO(#371): `engines.toml` and `routes.toml`
-/// replace this hard-coded route, with their gate on which engines and
-/// models a production route may name.
+/// The minimal route in every `ocr_engine` tag (13 §13.8.1).
+/// Profile preferences and the production licence gate come from engines.toml.
 pub const ROUTE: &str = "minimal";
 pub const ROUTE_VERSION: u32 = 1;
 /// The engine contract's version in the tag: 0, the worker runs Tesseract
@@ -269,33 +267,53 @@ pub const CONTRACT: u32 = 0;
 /// against.
 pub const MODELS_LOCK: &str = include_str!("../../../ocr/engines/tesseract/models.lock");
 
-/// Tesseract models to try for a language, best first. A `+` joins models
-/// read together; a candidate is used only when all its models are installed.
-/// German: UB Mannheim's `frak2021` (CC0, the survey's best on German, #370),
-/// else `deu_latf` (Fraktur, tessdata 4.1+) with `deu` for pages that mix
-/// in roman type, else `deu`. Other languages: their tessdata_best model.
-/// A language with no model here isn't read (the worker leaves the page
-/// for a node that has one).
+/// Tesseract profiles for a language, in catalog preference order.
 pub fn candidates(language: &str) -> Vec<String> {
-    let list: &[&str] = match language {
-        "deu" => &["frak2021", "deu_latf+deu", "deu"],
-        // Serbian papers print Cyrillic and Latin.
-        "srp" => &["srp+srp_latn", "srp"],
-        "hrv" | "bos" => &["hrv", "srp_latn"],
-        "nob" | "nno" | "nor" => &["nor"],
-        "zho" => &["chi_tra", "chi_sim"],
-        "yid" => &["yid", "heb"],
-        "ell" | "grc" => &["ell", "grc"],
-        other => return vec![other.to_owned()],
-    };
-    list.iter().map(|s| (*s).to_owned()).collect()
+    usnm_ocr_route::ENGINES
+        .engine("tesseract-5.5")
+        .expect("built-in Tesseract")
+        .profile
+        .iter()
+        .filter(|p| p.languages.iter().any(|l| l == language))
+        .map(|p| p.id.clone())
+        .collect()
 }
 
-/// The first candidate whose models are all in `installed`.
+/// The first cleared profile whose models are all installed.
 pub fn route(language: &str, installed: &BTreeSet<String>) -> Option<String> {
-    candidates(language)
-        .into_iter()
-        .find(|c| c.split('+').all(|m| installed.contains(m)))
+    route_with_catalog(
+        &usnm_ocr_route::ENGINES,
+        "tesseract-5.5",
+        language,
+        installed,
+    )
+}
+
+fn route_with_catalog(
+    catalog: &usnm_ocr_route::Catalog,
+    engine_id: &str,
+    language: &str,
+    installed: &BTreeSet<String>,
+) -> Option<String> {
+    catalog
+        .engine(engine_id)
+        .ok()?
+        .profile
+        .iter()
+        .find(|p| {
+            p.languages.iter().any(|l| l == language)
+            && catalog.check_production(engine_id, &p.models).is_ok()
+            && p.models.iter().all(|name| {
+                name.strip_prefix("tessdata/")
+                    .and_then(|n| n.strip_suffix(".traineddata"))
+                    .is_some_and(|n| installed.contains(n))
+            })
+            // The CLI reads the model names in the profile id. Do not allow
+            // a catalog edit to gate one set of models and execute another.
+            && p.id.split('+').map(|m| format!("tessdata/{m}.traineddata"))
+                .collect::<BTreeSet<_>>() == p.models.iter().cloned().collect()
+        })
+        .map(|p| p.id.clone())
 }
 
 /// Where Tesseract runs: a binary on the host, or a pinned container image
@@ -927,6 +945,7 @@ impl Runner {
 
 #[derive(Debug, Clone)]
 pub struct Tesseract {
+    catalog: usnm_ocr_route::Catalog,
     runner: Runner,
     /// Under the engine runtime.
     sandbox: Option<Sandbox>,
@@ -936,6 +955,13 @@ pub struct Tesseract {
     dpi: u32,
     threads: u32,
     timeout: Duration,
+}
+
+fn tesseract_id(version: &str) -> String {
+    format!(
+        "tesseract-{}",
+        version.split('.').take(2).collect::<Vec<_>>().join(".")
+    )
 }
 
 /// `tesseract 5.5.1` → `5.5.1`, from `tesseract --version`'s first line
@@ -1026,6 +1052,13 @@ pub(crate) fn tail(s: &str, n: usize) -> String {
 impl Tesseract {
     /// Find Tesseract's version and installed models (once, at startup).
     pub async fn detect(opts: TesseractOptions) -> anyhow::Result<Self> {
+        Self::detect_with_catalog(opts, usnm_ocr_route::ENGINES.clone()).await
+    }
+
+    pub async fn detect_with_catalog(
+        opts: TesseractOptions,
+        catalog: usnm_ocr_route::Catalog,
+    ) -> anyhow::Result<Self> {
         let mut sandbox = None;
         if let Runner::Podman {
             image,
@@ -1041,7 +1074,12 @@ impl Tesseract {
         let version = parse_version(&run(&opts.runner, &["--version"]).await?)
             .context("can't read `tesseract --version`")?;
         let installed = parse_langs(&run(&opts.runner, &["--list-langs"]).await?);
+        let engine_id = tesseract_id(&version);
+        catalog
+            .engine(&engine_id)
+            .context("Tesseract is not in the engine catalog")?;
         Ok(Self {
+            catalog,
             runner: opts.runner,
             sandbox,
             version,
@@ -1051,6 +1089,15 @@ impl Tesseract {
             threads: opts.threads.max(1),
             timeout: opts.timeout,
         })
+    }
+
+    fn route(&self, language: &str) -> Option<String> {
+        route_with_catalog(
+            &self.catalog,
+            &tesseract_id(&self.version),
+            language,
+            &self.installed,
+        )
     }
 
     pub fn version(&self) -> &str {
@@ -1067,7 +1114,7 @@ impl Tesseract {
 
     /// The `ocr_engine` value for a language, if it has a model here.
     pub fn engine_for(&self, language: &str) -> Option<String> {
-        let profile = route(language, &self.installed)?;
+        let profile = self.route(language)?;
         self.tag(&profile).ok().map(|t| t.to_string())
     }
 
@@ -1259,7 +1306,7 @@ impl Engine for Tesseract {
     }
 
     fn can_read(&self, language: &str) -> bool {
-        route(language, &self.installed).is_some()
+        self.route(language).is_some()
     }
 
     fn dpi(&self) -> u32 {
@@ -1267,7 +1314,7 @@ impl Engine for Tesseract {
     }
 
     fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
-        let profile = route(language, &self.installed)?;
+        let profile = self.route(language)?;
         let tag = self.tag(&profile).ok()?.to_string();
         Some((tag, self.read_info(&profile)))
     }
@@ -1278,7 +1325,8 @@ impl Engine for Tesseract {
         language: &str,
         work: &Path,
     ) -> Result<EngineOutput, EngineError> {
-        let models = route(language, &self.installed)
+        let models = self
+            .route(language)
             .ok_or_else(|| EngineError::Unsupported(language.to_owned()))?;
         // Under the engine runtime, the page gets a slot on the shared
         // scratch tmpfs instead of `work`, which the engine account's
@@ -1484,8 +1532,85 @@ mod tests {
     }
 
     #[test]
+    fn worker_and_routes_check_apply_the_same_gate_to_code_and_models() {
+        let set = |names: &[&str]| {
+            names
+                .iter()
+                .map(|n| (*n).to_owned())
+                .collect::<BTreeSet<_>>()
+        };
+        let routes = r#"version = 1
+[[route]]
+id = "test"
+candidates = [{engine="tesseract-5.5", profile="eng"}]
+"#;
+        let installed = set(&["eng"]);
+        for code in [true, false] {
+            for tier in ["Apache-2.0", "none"] {
+                for missing in [
+                    "",
+                    "author",
+                    "source",
+                    "credit",
+                    "fetched",
+                    "note",
+                    "restricted",
+                    "undecided",
+                    "license",
+                    "production",
+                ] {
+                    let mut catalog = usnm_ocr_route::ENGINES.clone();
+                    let a = if code {
+                        &mut catalog.engine[0].attribution
+                    } else {
+                        &mut catalog.engine[0].model[0].attribution
+                    };
+                    a.license = tier.into();
+                    a.note = Some("No explicit licence, source checked".into());
+                    match missing {
+                        "author" => a.author = None,
+                        "source" => a.source = None,
+                        "credit" => a.credit = None,
+                        "fetched" => a.fetched = None,
+                        "note" => a.note = None,
+                        "restricted" => a.restricted = Some("clause".into()),
+                        "undecided" => a.undecided = Some("decision pending".into()),
+                        "license" => a.license = "unknown".into(),
+                        "production" => catalog.engine[0].production = false,
+                        "" => {}
+                        _ => unreachable!(),
+                    }
+                    let allowed = missing.is_empty()
+                        || (tier != "none" && matches!(missing, "fetched" | "note"));
+                    assert_eq!(
+                        catalog.check_routes(routes).is_ok(),
+                        allowed,
+                        "{code} {tier} {missing}"
+                    );
+                    assert_eq!(
+                        route_with_catalog(&catalog, "tesseract-5.5", "eng", &installed).is_some(),
+                        allowed,
+                        "{code} {tier} {missing}"
+                    );
+                }
+            }
+        }
+        let mut catalog = usnm_ocr_route::ENGINES.clone();
+        catalog.engine[0]
+            .profile
+            .iter_mut()
+            .find(|p| p.id == "eng")
+            .unwrap()
+            .models = vec!["tessdata/deu.traineddata".into()];
+        assert!(
+            route_with_catalog(&catalog, "tesseract-5.5", "eng", &set(&["eng", "deu"])).is_none()
+        );
+    }
+
+    #[test]
     fn tags_name_the_image_and_models() {
         let t = Tesseract {
+            catalog: usnm_ocr_route::ENGINES.clone(),
             runner: Runner::Podman {
                 podman: "podman".into(),
                 remote: None,
@@ -1526,6 +1651,7 @@ mod tests {
         let image = dir.path().join("page.png");
         std::fs::write(&image, b"png").unwrap();
         let t = Tesseract {
+            catalog: usnm_ocr_route::ENGINES.clone(),
             runner: Runner::Host(dir.path().join("no-tesseract")),
             sandbox: None,
             version: "5.5.0".into(),

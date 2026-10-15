@@ -200,9 +200,11 @@ async fn an_instance_that_exits_is_replaced() {
     let hello = serde_json::json!({
         "adapter": {"lang": "rust", "name": "crash", "version": "0"},
         "cancel": "kill", "contract": 1, "deterministic": true,
-        "engine": {"family": "tesseract", "id": "crash", "version": "1"},
-        "granularity": "page", "layout": "boxes", "models": [], "models_loaded": "at_start",
-        "profiles": [{"id": "eng", "languages": ["eng"], "models": [], "tunable": []}],
+        "engine": {"family": "tesseract", "id": "tesseract-5.5", "version": "5.5.9"},
+        "granularity": "page", "layout": "boxes",
+        "models": [{"name": "tessdata/eng.traineddata", "sha256": "ab".repeat(32)}],
+        "models_loaded": "at_start",
+        "profiles": [{"id": "eng", "languages": ["eng"], "models": ["tessdata/eng.traineddata"], "tunable": []}],
         "type": "hello"
     });
     let script = dir.path().join("adapter");

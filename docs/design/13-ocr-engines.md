@@ -457,6 +457,11 @@ The routing bundle is `engines.toml`, `routes.toml` and `engines.lock.json`. Its
 
 ### 13.7.2 engines.toml
 
+**Built in #371:** the [catalog and credit schema](../../ocr/engines/README.md),
+`usnm-ocr-route` loader and shared production licence gate, both worker engine paths,
+and `usnm-ocr-worker routes check`. The minimal route stays Tesseract-only;
+full matching, node capability routing and the rest of the bundle remain later steps.
+
 An excerpt, with the German profiles only:
 
 ```toml

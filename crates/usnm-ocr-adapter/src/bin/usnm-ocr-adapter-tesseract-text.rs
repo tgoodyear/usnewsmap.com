@@ -125,7 +125,10 @@ fn hello(bin: &Path) -> anyhow::Result<Hello> {
         engine: EngineInfo {
             components: None,
             family: "tesseract".into(),
-            id: "tesseract-text".into(),
+            id: format!(
+                "tesseract-{}",
+                version.split('.').take(2).collect::<Vec<_>>().join(".")
+            ),
             version,
         },
         granularity: Granularity::Page,
