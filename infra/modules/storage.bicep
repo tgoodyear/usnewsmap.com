@@ -12,6 +12,9 @@
 param location string
 param tags object
 param name string
+@minValue(1)
+@maxValue(365)
+param blobSoftDeleteDays int = 3
 @description('Public IPv4 addresses or CIDR ranges allowed through the firewall. Empty (the default) keeps public network access off. Storage rejects /31 and /32 ranges, so a /32 is written as the bare address.')
 param allowedIps array = []
 
@@ -59,7 +62,7 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
     // But it's account-wide, so it also keeps every index split Quickwit
     // deletes after a merge or prune, at Hot prices (2 TB after the first
     // prune). Moving the index to its own account (#283) lets this go back up.
-    deleteRetentionPolicy: { enabled: true, days: 3 }
+    deleteRetentionPolicy: { enabled: true, days: blobSoftDeleteDays }
     containerDeleteRetentionPolicy: { enabled: true, days: 14 }
     // Lets the tiering rules below go by last read, not creation (#245).
     lastAccessTimeTrackingPolicy: {

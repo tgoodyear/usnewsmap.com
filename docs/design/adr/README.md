@@ -24,3 +24,4 @@ We use the [MADR](https://adr.github.io/madr/)-style lightweight format. Each re
 | [0018](0018-scan-archive.md)                    | Scan archive: Cold-tier blobs, read through a small API with signed tickets                                            | Proposed                                |
 | [0019](0019-boinc-server-hosting.md)            | Hosting for the stock BOINC server that #441's pilot submits to: Container App, MySQL, Azure Files, a bridge job       | Proposed                                |
 | [0020](0020-boinc-buda-evaluation.md)           | Retain separate BOINC apps while evaluating BUDA                                                                       | Proposed; server spike pending          |
+| [0021](0021-separate-index-storage.md)           | Separate private Quickwit index account, staged cutover and cross-account rollback (#283)                               | Accepted (behind settings)               |

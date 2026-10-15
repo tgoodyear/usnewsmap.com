@@ -68,6 +68,9 @@ pub struct Release {
     pub reference: Arc<dyn ObjectStore>,
     pub owner: String,
     pub full: bool,
+    /// A storage migration builds every index anew and publishes a pending
+    /// pointer, leaving the serving pointer and ops/current untouched.
+    pub stage_index_storage: bool,
     /// Mark the version as synthetic demo data (the fixture batches); the
     /// site then says so and doesn't link to loc.gov.
     pub synthetic: bool,
@@ -545,6 +548,24 @@ impl Release {
         let (previous, pointer) = match self.published_run().await? {
             Some((run, pointer)) => (Some(run), Some(pointer)),
             None => (None, None),
+        };
+        // Keep the lake version as rollback without inheriting its indexes.
+        let previous_version = if self.stage_index_storage {
+            match self.reference.get("current.json").await? {
+                Some(bytes) => {
+                    let pointer: Value = serde_json::from_slice(&bytes).context("current.json")?;
+                    Some(
+                        pointer["index_version"]
+                            .as_str()
+                            .filter(|v| !v.is_empty())
+                            .context("current.json has no index_version")?
+                            .to_owned(),
+                    )
+                }
+                None => None,
+            }
+        } else {
+            previous.as_ref().map(|p| p.index_version.clone())
         };
         let previous_backend = pointer.as_ref().map(|p| p.backend.as_str());
         let previous_grams = pointer.as_ref().and_then(|p| p.grams);
@@ -1111,7 +1132,7 @@ impl Release {
             duplicate_pages: dedup.duplicate_pages,
             started_at: Utc::now(),
             published_at: None,
-            previous_version: previous.as_ref().map(|p| p.index_version.clone()),
+            previous_version,
             last_error: None,
             failed_at: None,
             build: Some(build_info::summary(&built)),
@@ -1304,27 +1325,35 @@ impl Release {
         }
         self.reference
             .put(
-                "current.json",
+                if self.stage_index_storage {
+                    "index-storage-pending.json"
+                } else {
+                    "current.json"
+                },
                 serde_json::to_vec_pretty(&pointer)?,
                 "application/json",
             )
             .await?;
-        // The version is live from here on: a failure to record it says so
-        // (the next release repairs the record, `published_run`).
+        // The pointer is committed (pending for a migration). A recording failure
+        // is repaired by the next ordinary release after promotion.
         run.status = RunStatus::Published;
         run.published_at = Some(published_at);
         let recorded = async {
             self.state.update_run(&run, &etag).await?;
-            self.state.set_current_version(&version).await
+            if !self.stage_index_storage {
+                self.state.set_current_version(&version).await?;
+            }
+            Ok::<(), anyhow::Error>(())
         }
         .await;
         if let Err(e) = recorded {
             return Err(PublishedUnrecorded(format!(
-                "`{version}` is live, but recording the publish failed: {e:#}"
+                "`{version}` pointer is committed (staged: {}), but recording failed: {e:#}",
+                self.stage_index_storage
             ))
             .into());
         }
-        tracing::info!(%version, docs, "published");
+        tracing::info!(%version, docs, staged = self.stage_index_storage, "published");
         Ok(Some(Published {
             index_version: version,
             indexes,
@@ -1338,6 +1367,13 @@ impl Release {
     /// if a previous release crashed after writing it but before recording
     /// the publish in Cosmos, the run and `ops/current` are repaired here.
     async fn published_run(&self) -> anyhow::Result<Option<(IndexRun, PublishedPointer)>> {
+        // Index URIs are relative to Quickwit's configured Azure account.
+        // Inheriting even an unchanged Congress/JA index would point at blobs
+        // that exist only in the lake. No previous version forces all sets
+        // to be rebuilt, not just the main base.
+        if self.stage_index_storage {
+            return Ok(None);
+        }
         let Some(bytes) = self.reference.get("current.json").await? else {
             return Ok(None);
         };

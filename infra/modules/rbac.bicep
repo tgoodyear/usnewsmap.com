@@ -5,6 +5,7 @@
 // state. Both send telemetry to Application Insights. Operators named in
 // searchLogReaders can read the search log.
 
+param indexStorageName string = ''
 param storageName string
 param cosmosName string
 param appInsightsName string
@@ -161,3 +162,24 @@ resource appCosmos 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@202
     }
   }
 ]
+
+// Keep the lake grants for old revisions and rollback/prune. Never retarget
+// an existing assignment during the rebuild.
+resource indexAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: indexStorageName
+  resource blobs 'blobServices' existing = {
+    name: 'default'
+    resource index 'containers' existing = {
+      name: 'qw-index'
+    }
+  }
+}
+resource newIngestIndexContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(indexStorageName) && true) {
+  scope: indexAccount::blobs::index
+  name: guid(indexAccount::blobs::index.id, ingestPrincipalId, blobContributor)
+  properties: {
+    principalId: ingestPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobContributor)
+  }
+}

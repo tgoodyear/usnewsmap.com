@@ -21,6 +21,8 @@
 //   benchmark searches against node 0, and logs and stores its reports in
 //   `qw-bench/runs/`.
 //
+// The experiment deliberately stays in the lake: USNM_INDEX_STORAGE moves
+// only the serving/writer qw-index, not qw-cluster or qw-bench.
 // Storage, Entra only (ADR-0009): two containers of their own in the data
 // account; nothing here can write `qw-index`, `reference` or `curated`.
 // - `qw-cluster`: the cluster's metastore and splits. Quickwit 0.9 can only

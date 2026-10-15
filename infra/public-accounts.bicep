@@ -1,3 +1,5 @@
+// The separate Quickwit account (USNM_INDEX_STORAGE) is private-only and
+// deliberately never appears in publicAccountIds: the deny policy covers it.
 // The resources the public-network policy (usnm-audit-data-public-network,
 // guardrails.bicep) lets have public network access in one environment:
 // its publicAccountIds. main.bicep (the stack) and policy-exemptions.bicep
