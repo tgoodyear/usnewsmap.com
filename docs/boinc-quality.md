@@ -152,7 +152,8 @@ Read-only metadata retrieved 2026-10-15 (sources in the policy):
   **752,289,728** = **5,780,074,528 bytes**. Native and container paths use the
   same model bytes, not the same filesystem overhead.
 - These observations fetch manifests/configs/LFS metadata only, not layer/model
-  bodies. No local Docker daemon/cache was available for new extraction measurements.
+  bodies. No local Docker daemon/cache was available; disposable CI measurements
+  are recorded separately below.
   #559's historical ~27 GiB shared-layer `du` / ~20 GiB filesystem observation
   lacks exact artifact/node provenance in the issue, so is **not** treated as
   a measured size of either new split image.
@@ -210,8 +211,9 @@ checks before enabling work; a server cannot inspect a remote Docker store.
    disk bound; native benchmark targets fail explicitly before submission
    because native NOTICE/model templates are not yet installed.
 4. On a **disposable acceptance runner**, `qwen_cold_cache.py` streams a locally
-   built, cached image into a new isolated Docker daemon/store, without pulling
-   or pruning an existing daemon. Each model's CI artifact `qwen-disk-2b` /
+   built, cached image into a new isolated Docker daemon/store and network
+   namespace, without pulling, pruning, or changing the existing daemon's bridge.
+   Each model's CI artifact `qwen-disk-2b` /
    `qwen-disk-8b` records image ID, local gzip archive bytes (not registry
    compressed bytes), logical unpacked size, graph `du`, filesystem delta/peak,
    second-load warm increment and load wall time. It asserts bounds and exact
@@ -351,10 +353,43 @@ On the server (`contrib-compute/images/server/bridge-job.sh`) and the hand-off j
 
 ## Measured
 
-No split-image live extraction/inference measurements yet. Registry/LFS size
-metadata and the historical #559 observation are qualified in the disk section
-above; neither is a cold/warm acceptance result for the new artifacts. This
-section gets the first new live campaign's and full calibration's numbers.
+### Split-image disposable Docker acceptance
+
+[Run 38787485639](https://github.com/tgoodyear/usnewsmap.com/actions/runs/38787485639)
+measured both payloads on Linux/amd64, Docker 28.0.4, overlay2.
+[Committed evidence](../ocr/boinc/qwen/measurements/ci-38787485639.json)
+records exact image IDs, source/head/base revisions, artifact links and archive
+SHA-256 digests. Both measurement steps passed; the **overall jobs failed later**
+at a separate default-network probe because the second daemon removed the host
+bridge. The harness now uses a separate network namespace and an offline probe.
+
+| Observed bytes                   | 2B CPU         | 8B GPU payload |
+| -------------------------------- | -------------- | -------------- |
+| Local gzip save/load stream      | 4,861,064,470  | 8,286,566,549  |
+| Logical unpacked image           | 6,670,088,145  | 10,170,682,321 |
+| Retained graph `du`              | 6,726,541,312  | 10,227,142,656 |
+| Cold filesystem increase         | 6,725,922,816  | 10,226,704,384 |
+| Sampled peak filesystem increase | 20,098,748,416 | 30,602,686,464 |
+| Warm reimport increase           | 40,960         | 61,440         |
+
+The sampled peaks plus 2 GiB workspace and 2 GiB reserve pass the existing
+32/48 GiB admission bounds; no threshold increase or skipped acceptance is
+needed. Peaks are sampled at 100 ms and include other runner filesystem activity,
+so these observations are not exact upper bounds. Retained image size is not
+the cold extraction requirement.
+
+Cold import took 248.29/538.52 seconds (2B/8B); warm archive reimport took
+235.93/450.69 seconds. These are **local gzip Docker save/load** times, not registry
+transfer, normal warm task startup, or inference latency. Exact selected model
+membership, all three error outputs, and actual 6 GiB memory/no swap/1024 PID
+limits passed for both payloads (CPU quotas 4/2 respectively). The synthetic 2B
+CPU reading passed separately: model load 1,002 ms, engine 12,573 ms, child peak
+RSS 2,948,436 KiB. No NVIDIA inference ran on these non-GPU runners.
+
+Anonymous published-image pulls, managed Podman extraction, native cross-platform
+staging, live scheduler rejection, and the full live/calibration campaign still
+require the authorized acceptance described above. These measurements do not
+claim those checks passed.
 
 ## Unconfirmed
 

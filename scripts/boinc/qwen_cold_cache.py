@@ -23,6 +23,17 @@ except ModuleNotFoundError:
     from scripts.boinc.qwen_disk import policy
 
 
+def daemon_command(state, host):
+    # A second bridge driver can remove docker0 even with --bridge=none.
+    # Keep its entire network stack separate from the build daemon.
+    return [
+        "sudo", "-n", "unshare", "--net", "dockerd",
+        f"--data-root={state}/data", f"--exec-root={state}/exec",
+        f"--pidfile={state}/daemon.pid", f"--host={host}",
+        "--bridge=none", "--iptables=false", "--ip-masq=false", "--storage-driver=overlay2",
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
@@ -38,11 +49,8 @@ def main():
     state.mkdir()
     env = dict(os.environ, DOCKER_HOST=f"unix://{state}/docker.sock")
     log = (state / "daemon.log").open("w")
-    daemon = subprocess.Popen([
-        "sudo", "-n", "dockerd", f"--data-root={state}/data", f"--exec-root={state}/exec",
-        f"--pidfile={state}/daemon.pid", f"--host={env['DOCKER_HOST']}",
-        "--bridge=none", "--iptables=false", "--ip-masq=false", "--storage-driver=overlay2",
-    ], stdout=log, stderr=subprocess.STDOUT)
+    daemon = subprocess.Popen(daemon_command(state, env["DOCKER_HOST"]),
+                              stdout=log, stderr=subprocess.STDOUT)
     p = policy()
     selected = p["models"][args.model]
     report = {"image": args.image, "model": args.model, "policy_version": p["version"],

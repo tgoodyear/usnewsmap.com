@@ -1,0 +1,71 @@
+{
+  "run_url": "https://github.com/tgoodyear/usnewsmap.com/actions/runs/38787485639",
+  "head_revision": "7b28738dc3e1c197d77a001bd7a50cc0c6128f9c",
+  "source_revision": "c3096d85c5ee5e9b75b99aee207209f7434fa7df",
+  "base_revision": "4a9ca2b94125df78aea8fe06409867f56b216ba7",
+  "policy_version": 1,
+  "platform": "linux/amd64",
+  "docker_server_version": "28.0.4",
+  "storage_driver": "overlay2",
+  "limitations": [
+    "These are successful measurement steps, not successful overall jobs: a subsequent default-network probe failed because the second daemon disrupted the host docker0 bridge. Network namespace isolation fixes that harness defect separately.",
+    "Image IDs identify locally built images, not published registry manifest digests. No registry transfer was measured.",
+    "Local gzip docker-save streams are imported into a new empty isolated store. Warm means reimporting the same archive, not normal warm task startup.",
+    "Filesystem deltas include concurrent runner activity; peak is sampled every 100 ms, not a guaranteed maximum.",
+    "Extraction timing excludes inference. Only 2B CPU inference ran; NVIDIA inference, Podman, native staging, signing, anonymous publication, and live scheduler acceptance remain unmeasured."
+  ],
+  "models": {
+    "2b": {
+      "job_id": 116603599292,
+      "artifact_url": "https://github.com/tgoodyear/usnewsmap.com/actions/runs/38787485639/artifacts/12000260655",
+      "artifact_archive_sha256": "4083094ef9ca104e6e609857099625292ead837710d4ab1487e4946cc363b419",
+      "image": "ghcr.io/tgoodyear/usnm-boinc-worker:qwen-2b-c3096d85c5ee5e9b75b99aee207209f7434fa7df",
+      "image_id": "sha256:9a4208db07ffea2a8c2ab1e696164620c4b2e36125ba73810c11dddd3d04f02c",
+      "local_gzip_stream_bytes": 4861064470,
+      "logical_unpacked_bytes": 6670088145,
+      "cold_graph_du_bytes": 6726541312,
+      "cold_filesystem_delta_bytes": 6725922816,
+      "peak_filesystem_delta_bytes": 20098748416,
+      "warm_filesystem_delta_bytes": 40960,
+      "cold_load_wall_secs": 248.29214847499998,
+      "warm_load_wall_secs": 235.930355116,
+      "payload_file_bytes": {
+        "Qwen3-VL-2B-Instruct-Q8_0.gguf": 1834427296,
+        "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf": 445053056
+      },
+      "kernel_limits": ["6442450944", "0", "1024", "400000 100000"],
+      "error_output_shapes_passed": true,
+      "cpu_result": {
+        "outcome": "ok",
+        "model": "qwen3-vl-2b-q8",
+        "device": "cpu",
+        "load_ms": 1002,
+        "engine_ms": 12573,
+        "peak_rss_kib": 2948436
+      },
+      "measurement_passed": true
+    },
+    "8b": {
+      "job_id": 116603599532,
+      "artifact_url": "https://github.com/tgoodyear/usnewsmap.com/actions/runs/38787485639/artifacts/12000607464",
+      "artifact_archive_sha256": "0fb2d21c64990579ac6f8ad8b5de21ffb06634c9d8e51c20b7bda16b5a95a53a",
+      "image": "ghcr.io/tgoodyear/usnm-boinc-worker:qwen-8b-c3096d85c5ee5e9b75b99aee207209f7434fa7df",
+      "image_id": "sha256:ca0a562e4cd328a9bce1f41c801be30851f4f82bea97095869777d15aba0d3cb",
+      "local_gzip_stream_bytes": 8286566549,
+      "logical_unpacked_bytes": 10170682321,
+      "cold_graph_du_bytes": 10227142656,
+      "cold_filesystem_delta_bytes": 10226704384,
+      "peak_filesystem_delta_bytes": 30602686464,
+      "warm_filesystem_delta_bytes": 61440,
+      "cold_load_wall_secs": 538.5240554300001,
+      "warm_load_wall_secs": 450.686034845,
+      "payload_file_bytes": {
+        "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf": 752289728,
+        "Qwen3VL-8B-Instruct-Q4_K_M.gguf": 5027784800
+      },
+      "kernel_limits": ["6442450944", "0", "1024", "200000 100000"],
+      "error_output_shapes_passed": true,
+      "measurement_passed": true
+    }
+  }
+}

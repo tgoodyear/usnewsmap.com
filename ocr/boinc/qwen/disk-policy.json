@@ -6,7 +6,7 @@
     "https://huggingface.co/api/models/Qwen/Qwen3-VL-8B-Instruct-GGUF/tree/f982a07559d4a2f6c8744d840bf6fccab30eea96",
     "https://huggingface.co/api/models/ggml-org/Qwen3-VL-2B-Instruct-GGUF/tree/ea6a11058182570be6436b9a2e4ee7f7b49f908d"
   ],
-  "limitations": "Registry compressed layer sum and LFS sizes only. Unpacked, scratch, and cold admission values are conservative enforced envelopes, not measurements. See docs/boinc-quality.md.",
+  "limitations": "Policy values are conservative enforced envelopes, not measurements. Registry compressed layer sum and LFS sizes have pinned metadata sources above. Separate qualified Docker CI observations are in measurements/ci-38787485639.json; they do not measure registry transfer, Podman, native staging, or live NVIDIA inference. See docs/boinc-quality.md.",
   "base_index": "sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea",
   "base_amd64_manifest": "sha256:cb7f872937c65952258e5670d8c1da7bae7394aef50c1c90a8bb251bde46c32e",
   "base_compressed_bytes": 2592304104,

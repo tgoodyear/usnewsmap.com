@@ -72,5 +72,5 @@ runs:
         done
         jq -e '.unit_error != null' "$work/result.json" > /dev/null
         grep -q '== llama-server probe' "$work/diag.txt"
-        docker run --rm "$IMAGE:$SHA" usnm-boinc qwen probe
+        docker run --rm --network=none "$IMAGE:$SHA" usnm-boinc qwen probe
         cat "$work/diag.txt"

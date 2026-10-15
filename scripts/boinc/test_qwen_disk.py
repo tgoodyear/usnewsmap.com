@@ -17,6 +17,40 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class QwenDiskTest(unittest.TestCase):
+    def test_committed_ci_observations_fit_policy_and_keep_models_separate(self):
+        p = disk.policy()
+        observed = json.loads((ROOT / "ocr/boinc/qwen/measurements/ci-38787485639.json").read_text())
+        self.assertEqual(set(observed["models"]), {"2b", "8b"})
+        self.assertEqual(observed["platform"], "linux/amd64")
+        for model, result in observed["models"].items():
+            with self.subTest(model=model):
+                self.assertTrue(result["measurement_passed"])
+                self.assertTrue(result["error_output_shapes_passed"])
+                self.assertEqual(result["payload_file_bytes"], p["models"][model]["files"])
+                payload = sum(result["payload_file_bytes"].values())
+                self.assertLessEqual(result["logical_unpacked_bytes"],
+                                     p["base_unpacked_bound_bytes"] + payload + p["image_overhead_bound_bytes"])
+                self.assertLessEqual(result["local_gzip_stream_bytes"],
+                                     p["base_compressed_bytes"] + payload + p["image_overhead_bound_bytes"])
+                self.assertLessEqual(result["peak_filesystem_delta_bytes"] + p["warm_incremental_bytes"] + p["reserve_bytes"],
+                                     p["models"][model]["container_cold_bytes"])
+                self.assertLessEqual(result["warm_filesystem_delta_bytes"], p["warm_incremental_bytes"])
+                self.assertIn(observed["source_revision"], result["image"])
+                self.assertEqual(len(result["artifact_archive_sha256"]), 64)
+        self.assertNotEqual(observed["models"]["2b"]["image_id"], observed["models"]["8b"]["image_id"])
+
+    def test_cold_daemon_network_and_storage_are_isolated_from_build_daemon(self):
+        state = ROOT / ".new-test-store"
+        host = f"unix://{state}/docker.sock"
+        command = cold.daemon_command(state, host)
+        self.assertEqual(command[:5], ["sudo", "-n", "unshare", "--net", "dockerd"])
+        for option in (
+            f"--data-root={state}/data", f"--exec-root={state}/exec",
+            f"--pidfile={state}/daemon.pid", f"--host={host}",
+            "--bridge=none", "--iptables=false", "--ip-masq=false",
+        ):
+            self.assertIn(option, command)
+
     def test_cold_acceptance_cannot_touch_a_volunteer_or_existing_store(self):
         argv = ["qwen_cold_cache.py", "--image", "cached-only", "--model", "2b", "--state", str(ROOT)]
         with patch("sys.argv", argv), patch.object(cold.subprocess, "run") as run:
