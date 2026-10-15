@@ -83,10 +83,10 @@ resource apex 'Microsoft.Network/dnsZones/A@2018-05-01' = {
   }
 }
 
-var cnames = empty(appFqdn) ? [] : ['www', 'api']
-
+// The FQDN is a runtime API output. Keep the loop count static so an
+// unresolved FQDN cannot hide the whole zone from ARM what-if.
 resource hosts 'Microsoft.Network/dnsZones/CNAME@2018-05-01' = [
-  for name in cnames: {
+  for name in ['www', 'api']: if (!empty(appFqdn)) {
     parent: zone
     name: name
     properties: {

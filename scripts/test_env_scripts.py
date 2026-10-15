@@ -278,6 +278,26 @@ class SearcherRollbackSettings(Stubbed):
 
 
 @unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
+class DnsWhatIfTemplate(unittest.TestCase):
+    def test_cname_loop_count_does_not_depend_on_runtime_fqdn(self):
+        run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
+                              "infra/modules/dns.bicep", "--stdout"],
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        template = json.loads(run.stdout)
+        resources = template["resources"]
+        if isinstance(resources, dict):
+            resources = list(resources.values())
+        hosts = next(r for r in resources if r["type"] == "Microsoft.Network/dnsZones/CNAME")
+        self.assertNotIn("appFqdn", hosts["copy"]["count"])
+        self.assertIn("'www'", hosts["copy"]["count"])
+        self.assertIn("'api'", hosts["copy"]["count"])
+        self.assertEqual(hosts["condition"], "[not(empty(parameters('appFqdn')))]")
+        self.assertEqual(hosts["properties"]["CNAMERecord"]["cname"], "[parameters('appFqdn')]")
+        zone = next(r for r in resources if r["type"] == "Microsoft.Network/dnsZones")
+        self.assertNotIn("condition", zone)
+
+
+@unittest.skipUnless(shutil.which(os.environ.get("BICEP", "bicep")), "Bicep CLI required")
 class IngestTimeoutTemplate(unittest.TestCase):
     def test_only_explicit_full_or_staging_extends_the_ingest_timeout(self):
         run = subprocess.run([os.environ.get("BICEP", "bicep"), "build",
