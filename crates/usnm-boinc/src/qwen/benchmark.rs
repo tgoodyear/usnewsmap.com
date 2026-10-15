@@ -33,6 +33,7 @@ pub struct Options {
 struct Entry {
     job: Job,
     reference: Value,
+    provenance: Value,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -40,6 +41,7 @@ struct Entry {
 struct Manifest {
     v: u32,
     source_sha256: String,
+    source_manifest_sha256: String,
     entries: Vec<Entry>,
 }
 
@@ -63,6 +65,22 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         .parent()
         .context("crops has no parent")?
         .canonicalize()?;
+    ensure!(
+        base.join("LICENSES").is_dir(),
+        "dataset has no LICENSES provenance directory"
+    );
+    let source_manifest = std::fs::read(base.join("manifest.jsonl"))?;
+    let mut metadata = BTreeMap::new();
+    for row in score::read_jsonl(&base.join("manifest.jsonl"))? {
+        let cid = row["crop_id"]
+            .as_str()
+            .context("manifest has no crop_id")?
+            .to_string();
+        ensure!(
+            metadata.insert(cid, row).is_none(),
+            "duplicate manifest crop"
+        );
+    }
     let mut entries = Vec::new();
     let mut images = Vec::new();
     for row in rows.into_iter().take(opts.max_crops) {
@@ -71,6 +89,19 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
             "comparison-only crop is not ground truth"
         );
         let cid = row["crop_id"].as_str().context("missing crop_id")?;
+        let provenance = metadata
+            .get(cid)
+            .context("crop missing from source manifest")?;
+        let license = provenance["source_license"]
+            .as_str()
+            .context("missing source licence")?;
+        ensure!(
+            !license
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|part| part.eq_ignore_ascii_case("ND")
+                    || part.eq_ignore_ascii_case("NoDerivatives")),
+            "NoDerivatives source requires original-file transport, not crop workunits"
+        );
         let relative = row["image"].as_str().context("missing crop image")?;
         ensure!(
             !Path::new(relative).is_absolute(),
@@ -79,6 +110,10 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         let image = base.join(relative).canonicalize()?;
         ensure!(image.starts_with(&base), "image escapes dataset directory");
         let bytes = read(&image, MAX_SCAN)?;
+        ensure!(
+            provenance["crop_sha256"].as_str() == Some(&sha256(&bytes)),
+            "crop checksum differs from source manifest"
+        );
         let (w, h) = image::load_from_memory(&bytes)
             .with_context(|| format!("{cid}: decoding crop"))?
             .dimensions();
@@ -110,12 +145,14 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         entries.push(Entry {
             job,
             reference: row,
+            provenance: provenance.clone(),
         });
         images.push(bytes);
     }
     let manifest = Manifest {
         v: 1,
         source_sha256: sha256(&source),
+        source_manifest_sha256: sha256(&source_manifest),
         entries,
     };
     std::fs::create_dir_all(&opts.root)?;
@@ -325,6 +362,12 @@ mod tests {
             "transcriber": "public dataset", "reviewer": "published review"
         });
         std::fs::write(dir.join("crops.jsonl"), row.to_string()).unwrap();
+        std::fs::create_dir(dir.join("LICENSES")).unwrap();
+        let provenance = serde_json::json!({
+            "crop_id": "public-001", "source_license": "CC-BY-4.0",
+            "crop_sha256": sha256(&std::fs::read(dir.join("image.jpg")).unwrap()),
+        });
+        std::fs::write(dir.join("manifest.jsonl"), provenance.to_string()).unwrap();
         let mut engine = crate::qwen::stage::tests::engine();
         engine.models = vec![super::super::default_models().pop().unwrap()];
         Options {

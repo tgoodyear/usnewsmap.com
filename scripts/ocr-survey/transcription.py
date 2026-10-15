@@ -79,6 +79,8 @@ def prepare(sources: list[str], out: Path, seed: int, evaluation_only: bool,
             if not image.is_relative_to(base):
                 raise ValueError(f"{cid}: image escapes source directory")
             image_bytes = image.read_bytes()
+            if meta.get("crop_sha256") != digest(image_bytes):
+                raise ValueError(f"{cid}: crop checksum differs from source manifest")
             # Missing title metadata falls back to the entire source, never to random crops.
             lccn = meta.get("lccn")
             if not lccn:
