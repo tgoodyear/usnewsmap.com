@@ -1,0 +1,94 @@
+[
+  {
+    "images": [
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0117.jp2",
+        "seq": 1
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0118.jp2",
+        "seq": 2
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0119.jp2",
+        "seq": 3
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0120.jp2",
+        "seq": 4
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0121.jp2",
+        "seq": 5
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0122.jp2",
+        "seq": 6
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0123.jp2",
+        "seq": 7
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0124.jp2",
+        "seq": 8
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0125.jp2",
+        "seq": 9
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0126.jp2",
+        "seq": 10
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0127.jp2",
+        "seq": 11
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/in/batch_in_darrow_ver03/data/sn82015313/0038334881A/1925011001/0128.jp2",
+        "seq": 12
+      }
+    ],
+    "response_sha256": "1bbc0232e0c696b042aa936e98405d26f1b246522d2e9855c074322da7cf8533",
+    "source": "https://www.loc.gov/item/sn82015313/1925-01-10/ed-1/?fo=json"
+  },
+  {
+    "images": [
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/ak/batch_ak_goshawk_ver01/data/sn84020657/00393342055/1925010201/0007.jp2",
+        "seq": 1
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/ak/batch_ak_goshawk_ver01/data/sn84020657/00393342055/1925010201/0008.jp2",
+        "seq": 2
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/ak/batch_ak_goshawk_ver01/data/sn84020657/00393342055/1925010201/0009.jp2",
+        "seq": 3
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/ak/batch_ak_goshawk_ver01/data/sn84020657/00393342055/1925010201/0010.jp2",
+        "seq": 4
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/ak/batch_ak_goshawk_ver01/data/sn84020657/00393342055/1925010201/0011.jp2",
+        "seq": 5
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/ak/batch_ak_goshawk_ver01/data/sn84020657/00393342055/1925010201/0012.jp2",
+        "seq": 6
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/ak/batch_ak_goshawk_ver01/data/sn84020657/00393342055/1925010201/0013.jp2",
+        "seq": 7
+      },
+      {
+        "jp2": "https://tile.loc.gov/storage-services/service/ndnp/ak/batch_ak_goshawk_ver01/data/sn84020657/00393342055/1925010201/0014.jp2",
+        "seq": 8
+      }
+    ],
+    "response_sha256": "7f55e685071d88db60f37eb5ff26c1bae3f5e51ea5926f7d31d34374181644f7",
+    "source": "https://www.loc.gov/item/sn84020657/1925-01-02/ed-1/?fo=json"
+  }
+]

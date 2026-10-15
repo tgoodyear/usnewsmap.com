@@ -1,0 +1,31 @@
+{
+  "colliding_numbered_labels": 798,
+  "collision_issues": 791,
+  "coverage_pct": 47.27,
+  "excess_scans_at_numbered_labels": 4050,
+  "groups": {
+    "batch": 170,
+    "batch-title-date": 9767,
+    "date": 365,
+    "ingestion-year": 10,
+    "title": 201
+  },
+  "imported_page_ids": 91788,
+  "issue_absent": 8811,
+  "label_missing_collision_issue": 323,
+  "label_missing_other_issue": 456,
+  "matched": 8597,
+  "matched_collision_issue": 82,
+  "missing": 9590,
+  "placement": {
+    "duplicates": 4051,
+    "image_rule_agrees": 86052,
+    "image_rule_checked": 95815,
+    "page_from_image": 24,
+    "page_named": 95815,
+    "unparsed": 0
+  },
+  "reference_version": "pages-v20261006-2",
+  "sampled": 18187,
+  "upstream_physical_scans": 95839
+}
