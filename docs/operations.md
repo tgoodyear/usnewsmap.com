@@ -131,22 +131,15 @@ Before it publishes, a release waits for the writer's merges: `release merges` l
 
 ## Searcher caches
 
-The Quickwit sidecar keeps the split footers, fast fields and partial and predicate results in memory, with the capacities in `infra/quickwit/searcher.yaml` (08 §8.4). The API reads the sidecar's metrics every minute and reports them as `api.searcher_cache_*` (08 §8.1.2):
+The Quickwit searcher (a sidecar or its own app) keeps the split footers, fast fields and partial and predicate results in memory, with the capacities in `infra/quickwit/searcher.yaml` (08 §8.4). The API reads the searcher's metrics every minute and reports them as `api.searcher_cache_*` (08 §8.1.2):
 
 ```sh
 scripts/logs.sh --env prod --query-name searcher-caches --span 1d        # per replica and cache: MB and items held, hits, misses, evictions, hit rate
 ```
 
-The same table, and charts of MB held and of misses and evictions, are in the "usnm API (<env>)" workbook ("usnewsmap API" before the Phase 2 provision). In Log Analytics:
+The same table, and charts of MB held and of misses and evictions, are in the "usnm API (<env>)" workbook ("usnewsmap API" before the Phase 2 provision). The saved queries and these workbook panels select one reporting API replica per searcher per UTC minute, before aggregating any instruments. Remote searchers are identified by `Properties["usnm.searcher"]`, the origin of `USNM_QUICKWIT_URL` (without credentials, path or query). Loopback sidecars have no shared identity and keep their per-API-replica rows. The `Replica` column is the shared searcher's origin in app mode and the API replica in sidecar mode; chart series likewise keep sidecars separate. When the reporting replica disappears, the next minute can use another replica. Selection always keeps all rows from the chosen reporter, not just one metric row.
 
-```kusto
-AppMetrics
-| where AppRoleName == "usnm-api" and Name startswith "api.searcher_cache_"
-| where tostring(Properties.cache) == "split_footer"
-| summarize Count = sum(Sum), Held = max(Sum) by Name, Replica = AppRoleInstance
-```
-
-For `api.searcher_cache_bytes` and `api.searcher_cache_items` (gauges) read `Held`, the most the cache held in the span; for hits, misses and evictions read `Count`, their total in the span. Split footers are one item per split. A replica's first report counts everything since its sidecar started, the warm-up included.
+This dimension is emitted after deploying the API with this change; older data without it remains per replica, since its mode cannot safely be inferred. For that older shared-app data only, filter to one reporting replica before summing. These remain sampled metrics: independently timed scrapes and a reporter's first cache-counter report (which includes the searcher's lifetime totals) can skew bins and hand-offs, so do not treat their sums as exact accounting. For cache gauges the table reads the latest report, not the sum of gauge values. Split footers are one item per split. A replica's first report counts everything since its searcher started, the warm-up included.
 
 **Sizing `split_footer_cache_capacity`.** Size it from the release's footer total, and check it against what the cache does after the warm-up. Evictions on their own don't show the footers don't fit: Quickwit 0.9.1 also counts replacing an entry as an eviction, and after a publish the cache drops the old version's footers. The API logs `split footer cache evictions seen` once per searcher run, for the record, without a cause. The footers don't fit when the total is above the capacity, or when footer misses and evictions keep coming hours after the warm-up, with no publish or restart in between. To size it:
 
@@ -206,7 +199,7 @@ The provision creates the searcher app and its role first, then rolls the API on
 - **API to searcher latency:** `scripts/logs.sh --env prod --query-name backend-latency --span 14d`, `AvgMs` and `MinMs` per endpoint. The network hop should add a few milliseconds per call to searches of seconds.
 - **Deploys:** after a merge that changes only the site, the API's log has no `the searcher restarted` line, and `scripts/logs.sh --env prod --query-name searcher-caches --span 1d` shows the caches kept their contents.
 - **Idle billing of each app:** Cost Management, per resource and meter, daily: idle and active vCPU-seconds of `usnm-search-ca-prod` and of `ca-usnm-prod`, against about 180,000 idle and 14,000 to 32,000 active vCPU-seconds a day for the one app at 2.25 vCPU (3 to 8 October 2026, 09 §9.5). The searcher still polls the metastore every 30 s and answers the API's metrics read every minute; the API app now bills on its own between visitors.
-- **Capacity:** with two API replicas, both send searches to the one searcher (each with its own computation slots, 06 §6.6), and both report its metrics, so read one replica's rows in `searcher-caches` and `searcher-threads`. Each replica also warms the searcher after it restarts, one warm-up at a time within a replica but not across them: while two replicas run (a rollout, or the HTTP rule's second replica), a searcher restart gets a warm-up from each, which compute the same misses side by side for up to the warm-up's budget (5 minutes). The searcher app runs one replica in prod and the API usually one, so that's a rollout's few minutes.
+- **Capacity:** with two API replicas, both send searches to the one searcher (each with its own computation slots, 06 §6.6), and both report its metrics. `searcher-caches`, `searcher-threads` and the workbook cache panels automatically take one reporter per shared searcher per minute (see [Searcher caches](#searcher-caches)); do not add the replicas' raw metrics together. Slot sharing or a lower per-replica slot limit is a separate, pending design decision (#364); this telemetry change does not change admission limits. Each replica also warms the searcher after it restarts, one warm-up at a time within a replica but not across them: while two replicas run (a rollout, or the HTTP rule's second replica), a searcher restart gets a warm-up from each, which compute the same misses side by side for up to the warm-up's budget (5 minutes). The searcher app runs one replica in prod and the API usually one, so that's a rollout's few minutes.
 
 **Roll back in two provisions (#362):** Keep `USNM_SEARCH_BACKEND=quickwit` and leave unrelated settings and images unchanged throughout. `USNM_SEARCHER_APP_RETAIN` keeps the searcher app and its Blob Data Reader role without routing the new API revision to it. It defaults to false and is a committed public setting, like `USNM_SEARCHER_APP`.
 
