@@ -73,6 +73,13 @@ class PreflightTest(unittest.TestCase):
         (self.data / "slots").mkdir()
         self.uid = patch.object(pre.os, "geteuid", return_value=1000)
         self.uid.start()
+        usage = namedtuple("Usage", "total used free")
+        self.disk_usage = patch.object(
+            pre.shutil, "disk_usage",
+            return_value=usage(128 * 1024 ** 3, 64 * 1024 ** 3, 64 * 1024 ** 3),
+        )
+        self.disk_usage.start()
+        self.addCleanup(self.disk_usage.stop)
 
     def tearDown(self):
         self.uid.stop()
@@ -127,6 +134,22 @@ class PreflightTest(unittest.TestCase):
                 pre.preflight(self.data, pre.qwen_disk.REPOSITORY + "@sha256:" + "a" * 64, runtime)
         self.assertEqual(check.call_args.args[1], 51539607552)
         self.assertEqual([call[1] for call in runtime.calls], ["info"])
+
+    def test_each_qwen_filesystem_has_deterministic_exact_boundary_admission(self):
+        usage = namedtuple("Usage", "total used free")
+        paths = [self.data / "slots", self.data / "image-store", self.data / "extraction"]
+        for required in (34359738368, 51539607552):
+            sufficient = usage(required, 0, required)
+            with self.subTest(required=required, case="exact"):
+                with patch.object(pre.shutil, "disk_usage", return_value=sufficient):
+                    self.assertTrue(pre.check_disk(paths, required, co_located=True))
+            for deficient in range(len(paths)):
+                values = [sufficient] * len(paths)
+                values[deficient] = usage(required, 1, required - 1)
+                with self.subTest(required=required, deficient=deficient):
+                    with patch.object(pre.shutil, "disk_usage", side_effect=values):
+                        with self.assertRaisesRegex(pre.PreflightError, "Insufficient free disk"):
+                            pre.check_disk(paths, required, co_located=True)
 
     def test_qwen_cannot_admit_unknown_storage_or_malformed_disk_markers(self):
         source = Path(__file__).resolve().parents[2] / "ocr/boinc/qwen/job-cpu.toml"
