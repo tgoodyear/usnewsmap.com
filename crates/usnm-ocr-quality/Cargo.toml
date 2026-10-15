@@ -18,5 +18,8 @@ serde_json.workspace = true
 sha2.workspace = true
 unicode-normalization.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

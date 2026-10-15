@@ -75,6 +75,230 @@ pub enum ChildAction {
 
 pub type ChildHook = Arc<dyn Fn(u32, ChildAction) + Send + Sync>;
 
+/// Extracts the Windows named shared-memory segment from `<comm_obj_name>` in `init_data.xml`.
+pub fn parse_comm_obj_name(init_xml: &str) -> Option<String> {
+    let start = init_xml.find("<comm_obj_name>")? + "<comm_obj_name>".len();
+    let end = init_xml[start..].find("</comm_obj_name>")?;
+    let name = init_xml[start..start + end].trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_owned())
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod win_shmem {
+    use super::{
+        ChildAction, HEARTBEAT_OFFSET, MSG_CHANNEL_SIZE, PROCESS_CONTROL_REQUEST_OFFSET,
+        SHARED_MEM_SIZE,
+    };
+    use anyhow::ensure;
+    use std::{
+        ffi::CString,
+        os::raw::c_void,
+        sync::atomic::{fence, Ordering},
+    };
+
+    type Handle = *mut c_void;
+    const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
+    const PAGE_READWRITE: u32 = 0x04;
+    const FILE_MAP_ALL_ACCESS: u32 = 0x000F_001F;
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const PROCESS_SUSPEND_RESUME: u32 = 0x0800;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileMappingA(
+            hFile: Handle,
+            lpFileMappingAttributes: *mut c_void,
+            flProtect: u32,
+            dwMaximumSizeHigh: u32,
+            dwMaximumSizeLow: u32,
+            lpName: *const i8,
+        ) -> Handle;
+        fn OpenFileMappingA(dwDesiredAccess: u32, bInheritHandle: i32, lpName: *const i8)
+            -> Handle;
+        fn MapViewOfFile(
+            hFileMappingObject: Handle,
+            dwDesiredAccess: u32,
+            dwFileOffsetHigh: u32,
+            dwFileOffsetLow: u32,
+            dwNumberOfBytesToMap: usize,
+        ) -> *mut u8;
+        fn UnmapViewOfFile(lpBaseAddress: *const c_void) -> i32;
+        fn CloseHandle(hObject: Handle) -> i32;
+        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> Handle;
+        fn TerminateProcess(hProcess: Handle, uExitCode: u32) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtSuspendProcess(process_handle: Handle) -> i32;
+        fn NtResumeProcess(process_handle: Handle) -> i32;
+    }
+
+    /// Win32 named file mapping backing BOINC's `SHARED_MEM` (`<comm_obj_name>`
+    /// in `init_data.xml`, `lib/shmem.cpp`).
+    pub struct WinShmem {
+        handle: Handle,
+        base: *mut u8,
+    }
+
+    // SAFETY: `WinShmem` owns an OS file-mapping handle and a process-wide
+    // virtual view of `SHARED_MEM_SIZE` bytes; accesses go through volatile byte
+    // reads/writes with `SeqCst` fences matching BOINC's `MSG_CHANNEL` protocol.
+    unsafe impl Send for WinShmem {}
+    unsafe impl Sync for WinShmem {}
+
+    impl WinShmem {
+        /// Attaches to an existing BOINC named shared-memory segment (`Global\<seg>`
+        /// then `<seg>`, matching `attach_shmem` in BOINC `lib/shmem.cpp`), or
+        /// creates `<seg>` when `create_if_missing` is true.
+        pub fn attach_or_create(seg_name: &str, create_if_missing: bool) -> Option<Self> {
+            let global_name = CString::new(format!("Global\\{seg_name}")).ok()?;
+            let local_name = CString::new(seg_name).ok()?;
+            // SAFETY: `global_name` and `local_name` are valid NUL-terminated strings.
+            unsafe {
+                let mut h = OpenFileMappingA(FILE_MAP_ALL_ACCESS, 0, global_name.as_ptr());
+                if h.is_null() {
+                    h = OpenFileMappingA(FILE_MAP_ALL_ACCESS, 0, local_name.as_ptr());
+                }
+                if h.is_null() && create_if_missing {
+                    h = CreateFileMappingA(
+                        INVALID_HANDLE_VALUE,
+                        std::ptr::null_mut(),
+                        PAGE_READWRITE,
+                        0,
+                        SHARED_MEM_SIZE as u32,
+                        local_name.as_ptr(),
+                    );
+                }
+                if h.is_null() {
+                    return None;
+                }
+                let base = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, SHARED_MEM_SIZE);
+                if base.is_null() {
+                    let _ = CloseHandle(h);
+                    return None;
+                }
+                Some(Self { handle: h, base })
+            }
+        }
+
+        /// Reads and clears a BOINC `MSG_CHANNEL` at `offset` if byte 0 is non-zero.
+        pub fn take_channel(&self, offset: usize) -> Option<String> {
+            if offset + MSG_CHANNEL_SIZE > SHARED_MEM_SIZE {
+                return None;
+            }
+            // SAFETY: `self.base` maps `SHARED_MEM_SIZE` bytes and `offset + MSG_CHANNEL_SIZE <= SHARED_MEM_SIZE`.
+            unsafe {
+                let chan = self.base.add(offset);
+                if std::ptr::read_volatile(chan) == 0 {
+                    return None;
+                }
+                fence(Ordering::Acquire);
+                let mut buf = [0u8; MSG_CHANNEL_SIZE - 1];
+                for (i, slot) in buf.iter_mut().enumerate() {
+                    let b = std::ptr::read_volatile(chan.add(1 + i));
+                    if b == 0 {
+                        let msg = String::from_utf8_lossy(&buf[..i]).into_owned();
+                        std::ptr::write_volatile(chan, 0);
+                        fence(Ordering::SeqCst);
+                        return Some(msg);
+                    }
+                    *slot = b;
+                }
+                let msg = String::from_utf8_lossy(&buf).into_owned();
+                std::ptr::write_volatile(chan, 0);
+                fence(Ordering::SeqCst);
+                Some(msg)
+            }
+        }
+
+        /// Writes a BOINC `MSG_CHANNEL` frame (`byte[0] = 1`, `byte[1..]` = NUL-terminated XML).
+        pub fn write_channel(&self, offset: usize, xml: &str) -> anyhow::Result<()> {
+            ensure!(
+                offset + MSG_CHANNEL_SIZE <= SHARED_MEM_SIZE,
+                "invalid MSG_CHANNEL offset {offset}"
+            );
+            let xml_bytes = xml.as_bytes();
+            ensure!(
+                xml_bytes.len() < MSG_CHANNEL_SIZE - 1,
+                "MSG_CHANNEL payload too large"
+            );
+            // SAFETY: `self.base` maps `SHARED_MEM_SIZE` bytes and `offset + MSG_CHANNEL_SIZE <= SHARED_MEM_SIZE`.
+            unsafe {
+                let chan = self.base.add(offset);
+                for i in 0..(MSG_CHANNEL_SIZE - 1) {
+                    let b = xml_bytes.get(i).copied().unwrap_or(0);
+                    std::ptr::write_volatile(chan.add(1 + i), b);
+                }
+                fence(Ordering::SeqCst);
+                std::ptr::write_volatile(chan, 1);
+                fence(Ordering::SeqCst);
+            }
+            Ok(())
+        }
+
+        pub fn poll_process_control(&self) -> Option<String> {
+            self.take_channel(PROCESS_CONTROL_REQUEST_OFFSET)
+        }
+
+        pub fn poll_heartbeat(&self) -> Option<String> {
+            self.take_channel(HEARTBEAT_OFFSET)
+        }
+    }
+
+    impl Drop for WinShmem {
+        fn drop(&mut self) {
+            // SAFETY: `self.base` and `self.handle` were obtained from `MapViewOfFile`
+            // and `OpenFileMappingA`/`CreateFileMappingA` in `attach_or_create`.
+            unsafe {
+                if !self.base.is_null() {
+                    let _ = UnmapViewOfFile(self.base.cast::<c_void>());
+                }
+                if !self.handle.is_null() {
+                    let _ = CloseHandle(self.handle);
+                }
+            }
+        }
+    }
+
+    pub fn signal_process(pid: u32, action: ChildAction) {
+        // SAFETY: Win32 process handle lifecycle is scoped to this call.
+        unsafe {
+            match action {
+                ChildAction::Suspend => {
+                    let h = OpenProcess(PROCESS_SUSPEND_RESUME, 0, pid);
+                    if !h.is_null() {
+                        let _ = NtSuspendProcess(h);
+                        let _ = CloseHandle(h);
+                    }
+                }
+                ChildAction::Resume => {
+                    let h = OpenProcess(PROCESS_SUSPEND_RESUME, 0, pid);
+                    if !h.is_null() {
+                        let _ = NtResumeProcess(h);
+                        let _ = CloseHandle(h);
+                    }
+                }
+                ChildAction::Terminate => {
+                    let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                    if !h.is_null() {
+                        let _ = TerminateProcess(h, 1);
+                        let _ = CloseHandle(h);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use win_shmem::WinShmem;
+
 fn default_signal_child(pgid: u32, action: ChildAction) {
     #[cfg(unix)]
     {
@@ -100,7 +324,11 @@ fn default_signal_child(pgid: u32, action: ChildAction) {
                 .status();
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        win_shmem::signal_process(pgid, action);
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (pgid, action);
     }
@@ -162,13 +390,22 @@ impl BoincControl {
         Self::start_with_heartbeat_timeout(work, HEARTBEAT_TIMEOUT)
     }
 
-    /// Starts monitoring `boinc_mmap_file` in `work` with a custom heartbeat timeout.
+    /// Starts monitoring `boinc_mmap_file` (and on Windows `<comm_obj_name>`
+    /// named shared memory from `init_data.xml`) in `work` with a custom
+    /// heartbeat timeout.
     pub fn start_with_heartbeat_timeout(work: &Path, heartbeat_timeout: Duration) -> Self {
         std::hint::black_box(&BOINC_API_VERSION_MARKER);
         let init_path = resolve_slot_file(work, "init_data.xml");
         let has_init_data = init_path.is_file();
-        let no_heartbeat_check = std::fs::read_to_string(&init_path)
-            .is_ok_and(|xml| xml.contains("<no_heartbeat_check"));
+        let init_xml = std::fs::read_to_string(&init_path).ok();
+        let no_heartbeat_check = init_xml
+            .as_deref()
+            .is_some_and(|xml| xml.contains("<no_heartbeat_check"));
+        #[cfg(windows)]
+        let win_shm = init_xml
+            .as_deref()
+            .and_then(parse_comm_obj_name)
+            .and_then(|seg| WinShmem::attach_or_create(&seg, true));
         let mmap_path = resolve_slot_file(work, MMAP_FILE);
         // Mirror BOINC `boinc_init()` (`create_shmem_mmap`): when running in a
         // BOINC slot (`init_data.xml` present) and `boinc_mmap_file` has not yet
@@ -204,17 +441,35 @@ impl BoincControl {
             cvar: Condvar::new(),
         });
 
-        if mmap_path
+        let has_mmap = mmap_path
             .metadata()
-            .is_ok_and(|m| m.is_file() && m.len() >= SHARED_MEM_SIZE as u64)
-        {
-            poll_mmap_once(&mmap_path, &inner, heartbeat_timeout, no_heartbeat_check);
+            .is_ok_and(|m| m.is_file() && m.len() >= SHARED_MEM_SIZE as u64);
+        #[cfg(windows)]
+        let should_poll = has_mmap || win_shm.is_some();
+        #[cfg(not(windows))]
+        let should_poll = has_mmap;
+
+        if should_poll {
+            #[cfg(windows)]
+            if let Some(ref shm) = win_shm {
+                poll_win_shmem_once(shm, &inner);
+            }
+            if has_mmap {
+                poll_mmap_once(&mmap_path, &inner, heartbeat_timeout, no_heartbeat_check);
+            } else {
+                check_heartbeat_timeout(&inner, heartbeat_timeout, no_heartbeat_check);
+            }
             let weak = Arc::downgrade(&inner);
             let _ = std::thread::Builder::new()
                 .name("boinc-mmap-control".into())
                 .spawn(move || {
                     while let Some(shared) = weak.upgrade() {
+                        #[cfg(windows)]
+                        if let Some(ref shm) = win_shm {
+                            poll_win_shmem_once(shm, &shared);
+                        }
                         poll_mmap_once(&mmap_path, &shared, heartbeat_timeout, no_heartbeat_check);
+                        check_heartbeat_timeout(&shared, heartbeat_timeout, no_heartbeat_check);
                         if shared
                             .state
                             .lock()
@@ -287,6 +542,67 @@ impl BoincControl {
     }
 }
 
+fn apply_process_control_message(inner: &BoincControlInner, msg: &str) {
+    if let Ok(mut s) = inner.state.lock() {
+        if msg.contains("<quit") {
+            s.quit_requested = true;
+            s.suspended = false;
+            s.dispatch_child(ChildAction::Terminate);
+            inner.cvar.notify_all();
+        } else if msg.contains("<abort") {
+            s.abort_requested = true;
+            s.suspended = false;
+            s.dispatch_child(ChildAction::Terminate);
+            inner.cvar.notify_all();
+        } else if msg.contains("<suspend") {
+            s.suspended = true;
+            s.dispatch_child(ChildAction::Suspend);
+            inner.cvar.notify_all();
+        } else if msg.contains("<resume") {
+            s.suspended = false;
+            s.last_heartbeat = Instant::now();
+            s.dispatch_child(ChildAction::Resume);
+            inner.cvar.notify_all();
+        }
+    }
+}
+
+fn apply_heartbeat_message(inner: &BoincControlInner) {
+    if let Ok(mut s) = inner.state.lock() {
+        s.last_heartbeat = Instant::now();
+        s.heartbeat_enabled = true;
+    }
+}
+
+fn check_heartbeat_timeout(
+    inner: &BoincControlInner,
+    heartbeat_timeout: Duration,
+    no_heartbeat_check: bool,
+) {
+    if let Ok(mut s) = inner.state.lock() {
+        if !no_heartbeat_check
+            && s.heartbeat_enabled
+            && !s.suspended
+            && !s.heartbeat_lost
+            && s.last_heartbeat.elapsed() > heartbeat_timeout
+        {
+            s.heartbeat_lost = true;
+            s.dispatch_child(ChildAction::Terminate);
+            inner.cvar.notify_all();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn poll_win_shmem_once(shm: &WinShmem, inner: &BoincControlInner) {
+    if let Some(msg) = shm.poll_process_control() {
+        apply_process_control_message(inner, &msg);
+    }
+    if shm.poll_heartbeat().is_some() {
+        apply_heartbeat_message(inner);
+    }
+}
+
 fn poll_mmap_once(
     mmap_path: &Path,
     inner: &BoincControlInner,
@@ -326,28 +642,7 @@ fn poll_mmap_once(
             let _ = file.write_all(&[0u8]);
             let _ = file.sync_data();
         }
-        if let Ok(mut s) = inner.state.lock() {
-            if msg.contains("<quit") {
-                s.quit_requested = true;
-                s.suspended = false;
-                s.dispatch_child(ChildAction::Terminate);
-                inner.cvar.notify_all();
-            } else if msg.contains("<abort") {
-                s.abort_requested = true;
-                s.suspended = false;
-                s.dispatch_child(ChildAction::Terminate);
-                inner.cvar.notify_all();
-            } else if msg.contains("<suspend") {
-                s.suspended = true;
-                s.dispatch_child(ChildAction::Suspend);
-                inner.cvar.notify_all();
-            } else if msg.contains("<resume") {
-                s.suspended = false;
-                s.last_heartbeat = Instant::now();
-                s.dispatch_child(ChildAction::Resume);
-                inner.cvar.notify_all();
-            }
-        }
+        apply_process_control_message(inner, &msg);
     }
 
     let mut hb_buf = [0u8; MSG_CHANNEL_SIZE];
@@ -359,24 +654,10 @@ fn poll_mmap_once(
             let _ = file.write_all(&[0u8]);
             let _ = file.sync_data();
         }
-        if let Ok(mut s) = inner.state.lock() {
-            s.last_heartbeat = Instant::now();
-            s.heartbeat_enabled = true;
-        }
+        apply_heartbeat_message(inner);
     }
 
-    if let Ok(mut s) = inner.state.lock() {
-        if !no_heartbeat_check
-            && s.heartbeat_enabled
-            && !s.suspended
-            && !s.heartbeat_lost
-            && s.last_heartbeat.elapsed() > heartbeat_timeout
-        {
-            s.heartbeat_lost = true;
-            s.dispatch_child(ChildAction::Terminate);
-            inner.cvar.notify_all();
-        }
-    }
+    check_heartbeat_timeout(inner, heartbeat_timeout, no_heartbeat_check);
 }
 
 /// Writes a BOINC `MSG_CHANNEL` frame (`byte[0] = 1`, `byte[1..]` = NUL-terminated XML)
@@ -1219,6 +1500,59 @@ mod tests {
         assert_eq!(mmap.metadata().unwrap().len(), SHARED_MEM_SIZE as u64);
 
         write_mmap_channel(&mmap, PROCESS_CONTROL_REQUEST_OFFSET, "<quit/>").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while control.should_exit().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(control.should_exit(), Some("quit"));
+    }
+
+    #[test]
+    fn parse_comm_obj_name_extracts_segment_name() {
+        assert_eq!(
+            parse_comm_obj_name(
+                "<app_init_data>\n<comm_obj_name>boinc_usnm_0</comm_obj_name>\n</app_init_data>"
+            ),
+            Some("boinc_usnm_0".to_string())
+        );
+        assert_eq!(
+            parse_comm_obj_name("<app_init_data><comm_obj_name>  </comm_obj_name></app_init_data>"),
+            None
+        );
+        assert_eq!(parse_comm_obj_name("<app_init_data/>"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_comm_obj_name_shared_memory_controls_lifecycle() {
+        let tmp = TestDir::new("win-comm-obj");
+        let slot = tmp.path();
+        let seg_name = format!("boinc_usnm_test_{}", std::process::id());
+        let client_shm = WinShmem::attach_or_create(&seg_name, true).unwrap();
+        std::fs::write(
+            slot.join("init_data.xml"),
+            format!("<app_init_data><comm_obj_name>{seg_name}</comm_obj_name></app_init_data>\n"),
+        )
+        .unwrap();
+
+        client_shm
+            .write_channel(PROCESS_CONTROL_REQUEST_OFFSET, "<suspend/>")
+            .unwrap();
+        let control = BoincControl::start(slot);
+        assert!(control.is_suspended());
+
+        client_shm
+            .write_channel(PROCESS_CONTROL_REQUEST_OFFSET, "<resume/>")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while control.is_suspended() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!control.is_suspended());
+
+        client_shm
+            .write_channel(PROCESS_CONTROL_REQUEST_OFFSET, "<quit/>")
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while control.should_exit().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
