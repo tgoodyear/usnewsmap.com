@@ -15,7 +15,6 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -32,7 +31,7 @@ use usnm_ocr_contract::engine::{
 
 use crate::engine::{
     checked, podman_command, tail, ContainerGuard, Engine, EngineError, EngineOutput, Limits,
-    PageDir, Remote, Sandbox, ENGINE_USER, ROUTE, ROUTE_VERSION,
+    PageDir, ReadInfo, Remote, Sandbox, ENGINE_USER, ROUTE, ROUTE_VERSION,
 };
 
 /// The label on instance containers, so stale ones can be found.
@@ -123,6 +122,8 @@ struct Instance {
     sandbox: Option<Sandbox>,
     cleanups: Cleanups,
     jobs: u32,
+    /// Start to `hello`.
+    load_seconds: f64,
 }
 
 impl std::fmt::Debug for Instance {
@@ -283,7 +284,6 @@ pub struct ContractEngine {
     slots: tokio::sync::Semaphore,
     source: String,
     image: Digest,
-    runs: AtomicU64,
     cleanups: Cleanups,
 }
 
@@ -328,7 +328,6 @@ impl ContractEngine {
             sandbox,
             image,
             opts,
-            runs: AtomicU64::new(0),
             cleanups,
         })
     }
@@ -361,6 +360,53 @@ impl ContractEngine {
         Ok(t.to_string())
     }
 
+    /// The runs record's engine fields for a read on `inst` with
+    /// `profile` that answered `result`.
+    fn read_info(&self, inst: &Instance, profile: &str, result: &PageResult) -> ReadInfo {
+        let h = &inst.hello;
+        let image_ref = match &self.opts.launch {
+            Launch::Podman { image, .. } => image.clone(),
+            Launch::Local { .. } => "local".to_owned(),
+        };
+        let shas: BTreeMap<&str, &str> = h
+            .models
+            .iter()
+            .map(|m| (m.name.as_str(), m.sha256.as_str()))
+            .collect();
+        let models = h.profile(profile).and_then(|p| {
+            crate::engine::models_full(
+                p.models
+                    .iter()
+                    .map(|m| (m.as_str(), shas.get(m.as_str()).copied())),
+            )
+        });
+        let (models_digest, models_json) =
+            models.unwrap_or_else(|| ("local".to_owned(), "{}".to_owned()));
+        let cold_start = inst.jobs == 0;
+        ReadInfo {
+            engine_id: h.engine.id.clone(),
+            adapter: format!(
+                "{} {} ({})",
+                h.adapter.name, h.adapter.version, h.adapter.lang
+            ),
+            image_digest: crate::engine::image_digest(&image_ref),
+            image_ref,
+            models_digest,
+            models_json,
+            // The worker sends no options until routes carry them.
+            options_json: "{}".into(),
+            models_loaded: match h.models_loaded {
+                usnm_ocr_contract::engine::ModelsLoaded::AtStart => "at_start",
+                usnm_ocr_contract::engine::ModelsLoaded::PerPage => "per_page",
+            },
+            cold_start,
+            model_load_seconds: cold_start.then_some(inst.load_seconds),
+            markup: result.markup.as_str(),
+            engine_stats_json: serde_json::to_string(&result.engine_stats)
+                .unwrap_or_else(|_| "{}".into()),
+        }
+    }
+
     async fn instance(&self) -> anyhow::Result<Instance> {
         if let Some(i) = self.idle.lock().ok().and_then(|mut v| v.pop()) {
             return Ok(i);
@@ -383,19 +429,21 @@ impl ContractEngine {
         }
     }
 
-    async fn read(
+    async fn read_page(
         &self,
         inst: &mut Instance,
         image: &Path,
         language: &str,
         profile: &str,
+        run_id: &str,
     ) -> Result<EngineOutput, PageError> {
-        let n = self.runs.fetch_add(1, Ordering::Relaxed);
-        let run_id = format!(
-            "{}.{}{n}",
-            self.opts.node,
-            chrono::Utc::now().format("%Y%m%dT%H%M%S%6fZ")
-        );
+        let run_id = run_id.to_owned();
+        // The scan's and the page directory's names come from it.
+        if run_id.is_empty() || run_id.contains(['/', '\\']) || run_id.starts_with('.') {
+            return Err(PageError::Keep(EngineError::Failed(anyhow::anyhow!(
+                "a run id that can't name a file: {run_id:?}"
+            ))));
+        }
         // Failures before the engine sees the page aren't the instance's.
         let keep = |e: anyhow::Error| PageError::Keep(EngineError::Failed(e));
         let bytes = tokio::fs::read(image)
@@ -657,6 +705,7 @@ impl ContractEngine {
                 Layout::Boxes => "boxes.json",
             },
             engine,
+            read: self.read_info(inst, profile, &result),
         };
         Ok(out)
     }
@@ -822,6 +871,7 @@ async fn spawn(
     sandbox: Option<&Sandbox>,
     cleanups: &Cleanups,
 ) -> anyhow::Result<Instance> {
+    let started = std::time::Instant::now();
     let threads = opts.threads.max(1).to_string();
     let (mut cmd, dirs, container) = match (&opts.launch, sandbox) {
         (
@@ -976,10 +1026,12 @@ async fn spawn(
         sandbox: sandbox.cloned(),
         cleanups: cleanups.clone(),
         jobs: 0,
+        load_seconds: 0.0,
     };
     match read_hello(&mut inst, opts.start_timeout).await {
         Ok(h) => {
             inst.hello = h;
+            inst.load_seconds = started.elapsed().as_secs_f64();
             Ok(inst)
         }
         Err(e) => {
@@ -1128,7 +1180,18 @@ impl Engine for ContractEngine {
         &self,
         image: &Path,
         language: &str,
+        work: &Path,
+    ) -> Result<EngineOutput, EngineError> {
+        let run_id = crate::provenance::mint_run_id(&self.opts.node);
+        self.read(image, language, work, &run_id).await
+    }
+
+    async fn read(
+        &self,
+        image: &Path,
+        language: &str,
         _work: &Path,
+        run_id: &str,
     ) -> Result<EngineOutput, EngineError> {
         let profile = self
             .profile(language)
@@ -1140,7 +1203,10 @@ impl Engine for ContractEngine {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut inst = self.instance().await?;
-        match self.read(&mut inst, image, language, &profile).await {
+        match self
+            .read_page(&mut inst, image, language, &profile, run_id)
+            .await
+        {
             Ok(out) => {
                 self.give_back(inst).await;
                 Ok(out)

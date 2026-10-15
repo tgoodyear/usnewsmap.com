@@ -67,6 +67,12 @@ pub enum Reject {
     ImageUrl,
     /// Check 6.
     Alto(usnm_alto::AltoError),
+    /// Check 7: the runs record is over 1 MiB, fails the strict reader,
+    /// names another run or page, or its selected row another engine.
+    RunsTooLarge,
+    RunsUnreadable,
+    RunsMismatch,
+    RunsEngine,
     /// A dead letter that fails its schema.
     DeadLetter(&'static str),
 }
@@ -96,6 +102,10 @@ impl Reject {
             Reject::TitleJapanese => "title_japanese",
             Reject::ImageUrl => "image_url",
             Reject::Alto(e) => e.code(),
+            Reject::RunsTooLarge => "runs_too_large",
+            Reject::RunsUnreadable => "runs_unreadable",
+            Reject::RunsMismatch => "runs_mismatch",
+            Reject::RunsEngine => "runs_engine",
             Reject::DeadLetter(why) => {
                 // DeadLetterError's texts, as codes.
                 let code: String = why
@@ -166,6 +176,57 @@ pub fn parse_part_name(path: &str) -> Option<PartName> {
 /// The ALTO path in `ocr-out` that goes with a part's row.
 pub fn source_alto_path(doc_id: &str, name: &PartName) -> String {
     format!("alto/{doc_id}.{}.{}.xml", name.node, name.stamp)
+}
+
+impl PartName {
+    /// `<lccn>_<YYYY-MM-DD>_ed-<n>`.
+    pub fn issue(&self) -> String {
+        format!(
+            "{}_{}_ed-{}",
+            self.lccn,
+            self.date.format("%Y-%m-%d"),
+            self.edition
+        )
+    }
+
+    /// The node's `run_id`, `<node>.<stamp>` (13 §13.8.4).
+    pub fn run_id(&self) -> String {
+        format!("{}.{}", self.node, self.stamp)
+    }
+}
+
+/// The runs record in `ocr-out` that goes with a part (13 §13.8.3).
+pub fn source_runs_path(name: &PartName) -> String {
+    usnm_ocr_contract::runs::path(&name.issue(), &name.run_id())
+}
+
+/// Check 7 on a runs record's bytes (its size passed check 1): the strict
+/// reader, the part's `run_id` and `doc_id` on every row, and the
+/// selected row's `ocr_engine` the part's (which check 5 passed, so it has
+/// no `image=local`).
+pub fn check_runs(
+    bytes: Vec<u8>,
+    name: &PartName,
+    row: &NodeRow,
+) -> Result<Vec<usnm_ocr_contract::runs::RunRecord>, Reject> {
+    let rows = usnm_ocr_contract::runs::read(bytes::Bytes::from(bytes))
+        .map_err(|_| Reject::RunsUnreadable)?;
+    let (run_id, doc_id) = (name.run_id(), row.key.doc_id());
+    if rows
+        .iter()
+        .any(|r| r.run_id != run_id || r.doc_id != doc_id || r.node != name.node)
+    {
+        return Err(Reject::RunsMismatch);
+    }
+    // The reader checked there is exactly one.
+    let selected = rows
+        .iter()
+        .find(|r| r.selected)
+        .ok_or(Reject::RunsMismatch)?;
+    if selected.ocr_engine != row.ocr_engine || !engine_tag_ok(&selected.ocr_engine) {
+        return Err(Reject::RunsEngine);
+    }
+    Ok(rows)
 }
 
 /// What the checks need besides the part.

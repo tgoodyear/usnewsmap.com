@@ -863,6 +863,13 @@ A new create-only object, `runs/<lccn>_<date>_ed-<n>.<run_id>.parquet`, with Par
 - **Times.** The node writes only its own clock, as `node_finished_at`. `ocred_at` is the server's creation time of the page's part blob, as 12 Step 8 sets it for the overlay row; `ocr-sync` adds it as a column when it writes the runs record to `curated/ocr-local/runs/`, so both records carry the same `ocred_at`.
 - **ocr-sync's check.** 12 Step 8 check 7 takes `ocr_engine` from the selected row, requires it to equal the part's `ocr_engine`, and refuses it when it carries `image=local`.
 
+Built in #307 (step 8 of §13.11, the issue's item 6), with these limits:
+
+- **One row.** The worker mints the `run_id` (`provenance::mint_run_id`, strictly increasing per process) before the engine call, passes it to an engine behind the contract as the request's `run_id`, names the page's three outputs with it, and writes the kept read as the record's only row (`selected`, `selection` `route`, rank 0). Candidates that answered `unsupported` and a cascade's other read come with routing (§13.7, #371).
+- **What's known.** `routing_digest` is null and `options_json` holds the worker's own options (`dpi`, `psm` for direct Tesseract), until routes and `engines.toml` exist (#371). Direct Tesseract reports its Podman image reference as `image_ref` and `local` for a host binary; its `models_digest` and `models_json` come from `ocr/engines/tesseract/models.lock` for the profile's models. An engine behind the contract reports `hello`'s adapter, models and `models_loaded`, the result's `markup` and `engine_stats`, and `model_load_seconds` from spawn to `hello` on its cold start. `seconds_cpu`, the memory columns and `script` are null, `dpi_source` is `assumed`, and `damage_after` is the forced-language score of the stored text (null for a language with no word list).
+- **Stored ALTO.** The settings carry `image`, `models`, `profile`, `options`, `route`, `routing=r<N>` (no digest yet), `contract`, `adapter`, `run_id`, `input_sha256` and `damage_before`, after the full `ocr_engine` tag.
+- **Reads that write nothing** don't go to an `ocr_engine_run` event yet.
+
 ### 13.8.4 What stays the same
 
 - The overlay keeps its 16 columns, so `ja-ocr`'s Python writer and `usnm_overlay::read_part` don't change.

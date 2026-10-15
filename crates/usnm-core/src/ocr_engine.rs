@@ -161,6 +161,18 @@ impl OcrEngineTag {
         &self.models
     }
 
+    pub fn route(&self) -> &str {
+        &self.route
+    }
+
+    pub fn route_version(&self) -> u32 {
+        self.route_version
+    }
+
+    pub fn contract(&self) -> u32 {
+        self.contract
+    }
+
     fn check(&self) -> Result<(), TagError> {
         if !is_id(&self.family) {
             return Err(TagError("bad family"));

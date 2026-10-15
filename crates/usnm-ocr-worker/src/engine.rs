@@ -27,6 +27,90 @@ pub struct EngineOutput {
     /// and route, e.g. `tesseract/5.5.0 profile=frak2021 image=sha256:…
     /// models=sha256:… route=minimal@r1 contract=0`.
     pub engine: String,
+    /// What the runs record and the stored ALTO say about the read that
+    /// only the engine knows (13 §13.8.2, §13.8.3).
+    pub read: ReadInfo,
+}
+
+/// The engine's side of a read's provenance (13 §13.8.3's Engine,
+/// Artifacts, Configuration and Resources groups). The worker adds what it
+/// knows itself: the page, the times and the layout counts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadInfo {
+    /// The engine's id (`engines.toml`, or `hello`'s `engine.id`).
+    pub engine_id: String,
+    /// `<name> <version> (<lang>)`: the contract adapter, or the worker
+    /// itself when it runs the engine directly.
+    pub adapter: String,
+    /// `<registry>/usnm-ocr/<family>@sha256:<digest>`, `sha256:<id>`, or
+    /// `local` (a host binary or a local adapter).
+    pub image_ref: String,
+    /// `sha256:<64 hex>`, or `local`.
+    pub image_digest: String,
+    /// `sha256:<64 hex>` of the profile's models as sorted
+    /// `<name> <sha256>` lines, or `local`.
+    pub models_digest: String,
+    /// The profile's model files and their sha256s, as a JSON object.
+    pub models_json: String,
+    /// The options the engine read with, as a JSON object, keys sorted.
+    pub options_json: String,
+    /// `per_page` or `at_start`.
+    pub models_loaded: &'static str,
+    /// The read started the engine (a container per page, or a new
+    /// instance).
+    pub cold_start: bool,
+    /// Start to `hello`, for a cold start of a long-lived instance.
+    pub model_load_seconds: Option<f64>,
+    /// `none` or `html` (13 §13.4.4).
+    pub markup: &'static str,
+    /// The adapter's `engine_stats`, as a JSON object, keys sorted.
+    pub engine_stats_json: String,
+}
+
+impl ReadInfo {
+    /// An engine with nothing to say (tests, `ocr-file`).
+    pub fn local(engine_id: &str) -> Self {
+        Self {
+            engine_id: engine_id.to_owned(),
+            adapter: format!("usnm-ocr-worker {} (rust)", crate::stored::worker_version()),
+            image_ref: "local".into(),
+            image_digest: "local".into(),
+            models_digest: "local".into(),
+            models_json: "{}".into(),
+            options_json: "{}".into(),
+            models_loaded: "per_page",
+            cold_start: true,
+            model_load_seconds: None,
+            markup: "none",
+            engine_stats_json: "{}".into(),
+        }
+    }
+}
+
+/// `sha256:<64 hex>` from an image reference pinned by digest
+/// (`<name>@sha256:<digest>` or `sha256:<id>`), else `local`.
+pub fn image_digest(image: &str) -> String {
+    match image.rsplit_once("sha256:") {
+        Some((_, h)) if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            format!("sha256:{}", h.to_ascii_lowercase())
+        }
+        _ => "local".into(),
+    }
+}
+
+/// A profile's models as 13 §13.8.1 digests them: their sorted
+/// `<name> <sha256>` lines' full sha256 (`sha256:<64 hex>`) and a JSON
+/// object of name to sha256. None when a model has no known sha256.
+pub fn models_full<'a>(
+    models: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Option<(String, String)> {
+    let mut map = std::collections::BTreeMap::new();
+    for (name, sum) in models {
+        map.insert(name, sum?);
+    }
+    let lines: String = map.iter().map(|(n, s)| format!("{n} {s}\n")).collect();
+    let digest = format!("sha256:{}", crate::prefetch::sha256(lines.as_bytes()));
+    Some((digest, serde_json::to_string(&map).ok()?))
 }
 
 /// Tesseract exited unsuccessfully on a page (not a timeout or a kill for
@@ -98,6 +182,19 @@ pub trait Engine: Send + Sync + std::fmt::Debug {
         language: &str,
         work: &Path,
     ) -> Result<EngineOutput, EngineError>;
+    /// [`Engine::ocr`] for the worker's page `run_id` (13 §13.4.3), minted
+    /// before the engine call: an engine behind the contract sends it to
+    /// its adapter, so the protocol, the logs and the outputs share it.
+    async fn read(
+        &self,
+        image: &Path,
+        language: &str,
+        work: &Path,
+        run_id: &str,
+    ) -> Result<EngineOutput, EngineError> {
+        let _ = run_id;
+        self.ocr(image, language, work).await
+    }
 }
 
 /// The route in every `ocr_engine` tag the worker writes (13 §13.8.1):
@@ -969,6 +1066,29 @@ pub fn models_digest(lock: &str, profile: &str) -> Option<Digest> {
     Digest::short(&hex).ok()
 }
 
+/// A Tesseract profile's model files and their sha256s from `models.lock`,
+/// as [`models_full`] gives them; none when a model isn't in the lock.
+pub fn models_from_lock(lock: &str, profile: &str) -> Option<(String, String)> {
+    let entries: std::collections::BTreeMap<&str, &str> = lock
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let (name, _url, sum) = (f.next()?, f.next()?, f.next()?);
+            Some((name, sum))
+        })
+        .collect();
+    let names: Vec<String> = profile
+        .split('+')
+        .map(|m| format!("tessdata/{m}.traineddata"))
+        .collect();
+    models_full(
+        names
+            .iter()
+            .map(|n| (n.as_str(), entries.get(n.as_str()).copied())),
+    )
+}
+
 /// Size caps on an engine's files (13 §13.4.7).
 const MAX_TEXT: u64 = 8 << 20;
 const MAX_ALTO: u64 = 64 << 20;
@@ -1187,7 +1307,29 @@ impl Tesseract {
                     )
                 })?
                 .to_string(),
+            read: self.read_info(models),
         })
+    }
+
+    /// The runs record's engine fields for a read with `profile`: the
+    /// worker runs Tesseract itself, a container (or a process) per page.
+    pub fn read_info(&self, profile: &str) -> ReadInfo {
+        let (image_ref, models) = match &self.runner {
+            Runner::Podman { image, .. } => (image.clone(), models_from_lock(MODELS_LOCK, profile)),
+            Runner::Host(_) => ("local".to_owned(), None),
+        };
+        let (models_digest, models_json) =
+            models.unwrap_or_else(|| ("local".to_owned(), "{}".to_owned()));
+        let minor: Vec<&str> = self.version.split('.').take(2).collect();
+        ReadInfo {
+            engine_id: format!("tesseract-{}", minor.join(".")),
+            image_digest: image_digest(&image_ref),
+            image_ref,
+            models_digest,
+            models_json,
+            options_json: serde_json::json!({ "dpi": self.dpi, "psm": self.psm }).to_string(),
+            ..ReadInfo::local("tesseract")
+        }
     }
 }
 

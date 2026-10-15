@@ -22,6 +22,7 @@ use usnm_store::ObjectStore;
 /// What a reject was.
 pub const PART: &str = "part";
 pub const ALTO: &str = "alto";
+pub const RUNS: &str = "runs";
 pub const DEAD_LETTER: &str = "deadletter";
 
 /// The container's one top-level folder.
@@ -32,7 +33,7 @@ pub const TOP: &str = "rejects";
 #[serde(deny_unknown_fields)]
 pub struct Record {
     pub reason: String,
-    /// [`PART`], [`ALTO`] or [`DEAD_LETTER`].
+    /// [`PART`], [`ALTO`], [`RUNS`] or [`DEAD_LETTER`].
     pub kind: String,
     /// The path in `ocr-out`, or the dead letter's message id.
     pub source: String,
@@ -123,6 +124,7 @@ pub async fn put(quarantine: &dyn ObjectStore, run: &str, item: Item) -> anyhow:
 pub struct Replayed {
     pub parts: usize,
     pub alto: usize,
+    pub runs: usize,
     pub dead_letters: usize,
     /// Records with no content to put back (over a size limit).
     pub without_content: usize,
@@ -173,17 +175,17 @@ pub async fn replay(
                 queue.send(DEADLETTER, &text).await?;
                 report.dead_letters += 1;
             }
-            PART | ALTO => {
-                let ct = if record.kind == PART {
-                    "application/vnd.apache.parquet"
-                } else {
+            PART | ALTO | RUNS => {
+                let ct = if record.kind == ALTO {
                     "application/xml"
+                } else {
+                    "application/vnd.apache.parquet"
                 };
                 if out.put_new(&record.source, bytes.clone(), ct).await? {
-                    if record.kind == PART {
-                        report.parts += 1;
-                    } else {
-                        report.alto += 1;
+                    match record.kind.as_str() {
+                        PART => report.parts += 1,
+                        ALTO => report.alto += 1,
+                        _ => report.runs += 1,
                     }
                 } else if out.get(&record.source).await?.as_deref() == Some(bytes.as_slice()) {
                     report.already_there += 1;
