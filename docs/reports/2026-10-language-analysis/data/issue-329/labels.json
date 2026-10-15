@@ -1,0 +1,3820 @@
+[
+  {
+    "language": "cze",
+    "word": "ae",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tt",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "íi",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "io",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "eo",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "ui",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "žo",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jj",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "pru",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "ua",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "bv",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jm",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tli",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "bt",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "pn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "aa",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tii",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tk",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "vt",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "bl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "dm",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "iri",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jii",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "oa",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "vh",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "íe",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "žc",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "ee",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "kd",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "pii",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "vf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "clo",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "dt",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jk",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jsk",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jv",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nb",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nii",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nli",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nt",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "pk",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jfd",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jll",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jfj",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jff",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tlf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tjl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nll",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jct",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jtl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "ttf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jcr",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jtk",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jfl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jnl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jfe",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "pll",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jjko",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "prnl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "tnl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jlc",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "utt",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "nft",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "vvf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "vft",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "svf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "vtt",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "vvt",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "word": "jstm",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "jc",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "đa",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "aa",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "đo",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ođ",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ee",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ae",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "koii",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "sc",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "dk",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ffe",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ffodine",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "gadine",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ibi",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ijl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "jcš",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "jf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "jje",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "jji",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "jjj",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "js",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "kojf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "nc",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "nnn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "nvn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ss",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "stf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "tc",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ttf",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "ue",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "vni",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "vz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "xe",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "štp",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "hrv",
+    "word": "žto",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "ss",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "js",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kojn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "ns",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "bn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "dz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "zz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "aln",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nli",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "dd",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nnje",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kojs",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kojp",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "dl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "lz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "pz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "godnne",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nh",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "sz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nm",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "np",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kzo",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "iln",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nln",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "bp",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "jv",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "mz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "zl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kio",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kojc",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "oi",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "sne",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "sg",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "ij",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "ld",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "oe",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "snn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kz",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "pd",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "ua",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nijs",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kzko",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "knko",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "svc",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "godipe",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "štp",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "nnn",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kojnj",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kojv",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kojl",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "kpji",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "srp",
+    "word": "godpne",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нс",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нра",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "ото",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "ныо",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нм",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "эго",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "иа",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нх",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нз",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "зт",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нп",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нй",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нйе",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "егс",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нто",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "чго",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "кже",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "лто",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "зпа",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "нро",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "лсе",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "rus",
+    "word": "ддя",
+    "label": "likely_ocr_error",
+    "confidence": "medium",
+    "reason": "Malformed form in the concordance; likely character recognition or segmentation error. Not individually scan-verified."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1237,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1269,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1287,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1393,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1659,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1864,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1868,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1913,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2003,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2007,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2081,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2091,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2231,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2529,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2539,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2574,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2650,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2680,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2709,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2734,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2743,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 526,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 686,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1262,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1271,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1277,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1330,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1398,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1406,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1411,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1628,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1685,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1693,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1704,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1904-12-01_ed-1_seq-4",
+    "word_index": 94,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1904-12-01_ed-1_seq-4",
+    "word_index": 889,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045348_1905-09-13_ed-1_seq-15",
+    "word_index": 1556,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045348_1905-09-13_ed-1_seq-15",
+    "word_index": 1662,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045348_1908-09-23_ed-1_seq-3",
+    "word_index": 324,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 20,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 32,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 188,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 898,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 917,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1493,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1924,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1317,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1483,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1645,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1709,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1723,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1728,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1805,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1951,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2058,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2143,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2265,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2325,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2373,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2429,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2556,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2642,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2671,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2696,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 322,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 332,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1460,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83035546_1874-10-20_ed-1_seq-1",
+    "word_index": 2323,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 23,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 358,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 373,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 379,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 919,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1074,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1961,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1210,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1244,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1246,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1449,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1518,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1522,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1656,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1718,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1774,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1812,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2072,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2078,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2149,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2193,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2275,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2345,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2397,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2440,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2446,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2488,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2525,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2570,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2629,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2645,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2675,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2740,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2824,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2847,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1243,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 1521,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2077,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2439,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2730,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1904-12-01_ed-1_seq-4",
+    "word_index": 351,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1904-12-01_ed-1_seq-4",
+    "word_index": 640,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1904-12-01_ed-1_seq-4",
+    "word_index": 790,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1904-12-01_ed-1_seq-4",
+    "word_index": 845,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 777,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 800,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn90059424_1913-02-13_ed-1_seq-2",
+    "word_index": 1019,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045434_1925-03-27_ed-1_seq-6",
+    "word_index": 2605,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045348_1906-07-25_ed-1_seq-13",
+    "word_index": 1229,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045348_1917-08-22_ed-1_seq-11",
+    "word_index": 952,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045348_1917-08-22_ed-1_seq-11",
+    "word_index": 1041,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 630,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 669,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 769,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 821,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 882,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1350,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1380,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1399,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1451,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1656,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1658,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1660,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1662,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "cze",
+    "doc_id": "sn83045068_1923-02-19_ed-1_seq-4",
+    "word_index": 1667,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "pí. is the conventional abbreviation of paní (Mrs), used before a woman’s name."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1954-12-22_ed-1_seq-3",
+    "word_index": 824,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1955-12-14_ed-1_seq-6",
+    "word_index": 2470,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1956-02-01_ed-1_seq-6",
+    "word_index": 1449,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1956-02-01_ed-1_seq-6",
+    "word_index": 2606,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1957-04-24_ed-1_seq-12",
+    "word_index": 2851,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1958-02-19_ed-1_seq-5",
+    "word_index": 2785,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1958-02-19_ed-1_seq-5",
+    "word_index": 2791,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1958-02-19_ed-1_seq-5",
+    "word_index": 2907,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1954-04-14_ed-1_seq-1",
+    "word_index": 222,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1956-02-01_ed-1_seq-6",
+    "word_index": 3199,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1957-07-10_ed-1_seq-3",
+    "word_index": 1208,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1958-03-26_ed-1_seq-3",
+    "word_index": 1100,
+    "label": "valid",
+    "confidence": "high",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83045377_1906-09-01_ed-1_seq-2",
+    "word_index": 684,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Archaic/adversative nu (“but”), grammatical here; not the suggested na."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83045377_1906-09-01_ed-1_seq-2",
+    "word_index": 1251,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Archaic/adversative nu (“but”), grammatical here; not the suggested na."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83035526_1941-05-29_ed-1_seq-2",
+    "word_index": 543,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid inflected verb in da se bije (“to fight”)."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83035526_1941-05-29_ed-1_seq-2",
+    "word_index": 570,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid inflected verb in da se bije (“to fight”)."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83035526_1941-05-29_ed-1_seq-2",
+    "word_index": 3306,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid directional interrogative/relative kamo (“where to”)."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1956-11-21_ed-1_seq-4",
+    "word_index": 2144,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid directional interrogative/relative kamo (“where to”)."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83035526_1941-05-29_ed-1_seq-2",
+    "word_index": 475,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Religious title fra before Girard, not an error for da."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83035526_1941-05-29_ed-1_seq-2",
+    "word_index": 1149,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Religious title fra before Girard, not an error for da."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1957-04-24_ed-1_seq-12",
+    "word_index": 2117,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Kajkavian/dialectal kak in quoted dialogue, not an OCR substitution for kao."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1957-04-24_ed-1_seq-12",
+    "word_index": 2138,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Kajkavian/dialectal kak in quoted dialogue, not an OCR substitution for kao."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83035526_1942-09-24_ed-1_seq-4",
+    "word_index": 825,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid fali (“is missing/lacking”) in context."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1956-08-01_ed-1_seq-4",
+    "word_index": 1834,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid fali (“is missing/lacking”) in context."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83035526_1944-04-27_ed-1_seq-3",
+    "word_index": 984,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Karlo Marks: valid personal name, not kako."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1957-04-24_ed-1_seq-12",
+    "word_index": 1984,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid se kosi sa (“conflicts with”), an inflected verb."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn84024547_1957-04-24_ed-1_seq-12",
+    "word_index": 2310,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid plural/genitive land-measure form rali after sedam."
+  },
+  {
+    "language": "hrv",
+    "doc_id": "sn83045377_1906-09-01_ed-1_seq-2",
+    "word_index": 1084,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Archaic adversative pako (“however”) in context."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 2012,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-07-03_ed-1_seq-4",
+    "word_index": 1431,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1945-02-07_ed-1_seq-4",
+    "word_index": 1610,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 107,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 144,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 409,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 584,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 1630,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 657,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 809,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 863,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 1063,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 1069,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 1168,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2335,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2375,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2401,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2436,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2481,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2510,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1953-05-25_ed-1_seq-3",
+    "word_index": 1805,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1932-05-21_ed-1_seq-4",
+    "word_index": 945,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 303,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 421,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 628,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 1358,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 1360,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-07-03_ed-1_seq-4",
+    "word_index": 1809,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1946-09-11_ed-1_seq-2",
+    "word_index": 1577,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1946-09-11_ed-1_seq-2",
+    "word_index": 1834,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1946-09-11_ed-1_seq-2",
+    "word_index": 1881,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 354,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 528,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 902,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 1212,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-07-03_ed-1_seq-4",
+    "word_index": 1432,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 48,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 153,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 410,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 585,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 1431,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 1537,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 1656,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 658,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 665,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 783,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 871,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 888,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 1064,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 1070,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 1169,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 1184,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2376,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2402,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2437,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2482,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1948-11-22_ed-1_seq-3",
+    "word_index": 2518,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 1329,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 1336,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 1344,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-07-03_ed-1_seq-4",
+    "word_index": 350,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-07-03_ed-1_seq-4",
+    "word_index": 1162,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1936-11-10_ed-1_seq-1",
+    "word_index": 787,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1936-11-10_ed-1_seq-1",
+    "word_index": 1176,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1947-03-21_ed-1_seq-3",
+    "word_index": 1979,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid abbreviation in an address or organizational listing; absent from the scorer exclusion list."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1911-03-02_ed-1_seq-2",
+    "word_index": 1072,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "кал. abbreviates calendar or California in these four contexts."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1932-05-21_ed-1_seq-4",
+    "word_index": 1507,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "кал. abbreviates calendar or California in these four contexts."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1933-12-08_ed-1_seq-4",
+    "word_index": 1522,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "кал. abbreviates calendar or California in these four contexts."
+  },
+  {
+    "language": "srp",
+    "doc_id": "sn85055101_1934-04-23_ed-1_seq-4",
+    "word_index": 964,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "кал. abbreviates calendar or California in these four contexts."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 1099,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 1200,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 1776,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 1829,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 2158,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-03-11_ed-1_seq-1",
+    "word_index": 280,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-03-11_ed-1_seq-1",
+    "word_index": 506,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-09-12_ed-1_seq-6",
+    "word_index": 197,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 669,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 2012,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 2014,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 2108,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 2112,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 2116,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1933-06-22_ed-1_seq-4",
+    "word_index": 175,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1933-06-22_ed-1_seq-4",
+    "word_index": 178,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1933-06-22_ed-1_seq-4",
+    "word_index": 1102,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1933-06-22_ed-1_seq-4",
+    "word_index": 1113,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-03-26_ed-1_seq-1",
+    "word_index": 480,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-03-26_ed-1_seq-1",
+    "word_index": 1039,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-03-26_ed-1_seq-1",
+    "word_index": 1043,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-03-26_ed-1_seq-1",
+    "word_index": 1665,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-03-26_ed-1_seq-1",
+    "word_index": 2004,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-03-26_ed-1_seq-1",
+    "word_index": 2261,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 225,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 268,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 390,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 410,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 599,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 601,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 807,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 809,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 812,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1012,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1064,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1289,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1602,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1899,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1926,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1934,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1937-12-30_ed-1_seq-4",
+    "word_index": 374,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1937-12-30_ed-1_seq-4",
+    "word_index": 896,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1937-12-30_ed-1_seq-4",
+    "word_index": 1723,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1938-03-05_ed-1_seq-1",
+    "word_index": 540,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1938-03-05_ed-1_seq-1",
+    "word_index": 1632,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1938-03-05_ed-1_seq-1",
+    "word_index": 1788,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дол. abbreviates dollars in this monetary context (not the line-broken дол-ларов or дол-жен)."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 1214,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 1808,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-09-08_ed-1_seq-4",
+    "word_index": 129,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-09-08_ed-1_seq-4",
+    "word_index": 154,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-09-12_ed-1_seq-6",
+    "word_index": 99,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 1583,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 1620,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1931-12-18_ed-1_seq-1",
+    "word_index": 1890,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-01-20_ed-1_seq-6",
+    "word_index": 99,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-03-26_ed-1_seq-1",
+    "word_index": 144,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1934-03-26_ed-1_seq-1",
+    "word_index": 1407,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 162,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 174,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 292,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1093,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1095,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1097,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1099,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1937-12-30_ed-1_seq-4",
+    "word_index": 1213,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1937-12-30_ed-1_seq-4",
+    "word_index": 1216,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1926-12-31_ed-1_seq-8",
+    "word_index": 592,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1927-07-19_ed-1_seq-1",
+    "word_index": 1503,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "дж. is a transliterated personal initial or part of a New Jersey address, not a word error."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 167,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid archaic/genitive demonstrative сего in dates and до сего времени; not an error for его."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1929-10-08_ed-1_seq-1",
+    "word_index": 1930,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid archaic/genitive demonstrative сего in dates and до сего времени; not an error for его."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 539,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid archaic/genitive demonstrative сего in dates and до сего времени; not an error for его."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1935-03-18_ed-1_seq-1",
+    "word_index": 1474,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid archaic/genitive demonstrative сего in dates and до сего времени; not an error for его."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1938-04-08_ed-1_seq-3",
+    "word_index": 561,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid archaic/genitive demonstrative сего in dates and до сего времени; not an error for его."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1938-04-08_ed-1_seq-3",
+    "word_index": 610,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid archaic/genitive demonstrative сего in dates and до сего времени; not an error for его."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015743_1938-04-08_ed-1_seq-3",
+    "word_index": 2306,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Valid archaic/genitive demonstrative сего in dates and до сего времени; not an error for его."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015744_1926-05-25_ed-1_seq-2",
+    "word_index": 752,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Жак is a personal/character name in the literary review, not an error for как."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015744_1926-05-25_ed-1_seq-2",
+    "word_index": 1124,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Жак is a personal/character name in the literary review, not an error for как."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015744_1926-05-25_ed-1_seq-2",
+    "word_index": 1148,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Жак is a personal/character name in the literary review, not an error for как."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015744_1926-05-25_ed-1_seq-2",
+    "word_index": 1166,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Жак is a personal/character name in the literary review, not an error for как."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015744_1926-05-25_ed-1_seq-2",
+    "word_index": 1175,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Жак is a personal/character name in the literary review, not an error for как."
+  },
+  {
+    "language": "rus",
+    "doc_id": "sn82015744_1926-05-25_ed-1_seq-2",
+    "word_index": 1520,
+    "label": "valid",
+    "confidence": "medium",
+    "reason": "Жак is a personal/character name in the literary review, not an error for как."
+  }
+]

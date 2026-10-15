@@ -1,0 +1,50 @@
+{
+  "cze": {
+    "pages": 20,
+    "flagged": 2350,
+    "likely_ocr_error": 479,
+    "valid": 133,
+    "unresolved": 1738,
+    "provisional_precision_classified": 0.7826797385620915,
+    "conditional_precision_bounds_all_flags": [
+      0.20382978723404255,
+      0.943404255319149
+    ]
+  },
+  "hrv": {
+    "pages": 20,
+    "flagged": 943,
+    "likely_ocr_error": 64,
+    "valid": 28,
+    "unresolved": 851,
+    "provisional_precision_classified": 0.6956521739130435,
+    "conditional_precision_bounds_all_flags": [
+      0.06786850477200425,
+      0.9703075291622482
+    ]
+  },
+  "srp": {
+    "pages": 20,
+    "flagged": 2863,
+    "likely_ocr_error": 1332,
+    "valid": 69,
+    "unresolved": 1462,
+    "provisional_precision_classified": 0.9507494646680942,
+    "conditional_precision_bounds_all_flags": [
+      0.4652462451973454,
+      0.9758994062172547
+    ]
+  },
+  "rus": {
+    "pages": 20,
+    "flagged": 1475,
+    "likely_ocr_error": 86,
+    "valid": 81,
+    "unresolved": 1308,
+    "provisional_precision_classified": 0.5149700598802395,
+    "conditional_precision_bounds_all_flags": [
+      0.05830508474576271,
+      0.9450847457627118
+    ]
+  }
+}
