@@ -87,10 +87,12 @@ var sidecar = quickwit && !searcherApp && !indexStorageServe
 var searcherOn = quickwit && searcherApp
 var searcherDeployed = quickwit && (searcherApp || searcherAppRetain)
 var indexSearcherOn = quickwit && !empty(indexStorageAccountName)
-// Only the sidecar needs the API's system-assigned identity and index roles.
-// Rollback recreates them; retain the standalone searcher until the new
-// grants have reached Blob and the sidecar revision is ready (#362, #365).
-var apiSystemIdentity = sidecar
+// Drop the API identity only for the permanent standalone-searcher setting.
+// Unlike `sidecar`, this must not depend on indexStorageServe: that cutover
+// keeps the old revision's sidecar and lake grants working (ADR-0021).
+// Rollback recreates the identity and grants; retain the standalone searcher
+// until they reach Blob and the sidecar revision is ready (#362, #365).
+var apiSystemIdentity = quickwit && !searcherApp
 
 // The searcher sidecar's node config, from infra/quickwit/searcher.yaml.
 // CI applies the same file on every deploy (scripts/ci/roll-api.sh), so it
@@ -439,7 +441,8 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
 }
 
 // Read-only, and only the index: the sidecar can't write splits or the
-// metastore, and can't read anything else. Only present in sidecar mode.
+// metastore, and can't read anything else. Retained during index-storage
+// cutover, but removed with the permanent standalone searcher setting.
 resource quickwitIndexReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (apiSystemIdentity) {
   scope: account::blobs::index
   name: guid(account::blobs::index.id, app.id, blobReader)
