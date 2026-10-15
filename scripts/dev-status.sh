@@ -94,6 +94,9 @@ body=$(jq -n --arg from "$from" --arg to "$now" '{
 # (azure.cli.core.util.send_raw_request). Honour retry headers if included in
 # that text; otherwise use exponential backoff, without enabling verbose/debug
 # logging of requests. Never retry sooner than the server asks.
+cost_throttled() {
+  grep -qiE 'Too[[:space:]]*Many[[:space:]]*Requests|^ERROR:[[:space:]]*\(?429([^[:alnum:]_]|$)|HTTP(/[0-9.]+)?[[:space:]]+429([^[:alnum:]_]|$)|"(code|status|statusCode)"[[:space:]]*:[[:space:]]*"?429([^[:alnum:]_]|$)' <<< "$cost"
+}
 cost_query() {
   local attempt=1 waited=0 backoff=2 delay
   while :; do
@@ -102,7 +105,7 @@ cost_query() {
       --body "$body" 2>&1); then
       return 0
     fi
-    if ! grep -qiE '(^|[^0-9])429([^0-9]|$)|Too[[:space:]]*Many[[:space:]]*Requests' <<< "$cost"; then
+    if ! cost_throttled; then
       return 1
     fi
     [ "$attempt" -lt 4 ] || return 1
@@ -141,7 +144,7 @@ if cost_query; then
     | "\((map(.cost) | add // 0) * 100 | round / 100) \(.[0].cur // "")"' <<< "$cost") ||
     die "can't read Cost Management's answer"
   echo "cost since $from: $cost"
-elif grep -qiE '(^|[^0-9])429([^0-9]|$)|Too[[:space:]]*Many[[:space:]]*Requests' <<< "$cost"; then
+elif cost_throttled; then
   echo "warning: cost unknown (Cost Management throttled; retry limit reached): $cost" >&2
 elif grep -qiE 'AuthorizationFailed|RBACAccessDenied|Forbidden|does not have authorization' <<< "$cost"; then
   # Reading costs needs Cost Management Reader; the rest of the check doesn't.

@@ -614,6 +614,8 @@ class DevStatus(Stubbed):
     def test_throttle_then_success_honours_retry_headers(self):
         for error, delay in (
             ('ERROR: Too Many Requests({"error":{"code":"429"}})', 2),
+            ('ERROR: request failed {"error":{"code":"429"}}', 2),
+            ('ERROR: HTTP/1.1 429 throttled', 2),
             ('ERROR: (TooManyRequests) throttled\nRetry-After: 7', 7),
             ('ERROR: 429 {"Retry-After": "09"}', 9),
             ("ERROR: 429 {'x-ms-ratelimit-microsoft.costmanagement-qpu-retry-after': '5', "
@@ -686,6 +688,15 @@ class DevStatus(Stubbed):
         self.assertIn("can't read the cost", r.stderr)
         self.assertEqual(self.retry_delays(), [2])
         self.assertEqual(self.cost_calls(), 2)
+
+    def test_request_id_containing_429_is_not_throttling(self):
+        r = self.status(STUB_COST_ERROR="ERROR: InternalServerError request ID "
+                        "03a429bf-1234-4321-aaaa-123456789abc")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("can't read the cost", r.stderr)
+        self.assertNotIn("cost unknown", r.stderr)
+        self.assertEqual(self.cost_calls(), 1)
+        self.assertEqual(self.retry_delays(), [])
 
     def test_any_other_cost_error_fails(self):
         r = self.status(STUB_STACK="120", STUB_GROUPS="rg-usnm-dev", STUB_TAGS="275\n2026-10-01T12:00:00Z",
