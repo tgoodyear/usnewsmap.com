@@ -15,15 +15,32 @@ export const sources: Sources = {
   ocr_local: { pages: 2, by_engine: [{ source: "usnm-tesseract", engine: "tesseract/5.5.1 eng", pages: 2 }] },
 };
 
+function lockedRevision(url: string): string {
+  const best =
+    /^https:\/\/raw\.githubusercontent\.com\/tesseract-ocr\/tessdata_best\/([a-f0-9]{40})\/[^/]+\.traineddata$/.exec(
+      url,
+    );
+  const frak = /^https:\/\/zenodo\.org\/records\/\d+\/files\/frak2021[-_]([0-9]+(?:\.[0-9]+)*)\.traineddata$/.exec(url);
+  const revision = best?.[1] ?? frak?.[1];
+  if (!revision) throw new Error(`Unrecognized locked model URL: ${url}`);
+  return revision;
+}
+
 describe("serving engine credits from engines.toml", () => {
   it("keeps catalog model versions aligned with the production image lock", () => {
     const lock = readFileSync("../ocr/engines/tesseract/models.lock", "utf8");
     for (const line of lock.split("\n").filter((l) => l && !l.startsWith("#"))) {
       const [name, url] = line.split(/\s+/);
-      const version = url!.includes("tessdata_best/") ? url!.split("/")[5] : "0.905";
+      const version = lockedRevision(url!);
       const model = catalog.engine.find((e) => e.id === "tesseract-5.5")!.model!.find((m) => m.name === name)!;
       expect(model.version).toBe(version);
     }
+  });
+
+  it("detects changed frak2021 revisions and rejects unknown pin formats", () => {
+    expect(lockedRevision("https://zenodo.org/records/10125246/files/frak2021-0.906.traineddata")).toBe("0.906");
+    expect(() => lockedRevision("https://example.com/frak2021.traineddata")).toThrow("Unrecognized locked model URL");
+    expect(creditFor("tesseract/5.5.1 frak2021").models[0]!.version).toBeUndefined();
   });
 
   it("requires a credit for every engine in the serving inventory", () => {

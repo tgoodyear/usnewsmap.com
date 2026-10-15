@@ -21,7 +21,10 @@ No tier-2 or credit-required profiles are added before the credits page (#372).
 - `[[engine.model]]`: `name` (unique within its engine, e.g.
   `tessdata/eng.traineddata`), optional `version` (published revision), plus the
   same attribution fields as the code. Pinned image model versions must match
-  `tesseract/models.lock`; the web catalog test checks them.
+  `tesseract/models.lock`; the web catalog test checks them. These pins do not
+  prove the revision of a serving reading: short engine keys omit model
+  digests, so release credits and legacy web fallbacks leave those model
+  revisions unrecorded instead of relabelling old text with today's pin.
 - `[[engine.profile]]`: `id` (unique within its engine), nonempty `models`
   (exact model names), and nonempty `languages` (ISO 639-3 strings). File order
   is the preference order for the current minimal Tesseract route.

@@ -75,7 +75,9 @@ export function creditFor(key: string, pages = 1, japanese = false): UsedCredit 
     ? profile.models.map((name) => {
         const model = engine.model?.find((m) => m.name === name);
         if (!model) throw new Error(`Missing model credit: ${key}: ${name}`);
-        return model;
+        // Legacy short keys do not identify a model digest. A current image
+        // pin is not evidence of which revision produced these serving pages.
+        return { ...model, version: undefined };
       })
     : (engine.model ?? []);
   validateAttributions(key, engine, models);

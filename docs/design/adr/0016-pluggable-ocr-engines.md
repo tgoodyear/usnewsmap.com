@@ -158,7 +158,10 @@ Unknown serving keys or incomplete credits produce an explicit error, and
 the end-to-end inventory coverage test fails rather than silently omitting
 them. Licence links, mandatory attribution, and attributed-tier evidence
 come directly from the catalog. Model revisions absent from the existing
-serving inventory are labelled as unrecorded rather than invented.
+serving inventory are labelled as unrecorded rather than invented. Current
+worker image pins are checked against the catalog but are not evidence of
+the model revision that produced a retained short-key reading; those
+revisions remain unrecorded until per-reading digests can verify them.
 
 New releases freeze the used catalog entries and mandatory-attribution list
 in `credits.json`, checked by the reference manifest and exposed as

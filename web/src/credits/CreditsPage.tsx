@@ -79,6 +79,10 @@ export default function CreditsPage() {
           on a page identifies its engine below.
         </p>
         <p>
+          Model revisions are shown only when recorded in serving provenance. A short engine key cannot verify a model
+          revision; current worker image pins are not attributed to older readings.
+        </p>
+        <p>
           For American Stories dataset credits, see <a href="/datasets#ds-american-stories">dataset details</a>.
         </p>
         {status.isPending && <p role="status">Loading credits…</p>}

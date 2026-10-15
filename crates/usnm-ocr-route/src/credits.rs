@@ -68,7 +68,7 @@ impl Catalog {
                     }
             })
             .with_context(|| format!("missing OCR credit: {key}"))?;
-        let (models, languages) = if let Some(profile) = profile {
+        let (mut models, languages) = if let Some(profile) = profile {
             let profile = engine
                 .profile
                 .iter()
@@ -95,6 +95,12 @@ impl Catalog {
         self.check_attribution(&engine.attribution)?;
         for model in &models {
             self.check_attribution(&model.attribution)?;
+        }
+        // Short keys omit model digests. A catalog/image pin cannot prove
+        // which revision produced a retained reading, even on a full rebuild.
+        // Only future per-reading provenance may supply a verified revision.
+        for model in &mut models {
+            model.version = None;
         }
         let mut engine = engine.clone();
         // The snapshot contains only selected models, not the survey inventory.
@@ -127,6 +133,26 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use crate::ENGINES;
+
+    #[test]
+    fn catalog_changes_cannot_relabel_retained_model_revisions() {
+        let mut catalog = ENGINES.clone();
+        let key = "tesseract/5.5.1 frak2021";
+        let before = catalog.credits([key]).unwrap();
+        assert!(before.engines[0].models[0].version.is_none());
+        for model in &mut catalog
+            .engine
+            .iter_mut()
+            .find(|e| e.id == "tesseract-5.5")
+            .unwrap()
+            .model
+        {
+            model.version = Some("a different revision in the next release".into());
+        }
+        let after = catalog.credits([key]).unwrap();
+        assert_eq!(before.engines[0].key, after.engines[0].key);
+        assert!(after.engines[0].models[0].version.is_none());
+    }
 
     #[test]
     fn retired_routes_keep_their_published_credits() {
