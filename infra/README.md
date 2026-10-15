@@ -4,11 +4,11 @@ The lean hosting profile from [design doc 08](../docs/design/08-azure-infrastruc
 
 ## Separate index account (#283)
 
-| Setting | Default | Effect |
-| --- | --- | --- |
-| `USNM_INDEX_STORAGE` | `false` | Create `usnmqwst{env}{suffix}` (ADR-0017), private Blob endpoint/DNS, parallel `usnm-qw-search-ca-{env}` searcher and container-scoped roles. Writer stages fresh full rebuilds there while SERVE is false. **Keep on**: disabling deletes the account through the stack. |
-| `USNM_INDEX_STORAGE_SERVE` | `false` | Requires INDEX_STORAGE. After verifying/promoting `reference/index-storage-pending.json`, switch the API to the new searcher. Later releases publish `current.json` normally. The lake searcher/sidecar and roles are retained for the old revision and rollback. |
-| `USNM_LAKE_BLOB_SOFT_DELETE_DAYS` | `3` | Lake retention, 1–365 days. Restore `14` only after retiring/pruning its old indexes; does not affect the new account. |
+| Setting                           | Default | Effect                                                                                                                                                                                                                                                                    |
+| --------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `USNM_INDEX_STORAGE`              | `false` | Create `usnmqwst{env}{suffix}` (ADR-0017), private Blob endpoint/DNS, parallel `usnm-qw-search-ca-{env}` searcher and container-scoped roles. Writer stages fresh full rebuilds there while SERVE is false. **Keep on**: disabling deletes the account through the stack. |
+| `USNM_INDEX_STORAGE_SERVE`        | `false` | Requires INDEX_STORAGE. After verifying/promoting `reference/index-storage-pending.json`, switch the API to the new searcher. Later releases publish `current.json` normally. The lake searcher/sidecar and roles are retained for the old revision and rollback.         |
+| `USNM_LAKE_BLOB_SOFT_DELETE_DAYS` | `3`     | Lake retention, 1–365 days. Restore `14` only after retiring/pruning its old indexes; does not affect the new account.                                                                                                                                                    |
 
 The new account is Standard LRS, Hot, flat namespace, Entra-only, shared keys
 and public access disabled, **no versioning or blob/container soft delete**.
