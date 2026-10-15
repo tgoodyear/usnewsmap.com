@@ -87,6 +87,29 @@ Phase 3 scratch window, after its preconditions and rename PR. Wildcards,
 resource IDs and empty overrides are refused. Permissions, complete
 what-if expansion and an approved data migration remain mandatory.
 
+Archive-connected teardown first provisions without the archive/search
+cluster before deleting the environment's groups. With NFS search storage
+and ingest scratch disabled, that partial provision removes the scratch
+account and file private-DNS zone. `teardown.sh` accepts and forwards the
+same repeated exact-name approvals; confirming the environment name does
+**not** approve protected removals. Inspect the live inventory and partial
+provision's guard output, then explicitly approve **both** old names, for
+example:
+
+```sh
+# Set SCRATCH_ACCOUNT_NAME to the inspected account's exact old leaf name.
+scripts/teardown.sh --env dev \
+  --allow-rename="$SCRATCH_ACCOUNT_NAME" \
+  --allow-rename=privatelink.file.core.windows.net
+```
+
+Use the actual managed names, not an empty variable or assumed prod
+names. The approvals apply only to known Ignore/Delete results; failed,
+missing or unsupported plans still abort before stack creation/deletion.
+The archive lock is restored on failure, and a rerun resumes the detach
+using its saved marker. No wildcard or automatic teardown exemption is
+provided; a partial provision outside teardown follows the same rules.
+
 ### Owner steps for the stateless Phase 1 and Phase 2 names
 
 1. Before provisioning, reconcile the live stack inventory with the
