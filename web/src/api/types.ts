@@ -492,6 +492,10 @@ export interface YearPages {
 
 /** The texts a version searches besides LoC's OCR; each null when it has none. */
 export interface Sources {
+  /** Frozen with the serving release; older releases use the build-time catalog. */
+  ocr_credits?: import("../credits/data").CreditSnapshot;
+  /** Union of Japanese-index and main-index Latin OCR pages (no duplicates per engine). */
+  ocr_ja?: { pages: number; by_engine: { source: string; engine: string; pages: number }[] };
   /** American Stories' text (Dell et al. 2023). */
   american_stories: {
     /** Searches cover it; false when the server's setting leaves it out. */
@@ -508,6 +512,8 @@ export interface Sources {
   /** Japanese titles' pages whose main-index text is our OCR's Latin-script text (#203). */
   ja_latin: {
     pages: number;
+    /** Exact engine keys from the serving version (older servers omit this). */
+    by_engine?: { source: string; engine: string; pages: number }[];
     /** Why our OCR read them: missing, empty, short, garbled or mixed. */
     by_reason: { reason: string; pages: number }[];
     by_title: { lccn: string; name: string; pages: number }[];

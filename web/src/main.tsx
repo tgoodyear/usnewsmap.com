@@ -8,11 +8,12 @@ import { trackPageView } from "./pageview";
 import { DATASETS_PATH, OLD_DATASETS_PATH, pageFor } from "./route";
 import "./styles.css";
 
-// The dataset details and privacy pages are their own routes, loaded only
-// when visited. The API serves index.html for app paths, so /datasets and
-// /privacy work as direct links; other paths get it with a 404, and the
+// The dataset details, privacy and credits pages load only when visited.
+// The API serves index.html for app paths, so all work as direct links;
+// other paths get it with a 404, and the
 // not-found page.
 const DatasetsPage = lazy(() => import("./status/StatusPage"));
+const CreditsPage = lazy(() => import("./credits/CreditsPage"));
 const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
 const page = pageFor(window.location.pathname);
 // The old path, where a server didn't redirect it: show the new one.
@@ -48,6 +49,10 @@ createRoot(document.getElementById("root")!).render(
       {page === "datasets" ? (
         <Suspense fallback={<p role="status">Loading…</p>}>
           <DatasetsPage />
+        </Suspense>
+      ) : page === "credits" ? (
+        <Suspense fallback={<p role="status">Loading…</p>}>
+          <CreditsPage />
         </Suspense>
       ) : page === "privacy" ? (
         <Suspense fallback={<p role="status">Loading…</p>}>

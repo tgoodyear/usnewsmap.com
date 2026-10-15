@@ -12,6 +12,8 @@ describe("pageFor", () => {
     // The old path, for a server that doesn't redirect it (#294).
     expect(pageFor("/status")).toBe("datasets");
     expect(pageFor("/status/")).toBe("datasets");
+    expect(pageFor("/credits")).toBe("credits");
+    expect(pageFor("/credits/")).toBe("credits");
     expect(pageFor("/privacy")).toBe("privacy");
     expect(pageFor("/privacy/")).toBe("privacy");
   });
@@ -25,6 +27,7 @@ describe("pageFor", () => {
       "/dataset",
       "/search/gold",
       "/privacy/x",
+      "/credits/x",
     ]) {
       expect(pageFor(path)).toBe("not-found");
     }

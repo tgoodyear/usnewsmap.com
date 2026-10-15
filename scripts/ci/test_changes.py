@@ -67,6 +67,13 @@ class Quickwit(unittest.TestCase):
         with f.open("a") as h:
             h.write("\n// touched\n")
 
+    def test_catalog_changes_validate_web_credits(self):
+        self.change = lambda: self.touch("ocr/engines/engines.toml")
+        flags = self.outputs()
+        self.assertTrue(flags["web"])
+        self.assertTrue(flags["e2e"])
+        self.assertTrue(flags["image"])
+
     def test_a_crate_outside_the_closure_doesnt_run_it(self):
         self.change = lambda: self.touch("crates/usnm-boinc/src/lib.rs")
         self.assertFalse(self.quickwit())

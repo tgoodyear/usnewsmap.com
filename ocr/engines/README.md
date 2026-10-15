@@ -12,14 +12,19 @@ other engine unroutable; recording a cleared model does not deploy it. Code
 not separately checked in the design stays `unknown`, not implicitly Apache.
 No tier-2 or credit-required profiles are added before the credits page (#372).
 
-## Shape for #372
+## Credits data shape
 
 - `production_licenses`: array of licence identifier strings approved by the
   maintainer. `credit_required`: array of licences whose terms mandate credit.
 - `[[engine]]`: `id` (unique), `family`, `production` (defaults to false), the
   code's attribution fields below, and nested `model` and `profile` arrays.
 - `[[engine.model]]`: `name` (unique within its engine, e.g.
-  `tessdata/eng.traineddata`) plus the same attribution fields as the code.
+  `tessdata/eng.traineddata`), optional `version` (published revision), plus the
+  same attribution fields as the code. Pinned image model versions must match
+  `tesseract/models.lock`; the web catalog test checks them. These pins do not
+  prove the revision of a serving reading: short engine keys omit model
+  digests, so release credits and legacy web fallbacks leave those model
+  revisions unrecorded instead of relabelling old text with today's pin.
 - `[[engine.profile]]`: `id` (unique within its engine), nonempty `models`
   (exact model names), and nonempty `languages` (ISO 639-3 strings). File order
   is the preference order for the current minimal Tesseract route.
@@ -37,6 +42,10 @@ Attribution fields are direct TOML keys, **not embedded JSON, Markdown or HTML**
 | `terms`      | string                              | Licence-text URL; required for cleared `LicenseRef-*` entries                    |
 | `restricted` | optional string                     | Quoted restrictive clause and its source link; presence always vetoes production |
 | `undecided`  | optional string                     | Open maintainer decision and terms link; presence always vetoes production       |
+
+The web build parses this TOML directly (Vite's `ocr-credit-catalog` plugin);
+`web/src/credits/data.ts` selects serving engines and profile models, and
+unit/e2e tests reject missing credits. No generated list is maintained.
 
 For the credits page, identify code by `engine.id` and weights by
 `(engine.id, model.name)`. Read each entry's `credit`, `author`, `source` and
@@ -77,3 +86,12 @@ are later design steps, not claimed by this command yet.
 Tesseract modes `--psm 0`, `1` and `12` implicitly read `osd.traineddata`.
 Both the direct worker and text adapter refuse these modes until OSD is
 cataloged, gated and included in provenance. The default mode 3 is unchanged.
+
+New releases also freeze the used engine and selected model entries in
+`credits.json`, using `usnm-ocr-route::Catalog::credits`. Unknown keys block
+publication. The API verifies the file against the reference manifest and
+returns it in `published.sources.ocr_credits`; the web page prefers that copy
+over its build-time fallback for older releases. Japanese per-engine counts
+cover the union of the serving Japanese search index and main-index Latin
+replacements, deduplicated per page and engine, and are frozen alongside
+the credits. They do not come from the current OCR job.

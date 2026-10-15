@@ -394,6 +394,9 @@ export function OurOcr({ s, now }: { s: Status; now: number }) {
     <section aria-labelledby="own-ocr" className="status-section">
       <h2 id="own-ocr">Pages we read ourselves</h2>
       <p>
+        <a href="/credits">OCR engine and model credits</a>, with their sources and licences.
+      </p>
+      <p>
         A search finds a page only through its text, so a page whose Library of Congress text is missing or badly read
         can&apos;t be found. We read such a page again from its image: on the Japanese-language newspapers, when the
         Library of Congress has no text for it, or its text is empty, too short, garbled or only partly readable; on the

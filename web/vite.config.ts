@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { parse } from "smol-toml";
 
 // In development the API runs locally (`cargo run -p usnm-api`) and is
 // proxied, so the app talks to a same-origin `/v1`. Production builds set
@@ -8,7 +9,16 @@ import react from "@vitejs/plugin-react";
 const api = process.env.USNM_API_ORIGIN ?? "http://127.0.0.1:8080";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: "ocr-credit-catalog",
+      transform(text, id) {
+        if (!id.endsWith("/ocr/engines/engines.toml")) return;
+        return { code: `export default ${JSON.stringify(parse(text))}`, map: null };
+      },
+    },
+  ],
   // MapLibre's worker is an ES module that imports a shared chunk.
   worker: { format: "es" },
   server: { proxy: { "/v1": api } },

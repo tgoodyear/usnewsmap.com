@@ -26,10 +26,11 @@ describe("Hit", () => {
       </ul>,
     );
     const badge = screen.getByText(/^Our OCR/);
-    expect(badge.getAttribute("title")).toMatch(/no searchable text for this page/);
+    expect(badge.getAttribute("title")).toMatch(/Machine-read text/);
     // The explanation is in the text too, for screen readers and touch screens.
-    expect(badge.textContent).toMatch(/^Our OCR\. The Library of Congress has no searchable text/);
-    expect(screen.getByRole("link").textContent).toBe("View the page image at the Library of Congress");
+    expect(badge.textContent).toMatch(/^Our OCR\. Machine-read text/);
+    expect(badge.getAttribute("href")).toBe("/credits#ndlocr-lite%20636d1cf");
+    expect(screen.getByRole("link", { name: "View the page image at the Library of Congress" })).toBeTruthy();
   });
 
   it("shows a LoC page as before", () => {

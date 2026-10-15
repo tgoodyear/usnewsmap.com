@@ -3044,6 +3044,7 @@ dependencies = [
  "usnm-api",
  "usnm-core",
  "usnm-ocr-contract",
+ "usnm-ocr-route",
  "usnm-overlay",
  "usnm-search",
  "usnm-state",
