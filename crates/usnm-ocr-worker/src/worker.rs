@@ -194,6 +194,15 @@ impl ReadTrace {
         }
     }
 
+    /// The engine fields of the instance the read got, replacing the
+    /// planned ones (`describe` guessed before the read had a slot).
+    fn instance(&self, info: ReadInfo) {
+        if let Ok(mut t) = self.0.lock() {
+            let tag = t.planned.take().map(|(tag, _)| tag).unwrap_or_default();
+            t.planned = Some((tag, info));
+        }
+    }
+
     fn ended(&self, out: &Result<EngineOutput, EngineError>) {
         let Ok(mut t) = self.0.lock() else { return };
         match out {
@@ -203,6 +212,15 @@ impl ReadTrace {
             }
             // Not a read: no model here, or the worker's own scratch files.
             Err(_) => t.started = None,
+        }
+    }
+
+    /// The read's runs record is uploaded: it is the read's record now, so
+    /// a later failure (the part's upload, or a stop while the scan is
+    /// evicted) sends no event of its own.
+    fn recorded(&self) {
+        if let Ok(mut t) = self.0.lock() {
+            t.started = None;
         }
     }
 }
@@ -929,7 +947,7 @@ impl Worker {
         let paths = output_paths(key, &run_id);
         tokio::time::timeout_at(
             deadline.into(),
-            self.write_output(key, &paths, alto, runs, part),
+            self.write_output(key, &paths, alto, runs, part, trace),
         )
         .await
         .map_err(|_| Failure::Abandoned)??;
@@ -968,7 +986,12 @@ impl Worker {
             .await
             .map_err(|e| anyhow::anyhow!(ScratchError(format!("scratch image: {e}"))))?;
         trace.start(self.engine.describe(&m.language));
-        let out = self.engine.read(&image, &m.language, work, run_id).await;
+        let out = self
+            .engine
+            .read_traced(&image, &m.language, work, run_id, &|info| {
+                trace.instance(info)
+            })
+            .await;
         trace.ended(&out);
         out
     }
@@ -981,6 +1004,7 @@ impl Worker {
         alto: String,
         runs: Vec<u8>,
         part: Vec<u8>,
+        trace: &ReadTrace,
     ) -> Result<(), Failure> {
         // ALTO first, then the runs record, then the part (13 §13.8.3): a
         // part is only written once its page's ALTO and record are there.
@@ -997,6 +1021,9 @@ impl Worker {
                     "output",
                     format!("{path} for {key} already exists ({})", random_token()),
                 ));
+            }
+            if *path == paths.runs {
+                trace.recorded();
             }
         }
         Ok(())
@@ -1682,6 +1709,43 @@ mod tests {
         }
     }
 
+    /// [`FailingEngine`], whose read gets a cold instance though
+    /// `describe` guessed a warm one.
+    #[derive(Debug)]
+    struct ColdInstanceEngine;
+
+    #[async_trait]
+    impl Engine for ColdInstanceEngine {
+        fn source(&self) -> &str {
+            FailingEngine.source()
+        }
+        fn can_read(&self, language: &str) -> bool {
+            FailingEngine.can_read(language)
+        }
+        fn describe(&self, language: &str) -> Option<(String, crate::engine::ReadInfo)> {
+            FailingEngine.describe(language)
+        }
+        async fn ocr(&self, image: &Path, l: &str, w: &Path) -> Result<EngineOutput, EngineError> {
+            FailingEngine.ocr(image, l, w).await
+        }
+        async fn read_traced(
+            &self,
+            image: &Path,
+            language: &str,
+            work: &Path,
+            _: &str,
+            on_instance: &(dyn Fn(crate::engine::ReadInfo) + Send + Sync),
+        ) -> Result<EngineOutput, EngineError> {
+            let (_, info) = FailingEngine.describe(language).unwrap();
+            on_instance(crate::engine::ReadInfo {
+                cold_start: true,
+                model_load_seconds: Some(2.5),
+                ..info
+            });
+            FailingEngine.ocr(image, language, work).await
+        }
+    }
+
     /// Reads into ALTO that doesn't convert.
     #[derive(Debug)]
     struct BadAltoEngine;
@@ -1788,6 +1852,140 @@ mod tests {
         .await;
         assert!(runs.is_empty(), "{runs:?}");
         assert_eq!(out.list("runs").await.unwrap().len(), 1);
+    }
+
+    /// A store whose overlay-part uploads fail.
+    #[derive(Debug)]
+    struct NoParts(Arc<dyn ObjectStore>);
+
+    #[async_trait]
+    impl ObjectStore for NoParts {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            self.0.get(path).await
+        }
+        async fn put_new(&self, path: &str, body: Vec<u8>, ct: &str) -> Result<bool, StoreError> {
+            if path.starts_with("pages/") {
+                return Err(StoreError::Io("the store went away".into()));
+            }
+            self.0.put_new(path, body, ct).await
+        }
+        async fn put(&self, path: &str, body: Vec<u8>, ct: &str) -> Result<(), StoreError> {
+            self.0.put(path, body, ct).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+            self.0.list(prefix).await
+        }
+    }
+
+    /// Scans to evict, whose eviction never ends.
+    #[derive(Debug, Default)]
+    struct StuckEvict(FakeScans);
+
+    #[async_trait]
+    impl ScanSource for StuckEvict {
+        async fn scan(&self, key: &PageKey, batch: &str) -> Result<Scan, FetchError> {
+            let mut s = self.0.scan(key, batch).await?;
+            s.evict = Some(s.url.clone());
+            Ok(s)
+        }
+        async fn jpeg(&self, key: &PageKey, batch: &str, base: &str) -> Result<Scan, FetchError> {
+            self.0.jpeg(key, batch, base).await
+        }
+        async fn evict(&self, _url: &str) {
+            std::future::pending::<()>().await
+        }
+    }
+
+    /// Once its runs record is uploaded a read has its record: a failure
+    /// after it (the part's upload, a stop while the scan is evicted)
+    /// sends no `ocr_engine_run` of its own.
+    #[tokio::test]
+    async fn a_read_with_its_runs_record_sends_no_failure_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out) = worker(dir.path());
+        let no_parts = Arc::new(Worker {
+            out: Arc::new(NoParts(out.clone())),
+            cfg: w.cfg.clone(),
+            engine: w.engine.clone(),
+            queue: w.queue.clone(),
+            scans: w.scans.clone(),
+            metrics: w.metrics.clone(),
+            tracker: w.tracker.clone(),
+        });
+        let runs = engine_runs(one_page(
+            &no_parts,
+            &queue,
+            "sn83045462/1890-05-03/ed-1/seq-7",
+            "deu",
+        ))
+        .await;
+        assert!(runs.is_empty(), "{runs:?}");
+        assert_eq!(out.list("runs").await.unwrap().len(), 1);
+        assert!(out.list("pages").await.unwrap().is_empty());
+        // The page failed and is back for another try.
+        let again = queue.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
+        assert_eq!(again.dequeue_count, 2);
+
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, out) = worker(dir.path());
+        let w = Arc::new(Worker {
+            scans: Arc::new(StuckEvict::default()),
+            cfg: Config {
+                once: false,
+                visibility: Duration::from_secs(60),
+                shutdown_grace: Duration::from_millis(50),
+                ..w.cfg.clone()
+            },
+            out: w.out.clone(),
+            engine: w.engine.clone(),
+            queue: w.queue.clone(),
+            metrics: w.metrics.clone(),
+            tracker: w.tracker.clone(),
+        });
+        queue
+            .send(BULK, &msg("sn83045462/1890-05-03/ed-1/seq-7", "deu"))
+            .await
+            .unwrap();
+        let (tx, rx) = watch::channel(false);
+        let runs = engine_runs(async {
+            let run = tokio::spawn(w.run(rx));
+            // Stopped while the uploaded page's scan is evicted.
+            let t0 = Instant::now();
+            while out.list("pages").await.unwrap().is_empty() {
+                assert!(t0.elapsed() < Duration::from_secs(10), "no part");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tx.send_replace(true);
+            tokio::time::timeout(Duration::from_secs(10), run)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        })
+        .await;
+        assert!(runs.is_empty(), "{runs:?}");
+        assert_eq!(out.list("runs").await.unwrap().len(), 1);
+    }
+
+    /// A failed read reports the instance it got, not `describe`'s guess.
+    #[tokio::test]
+    async fn a_failed_read_reports_its_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, queue, _) = worker(dir.path());
+        let cold = with_engine(&w, Arc::new(ColdInstanceEngine));
+        let runs = engine_runs(one_page(
+            &cold,
+            &queue,
+            "sn83045462/1890-05-03/ed-1/seq-7",
+            "deu",
+        ))
+        .await;
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0]["cold_start"], "true");
+        assert_eq!(runs[0]["model_load_seconds"], "2.5");
+        // The tag is still the planned one.
+        assert_eq!(runs[0]["profile"], "frak2021");
+        assert_eq!(runs[0]["error_kind"], "engine_timeout");
     }
 
     #[tokio::test]

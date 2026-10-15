@@ -390,13 +390,22 @@ impl ContractEngine {
             markup: result.markup.as_str(),
             engine_stats_json: serde_json::to_string(&result.engine_stats)
                 .unwrap_or_else(|_| "{}".into()),
-            ..self.hello_info(&inst.hello, profile)
+            ..self.hello_info(&inst.hello, profile, cold_start)
         }
     }
 
-    /// The engine fields `h` gives for `profile`, before a read: a cold
-    /// start when no instance is idle.
-    fn hello_info(&self, h: &Hello, profile: &str) -> ReadInfo {
+    /// The engine fields a read on `inst` with `profile` has before it
+    /// answers: what a failed read reports.
+    fn instance_info(&self, inst: &Instance, profile: &str) -> ReadInfo {
+        let cold_start = inst.jobs == 0;
+        ReadInfo {
+            model_load_seconds: cold_start.then_some(inst.load_seconds),
+            ..self.hello_info(&inst.hello, profile, cold_start)
+        }
+    }
+
+    /// The engine fields `h` gives for `profile`, before a read.
+    fn hello_info(&self, h: &Hello, profile: &str, cold_start: bool) -> ReadInfo {
         let image_ref = match &self.opts.launch {
             Launch::Podman { image, .. } => image.clone(),
             Launch::Local { .. } => "local".to_owned(),
@@ -415,12 +424,6 @@ impl ContractEngine {
         });
         let (models_digest, models_json) =
             models.unwrap_or_else(|| ("local".to_owned(), "{}".to_owned()));
-        // The instance `instance()` takes next: the last idle one, cold
-        // if it hasn't read a page yet, or a new one.
-        let cold_start = self
-            .idle
-            .lock()
-            .map_or(true, |v| v.last().is_none_or(|i| i.jobs == 0));
         ReadInfo {
             engine_id: h.engine.id.clone(),
             adapter: format!(
@@ -1231,7 +1234,14 @@ impl Engine for ContractEngine {
     fn describe(&self, language: &str) -> Option<(String, ReadInfo)> {
         let profile = self.profile(language)?;
         let tag = self.tag(profile).ok()?;
-        Some((tag, self.hello_info(&self.hello, profile)))
+        // A guess, before the page has a slot: the instance `instance()`
+        // would take now (the last idle one, cold if it hasn't read a page
+        // yet, or a new one). The read reports the one it gets.
+        let cold_start = self
+            .idle
+            .lock()
+            .map_or(true, |v| v.last().is_none_or(|i| i.jobs == 0));
+        Some((tag, self.hello_info(&self.hello, profile, cold_start)))
     }
 
     async fn shutdown(&self) {
@@ -1273,8 +1283,20 @@ impl Engine for ContractEngine {
         &self,
         image: &Path,
         language: &str,
+        work: &Path,
+        run_id: &str,
+    ) -> Result<EngineOutput, EngineError> {
+        self.read_traced(image, language, work, run_id, &|_| {})
+            .await
+    }
+
+    async fn read_traced(
+        &self,
+        image: &Path,
+        language: &str,
         _work: &Path,
         run_id: &str,
+        on_instance: &(dyn Fn(ReadInfo) + Send + Sync),
     ) -> Result<EngineOutput, EngineError> {
         let profile = self
             .profile(language)
@@ -1286,6 +1308,7 @@ impl Engine for ContractEngine {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut inst = self.instance().await?;
+        on_instance(self.instance_info(&inst, &profile));
         match self
             .read_page(&mut inst, image, language, &profile, run_id)
             .await
@@ -1361,13 +1384,14 @@ mod tests {
     /// An adapter that sends its hello and reads requests without
     /// answering.
     async fn silent_engine(dir: &Path) -> ContractEngine {
+        script_engine(dir, "cat >/dev/null\n").await
+    }
+
+    /// An adapter that sends its hello, then runs `body` on its requests.
+    async fn script_engine(dir: &Path, body: &str) -> ContractEngine {
         let hello = r#"{"adapter":{"lang":"sh","name":"silent","version":"0"},"cancel":"kill","contract":1,"deterministic":true,"engine":{"family":"silent","id":"silent","version":"1"},"granularity":"page","layout":"boxes","models":[],"models_loaded":"at_start","profiles":[{"id":"eng","languages":["eng"],"models":[],"tunable":[]}],"type":"hello"}"#;
         let script = dir.join("adapter");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\necho '{hello}'\ncat >/dev/null\n"),
-        )
-        .unwrap();
+        std::fs::write(&script, format!("#!/bin/sh\necho '{hello}'\n{body}")).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1429,6 +1453,61 @@ mod tests {
         let inst = e.instance().await.unwrap();
         assert!(e.describe("eng").unwrap().1.cold_start);
         inst.retire().await;
+        e.shutdown().await;
+    }
+
+    /// A read reports the instance it got once it has a slot, not the
+    /// guess `describe` made before: here the page waits for the one
+    /// instance, which another page has warmed by then.
+    #[tokio::test]
+    async fn a_read_reports_the_instance_it_got() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = std::sync::Arc::new(
+            script_engine(
+                dir.path(),
+                r#"while IFS= read -r l; do
+  run=$(printf '%s\n' "$l" | sed 's/.*"run_id":"\([^"]*\)".*/\1/')
+  printf '{"engine_stats":{},"error":{"kind":"image","message":"unreadable"},"markup":"none","run_id":"%s","status":"bad_input","type":"result","warnings":[]}\n' "$run"
+done
+"#,
+            )
+            .await,
+        );
+        let image = dir.path().join("page.pgm");
+        std::fs::write(&image, crate::testimg::text_image("HELLO")).unwrap();
+        let read = |run_id: &'static str| {
+            let (e, image) = (e.clone(), image.clone());
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let s = seen.clone();
+            let task = tokio::spawn(async move {
+                let on = move |i: ReadInfo| s.lock().unwrap().push(i.cold_start);
+                e.read_traced(&image, "eng", Path::new("."), run_id, &on)
+                    .await
+            });
+            (task, seen)
+        };
+        // The first page holds the only slot and instance.
+        let permit = e.slots.acquire().await.unwrap();
+        let mut inst = e.instance().await.unwrap();
+        assert!(e.describe("eng").unwrap().1.cold_start, "none idle");
+        let (second, seen) = read("r2");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(seen.lock().unwrap().is_empty(), "waits for the slot");
+        inst.jobs = 1;
+        e.give_back(inst).await;
+        drop(permit);
+        let r = second.await.unwrap();
+        assert!(
+            matches!(&r, Err(EngineError::Failed(err)) if crate::engine::read_failure(err) == ("bad_input", "engine")),
+            "{r:?}"
+        );
+        assert_eq!(*seen.lock().unwrap(), vec![false], "the warm instance");
+        // A new instance's first read is cold.
+        let idle = e.idle.lock().unwrap().pop().unwrap();
+        idle.retire().await;
+        let (third, seen) = read("r3");
+        assert!(third.await.unwrap().is_err());
+        assert_eq!(*seen.lock().unwrap(), vec![true]);
         e.shutdown().await;
     }
 

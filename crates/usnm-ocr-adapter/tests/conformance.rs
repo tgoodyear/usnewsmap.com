@@ -194,12 +194,14 @@ async fn noise_on_stdout_is_caught() {
 
 /// A stand-in adapter (`cancel = adapter`) that answers with a
 /// page-granularity `boxes.json`: `unsupported` for any profile but `eng`,
-/// `bad_input` for the corrupt fixture, `timeout` for the deadline case's
-/// large page. For the other pages `page` (shell) sets `$text`, the block's
-/// text, and `$sidecar`, the text file's (`-` for none), from `$blank` (1
-/// for a page with no black pixel); it may set `$blocks` to replace the
-/// blocks.
-fn boxes_adapter(dir: &Path, page: &str) -> PathBuf {
+/// `bad_input` for the corrupt fixture. For the deadline case's large page
+/// it runs `big` (shell), which answers `timeout` by default; one that sets
+/// `$big` instead reads the page as blank. For the other pages `page`
+/// (shell) sets `$text`, the block's text, and `$sidecar`, the text file's
+/// (`-` for none), from `$blank` (1 for a page with no black pixel); it may
+/// set `$blocks` to replace the blocks.
+fn boxes_adapter(dir: &Path, page: &str, big: Option<&str>) -> PathBuf {
+    let big = big.unwrap_or("fail timeout timeout; continue");
     script(
         dir,
         "adapter",
@@ -214,8 +216,9 @@ while IFS= read -r l; do
   fail() {{ printf '{{"engine_stats":{{}},"error":{{"kind":"%s","message":"%s"}},"markup":"none","run_id":"%s","status":"%s","type":"result","warnings":[]}}\n' "$2" "$2" "$run" "$1"; }}
   if [ "$profile" != eng ]; then fail unsupported profile; continue; fi
   if grep -q badcrc "$img"; then fail bad_input image; continue; fi
-  case "$l" in *'"width":3500'*) fail timeout timeout; continue ;; esac
-  if od -An -v -tu1 "$img" | grep -qw 0; then blank=0; else blank=1; fi
+  big=
+  case "$l" in *'"width":3500'*) {big} ;; esac
+  if [ -n "$big" ]; then blank=1; elif od -An -v -tu1 "$img" | grep -qw 0; then blank=0; else blank=1; fi
   blocks=
   {page}
   [ -n "$blocks" ] || blocks=$(printf '{{"bbox":[0,0,%s,%s],"kind":"text","text":"%s"}}' "$w" "$h" "$text")
@@ -234,8 +237,12 @@ done
 }
 
 async fn boxes_report(page: &str) -> Report {
+    boxes_report_with(page, None).await
+}
+
+async fn boxes_report_with(page: &str, big: Option<&str>) -> Report {
     let dir = tempfile::tempdir().unwrap();
-    let adapter = boxes_adapter(dir.path(), page);
+    let adapter = boxes_adapter(dir.path(), page, big);
     conformance::run(
         options(adapter, Vec::new(), dir.path()),
         Path::new(FIXTURES),
@@ -257,6 +264,39 @@ async fn a_layout_only_adapter_conforms() {
     assert_eq!(r.outcome("text_line"), Some(Outcome::Pass));
     assert_eq!(r.outcome("blank_page"), Some(Outcome::Pass));
     assert_eq!(r.outcome("deadline"), Some(Outcome::Pass));
+}
+
+/// An engine that reads the deadline case's page within its deadline
+/// leaves nothing to cancel: the case is skipped, not failed. One that
+/// answers after the deadline fails.
+#[tokio::test]
+async fn a_fast_read_skips_the_deadline_and_a_late_one_fails() {
+    let page = format!(
+        r#"if [ $blank = 1 ]; then text=; else text='{}'; fi; sidecar=-"#,
+        conformance::LINE
+    );
+    let r = boxes_report_with(&page, Some("big=1")).await;
+    assert_eq!(
+        r.outcome("deadline"),
+        Some(Outcome::Skipped),
+        "{}",
+        outcomes(&r)
+    );
+    assert!(r.passed(), "{}", outcomes(&r));
+    let r = boxes_report_with(&page, Some("big=1; sleep 2")).await;
+    assert_eq!(
+        r.outcome("deadline"),
+        Some(Outcome::Fail),
+        "{}",
+        outcomes(&r)
+    );
+    assert!(
+        r.cases
+            .iter()
+            .any(|c| c.case == "deadline" && c.detail.contains("read after")),
+        "{}",
+        outcomes(&r)
+    );
 }
 
 /// A right text file doesn't hide a wrong layout, nor an empty one text in

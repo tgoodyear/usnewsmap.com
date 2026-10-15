@@ -255,7 +255,7 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
         }
         report.push(
             "tesseract_dpi",
-            if seen.contains("--dpi 300") {
+            if has_dpi(&seen, "300") {
                 Ok("the command line on stderr has --dpi 300".into())
             } else {
                 Err(format!("no --dpi 300 on stderr: {}", tail(&seen, 400)))
@@ -304,6 +304,8 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
     let a = a?;
     let took = started.elapsed();
     let cut = match (hello.cancel, &a) {
+        // Read in time: nothing was cut, so there's nothing to check.
+        (_, Answer::Read(..)) if took <= SHORT_DEADLINE => Err(None),
         (usnm_ocr_contract::engine::Cancel::Adapter, Answer::Kept(e))
             if failure(e).0 == "timeout" =>
         {
@@ -316,19 +318,33 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
                 "no result, and the worker killed the instance after {took:.1?}"
             ))
         }
-        (_, other) => Err(format!(
+        (_, Answer::Read(..)) => Err(Some(format!(
+            "a {SHORT_DEADLINE:?} deadline on a {bw}x{bh} page: read after {took:.1?}"
+        ))),
+        (_, other) => Err(Some(format!(
             "a {SHORT_DEADLINE:?} deadline on a {bw}x{bh} page: {}",
             other.describe()
-        )),
+        ))),
     };
-    let outcome = match cut {
-        Ok(d) => match r.page(&line, "pgm", size, &language, &profile).await? {
-            Answer::Read(_, text) if text.contains(LINE) => Ok(format!("{d}; the next page read")),
-            other => Err(format!("{d}; the next page: {}", other.describe())),
-        },
-        Err(e) => Err(e),
-    };
-    report.push("deadline", outcome);
+    match cut {
+        Ok(d) => {
+            let outcome = match r.page(&line, "pgm", size, &language, &profile).await? {
+                Answer::Read(_, text) if text.contains(LINE) => {
+                    Ok(format!("{d}; the next page read"))
+                }
+                other => Err(format!("{d}; the next page: {}", other.describe())),
+            };
+            report.push("deadline", outcome);
+        }
+        Err(Some(e)) => report.push("deadline", Err(e)),
+        Err(None) => report.skip(
+            "deadline",
+            &format!(
+                "the {bw}x{bh} page read in {took:.1?}, within its {SHORT_DEADLINE:?} deadline: \
+                 nothing to cancel"
+            ),
+        ),
+    }
     report.skip(
         "deadline_cgroup",
         "nothing left in the container's cgroup.procs after a timeout isn't checked yet: \
@@ -403,6 +419,18 @@ async fn suite(r: &mut Runner, corrupt: &[u8], report: &mut Report) -> anyhow::R
 }
 
 /// The text `o`'s layout stores as, as the worker derives it.
+/// Whether the command line `seen` passes `--dpi` as exactly `dpi`
+/// (`--dpi 300` or `--dpi=300`, however the adapter quotes it).
+fn has_dpi(seen: &str, dpi: &str) -> bool {
+    let tokens: Vec<&str> = seen
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | '[' | ']' | '\'' | '"'))
+        .filter(|t| !t.is_empty())
+        .collect();
+    tokens.iter().enumerate().any(|(i, t)| {
+        t.strip_prefix("--dpi=") == Some(dpi) || (*t == "--dpi" && tokens.get(i + 1) == Some(&dpi))
+    })
+}
+
 fn stored_text(o: &EngineOutput, language: &str, dpi: u32) -> String {
     let Some(page) = o.page.clone() else {
         return String::new();
@@ -542,6 +570,28 @@ fn check_line(o: &EngineOutput, text: &str, (w, h): (u32, u32)) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_dpi_must_be_its_own_argument() {
+        for ok in [
+            "tesseract page.png out --dpi 300 -l eng",
+            "\"tesseract\" \"--dpi\" \"300\"",
+            "[\"tesseract\", \"--dpi\", \"300\"]",
+            "tesseract --dpi=300",
+        ] {
+            assert!(has_dpi(ok, "300"), "{ok}");
+        }
+        for bad in [
+            "tesseract --dpi 3000",
+            "tesseract --dpi 30",
+            "tesseract --dpi=3000",
+            "tesseract --dpi",
+            "tesseract --dpix 300",
+            "tesseract 300 --dpi 72",
+        ] {
+            assert!(!has_dpi(bad, "300"), "{bad}");
+        }
+    }
 
     #[test]
     fn protocol_failures_are_sorted_by_rule() {
