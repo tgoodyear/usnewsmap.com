@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <Description><MeasurementUnit>pixel</MeasurementUnit>
+    <sourceImageInformation><fileName>https://tile.loc.gov/a?b&amp;c</fileName></sourceImageInformation>
+  </Description>
+  <Layout><Page ID="p1" WIDTH="5000" HEIGHT="7000" PHYSICAL_IMG_NR="1">
+    <PrintSpace><TextBlock ID="b1"><TextLine ID="l1">
+      <String CONTENT="&b;" HPOS="1" VPOS="2" WIDTH="3" HEIGHT="4"/><SP/>
+      <String CONTENT="&#228;&lt;" />
+    </TextLine></TextBlock></PrintSpace>
+  </Page></Layout>
+</alto>
