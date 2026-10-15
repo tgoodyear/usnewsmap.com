@@ -220,6 +220,8 @@ The Serial Set fetch (#229, [04 §4.10](04-data-sources-and-ingestion.md#410-con
 
 Turn `USNM_SERIALSET_ONPREM` off when the fetch is done: the next provision closes the lake, removes the grant and drops the exemption ([operations](../operations.md#the-serial-set-on-prem)).
 
+Shared-searcher visitor slots (#364): `USNM_COMPUTE_CONCURRENCY` configures a per-searcher budget (default 2), and `USNM_API_MAX_REPLICAS` configures both API scaling and the divisor (default 2). `containerapp.bicep` exports `floor(budget / maxReplicas)` as each API container's slot limit when Quickwit is remote, including the separate-index serving app; loopback sidecars and fixtures retain the full per-replica budget. Inputs must be positive, and shared budgets smaller than the replica cap are rejected. Static shares leave odd remainders and idle replicas' shares unused; they do not coordinate warm-ups or enforce a cross-revision lease. Provision is required for these settings to change the live app (06 §6.6).
+
 ## 8.4 Compute sizing notes
 
 - **`api` container:** 0.25 vCPU / 0.5 GiB. Rust handles cached responses at hundreds of requests per second on this, so the searcher is the bottleneck.

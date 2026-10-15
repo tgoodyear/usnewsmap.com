@@ -26,6 +26,8 @@
 // Clear retention only after role propagation and the sidecar revision's
 // readiness and search checks (docs/operations.md, "Searcher app").
 
+import { replicaComputeSlots } from '../api-capacity.bicep'
+
 param location string
 param tags object
 param name string
@@ -45,7 +47,11 @@ param indexSearcherName string = ''
 param indexStorageServe bool = false
 param storageAccountName string
 param minReplicas int
+@minValue(1)
 param maxReplicas int = 2
+@description('Visitor computation slots per searcher. Shared remote searchers divide this budget by API maxReplicas; sidecars keep the full per-replica budget.')
+@minValue(1)
+param computeConcurrency int = 2
 @description('Proxies appending to X-Forwarded-For: 1 = Container Apps ingress only.')
 param trustedProxyHops int = 1
 @allowed(['fixtures', 'quickwit'])
@@ -86,6 +92,8 @@ var quickwit = searchBackend == 'quickwit'
 var sidecar = quickwit && !searcherApp && !indexStorageServe
 var searcherOn = quickwit && searcherApp
 var searcherDeployed = quickwit && (searcherApp || searcherAppRetain)
+var computeSlots = replicaComputeSlots(computeConcurrency, maxReplicas, quickwit && !sidecar)
+var computeEnv = [{ name: 'USNM_COMPUTE_CONCURRENCY', value: string(computeSlots) }]
 var indexSearcherOn = quickwit && !empty(indexStorageAccountName)
 // Drop the API identity only for the permanent standalone-searcher setting.
 // Unlike `sidecar`, this must not depend on indexStorageServe: that cutover
@@ -172,7 +180,7 @@ var apiContainer = {
   name: 'api'
   image: image
   resources: { cpu: json('0.25'), memory: '0.5Gi' }
-  env: concat(backendEnv, apiEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv)
+  env: concat(backendEnv, apiEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv, computeEnv)
   probes: [
     {
       // A start loads the published version (loadSecs), then warms the
