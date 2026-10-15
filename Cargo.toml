@@ -12,6 +12,7 @@ members = [
     "crates/usnm-ocr-contract",
     "crates/usnm-ocr-dash",
     "crates/usnm-ocr-quality",
+    "crates/usnm-ocr-route",
     "crates/usnm-ocr-survey",
     "crates/usnm-ocr-worker",
     "crates/usnm-overlay",
@@ -31,6 +32,7 @@ repository = "https://github.com/tgoodyear/usnewsmap.com"
 usnm-alto = { path = "crates/usnm-alto" }
 usnm-core = { path = "crates/usnm-core" }
 usnm-ocr-contract = { path = "crates/usnm-ocr-contract", default-features = false }
+usnm-ocr-route = { path = "crates/usnm-ocr-route" }
 usnm-ocr-quality = { path = "crates/usnm-ocr-quality" }
 usnm-ocr-survey = { path = "crates/usnm-ocr-survey" }
 usnm-overlay = { path = "crates/usnm-overlay" }
@@ -84,6 +86,7 @@ sha2 = "0.11"
 tar = "0.4"
 tempfile = "3"
 thiserror = "2"
+toml = "0.9"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["compression-gzip", "cors", "fs", "set-header", "timeout", "trace"] }

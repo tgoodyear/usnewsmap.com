@@ -185,3 +185,22 @@ class BoincPages(unittest.TestCase):
         self.change = lambda: self.touch("scripts/ocr-survey/transcription.py")
         o = self.outputs()
         self.assertEqual((o["contrib"], o["ocr_gold"]), ("true", "true"))
+
+class OcrCatalog(unittest.TestCase):
+    """Embedded catalog and routing edits must rebuild and test OCR releases."""
+
+    setUp, tearDown, commit, touch, outputs = (Quickwit.setUp, Quickwit.tearDown,
+                                               Quickwit.commit, Quickwit.touch, Quickwit.outputs)
+
+    def test_catalog_and_routes_run_rust_and_worker_release(self):
+        for path in ["ocr/engines/engines.toml", "ocr/routing/routes.toml",
+                     "crates/usnm-ocr-route/src/lib.rs"]:
+            with self.subTest(path=path):
+                self.change = lambda path=path: self.touch(path)
+                o = self.outputs()
+                self.assertTrue(o["rust"])
+                self.assertTrue(o["ocr_worker"])
+
+    def test_boinc_image_filter_includes_embedded_catalog(self):
+        workflow = (ROOT / ".github/workflows/boinc-worker.yml").read_text()
+        self.assertIn("      - ocr/engines/engines.toml\n", workflow)

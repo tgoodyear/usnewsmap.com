@@ -54,6 +54,9 @@ enum EngineName {
 
 #[derive(clap::Args)]
 struct EngineArgs {
+    /// Engine catalog; defaults to the catalog embedded at build time.
+    #[arg(long, env = "USNM_OCR_ENGINES")]
+    engines: Option<PathBuf>,
     /// OCR engine.
     #[arg(long, value_enum, default_value = "tesseract")]
     engine: EngineName,
@@ -176,9 +179,14 @@ impl EngineArgs {
     }
 
     async fn engine(&self, node: &str) -> anyhow::Result<Arc<dyn Engine>> {
+        let catalog = match &self.engines {
+            Some(path) => usnm_ocr_route::Catalog::load(path)?,
+            None => usnm_ocr_route::ENGINES.clone(),
+        };
         match self.engine {
             EngineName::Contract => {
-                let e = ContractEngine::start(self.contract_options(node)?).await?;
+                let e = ContractEngine::start_with_catalog(self.contract_options(node)?, catalog)
+                    .await?;
                 Ok(Arc::new(e))
             }
             EngineName::Tesseract => {
@@ -208,13 +216,16 @@ impl EngineArgs {
                     }
                     None => Runner::Host(self.tesseract_bin.clone()),
                 };
-                let t = Tesseract::detect(TesseractOptions {
-                    runner,
-                    psm: self.psm,
-                    dpi: self.dpi,
-                    threads: self.threads_per_page,
-                    timeout: Duration::from_secs(self.page_timeout_secs),
-                })
+                let t = Tesseract::detect_with_catalog(
+                    TesseractOptions {
+                        runner,
+                        psm: self.psm,
+                        dpi: self.dpi,
+                        threads: self.threads_per_page,
+                        timeout: Duration::from_secs(self.page_timeout_secs),
+                    },
+                    catalog,
+                )
                 .await?;
                 tracing::info!(
                     version = t.version(),
@@ -230,6 +241,11 @@ impl EngineArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Validate production route licences without starting an engine.
+    Routes {
+        #[command(subcommand)]
+        command: RoutesCommand,
+    },
     /// Take pages from the queues and OCR them until stopped.
     Run {
         /// `https://<account>.queue.core.windows.net`, or a directory.
@@ -539,6 +555,17 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum RoutesCommand {
+    /// Refuse production candidates whose code or models fail the licence gate.
+    Check {
+        #[arg(long, env = "USNM_OCR_ENGINES")]
+        engines: Option<PathBuf>,
+        #[arg(long, default_value = "ocr/routing/routes.toml")]
+        routes: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum EnginesCommand {
     /// Drive one instance of an engine through the contract's conformance
     /// cases (13 §13.4.8): a rendered line with its boxes, a blank page, a
@@ -625,6 +652,20 @@ async fn main() -> std::process::ExitCode {
 
 async fn command(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Command::Routes {
+            command: RoutesCommand::Check { engines, routes },
+        } => {
+            let catalog = match engines {
+                Some(path) => usnm_ocr_route::Catalog::load(&path)?,
+                None => usnm_ocr_route::ENGINES.clone(),
+            };
+            catalog.check_routes(
+                &std::fs::read_to_string(&routes)
+                    .with_context(|| format!("reading {}", routes.display()))?,
+            )?;
+            println!("production route licences cleared");
+            Ok(())
+        }
         Command::Run {
             queue_url,
             out_url,
