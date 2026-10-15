@@ -308,13 +308,40 @@ class SearcherRollbackTemplate(unittest.TestCase):
         self.assertEqual(app["properties"]["template"]["containers"],
                          "[if(variables('sidecar'), createArray(variables('apiContainer'), variables('quickwitContainer')), createArray(variables('apiContainer')))]")
 
-    def test_api_identity_and_reader_survive_both_rollback_steps(self):
-        self.assertEqual(self.template["variables"]["apiSystemIdentity"], "[variables('quickwit')]")
-        reader = next(r for r in self.template["resources"]
-                      if r["type"] == "Microsoft.Authorization/roleAssignments"
-                      and "parameters('name')" in r["name"]
-                      and "parameters('storageAccountName')" in r["name"])
-        self.assertEqual(reader["condition"], "[variables('apiSystemIdentity')]")
+    def test_api_identity_and_both_readers_drop_with_searcher_app(self):
+        self.assertEqual(self.template["variables"]["apiSystemIdentity"],
+                         "[and(variables('quickwit'), not(parameters('searcherApp')))]")
+        app = next(r for r in self.template["resources"] if r["name"] == "[parameters('name')]")
+        self.assertEqual(app["identity"]["type"],
+                         "[if(variables('apiSystemIdentity'), 'SystemAssigned,UserAssigned', 'UserAssigned')]")
+        readers = [r for r in self.template["resources"]
+                   if r["type"] == "Microsoft.Authorization/roleAssignments"
+                   and "parameters('name')" in r["name"]]
+        self.assertEqual(len(readers), 2)
+        for reader in readers:
+            expected = ("[and(not(empty(parameters('indexStorageAccountName'))), variables('apiSystemIdentity'))]"
+                        if "parameters('indexStorageAccountName')" in reader["name"] else "[variables('apiSystemIdentity')]")
+            self.assertEqual(reader["condition"], expected)
+            self.assertIn(".identity.principalId", reader["properties"]["principalId"])
+            self.assertIn("[resourceId('Microsoft.App/containerApps', parameters('name'))]",
+                          reader["dependsOn"])
+
+    def test_index_storage_cutover_keeps_old_sidecar_identity(self):
+        variables = self.template["variables"]
+        # indexStorageServe=true removes the new revision's sidecar, not
+        # the app-level identity needed by its still-serving old revision.
+        self.assertEqual(variables["sidecar"],
+                         "[and(and(variables('quickwit'), not(parameters('searcherApp'))), not(parameters('indexStorageServe')))]")
+        self.assertEqual(variables["apiSystemIdentity"],
+                         "[and(variables('quickwit'), not(parameters('searcherApp')))]")
+
+    def test_rollback_keeps_single_revision_readiness_gated_handoff(self):
+        app = next(r for r in self.template["resources"] if r["name"] == "[parameters('name')]")
+        self.assertEqual(app["properties"]["configuration"]["activeRevisionsMode"], "Single")
+        probes = self.template["variables"]["apiContainer"]["probes"]
+        for kind in ("Startup", "Readiness"):
+            probe = next(p for p in probes if p["type"] == kind)
+            self.assertEqual(probe["httpGet"]["path"], "/readyz")
 
 
 class SettingsLocation(Stubbed):
