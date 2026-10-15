@@ -1,0 +1,384 @@
+{
+  "audit": "All 20 crop images visually checked before inference; 006 and 010 excluded for two-column geometry. This selection grants no training permission.",
+  "engine": {
+    "image": "sha256:d38ad661323c7c7928eb06c7398582f7ee63b32dc0f252fda2f7f990f0301b53",
+    "llama": "sha256:b0baccbe2e00b5d74e63f85f9f023c93d61d0f329475269e1e7002e87eb875ea",
+    "models": [
+      {
+        "file": "Qwen3-VL-2B-Instruct-Q8_0.gguf",
+        "min_gpu_mb": 0,
+        "mmproj": "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
+        "name": "qwen3-vl-2b-q8"
+      }
+    ],
+    "weights": "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd"
+  },
+  "evaluation_only": true,
+  "excluded": [
+    "pub-overproof-ca-006",
+    "pub-overproof-ca-010"
+  ],
+  "included": [
+    {
+      "crop_id": "pub-overproof-ca-001",
+      "image_sha256": "9253cf2ecbf0baf764aa098c5123bc0aa242ba32417658e3536bb7ae1fabd038",
+      "provenance": {
+        "box": [
+          3678,
+          3232,
+          4503,
+          3661
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-1-00211100606-1887061801-0101/40",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "e14057e5ebf6d102d2d1ee56bc380548cbbf7831be5e2d64909fa1ae9ebd7e21",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-002",
+      "image_sha256": "b82dbf60a4e17788934e92b3241dc7c3c9e9f4882438a3ee5f7b4a5d22a52055",
+      "provenance": {
+        "box": [
+          127,
+          4011,
+          853,
+          4389
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100618-1894062301-0285",
+        "page_image_sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+        "region": "sn84024828-3-00211100618-1894062301-0285/48",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "5ef4086858ea52409b0a147dd6b5dd9ccd653cbed4bdb757fb029668f77c6825",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-003",
+      "image_sha256": "30c94d7a31e43c7a843c51b2699ed0c031ba671bfb22aca16fc68597d16f886f",
+      "provenance": {
+        "box": [
+          3674,
+          4850,
+          4498,
+          5341
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-2-00211100606-1887061801-0101/0",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "5bde5cc2cba8016e9e1b160ad9a6c76b2b87b3fdaf84128b346200e332f6902b",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-004",
+      "image_sha256": "2d3c01d7893548d77b2114993c22949c81b8e518da99c6803fae3b366799cff8",
+      "provenance": {
+        "box": [
+          116,
+          2485,
+          838,
+          2861
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100618-1894062301-0285",
+        "page_image_sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+        "region": "sn84024828-3-00211100618-1894062301-0285/16",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "3dfb0acc8485d78d56a2f899e9f0ee2f243b9aee6a03086e278a00e49b333162",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-005",
+      "image_sha256": "acf4b5ead5c5c1f0ff5aa6ee59a27f09eaee02fa260931b0af0ba0c47cc29d41",
+      "provenance": {
+        "box": [
+          3677,
+          1492,
+          4505,
+          1923
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-1-00211100606-1887061801-0101/8",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "65d2a5c8c37549be856415a3bb6fb1bfafb9102ba33a719c0a56891d700c661a",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-007",
+      "image_sha256": "dee844185ce61d7b1ed54779387b7878573db7b79bc88172557f66d13dcc35ae",
+      "provenance": {
+        "box": [
+          3678,
+          1927,
+          4504,
+          2356
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-1-00211100606-1887061801-0101/16",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "8b5e2477f4e56824cd6e1c6df598c503104b72f403dfdc19cc00202da695ef33",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-008",
+      "image_sha256": "ea420b09569298b6921ea8ce336399ffb2c6407d48a5a11a8efd9bf1afd34556",
+      "provenance": {
+        "box": [
+          124,
+          3633,
+          851,
+          4007
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100618-1894062301-0285",
+        "page_image_sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+        "region": "sn84024828-3-00211100618-1894062301-0285/40",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "a346cfcabe34b2ed2c6664ad83395d526090f9604e02f3e0687074406df8059c",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-009",
+      "image_sha256": "5d61778ca3e1cd7c6e2ebe15ae8be00189b8eea15ff05b50a03cea49841eae9e",
+      "provenance": {
+        "box": [
+          3673,
+          6219,
+          4496,
+          6646
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-2-00211100606-1887061801-0101/24",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "98fa769fe4e345ce0712c85d3e7fa43c34c721e4b82abfb0fc442716df0a1927",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-011",
+      "image_sha256": "d9f5eaf75fcee194636f7b02e3fe1ee79a378bf3c9e321fa4a98d0aa5dcaf520",
+      "provenance": {
+        "box": [
+          3682,
+          2799,
+          4505,
+          3215
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-1-00211100606-1887061801-0101/32",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "aed6a7bcf582196a9f5030d15c26acd2710e780571031bcf127d23e4cedfe041",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-012",
+      "image_sha256": "b37a1e16be30c8f7c41ea42fd9be7cce462302c6763e625e2c2b53bfbdd1935d",
+      "provenance": {
+        "box": [
+          114,
+          1670,
+          829,
+          2477
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100618-1894062301-0285",
+        "page_image_sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+        "region": "sn84024828-3-00211100618-1894062301-0285/8",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "46c134474a0368b91f26b18aee9ca190472724f558d773b989551897824e3a23",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-013",
+      "image_sha256": "29957a66c96a212ad97e4cd12e2a1a7c91fc00041ce80cdb79f82fd7a59be1c0",
+      "provenance": {
+        "box": [
+          3677,
+          1058,
+          4504,
+          1487
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-1-00211100606-1887061801-0101/0",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "a46345840a25bff9b0da1d962d6877117f3d3b7ff943674194441578ddc17969",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-014",
+      "image_sha256": "a6f916c10adda0255e13edeb2516adc94671b7f6422bc7a9ca773d0177e52c98",
+      "provenance": {
+        "box": [
+          849,
+          1245,
+          1564,
+          1621
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100618-1894062301-0285",
+        "page_image_sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+        "region": "sn84024828-3-00211100618-1894062301-0285/92",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "b29d39a07cef600b2a094f79dad2ccb13dba27e469b3681d7bc6b89a7eba8879",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-015",
+      "image_sha256": "6665eeb98da9701956f62b36fa45bc2d410923e5e8bf192519e89edb13cd032a",
+      "provenance": {
+        "box": [
+          3672,
+          5786,
+          4497,
+          6212
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-2-00211100606-1887061801-0101/16",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "4a1365b4d4ed90433cb044f626132a4d67b7540813cad26497c5b167e29e4bbe",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-016",
+      "image_sha256": "a8c9bce09e5a8089cdf69a9fe68dab2516b4d0bd56ac472c71b69ff8f317d227",
+      "provenance": {
+        "box": [
+          149,
+          5192,
+          862,
+          5567
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100618-1894062301-0285",
+        "page_image_sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+        "region": "sn84024828-3-00211100618-1894062301-0285/72",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "b3554a66d7cde3bc6bc4edd409510e32b93b09e661f6cee6c0bdb1be3177b7d4",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-017",
+      "image_sha256": "c6ec4ed91667bbc08dc126519d70846dd4a40ccb0c02bd4fd4f55b874d0670d7",
+      "provenance": {
+        "box": [
+          3677,
+          3668,
+          4502,
+          4094
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-1-00211100606-1887061801-0101/48",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "1d5153ca99bbf57063db458bec471b4fed46783381b5042c5de4083e5c36dd4b",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-018",
+      "image_sha256": "94c4c444a0528fa7f08f87334c2173bc25e8de1c1758d6e065309619573c5dcd",
+      "provenance": {
+        "box": [
+          153,
+          5573,
+          867,
+          5959
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100618-1894062301-0285",
+        "page_image_sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+        "region": "sn84024828-3-00211100618-1894062301-0285/80",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "39789c8885f29270d53e0963e34d85142f52b5acaa4c0646c1f0d21f692a9453",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-019",
+      "image_sha256": "3f90c26e02ec581ebb066785e4817e2bd4ea6a09dfe182b24bdf8a0349666386",
+      "provenance": {
+        "box": [
+          3671,
+          4105,
+          4500,
+          4538
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100606-1887061801-0101",
+        "page_image_sha256": "33e7af713d9ae542c53c61d63f2b2cec46cbb58e993d998bbdbd559af19477c9",
+        "region": "sn84024828-1-00211100606-1887061801-0101/56",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "e945bbbae43acfaba7e6d48a88dc9acc12b8485680cc2b9de3360493f02c51aa",
+      "source_dataset": "overproof-ca"
+    },
+    {
+      "crop_id": "pub-overproof-ca-020",
+      "image_sha256": "0de6a6765eb3d12980e0fe0f90995442ce8ad2203b496c6d1f506cbee37570d1",
+      "provenance": {
+        "box": [
+          113,
+          1241,
+          827,
+          1663
+        ],
+        "page_id": "overproof-ca-sn84024828-00211100618-1894062301-0285",
+        "page_image_sha256": "72770912e4e4a1cde38d3c4d86908bf80dcfbaee8181b05ee6f6ebe3aead61a4",
+        "region": "sn84024828-3-00211100618-1894062301-0285/0",
+        "source_attribution": "Overproof dataset 3 (Evershed and Fitch 2014), as curated in HIPE-OCRepair-2026 (CC BY-NC-SA 4.0); page images and ALTO from the Library of Congress, Chronicling America",
+        "source_license": "CC BY-NC-SA 4.0 (HIPE-OCRepair-2026 copy); the newspaper text and LoC images are public domain",
+        "source_url": "https://github.com/hipe-eval/HIPE-OCRepair-2026-data"
+      },
+      "reference_sha256": "3488d17a6438799200bd414cb1921ef5596e80d5550dd544764cc50ad4bc4a41",
+      "source_dataset": "overproof-ca"
+    }
+  ],
+  "v": 1
+}

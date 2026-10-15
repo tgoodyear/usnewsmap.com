@@ -126,6 +126,10 @@ Do not bypass signing or replace unrelated production settings.
 The deployed bridge supports these steps:
 
 ```sh
+scripts/start-boinc-bridge.sh --env prod --step qwen-benchmark-prepare \
+  --var QWEN_CAMPAIGN=transcription-prepared-v1 \
+  --var QWEN_SELECTION=transcription-audited-20261015 \
+  --var QWEN_MAX=18 --wait-mins 15
 scripts/start-boinc-bridge.sh --env prod --step qwen-benchmark-stage \
   --var QWEN_CAMPAIGN=transcription-baseline-v1 \
   --var QWEN_CROPS=/project/qwen/transcription-baseline-v1/test/crops.jsonl \
@@ -138,9 +142,23 @@ scripts/start-boinc-bridge.sh --env prod --step qwen-benchmark-collect \
   --var QWEN_SPOOL=/project/usnmocr/results/0 --wait-mins 15
 ```
 
-Place the dataset and engine file on the share first. The existing converted
-public sources are under `/project/gold/build-v1/out/` when the gold bundle has
-been built. References must remain outside the project's download directory.
+`qwen-benchmark-prepare` replaces manual dataset/engine placement for a reviewed
+selection. It resolves the committed hash-only audit under
+`fixtures/ocr-gold/selections/` against the existing converted public cache at
+`/project/gold/build-v1/out/` (built by `gold-bundle`). Missing or duplicate
+matches, changed pixels, references or provenance, NoDerivatives sources and
+mutable engine pins fail before installation. Preparation installs atomically,
+retains licences, records output checksums and is idempotent only for identical
+inputs and outputs. Existing campaigns without its `prepared.json` marker are
+not adopted or overwritten: use a new campaign name. A held lock requires
+explicit recovery after confirming no preparation is running.
+
+Preparation then runs benchmark staging, which generates and checks the
+reference-free notices; it never submits work. `qwen-benchmark-stage` remains
+available for an already prepared campaign. References stay outside the public
+download directory, and the reviewed evaluation selection grants no training
+permission. Never submit the same selection under multiple roots merely to test
+preparation.
 
 ## Results and promotion
 
