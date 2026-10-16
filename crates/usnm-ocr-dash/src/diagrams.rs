@@ -63,7 +63,7 @@ pub const DIAGRAMS: [Diagram; 4] = [
             ),
             (
                 "Needs OCR",
-                "Yes. Queue ocr-bulk (ocr-priority is for pages users find, not built). OCR nodes 3 and 4 \
+                "Yes. Queue ocr-bulk (ocr-priority is for pages users find, not built). Active OCR workers \
                  read them with Tesseract in a container per page, using the scan from the scan server.",
             ),
             (
@@ -353,7 +353,7 @@ pub fn section(v: &View) -> String {
     let st = steps(v);
     let mut o = String::with_capacity(48 * 1024);
     o.push_str(
-        "<section class=\"wide\" id=\"pipelines\"><h2>Pipelines</h2>\
+        "<section class=\"wide\" id=\"pipelines\"><details><summary><h2>Pipelines</h2> — reference diagrams</summary>\
          <p class=\"note\">One diagram for each data set: where it comes from, whether it needs OCR, where \
          each copy is stored and what still has to happen before it is searchable. The drawings are \
          fixed; the bar on each box and the italic line under it are the live state from this page's \
@@ -380,7 +380,7 @@ pub fn section(v: &View) -> String {
         }
         o.push_str("</table>");
     }
-    o.push_str("</section>");
+    o.push_str("</details></section>");
     o
 }
 
@@ -526,6 +526,8 @@ mod tests {
         }
         // Pipelines follow At a glance.
         assert!(html.find("At a glance") < html.find("Pipelines"));
+        assert!(html.find("Azure queues and dead letters") < html.find("Pipelines"));
+        assert!(html.contains("<details><summary><h2>Pipelines</h2>"));
         // Element ids are unique across the inlined SVGs.
         let mut ids: Vec<&str> = html
             .split(" id=\"")
