@@ -220,29 +220,9 @@ impl Ndlocr {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
+        ensure!(Instant::now() < deadline, ReadError::Timeout);
         let mut child = cmd.spawn().context("starting NDLOCR-Lite")?;
-        let stop = |child: &mut std::process::Child| {
-            #[cfg(unix)]
-            if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
-                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        };
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(s)) => break s,
-                Ok(None) if Instant::now() >= deadline => {
-                    stop(&mut child);
-                    return Err(ReadError::Timeout.into());
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => {
-                    stop(&mut child);
-                    return Err(e.into());
-                }
-            }
-        };
+        let status = wait_for_exit(&mut child, deadline)?;
         if !status.success() {
             // A bounded tail, never page text, is enough to diagnose a broken image.
             use std::io::{Seek, SeekFrom};
@@ -265,14 +245,47 @@ impl Ndlocr {
             }
             anyhow::bail!("NDLOCR-Lite exit {status}: {tail}");
         }
-        Ok(Output {
+        let result = Output {
             xml: read_bounded(&output.join("page.xml"), 64 << 20)
                 .context("NDLOCR-Lite produced no XML")?,
             text: normalize(std::str::from_utf8(
                 &read_bounded(&output.join("page.txt"), 8 << 20)
                     .context("NDLOCR-Lite produced no text")?,
             )?),
-        })
+        };
+        ensure!(Instant::now() < deadline, ReadError::Timeout);
+        Ok(result)
+    }
+}
+
+fn wait_for_exit(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> anyhow::Result<std::process::ExitStatus> {
+    let stop = |child: &mut std::process::Child| {
+        #[cfg(unix)]
+        if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    loop {
+        let status = child.try_wait();
+        if Instant::now() >= deadline {
+            stop(child);
+            return Err(ReadError::Timeout.into());
+        }
+        match status {
+            Ok(Some(s)) => return Ok(s),
+            Ok(None) => std::thread::sleep(
+                Duration::from_millis(20).min(deadline.saturating_duration_since(Instant::now())),
+            ),
+            Err(e) => {
+                stop(child);
+                return Err(e.into());
+            }
+        }
     }
 }
 
@@ -313,6 +326,9 @@ impl Reader for ContractReader {
             message: e.to_string(),
             restart: false,
         })?;
+        if Instant::now() >= deadline {
+            return Err(ReadError::Timeout);
+        }
         Ok(Reading::Alto {
             alto,
             text: result.text,
@@ -329,6 +345,25 @@ fn processing_time(at: chrono::DateTime<chrono::Utc>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn completed_child_observed_after_deadline_is_timeout() {
+        use std::os::unix::process::CommandExt;
+        let deadline = std::time::Instant::now();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        // A completed status is available before the next poll, but late.
+        assert!(child.wait().unwrap().success());
+        let error = super::wait_for_exit(&mut child, deadline).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::ReadError>(),
+            Some(crate::ReadError::Timeout)
+        ));
+    }
+
     #[test]
     fn processing_time_round_trips_through_python_datetime_spelling() {
         for stamp in [
