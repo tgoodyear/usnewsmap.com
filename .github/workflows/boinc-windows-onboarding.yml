@@ -1,0 +1,25 @@
+name: boinc-windows-onboarding
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/boinc-windows-onboarding.yml
+      - scripts/boinc/*windows_volunteer.ps1
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Windows PowerShell 5.1 contract (no host changes)
+        shell: powershell
+        run: .\scripts\boinc\test_windows_volunteer.ps1
+      - name: PowerShell 7 contract (no host changes)
+        shell: pwsh
+        run: .\scripts\boinc\test_windows_volunteer.ps1

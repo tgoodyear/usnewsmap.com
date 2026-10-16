@@ -14,6 +14,22 @@ test.beforeEach(async ({ page }) => {
 });
 const query = "/?q=%22cross+of+gold%22&bucket=month&from=1896-06-01&to=1896-12-31&c=-89,40&z=5";
 
+test("States paint timing does not count a deck draw behind an invisible overlay", async ({ page }) => {
+  await page.goto(query);
+  await expect(page.locator("#search-overlay")).toHaveCSS("opacity", "1");
+  const gate = await page.addStyleTag({ content: "#search-overlay { opacity: 0 !important; }" });
+  await page.getByRole("combobox", { name: "Map layer" }).selectOption("states");
+  await page.waitForFunction(() => performance.getEntriesByName("usnm-states-first-draw").length > 0);
+  expect(await page.evaluate(() => performance.getEntriesByName("usnm-states-first-paint").length)).toBe(0);
+  await gate.evaluate((element) => element.parentNode?.removeChild(element));
+  await page.waitForFunction(() => performance.getEntriesByName("usnm-states-first-paint").length > 0);
+  const timings = await page.evaluate(() => ({
+    draw: performance.getEntriesByName("usnm-states-first-draw")[0]!.duration,
+    paint: performance.getEntriesByName("usnm-states-first-paint")[0]!.duration,
+  }));
+  expect(timings.paint).toBeGreaterThan(timings.draw);
+});
+
 test("States is lazy, permalinked, accessible and exports the exact window numbers without new API queries", async ({
   page,
 }) => {

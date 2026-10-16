@@ -40,6 +40,7 @@ Build-time settings:
 - **Snippets** are split into text and `<mark>` segments and rendered as text nodes. No API HTML is ever injected.
 - **Accessibility.** A Table tab mirrors the map. Playback works from the keyboard: `Space`, `←`/`→` (`Shift` for 10), `Home`/`End`. The current date is announced in a live region. Reduced motion is honored. Without WebGL2, the table is shown instead of the map.
 - **Page views** (`src/pageview.ts`, 07 §7.8). One per page load, sent with `navigator.sendBeacon` to `/v1/beacon`: the page name and title, and on the first page the referrer's origin and the landing URL's `utm_*` tags. Never the search or other query parameters. Do Not Track and Global Privacy Control turn it off, and nothing is stored in the browser. The privacy page (`/privacy`) describes it for visitors.
+- **Basemap startup.** The entry bundle warms the initial permalink/default viewport’s tiles, sprites and label glyphs before the lazy map stack loads (up to 40 requests; skipped with `VITE_BASEMAP_STYLE=none`). TileJSON resolves the provider’s current tile URLs at runtime. Dots fade in after the basemap’s first loaded idle, or after a two-second fallback if the provider is slow/blocked; reduced motion disables the fade. Requests use the browser HTTP cache, not persistent application storage.
 - **Performance.** The map stack is lazy-loaded; the critical-path JS is about 99 KB gzip (budget 250 KB).
 
 ## States layer
@@ -121,6 +122,9 @@ The test checks that no geometry resource was requested before States selection.
 `usnm-states-parsed` and `usnm-states-first-draw` additionally separate JSON
 decoding and CPU draw submission from the subsequent paint opportunity. Neither
 draw submission nor two animation frames proves GPU completion.
+The paint proxy waits until the basemap-gated overlay has nonzero opacity;
+an invisible deck draw is not counted as visible paint. The benchmark waits
+for the initial basemap/overlay fade to finish before selecting States.
 
 On the same Apple M1 with **Chromium 153.0.8010.12, ANGLE Metal native GPU**,
 the initial run measured **489.4, 45.6, 49.4, 50.1, 44.9 ms**: the first cold
@@ -145,6 +149,9 @@ hardware, including GPU/compositor completion if strict actual presentation is
 required, remains a release blocker. The first failed run did not capture the
 new intermediate marks, so attributing its excess time to shader compilation
 or to the two animation frames would be speculation.
+After integrating the initial basemap readiness gate, the visibility-aware
+five-process native-Metal run measured **52.9, 52.8, 54.7, 81.4, 67.7 ms**.
+The same uncontrolled-driver-cache limitation applies; no cold pass is claimed.
 
 Read-only public metadata on 2026-10-15 (`pages-v20261010-2`) listed **1,617
 places**, none missing state codes; all codes are represented by the boundary

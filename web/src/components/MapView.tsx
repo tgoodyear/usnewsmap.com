@@ -17,6 +17,7 @@ import { colorFor, timeColor } from "../lib/scale";
 import { ALPHA_CLEAR, ALPHA_UNCLEAR, skewColor } from "../lib/skewScale";
 import { skewSentence } from "../lib/skewText";
 import type { MapPoint } from "./mapTypes";
+import { DEFAULT_ZOOM, STYLE_URL, US_CENTER } from "../lib/basemap";
 import { MAX_ZOOM, MIN_ZOOM } from "../lib/mapLimits";
 import { stateColor, stateDescription, type StateTotal } from "../engine/states";
 import boundariesUrl from "../assets/states.geojson?url";
@@ -41,7 +42,6 @@ interface Props {
 
 setWorkerUrl(workerUrl);
 
-const US_CENTER: [number, number] = [-96, 38.5];
 const MAX_RADIUS_PX = 26;
 /** Extra slop around a circle for hover and click, in pixels. */
 const HIT_SLOP_PX = 3;
@@ -83,7 +83,6 @@ function skewFill(p: MapPoint): [number, number, number, number] {
 }
 
 // `none` gives a plain background: offline development and tests.
-const STYLE_URL = import.meta.env.VITE_BASEMAP_STYLE ?? "https://tiles.openfreemap.org/styles/positron";
 const PLAIN_STYLE: StyleSpecification = {
   version: 8,
   sources: {},
@@ -135,12 +134,13 @@ export default function MapView(props: Props) {
   });
 
   useEffect(() => {
-    if (!container.current) return;
+    const element = container.current;
+    if (!element) return;
     const m = new MapLibreMap({
-      container: container.current,
+      container: element,
       style: STYLE_URL === "none" ? PLAIN_STYLE : STYLE_URL,
       center: latest.current.center ?? US_CENTER,
-      zoom: latest.current.zoom ?? 3.3,
+      zoom: latest.current.zoom ?? DEFAULT_ZOOM,
       minZoom: MIN_ZOOM,
       maxZoom: MAX_ZOOM,
       attributionControl: { compact: true },
@@ -151,13 +151,31 @@ export default function MapView(props: Props) {
     m.addControl(new NavigationControl({ showCompass: false }), "top-left");
     // Overlaid, not interleaved: deck.gl 9.4's interleaved mode reads
     // MapLibre internals that changed in MapLibre 6.
-    const o = new MapboxOverlay({ interleaved: false, layers: [] });
+    const o = new MapboxOverlay({ id: "search-overlay", interleaved: false, layers: [] });
     m.addControl(o);
+
+    let ready = false;
+    let loaded = false;
+    const reveal = () => {
+      if (ready) return;
+      ready = true;
+      element.classList.add("map--basemap-ready");
+      clearTimeout(fallback);
+    };
+    const fallback = setTimeout(reveal, 2000);
+    m.on("load", () => {
+      loaded = true;
+    });
+    m.on("idle", () => {
+      if (loaded && m.areTilesLoaded()) reveal();
+    });
+    if (STYLE_URL === "none") reveal();
 
     // Hover and click are hit-tested on the CPU against the projected
     // circles. GPU picking would read pixels back on every mouse move,
     // stalling the pipeline; a few thousand projections cost far less.
     const hit = (x: number, y: number): MapPoint | null => {
+      if (!ready) return null;
       const { points, maxValue, layer, norm } = drawn.current;
       if (layer !== "points") return null;
       let best: MapPoint | null = null;
@@ -217,6 +235,8 @@ export default function MapView(props: Props) {
     map.current = m;
     overlay.current = o;
     return () => {
+      clearTimeout(fallback);
+      element.classList.remove("map--basemap-ready");
       cancelAnimationFrame(frame);
       m.remove();
       map.current = null;
@@ -229,7 +249,7 @@ export default function MapView(props: Props) {
   // URL stores are the map's own last move echoing back, so they're ignored.
   // Keyed on the values, not the array: the URL is re-parsed on every render
   // (each playback frame), and a jump mid-gesture would cancel a pinch zoom.
-  const zoom = props.zoom ?? 3.3;
+  const zoom = props.zoom ?? DEFAULT_ZOOM;
   const [lng, lat] = props.center ?? US_CENTER;
   useEffect(() => {
     const m = map.current;
@@ -269,11 +289,13 @@ export default function MapView(props: Props) {
                 getLineWidth: 0.8,
                 updateTriggers: { getFillColor: [states, stateBreaks] },
                 onHover: (info) => {
+                  if (!container.current?.classList.contains("map--basemap-ready")) return;
                   const code = (info.object as StateFeature | undefined)?.properties.STUSPS;
                   const x = Math.min(info.x + 12, Math.max(0, (container.current?.clientWidth ?? 320) - 280));
                   setStateTip((old) => (old?.pinned ? old : code ? { code, x, y: info.y, pinned: false } : null));
                 },
                 onClick: (info) => {
+                  if (!container.current?.classList.contains("map--basemap-ready")) return;
                   const code = (info.object as StateFeature | undefined)?.properties.STUSPS;
                   if (!code) return;
                   if (window.matchMedia("(pointer: coarse)").matches) {
@@ -354,28 +376,40 @@ export default function MapView(props: Props) {
               ];
     // No attribute transitions: deck.gl runs them on the GPU with transform
     // feedback and reads buffers back, which stalls every playback step.
+    let paintFrame = 0;
+    let measuring = false;
     o.setProps({
       layers,
       onAfterRender: () => {
-        if (layer !== "states" || layers.length === 0 || paintMeasured.current) return;
+        if (layer !== "states" || layers.length === 0 || paintMeasured.current || measuring) return;
         const asset = performance.getEntriesByType("resource").find((entry) => entry.name.endsWith(boundariesUrl)) as
           PerformanceResourceTiming | undefined;
         if (!asset) return;
-        paintMeasured.current = true;
-        performance.measure("usnm-states-first-draw", { start: asset.responseEnd, end: performance.now() });
-        // Two frames after deck's draw gives the browser a paint opportunity.
+        measuring = true;
+        if (performance.getEntriesByName("usnm-states-first-draw").length === 0) {
+          performance.measure("usnm-states-first-draw", { start: asset.responseEnd, end: performance.now() });
+        }
+        // Never count a draw behind the basemap opacity gate as a visible paint.
         // This is a presentation proxy, not a compositor/GPU fence timestamp.
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            performance.measure("usnm-states-first-paint", {
-              start: asset.responseEnd,
-              end: performance.now(),
-              detail: "First deck draw plus two animation frames; presentation proxy",
-            });
-          }),
-        );
+        const measurePaint = () => {
+          const canvas = container.current?.querySelector("#search-overlay");
+          if (!canvas || Number(getComputedStyle(canvas).opacity) <= 0) {
+            paintFrame = requestAnimationFrame(measurePaint);
+            return;
+          }
+          paintMeasured.current = true;
+          performance.measure("usnm-states-first-paint", {
+            start: asset.responseEnd,
+            end: performance.now(),
+            detail: "First deck draw plus two animation frames, waiting for visible overlay; presentation proxy",
+          });
+        };
+        paintFrame = requestAnimationFrame(() => {
+          paintFrame = requestAnimationFrame(measurePaint);
+        });
       },
     });
+    return () => cancelAnimationFrame(paintFrame);
   }, [points, layer, norm, maxValue, selected, states, stateBreaks, boundaries.data]);
 
   const tipRow =
@@ -383,7 +417,7 @@ export default function MapView(props: Props) {
 
   return (
     <div className="map-wrap">
-      <div ref={container} className="map" data-testid="map" />
+      <div ref={container} className="map map--gated" data-testid="map" />
       <div ref={tooltip} className="map-tooltip" role="tooltip" hidden />
       {layer === "states" && boundaries.isError && (
         <div className="map-state-error" role="alert">

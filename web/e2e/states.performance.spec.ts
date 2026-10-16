@@ -39,6 +39,7 @@ test("States first-paint proxy meets 300 ms after the boundary asset arrives", a
       await expect(page.getByTestId("map")).toBeVisible();
       // Warm the map and let the already-requested coverage arrive, not the state geometry.
       await page.waitForTimeout(500);
+      await expect(page.locator("#search-overlay")).toHaveCSS("opacity", "1");
       expect(
         await page.evaluate(() => performance.getEntriesByType("resource").some((e) => e.name.endsWith(".geojson"))),
       ).toBe(false);
