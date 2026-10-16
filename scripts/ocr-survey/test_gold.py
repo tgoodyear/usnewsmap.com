@@ -3,8 +3,10 @@
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -311,6 +313,57 @@ class Overproof(unittest.TestCase):
             self.assertEqual([(r["box"], r["text"]) for r in regs], [([10, 10, 220, 90], "The cat\nsat-\ndown.")])
             smh_regs = gold.public_regions("overproof-smh", src)
             self.assertEqual([(r["image"], r["text"]) for r in smh_regs], [(None, "Text only")])
+
+    def test_page_spanning_string_and_textline_boxes_do_not_stretch_crop(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d)
+            (src / "hipe").mkdir()
+            (src / "loc").mkdir()
+            key = "sn1-00001-1872040501-0002"
+            doc = hipe_doc("sn1-11-00001-1872040501-0002",
+                           ["The cat", "sat-", "down."], ["Tho cat", "sat-", "down."])
+            (src / "hipe" / "a.jsonl").write_text(json.dumps(doc) + "\n")
+            malformed = (ALTO.replace("<TextBlock>", '<TextBlock HPOS="10" VPOS="10" WIDTH="200" HEIGHT="80">')
+                         .replace("<TextLine><String HPOS=\"10\"",
+                                  '<TextLine HPOS="0" VPOS="0" WIDTH="400" HEIGHT="300"><String HPOS="10"', 1)
+                         .replace('HPOS="120" VPOS="10" WIDTH="100" HEIGHT="20" CONTENT="cat"',
+                                  'HPOS="120" VPOS="10" WIDTH="400" HEIGHT="300" CONTENT="cat"'))
+            (src / "loc" / f"{key}.xml").write_text(malformed)
+            (src / "loc" / f"{key}.jpg").write_bytes(b"synthetic image placeholder")
+            (src / "loc" / "pages.json").write_text(json.dumps({key: {"image": f"{key}.jpg", "alto": f"{key}.xml"}}))
+
+            class FakeImage:
+                width = 400
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+            pil = types.ModuleType("PIL")
+            image = types.ModuleType("PIL.Image")
+            image.open = lambda _: FakeImage()
+            pil.Image = image
+            with patch.dict(sys.modules, {"PIL": pil, "PIL.Image": image}):
+                regs, _ = gold.overproof_ca_regions(src)
+            self.assertEqual(len(regs), 1)
+            self.assertEqual(regs[0]["text"], "The cat\nsat-\ndown.")
+            self.assertEqual(regs[0]["box"], [10, 10, 210, 90])
+
+    def test_line_without_plausible_string_or_textline_geometry_fails_loudly(self):
+        malformed = (ALTO.replace('HEIGHT="20"', 'HEIGHT="300"')
+                     .replace("<TextLine><String", '<TextLine HPOS="0" VPOS="0" WIDTH="400" HEIGHT="300"><String'))
+        with self.assertRaisesRegex(ValueError, "no plausible geometry"):
+            gold.alto_lines(malformed.encode(), 400)
+
+    def test_usable_textline_box_is_a_fallback(self):
+        xml = b"""<alto><Layout><Page WIDTH="400" HEIGHT="300"><PrintSpace>
+        <TextBlock HPOS="10" VPOS="10" WIDTH="200" HEIGHT="80">
+        <TextLine HPOS="10" VPOS="10" WIDTH="200" HEIGHT="20">
+        <String HPOS="10" VPOS="10" WIDTH="400" HEIGHT="300" CONTENT="Text"/>
+        </TextLine></TextBlock></PrintSpace></Page></Layout></alto>"""
+        self.assertEqual(gold.alto_lines(xml, 400), [{"text": "Text", "box": [10, 10, 210, 30]}])
 
     def test_text_only_rows_validate(self):
         p = {"page_id": "overproof-smh-1", "region": "1", "text": "Some text", "box": None, "image": None}

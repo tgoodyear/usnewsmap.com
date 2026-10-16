@@ -741,21 +741,146 @@ def ca_page(doc_id: str) -> dict | None:
 
 
 def alto_lines(xml: bytes, image_width: int) -> list[dict]:
-    """LoC ALTO as lines in reading (file) order: text (Strings joined by spaces) and box in image pixels."""
-    import crops
+    """LoC ALTO as lines in reading order, ignoring implausible String/TextLine geometry.
 
-    w = crops.page_width(xml)
+    String text is kept even when its coordinates are bad. Its box is left out of the union, so a single
+    page-spanning coordinate cannot stretch the crop. A line with no plausible String box falls back to
+    its TextLine box; if neither is usable, conversion fails rather than emitting a crop with false bounds.
+    """
+    import math
+    import statistics
+    import xml.etree.ElementTree as ET
+
+    page_width_match = re.search(rb"<(?:\w+:)?Page\b[^>]*\bWIDTH=\"([\d.]+)\"", xml)
+    w = float(page_width_match.group(1)) if page_width_match else None
     import altotext
 
     scale = image_width / w if w else altotext.pixel_scale(xml)
+    root = ET.fromstring(xml)
+    page = next((e for e in root.iter() if _local(e) == "Page"), None)
+    page_height = None
+    if page is not None and page.get("HEIGHT"):
+        try:
+            page_height = float(page.get("HEIGHT")) * scale
+        except ValueError:
+            pass
+    if page_height is not None and (not math.isfinite(page_height) or page_height <= 0):
+        page_height = None
+    page_width = float(w) * scale if w else None
+
+    def rect(el):
+        try:
+            values = tuple(float(el.get(k)) * scale for k in ("HPOS", "VPOS", "WIDTH", "HEIGHT"))
+        except (TypeError, ValueError):
+            return None
+        return values if all(math.isfinite(v) for v in values) and values[2] > 0 and values[3] > 0 else None
+
+    # altotext numbers every direct TextLine child of every TextBlock in this same order.
+    line_meta = []
+    for block in root.iter():
+        if _local(block) != "TextBlock":
+            continue
+        block_rect = rect(block)
+        for line in block:
+            if _local(line) == "TextLine":
+                line_meta.append((block_rect, rect(line)))
+
+    words = altotext.parse(xml, scale)[1]
     lines: dict[int, list] = {}
-    for x, y, ww, h, c, ln in altotext.parse(xml, scale)[1]:
+    for x, y, ww, h, c, ln in words:
         lines.setdefault(ln, []).append((x, y, ww, h, c))
+
+    line_heights = {}
+    char_widths = []
+    for x, y, ww, h, c, ln in words:
+        if math.isfinite(h) and h > 0 and (not page_height or h < page_height * 0.15):
+            line_heights.setdefault(ln, []).append(h)
+        if c and math.isfinite(ww) and ww > 0:
+            char_widths.append(ww / len(c))
+    typical_height = statistics.median(
+        statistics.median(values) for values in line_heights.values() if values
+    ) if line_heights else None
+    typical_char_width = statistics.median(char_widths) if char_widths else None
+
+    def plausible(box, containing, text):
+        if box is None:
+            return False
+        x, y, ww, h = box
+        if not all(math.isfinite(v) for v in box) or ww <= 0 or h <= 0:
+            return False
+        if typical_height and h > 6 * typical_height:
+            return False
+        if page_height and h > 0.12 * page_height:
+            return False
+        if typical_char_width and text and ww > 4 * typical_char_width * len(text):
+            return False
+        if page_width:
+            margin = max(3.0, page_width * 0.02)
+            if x < -margin or x + ww > page_width + margin:
+                return False
+        if page_height:
+            margin = max(3.0, page_height * 0.02)
+            if y < -margin or y + h > page_height + margin:
+                return False
+        if containing:
+            bx, by, bw, bh = containing
+            margin = max(3.0, bw * 0.02)
+            if ww > bw + margin or x < bx - margin or x + ww > bx + bw + margin:
+                return False
+            vmargin = max(3.0, bh * 0.02)
+            if h > bh + vmargin or y < by - vmargin or y + h > by + bh + vmargin:
+                return False
+        return True
+
+    def string_rect(box, containing, text):
+        """Repair oversized dimensions at a sane origin; discard coordinates whose origin is unusable."""
+        if box is None or not text:
+            return None
+        x, y, ww, h = box
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        if page_width and not 0 <= x < page_width:
+            return None
+        if page_height and not 0 <= y < page_height:
+            return None
+        if containing:
+            bx, by, bw, bh = containing
+            margin = max(3.0, bw * 0.02)
+            if x < bx - margin or x >= bx + bw + margin or y < by - margin or y >= by + bh + margin:
+                return None
+
+        if typical_char_width and (not math.isfinite(ww) or ww <= 0 or
+                                   ww > 4 * typical_char_width * len(text)):
+            ww = typical_char_width * len(text)
+        if typical_height and (not math.isfinite(h) or h <= 0 or h > 6 * typical_height):
+            h = typical_height
+        if not math.isfinite(ww) or ww <= 0 or not math.isfinite(h) or h <= 0:
+            return None
+        if page_width:
+            ww = min(ww, page_width - x)
+        if page_height:
+            h = min(h, page_height - y)
+        if containing:
+            bx, by, bw, bh = containing
+            ww = min(ww, bx + bw - x)
+            h = min(h, by + bh - y)
+        repaired = (x, y, ww, h)
+        return repaired if plausible(repaired, containing, text) else None
+
     out = []
     for ln in sorted(lines):
         ws = lines[ln]
-        out.append({"text": " ".join(c for *_, c in ws if c),
-                    "box": box_of([(x, y) for x, y, *_ in ws] + [(x + ww, y + h) for x, y, ww, h, _ in ws])})
+        text = " ".join(c for *_, c in ws if c)
+        block_rect, line_rect = line_meta[ln - 1] if ln <= len(line_meta) else (None, None)
+        valid = [box for x, y, ww, h, c in ws
+                 if (box := string_rect((x, y, ww, h), block_rect, c)) is not None]
+        if not valid and plausible(line_rect, block_rect, text):
+            valid = [line_rect]
+        if not valid and text.strip():
+            raise ValueError(f"ALTO TextLine {ln} has no plausible geometry; refusing to emit an invalid crop")
+        box = (box_of([(x, y) for x, y, *_ in valid] +
+                      [(x + ww, y + h) for x, y, ww, h in valid]) if valid else None)
+        out.append({"text": text, "box": box})
     return out
 
 
