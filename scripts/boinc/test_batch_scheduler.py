@@ -44,6 +44,7 @@ class Fake:
         self.hosts = 2
         self.other = 0
         self.assimilated = set()
+        self.extra_pending = set()
         self.crash_export = False
         self.crash_submit = False
         self.hold = False
@@ -52,6 +53,7 @@ class Fake:
     def inventory(self):
         pending = [job_id for job_id, job in self.jobs.items()
                    if job["stage"] == "submitted" and not job["spool"] and job_id not in self.assimilated]
+        pending = sorted(set(pending) | self.extra_pending)
         return {"schema_version": 1, "nonce": "a" * 32, "created_at": NOW,
                 "active_hosts": self.hosts,
                 "pending_workunits": self.other + len(pending), "pending_jobs": pending,
@@ -212,6 +214,35 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "migration"):
             self.tick()
         self.assertEqual(self.fake.actions, [])
+
+    def test_other_plan_same_page_cannot_overwrite_original_journal(self):
+        original = record(self.config["pages"][0]["page"], 1, "submitted")
+        original.update(plan="original-owner", stamp="original-timestamp")
+        self.fake.rows = [copy.deepcopy(original)]
+        with self.assertRaisesRegex(ValueError, "another plan"):
+            self.tick()
+        self.assertEqual(self.fake.rows, [original])
+        self.assertEqual(self.fake.actions, [])
+        self.assertNotIn("selected", self.state)
+
+    def test_sql_workunit_with_missing_or_stale_bridge_journal_is_not_resubmitted(self):
+        job_id = "0" * 63 + "1"
+        self.fake.rows = [record(self.config["pages"][0]["page"], 1)]
+        self.fake.extra_pending = {job_id}
+        for remote in (None, {"stage": "reserved", "spool": None}):
+            with self.subTest(remote=remote):
+                self.fake.jobs = {} if remote is None else {job_id: remote}
+                with self.assertRaisesRegex(ValueError, "SQL/journal mismatch"):
+                    self.tick()
+                self.assertEqual(self.fake.actions, [])
+                self.assertNotIn("selected", self.state)
+
+    def test_sql_orphan_discovered_after_export_is_not_submitted(self):
+        self.fake.extra_pending = {"0" * 63 + "1"}
+        with self.assertRaisesRegex(ValueError, "SQL/journal mismatch"):
+            self.tick()
+        self.assertEqual(self.fake.jobs, {})
+        self.assertFalse(any(action[0] == "submit" for action in self.fake.actions))
 
     def test_stale_inventory(self):
         with self.assertRaisesRegex(ValueError, "fresh"):

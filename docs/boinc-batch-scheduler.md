@@ -72,6 +72,10 @@ existing exporter verifies them. Allocate up to 10,000 explicit pages, with
 mid-cohort: its configuration hash pins the complete allocation, limits and
 worker image. Finish/drain, reconcile failures, and obtain operator approval
 before migrating the configuration or allocating another cohort.
+If any allocated page already has another plan's hand-off journal, the controller
+refuses the overlap before writing allocation state or exporting anything. Keep
+the original owner's journals intact; resolve ownership or choose different
+pages rather than overwriting them, including for historical cohorts.
 
 ## One tick and backpressure
 
@@ -107,6 +111,8 @@ before migrating the configuration or allocating another cohort.
    On rerun, authoritative hand-off and bridge records recover partial export
    and interrupted pulls. Never replay `create_work` for a `submitting` record.
    A submitted reservation is not submitted twice.
+   An existing SQL workunit with a missing/stale bridge journal also requires
+   explicit reconciliation, even if capacity is available.
 6. Emit a structured `boinc_batch_tick` JSON event: selected/published counts,
    new publications, cumulative pages/hour, host/queue counts, oldest pending
    age, collection backlog and backpressure. Errors emit

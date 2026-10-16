@@ -178,10 +178,12 @@ def owned_records(config, records):
     for record in records:
         require(record["stage"] in STAGES and ID.fullmatch(record["job"]["id"]),
                 "invalid dispatch journal")
-        if record["plan"] != config["plan"]:
-            continue
         job = record["job"]
         page = job["message"]["page"]
+        if record["plan"] != config["plan"]:
+            require(page not in wanted,
+                    "page is already allocated to another plan; reconcile the allocation before export")
+            continue
         require(job["message"]["batch"] == config["batch"] and page in wanted
                 and job["engine"]["image"] == config["image"],
                 "plan already exists with a different allocation/image; operator migration required")
@@ -210,6 +212,10 @@ def tick(config, state, transport, persist, now=None):
                 "invalid server job record")
     records = transport.records()
     owned = owned_records(config, records)
+    for record in owned.values():
+        job_id = record["job"]["id"]
+        require(job_id not in pending_jobs or server.get(job_id, {}).get("stage") == "submitted",
+                "SQL/journal mismatch; reconcile existing work before any automatic submission")
     selected = state.setdefault("selected", {})
     for page in owned:
         selected.setdefault(page, now)
@@ -254,8 +260,11 @@ def tick(config, state, transport, persist, now=None):
                   (page["page"] not in owned or owned[page["page"]]["stage"] == "prepared")]
         if export:
             export = export[:config["batch_size"]]
-            transport.export(export, [owned[page["page"]]["job"]["id"]
-                                      for page in export if page["page"] in owned])
+            pages = {page["page"] for page in export}
+            journals = [record["job"]["id"] for record in records
+                        if record["job"]["message"]["page"] in pages]
+            require(len(journals) <= 100, "too many existing journals for selected pages; reconcile history")
+            transport.export(export, journals)
             records = transport.records()
             owned = owned_records(config, records)
         submitted = 0
@@ -265,6 +274,8 @@ def tick(config, state, transport, persist, now=None):
             if record["stage"] == "reserved" and \
                     server.get(job_id, {}).get("stage") in (None, "reserved") and \
                     submitted < submit_limit:
+                require(job_id not in pending_jobs,
+                        "SQL/journal mismatch; reconcile existing work before any automatic submission")
                 transport.submit(job_id)
                 submitted += 1
     published = sum(record["stage"] == "published" for record in owned.values())

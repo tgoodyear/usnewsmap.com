@@ -46,6 +46,7 @@ def inventory(root, results, counts, nonce, pending_ids=()):
             raise ValueError("invalid inventory record")
         jobs[job_id] = {"stage": record["stage"], "spool": None}
     seen = {}
+    locations = {}
     for number, path in enumerate(results.rglob("*")):
         if number >= MAX_FILES:
             raise ValueError("inventory spool limit reached; archive drained results")
@@ -59,6 +60,9 @@ def inventory(root, results, counts, nonce, pending_ids=()):
             continue
         if not path.resolve().is_relative_to(results.resolve()):
             raise ValueError("spool escapes results directory")
+        locations.setdefault(match[1], set()).add(str(path.parent))
+        if len(locations[match[1]]) > 1:
+            raise ValueError("multiple assimilator spools for one job, including partial outputs")
         seen.setdefault((match[1], str(path.parent)), set()).add(match[2])
     for (job_id, directory), names in seen.items():
         complete = {"__file_result.json", "__file_text.txt", "__file_layout.xml"} <= names

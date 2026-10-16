@@ -62,6 +62,15 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "multiple"):
             self.payload()
 
+    def test_complete_plus_partial_spools_are_also_ambiguous(self):
+        for suffix in ("__file_result.json", "__file_text.txt", "__file_layout.xml"):
+            self.write(suffix)
+        second = self.results / "partial"
+        second.mkdir()
+        (second / ("usnm_" + self.job + "__file_result.json")).write_text("partial")
+        with self.assertRaisesRegex(ValueError, "multiple"):
+            self.payload()
+
     def test_limits_and_invalid_counts(self):
         with patch.object(inventory, "MAX_JOBS", 0), self.assertRaises(ValueError):
             self.payload()
