@@ -282,7 +282,9 @@ def adapt_worker(metadata, page_id):
                             "invalid engine digest")
                     sha(info[key], prefixed=True)
                 projection[key] = info[key]
-            projection["config_sha256"] = digest(info)
+            projection["config_sha256"] = digest({key: value for key, value in info.items()
+                                                   if key not in ("cold_start", "model_load_seconds",
+                                                                  "engine_stats_json")})
         observations.append(projection)
     if metadata["run_record"] is not None:
         run = adapt_run(metadata["run_record"], page_id)
@@ -423,9 +425,12 @@ def connect(path, writable=False):
         require(len(versions) == 1 and versions[0][0] == 1,
                 "unsupported catalog schema (rebuild from evidence)")
         if writable:
-            conn.execute("PRAGMA journal_mode=WAL")
+            # Rollback journal permits truly read-only queries without WAL/SHM creation.
+            conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=FULL")
         if not writable:
+            require(conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete",
+                    "catalog must use DELETE journaling; reopen with init to migrate")
             conn.execute("PRAGMA query_only=ON")
         return conn
     except Exception:
@@ -486,7 +491,7 @@ def ingest(db, batch):
                 conn.execute("""INSERT INTO latest VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(key) DO UPDATE SET event_id=excluded.event_id,
                     observed_at=excluded.observed_at,data=excluded.data,
-                    status=excluded.status,state=excluded.state""",
+                    engine=excluded.engine,status=excluded.status,state=excluded.state""",
                              (event["key"], event["invariant"], event["kind"], event["source"],
                               event["page_id"], event["event_id"], event["observed_at"], canonical(data),
                               data.get("engine_id"), data.get("status"), data.get("run_id"),
@@ -908,6 +913,8 @@ references 512 chars (relative object keys ONLY, no URI/credentials), run string
 8192 chars, 100 rows/page, 1 MiB/response or snapshot, SQLite query deadline 2s,
 busy timeout 2s, HTTP socket timeout 3s, 2048-char URI, 10 query parameters.
 HTTP is optional read-only numeric loopback, single-request bounded backlog; no SQL.
+Catalog uses DELETE rollback journaling so read-only connections do not create WAL/SHM.
+Migrate older local WAL catalogs by stopping readers and running --db DB init once.
 Do not expose it through an unauthenticated proxy. Local files/exports are trusted
 operator inputs; use filesystem access controls, never include text or credentials
 in identifiers or references. Retain evidence on durable storage; SQLite is disposable.

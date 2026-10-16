@@ -283,6 +283,56 @@ class CatalogTests(unittest.TestCase):
             c.ingest_worker(self.db, oversized, self.work / "out.jsonl", "b", "worker")
         self.assertFalse((self.work / "out.jsonl").exists())
 
+    def test_worker_engine_index_updates_and_measurements_do_not_change_config(self):
+        metadata = json.loads((ROOT / "scripts/fixtures/data_catalog/worker-timeout.json").read_text())
+        page_id = "loc:" + metadata["doc_id"]
+        original = c.adapt_worker(metadata, page_id)["observations"][0]["config_sha256"]
+        measurements = copy.deepcopy(metadata)
+        measurements["observations"][0]["info"].update(
+            cold_start=False, model_load_seconds=9, engine_stats_json='{"seconds":12}')
+        self.assertEqual(c.adapt_worker(measurements, page_id)["observations"][0]["config_sha256"],
+                         original)
+        measurements["observations"][0]["info"]["options_json"] = '{"psm":6}'
+        self.assertNotEqual(c.adapt_worker(measurements, page_id)["observations"][0]["config_sha256"],
+                            original)
+        missing_info = copy.deepcopy(metadata)
+        missing_info["observations"][0]["info"] = None
+        older = event("execution-old", "execution", T0, page_id=page_id,
+                      payload={"worker_metadata": missing_info})
+        newer = event("execution-new", "execution", T1, page_id=page_id,
+                      payload={"worker_metadata": metadata})
+        self.ingest(older)
+        self.assertEqual(c.query(self.db, "execution", {"engine": "tesseract-5.5"})["items"], [])
+        self.ingest(newer)
+        self.assertEqual(len(c.query(self.db, "execution", {"engine": "tesseract-5.5"})["items"]), 1)
+        changed_engine = copy.deepcopy(metadata)
+        changed_engine["observations"][0]["info"]["engine_id"] = "tesseract-corrected"
+        self.ingest(event("execution-corrected", "execution", "2026-01-03T00:00:00Z",
+                          page_id=page_id, payload={"worker_metadata": changed_engine}))
+        self.assertEqual(c.query(self.db, "execution", {"engine": "tesseract-5.5"})["items"], [])
+        self.assertEqual(len(c.query(self.db, "execution", {"engine": "tesseract-corrected"})["items"]), 1)
+
+    def test_read_queries_do_not_create_or_modify_database_sidecars(self):
+        self.ingest(event("run", "run"))
+        before_files = {file.name: file.read_bytes() for file in self.work.iterdir() if file.is_file()}
+        c.snapshot(self.db)
+        c.page(self.db, PAGE)
+        c.query(self.db, "run", {})
+        with c.make_server(self.db) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:" + str(server.server_address[1]) +
+                                            "/health", timeout=5) as response:
+                    self.assertEqual(json.load(response)["catalog"], "readable")
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+        self.assertEqual(before_files, {file.name: file.read_bytes() for file in self.work.iterdir()
+                                        if file.is_file()})
+        self.assertFalse(Path(str(self.db) + "-wal").exists())
+        self.assertFalse(Path(str(self.db) + "-shm").exists())
+
     def test_cli_end_to_end_and_snapshot_freshness(self):
         batch = self.batch([event(), event("r1", "run"), event("a1", "page_state"),
                             event("s1", "stage", T1)])
